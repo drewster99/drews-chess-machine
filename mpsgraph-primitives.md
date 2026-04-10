@@ -634,6 +634,21 @@ You loop over all variables, calling `graph.adam()` for each one. The returned t
 
 ## Executing the Graph
 
+### Helper: wrapping Swift arrays as MPSGraphTensorData
+
+`MPSGraphTensorData` requires a `Data` buffer and an `MPSGraphDevice`, not a Swift array directly:
+
+```swift
+func makeTensorData(
+    device: MPSGraphDevice,
+    floats: [Float],
+    shape: [NSNumber]
+) -> MPSGraphTensorData {
+    let data = floats.withUnsafeBytes { Data($0) }
+    return MPSGraphTensorData(device: device, data: data, shape: shape, dataType: .float32)
+}
+```
+
 ### Training step
 
 ```swift
@@ -642,28 +657,26 @@ func trainingStep(
     policyTargets: [Float],     // one-hot vectors of moves played
     valueTargets: [Float]       // game outcomes: +1, 0, -1
 ) {
-    guard let device = MTLCreateSystemDefaultDevice() else {
+    guard let mtlDevice = MTLCreateSystemDefaultDevice() else {
         fatalError("Metal is not supported on this device")
     }
-    guard let commandQueue = device.makeCommandQueue() else {
+    guard let commandQueue = mtlDevice.makeCommandQueue() else {
         fatalError("Failed to create Metal command queue")
     }
+    let graphDevice = MPSGraphDevice(mtlDevice: mtlDevice)
 
     // wrap data in MPSGraphTensorData
-    let boardData = MPSGraphTensorData(
-        boardPositions,
-        shape: [batchSize, 18, 8, 8],
-        dataType: .float32
+    let boardData = makeTensorData(
+        device: graphDevice, floats: boardPositions,
+        shape: [batchSize as NSNumber, 18, 8, 8]
     )
-    let policyData = MPSGraphTensorData(
-        policyTargets,
-        shape: [batchSize, 4096],
-        dataType: .float32
+    let policyData = makeTensorData(
+        device: graphDevice, floats: policyTargets,
+        shape: [batchSize as NSNumber, 4096]
     )
-    let valueData = MPSGraphTensorData(
-        valueTargets,
-        shape: [batchSize, 1],
-        dataType: .float32
+    let valueData = makeTensorData(
+        device: graphDevice, floats: valueTargets,
+        shape: [batchSize as NSNumber, 1]
     )
 
     // run forward pass + backward pass + weight update
@@ -690,11 +703,10 @@ func trainingStep(
 ### Inference (during self-play)
 
 ```swift
-func evaluatePosition(board: [Float]) -> (policy: [Float], value: Float) {
-    let boardData = MPSGraphTensorData(
-        board,
-        shape: [1, 18, 8, 8],   // batch size 1 for single position
-        dataType: .float32
+func evaluatePosition(device: MPSGraphDevice, board: [Float]) -> (policy: [Float], value: Float) {
+    let boardData = makeTensorData(
+        device: device, floats: board,
+        shape: [1, 18, 8, 8]    // batch size 1 for single position
     )
 
     let results = graph.run(
