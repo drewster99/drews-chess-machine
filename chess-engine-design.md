@@ -1,6 +1,14 @@
 # Chess Engine Design Notes
 
-A reference document covering the full design of a self-learning chess engine built with Swift and Metal Performance Shaders on Apple Silicon. Written conversationally to be readable after time away.
+A reference document covering the full design of a self-learning chess engine built with Swift and Metal Performance Shaders on Apple Silicon. Written conversationally for someone who’s pretty new to this (*by* someone who’s pretty new to this).
+
+## My Goal
+
+As Googling and chats with Claude have informed me, there are several ways to improve this that should enable the network to learn at a significantly faster rate. Those things might be part of a future project, but my immediate goal is to try to better understand the basic building blocks of neural networks and machine learning.
+
+With that in mind, I’m hoping to build the most basic convolutional neural network setup and have it learn some chess, playing only itself, starting from completely random weights.
+
+This document is really my own documentation of my learning process as I walk through designing the neural network, before moving on to coding and testing.
 
 ---
 
@@ -8,40 +16,61 @@ A reference document covering the full design of a self-learning chess engine bu
 
 The goal is a chess engine that learns entirely from self-play — no human game data required. It starts knowing nothing, plays itself, gets slightly better, plays a stronger version of itself, and repeats. Given enough iterations it discovers chess strategy from scratch.
 
-The system has three major components that work together:
+The system has two major components that work together:
 
-- **A neural network** that looks at a board position and outputs (a) which moves look promising, and (b) how good the position is
-- **MCTS (Monte Carlo Tree Search)** that uses the network to intelligently explore possible futures
+- **A neural network** that looks at a board position and outputs (a) which moves look promising, and (b) how good the player’s current position is
 - **A self-play training loop** that generates games, trains the network, and decides whether the new network is stronger
 
 ---
 
 ## The Input Tensor
 
-The board is represented as a 3D array — 19 planes, each an 8×8 grid of floats. Think of it as 19 spreadsheets stacked on top of each other, each answering one specific question about the board.
+> [!NOTE] What’s a `Tensor`?
+> A tensor is just an <u>N-dimensional array</u> of a <u>specific shape</u>.
+>
+> **Notation:** *The shape is described as the size of each dimension, in square brackets, like this:*
+>
+> **[]** - Just a single value / scalar — this is a zero-dimensional tensor
+> 
+> **[2048]** - A Vector, or a 1-dimensional array *(i.e., just a plain old “array”)*, 2048 elements long
+> 
+> **[8, 8]** - a 2-dimensional array, where both dimensions have a size of 8. This is like a square grid for Chess or Checkers (8x8)
+> 
+> **[16, 4, 2]** - a 3-dimensional array, with sizes 16, 4, and 2. You can think of this as a 16x4 rectangular grid that is two layers deep. Or you could think of it as a 4x2 grid that is 16 layers deep.
+> 
 
-**Always encoded from the current player's perspective.** Whoever's turn it is, their pieces are "my pieces." The board is flipped vertically if needed so the current player is always at the bottom. This means the network never needs to learn separate strategies for white and black — chess knowledge is symmetric.
+The board is represented as a 3D array — 18 planes/layers, each an 8×8 grid of floats. Think of it as 18 spreadsheets stacked on top of each other, each answering one specific question about the board.
 
-### The 19 Planes
+**Always encoded from the <u>current</u> player's perspective.** Whoever's turn it is, their pieces are "my pieces." The board is flipped vertically if needed so the current player is always at the bottom. This means the network never needs to learn separate strategies for white and black — chess knowledge is symmetric.
 
-```
-planes 0–5:    my pieces          — one plane each for P, N, B, R, Q, K
-                                    1.0 where piece exists, 0.0 elsewhere
-planes 6–11:   opponent's pieces  — same structure for their pieces
-plane 12:      my kingside castling right        — all 1.0s or all 0.0s
-plane 13:      my queenside castling right       — all 1.0s or all 0.0s
-plane 14:      opponent kingside castling right  — all 1.0s or all 0.0s
-plane 15:      opponent queenside castling right — all 1.0s or all 0.0s
-plane 16:      en passant square I can capture   — single 1.0 on target square
-plane 17:      en passant square opponent can capture me — single 1.0
-plane 18:      halfmove clock     — all same value, normalized 0.0–1.0
-```
+### The 18 Planes
+
+| Plane | Content | Encoding |
+|-------|---------|----------|
+| 0 | My pawns | 1.0 where piece exists, 0.0 elsewhere |
+| 1 | My knights | 1.0 where piece exists, 0.0 elsewhere |
+| 2 | My bishops | 1.0 where piece exists, 0.0 elsewhere |
+| 3 | My rooks | 1.0 where piece exists, 0.0 elsewhere |
+| 4 | My queens | 1.0 where piece exists, 0.0 elsewhere |
+| 5 | My king | 1.0 where piece exists, 0.0 elsewhere |
+| 6 | Opponent pawns | 1.0 where piece exists, 0.0 elsewhere |
+| 7 | Opponent knights | 1.0 where piece exists, 0.0 elsewhere |
+| 8 | Opponent bishops | 1.0 where piece exists, 0.0 elsewhere |
+| 9 | Opponent rooks | 1.0 where piece exists, 0.0 elsewhere |
+| 10 | Opponent queens | 1.0 where piece exists, 0.0 elsewhere |
+| 11 | Opponent king | 1.0 where piece exists, 0.0 elsewhere |
+| 12 | My kingside castling right | All 1.0s or all 0.0s |
+| 13 | My queenside castling right | All 1.0s or all 0.0s |
+| 14 | Opponent kingside castling right | All 1.0s or all 0.0s |
+| 15 | Opponent queenside castling right | All 1.0s or all 0.0s |
+| 16 | En passant target square | Single 1.0 on capturable square, 0.0 elsewhere |
+| 17 | Halfmove clock | All same value, normalized 0.0–1.0 |
 
 ### Design Decisions Worth Remembering
 
 **Why castling gets whole planes of 1s/0s:** Castling availability cannot be inferred from the current board. Two positions with identical piece placement can have different castling rights depending on move history. The plane carries that lost history forward. The all-1s/all-0s approach is spatially redundant but unambiguous and consistent with everything else.
 
-**Why two en passant planes instead of one:** "I can capture en passant" and "my opponent can capture me en passant" are strategically opposite things — opportunity vs threat. One plane would conflate them.
+**Why only one en passant plane:** En passant must be exercised immediately on the turn following a double pawn push, or the right expires. Since the board is always encoded from the current player's perspective, the only valid en passant state is one the current player can execute. Any en passant opportunity the opponent had was on their turn and has already expired.
 
 **Why halfmove clock instead of total move count:** The halfmove clock tracks consecutive moves since the last pawn move or capture. It directly encodes fifty-move rule proximity. Total move count is a less useful phase indicator — the network can infer phase from piece configuration anyway.
 
@@ -54,7 +83,7 @@ plane 18:      halfmove clock     — all same value, normalized 0.0–1.0
 ### Overview
 
 ```
-input (19 × 8 × 8)
+input (18 × 8 × 8)
     ↓
 stem — expands to 128 channels
     ↓
@@ -70,7 +99,7 @@ probabilities    [-1.0, +1.0]
 
 ### The Stem
 
-One conv layer that takes 19 input planes to 128 output planes:
+One conv layer that takes 18 input planes to 128 output channels:
 
 ```
 3×3 conv, 128 filters, padding=1
@@ -79,7 +108,54 @@ ReLU
 → 128 × 8 × 8
 ```
 
-Its only job is to translate from "19 planes of chess facts" into "128 planes of learned features" that the tower can work with. The padding=1 ensures the 8×8 spatial dimensions are preserved — board edges matter (rooks on the a-file, kings in corners) so you never want to lose them.
+Its only job is to translate from "18 planes of chess facts" into "128 channels of learned features" that the tower can work with.
+
+**Terminology note — planes vs channels:** These mean the same thing (one 8×8 grid in the tensor), but convention shifts here. The input uses "planes" because each layer has a human-interpretable meaning you designed — "my pawns," "castling rights." After the stem, the 128 layers are abstract features the network discovered during training with no human-interpretable meaning, so they're called "channels" (the standard neural network term).
+
+**How padding=1 preserves the 8×8 board:** The 3×3 filter needs to read a center square plus its 8 neighbors. Without padding, the filter can only center on squares that have a full 3×3 neighborhood of real data — that excludes the entire border of the board, shrinking the output to 6×6. After a few conv layers the board would disappear entirely.
+
+Padding=1 adds a 1-wide border of zeros around each input plane, expanding each 8×8 plane to 10×10 before the filter slides across it:
+
+```
+0 0 0 0 0 0 0 0 0 0
+0 . . . . . . . . 0      . = real board data
+0 . . . . . . . . 0      0 = padding (zeros)
+0 . . . . . . . . 0
+0 . . . . . . . . 0
+0 . . . . . . . . 0
+0 . . . . . . . . 0
+0 . . . . . . . . 0
+0 . . . . . . . . 0
+0 0 0 0 0 0 0 0 0 0
+```
+
+Now the filter can center on every original board position, including edges and corners. For a center square like e4, all 9 values in the 3×3 window are real data. For an edge square like a4, three values come from the zero padding:
+
+```
+0  a5  b5
+0  a4  b4        ← filter centered on a4
+0  a3  b3
+```
+
+For a corner like a8, five values are zeros:
+
+```
+0   0   0
+0  a8  b8        ← filter centered on a8
+0  a7  b7
+```
+
+The zeros don't add information — they just let the math run on edge and corner squares so the output stays 8×8:
+
+```
+output_size = input_size - kernel_size + 2×padding + 1
+            = 8 - 3 + 2(1) + 1
+            = 8
+```
+
+This padding happens independently on each of the 18 input planes. The filter reads across all 18 padded planes simultaneously at each position (see [The Convolution Operation](#the-convolution-operation) for the full breakdown of this math). 128 filters produce 128 output channels. Board edges matter (rooks on the a-file, kings in corners) so you never want to lose them.
+
+Skip the math and move on to [The Tower](#the-tower)
 
 ### The Tower
 
@@ -96,72 +172,60 @@ ReLU
     ↓
 conv 3×3, 128 filters     — refines further
 batch norm
-    ↓
+    ↓                       (no ReLU here — conv2 needs to produce negative
+                             values so the skip addition can subtract, not just add)
 + original input           ← skip connection
-ReLU
+ReLU                       ← ReLU goes here, after the skip addition
     ↓
 output: 128 × 8 × 8
 ```
 
-**Why two convs per block:** One conv alone doesn't have enough capacity. The second conv operates on features the first already processed — it's one level of abstraction higher.
+**Why two convolutions per block:** Each block has two convolutions with completely separate weights — conv1 has its own 128×128×3×3 weight block, conv2 has a different one. They learn different things. Conv1 detects features from the input. Conv2 combines those features into something higher-level. Together they compute the "correction" that gets added back to the input via the skip connection.
 
-**Why residual (skip connection):** Without it, gradients during training have to travel backwards through all 8 blocks to reach early layers. Each block they pass through, the signal weakens. By block 1 it's nearly gone — early layers stop learning. The skip connection creates a direct gradient highway: the error signal can jump straight to any layer regardless of depth.
+One conv alone doesn't have enough capacity — it can detect features but can't compose them in the same step. Three convs per block was tested in early ResNet research, but the gains are marginal while adding ~147K parameters per block, slowing inference by ~50% per block, and making the gradient path through the block longer (partially undermining the skip connection). AlphaZero and Leela Chess Zero both use 2 — it's the established sweet spot for chess engines.
 
-The block learns a *correction* to its input rather than a full transformation:
+**How the skip connection works:** The input arrives at the block and goes two places simultaneously:
+
 ```
-output = input + what_the_block_learned
+input ──→ conv1 → bn → ReLU → conv2 → bn ──→ (+) → ReLU → output
+  │                                              ↑
+  └──────────────────────────────────────────────┘
+                    skip (the original input, unchanged)
 ```
+
+One path goes through both convolutions, which transform it. The other path goes straight to the addition at the end, completely unchanged — it bypasses the convolutions entirely. Conv1 sees the block's input. Conv2 sees conv1's processed output. Neither convolution sees the skip. Then at the `+`, the two paths meet and get added element-wise (each of the 128 × 8 × 8 values added to its counterpart).
+
+The block's output is:
+```
+output = original_input + what_the_convolutions_produced
+```
+
+Not just the convolution output — the original input is always preserved. Think of it like editing a document rather than rewriting it from scratch. Each block makes edits to the input. If the edits are bad, the original document is still there.
+
+**Why skip connections matter for training:** Early in training, the convolution weights are random, so their output is essentially noise. Without the skip connection, that noise is all that passes to the next block — useful information from earlier blocks is destroyed. With the skip, even if the convolutions produce garbage, the original input passes through untouched. The convolutions just need to learn a small *improvement* on top of what's already there.
+
+The skip also solves the vanishing gradient problem. During backpropagation, the error signal needs to travel from the output all the way back to the early blocks to update their weights. Through 8 blocks of convolutions, that signal gets weaker at every step. The skip connections provide a direct path — the gradient can flow straight through the additions without passing through any convolutions at all. Every block gets a strong training signal regardless of depth.
 
 Early in training blocks can output near-zero corrections (acting as identity), only gradually learning to contribute. This is why residual networks train so reliably.
 
-**Why 8 blocks:** Each 3×3 conv expands the receptive field — the area of the board one output value can "see" — by 2 squares in each direction. After ~5 blocks every square can influence every other square. The remaining blocks deepen the abstraction rather than expanding coverage.
+**Why 128 channels:** The channel count is the "width" of each block — how many dimensions the network has to represent different patterns at each square. With 128 channels, each block can track 128 different aspects of every board position simultaneously: pawn structure, piece pressure, king proximity, and dozens of other patterns the network discovers during training. These aren't discrete features like "is this square attacked: yes/no" — each channel is a continuous float, and the 128 channels interact (each convolution mixes all channels together), so they function as 128 dimensions of a shared representation rather than 128 independent detectors.
 
-**What the tower is learning:** There's a rough hierarchy that emerges from training (nobody programs this):
-- Early blocks: raw patterns — is this square occupied, is a piece under attack
-- Middle blocks: tactics — pins, forks, open files, pawn chains  
-- Late blocks: strategy — king safety, piece coordination, endgame structure
+**Why 8 blocks (depth vs width tradeoff):** Each block adds one more level of abstraction — composing the previous block's patterns into increasingly complex ones:
+- Early blocks see raw piece positions and detect simple spatial patterns (adjacency, piece types nearby)
+- Middle blocks compose those into tactical patterns (pins, forks, open files — "the knight on f6 is attacking the square the bishop on e4 defends")
+- Late blocks compose tactics into strategy (king safety, piece coordination — "the king is exposed on the queenside while the opponent has a rook on an open file pointing that direction")
 
-### The Convolution Operation
+Nobody programs these levels — they emerge because composing simple patterns repeatedly produces increasingly complex ones.
 
-A 3×3 conv with 128 input and 128 output channels means:
-- 128 filters, each of shape 3×3×128
-- At each square, each filter looks at that square + 8 neighbors across ALL 128 input channels simultaneously
-- 3 × 3 × 128 = 1,152 multiplications per square per filter, summed to one value
-- 128 filters → 128 output planes
+Each 3×3 conv expands the receptive field — the area of the board one output value can "see" — by 2 squares in each direction. After ~5 blocks every square can influence every other square. The remaining blocks deepen the abstraction rather than expanding coverage. More blocks beyond 8 add subtlety but with diminishing returns, and each block adds ~295K parameters and slows inference.
 
-A 1×1 conv is the same but with no spatial neighborhood — it only mixes across channels at each individual square. Used in the heads to cheaply compress 128 channels to 2 or 1 before flattening.
+The tradeoff is width (channels) vs depth (blocks). Both add capacity, but they add different kinds:
+- More channels → richer representations at each level (more patterns per block)
+- More blocks → more levels of composition (deeper abstraction)
 
-### Batch Normalization
+AlphaZero and Leela Chess Zero development found that wider networks tend to outperform deeper ones at equivalent parameter counts. The reason: a wider block (more channels) adds capacity without adding sequential inference steps, while more blocks add steps that can't be parallelized. GPUs are good at parallelism, so width is "cheaper" than depth in wall-clock time. This is why we target 128 filters × 8 blocks rather than 64 filters × 16 blocks.
 
-After each conv layer, values can end up in wildly different ranges — some channels near 0.001, others near 847. This causes:
-- Training instability (large values → large gradients → overshooting weight updates)
-- Layers constantly re-adapting as upstream distributions shift during training
-
-Batch norm fixes this by normalizing each channel across the training batch to mean=0, std=1. Then two learnable parameters (gamma, beta) let the network find the optimal scale and offset per channel:
-
-```
-output = gamma × normalized_value + beta
-```
-
-At inference time (single positions during self-play), batch norm uses running averages computed during training rather than batch statistics.
-
-### ReLU
-
-Rectified Linear Unit. Does one thing:
-
-```
-f(x) = max(0, x)
-```
-
-Negative inputs → 0. Positive inputs → unchanged.
-
-**Why you need it:** Without nonlinearity, stacking conv layers collapses to a single linear transformation no matter how deep you go. Linear functions can only draw straight lines through data. Chess positions don't separate along straight lines. ReLU introduces the bends that let the network learn complex patterns.
-
-**Why ReLU specifically:** Sigmoid and tanh saturate — for large inputs their gradients approach zero, causing vanishing gradients. ReLU has no ceiling on the positive side, so gradients flow freely. It's also trivially fast to compute.
-
-After batch norm, values are centered near zero, so roughly half get zeroed by ReLU and half pass through. This is the intended operating range.
-
-### The Policy Head
+### The Policy Head - What Move Should I Make?
 
 Takes the 128 × 8 × 8 trunk output and produces 4096 move probabilities.
 
@@ -173,7 +237,7 @@ fully connected (128→4096) → 4096 numbers
 softmax                    → 4096 probabilities summing to 1.0
 ```
 
-The 1×1 conv compresses 128 channels to 2 before flattening. Without it, flattening 128 × 8 × 8 = 8,192 inputs into a FC layer targeting 4096 outputs would require 33 million weights in that one layer alone.
+The 1×1 conv compresses 128 channels to 2 before flattening. Without it, flattening 128 × 8 × 8 = 8,192 inputs into a FC layer targeting 4096 outputs would require 33 million weights in that one layer alone. The fully connected layer is a matrix multiplication — every input value connects to every output value through a learned weight (see [Fully Connected Layers](#fully-connected-layers) for the math).
 
 **Move encoding:** Each of the 4096 outputs maps to one (from_square, to_square) pair:
 ```
@@ -187,7 +251,7 @@ Squares numbered 0–63, row by row from rank 8. Most outputs will be near zero 
 
 **Softmax function:** Takes unbounded floats, exponentiates each, divides by sum. Result is all-positive, sums to 1.0. The exponentiation amplifies differences — the network's most confident move gets disproportionately more probability, weak moves get squeezed toward zero.
 
-### The Value Head
+### The Value Head - Am I Winning?
 
 Takes the 128 × 8 × 8 trunk output and produces one float in [-1, 1].
 
@@ -201,7 +265,7 @@ fully connected (64→1)     → 1 number
 tanh                       → float in [-1.0, +1.0]
 ```
 
-The intermediate 64→64 FC layer gives the head capacity to combine spatial features before collapsing to a scalar. Going straight to 1 output is too aggressive.
+The intermediate 64→64 [fully connected layer](#fully-connected-layers) gives the head capacity to combine spatial features before collapsing to a scalar. Going straight to 1 output is too aggressive.
 
 **Tanh:** Squashes unbounded FC output to [-1, 1]. The FC layer could output -47 or +831 — tanh maps the entire real line to this fixed range to match the game outcome encoding.
 
@@ -232,67 +296,190 @@ output[4095] = input[0]×w[0,4095] + ... + input[127]×w[127,4095]
 ```
 128 × 4096 = 524,288 weights in this one layer.
 
-### Parameter Count (Small Config)
-
-```
-stem:              19 × 128 × 3 × 3 =     21,888
-per residual block: 2 × (128 × 128 × 3 × 3) = 294,912
-8 blocks:                              = 2,359,296
-policy head:                           ~  135,000
-value head:                            ~   75,000
-total:                                 ~  2.6M parameters
-```
+It's the same idea as convolution — paired multiplications summed together — but with no spatial structure. Every input connects to every output. The convolution only looks at 3×3 neighbors; the FC layer looks at everything at once.
 
 ---
 
-## MCTS — Monte Carlo Tree Search
+## How the Operations Work (Math Detail)
 
-### What It Is
+### The Convolution Operation
 
-A way to decide which move to make by selectively exploring a tree of possible futures. Rather than searching exhaustively (impossible — chess has ~10^120 positions), it builds a running estimate of move quality by focusing compute on the most promising branches.
-
-### The Four Phases (repeat thousands of times)
-
-**1. Select:** Starting from the root (current position), follow the tree downward, at each node choosing the child with the best UCB score:
+A convolution produces a completely new output tensor — it does not modify the input or the weights. The input is read, the weights are applied, and the result is a fresh tensor.
 
 ```
-UCB = wins/visits  +  C × √(ln(parent_visits) / visits)
-         ↑                        ↑
-    exploitation              exploration
+input (read-only)          weights (fixed during inference)
+        \                  /
+    multiply paired values and sum everything
+                |
+                v
+    new output tensor (separate from input)
 ```
 
-C ≈ 1.4 controls the exploration/exploitation balance. Nodes with few visits get a large exploration bonus. Once visited enough times, their actual win rate takes over.
+**How one filter computes one output value at one position:**
 
-**2. Expand:** At a node that hasn't been fully explored, add a new child node for an untried legal move. Seed its prior probability from the network's policy output.
+Each filter is a 3D block of weights — for the stem that's 18×3×3 (18 channels × 3 rows × 3 columns = 162 weights). At a given board position (row, col), the filter reads the 3×3 spatial window across every input channel. Each weight is paired with exactly one input value at the same channel and spatial offset — it's not every weight against every input:
 
-**3. Evaluate:** Call the neural network on the new node's position. Get back:
-- Policy output → prior probabilities for this node's children (replaces random rollout)
-- Value output → position evaluation, used as the simulation result
+```
+For one channel, at position (row, col):
 
-**4. Backpropagate:** The value travels back up the tree, updating visit counts and win estimates for every node on the path.
+weight[0][0] × input[row-1][col-1]     ← top-left
+weight[0][1] × input[row-1][col  ]     ← top-center
+weight[0][2] × input[row-1][col+1]     ← top-right
+weight[1][0] × input[row  ][col-1]     ← middle-left
+weight[1][1] × input[row  ][col  ]     ← center
+weight[1][2] × input[row  ][col+1]     ← middle-right
+weight[2][0] × input[row+1][col-1]     ← bottom-left
+weight[2][1] × input[row+1][col  ]     ← bottom-center
+weight[2][2] × input[row+1][col+1]     ← bottom-right
+```
 
-After thousands of iterations, pick the move with the most visits from the root.
+That's 9 paired multiplications for one channel. Each multiplication pairs one weight with the input value at the same spatial position — not every weight against every input.
 
-### Why MCTS + Network Together
+This repeats for all input channels (18 in the stem, 128 in the tower). Every channel uses its own 3×3 weights, and the multiplications stay within their own channel. The cross-channel mixing happens at the end: all the products across all channels and all 9 spatial positions get summed together into one number:
 
-The network makes MCTS smarter at both ends:
-- Policy output biases exploration toward promising moves (don't waste simulations on obviously bad moves)
-- Value output replaces slow noisy random rollouts with fast accurate evaluation
+```
+output[row][col] = sum of all (weight × input) pairs across all channels and all 3×3 positions
+```
 
-MCTS makes the network's training data better:
-- The visit count distribution (not just the chosen move) becomes the policy training target — much richer signal than a one-hot move label
-- Games played with MCTS contain genuine combination thinking the network couldn't find alone
+For the stem: 9 positions × 18 channels = 162 multiply-and-adds → one output value.
+For the tower: 9 positions × 128 channels = 1,152 multiply-and-adds → one output value.
 
-They improve each other: better network → MCTS explores better → stronger games → better training signal → better network.
+**From one value to a full output tensor:**
 
-### MCTS and Convergence
+One filter sliding across all 64 board positions *(with `padding=1` as described in the `Stem` section)* produces one 8×8 output channel. 128 different filters — each with their own 18×3×3 (or 128×3×3) block of weights — produce 128 output channels. The result is a 128 × 8 × 8 tensor.
 
-MCTS probably isn't strictly required — pure self-play without search would eventually learn chess. But without it:
-- Games are weaker and noisier (greedy play misses combinations)
-- Training needs far more games to reach the same level
-- On constrained hardware (one Mac) you can't compensate with volume
+**1×1 convolution:** The same operation but with kernel size 1×1. No spatial neighborhood — just one position, across all channels. For one filter: 1 × 1 × 128 = 128 multiply-and-adds per position. Used in the heads to cheaply compress 128 channels to 2 or 1 before flattening.
 
-MCTS is essentially a way to get more learning per game. With limited compute it tips from "dramatically helpful" toward "practically necessary."
+### Batch Normalization
+
+After each conv layer, values can end up in wildly different ranges — some channels near 0.001, others near 847 (not a meaningful number — just illustrating that scales can vary wildly). This causes:
+- Training instability (large values → large gradients → overshooting weight updates)
+- Layers constantly re-adapting as upstream distributions shift during training
+
+Batch norm fixes this by normalizing each channel independently. For one channel, compute a single μ and σ across all spatial positions (64 squares) and all boards in the training batch. With batch size 256, that's 256 × 64 = 16,384 values going into one μ and σ calculation. Each of the 128 channels gets its own independent μ and σ.
+
+Then every individual value in the channel goes through the same pipeline:
+
+```
+// x = one value coming out of the convolution layer (before normalization)
+
+// 1. compute mean and variance for this channel (once, shared across all values)
+μ = mean of all values in this channel
+σ² = variance of all values in this channel
+
+// 2. normalize to mean=0, std=1
+x̂ = (x - μ) / √(σ² + ε)          // ε = 0.00001, prevents division by zero
+
+// 3. scale and shift with learnable parameters (one pair per channel)
+y = γ × x̂ + β
+
+// y = the final output value, passed to ReLU
+```
+
+γ (gamma) and β (beta) start at 1.0 and 0.0 respectively — an identity transform, so batch norm does nothing at initialization and gradually learns the optimal scale and offset per channel during training.
+
+At inference time (single positions during self-play), there's no batch to compute statistics from. Instead, batch norm uses running averages of μ and σ² accumulated during training — these are frozen and applied as fixed constants.
+
+#### What are those little symbols above?
+
+| Symbol | Name / Pronunciation | What it means here |
+|--------|---------------------|--------------------|
+| **μ**  | *mu* ("myoo" or "mew") | The average value across all positions in this `channel` — what we subtract to center the data at zero |
+| **σ**  | *sigma* ("SIG-muh") | Standard deviation — how spread out the values are. σ² (sigma squared) is the variance. We divide by it to normalize the spread to 1 |
+| **x̂** | *x-hat* | The normalized value after subtracting the mean and dividing by the standard deviation — centered at 0, spread of 1 |
+| **ε**  | *epsilon* ("EP-si-lon") | A tiny constant (0.00001) added to prevent dividing by zero when the variance happens to be exactly 0 |
+| **γ**  | *gamma* ("GAM-uh") | Learned `scale` parameter — one per channel. Lets the network adjust how spread out the normalized values should actually be |
+| **β**  | *beta* ("BAY-tuh" or "BEE-tuh") | Learned `shift` parameter — one per channel. Lets the network adjust the center point away from zero if that's better |
+
+#### Calculating standard deviation (σ)
+
+```
+Given N values: x₁, x₂, ..., xₙ
+
+1. Compute mean:           μ = (x₁ + x₂ + ... + xₙ) / N
+2. Subtract mean:          each (xᵢ - μ)
+3. Square each difference: each (xᵢ - μ)²
+4. Average them:           σ² = sum of all (xᵢ - μ)² / N
+5. Take square root:       σ = √(σ²)
+```
+
+In batch normalization, `N` is the number of values in one channel across the batch (e.g. 16,384 for batch size 256 × 64 squares).
+
+### ReLU - All negative values become zero
+
+Rectified Linear Unit. Does one thing:
+
+```
+f(x) = max(0, x)
+```
+
+Negative inputs → 0. Positive inputs → unchanged.
+
+**Why you need it:** Without nonlinearity, stacking conv layers collapses to a single linear transformation no matter how deep you go. Linear functions can only draw straight lines through data. Chess positions don't separate along straight lines. ReLU introduces the bends that let the network learn complex patterns.
+
+**Why ReLU specifically:** Sigmoid and tanh saturate — for large inputs their gradients approach zero, causing vanishing gradients. ReLU has no ceiling on the positive side, so gradients flow freely. It's also trivially fast to compute.
+
+After batch norm, values are centered near zero, so roughly half get zeroed by ReLU and half pass through. This is the intended operating range.
+
+---
+
+### Parameter Count (Small Config)
+
+**Stem:**
+
+| Component | Shape | Parameters |
+|-----------|-------|------------|
+| Conv weights | [128, 18, 3, 3] | 20,736 |
+| BN gamma | [128] | 128 |
+| BN beta | [128] | 128 |
+| **Stem total** | | **20,992** |
+
+**Per Residual Block (×8):**
+
+| Component | Shape | Parameters |
+|-----------|-------|------------|
+| Conv1 weights | [128, 128, 3, 3] | 147,456 |
+| BN1 gamma | [128] | 128 |
+| BN1 beta | [128] | 128 |
+| Conv2 weights | [128, 128, 3, 3] | 147,456 |
+| BN2 gamma | [128] | 128 |
+| BN2 beta | [128] | 128 |
+| **Per block** | | **295,424** |
+| **×8 blocks** | | **2,363,392** |
+
+**Policy Head (What Move Should I Make?):**
+
+| Component | Shape | Parameters |
+|-----------|-------|------------|
+| 1×1 conv weights | [2, 128, 1, 1] | 256 |
+| BN gamma | [2] | 2 |
+| BN beta | [2] | 2 |
+| FC weights | [128, 4096] | 524,288 |
+| FC bias | [4096] | 4,096 |
+| **Policy total** | | **528,644** |
+
+**Value Head (Am I Winning?):**
+
+| Component | Shape | Parameters |
+|-----------|-------|------------|
+| 1×1 conv weights | [1, 128, 1, 1] | 128 |
+| BN gamma | [1] | 1 |
+| BN beta | [1] | 1 |
+| FC1 weights | [64, 64] | 4,096 |
+| FC1 bias | [64] | 64 |
+| FC2 weights | [64, 1] | 64 |
+| FC2 bias | [1] | 1 |
+| **Value total** | | **4,355** |
+
+**Total:**
+
+| Section | Parameters |
+|---------|------------|
+| Stem | 20,992 |
+| 8 residual blocks | 2,363,392 |
+| Policy head | 528,644 |
+| Value head | 4,355 |
+| **Total** | **2,917,383 (~2.9M)** |
 
 ---
 
@@ -302,7 +489,7 @@ MCTS is essentially a way to get more learning per game. With limited compute it
 initialize: random network weights
 
 loop forever:
-    1. generate N self-play games using current network + MCTS
+    1. generate N self-play games using current network
     2. add all positions to replay buffer
     3. sample mini-batches from buffer, train candidate network
     4. play G evaluation games (G/2 each color)
@@ -311,13 +498,17 @@ loop forever:
     6. go to 1
 ```
 
+### Move Selection During Self-Play
+
+Each move, the network evaluates the current position and outputs a probability distribution over all moves. Select the move to play by sampling from the legal move probabilities (after masking illegal moves and renormalizing). Sampling rather than always picking the highest-probability move introduces variety into games — necessary so the network encounters diverse positions during training. Early in training when the network knows nothing, this is effectively random play.
+
 ### Training Data Generation
 
-Each game of M moves generates approximately M × 2 training positions (each position encoded from the current player's perspective — white's first move from the starting position is the only one that doesn't need flipping).
+Each game of M moves generates M training positions — one per move, each encoded from the current player's perspective.
 
 Each training position stores:
-- The board tensor (19 × 8 × 8)
-- The MCTS visit distribution (4096 floats) — policy target
+- The board tensor (18 × 8 × 8)
+- The move played, as a one-hot vector (4096 floats) — policy target
 - The game outcome from that player's perspective (+1, 0, -1) — value target
 
 ### The Replay Buffer
@@ -334,8 +525,8 @@ Always train a *candidate* — never update the current network in place while i
 **Two loss functions trained jointly:**
 
 ```swift
-// policy: cross entropy vs MCTS visit distribution
-let policyLoss = crossEntropy(predicted: policyOutput, target: mctsVisits)
+// policy: cross entropy vs the move actually played (one-hot vector)
+let policyLoss = crossEntropy(predicted: policyOutput, target: movePlayed)
 
 // value: mean squared error vs actual game outcome
 let valueLoss = MSE(predicted: valueOutput, target: gameOutcome)
@@ -366,26 +557,23 @@ During evaluation: enforce G/2 games each color so a network that's merely bette
 | Config | Filters | Blocks | Params | Notes |
 |--------|---------|--------|--------|-------|
 | Tiny   | 64      | 5      | ~1M    | First pass, verify training loop |
-| Small  | 128     | 8      | ~2.6M  | Sweet spot for self-play on Mac |
+| Small  | 128     | 8      | ~2.9M  | Sweet spot for self-play on Mac |
 | Medium | 256     | 10     | ~25M   | Too slow for self-play volume |
 
-**The small config (128 filters, 8 blocks) is the target.** At ~2ms inference time, 800 MCTS simulations per move = ~1.6 seconds per move. Slow but workable for training. Medium config hits ~8ms → 6.4 seconds per move → self-play crawls.
+**The small config (128 filters, 8 blocks) is the target.** At ~2ms inference time, each move is one network evaluation — fast enough to generate a high volume of self-play games. Medium config hits ~8ms per evaluation, reducing training data throughput.
 
-Inference speed × simulations per move × moves per game × games per hour = training data rate. Faster inference = more games = faster learning.
+Inference speed × moves per game × games per hour = training data rate. Faster inference = more games = faster learning.
 
 ---
 
 ## Implementation Stack
 
 ```
-python-chess (Python)     → chess rules, move generation for data pipeline
-PyTorch + MPS backend     → train on Apple Silicon GPU
-coremltools               → export .mlmodel
-Swift + CoreML            → run inference
-Swift MCTS engine         → tree search wrapping inference
+Swift + MPSGraph          → network definition, training, and inference on Apple Silicon GPU
+Swift                     → chess rules, move generation, self-play loop, training orchestration
 ```
 
-Or, for maximum learning: implement the network directly in Metal Performance Shaders (MPSGraph) in Swift, keeping the entire system in one language.
+The entire system in one language, with the network implemented directly in Metal Performance Shaders (MPSGraph).
 
 ---
 
@@ -393,7 +581,7 @@ Or, for maximum learning: implement the network directly in Metal Performance Sh
 
 | Term | What it means |
 |------|---------------|
-| Tensor | Multi-dimensional array. 19 × 8 × 8 = 19 stacked 8×8 grids |
+| Tensor | Multi-dimensional array. 18 × 8 × 8 = 18 stacked 8×8 grids |
 | Channel / plane | One 8×8 layer in the tensor |
 | Conv 3×3 | Filter that looks at each square + 8 neighbors across ALL channels |
 | 1×1 conv | Filter that mixes channels at each square with no spatial neighborhood |
@@ -401,8 +589,8 @@ Or, for maximum learning: implement the network directly in Metal Performance Sh
 | Batch norm | Rescales channel values to stable range after each conv |
 | ReLU | Zeros out negatives — introduces nonlinearity so network can learn complex patterns |
 | Residual / skip | Adds block input back to output — enables gradient flow through deep networks |
-| Policy head | Outputs 4096 move probabilities — seeds MCTS priors |
-| Value head | Outputs single float [-1,1] — evaluates position for MCTS and training |
+| Policy head | Outputs 4096 move probabilities — guides move selection during self-play |
+| Value head | Outputs single float [-1,1] — evaluates how good the position is for the current player |
 | Softmax | Converts unbounded floats to probabilities summing to 1.0 |
 | Tanh | Squashes unbounded float to [-1, 1] |
 | Fully connected | Dense matrix multiplication — every input connects to every output |
@@ -414,3 +602,49 @@ Or, for maximum learning: implement the network directly in Metal Performance Sh
 | Halfmove clock | Moves since last pawn move or capture — tracks fifty-move rule proximity |
 | En passant | Pawn capture rule where you capture a pawn that just moved two squares, as if it moved one |
 | Underpromotion | Promoting pawn to knight instead of queen — rare, avoids stalemate in specific endgames |
+
+---
+
+## Future Improvements
+
+Things intentionally left out of the initial implementation to keep complexity manageable. Each builds on a working foundation.
+
+### Add MCTS
+
+The initial version uses the network's policy output directly — sample from the legal move probabilities. No tree search. This means the engine plays at the raw strength of the network with no lookahead. Games will be weaker and noisier, and training will need more games to converge, but it eliminates an entire subsystem's worth of debugging while learning how the network and training loop work.
+
+Once the network trains and improves from pure self-play, add MCTS (Monte Carlo Tree Search) to get lookahead. The value head is already there — MCTS just needs it to evaluate leaf nodes. The training loop changes: policy targets become MCTS visit count distributions instead of one-hot move vectors.
+
+**What MCTS is:** A way to decide which move to make by selectively exploring a tree of possible futures. Rather than searching exhaustively (impossible — chess has ~10^120 positions), it builds a running estimate of move quality by focusing compute on the most promising branches.
+
+**The four phases (repeat thousands of times):**
+
+1. **Select:** Starting from the root (current position), follow the tree downward, at each node choosing the child with the best UCB score:
+
+```
+UCB = wins/visits  +  C × √(ln(parent_visits) / visits)
+         ↑                        ↑
+    exploitation              exploration
+```
+
+C ≈ 1.4 controls the exploration/exploitation balance. Nodes with few visits get a large exploration bonus. Once visited enough times, their actual win rate takes over.
+
+2. **Expand:** At a node that hasn't been fully explored, add a new child node for an untried legal move.
+
+3. **Evaluate:** Call the neural network on the new node's position. The value output becomes the simulation result.
+
+4. **Backpropagate:** The value travels back up the tree, updating visit counts and win estimates for every node on the path.
+
+After thousands of iterations, pick the move with the most visits from the root.
+
+**Why it helps:** MCTS makes training data better — games contain genuine combination thinking the network couldn't find alone, and the visit count distribution is a much richer policy target than a one-hot move label. It's essentially a way to get more learning per game. With limited compute (one Mac) it tips from "dramatically helpful" toward "practically necessary."
+
+### Upgrade UCB1 to PUCT
+
+With MCTS in place and the network producing policy priors, replace the UCB1 selection formula with PUCT:
+
+```
+PUCT = Q(s,a) + c_puct × P(s,a) × √(N(s)) / (1 + N(s,a))
+```
+
+This lets the network's policy output guide which branches MCTS explores — moves the network thinks are promising get searched more deeply, moves it thinks are bad get fewer simulations. On a limited simulation budget (800 sims/move on one Mac), this is how you get strong play without exhaustive search.
