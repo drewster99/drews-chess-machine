@@ -19,7 +19,7 @@ let graph = MPSGraph()
 let results = graph.run(
     feeds: [
         input: boardTensorData,
-        policyTarget: mctsVisitData,
+        policyTarget: movePlayedData,
         valueTarget: gameOutcomeData
     ],
     targetTensors: [policyOutput, valueOutput, totalLoss],
@@ -48,9 +48,9 @@ This is your network. You build the entire computation as a graph of operations 
 Every value flowing through the network is an `MPSGraphTensor`. This is not actual data — it's a **placeholder in the graph** describing the shape and type of data that will flow through that point when the graph executes.
 
 ```swift
-// the input tensor — batch dimension first, then 19 × 8 × 8
+// the input tensor — batch dimension first, then 18 × 8 × 8
 let input = graph.placeholder(
-    shape: [batchSize, 19, 8, 8],
+    shape: [batchSize, 18, 8, 8],
     dataType: .float32,
     name: "board_input"
 )
@@ -67,11 +67,11 @@ Every operation in the graph takes `MPSGraphTensor` inputs and produces `MPSGrap
 The learned parameters — conv filter weights, batch norm gamma/beta, FC layer weights — are `MPSGraphVariable` tensors. Unlike placeholders which receive new data each run, variables **persist between runs** and get updated during training.
 
 ```swift
-// stem conv weights: 128 output filters, 19 input channels, 3×3 kernel
+// stem conv weights: 128 output filters, 18 input channels, 3×3 kernel
 // shape is [outputChannels, inputChannels, kernelHeight, kernelWidth]
 let stemWeights = graph.variable(
     with: randomData,           // initial values — usually small random floats
-    shape: [128, 19, 3, 3],
+    shape: [128, 18, 3, 3],
     dataType: .float32,
     name: "stem_conv_weights"
 )
@@ -151,7 +151,9 @@ So 3×3 kernel → padding=1. If you ever use 5×5 → padding=2.
 
 ### What the conv actually computes
 
-Each of the 128 filters has shape 3×3×128 — it looks at a 3×3 neighborhood across ALL 128 input channels simultaneously. At each square position: 3 × 3 × 128 = 1,152 multiplications, summed to one output value. 128 filters → 128 output planes. MPSGraph handles all of this automatically.
+For the stem, each of the 128 filters has shape 3×3×18 — it looks at a 3×3 neighborhood across all 18 input planes simultaneously. At each square position: 3 × 3 × 18 = 162 multiplications, summed to one output value. 128 filters → 128 output channels.
+
+In the tower, the input has 128 channels, so each filter is 3×3×128 — at each position: 3 × 3 × 128 = 1,152 multiplications, summed to one output value. MPSGraph handles all of this automatically.
 
 ### 1×1 Convolution (used in heads)
 
@@ -209,7 +211,7 @@ let valueConvOutput = graph.convolution2D(
 
 ## Batch Normalization
 
-After a conv layer multiplies and sums 1,152 values, outputs can end up in wildly different ranges. Batch norm normalizes each channel across the training batch to mean=0, std=1, then applies learnable scale (gamma) and shift (beta).
+After a conv layer multiplies and sums many values (162 in the stem, 1,152 in the tower), outputs can end up in wildly different ranges. Batch norm normalizes each channel across the training batch to mean=0, std=1, then applies learnable scale (gamma) and shift (beta).
 
 ```swift
 // learnable parameters — one per channel
@@ -227,20 +229,26 @@ let bnBeta = graph.variable(
     name: "block1_bn1_beta"
 )
 
-// running statistics — maintained separately, not learned via gradients
-// these are updated during training and used fixed at inference time
-var bnMean = MPSGraphTensor(...)    // running mean per channel
-var bnVariance = MPSGraphTensor(...)  // running variance per channel
+// during training: compute mean and variance from the current batch
+// axes [0, 2, 3] = across batch, height, width — leaving per-channel statistics
+let batchMean = graph.mean(of: convOutput, axes: [0, 2, 3] as [NSNumber], name: "block1_bn1_mean")
+let batchVariance = graph.variance(of: convOutput, mean: batchMean, axes: [0, 2, 3] as [NSNumber], name: "block1_bn1_var")
 
+// normalize using the batch statistics, then scale/shift with learned gamma/beta
 let bnOutput = graph.normalize(
     convOutput,
-    mean: bnMean,
-    variance: bnVariance,
+    mean: batchMean,
+    variance: batchVariance,
     gamma: bnGamma,
     beta: bnBeta,
     epsilon: 1e-5,          // small value to avoid division by zero
     name: "block1_bn1"
 )
+
+// running statistics for inference: maintain exponential moving averages
+// of batchMean and batchVariance across training steps. At inference time,
+// feed these stored averages instead of computing from a batch.
+// (implementation detail: update running stats as a targetOperation each step)
 ```
 
 `bnGamma` and `bnBeta` are `MPSGraphVariable` tensors — they're learned parameters updated during training just like conv weights. The running mean and variance are updated separately using an exponential moving average during training, then frozen at inference time.
@@ -334,6 +342,8 @@ func residualBlock(
     // first conv → bn → relu
     var x = graph.convolution2D(input, weights: conv1Weights,
         descriptor: convDesc, name: "block\(blockIndex)_conv1")
+    let bn1Mean = graph.mean(of: x, axes: [0, 2, 3] as [NSNumber], name: "block\(blockIndex)_bn1_mean")
+    let bn1Var = graph.variance(of: x, mean: bn1Mean, axes: [0, 2, 3] as [NSNumber], name: "block\(blockIndex)_bn1_var")
     x = graph.normalize(x, mean: bn1Mean, variance: bn1Var,
         gamma: bn1Gamma, beta: bn1Beta, epsilon: 1e-5,
         name: "block\(blockIndex)_bn1")
@@ -342,6 +352,8 @@ func residualBlock(
     // second conv → bn (no relu yet — relu after skip add)
     x = graph.convolution2D(x, weights: conv2Weights,
         descriptor: convDesc, name: "block\(blockIndex)_conv2")
+    let bn2Mean = graph.mean(of: x, axes: [0, 2, 3] as [NSNumber], name: "block\(blockIndex)_bn2_mean")
+    let bn2Var = graph.variance(of: x, mean: bn2Mean, axes: [0, 2, 3] as [NSNumber], name: "block\(blockIndex)_bn2_var")
     x = graph.normalize(x, mean: bn2Mean, variance: bn2Var,
         gamma: bn2Gamma, beta: bn2Beta, epsilon: 1e-5,
         name: "block\(blockIndex)_bn2")
@@ -400,8 +412,16 @@ let policyLogits = graph.matrixMultiplication(
     secondary: policyFCWeights,     // [128, 4096]
     name: "policy_fc"
 )
+// add bias — one learnable value per output
+let policyFCBias = graph.variable(
+    with: zerosData(count: 4096),
+    shape: [1, 4096],
+    dataType: .float32,
+    name: "policy_fc_bias"
+)
+let policyFCOutput = graph.addition(policyLogits, policyFCBias, name: "policy_fc_add_bias")
 // output shape: [batch, 4096]
-// 128 × 4096 = 524,288 weights in this one layer
+// 128 × 4096 = 524,288 weights + 4,096 biases in this one layer
 
 // value head: 64 → 64
 let valueFCWeights1 = graph.variable(
@@ -410,11 +430,21 @@ let valueFCWeights1 = graph.variable(
     dataType: .float32,
     name: "value_fc1_weights"
 )
+let valueFCBias1 = graph.variable(
+    with: zerosData(count: 64),
+    shape: [1, 64],
+    dataType: .float32,
+    name: "value_fc1_bias"
+)
 
-let valueFCOutput1 = graph.matrixMultiplication(
-    primary: valueFlattened,
-    secondary: valueFCWeights1,
-    name: "value_fc1"
+let valueFCOutput1 = graph.addition(
+    graph.matrixMultiplication(
+        primary: valueFlattened,
+        secondary: valueFCWeights1,
+        name: "value_fc1"
+    ),
+    valueFCBias1,
+    name: "value_fc1_add_bias"
 )
 // apply relu between FC layers in value head
 let valueFCRelu = graph.reLU(with: valueFCOutput1, name: "value_fc1_relu")
@@ -426,11 +456,21 @@ let valueFCWeights2 = graph.variable(
     dataType: .float32,
     name: "value_fc2_weights"
 )
+let valueFCBias2 = graph.variable(
+    with: zerosData(count: 1),
+    shape: [1, 1],
+    dataType: .float32,
+    name: "value_fc2_bias"
+)
 
-let valueFCOutput2 = graph.matrixMultiplication(
-    primary: valueFCRelu,
-    secondary: valueFCWeights2,
-    name: "value_fc2"
+let valueFCOutput2 = graph.addition(
+    graph.matrixMultiplication(
+        primary: valueFCRelu,
+        secondary: valueFCWeights2,
+        name: "value_fc2"
+    ),
+    valueFCBias2,
+    name: "value_fc2_add_bias"
 )
 // output shape: [batch, 1] — unbounded float, will be squashed by tanh
 ```
@@ -442,7 +482,7 @@ let valueFCOutput2 = graph.matrixMultiplication(
 ```swift
 // policy head: convert 4096 logits to probabilities summing to 1.0
 let policyOutput = graph.softMax(
-    with: policyLogits,
+    with: policyFCOutput,
     axis: 1,                // apply across the move dimension
     name: "policy_softmax"
 )
@@ -462,35 +502,23 @@ let valueOutput = graph.tanh(
 
 ## Illegal Move Masking
 
-After getting policy output, zero out illegal moves and renormalize:
+This is done on the CPU after extracting the policy output from the graph — not inside the graph. The graph is built once and run many times, but legal moves change every position. Using `graph.constant()` would bake one position's legal moves into the graph permanently.
 
 ```swift
 func maskIllegalMoves(
-    graph: MPSGraph,
-    policyOutput: MPSGraphTensor,
-    legalMoves: [Int]   // list of legal move indices (0-4095)
-) -> MPSGraphTensor {
-
-    // build mask: 1.0 for legal moves, 0.0 for illegal
-    var maskValues = [Float](repeating: 0, count: 4096)
-    for moveIndex in legalMoves {
-        maskValues[moveIndex] = 1.0
-    }
-
-    let mask = graph.constant(
-        maskValues,
-        shape: [1, 4096],
-        dataType: .float32
-    )
+    policyOutput: [Float],      // 4096 probabilities from the graph
+    legalMoves: [Int]           // list of legal move indices (0-4095)
+) -> [Float] {
 
     // zero out illegal moves
-    let masked = graph.multiplication(policyOutput, mask, name: "mask_illegal")
+    var masked = [Float](repeating: 0, count: 4096)
+    for moveIndex in legalMoves {
+        masked[moveIndex] = policyOutput[moveIndex]
+    }
 
     // renormalize so remaining probabilities sum to 1.0
-    let sum = graph.reductionSum(with: masked, axis: 1, name: "policy_sum")
-    let normalized = graph.division(masked, sum, name: "policy_normalized")
-
-    return normalized
+    let sum = masked.reduce(0, +)
+    return masked.map { $0 / sum }
 }
 ```
 
@@ -509,22 +537,19 @@ func moveIndex(from: Int, to: Int) -> Int {
 ```swift
 // value loss: mean squared error between prediction and actual outcome
 // valueTarget is +1.0 (win), 0.0 (draw), or -1.0 (loss) for current player
-let valueLoss = graph.meanSquaredError(
-    labels: valueTarget,        // placeholder fed actual game outcomes
-    predictions: valueOutput,
-    name: "value_loss"
-)
+// NOTE: MPSGraph has no built-in MSE op — build from primitives
+let valueDiff = graph.subtraction(valueOutput, valueTarget, name: "value_diff")
+let valueSquared = graph.multiplication(valueDiff, valueDiff, name: "value_squared")
+let valueLoss = graph.mean(of: valueSquared, axes: [0 as NSNumber, 1 as NSNumber], name: "value_loss")
 
-// policy loss: cross entropy between prediction and MCTS visit distribution
-// (or one-hot move vector when training without MCTS)
-// NOTE: pass logits (before softmax) to crossEntropyLoss — it applies
-// softmax internally for numerical stability
-let policyLoss = graph.crossEntropyLoss(
-    labels: policyTarget,       // placeholder fed MCTS visit counts or one-hot
-    logits: policyLogits,       // the raw FC output, before softmax
-    reductionType: .mean,
-    labelSmoothing: 0,
+// policy loss: softmax cross entropy between prediction and the move actually played
+// NOTE: pass logits (before softmax) — this op applies softmax internally
+// for numerical stability
+let policyLoss = graph.softMaxCrossEntropy(
+    policyFCOutput,             // the FC output with bias, before softmax
+    labels: policyTarget,       // placeholder fed one-hot vector of move played
     axis: 1,
+    reuctionType: .mean,        // NOTE: Apple's API has a typo — "reuctionType" not "reductionType"
     name: "policy_loss"
 )
 
@@ -532,7 +557,7 @@ let policyLoss = graph.crossEntropyLoss(
 let totalLoss = graph.addition(policyLoss, valueLoss, name: "total_loss")
 ```
 
-When training without MCTS (initial phase), `policyTarget` is a one-hot vector — all zeros except a 1.0 at the index of the move that was actually played. When training with MCTS, it's the full visit count distribution — a much richer signal.
+`policyTarget` is a one-hot vector — all zeros except a 1.0 at the index of the move that was actually played.
 
 ---
 
@@ -548,8 +573,8 @@ let allVariables: [MPSGraphVariable] = [
     block1BN1Gamma, block1BN1Beta,
     block1BN2Gamma, block1BN2Beta,
     // ... all 8 blocks ...
-    policyConvWeights, policyFCWeights,
-    valueConvWeights, valueFCWeights1, valueFCWeights2,
+    policyConvWeights, policyFCWeights, policyFCBias,
+    valueConvWeights, valueFCWeights1, valueFCBias1, valueFCWeights2, valueFCBias2,
     // ... all bn parameters ...
 ]
 
@@ -573,22 +598,37 @@ This is automatic differentiation — the framework derives the backward pass fr
 
 Adam (Adaptive Moment Estimation) is the standard optimizer for training neural networks. It adapts the learning rate for each parameter individually based on the history of gradients — parameters that have been getting consistent gradients get larger updates, noisy ones get smaller updates.
 
-```swift
-let optimizer = MPSGraphAdamOptimizer(
-    graph: graph,
-    learningRate: 0.001,    // how big each update step is
-    beta1: 0.9,             // decay rate for first moment (gradient mean)
-    beta2: 0.999,           // decay rate for second moment (gradient variance)
-    epsilon: 1e-8           // small value for numerical stability
-)
+There is no `MPSGraphAdamOptimizer` class — Adam is a method on `MPSGraph` itself. You call it once per variable, and it returns the updated values along with new momentum/velocity state:
 
-let updateOps = optimizer.applyUpdate(
-    variables: allVariables,
-    gradients: gradients
+```swift
+// these are graph constants — same for all variables
+let lr = graph.constant(0.001, dataType: .float32)       // learning rate
+let beta1 = graph.constant(0.9, dataType: .float32)       // first moment decay
+let beta2 = graph.constant(0.999, dataType: .float32)     // second moment decay
+let epsilon = graph.constant(1e-8, dataType: .float32)     // numerical stability
+
+// for each variable, you need momentum and velocity state (initialized to zeros)
+// and beta power trackers (beta1^t, beta2^t) that update each step
+
+// apply Adam update for one variable:
+let updated = graph.adam(
+    learningRate: lr,
+    beta1: beta1,
+    beta2: beta2,
+    epsilon: epsilon,
+    beta1Power: beta1PowerTensor,    // beta1^t — tracks training step
+    beta2Power: beta2PowerTensor,    // beta2^t
+    values: variable,                // the weight tensor to update
+    momentum: momentumTensor,        // first moment estimate (zeros initially)
+    velocity: velocityTensor,        // second moment estimate (zeros initially)
+    maximumVelocity: nil,            // nil unless using AMSGrad variant
+    gradient: gradients[variable]!,  // gradient from graph.gradients()
+    name: "adam_update"
 )
+// returns [updatedValues, newMomentum, newVelocity]
 ```
 
-Including `updateOps` in `targetOperations` when running the graph triggers the weight updates. Without it, the graph computes gradients but doesn't apply them.
+You loop over all variables, calling `graph.adam()` for each one. The returned tensors become assign operations — include them in `targetOperations` when running the graph to trigger the weight updates.
 
 ---
 
@@ -599,16 +639,20 @@ Including `updateOps` in `targetOperations` when running the graph triggers the 
 ```swift
 func trainingStep(
     boardPositions: [Float],    // batch of board tensors flattened
-    policyTargets: [Float],     // MCTS visit distributions or one-hot moves
+    policyTargets: [Float],     // one-hot vectors of moves played
     valueTargets: [Float]       // game outcomes: +1, 0, -1
 ) {
-    let device = MTLCreateSystemDefaultDevice()!
-    let commandQueue = device.makeCommandQueue()!
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        fatalError("Metal is not supported on this device")
+    }
+    guard let commandQueue = device.makeCommandQueue() else {
+        fatalError("Failed to create Metal command queue")
+    }
 
     // wrap data in MPSGraphTensorData
     let boardData = MPSGraphTensorData(
         boardPositions,
-        shape: [batchSize, 19, 8, 8],
+        shape: [batchSize, 18, 8, 8],
         dataType: .float32
     )
     let policyData = MPSGraphTensorData(
@@ -635,7 +679,11 @@ func trainingStep(
     )
 
     // read loss values for logging
-    let loss = results[totalLoss]!.mpsndarray().readBytes(...)
+    if let lossData = results[totalLoss] {
+        var lossValue: Float = 0
+        lossData.mpsndarray().readBytes(&lossValue, strideBytes: nil)
+        print("Loss: \(lossValue)")
+    }
 }
 ```
 
@@ -645,7 +693,7 @@ func trainingStep(
 func evaluatePosition(board: [Float]) -> (policy: [Float], value: Float) {
     let boardData = MPSGraphTensorData(
         board,
-        shape: [1, 19, 8, 8],   // batch size 1 for single position
+        shape: [1, 18, 8, 8],   // batch size 1 for single position
         dataType: .float32
     )
 
@@ -656,10 +704,22 @@ func evaluatePosition(board: [Float]) -> (policy: [Float], value: Float) {
         targetOperations: []    // no weight updates during inference
     )
 
-    let policy = // extract [Float] from results[policyOutput]
-    let value = // extract Float from results[valueOutput]
+    // extract policy probabilities
+    var policyValues = [Float](repeating: 0, count: 4096)
+    if let policyData = results[policyOutput] {
+        policyValues.withUnsafeMutableBytes { buffer in
+            guard let ptr = buffer.baseAddress else { return }
+            policyData.mpsndarray().readBytes(ptr, strideBytes: nil)
+        }
+    }
 
-    return (policy, value)
+    // extract value score
+    var valueScore: Float = 0
+    if let valueData = results[valueOutput] {
+        valueData.mpsndarray().readBytes(&valueScore, strideBytes: nil)
+    }
+
+    return (policyValues, valueScore)
 }
 ```
 
@@ -671,7 +731,7 @@ Every learnable parameter in the network:
 
 ```
 stem:
-    stemConvWeights         [128, 19, 3, 3]
+    stemConvWeights         [128, 18, 3, 3]
     stemBNGamma             [1, 128, 1, 1]
     stemBNBeta              [1, 128, 1, 1]
 
@@ -688,16 +748,19 @@ policy head:
     policyBNGamma           [1, 2, 1, 1]
     policyBNBeta            [1, 2, 1, 1]
     policyFCWeights         [128, 4096]
+    policyFCBias            [1, 4096]
 
 value head:
     valueConvWeights        [1, 128, 1, 1]
     valueBNGamma            [1, 1, 1, 1]
     valueBNBeta             [1, 1, 1, 1]
     valueFCWeights1         [64, 64]
+    valueFCBias1            [1, 64]
     valueFCWeights2         [64, 1]
+    valueFCBias2            [1, 1]
 ```
 
-Total: ~2.6M parameters for the small config (128 filters, 8 blocks).
+Total: ~2.9M parameters for the small config (128 filters, 8 blocks).
 
 ---
 
@@ -706,7 +769,7 @@ Total: ~2.6M parameters for the small config (128 filters, 8 blocks).
 The shape of the data at every point in the network (batch dimension omitted for clarity):
 
 ```
-input:                      19 × 8 × 8
+input:                      18 × 8 × 8
 
 stem conv:                 128 × 8 × 8
 stem bn + relu:            128 × 8 × 8
@@ -753,10 +816,10 @@ value tanh:                           1  ← position value [-1, +1]
 | matrixMultiplication | Fully connected layer — every input to every output |
 | softMax | Converts logits to probabilities summing to 1.0 |
 | tanh | Squashes unbounded float to [-1, 1] |
-| crossEntropyLoss | Policy loss — penalizes difference from target distribution |
-| meanSquaredError | Value loss — penalizes distance from actual game outcome |
+| softMaxCrossEntropy | Policy loss — combines softmax and cross entropy in one numerically stable op |
+| subtraction/multiplication/mean | Value loss (MSE) — built from primitives since MPSGraph has no built-in MSE |
 | gradients(of:with:) | Automatic differentiation — computes ∂loss/∂weight for every weight |
-| AdamOptimizer | Applies gradients to weights with adaptive learning rates |
+| graph.adam() | Applies gradients to weights with adaptive learning rates — method on MPSGraph, not a standalone class |
 | targetOperations | Operations to run (e.g. weight updates) when executing graph |
 | He initialization | Weight init scaled by sqrt(2/fan_in) — prevents vanishing/exploding values |
 | Automatic differentiation | Framework derives backward pass from forward pass — no manual backprop |
