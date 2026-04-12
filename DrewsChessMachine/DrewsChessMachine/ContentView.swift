@@ -38,7 +38,15 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         var totalGameTimeMs: Double = 0
         var totalWhiteThinkMs: Double = 0
         var totalBlackThinkMs: Double = 0
-        var sessionStartTime: CFAbsoluteTime?
+
+        /// Cumulative wall-clock seconds spent in active play (between
+        /// markPlaying(true) and the matching markPlaying(false) /
+        /// gameEnded / playerErrored). Idle time between Play clicks
+        /// and the small inter-game pauses in continuous play are excluded.
+        var activePlaySeconds: Double = 0
+        /// Set to the wall-clock time at which play started; cleared on stop.
+        /// While non-nil, the live "active seconds" includes (now - this).
+        var currentPlayStartTime: CFAbsoluteTime?
 
         var whiteCheckmates = 0
         var blackCheckmates = 0
@@ -74,15 +82,22 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     func markPlaying(_ playing: Bool) {
         lock.lock()
         defer { lock.unlock() }
-        s.isPlaying = playing
+        setPlayingLocked(playing)
     }
 
-    func markSessionStart() {
-        lock.lock()
-        defer { lock.unlock() }
-        if s.sessionStartTime == nil {
-            s.sessionStartTime = CFAbsoluteTimeGetCurrent()
+    /// Toggle isPlaying and update the active-play stopwatch. Caller must
+    /// already hold `lock`. Idempotent: calling with the same value twice
+    /// is a no-op for the stopwatch.
+    private func setPlayingLocked(_ playing: Bool) {
+        if playing {
+            if s.currentPlayStartTime == nil {
+                s.currentPlayStartTime = CFAbsoluteTimeGetCurrent()
+            }
+        } else if let start = s.currentPlayStartTime {
+            s.activePlaySeconds += max(0, CFAbsoluteTimeGetCurrent() - start)
+            s.currentPlayStartTime = nil
         }
+        s.isPlaying = playing
     }
 
     // MARK: - Delegate (called on ChessMachine.delegateQueue, never main)
@@ -105,7 +120,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         s.result = result
         s.state = finalState
         s.lastGameStats = stats
-        s.isPlaying = false
+        setPlayingLocked(false)
 
         s.totalGames += 1
         s.totalMoves += stats.totalMoves
@@ -136,7 +151,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     func chessMachine(_ machine: ChessMachine, playerErrored player: any ChessPlayer, error: any Error) {
         lock.lock()
         defer { lock.unlock() }
-        s.isPlaying = false
+        setPlayingLocked(false)
     }
 }
 
@@ -151,26 +166,38 @@ extension GameWatcher.Snapshot {
         totalGames > 0 ? totalGameTimeMs / Double(totalGames) : 0
     }
 
-    func gamesPerHour(now: CFAbsoluteTime) -> Double {
-        guard let start = sessionStartTime else { return 0 }
-        let elapsed = now - start
-        guard elapsed > 0, totalGames > 0 else { return 0 }
-        return Double(totalGames) / (elapsed / 3600)
+    /// Discrete throughput: based only on completed-game time. Equivalent to
+    /// 3600 / avgGameTimeSec. Updates only when a game ends, so it never
+    /// drifts mid-game.
+    func gamesPerHour() -> Double {
+        guard totalGames > 0, totalGameTimeMs > 0 else { return 0 }
+        let totalGameSec = totalGameTimeMs / 1000
+        return Double(totalGames) / (totalGameSec / 3600)
     }
 
+    /// Live throughput: includes the in-progress game's moves so the rate
+    /// updates smoothly. Denominator is active play time, so idle gaps
+    /// between Play clicks don't depress the value.
     func movesPerHour(now: CFAbsoluteTime) -> Double {
-        guard let start = sessionStartTime else { return 0 }
-        let elapsed = now - start
-        // Include moves from the in-progress game so the rate updates smoothly
-        // instead of sagging during a game and jumping when it completes.
         let moves = totalMoves + moveCount
-        guard elapsed > 0, moves > 0 else { return 0 }
-        return Double(moves) / (elapsed / 3600)
+        let secs = activeSeconds(now: now)
+        guard moves > 0, secs > 0 else { return 0 }
+        return Double(moves) / (secs / 3600)
     }
 
-    func sessionElapsedSeconds(now: CFAbsoluteTime) -> Double {
-        guard let start = sessionStartTime else { return 0 }
-        return max(0, now - start)
+    /// Live cumulative seconds spent in active play.
+    func activeSeconds(now: CFAbsoluteTime) -> Double {
+        var sec = activePlaySeconds
+        if let start = currentPlayStartTime {
+            sec += max(0, now - start)
+        }
+        return sec
+    }
+
+    /// True once any play has started — used to decide whether to show
+    /// "--" for time and rates.
+    var hasSession: Bool {
+        activePlaySeconds > 0 || currentPlayStartTime != nil
     }
 
     /// Fixed-layout stats text. Every section is always present — values show
@@ -206,16 +233,14 @@ extension GameWatcher.Snapshot {
         let liveMoves = totalMoves + moveCount
         let sGames = totalGames > 0 ? totalGames.formatted(.number.grouping(.automatic)) : dash
         let sMoves = liveMoves > 0 ? liveMoves.formatted(.number.grouping(.automatic)) : dash
-        let sTime = sessionStartTime != nil
-            ? Self.formatHMS(seconds: sessionElapsedSeconds(now: now))
-            : dash
+        let sTime = hasSession ? Self.formatHMS(seconds: activeSeconds(now: now)) : dash
         let sAvgMove = totalMoves > 0 ? String(format: "%.2f ms", avgMoveTimeMs) : dash
         let sAvgGame = totalGames > 0 ? String(format: "%.1f ms", avgGameTimeMs) : dash
         let sMovesHr = liveMoves > 0
             ? Int(movesPerHour(now: now).rounded()).formatted(.number.grouping(.automatic))
             : dash
         let sGamesHr = totalGames > 0
-            ? Int(gamesPerHour(now: now).rounded()).formatted(.number.grouping(.automatic))
+            ? Int(gamesPerHour().rounded()).formatted(.number.grouping(.automatic))
             : dash
 
         // Last Game — only shown when not in active continuous play. During
@@ -548,7 +573,6 @@ struct ContentView: View {
     private func playSingleGame() {
         inferenceResult = nil
         gameWatcher.resetCurrentGame()
-        gameWatcher.markSessionStart()
         gameWatcher.markPlaying(true)
         // Synchronously refresh the snapshot so isBusy reflects the new
         // playing state immediately — the polling task only runs every
@@ -575,7 +599,6 @@ struct ContentView: View {
     private func startContinuousPlay() {
         inferenceResult = nil
         gameWatcher.resetAll()
-        gameWatcher.markSessionStart()
         continuousPlay = true
 
         continuousTask = Task { [network] in
