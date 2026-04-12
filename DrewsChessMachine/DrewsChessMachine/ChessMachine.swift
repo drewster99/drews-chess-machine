@@ -243,13 +243,12 @@ final class ChessMachine: @unchecked Sendable {
 
     /// Dispatch a delegate event onto the serial delegate queue. Fires and
     /// forgets — the game loop never blocks on delegate work. The serial
-    /// queue preserves event ordering even though we never wait. The
-    /// machine reference is captured weakly so a delayed callback after
-    /// machine deallocation is a no-op.
+    /// queue preserves event ordering even though we never wait. The box
+    /// holds the machine strongly so the machine cannot be released between
+    /// the async dispatch and the delegate-queue delivery, which would
+    /// otherwise drop the final gameEnded event when the caller's local
+    /// reference goes out of scope (e.g. on continuous-play Stop).
     private func emit(_ event: DelegateEvent) {
-        // The delegate is a non-Sendable AnyObject; we wrap it in a box
-        // because the class is `@unchecked Sendable` and we own the
-        // thread-safety contract for delegate access.
         let box = DelegateBox(machine: self, delegate: delegate)
         Self.delegateQueue.async {
             box.deliver(event)
@@ -267,12 +266,14 @@ private enum DelegateEvent: @unchecked Sendable {
     case playerErrored(player: any ChessPlayer, error: any Error)
 }
 
-/// Shim that holds (weak) references to the machine and delegate for
-/// delivery on the delegate queue. Marked `@unchecked Sendable` because
-/// `ChessMachine` itself promises serialized access — the delegate is only
-/// touched on the serial delegate queue.
+/// Shim that carries the machine and (weak) delegate to the delegate queue.
+/// Marked `@unchecked Sendable` because `ChessMachine` itself promises
+/// serialized access — the delegate is only touched on the serial delegate
+/// queue. The machine is held strongly so it survives until every queued
+/// event has been delivered; the delegate is weak so events become a no-op
+/// when the UI owning the delegate has gone away.
 private final class DelegateBox: @unchecked Sendable {
-    weak var machine: ChessMachine?
+    let machine: ChessMachine
     weak var delegate: AnyObject?
 
     init(machine: ChessMachine, delegate: (any ChessMachineDelegate)?) {
@@ -281,7 +282,7 @@ private final class DelegateBox: @unchecked Sendable {
     }
 
     func deliver(_ event: DelegateEvent) {
-        guard let machine, let delegate = delegate as? any ChessMachineDelegate else { return }
+        guard let delegate = delegate as? any ChessMachineDelegate else { return }
         switch event {
         case .didApplyMove(let move, let newState):
             delegate.chessMachine(machine, didApplyMove: move, newState: newState)
