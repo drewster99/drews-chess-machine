@@ -83,39 +83,52 @@ final class ChessGameEngine {
         }
     }
 
-    /// Detects positions where neither side can checkmate:
-    /// K vs K, K+B vs K, K+N vs K.
+    /// Detects positions where neither side can checkmate (FIDE Article 5.2.2):
+    /// K vs K, K+B vs K, K+N vs K, and K+B(s) vs K+B(s) when all bishops sit
+    /// on a single color complex.
     private func isInsufficientMaterial() -> Bool {
-        var whitePieces: [PieceType] = []
-        var blackPieces: [PieceType] = []
+        var whiteKnights = 0
+        var blackKnights = 0
+        var whiteBishops = 0
+        var blackBishops = 0
+        // Track square colors of all bishops on the board (0 = light, 1 = dark).
+        var bishopSquareColors: Set<Int> = []
 
-        for square in state.board {
-            guard let piece = square else { continue }
-            if piece.color == .white {
-                whitePieces.append(piece.type)
-            } else {
-                blackPieces.append(piece.type)
+        for row in 0..<8 {
+            let rowBase = row * 8
+            for col in 0..<8 {
+                guard let piece = state.board[rowBase + col] else { continue }
+                switch piece.type {
+                case .pawn, .rook, .queen:
+                    // Any of these on either side → mate is possible.
+                    return false
+                case .king:
+                    continue
+                case .knight:
+                    if piece.color == .white { whiteKnights += 1 } else { blackKnights += 1 }
+                case .bishop:
+                    if piece.color == .white { whiteBishops += 1 } else { blackBishops += 1 }
+                    bishopSquareColors.insert((row + col) & 1)
+                }
             }
         }
 
-        // Any pawns, rooks, or queens → sufficient material
-        let hasMatingPiece: (PieceType) -> Bool = { type in
-            type == .pawn || type == .rook || type == .queen
-        }
-
-        if whitePieces.contains(where: hasMatingPiece) || blackPieces.contains(where: hasMatingPiece) {
-            return false
-        }
-
-        // Only kings, bishops, and knights remain
-        let whiteMinors = whitePieces.filter { $0 != .king }.count
-        let blackMinors = blackPieces.filter { $0 != .king }.count
+        let whiteMinors = whiteKnights + whiteBishops
+        let blackMinors = blackKnights + blackBishops
 
         // K vs K
         if whiteMinors == 0 && blackMinors == 0 { return true }
-        // K+minor vs K
-        if whiteMinors <= 1 && blackMinors == 0 { return true }
-        if whiteMinors == 0 && blackMinors <= 1 { return true }
+        // K+minor vs K (single bishop or single knight)
+        if whiteMinors == 1 && blackMinors == 0 { return true }
+        if whiteMinors == 0 && blackMinors == 1 { return true }
+
+        // K+bishop(s) vs K+bishop(s) — drawn iff every bishop on the board
+        // (both colors) is on the same color complex. No knights allowed:
+        // K+N+N vs K is technically winnable with cooperation and FIDE does
+        // not treat it as a forced draw, and K+B vs K+N can mate.
+        if whiteKnights == 0 && blackKnights == 0 && bishopSquareColors.count == 1 {
+            return true
+        }
 
         return false
     }

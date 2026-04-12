@@ -112,6 +112,10 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         s.totalGameTimeMs += stats.totalGameTimeMs
         s.totalWhiteThinkMs += stats.whiteThinkingTimeMs
         s.totalBlackThinkMs += stats.blackThinkingTimeMs
+        // Move counting handed off to totalMoves; zero the per-game counter
+        // atomically so display helpers using `totalMoves + moveCount` don't
+        // double-count between gameEnded and the next resetCurrentGame call.
+        s.moveCount = 0
 
         switch result {
         case .checkmate(let winner):
@@ -157,13 +161,21 @@ extension GameWatcher.Snapshot {
     func movesPerHour(now: CFAbsoluteTime) -> Double {
         guard let start = sessionStartTime else { return 0 }
         let elapsed = now - start
-        guard elapsed > 0, totalMoves > 0 else { return 0 }
-        return Double(totalMoves) / (elapsed / 3600)
+        // Include moves from the in-progress game so the rate updates smoothly
+        // instead of sagging during a game and jumping when it completes.
+        let moves = totalMoves + moveCount
+        guard elapsed > 0, moves > 0 else { return 0 }
+        return Double(moves) / (elapsed / 3600)
+    }
+
+    func sessionElapsedSeconds(now: CFAbsoluteTime) -> Double {
+        guard let start = sessionStartTime else { return 0 }
+        return max(0, now - start)
     }
 
     /// Fixed-layout stats text. Every section is always present — values show
     /// "--" when no data exists. Structure never changes so layout stays stable.
-    var statsText: String {
+    func statsText(continuousPlay: Bool) -> String {
         let dash = "--"
         let now = CFAbsoluteTimeGetCurrent()
 
@@ -188,46 +200,54 @@ extension GameWatcher.Snapshot {
             status = dash
         }
 
-        // Last-game display strings
-        let lgMoves: String
-        let lgTime: String
-        let lgAvg: String
-        let lgWAvg: String
-        let lgBAvg: String
-        if let stats = lastGameStats {
-            lgMoves = String(format: "%d (%dW + %dB)", stats.totalMoves, stats.whiteMoves, stats.blackMoves)
-            lgTime = String(format: "%.1f ms", stats.totalGameTimeMs)
-            lgAvg = String(format: "%.2f ms", stats.avgMoveTimeMs)
-            lgWAvg = String(format: "%.2f ms", stats.avgWhiteMoveTimeMs)
-            lgBAvg = String(format: "%.2f ms", stats.avgBlackMoveTimeMs)
-        } else {
-            lgMoves = dash
-            lgTime = dash
-            lgAvg = dash
-            lgWAvg = dash
-            lgBAvg = dash
-        }
-
-        // Session
-        let sGames = totalGames > 0 ? "\(totalGames)" : dash
-        let sMoves = totalMoves > 0 ? "\(totalMoves)" : dash
-        let sTime = totalGames > 0 ? String(format: "%.0f ms", totalGameTimeMs) : dash
+        // Session — totalMoves only counts completed games' moves; add the
+        // in-progress game's moveCount so the displayed count and rate update
+        // smoothly instead of jumping at game-end.
+        let liveMoves = totalMoves + moveCount
+        let sGames = totalGames > 0 ? totalGames.formatted(.number.grouping(.automatic)) : dash
+        let sMoves = liveMoves > 0 ? liveMoves.formatted(.number.grouping(.automatic)) : dash
+        let sTime = sessionStartTime != nil
+            ? Self.formatHMS(seconds: sessionElapsedSeconds(now: now))
+            : dash
         let sAvgMove = totalMoves > 0 ? String(format: "%.2f ms", avgMoveTimeMs) : dash
         let sAvgGame = totalGames > 0 ? String(format: "%.1f ms", avgGameTimeMs) : dash
-        let sMovesHr = totalMoves > 0 ? String(format: "%.0f", movesPerHour(now: now)) : dash
-        let sGamesHr = totalGames > 0 ? String(format: "%.0f", gamesPerHour(now: now)) : dash
+        let sMovesHr = liveMoves > 0
+            ? Int(movesPerHour(now: now).rounded()).formatted(.number.grouping(.automatic))
+            : dash
+        let sGamesHr = totalGames > 0
+            ? Int(gamesPerHour(now: now).rounded()).formatted(.number.grouping(.automatic))
+            : dash
+
+        // Last Game — only shown when not in active continuous play. During
+        // continuous play it has no value (it's already part of session totals
+        // and changes too fast to read).
+        let lastGameSection: String
+        if continuousPlay {
+            lastGameSection = ""
+        } else if let stats = lastGameStats {
+            let lgMoves = String(format: "%d (%dW + %dB)", stats.totalMoves, stats.whiteMoves, stats.blackMoves)
+            let lgTime = String(format: "%.1f ms", stats.totalGameTimeMs)
+            let lgAvg = String(format: "%.2f ms", stats.avgMoveTimeMs)
+            let lgWAvg = String(format: "%.2f ms", stats.avgWhiteMoveTimeMs)
+            let lgBAvg = String(format: "%.2f ms", stats.avgBlackMoveTimeMs)
+            lastGameSection = """
+                Last Game
+                  Moves:     \(lgMoves)
+                  Time:      \(lgTime)
+                  Avg move:  \(lgAvg)
+                  White avg: \(lgWAvg)
+                  Black avg: \(lgBAvg)
+
+
+                """
+        } else {
+            lastGameSection = ""
+        }
 
         return """
             Status: \(status)
 
-            Last Game
-              Moves:     \(lgMoves)
-              Time:      \(lgTime)
-              Avg move:  \(lgAvg)
-              White avg: \(lgWAvg)
-              Black avg: \(lgBAvg)
-
-            Session
+            \(lastGameSection)Session
               Games:     \(sGames)
               Moves:     \(sMoves)
               Time:      \(sTime)
@@ -238,8 +258,8 @@ extension GameWatcher.Snapshot {
 
             Results
               Checkmate:      \(whiteCheckmates + blackCheckmates)\(pct(whiteCheckmates + blackCheckmates))
-                White wins:   \(whiteCheckmates)\(pct(whiteCheckmates))
-                Black wins:   \(blackCheckmates)\(pct(blackCheckmates))
+                White wins:     \(whiteCheckmates)\(pct(whiteCheckmates))
+                Black wins:     \(blackCheckmates)\(pct(blackCheckmates))
               Stalemate:      \(stalemates)\(pct(stalemates))
               50-move draw:   \(fiftyMoveDraws)\(pct(fiftyMoveDraws))
               Insufficient:   \(insufficientMaterialDraws)\(pct(insufficientMaterialDraws))
@@ -249,6 +269,16 @@ extension GameWatcher.Snapshot {
     private func pct(_ count: Int) -> String {
         guard totalGames > 0 else { return "" }
         return String(format: "  (%.1f%%)", Double(count) / Double(totalGames) * 100)
+    }
+
+    static func formatHMS(seconds: Double) -> String {
+        let totalTenths = Int((seconds * 10).rounded())
+        let tenths = totalTenths % 10
+        let totalSeconds = totalTenths / 10
+        let h = totalSeconds / 3600
+        let m = (totalSeconds % 3600) / 60
+        let s = totalSeconds % 60
+        return String(format: "%02d:%02d:%02d.%d", h, m, s, tenths)
     }
 }
 
@@ -285,7 +315,7 @@ struct ContentView: View {
     /// publisher is created when the view struct is initialized and SwiftUI
     /// manages the subscription lifecycle via `.onReceive` below.
     private let snapshotTimer = Timer.publish(
-        every: 0.1, on: .main, in: .common
+        every: 1.0/60.0, on: .main, in: .common
     ).autoconnect()
 
     private var networkReady: Bool { network != nil }
@@ -400,7 +430,7 @@ struct ContentView: View {
                         }
 
                         if isGameMode {
-                            Text(gameSnapshot.statsText)
+                            Text(gameSnapshot.statsText(continuousPlay: continuousPlay))
                         }
 
                         if let result = inferenceResult, !isGameMode {
