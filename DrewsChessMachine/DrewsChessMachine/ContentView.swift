@@ -53,6 +53,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         var stalemates = 0
         var fiftyMoveDraws = 0
         var insufficientMaterialDraws = 0
+        var threefoldRepetitionDraws = 0
     }
 
     private let lock = NSLock()
@@ -145,6 +146,8 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
             s.fiftyMoveDraws += 1
         case .drawByInsufficientMaterial:
             s.insufficientMaterialDraws += 1
+        case .drawByThreefoldRepetition:
+            s.threefoldRepetitionDraws += 1
         }
     }
 
@@ -222,6 +225,8 @@ extension GameWatcher.Snapshot {
                 status = "Draw by fifty-move rule"
             case .drawByInsufficientMaterial:
                 status = "Draw by insufficient material"
+            case .drawByThreefoldRepetition:
+                status = "Draw by threefold repetition"
             }
         } else {
             status = dash
@@ -287,6 +292,7 @@ extension GameWatcher.Snapshot {
                 Black wins:     \(blackCheckmates)\(pct(blackCheckmates))
               Stalemate:      \(stalemates)\(pct(stalemates))
               50-move draw:   \(fiftyMoveDraws)\(pct(fiftyMoveDraws))
+              Threefold rep:  \(threefoldRepetitionDraws)\(pct(threefoldRepetitionDraws))
               Insufficient:   \(insufficientMaterialDraws)\(pct(insufficientMaterialDraws))
             """
     }

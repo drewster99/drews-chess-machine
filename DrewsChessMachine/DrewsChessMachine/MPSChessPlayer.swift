@@ -75,7 +75,10 @@ final class MPSChessPlayer: ChessPlayer {
         switch result {
         case .checkmate(let winner):
             myOutcome = (winner == .white) == isWhite ? 1.0 : -1.0
-        case .stalemate, .drawByFiftyMoveRule, .drawByInsufficientMaterial:
+        case .stalemate,
+             .drawByFiftyMoveRule,
+             .drawByInsufficientMaterial,
+             .drawByThreefoldRepetition:
             myOutcome = 0.0
         }
 

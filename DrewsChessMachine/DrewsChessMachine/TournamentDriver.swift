@@ -95,7 +95,10 @@ final class TournamentDriver {
             case .checkmate(let winner):
                 let aWon = (winner == .white && aIsWhite) || (winner == .black && !aIsWhite)
                 if aWon { aWins += 1 } else { bWins += 1 }
-            case .stalemate, .drawByFiftyMoveRule, .drawByInsufficientMaterial:
+            case .stalemate,
+                 .drawByFiftyMoveRule,
+                 .drawByInsufficientMaterial,
+                 .drawByThreefoldRepetition:
                 draws += 1
             }
 

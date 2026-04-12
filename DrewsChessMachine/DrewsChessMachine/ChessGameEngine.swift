@@ -7,6 +7,43 @@ enum GameResult: Sendable {
     case stalemate
     case drawByFiftyMoveRule
     case drawByInsufficientMaterial
+    case drawByThreefoldRepetition
+}
+
+// MARK: - Position Key (for repetition detection)
+
+/// A hashable identifier for a chess position. Two positions match for the
+/// purposes of FIDE Article 9.2 (threefold repetition) when piece placement,
+/// side to move, all four castling rights, and en passant target are equal.
+///
+/// Note: this implementation includes the en passant square verbatim. The
+/// strict FIDE rule says the ep target only differentiates positions when
+/// a capture is actually playable; we err on the conservative side and
+/// treat any ep target difference as different positions, which can miss
+/// a tiny number of legitimate threefold draws but never declares a wrong
+/// one.
+struct PositionKey: Hashable {
+    let board: [Piece?]
+    let currentPlayer: PieceColor
+    let whiteKingsideCastle: Bool
+    let whiteQueensideCastle: Bool
+    let blackKingsideCastle: Bool
+    let blackQueensideCastle: Bool
+    let enPassantSquareIndex: Int?
+
+    init(from state: GameState) {
+        self.board = state.board
+        self.currentPlayer = state.currentPlayer
+        self.whiteKingsideCastle = state.whiteKingsideCastle
+        self.whiteQueensideCastle = state.whiteQueensideCastle
+        self.blackKingsideCastle = state.blackKingsideCastle
+        self.blackQueensideCastle = state.blackQueensideCastle
+        if let ep = state.enPassantSquare {
+            self.enPassantSquareIndex = ep.row * 8 + ep.col
+        } else {
+            self.enPassantSquareIndex = nil
+        }
+    }
 }
 
 // MARK: - Errors
@@ -36,8 +73,15 @@ final class ChessGameEngine {
     private(set) var result: GameResult?
     private(set) var moveHistory: [ChessMove] = []
 
+    /// Tally of how many times each position has appeared since the last
+    /// irreversible move. Cleared whenever halfmoveClock resets to 0
+    /// (pawn moves and captures), since no prior position can recur after
+    /// an irreversible move.
+    private var positionCounts: [PositionKey: Int] = [:]
+
     init(state: GameState = .starting) {
         self.state = state
+        positionCounts[PositionKey(from: state)] = 1
     }
 
     /// Apply a move and recompute the result given the legal moves available
@@ -56,14 +100,26 @@ final class ChessGameEngine {
         state = MoveGenerator.applyMove(move, to: state)
         moveHistory.append(move)
 
+        // Pawn moves and captures reset halfmoveClock to 0 and make all
+        // prior positions unreachable. Drop the table so it doesn't grow
+        // unbounded across long games and so prior positions can never
+        // accidentally match.
+        if state.halfmoveClock == 0 {
+            positionCounts.removeAll(keepingCapacity: true)
+        }
+        let key = PositionKey(from: state)
+        let count = (positionCounts[key] ?? 0) + 1
+        positionCounts[key] = count
+        let isThreefold = count >= 3
+
         let nextMoves = MoveGenerator.legalMoves(for: state)
-        updateResult(nextLegalMoves: nextMoves)
+        updateResult(nextLegalMoves: nextMoves, isThreefoldRepetition: isThreefold)
         return nextMoves
     }
 
     // MARK: - Game End Detection
 
-    private func updateResult(nextLegalMoves: [ChessMove]) {
+    private func updateResult(nextLegalMoves: [ChessMove], isThreefoldRepetition: Bool) {
         if nextLegalMoves.isEmpty {
             if MoveGenerator.isInCheck(state, color: state.currentPlayer) {
                 result = .checkmate(winner: state.currentPlayer.opposite)
@@ -75,6 +131,11 @@ final class ChessGameEngine {
 
         if state.halfmoveClock >= 100 {
             result = .drawByFiftyMoveRule
+            return
+        }
+
+        if isThreefoldRepetition {
+            result = .drawByThreefoldRepetition
             return
         }
 

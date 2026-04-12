@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Chess Types
 
-enum PieceColor: Sendable {
+enum PieceColor: Sendable, Hashable {
     case white, black
 
     var opposite: PieceColor {
@@ -14,7 +14,7 @@ enum PieceColor: Sendable {
 }
 
 /// Piece types ordered to match tensor plane indices (0-5).
-enum PieceType: Int, Sendable, CaseIterable {
+enum PieceType: Int, Sendable, CaseIterable, Hashable {
     case pawn = 0
     case knight = 1
     case bishop = 2
@@ -23,7 +23,7 @@ enum PieceType: Int, Sendable, CaseIterable {
     case king = 5
 }
 
-struct Piece: Sendable {
+struct Piece: Sendable, Hashable {
     let type: PieceType
     let color: PieceColor
 
