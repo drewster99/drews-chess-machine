@@ -1,18 +1,5 @@
 import Foundation
 
-// MARK: - Errors
-
-enum ChessRunnerError: LocalizedError {
-    case networkNotBuilt
-
-    var errorDescription: String? {
-        switch self {
-        case .networkNotBuilt:
-            return "Network has not been built — call buildNetwork() first"
-        }
-    }
-}
-
 // MARK: - Chess Runner
 
 /// UI-facing wrapper around ChessMPSNetwork. Adds timing and move extraction
@@ -20,28 +7,24 @@ enum ChessRunnerError: LocalizedError {
 ///
 /// Marked @unchecked Sendable — access serialized via disabled UI buttons.
 final class ChessRunner: @unchecked Sendable {
-    private var network: ChessMPSNetwork?
-    private(set) var networkBuildTimeMs: Double = 0
+    private let network: ChessMPSNetwork
 
-    var isReady: Bool { network != nil }
-
-    /// Build a new network with random weights.
-    func buildNetwork() throws {
-        let net = try ChessMPSNetwork(.randomWeights)
-        networkBuildTimeMs = net.buildTimeMs
-        network = net
+    init(network: ChessMPSNetwork) {
+        self.network = network
     }
 
     /// Run the forward pass on a board position.
+    ///
+    /// The network emits raw policy logits (no softmax in the graph). For the
+    /// UI demo we softmax over all 4096 slots once here so the displayed
+    /// percentages are real probabilities. Self-play does not go through
+    /// this path; it consumes the logits directly via MPSChessPlayer.
     func evaluate(board: [Float]) throws -> InferenceResult {
-        guard let network else {
-            throw ChessRunnerError.networkNotBuilt
-        }
-
         let start = CFAbsoluteTimeGetCurrent()
-        let (policy, value) = try network.evaluate(board: board)
+        let (logits, value) = try network.evaluate(board: board)
         let inferenceTimeMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
 
+        let policy = Self.softmax(logits)
         return InferenceResult(
             topMoves: Self.extractTopMoves(from: policy, count: 4),
             policy: policy,
@@ -50,15 +33,27 @@ final class ChessRunner: @unchecked Sendable {
         )
     }
 
+    /// Numerically stable softmax over the full vector.
+    private static func softmax(_ logits: [Float]) -> [Float] {
+        guard let maxLogit = logits.max() else { return logits }
+        var out = logits.map { expf($0 - maxLogit) }
+        let sum = out.reduce(0, +)
+        if sum > 0 {
+            for i in out.indices { out[i] /= sum }
+        }
+        return out
+    }
+
     // MARK: - Move Extraction
 
     private static func extractTopMoves(from policy: [Float], count: Int) -> [MoveVisualization] {
-        policy.enumerated()
-            .sorted { $0.element > $1.element }
+        let indexed = policy.indices.map { (index: $0, prob: policy[$0]) }
+        return indexed
+            .sorted { $0.prob > $1.prob }
             .prefix(count)
-            .map { index, prob in
-                let fromSquare = index / 64
-                let toSquare = index % 64
+            .map { entry in
+                let fromSquare = entry.index / 64
+                let toSquare = entry.index % 64
                 let fromRow = fromSquare / 8
                 let fromCol = fromSquare % 8
                 return MoveVisualization(
@@ -66,8 +61,8 @@ final class ChessRunner: @unchecked Sendable {
                     fromCol: fromCol,
                     toRow: toSquare / 8,
                     toCol: toSquare % 8,
-                    probability: prob,
-                    piece: BoardEncoder.startingPieces[fromRow][fromCol]
+                    probability: entry.prob,
+                    piece: BoardEncoder.startingPieces[fromSquare]
                 )
             }
     }

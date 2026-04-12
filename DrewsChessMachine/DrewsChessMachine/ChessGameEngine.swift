@@ -12,13 +12,10 @@ enum GameResult: Sendable {
 // MARK: - Errors
 
 enum ChessGameError: LocalizedError {
-    case illegalMove(ChessMove)
     case gameAlreadyOver
 
     var errorDescription: String? {
         switch self {
-        case .illegalMove(let move):
-            return "Illegal move: \(move.notation)"
         case .gameAlreadyOver:
             return "The game has already ended"
         }
@@ -27,8 +24,13 @@ enum ChessGameError: LocalizedError {
 
 // MARK: - Chess Game Engine
 
-/// Manages a chess game between two players: validates moves, updates state,
+/// Manages a chess game between two players: applies moves, updates state,
 /// detects game-ending conditions (checkmate, stalemate, draws).
+///
+/// Move legality is **not** validated here — the caller (`ChessMachine`) is
+/// required to pass moves drawn from `MoveGenerator.legalMoves(for:)`. The
+/// game loop already needs that list for player choice and end-detection, so
+/// re-deriving it inside `applyMove` would be wasted work.
 final class ChessGameEngine {
     private(set) var state: GameState
     private(set) var result: GameResult?
@@ -38,73 +40,31 @@ final class ChessGameEngine {
         self.state = state
     }
 
-    /// All legal moves in the current position.
-    func legalMoves() -> [ChessMove] {
-        MoveGenerator.legalMoves(for: state)
-    }
-
-    /// Whether the current player is in check.
-    func isInCheck() -> Bool {
-        MoveGenerator.isInCheck(state, color: state.currentPlayer)
-    }
-
-    /// Apply a legal move, updating the game state. Throws if the move is illegal or the game is over.
-    func applyMove(_ move: ChessMove) throws {
+    /// Apply a move and recompute the result given the legal moves available
+    /// in the *new* position. The caller is responsible for generating
+    /// `nextLegalMoves` after the move is applied — the engine reuses that
+    /// list for end-of-game detection (no second `legalMoves` call).
+    ///
+    /// Returns the legal moves for the next position so the caller can hand
+    /// them straight back to the next player.
+    @discardableResult
+    func applyMoveAndAdvance(_ move: ChessMove) throws -> [ChessMove] {
         guard result == nil else {
             throw ChessGameError.gameAlreadyOver
         }
 
-        let legal = legalMoves()
-        guard legal.contains(move) else {
-            throw ChessGameError.illegalMove(move)
-        }
-
         state = MoveGenerator.applyMove(move, to: state)
         moveHistory.append(move)
-        updateResult()
-    }
 
-    /// Play a complete game between two players. Returns the result.
-    func playGame(white: ChessPlayer, black: ChessPlayer) async -> GameResult {
-        white.onNewGame(true)
-        black.onNewGame(false)
-
-        var lastMove: ChessMove?
-
-        while result == nil {
-            let currentPlayer = state.currentPlayer == .white ? white : black
-
-            do {
-                let move = try await currentPlayer.onChooseNextMove(
-                    opponentMove: lastMove,
-                    newGameState: state
-                )
-                try applyMove(move)
-                lastMove = move
-            } catch {
-                // Player threw or returned illegal move — game over
-                break
-            }
-        }
-
-        guard let finalResult = result else {
-            let finalResult = GameResult.stalemate
-            white.onGameEnded(finalResult, finalState: state)
-            black.onGameEnded(finalResult, finalState: state)
-            return finalResult
-        }
-
-        white.onGameEnded(finalResult, finalState: state)
-        black.onGameEnded(finalResult, finalState: state)
-        return finalResult
+        let nextMoves = MoveGenerator.legalMoves(for: state)
+        updateResult(nextLegalMoves: nextMoves)
+        return nextMoves
     }
 
     // MARK: - Game End Detection
 
-    private func updateResult() {
-        let moves = MoveGenerator.legalMoves(for: state)
-
-        if moves.isEmpty {
+    private func updateResult(nextLegalMoves: [ChessMove]) {
+        if nextLegalMoves.isEmpty {
             if MoveGenerator.isInCheck(state, color: state.currentPlayer) {
                 result = .checkmate(winner: state.currentPlayer.opposite)
             } else {
@@ -129,14 +89,12 @@ final class ChessGameEngine {
         var whitePieces: [PieceType] = []
         var blackPieces: [PieceType] = []
 
-        for row in state.board {
-            for square in row {
-                guard let piece = square else { continue }
-                if piece.color == .white {
-                    whitePieces.append(piece.type)
-                } else {
-                    blackPieces.append(piece.type)
-                }
+        for square in state.board {
+            guard let piece = square else { continue }
+            if piece.color == .white {
+                whitePieces.append(piece.type)
+            } else {
+                blackPieces.append(piece.type)
             }
         }
 

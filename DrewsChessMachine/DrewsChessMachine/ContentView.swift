@@ -10,45 +10,135 @@ struct EvaluationResult: Sendable {
 
 // MARK: - Game Watcher
 
-@Observable
+/// Holds live game state mutated by the ChessMachine delegate queue.
+///
+/// **Not @Observable.** SwiftUI doesn't observe its mutations directly —
+/// instead, ContentView polls `snapshot()` on a 100ms timer and copies the
+/// values into local @State. That decouples UI redraw frequency from game
+/// throughput: continuous self-play can run hundreds of moves per second
+/// while the UI updates at most 10 times per second, and the game loop
+/// never waits for SwiftUI invalidation.
+///
+/// Mutations come from two sources:
+/// 1. The ChessMachine delegate queue (didApplyMove, gameEnded, playerErrored).
+/// 2. Direct calls from ContentView actions (resetCurrentGame, markPlaying).
+/// Both go through `lock`, so reads from any thread are safe.
 final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
-    // Current game
-    var state: GameState = .starting
-    var result: GameResult?
-    var moveCount = 0
-    var isPlaying = false
-    var lastGameStats: GameStats?
+    /// Snapshot of all displayable values, taken atomically. Sendable so it
+    /// can flow from any thread to the main actor.
+    struct Snapshot: Sendable {
+        var state: GameState = .starting
+        var result: GameResult?
+        var moveCount = 0
+        var isPlaying = false
+        var lastGameStats: GameStats?
 
-    // Aggregate stats
-    var totalGames = 0
-    var totalMoves = 0
-    var totalGameTimeMs: Double = 0
-    var totalWhiteThinkMs: Double = 0
-    var totalBlackThinkMs: Double = 0
-    var sessionStartTime: CFAbsoluteTime?
+        var totalGames = 0
+        var totalMoves = 0
+        var totalGameTimeMs: Double = 0
+        var totalWhiteThinkMs: Double = 0
+        var totalBlackThinkMs: Double = 0
+        var sessionStartTime: CFAbsoluteTime?
 
-    // Result breakdown
-    var whiteCheckmates = 0
-    var blackCheckmates = 0
-    var stalemates = 0
-    var fiftyMoveDraws = 0
-    var insufficientMaterialDraws = 0
-
-    // Computed rates
-    var gamesPerHour: Double {
-        guard let start = sessionStartTime else { return 0 }
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
-        guard elapsed > 0, totalGames > 0 else { return 0 }
-        return Double(totalGames) / (elapsed / 3600)
+        var whiteCheckmates = 0
+        var blackCheckmates = 0
+        var stalemates = 0
+        var fiftyMoveDraws = 0
+        var insufficientMaterialDraws = 0
     }
 
-    var movesPerHour: Double {
-        guard let start = sessionStartTime else { return 0 }
-        let elapsed = CFAbsoluteTimeGetCurrent() - start
-        guard elapsed > 0, totalMoves > 0 else { return 0 }
-        return Double(totalMoves) / (elapsed / 3600)
+    private let lock = NSLock()
+    private var s = Snapshot()
+
+    func snapshot() -> Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return s
     }
 
+    func resetCurrentGame() {
+        lock.lock()
+        defer { lock.unlock() }
+        s.state = .starting
+        s.result = nil
+        s.moveCount = 0
+        // Keep lastGameStats — show previous game until the next one ends
+    }
+
+    func resetAll() {
+        lock.lock()
+        defer { lock.unlock() }
+        s = Snapshot()
+    }
+
+    func markPlaying(_ playing: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        s.isPlaying = playing
+    }
+
+    func markSessionStart() {
+        lock.lock()
+        defer { lock.unlock() }
+        if s.sessionStartTime == nil {
+            s.sessionStartTime = CFAbsoluteTimeGetCurrent()
+        }
+    }
+
+    // MARK: - Delegate (called on ChessMachine.delegateQueue, never main)
+
+    func chessMachine(_ machine: ChessMachine, didApplyMove move: ChessMove, newState: GameState) {
+        lock.lock()
+        defer { lock.unlock() }
+        s.state = newState
+        s.moveCount += 1
+    }
+
+    func chessMachine(
+        _ machine: ChessMachine,
+        gameEndedWith result: GameResult,
+        finalState: GameState,
+        stats: GameStats
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        s.result = result
+        s.state = finalState
+        s.lastGameStats = stats
+        s.isPlaying = false
+
+        s.totalGames += 1
+        s.totalMoves += stats.totalMoves
+        s.totalGameTimeMs += stats.totalGameTimeMs
+        s.totalWhiteThinkMs += stats.whiteThinkingTimeMs
+        s.totalBlackThinkMs += stats.blackThinkingTimeMs
+
+        switch result {
+        case .checkmate(let winner):
+            if winner == .white {
+                s.whiteCheckmates += 1
+            } else {
+                s.blackCheckmates += 1
+            }
+        case .stalemate:
+            s.stalemates += 1
+        case .drawByFiftyMoveRule:
+            s.fiftyMoveDraws += 1
+        case .drawByInsufficientMaterial:
+            s.insufficientMaterialDraws += 1
+        }
+    }
+
+    func chessMachine(_ machine: ChessMachine, playerErrored player: any ChessPlayer, error: any Error) {
+        lock.lock()
+        defer { lock.unlock() }
+        s.isPlaying = false
+    }
+}
+
+// MARK: - Snapshot Display Helpers
+
+extension GameWatcher.Snapshot {
     var avgMoveTimeMs: Double {
         totalMoves > 0 ? (totalWhiteThinkMs + totalBlackThinkMs) / Double(totalMoves) : 0
     }
@@ -57,10 +147,25 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         totalGames > 0 ? totalGameTimeMs / Double(totalGames) : 0
     }
 
-    /// Fixed-layout stats text. Every section is always present — values show "--"
-    /// when no data exists. Structure never changes so layout stays stable.
+    func gamesPerHour(now: CFAbsoluteTime) -> Double {
+        guard let start = sessionStartTime else { return 0 }
+        let elapsed = now - start
+        guard elapsed > 0, totalGames > 0 else { return 0 }
+        return Double(totalGames) / (elapsed / 3600)
+    }
+
+    func movesPerHour(now: CFAbsoluteTime) -> Double {
+        guard let start = sessionStartTime else { return 0 }
+        let elapsed = now - start
+        guard elapsed > 0, totalMoves > 0 else { return 0 }
+        return Double(totalMoves) / (elapsed / 3600)
+    }
+
+    /// Fixed-layout stats text. Every section is always present — values show
+    /// "--" when no data exists. Structure never changes so layout stays stable.
     var statsText: String {
         let dash = "--"
+        let now = CFAbsoluteTimeGetCurrent()
 
         // Status line
         let status: String
@@ -83,18 +188,24 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
             status = dash
         }
 
-        // Last game
-        let lg: (moves: String, time: String, avg: String, wAvg: String, bAvg: String)
-        if let s = lastGameStats {
-            lg = (
-                String(format: "%d (%dW + %dB)", s.totalMoves, s.whiteMoves, s.blackMoves),
-                String(format: "%.1f ms", s.totalGameTimeMs),
-                String(format: "%.2f ms", s.avgMoveTimeMs),
-                String(format: "%.2f ms", s.avgWhiteMoveTimeMs),
-                String(format: "%.2f ms", s.avgBlackMoveTimeMs)
-            )
+        // Last-game display strings
+        let lgMoves: String
+        let lgTime: String
+        let lgAvg: String
+        let lgWAvg: String
+        let lgBAvg: String
+        if let stats = lastGameStats {
+            lgMoves = String(format: "%d (%dW + %dB)", stats.totalMoves, stats.whiteMoves, stats.blackMoves)
+            lgTime = String(format: "%.1f ms", stats.totalGameTimeMs)
+            lgAvg = String(format: "%.2f ms", stats.avgMoveTimeMs)
+            lgWAvg = String(format: "%.2f ms", stats.avgWhiteMoveTimeMs)
+            lgBAvg = String(format: "%.2f ms", stats.avgBlackMoveTimeMs)
         } else {
-            lg = (dash, dash, dash, dash, dash)
+            lgMoves = dash
+            lgTime = dash
+            lgAvg = dash
+            lgWAvg = dash
+            lgBAvg = dash
         }
 
         // Session
@@ -103,18 +214,18 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         let sTime = totalGames > 0 ? String(format: "%.0f ms", totalGameTimeMs) : dash
         let sAvgMove = totalMoves > 0 ? String(format: "%.2f ms", avgMoveTimeMs) : dash
         let sAvgGame = totalGames > 0 ? String(format: "%.1f ms", avgGameTimeMs) : dash
-        let sMovesHr = totalMoves > 0 ? String(format: "%.0f", movesPerHour) : dash
-        let sGamesHr = totalGames > 0 ? String(format: "%.0f", gamesPerHour) : dash
+        let sMovesHr = totalMoves > 0 ? String(format: "%.0f", movesPerHour(now: now)) : dash
+        let sGamesHr = totalGames > 0 ? String(format: "%.0f", gamesPerHour(now: now)) : dash
 
         return """
             Status: \(status)
 
             Last Game
-              Moves:     \(lg.moves)
-              Time:      \(lg.time)
-              Avg move:  \(lg.avg)
-              White avg: \(lg.wAvg)
-              Black avg: \(lg.bAvg)
+              Moves:     \(lgMoves)
+              Time:      \(lgTime)
+              Avg move:  \(lgAvg)
+              White avg: \(lgWAvg)
+              Black avg: \(lgBAvg)
 
             Session
               Games:     \(sGames)
@@ -139,71 +250,6 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         guard totalGames > 0 else { return "" }
         return String(format: "  (%.1f%%)", Double(count) / Double(totalGames) * 100)
     }
-
-    func resetCurrentGame() {
-        state = .starting
-        result = nil
-        moveCount = 0
-        // Keep lastGameStats — show previous game until the next one ends
-    }
-
-    func resetAll() {
-        resetCurrentGame()
-        lastGameStats = nil
-        totalGames = 0
-        totalMoves = 0
-        totalGameTimeMs = 0
-        totalWhiteThinkMs = 0
-        totalBlackThinkMs = 0
-        sessionStartTime = nil
-        whiteCheckmates = 0
-        blackCheckmates = 0
-        stalemates = 0
-        fiftyMoveDraws = 0
-        insufficientMaterialDraws = 0
-    }
-
-    // MARK: - Delegate
-
-    func chessMachine(_ machine: ChessMachine, didApplyMove move: ChessMove, newState: GameState) {
-        Task { @MainActor in
-            self.state = newState
-            self.moveCount += 1
-        }
-    }
-
-    func chessMachine(_ machine: ChessMachine, gameEndedWith result: GameResult, finalState: GameState, stats: GameStats) {
-        Task { @MainActor in
-            self.result = result
-            self.state = finalState
-            self.lastGameStats = stats
-            self.isPlaying = false
-
-            self.totalGames += 1
-            self.totalMoves += stats.totalMoves
-            self.totalGameTimeMs += stats.totalGameTimeMs
-            self.totalWhiteThinkMs += stats.whiteThinkingTimeMs
-            self.totalBlackThinkMs += stats.blackThinkingTimeMs
-
-            switch result {
-            case .checkmate(let winner):
-                if winner == .white { self.whiteCheckmates += 1 }
-                else { self.blackCheckmates += 1 }
-            case .stalemate:
-                self.stalemates += 1
-            case .drawByFiftyMoveRule:
-                self.fiftyMoveDraws += 1
-            case .drawByInsufficientMaterial:
-                self.insufficientMaterialDraws += 1
-            }
-        }
-    }
-
-    func chessMachine(_ machine: ChessMachine, playerErrored player: any ChessPlayer, error: any Error) {
-        Task { @MainActor in
-            self.isPlaying = false
-        }
-    }
 }
 
 // MARK: - Content View
@@ -211,7 +257,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
 struct ContentView: View {
     // Network
     @State private var network: ChessMPSNetwork?
-    @State private var runner = ChessRunner()
+    @State private var runner: ChessRunner?
     @State private var networkStatus = ""
     @State private var isBuilding = false
 
@@ -220,17 +266,34 @@ struct ContentView: View {
     @State private var isEvaluating = false
     @State private var selectedOverlay = 0
 
-    // Game
+    // Game — gameWatcher is mutated by the delegate queue and is NOT
+    // SwiftUI-observed. A 100ms timer copies its `snapshot()` into
+    // `gameSnapshot`, which is what the body actually reads. This caps UI
+    // refresh rate regardless of game throughput.
+    //
+    // `gameWatcher` MUST be `@State`, not `let`. SwiftUI may reconstruct
+    // ContentView's struct across body invocations; a plain `let` initializer
+    // would build a fresh `GameWatcher` each time and any in-flight machine
+    // (which only holds the delegate via `weak`) would lose its delegate.
     @State private var gameWatcher = GameWatcher()
+    @State private var gameSnapshot = GameWatcher.Snapshot()
     @State private var continuousPlay = false
     @State private var continuousTask: Task<Void, Never>?
 
-    private var networkReady: Bool { network != nil }
-    private var isBusy: Bool { isBuilding || isEvaluating || gameWatcher.isPlaying || continuousPlay }
-    private var isGameMode: Bool { gameWatcher.isPlaying || gameWatcher.totalGames > 0 }
+    /// 100 ms heartbeat that pulls the latest snapshot from `gameWatcher`
+    /// into `gameSnapshot`. Standard SwiftUI Combine timer pattern — the
+    /// publisher is created when the view struct is initialized and SwiftUI
+    /// manages the subscription lifecycle via `.onReceive` below.
+    private let snapshotTimer = Timer.publish(
+        every: 0.1, on: .main, in: .common
+    ).autoconnect()
 
-    private var displayedPieces: [[Piece?]] {
-        if isGameMode { return gameWatcher.state.board }
+    private var networkReady: Bool { network != nil }
+    private var isBusy: Bool { isBuilding || isEvaluating || gameSnapshot.isPlaying || continuousPlay }
+    private var isGameMode: Bool { gameSnapshot.isPlaying || gameSnapshot.totalGames > 0 }
+
+    private var displayedPieces: [Piece?] {
+        if isGameMode { return gameSnapshot.state.board }
         return GameState.starting.board
     }
 
@@ -256,7 +319,11 @@ struct ContentView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text("Forward pass through a ~2.9M parameter convolutional network using MPSGraph on the GPU. Weights are randomly initialized (He initialization) — no training has occurred.")
+            Text(
+                "Forward pass through a ~2.9M parameter convolutional network using MPSGraph " +
+                "on the GPU. Weights are randomly initialized (He initialization) — no training " +
+                "has occurred."
+            )
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -298,9 +365,12 @@ struct ContentView: View {
 
                     HStack(spacing: 8) {
                         let leftDisabled = inferenceResult == nil || selectedOverlay == 0 || isGameMode
-                        Button(action: { navigateOverlay(-1) }) {
-                            Image(systemName: "chevron.left").font(.title3).frame(width: 24)
-                        }
+                        Button(
+                            action: { navigateOverlay(-1) },
+                            label: {
+                                Image(systemName: "chevron.left").font(.title3).frame(width: 24)
+                            }
+                        )
                         .buttonStyle(.plain)
                         .disabled(leftDisabled)
                         .opacity(leftDisabled ? 0.2 : 0.6)
@@ -308,9 +378,12 @@ struct ContentView: View {
                         ChessBoardView(pieces: displayedPieces, overlay: currentOverlay)
 
                         let rightDisabled = inferenceResult == nil || selectedOverlay == 18 || isGameMode
-                        Button(action: { navigateOverlay(1) }) {
-                            Image(systemName: "chevron.right").font(.title3).frame(width: 24)
-                        }
+                        Button(
+                            action: { navigateOverlay(1) },
+                            label: {
+                                Image(systemName: "chevron.right").font(.title3).frame(width: 24)
+                            }
+                        )
                         .buttonStyle(.plain)
                         .disabled(rightDisabled)
                         .opacity(rightDisabled ? 0.2 : 0.6)
@@ -327,7 +400,7 @@ struct ContentView: View {
                         }
 
                         if isGameMode {
-                            Text(gameWatcher.statsText)
+                            Text(gameSnapshot.statsText)
                         }
 
                         if let result = inferenceResult, !isGameMode {
@@ -374,11 +447,17 @@ struct ContentView: View {
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) { navigateOverlay(-1); return .handled }
         .onKeyPress(.rightArrow) { navigateOverlay(1); return .handled }
+        .onReceive(snapshotTimer) { _ in
+            // Pull the latest game state into @State at most every 100ms.
+            // Cheap (single locked struct copy) and bounds UI work even
+            // when the game loop is doing hundreds of moves per second.
+            gameSnapshot = gameWatcher.snapshot()
+        }
     }
 
     private var busyLabel: String {
         if isBuilding { return "Building network..." }
-        if gameWatcher.isPlaying { return "Game \(gameWatcher.totalGames + 1), move \(gameWatcher.moveCount)..." }
+        if gameSnapshot.isPlaying { return "Game \(gameSnapshot.totalGames + 1), move \(gameSnapshot.moveCount)..." }
         return "Running inference..."
     }
 
@@ -397,25 +476,37 @@ struct ContentView: View {
         networkStatus = ""
 
         Task {
-            let (net, status) = await Task.detached(priority: .userInitiated) {
+            let result = await Task.detached(priority: .userInitiated) {
                 Self.performBuild()
             }.value
-            network = net
-            if net != nil {
-                runner = ChessRunner()
-                do { try runner.buildNetwork() } catch {}
+
+            switch result {
+            case .success(let net):
+                network = net
+                runner = ChessRunner(network: net)
+                networkStatus = """
+                    Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
+                    Parameters: ~2,917,383 (~2.9M)
+                    Architecture: 18x8x8 -> stem(128)
+                      -> 8 res blocks -> policy(4096) + value(1)
+                    """
+            case .failure(let error):
+                network = nil
+                runner = nil
+                networkStatus = "Build failed: \(error.localizedDescription)"
             }
-            networkStatus = status
             isBuilding = false
         }
     }
 
     private func runForwardPass() {
+        guard let runner else { return }
         isEvaluating = true
         gameWatcher.resetAll()
+        gameSnapshot = gameWatcher.snapshot()
 
         Task {
-            let evalResult = await Task.detached(priority: .userInitiated) { [runner] in
+            let evalResult = await Task.detached(priority: .userInitiated) {
                 Self.performInference(with: runner)
             }.value
             inferenceResult = evalResult
@@ -427,10 +518,14 @@ struct ContentView: View {
     private func playSingleGame() {
         inferenceResult = nil
         gameWatcher.resetCurrentGame()
-        gameWatcher.isPlaying = true
-        if gameWatcher.sessionStartTime == nil {
-            gameWatcher.sessionStartTime = CFAbsoluteTimeGetCurrent()
-        }
+        gameWatcher.markSessionStart()
+        gameWatcher.markPlaying(true)
+        // Synchronously refresh the snapshot so isBusy reflects the new
+        // playing state immediately — the polling task only runs every
+        // 100ms, which would otherwise leave a window where the Play
+        // button stayed enabled and a fast double-click could spawn two
+        // concurrent ChessMachine instances against the same gameWatcher.
+        gameSnapshot = gameWatcher.snapshot()
 
         Task { [network] in
             guard let network else { return }
@@ -438,14 +533,19 @@ struct ContentView: View {
             machine.delegate = gameWatcher
             let white = MPSChessPlayer(name: "White", network: network)
             let black = MPSChessPlayer(name: "Black", network: network)
-            _ = await machine.beginNewGame(white: white, black: black).value
+            do {
+                let task = try machine.beginNewGame(white: white, black: black)
+                _ = await task.value
+            } catch {
+                gameWatcher.markPlaying(false)
+            }
         }
     }
 
     private func startContinuousPlay() {
         inferenceResult = nil
         gameWatcher.resetAll()
-        gameWatcher.sessionStartTime = CFAbsoluteTimeGetCurrent()
+        gameWatcher.markSessionStart()
         continuousPlay = true
 
         continuousTask = Task { [network] in
@@ -453,16 +553,25 @@ struct ContentView: View {
 
             while !Task.isCancelled {
                 gameWatcher.resetCurrentGame()
-                await MainActor.run { gameWatcher.isPlaying = true }
+                gameWatcher.markPlaying(true)
 
                 let machine = ChessMachine()
                 machine.delegate = gameWatcher
                 let white = MPSChessPlayer(name: "White", network: network)
                 let black = MPSChessPlayer(name: "Black", network: network)
-                _ = await machine.beginNewGame(white: white, black: black).value
+                do {
+                    let task = try machine.beginNewGame(white: white, black: black)
+                    _ = await task.value
+                } catch {
+                    gameWatcher.markPlaying(false)
+                    break
+                }
 
-                do { try await Task.sleep(for: .milliseconds(1)) }
-                catch { break }
+                do {
+                    try await Task.sleep(for: .milliseconds(1))
+                } catch {
+                    break
+                }
             }
 
             await MainActor.run { continuousPlay = false }
@@ -476,19 +585,8 @@ struct ContentView: View {
 
     // MARK: - Background Work
 
-    nonisolated private static func performBuild() -> (ChessMPSNetwork?, String) {
-        do {
-            let net = try ChessMPSNetwork(.randomWeights)
-            let status = """
-                Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
-                Parameters: ~2,917,383 (~2.9M)
-                Architecture: 18x8x8 -> stem(128)
-                  -> 8 res blocks -> policy(4096) + value(1)
-                """
-            return (net, status)
-        } catch {
-            return (nil, "Build failed: \(error.localizedDescription)")
-        }
+    nonisolated private static func performBuild() -> Result<ChessMPSNetwork, Error> {
+        Result { try ChessMPSNetwork(.randomWeights) }
     }
 
     nonisolated private static func performInference(with runner: ChessRunner) -> EvaluationResult {

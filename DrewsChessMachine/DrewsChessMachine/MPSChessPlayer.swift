@@ -46,8 +46,11 @@ final class MPSChessPlayer: ChessPlayer {
         gamePositions = []
     }
 
-    func onChooseNextMove(opponentMove: ChessMove?, newGameState gameState: GameState) async throws -> ChessMove {
-        let legalMoves = MoveGenerator.legalMoves(for: gameState)
+    func onChooseNextMove(
+        opponentMove: ChessMove?,
+        newGameState gameState: GameState,
+        legalMoves: [ChessMove]
+    ) async throws -> ChessMove {
         guard !legalMoves.isEmpty else {
             throw ChessPlayerError.noLegalMoves
         }
@@ -100,28 +103,41 @@ final class MPSChessPlayer: ChessPlayer {
     // MARK: - Move Sampling
 
     /// Sample a move from the policy distribution over legal moves.
-    /// Converts each legal move to the network's coordinate system before looking up
-    /// its probability in the policy output.
-    private func sampleMove(from policy: [Float], legalMoves: [ChessMove], flip: Bool) -> ChessMove {
-        var probs = legalMoves.map { policy[Self.networkPolicyIndex(for: $0, flip: flip)] }
+    ///
+    /// The network emits raw logits, not a softmax distribution — softmax is
+    /// fused with the legal-move mask here on the CPU. We exponentiate only
+    /// the ~30 legal-move logits (with max-subtract for numerical stability)
+    /// rather than running softmax over all 4096 slots and then masking.
+    ///
+    /// Performance-critical: runs once per ply. legalMoves is guaranteed
+    /// non-empty by the caller (game-end is detected before this call).
+    private func sampleMove(from logits: [Float], legalMoves: [ChessMove], flip: Bool) -> ChessMove {
+        // Gather logits for legal moves only.
+        var values = legalMoves.map { logits[Self.networkPolicyIndex(for: $0, flip: flip)] }
 
-        let sum = probs.reduce(0, +)
-        if sum > 0 {
-            for i in probs.indices { probs[i] /= sum }
-        } else {
-            let uniform = 1.0 / Float(legalMoves.count)
-            probs = [Float](repeating: uniform, count: legalMoves.count)
+        // Numerically stable softmax: subtract max, exp, then normalize.
+        let maxLogit = values.max() ?? 0
+        var sum: Float = 0
+        for i in values.indices {
+            let e = expf(values[i] - maxLogit)
+            values[i] = e
+            sum += e
         }
+        // exp() is strictly positive, so sum is strictly positive whenever
+        // legalMoves is non-empty.
+        for i in values.indices { values[i] /= sum }
 
         let r = Float.random(in: 0..<1)
         var cumulative: Float = 0
-        for i in 0..<probs.count {
-            cumulative += probs[i]
+        for i in 0..<values.count {
+            cumulative += values[i]
             if r < cumulative {
                 return legalMoves[i]
             }
         }
 
+        // Floating-point rounding can leave the cumulative just shy of 1.0;
+        // the last legal move catches that.
         return legalMoves[legalMoves.count - 1]
     }
 }

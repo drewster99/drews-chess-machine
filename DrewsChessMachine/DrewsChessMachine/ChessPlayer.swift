@@ -30,7 +30,16 @@ protocol ChessPlayer: AnyObject {
 
     /// Called when it's this player's turn. Returns a legal move or throws.
     /// Thrown errors abort the game — the engine treats it as a forfeit.
-    func onChooseNextMove(opponentMove: ChessMove?, newGameState gameState: GameState) async throws -> ChessMove
+    ///
+    /// `legalMoves` is the precomputed legal-move list for `gameState`. The
+    /// engine generates this once per ply and shares it with the player to
+    /// avoid duplicate generation. The player must return a move from this
+    /// list (or one that is otherwise legal).
+    func onChooseNextMove(
+        opponentMove: ChessMove?,
+        newGameState gameState: GameState,
+        legalMoves: [ChessMove]
+    ) async throws -> ChessMove
 
     /// Called when the game ends, regardless of outcome.
     func onGameEnded(_ result: GameResult, finalState: GameState)
@@ -49,12 +58,15 @@ final class RandomPlayer: ChessPlayer {
 
     func onNewGame(_ isWhite: Bool) {}
 
-    func onChooseNextMove(opponentMove: ChessMove?, newGameState gameState: GameState) async throws -> ChessMove {
-        let moves = MoveGenerator.legalMoves(for: gameState)
-        guard !moves.isEmpty else {
+    func onChooseNextMove(
+        opponentMove: ChessMove?,
+        newGameState gameState: GameState,
+        legalMoves: [ChessMove]
+    ) async throws -> ChessMove {
+        guard !legalMoves.isEmpty else {
             throw ChessPlayerError.noLegalMoves
         }
-        return moves[Int.random(in: 0..<moves.count)]
+        return legalMoves[Int.random(in: 0..<legalMoves.count)]
     }
 
     func onGameEnded(_ result: GameResult, finalState: GameState) {}
@@ -70,7 +82,11 @@ final class NullPlayer: ChessPlayer {
 
     func onNewGame(_ isWhite: Bool) {}
 
-    func onChooseNextMove(opponentMove: ChessMove?, newGameState gameState: GameState) async throws -> ChessMove {
+    func onChooseNextMove(
+        opponentMove: ChessMove?,
+        newGameState gameState: GameState,
+        legalMoves: [ChessMove]
+    ) async throws -> ChessMove {
         throw ChessPlayerError.noPlayerAvailable
     }
 

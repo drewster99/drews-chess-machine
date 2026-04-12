@@ -21,17 +21,21 @@ enum BoardOverlay {
 /// - `.topMoves`: gradient arrows from source to destination + ghost pieces
 /// - `.channel`: blue highlights on active squares of a tensor channel
 struct ChessBoardView: View {
-    var pieces: [[Piece?]] = GameState.starting.board
+    /// 64-square flat board, indexed as row * 8 + col.
+    var pieces: [Piece?] = GameState.starting.board
     var overlay: BoardOverlay = .none
 
     private static let lightSquare = Color(red: 0.94, green: 0.85, blue: 0.71)
     private static let darkSquare = Color(red: 0.71, green: 0.53, blue: 0.39)
     private static let channelColor = Color.blue
 
-    private static let allAssetNames = ["wP","wN","wB","wR","wQ","wK","bP","bN","bB","bR","bQ","bK"]
+    private static let allAssetNames = [
+        "wP", "wN", "wB", "wR", "wQ", "wK",
+        "bP", "bN", "bB", "bR", "bQ", "bK"
+    ]
 
     var body: some View {
-        Canvas(opaque: true, rendersAsynchronously: false) { context, size in
+        Canvas(opaque: true, rendersAsynchronously: true) { context, size in
             let squareSize = min(size.width, size.height) / 8
 
             // 1. Board squares
@@ -75,8 +79,9 @@ struct ChessBoardView: View {
             // 3. Pieces at their actual positions
             let pieceInset = squareSize * 0.08
             for row in 0..<8 {
+                let rowBase = row * 8
                 for col in 0..<8 {
-                    if let piece = pieces[row][col] {
+                    if let piece = pieces[rowBase + col] {
                         let rect = CGRect(
                             x: CGFloat(col) * squareSize + pieceInset,
                             y: CGFloat(row) * squareSize + pieceInset,
@@ -117,7 +122,7 @@ struct ChessBoardView: View {
                         with: .linearGradient(
                             Gradient(stops: [
                                 .init(color: color.opacity(1.0), location: 0),
-                                .init(color: color.opacity(0.6), location: 1),
+                                .init(color: color.opacity(0.6), location: 1)
                             ]),
                             startPoint: fromCenter,
                             endPoint: toCenter
@@ -125,16 +130,17 @@ struct ChessBoardView: View {
                     )
                 }
 
-                // Ghost pieces at target squares (25% opacity)
-                let pieceInset = squareSize * 0.08
+                // Ghost pieces at target squares (25% opacity).
+                // Same inset as the live pieces drawn above.
+                let ghostInset = squareSize * 0.08
                 for move in moves {
                     guard let assetName = move.piece,
                           let resolved = context.resolveSymbol(id: assetName) else { continue }
                     let rect = CGRect(
-                        x: CGFloat(move.toCol) * squareSize + pieceInset,
-                        y: CGFloat(move.toRow) * squareSize + pieceInset,
-                        width: squareSize - pieceInset * 2,
-                        height: squareSize - pieceInset * 2
+                        x: CGFloat(move.toCol) * squareSize + ghostInset,
+                        y: CGFloat(move.toRow) * squareSize + ghostInset,
+                        width: squareSize - ghostInset * 2,
+                        height: squareSize - ghostInset * 2
                     )
                     context.drawLayer { ghostContext in
                         ghostContext.opacity = 0.25

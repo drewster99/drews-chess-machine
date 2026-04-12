@@ -48,7 +48,7 @@ enum TensorChannelNames {
         "Opp Rooks", "Opp Queens", "Opp King",
         "My Kingside Castle", "My Queenside Castle",
         "Opp Kingside Castle", "Opp Queenside Castle",
-        "En Passant", "Halfmove Clock",
+        "En Passant", "Halfmove Clock"
     ]
 
     /// Short labels for the strip thumbnails.
@@ -56,6 +56,6 @@ enum TensorChannelNames {
         "♙", "♘", "♗", "♖", "♕", "♔",
         "♟", "♞", "♝", "♜", "♛", "♚",
         "K-side", "Q-side", "K-side", "Q-side",
-        "e.p.", "50-mv",
+        "e.p.", "50-mv"
     ]
 }

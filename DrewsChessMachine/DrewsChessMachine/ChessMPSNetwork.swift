@@ -49,9 +49,11 @@ final class ChessMPSNetwork: @unchecked Sendable {
             network = try ChessNetwork()
 
         case .package:
-            // TODO: Implement MPSGraphExecutable deserialization
-            // 1. Load MPSGraphExecutable from the package URL
-            // 2. Use executable.run() instead of graph.run() for inference
+            // Deserializing a saved MPSGraphExecutable is tracked in
+            // ROADMAP.md ("Compiled MPSGraphExecutable"); not implemented
+            // yet. Steps once we get there:
+            //   1. Load MPSGraphExecutable from the package URL
+            //   2. Use executable.run() instead of graph.run() for inference
             throw ChessMPSNetworkError.packageLoadingNotImplemented
         }
 

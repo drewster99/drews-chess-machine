@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 import Metal
 import MetalPerformanceShadersGraph
@@ -32,7 +33,7 @@ enum ChessNetworkError: LocalizedError {
 /// - Input: 18x8x8 board tensor (NCHW layout)
 /// - Stem: 3x3 conv (18 -> 128 channels), batch norm, ReLU
 /// - Tower: 8 residual blocks (each: conv -> BN -> ReLU -> conv -> BN -> skip add -> ReLU)
-/// - Policy head: 1x1 conv (128 -> 2) -> BN -> ReLU -> flatten -> FC(128 -> 4096) -> softmax
+/// - Policy head: 1x1 conv (128 -> 2) -> BN -> ReLU -> flatten -> FC(128 -> 4096) (logits)
 /// - Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 1) -> tanh
 ///
 /// Total parameters: ~2,917,383 (~2.9M)
@@ -41,8 +42,15 @@ final class ChessNetwork {
     // MARK: Configuration
 
     /// Numeric precision for all weights and activations.
-    /// Data helpers (heInitData, onesData, zerosData) produce Float bytes to match.
-    static let dataType: MPSDataType = .float16
+    ///
+    /// Switching this between `.float32` and `.float16` should Just Work —
+    /// the data helpers (`heInitData`, `onesData`, `zerosData`) and the
+    /// inference output reader (`readFloats(from:count:)`) both consult
+    /// `dataType` and convert via Accelerate as needed. The graph's
+    /// `placeholder` and `variable` calls all pass `Self.dataType`, and
+    /// `evaluate(board:)` writes the input tensor in the configured
+    /// precision before passing it to the graph.
+    static let dataType: MPSDataType = .float32
 
     static let channels = 128
     static let inputPlanes = 18
@@ -126,10 +134,10 @@ final class ChessNetwork {
     /// - Parameter board: 18x8x8 = 1,152 floats in NCHW order (planes, rows, cols)
     /// - Returns: Policy probabilities (4096 move slots) and position value in [-1, +1]
     func evaluate(board: [Float]) throws -> (policy: [Float], value: Float) {
-        let boardBytes = board.withUnsafeBytes { Data($0) }
+        let inputBytes = Self.makeWeightData(board)
         let inputData = MPSGraphTensorData(
             device: graphDevice,
-            data: boardBytes,
+            data: inputBytes,
             shape: [1, 18, 8, 8],
             dataType: Self.dataType
         )
@@ -148,16 +156,9 @@ final class ChessNetwork {
             throw ChessNetworkError.outputMissing("value")
         }
 
-        var policy = [Float](repeating: 0, count: Self.policySize)
-        policy.withUnsafeMutableBytes { buffer in
-            guard let ptr = buffer.baseAddress else { return }
-            policyData.mpsndarray().readBytes(ptr, strideBytes: nil)
-        }
-
-        var value: Float = 0
-        valueData.mpsndarray().readBytes(&value, strideBytes: nil)
-
-        return (policy, value)
+        let policy = Self.readFloats(from: policyData, count: Self.policySize)
+        let valueBuf = Self.readFloats(from: valueData, count: 1)
+        return (policy, valueBuf[0])
     }
 
     // MARK: - Convolution Descriptors
@@ -293,7 +294,13 @@ final class ChessNetwork {
         return x
     }
 
-    /// Policy head: 1x1 conv (128 -> 2) -> BN -> ReLU -> flatten -> FC (128 -> 4096) -> softmax
+    /// Policy head: 1x1 conv (128 -> 2) -> BN -> ReLU -> flatten -> FC (128 -> 4096) (logits)
+    ///
+    /// Note: this used to end with a 4096-way softmax. We dropped it because
+    /// the CPU has to mask illegal moves anyway, and computing softmax over
+    /// only the ~30 legal moves is far cheaper than softmax over 4096 slots
+    /// followed by mask + renormalize. The CPU side (MPSChessPlayer.sampleMove)
+    /// now does softmax-over-legal-moves directly from these logits.
     private static func policyHead(
         graph: MPSGraph,
         input: MPSGraphTensor,
@@ -331,9 +338,8 @@ final class ChessNetwork {
         x = graph.matrixMultiplication(primary: x, secondary: fcW, name: "policy_fc")
         x = graph.addition(x, fcBias, name: "policy_fc_bias_add")
 
-        // Softmax: convert logits to probabilities summing to 1.0
-        x = graph.softMax(with: x, axis: 1, name: "policy_softmax")
-
+        // Logits, not probabilities — softmax happens on the CPU over only
+        // the legal moves (see MPSChessPlayer.sampleMove).
         return x
     }
 
@@ -402,25 +408,165 @@ final class ChessNetwork {
 
     /// He initialization: random normal with std = sqrt(2 / fan_in).
     /// Fan-in is the product of all dimensions except the first (output channels).
+    ///
+    /// Implementation note: this used to be a per-element scalar Box-Muller
+    /// loop. With ~2.9M weights to initialize, that dominated build time. The
+    /// vectorized version below uses Accelerate (vDSP/vForce) on bulk arrays
+    /// of uniform random Floats, which is roughly an order of magnitude
+    /// faster on Apple silicon.
     static func heInitData(shape: [Int]) -> Data {
         let fanIn = shape.dropFirst().reduce(1, *)
         let std = sqrt(2.0 / Float(fanIn))
         let count = shape.reduce(1, *)
-        var values = [Float](repeating: 0, count: count)
-        for i in 0..<count {
-            // Box-Muller transform for normal distribution
-            let u1 = Float.random(in: Float.ulpOfOne...1)
-            let u2 = Float.random(in: 0...1)
-            values[i] = std * sqrt(-2 * log(u1)) * cos(2 * .pi * u2)
+        let values = heInitFloats(count: count, std: std)
+        return makeWeightData(values)
+    }
+
+    /// Vectorized He initialization producing `count` random normals with
+    /// standard deviation `std`. Box-Muller form:
+    ///   z = std * sqrt(-2 * ln(u1)) * cos(2π * u2)
+    /// where u1, u2 are independent uniforms.
+    private static func heInitFloats(count: Int, std: Float) -> [Float] {
+        // Box-Muller produces values in pairs; we generate `count` outputs
+        // using `count` u1 + `count` u2 (one z per pair of uniforms).
+        var u1 = [Float](repeating: 0, count: count)
+        var u2 = [Float](repeating: 0, count: count)
+
+        // Bulk-fill with uniform Floats in [0, 1). arc4random_buf gives us
+        // uniformly distributed UInt32s; divide by 2^32 for [0, 1).
+        u1.withUnsafeMutableBufferPointer { buf in
+            buf.baseAddress.map { fillUniform01(buf: $0, count: count) }
         }
-        return values.withUnsafeBytes { Data($0) }
+        u2.withUnsafeMutableBufferPointer { buf in
+            buf.baseAddress.map { fillUniform01(buf: $0, count: count) }
+        }
+
+        // Clamp u1 away from 0 so log(u1) is finite.
+        var lo: Float = .leastNormalMagnitude
+        var hi: Float = 1.0
+        vDSP_vclip(u1, 1, &lo, &hi, &u1, 1, vDSP_Length(count))
+
+        // u1 = ln(u1)  →  u1 = -2 * u1  →  u1 = sqrt(u1)
+        var n = Int32(count)
+        vvlogf(&u1, u1, &n)
+        var negTwo: Float = -2
+        vDSP_vsmul(u1, 1, &negTwo, &u1, 1, vDSP_Length(count))
+        vvsqrtf(&u1, u1, &n)
+
+        // u2 = cos(2π * u2)
+        var twoPi: Float = 2 * .pi
+        vDSP_vsmul(u2, 1, &twoPi, &u2, 1, vDSP_Length(count))
+        vvcosf(&u2, u2, &n)
+
+        // z = u1 * u2
+        var z = [Float](repeating: 0, count: count)
+        vDSP_vmul(u1, 1, u2, 1, &z, 1, vDSP_Length(count))
+
+        // Scale by std
+        var stdVar = std
+        vDSP_vsmul(z, 1, &stdVar, &z, 1, vDSP_Length(count))
+        return z
+    }
+
+    /// Fill a Float buffer with uniformly distributed values in [0, 1).
+    private static func fillUniform01(buf: UnsafeMutablePointer<Float>, count: Int) {
+        // Generate UInt32s straight into a temporary buffer, then convert to
+        // Float. 2^-32 maps the full UInt32 range to [0, 1).
+        var raw = [UInt32](repeating: 0, count: count)
+        raw.withUnsafeMutableBytes { rawBytes in
+            if let base = rawBytes.baseAddress {
+                arc4random_buf(base, rawBytes.count)
+            }
+        }
+        let scale: Float = Float(1.0 / 4294967296.0) // 2^-32
+        for i in 0..<count {
+            buf[i] = Float(raw[i]) * scale
+        }
     }
 
     static func onesData(count: Int) -> Data {
-        [Float](repeating: 1.0, count: count).withUnsafeBytes { Data($0) }
+        makeWeightData([Float](repeating: 1.0, count: count))
     }
 
     static func zerosData(count: Int) -> Data {
-        [Float](repeating: 0.0, count: count).withUnsafeBytes { Data($0) }
+        makeWeightData([Float](repeating: 0.0, count: count))
+    }
+
+    /// Convert a Float32 array into bytes laid out in `Self.dataType`.
+    /// Float32 → passthrough; Float16 → conversion via vImage.
+    static func makeWeightData(_ floats: [Float]) -> Data {
+        switch dataType {
+        case .float32:
+            return floats.withUnsafeBytes { Data($0) }
+
+        case .float16:
+            let count = floats.count
+            var halfBuf = [UInt16](repeating: 0, count: count)
+            floats.withUnsafeBufferPointer { srcBuf in
+                halfBuf.withUnsafeMutableBufferPointer { dstBuf in
+                    var src = vImage_Buffer(
+                        data: UnsafeMutableRawPointer(mutating: srcBuf.baseAddress),
+                        height: 1,
+                        width: vImagePixelCount(count),
+                        rowBytes: count * MemoryLayout<Float>.size
+                    )
+                    var dst = vImage_Buffer(
+                        data: dstBuf.baseAddress,
+                        height: 1,
+                        width: vImagePixelCount(count),
+                        rowBytes: count * MemoryLayout<UInt16>.size
+                    )
+                    _ = vImageConvert_PlanarFtoPlanar16F(&src, &dst, 0)
+                }
+            }
+            return halfBuf.withUnsafeBytes { Data($0) }
+
+        default:
+            fatalError("Unsupported ChessNetwork.dataType: \(dataType)")
+        }
+    }
+
+    /// Read inference output as Float32, converting from `Self.dataType`.
+    static func readFloats(from data: MPSGraphTensorData, count: Int) -> [Float] {
+        switch dataType {
+        case .float32:
+            var out = [Float](repeating: 0, count: count)
+            out.withUnsafeMutableBytes { buf in
+                if let ptr = buf.baseAddress {
+                    data.mpsndarray().readBytes(ptr, strideBytes: nil)
+                }
+            }
+            return out
+
+        case .float16:
+            var halfBuf = [UInt16](repeating: 0, count: count)
+            halfBuf.withUnsafeMutableBytes { buf in
+                if let ptr = buf.baseAddress {
+                    data.mpsndarray().readBytes(ptr, strideBytes: nil)
+                }
+            }
+            var out = [Float](repeating: 0, count: count)
+            halfBuf.withUnsafeMutableBufferPointer { srcBuf in
+                out.withUnsafeMutableBufferPointer { dstBuf in
+                    var src = vImage_Buffer(
+                        data: srcBuf.baseAddress,
+                        height: 1,
+                        width: vImagePixelCount(count),
+                        rowBytes: count * MemoryLayout<UInt16>.size
+                    )
+                    var dst = vImage_Buffer(
+                        data: dstBuf.baseAddress,
+                        height: 1,
+                        width: vImagePixelCount(count),
+                        rowBytes: count * MemoryLayout<Float>.size
+                    )
+                    _ = vImageConvert_Planar16FtoPlanarF(&src, &dst, 0)
+                }
+            }
+            return out
+
+        default:
+            fatalError("Unsupported ChessNetwork.dataType: \(dataType)")
+        }
     }
 }

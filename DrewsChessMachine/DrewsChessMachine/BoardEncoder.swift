@@ -46,8 +46,11 @@ struct Piece: Sendable {
 /// Complete game state needed for tensor encoding and move generation.
 /// Board is stored in absolute coordinates: row 0 = rank 8, row 7 = rank 1.
 struct GameState: Sendable {
-    /// 8x8 board. board[row][col], row 0 = rank 8, row 7 = rank 1, col 0 = a-file.
-    let board: [[Piece?]]
+    /// 64-square board, indexed as row * 8 + col.
+    /// row 0 = rank 8, row 7 = rank 1, col 0 = a-file.
+    /// Stored flat (instead of nested 8×8) so applyMove only triggers a single
+    /// CoW copy of one array, not eight inner arrays plus the outer.
+    let board: [Piece?]
     let currentPlayer: PieceColor
     let whiteKingsideCastle: Bool
     let whiteQueensideCastle: Bool
@@ -58,25 +61,32 @@ struct GameState: Sendable {
     /// Moves since last pawn move or capture (for fifty-move rule).
     let halfmoveClock: Int
 
-    static let starting = GameState(
-        board: [
-            [Piece(type: .rook, color: .black), Piece(type: .knight, color: .black), Piece(type: .bishop, color: .black), Piece(type: .queen, color: .black), Piece(type: .king, color: .black), Piece(type: .bishop, color: .black), Piece(type: .knight, color: .black), Piece(type: .rook, color: .black)],
-            [Piece(type: .pawn, color: .black), Piece(type: .pawn, color: .black), Piece(type: .pawn, color: .black), Piece(type: .pawn, color: .black), Piece(type: .pawn, color: .black), Piece(type: .pawn, color: .black), Piece(type: .pawn, color: .black), Piece(type: .pawn, color: .black)],
-            [nil, nil, nil, nil, nil, nil, nil, nil],
-            [nil, nil, nil, nil, nil, nil, nil, nil],
-            [nil, nil, nil, nil, nil, nil, nil, nil],
-            [nil, nil, nil, nil, nil, nil, nil, nil],
-            [Piece(type: .pawn, color: .white), Piece(type: .pawn, color: .white), Piece(type: .pawn, color: .white), Piece(type: .pawn, color: .white), Piece(type: .pawn, color: .white), Piece(type: .pawn, color: .white), Piece(type: .pawn, color: .white), Piece(type: .pawn, color: .white)],
-            [Piece(type: .rook, color: .white), Piece(type: .knight, color: .white), Piece(type: .bishop, color: .white), Piece(type: .queen, color: .white), Piece(type: .king, color: .white), Piece(type: .bishop, color: .white), Piece(type: .knight, color: .white), Piece(type: .rook, color: .white)],
-        ],
-        currentPlayer: .white,
-        whiteKingsideCastle: true,
-        whiteQueensideCastle: true,
-        blackKingsideCastle: true,
-        blackQueensideCastle: true,
-        enPassantSquare: nil,
-        halfmoveClock: 0
-    )
+    /// Convenience: read the piece at (row, col). Equivalent to board[row * 8 + col].
+    @inline(__always)
+    func piece(at row: Int, _ col: Int) -> Piece? {
+        board[row * 8 + col]
+    }
+
+    static let starting: GameState = {
+        var b: [Piece?] = Array(repeating: nil, count: 64)
+        let backRank: [PieceType] = [.rook, .knight, .bishop, .queen, .king, .bishop, .knight, .rook]
+        for col in 0..<8 {
+            b[0 * 8 + col] = Piece(type: backRank[col], color: .black)
+            b[1 * 8 + col] = Piece(type: .pawn, color: .black)
+            b[6 * 8 + col] = Piece(type: .pawn, color: .white)
+            b[7 * 8 + col] = Piece(type: backRank[col], color: .white)
+        }
+        return GameState(
+            board: b,
+            currentPlayer: .white,
+            whiteKingsideCastle: true,
+            whiteQueensideCastle: true,
+            blackKingsideCastle: true,
+            blackQueensideCastle: true,
+            enPassantSquare: nil,
+            halfmoveClock: 0
+        )
+    }()
 }
 
 // MARK: - Board Encoder
@@ -100,13 +110,15 @@ enum BoardEncoder {
 
         // Planes 0-11: pieces
         for row in 0..<8 {
+            let sourceRow = flip ? (7 - row) : row
+            let sourceRowBase = sourceRow * 8
+            let destRowBase = row * 8
             for col in 0..<8 {
-                let sourceRow = flip ? (7 - row) : row
-                guard let piece = state.board[sourceRow][col] else { continue }
+                guard let piece = state.board[sourceRowBase + col] else { continue }
 
                 let isMine = piece.color == state.currentPlayer
                 let plane = (isMine ? 0 : 6) + piece.type.rawValue
-                tensor[plane * 64 + row * 8 + col] = 1.0
+                tensor[plane * 64 + destRowBase + col] = 1.0
             }
         }
 
@@ -128,7 +140,7 @@ enum BoardEncoder {
             oppQueenside = state.blackQueensideCastle
         }
 
-        if myKingside  { fillPlane(&tensor, plane: 12) }
+        if myKingside { fillPlane(&tensor, plane: 12) }
         if myQueenside { fillPlane(&tensor, plane: 13) }
         if oppKingside { fillPlane(&tensor, plane: 14) }
         if oppQueenside { fillPlane(&tensor, plane: 15) }
@@ -156,10 +168,8 @@ enum BoardEncoder {
     // MARK: - Piece Lookup
 
     /// Piece symbols for the starting position, used by the board visualization.
-    /// Row 0 = rank 8 (top), row 7 = rank 1 (bottom).
-    static let startingPieces: [[String?]] = GameState.starting.board.map { row in
-        row.map { $0?.assetName }
-    }
+    /// Row 0 = rank 8 (top), row 7 = rank 1 (bottom). Indexed as row * 8 + col.
+    static let startingPieces: [String?] = GameState.starting.board.map { $0?.assetName }
 
     // MARK: - Move Decoding
 
