@@ -316,6 +316,23 @@ final class ChessTrainer: @unchecked Sendable {
     private var valueLossTensor: MPSGraphTensor         // scalar
     private var assignOps: [MPSGraphOperation]
 
+    /// Pre-allocated ND-array-backed tensor data for the three training
+    /// placeholders at a given batch size. `buildFeeds(...)` looks these
+    /// up (or lazily creates them on the first call for each batch
+    /// size) and writes new Swift-array values into them in place, so
+    /// steady-state training and the timed portion of the batch-size
+    /// sweep allocate no MPS objects per step. The warmup step of a
+    /// new batch size pays the allocation exactly once.
+    private struct BatchFeeds {
+        let boardND: MPSNDArray
+        let boardTD: MPSGraphTensorData
+        let moveND: MPSNDArray
+        let moveTD: MPSGraphTensorData
+        let zND: MPSNDArray
+        let zTD: MPSGraphTensorData
+    }
+    private var feedCache: [Int: BatchFeeds] = [:]
+
     // MARK: Init
 
     init(learningRate: Float = 1e-4) throws {
@@ -346,6 +363,11 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
         self.assignOps = built.assignOps
+        // The cached ND arrays were allocated against the old network's
+        // device and are keyed by batch size against the old graph's
+        // placeholders. Drop the cache so the first trainStep after
+        // reset rebuilds against the fresh network.
+        feedCache.removeAll()
     }
 
     /// Build the training subgraph (loss + gradients + SGD assigns) on top
@@ -549,46 +571,104 @@ final class ChessTrainer: @unchecked Sendable {
     /// Pack the three Swift arrays for one training step into the feed
     /// dictionary the graph expects. Shared by the random-data and
     /// real-data paths so they can't drift out of sync.
+    ///
+    /// The ND-array wrappers for this batch size are allocated once on
+    /// first use and cached in `feedCache`; every subsequent call at
+    /// the same batch size reuses them by writing new values into
+    /// their storage in place via `writeBytes`. The batch-size sweep's
+    /// warmup step covers the first allocation; the timed window then
+    /// runs allocation-free.
     private func buildFeeds(
         batchSize: Int,
         boardFloats: [Float],
         moveIndices: [Int32],
         zValues: [Float]
     ) -> [MPSGraphTensor: MPSGraphTensorData] {
-        let boardData = MPSGraphTensorData(
-            device: network.graphDevice,
-            data: ChessNetwork.makeWeightData(boardFloats),
+        let cached = feedsForBatch(batchSize)
+
+        // Float32-only hot path. The ND array's element type matches
+        // ChessNetwork.dataType, so on .float32 we can hand it the raw
+        // Swift-array bytes directly. A .float16 flip would need a
+        // reused [UInt16] scratch buffer here and in ChessNetwork's
+        // inference writer — fail loud until that exists.
+        guard ChessNetwork.dataType == .float32 else {
+            fatalError("ChessTrainer.buildFeeds: only .float32 is currently supported; got \(ChessNetwork.dataType)")
+        }
+
+        boardFloats.withUnsafeBytes { buf in
+            guard let base = buf.baseAddress else { return }
+            cached.boardND.writeBytes(
+                UnsafeMutableRawPointer(mutating: base),
+                strideBytes: nil
+            )
+        }
+        moveIndices.withUnsafeBytes { buf in
+            guard let base = buf.baseAddress else { return }
+            cached.moveND.writeBytes(
+                UnsafeMutableRawPointer(mutating: base),
+                strideBytes: nil
+            )
+        }
+        zValues.withUnsafeBytes { buf in
+            guard let base = buf.baseAddress else { return }
+            cached.zND.writeBytes(
+                UnsafeMutableRawPointer(mutating: base),
+                strideBytes: nil
+            )
+        }
+
+        return [
+            network.inputPlaceholder: cached.boardTD,
+            movePlayedPlaceholder: cached.moveTD,
+            zPlaceholder: cached.zTD
+        ]
+    }
+
+    /// Return the cached `BatchFeeds` for `batchSize`, allocating it
+    /// lazily on first use. The three ND arrays are sized exactly for
+    /// this batch size; the wrappers are built once per size and kept
+    /// for the trainer's lifetime (or until `resetNetwork()` clears
+    /// the cache).
+    private func feedsForBatch(_ batchSize: Int) -> BatchFeeds {
+        if let existing = feedCache[batchSize] {
+            return existing
+        }
+        let mtlDevice = network.metalDevice
+        let dtype = ChessNetwork.dataType
+
+        let boardDesc = MPSNDArrayDescriptor(
+            dataType: dtype,
             shape: [
                 NSNumber(value: batchSize),
                 NSNumber(value: ChessNetwork.inputPlanes),
                 NSNumber(value: ChessNetwork.boardSize),
                 NSNumber(value: ChessNetwork.boardSize)
-            ],
-            dataType: ChessNetwork.dataType
+            ]
         )
+        let boardND = MPSNDArray(device: mtlDevice, descriptor: boardDesc)
 
-        let moveData = moveIndices.withUnsafeBufferPointer { buf -> MPSGraphTensorData in
-            let bytes = Data(buffer: buf)
-            return MPSGraphTensorData(
-                device: network.graphDevice,
-                data: bytes,
-                shape: [NSNumber(value: batchSize)],
-                dataType: .int32
-            )
-        }
-
-        let zData = MPSGraphTensorData(
-            device: network.graphDevice,
-            data: ChessNetwork.makeWeightData(zValues),
-            shape: [NSNumber(value: batchSize), 1],
-            dataType: ChessNetwork.dataType
+        let moveDesc = MPSNDArrayDescriptor(
+            dataType: .int32,
+            shape: [NSNumber(value: batchSize)]
         )
+        let moveND = MPSNDArray(device: mtlDevice, descriptor: moveDesc)
 
-        return [
-            network.inputPlaceholder: boardData,
-            movePlayedPlaceholder: moveData,
-            zPlaceholder: zData
-        ]
+        let zDesc = MPSNDArrayDescriptor(
+            dataType: dtype,
+            shape: [NSNumber(value: batchSize), 1]
+        )
+        let zND = MPSNDArray(device: mtlDevice, descriptor: zDesc)
+
+        let feeds = BatchFeeds(
+            boardND: boardND,
+            boardTD: MPSGraphTensorData(boardND),
+            moveND: moveND,
+            moveTD: MPSGraphTensorData(moveND),
+            zND: zND,
+            zTD: MPSGraphTensorData(zND)
+        )
+        feedCache[batchSize] = feeds
+        return feeds
     }
 
     /// Run the forward + backward + SGD update graph with the given feeds

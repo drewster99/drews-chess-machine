@@ -12,6 +12,7 @@ enum ChessNetworkError: LocalizedError {
     case outputMissing(String)
     case weightLoadMismatch(String)
     case variableShapeMissing(String)
+    case boardSizeMismatch(expected: Int, got: Int)
 
     var errorDescription: String? {
         switch self {
@@ -27,6 +28,8 @@ enum ChessNetworkError: LocalizedError {
             return "Weight load mismatch: \(detail)"
         case .variableShapeMissing(let name):
             return "Variable '\(name)' has no shape — cannot size load placeholder"
+        case .boardSizeMismatch(let expected, let got):
+            return "Inference input size mismatch: expected \(expected) floats, got \(got)"
         }
     }
 }
@@ -122,6 +125,29 @@ final class ChessNetwork {
     /// the output of `exportWeights()`.
     private var weightLoadPlaceholders: [MPSGraphTensor] = []
     private var weightLoadAssignOps: [MPSGraphOperation] = []
+
+    /// One pre-allocated `MPSNDArray` + `MPSGraphTensorData` wrapper per
+    /// persistent variable, ordered identically to
+    /// `weightLoadPlaceholders`. `loadWeights(_:)` writes new values into
+    /// each ND array in place via `writeBytes` and feeds the cached
+    /// tensor data, so a weight transfer allocates no MPS objects.
+    private let weightLoadNDArrays: [MPSNDArray]
+    private let weightLoadTensorData: [MPSGraphTensorData]
+
+    /// Pre-allocated `[1, 18, 8, 8]` input feed reused on every
+    /// `evaluate(board:)` call. The ND array holds the board floats in
+    /// `Self.dataType`; the tensor data wrapper is built once and fed
+    /// into `graph.run` unchanged. The per-move inference hot path
+    /// writes directly into this ND array and allocates zero MPS
+    /// objects or shape arrays.
+    private let inferenceInputNDArray: MPSNDArray
+    private let inferenceInputTensorData: MPSGraphTensorData
+
+    /// Zero-filled `[1, 18, 8, 8]` feed shared by `exportWeights()` and
+    /// `loadWeights(_:)` to satisfy MPSGraph's requirement that every
+    /// graph placeholder be fed even when the target ops don't consume
+    /// it. Filled once at init, never modified afterwards.
+    private let dummyInferenceInputTensorData: MPSGraphTensorData
 
     // MARK: Metal
 
@@ -240,9 +266,13 @@ final class ChessNetwork {
         // variable round trips.
         var loadPlaceholders: [MPSGraphTensor] = []
         var loadAssignOps: [MPSGraphOperation] = []
+        var loadNDArrays: [MPSNDArray] = []
+        var loadTensorData: [MPSGraphTensorData] = []
         let persistent = trainables + runningStats
         loadPlaceholders.reserveCapacity(persistent.count)
         loadAssignOps.reserveCapacity(persistent.count)
+        loadNDArrays.reserveCapacity(persistent.count)
+        loadTensorData.reserveCapacity(persistent.count)
         for v in persistent {
             guard let shape = v.shape else {
                 throw ChessNetworkError.variableShapeMissing(v.operation.name)
@@ -255,9 +285,36 @@ final class ChessNetwork {
             let assignOp = g.assign(v, tensor: ph, name: "\(v.operation.name)_load_assign")
             loadPlaceholders.append(ph)
             loadAssignOps.append(assignOp)
+
+            let desc = MPSNDArrayDescriptor(dataType: Self.dataType, shape: shape)
+            let nda = MPSNDArray(device: mtlDevice, descriptor: desc)
+            loadNDArrays.append(nda)
+            loadTensorData.append(MPSGraphTensorData(nda))
         }
         weightLoadPlaceholders = loadPlaceholders
         weightLoadAssignOps = loadAssignOps
+        weightLoadNDArrays = loadNDArrays
+        weightLoadTensorData = loadTensorData
+
+        // Reusable `[1, 18, 8, 8]` inference input ND array + wrapper.
+        // `evaluate(board:)` writes new floats directly into this
+        // array's storage each call and feeds the same wrapper — no
+        // per-move MPS allocations.
+        let inputDesc = MPSNDArrayDescriptor(
+            dataType: Self.dataType,
+            shape: [1, 18, 8, 8]
+        )
+        let inputND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
+        inferenceInputNDArray = inputND
+        inferenceInputTensorData = MPSGraphTensorData(inputND)
+
+        // Zero-filled dummy input shared by exportWeights / loadWeights.
+        let dummyND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
+        Self.writeFloats(
+            [Float](repeating: 0, count: 1 * 18 * 8 * 8),
+            into: dummyND
+        )
+        dummyInferenceInputTensorData = MPSGraphTensorData(dummyND)
     }
 
     // MARK: - Inference
@@ -266,17 +323,16 @@ final class ChessNetwork {
     /// - Parameter board: 18x8x8 = 1,152 floats in NCHW order (planes, rows, cols)
     /// - Returns: Policy probabilities (4096 move slots) and position value in [-1, +1]
     func evaluate(board: [Float]) throws -> (policy: [Float], value: Float) {
-        let inputBytes = Self.makeWeightData(board)
-        let inputData = MPSGraphTensorData(
-            device: graphDevice,
-            data: inputBytes,
-            shape: [1, 18, 8, 8],
-            dataType: Self.dataType
-        )
+        let expected = 1 * Self.inputPlanes * Self.boardSize * Self.boardSize
+        guard board.count == expected else {
+            throw ChessNetworkError.boardSizeMismatch(expected: expected, got: board.count)
+        }
+
+        Self.writeInferenceInput(board, into: inferenceInputNDArray)
 
         let results = graph.run(
             with: commandQueue,
-            feeds: [inputPlaceholder: inputData],
+            feeds: [inputPlaceholder: inferenceInputTensorData],
             targetTensors: [policyOutput, valueOutput],
             targetOperations: nil
         )
@@ -311,21 +367,14 @@ final class ChessNetwork {
 
         // MPSGraph requires feeds for every placeholder in the graph,
         // even ones unreachable from the target tensors. We feed the
-        // board_input placeholder with a zero-filled batch-of-1 dummy
+        // board_input placeholder with a pre-built zero-filled dummy
         // (and nothing for the weight-load placeholders, which are safe
         // to omit because no run-time target reaches them). targetTensors
         // are the variables themselves — reading them doesn't require
         // any compute ancestor, so no forward pass actually runs.
-        let dummyBoard = [Float](repeating: 0, count: 1 * 18 * 8 * 8)
-        let dummyInput = MPSGraphTensorData(
-            device: graphDevice,
-            data: Self.makeWeightData(dummyBoard),
-            shape: [1, 18, 8, 8],
-            dataType: Self.dataType
-        )
         let results = graph.run(
             with: commandQueue,
-            feeds: [inputPlaceholder: dummyInput],
+            feeds: [inputPlaceholder: dummyInferenceInputTensorData],
             targetTensors: allVars,
             targetOperations: nil
         )
@@ -367,13 +416,7 @@ final class ChessNetwork {
         // Dummy feed for the board_input placeholder — MPSGraph wants
         // every graph placeholder fed even though the target operations
         // below never consume board_input.
-        let dummyBoard = [Float](repeating: 0, count: 1 * 18 * 8 * 8)
-        feeds[inputPlaceholder] = MPSGraphTensorData(
-            device: graphDevice,
-            data: Self.makeWeightData(dummyBoard),
-            shape: [1, 18, 8, 8],
-            dataType: Self.dataType
-        )
+        feeds[inputPlaceholder] = dummyInferenceInputTensorData
 
         for (i, v) in allVars.enumerated() {
             let expectedCount = try Self.elementCount(of: v)
@@ -382,16 +425,8 @@ final class ChessNetwork {
                     "variable \(v.operation.name): expected \(expectedCount) floats, got \(weights[i].count)"
                 )
             }
-            let ph = weightLoadPlaceholders[i]
-            guard let phShape = ph.shape else {
-                throw ChessNetworkError.variableShapeMissing(ph.operation.name)
-            }
-            feeds[ph] = MPSGraphTensorData(
-                device: graphDevice,
-                data: Self.makeWeightData(weights[i]),
-                shape: phShape,
-                dataType: Self.dataType
-            )
+            Self.writeFloats(weights[i], into: weightLoadNDArrays[i])
+            feeds[weightLoadPlaceholders[i]] = weightLoadTensorData[i]
         }
 
         // graph.run requires at least one target tensor. Use the first
@@ -864,6 +899,44 @@ final class ChessNetwork {
 
     static func zerosData(count: Int) -> Data {
         makeWeightData([Float](repeating: 0.0, count: count))
+    }
+
+    /// Write `floats` directly into `array`'s storage. Used on the
+    /// inference hot path to avoid the intermediate `Data` copy inside
+    /// `makeWeightData`. On `.float32` we hand the Swift array's bytes
+    /// straight to `writeBytes`; `.float16` would need a reused
+    /// `[UInt16]` scratch buffer (not yet implemented because dataType
+    /// is currently `.float32`).
+    static func writeInferenceInput(_ floats: [Float], into array: MPSNDArray) {
+        switch dataType {
+        case .float32:
+            floats.withUnsafeBytes { buf in
+                guard let base = buf.baseAddress else { return }
+                array.writeBytes(
+                    UnsafeMutableRawPointer(mutating: base),
+                    strideBytes: nil
+                )
+            }
+        default:
+            fatalError("writeInferenceInput: unsupported dataType \(dataType). "
+                + "Implement a reused half-scratch buffer before flipping to .float16.")
+        }
+    }
+
+    /// Copy `floats` into `array`'s storage, going through
+    /// `makeWeightData` for dtype conversion. Used by cold paths
+    /// (`loadWeights`, init-time dummy fill) where the transient `Data`
+    /// allocation is acceptable. Don't call from hot paths — use
+    /// `writeInferenceInput` or the trainer's in-place writer instead.
+    static func writeFloats(_ floats: [Float], into array: MPSNDArray) {
+        let data = makeWeightData(floats)
+        data.withUnsafeBytes { buf in
+            guard let base = buf.baseAddress else { return }
+            array.writeBytes(
+                UnsafeMutableRawPointer(mutating: base),
+                strideBytes: nil
+            )
+        }
     }
 
     /// Convert a Float32 array into bytes laid out in `Self.dataType`.
