@@ -522,19 +522,64 @@ A fixed-size pool of recent positions (e.g. last 500,000). Training samples rand
 
 Always train a *candidate* — never update the current network in place while it's generating games. Mixing training updates into game generation creates unstable feedback loops.
 
-**Two loss functions trained jointly:**
+**Two loss functions trained jointly, plus weight decay:**
 
 ```swift
-// policy: cross entropy vs the move actually played (one-hot vector)
-let policyLoss = crossEntropy(predicted: policyOutput, target: movePlayed)
+// policy: outcome-weighted cross entropy vs the move actually played
+let policyLoss = -z * log(policyOutput[movePlayed])
 
 // value: mean squared error vs actual game outcome
-let valueLoss = MSE(predicted: valueOutput, target: gameOutcome)
+let valueLoss = (z - valueOutput) * (z - valueOutput)
 
-let totalLoss = policyLoss + valueLoss
+// L2 weight decay on network parameters
+let regLoss = c * sumOfSquares(networkWeights)
+
+let totalLoss = policyLoss + valueLoss + regLoss
 ```
 
-The shared trunk learns representations useful for both tasks simultaneously. Policy and value heads constrain each other toward a consistent understanding of the position.
+#### Policy loss: `L = −z · log p(a*)`
+
+- **p** — the policy head's predicted probability distribution over all 4096 moves (after softmax, masked to legal moves — see below).
+- **a\*** — the move actually played from this position during self-play.
+- **z** — the game outcome from the side-to-move's perspective at this position: `+1` won, `−1` lost, `0` drew.
+
+This is the general cross-entropy loss `−Σ π(a) log p(a)` specialized to a one-hot target on `a*` and scaled by the game result. Behavior by outcome:
+
+- `z = +1` → `L = −log p(a*)` → normal cross-entropy, pushes `p(a*)` *up*. "This move was on a winning path — do more of it."
+- `z = −1` → `L = +log p(a*)` → sign-flipped, pushes `p(a*)` *down*. "This move was on a losing path — do less of it."
+- `z =  0` → `L = 0` → draws contribute nothing to policy training.
+
+Without the `z` weighting, the network would just train to imitate its own moves — a fixed point with no learning signal. The game outcome is what turns self-play into actual improvement: winning-side moves become positive examples, losing-side moves become negative examples.
+
+**Why not just train on winning-side positions only?** It works, but it's wasteful — you throw away half the data, and draws contribute nothing either. Outcome-weighting is strictly better because losing positions still produce useful gradient (pushing bad moves *down*), whereas filtering discards them entirely.
+
+**Caveat — unbounded loss when `z = −1`:** as `p(a*) → 0`, `+log p(a*) → −∞`, so the policy loss is unbounded below on losing positions. In practice this can destabilize training if the learning rate is too high. Mitigations if it becomes a problem: clip the loss, clip gradients, lower the learning rate, or fall back to winning-side-only filtering for the first few training iterations.
+
+**Illegal-move masking.** The policy head's 4096 outputs cover every possible (from, to) square pair, including plenty of moves that are illegal in any given position (blocked, off-board, leaves king in check, wrong piece, etc.). Before the softmax, set the logits of all illegal moves to a large negative number (e.g. `-1e9`). After softmax those slots become exactly `0.0` and the legal moves renormalize to sum to `1.0` among themselves. The network structurally *cannot* emit an illegal move — no wasted capacity learning legality, no contradictory gradients across positions where the same move index is legal in one and illegal in another. Legality is a hard constraint, not a soft preference learned from data.
+
+#### Value loss: `L = (z − v)²`
+
+- **v** — the value head's predicted outcome, a scalar in `[−1, +1]` (via `tanh`) from the side-to-move's perspective.
+- **z** — the same outcome target as above: `+1` won, `−1` lost, `0` drew.
+
+Unlike the policy side, **every position contributes** to the value loss — winners, losers, *and* draws. A draw isn't a zero signal here; `z = 0` is an informative target that says "this position was balanced, predict zero." Over many positions the value head converges to the *expected* outcome: "what fraction of a win is this position worth, averaged across all positions like it."
+
+**Why MSE instead of cross-entropy?** Value is a regression problem — predict a continuous scalar, minimize squared distance from the true number. Cross-entropy requires a probability distribution over discrete classes, which doesn't naturally fit a single `[−1, +1]` output. Some implementations discretize the outcome into {win, draw, loss} and use cross-entropy on that three-class distribution, but MSE on a scalar is simpler and works fine for our purposes.
+
+#### Combined loss
+
+```
+total = (z - v)²  +  (-z · log p(a*))  +  c · ‖θ‖²
+        └─value─┘    └─── policy ───┘    └─L2 reg─┘
+```
+
+The `c · ‖θ‖²` term is standard L2 weight decay — a small penalty on the sum of squared network parameters to keep weights from blowing up. Not chess-specific, just healthy regularization. Typical `c` values are around `1e-4`.
+
+The shared trunk learns representations useful for both tasks simultaneously. Gradients from both the policy and value losses flow back through the same convolutional body, forcing it to encode features that are simultaneously good at "which move?" and "who's winning?" Policy and value heads constrain each other toward a consistent understanding of the position.
+
+#### Future: MCTS changes the policy target
+
+Once MCTS is added (later phase — not part of the bootstrap), the policy target changes. Instead of a one-hot on the played move weighted by the game outcome, the target `π` becomes the MCTS visit-count distribution at that position: `π(a) ∝ N(s,a)^(1/τ)`. The loss reverts to the full `−Σ π(a) log p(a)` form (no more `z` scaling), because MCTS is a stronger player than the raw network and training `p` to imitate `π` is itself a policy improvement step — the outcome weighting is no longer needed as the learning signal.
 
 ### Evaluation and Promotion
 

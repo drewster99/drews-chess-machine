@@ -41,3 +41,28 @@ Long-term goals, deferred work, and notes on decisions.
   Run Forward Pass demo button — not the self-play hot path — so it's
   cosmetic. Worth doing if we ever start ranking top-k moves per ply during
   search.
+
+## Findings
+
+- **Batch-size sweep is reliable at 1 s per batch size.** The Batch Size
+  Sweep panel runs a training-mode copy of the network through real SGD
+  steps at each batch size and reports steady-state throughput. We tried
+  longer per-size windows (15 s, 5 s, 3 s, 1.5 s) and found 1 s gives
+  essentially the same shape and the same winner — the fast-warming MPSGraph
+  caches mean each row converges within a handful of steps and the tail just
+  accumulates redundant samples. Keeping it at 1 s makes the whole sweep
+  cheap enough to run any time on a new machine to pick the most efficient
+  batch size for *that* hardware, rather than baking a single number in.
+
+- **Sweep memory guard is empirical, not architectural.** The sweep refuses
+  to run a batch size whose predicted resident footprint exceeds 75 % of
+  `min(recommendedMaxWorkingSetSize, maxBufferLength)`, or whose largest
+  single buffer would exceed `maxBufferLength`. The prediction comes from
+  a least-squares linear fit over the (batch, peak `phys_footprint`) pairs
+  already observed during the same sweep — no per-architecture fudge
+  factor. Peak `phys_footprint` is sampled by the UI heartbeat (~10 Hz)
+  plus once at the start and end of each row, so we catch transient spikes
+  during a step rather than relying on `MTLDevice.currentAllocatedSize`,
+  which is post-step and undercounts. Skipped rows still appear in the
+  table with the prediction and the reason they were skipped, so the
+  sweep walks the full ladder and makes its limits visible.

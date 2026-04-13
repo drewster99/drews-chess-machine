@@ -25,6 +25,24 @@ enum ChessNetworkError: LocalizedError {
     }
 }
 
+// MARK: - BN Mode
+
+/// How batch normalization is computed in the forward graph.
+///
+/// `inference` uses fixed running statistics (the existing behavior — fast,
+/// stateless, but degenerate during training because the running stats are
+/// frozen). `training` computes batch mean and variance from the input on
+/// every forward pass, which is what real training does and which produces
+/// meaningfully different gradient computations.
+///
+/// Used by ChessTrainer to build a separate copy of the network with
+/// training-mode BN for benchmarking, while the inference network used by
+/// Play Game stays in inference mode.
+enum BNMode {
+    case inference
+    case training
+}
+
 // MARK: - Chess Neural Network
 
 /// Chess engine neural network forward pass implemented with MPSGraph.
@@ -65,15 +83,25 @@ final class ChessNetwork {
     let policyOutput: MPSGraphTensor
     let valueOutput: MPSGraphTensor
 
+    /// All graph variables that should receive gradient updates during
+    /// training: every conv weight, FC weight, FC bias, and BN gamma/beta.
+    /// Excludes BN running mean/variance — those are inference-mode constants
+    /// (would be EMA-updated, not gradient-updated, in proper training).
+    private(set) var trainableVariables: [MPSGraphTensor] = []
+
     // MARK: Metal
 
-    private let device: MTLDevice
-    private let commandQueue: MTLCommandQueue
-    private let graphDevice: MPSGraphDevice
+    let metalDevice: MTLDevice
+    let commandQueue: MTLCommandQueue
+    let graphDevice: MPSGraphDevice
 
     // MARK: Initialization
 
-    init() throws {
+    /// Build the network. Default `bnMode = .inference` keeps the existing
+    /// behavior for play / forward-pass demos; pass `.training` to build a
+    /// copy whose BN layers compute fresh batch stats on every forward pass
+    /// (used by ChessTrainer for accurate training-step benchmarks).
+    init(bnMode: BNMode = .inference) throws {
         guard let mtlDevice = MTLCreateSystemDefaultDevice() else {
             throw ChessNetworkError.metalNotSupported
         }
@@ -81,51 +109,62 @@ final class ChessNetwork {
             throw ChessNetworkError.commandQueueCreationFailed
         }
 
-        device = mtlDevice
+        metalDevice = mtlDevice
         commandQueue = cmdQueue
         graphDevice = MPSGraphDevice(mtlDevice: mtlDevice)
-        graph = MPSGraph()
+        let g = MPSGraph()
+        graph = g
 
         let conv3x3 = try Self.makeConv3x3Descriptor()
         let conv1x1 = try Self.makeConv1x1Descriptor()
 
         // Input: [batch, 18, 8, 8]
-        inputPlaceholder = graph.placeholder(
+        let input = g.placeholder(
             shape: [-1, 18, 8, 8],
             dataType: Self.dataType,
             name: "board_input"
         )
+        inputPlaceholder = input
+
+        // Build the forward graph into a local `trainables` array, then
+        // assign to `self.trainableVariables` after all stored properties
+        // are set. We can't use `self` methods until init finishes, so the
+        // layer builders are static and take the array as inout.
+        var trainables: [MPSGraphTensor] = []
 
         // --- Stem: 3x3 conv (18 -> 128) -> BN -> ReLU ---
 
-        let stemWeights = graph.variable(
+        let stemWeights = g.variable(
             with: Self.heInitData(shape: [128, 18, 3, 3]),
             shape: [128, 18, 3, 3],
             dataType: Self.dataType,
             name: "stem_conv_weights"
         )
-        var x = graph.convolution2D(
-            inputPlaceholder,
+        trainables.append(stemWeights)
+        var x = g.convolution2D(
+            input,
             weights: stemWeights,
             descriptor: conv3x3,
             name: "stem_conv"
         )
-        x = Self.batchNorm(graph: graph, input: x, channels: 128, name: "stem_bn")
-        x = graph.reLU(with: x, name: "stem_relu")
+        x = Self.batchNorm(graph: g, input: x, channels: 128, name: "stem_bn", bnMode: bnMode, trainables: &trainables)
+        x = g.reLU(with: x, name: "stem_relu")
 
         // --- Tower: 8 residual blocks ---
 
         for i in 0..<8 {
-            x = Self.residualBlock(graph: graph, input: x, descriptor: conv3x3, blockIndex: i)
+            x = Self.residualBlock(graph: g, input: x, descriptor: conv3x3, blockIndex: i, bnMode: bnMode, trainables: &trainables)
         }
 
         // --- Policy head ---
 
-        policyOutput = Self.policyHead(graph: graph, input: x, descriptor: conv1x1)
+        policyOutput = Self.policyHead(graph: g, input: x, descriptor: conv1x1, bnMode: bnMode, trainables: &trainables)
 
         // --- Value head ---
 
-        valueOutput = Self.valueHead(graph: graph, input: x, descriptor: conv1x1)
+        valueOutput = Self.valueHead(graph: g, input: x, descriptor: conv1x1, bnMode: bnMode, trainables: &trainables)
+
+        trainableVariables = trainables
     }
 
     // MARK: - Inference
@@ -203,20 +242,34 @@ final class ChessNetwork {
 
     // MARK: - Layer Builders
 
-    /// Inference-time batch normalization using stored running statistics.
+    /// Batch normalization. Behavior depends on `bnMode`:
     ///
-    /// Running mean initialized to 0, running variance initialized to 1. With gamma=1 and
-    /// beta=0 this is an identity transform — correct for an untrained network. During
-    /// training these would be updated via exponential moving average; at inference they're
-    /// frozen constants.
+    /// - `.inference`: uses fixed running statistics (mean=0, variance=1)
+    ///   stored as graph variables. With gamma=1 / beta=0 this is an
+    ///   identity transform until the network is actually trained — fine
+    ///   for the random-weight forward-pass demo.
+    ///
+    /// - `.training`: computes per-batch mean and variance over (batch,
+    ///   height, width) on every forward pass, normalizes by those. This
+    ///   is what real BN training does. Gradients flow through the batch
+    ///   stats computation (the BN backward pass couples samples within
+    ///   a batch via the shared mean/var). Running stats aren't created
+    ///   in this mode — proper training would also EMA-update them for
+    ///   later inference, but we skip that since the trainer's internal
+    ///   network is never used for inference.
+    ///
+    /// gamma and beta are appended to `trainables` in both modes.
     private static func batchNorm(
         graph: MPSGraph,
         input: MPSGraphTensor,
         channels: Int,
-        name: String
+        name: String,
+        bnMode: BNMode,
+        trainables: inout [MPSGraphTensor]
     ) -> MPSGraphTensor {
         let ch = NSNumber(value: channels)
 
+        // gamma and beta are trainable in both modes.
         let gamma = graph.variable(
             with: onesData(count: channels),
             shape: [1, ch, 1, 1],
@@ -229,23 +282,48 @@ final class ChessNetwork {
             dataType: Self.dataType,
             name: "\(name)_beta"
         )
-        let runningMean = graph.variable(
-            with: zerosData(count: channels),
-            shape: [1, ch, 1, 1],
-            dataType: Self.dataType,
-            name: "\(name)_running_mean"
-        )
-        let runningVar = graph.variable(
-            with: onesData(count: channels),
-            shape: [1, ch, 1, 1],
-            dataType: Self.dataType,
-            name: "\(name)_running_var"
-        )
+        trainables.append(gamma)
+        trainables.append(beta)
+
+        let meanTensor: MPSGraphTensor
+        let varianceTensor: MPSGraphTensor
+
+        switch bnMode {
+        case .inference:
+            // Frozen running stats — fast, but only correct when the network
+            // is in inference mode (gamma=1, beta=0, mean=0, var=1 makes
+            // this an identity transform until the network is actually trained).
+            let runningMean = graph.variable(
+                with: zerosData(count: channels),
+                shape: [1, ch, 1, 1],
+                dataType: Self.dataType,
+                name: "\(name)_running_mean"
+            )
+            let runningVar = graph.variable(
+                with: onesData(count: channels),
+                shape: [1, ch, 1, 1],
+                dataType: Self.dataType,
+                name: "\(name)_running_var"
+            )
+            meanTensor = runningMean
+            varianceTensor = runningVar
+
+        case .training:
+            // Compute fresh batch statistics over (batch, height, width) for
+            // each channel. axes [0, 2, 3] keep the channel dim, reduce
+            // everything else. Real training would also EMA-update the
+            // running stats here for later inference; we skip that for the
+            // benchmark since this network is never used for inference.
+            let bMean = graph.mean(of: input, axes: [0, 2, 3], name: "\(name)_batch_mean")
+            let bVar = graph.variance(of: input, axes: [0, 2, 3], name: "\(name)_batch_var")
+            meanTensor = bMean
+            varianceTensor = bVar
+        }
 
         return graph.normalize(
             input,
-            mean: runningMean,
-            variance: runningVar,
+            mean: meanTensor,
+            variance: varianceTensor,
             gamma: gamma,
             beta: beta,
             epsilon: 1e-5,
@@ -258,7 +336,9 @@ final class ChessNetwork {
         graph: MPSGraph,
         input: MPSGraphTensor,
         descriptor: MPSGraphConvolution2DOpDescriptor,
-        blockIndex: Int
+        blockIndex: Int,
+        bnMode: BNMode,
+        trainables: inout [MPSGraphTensor]
     ) -> MPSGraphTensor {
         let prefix = "block\(blockIndex)"
 
@@ -269,10 +349,11 @@ final class ChessNetwork {
             dataType: Self.dataType,
             name: "\(prefix)_conv1_weights"
         )
+        trainables.append(conv1W)
         var x = graph.convolution2D(
             input, weights: conv1W, descriptor: descriptor, name: "\(prefix)_conv1"
         )
-        x = batchNorm(graph: graph, input: x, channels: 128, name: "\(prefix)_bn1")
+        x = batchNorm(graph: graph, input: x, channels: 128, name: "\(prefix)_bn1", bnMode: bnMode, trainables: &trainables)
         x = graph.reLU(with: x, name: "\(prefix)_relu1")
 
         // Second path: conv -> BN (no ReLU yet — applied after skip add)
@@ -282,10 +363,11 @@ final class ChessNetwork {
             dataType: Self.dataType,
             name: "\(prefix)_conv2_weights"
         )
+        trainables.append(conv2W)
         x = graph.convolution2D(
             x, weights: conv2W, descriptor: descriptor, name: "\(prefix)_conv2"
         )
-        x = batchNorm(graph: graph, input: x, channels: 128, name: "\(prefix)_bn2")
+        x = batchNorm(graph: graph, input: x, channels: 128, name: "\(prefix)_bn2", bnMode: bnMode, trainables: &trainables)
 
         // Skip connection: add original input, then ReLU
         x = graph.addition(input, x, name: "\(prefix)_skip")
@@ -304,7 +386,9 @@ final class ChessNetwork {
     private static func policyHead(
         graph: MPSGraph,
         input: MPSGraphTensor,
-        descriptor: MPSGraphConvolution2DOpDescriptor
+        descriptor: MPSGraphConvolution2DOpDescriptor,
+        bnMode: BNMode,
+        trainables: inout [MPSGraphTensor]
     ) -> MPSGraphTensor {
         // 1x1 conv: compress 128 channels to 2
         let convW = graph.variable(
@@ -313,10 +397,11 @@ final class ChessNetwork {
             dataType: Self.dataType,
             name: "policy_conv_weights"
         )
+        trainables.append(convW)
         var x = graph.convolution2D(
             input, weights: convW, descriptor: descriptor, name: "policy_conv"
         )
-        x = batchNorm(graph: graph, input: x, channels: 2, name: "policy_bn")
+        x = batchNorm(graph: graph, input: x, channels: 2, name: "policy_bn", bnMode: bnMode, trainables: &trainables)
         x = graph.reLU(with: x, name: "policy_relu")
 
         // Flatten: [batch, 2, 8, 8] -> [batch, 128]
@@ -335,6 +420,8 @@ final class ChessNetwork {
             dataType: Self.dataType,
             name: "policy_fc_bias"
         )
+        trainables.append(fcW)
+        trainables.append(fcBias)
         x = graph.matrixMultiplication(primary: x, secondary: fcW, name: "policy_fc")
         x = graph.addition(x, fcBias, name: "policy_fc_bias_add")
 
@@ -347,7 +434,9 @@ final class ChessNetwork {
     private static func valueHead(
         graph: MPSGraph,
         input: MPSGraphTensor,
-        descriptor: MPSGraphConvolution2DOpDescriptor
+        descriptor: MPSGraphConvolution2DOpDescriptor,
+        bnMode: BNMode,
+        trainables: inout [MPSGraphTensor]
     ) -> MPSGraphTensor {
         // 1x1 conv: compress 128 channels to 1
         let convW = graph.variable(
@@ -356,10 +445,11 @@ final class ChessNetwork {
             dataType: Self.dataType,
             name: "value_conv_weights"
         )
+        trainables.append(convW)
         var x = graph.convolution2D(
             input, weights: convW, descriptor: descriptor, name: "value_conv"
         )
-        x = batchNorm(graph: graph, input: x, channels: 1, name: "value_bn")
+        x = batchNorm(graph: graph, input: x, channels: 1, name: "value_bn", bnMode: bnMode, trainables: &trainables)
         x = graph.reLU(with: x, name: "value_relu")
 
         // Flatten: [batch, 1, 8, 8] -> [batch, 64]
@@ -378,6 +468,8 @@ final class ChessNetwork {
             dataType: Self.dataType,
             name: "value_fc1_bias"
         )
+        trainables.append(fc1W)
+        trainables.append(fc1Bias)
         x = graph.matrixMultiplication(primary: x, secondary: fc1W, name: "value_fc1")
         x = graph.addition(x, fc1Bias, name: "value_fc1_bias_add")
         x = graph.reLU(with: x, name: "value_fc1_relu")
@@ -395,6 +487,8 @@ final class ChessNetwork {
             dataType: Self.dataType,
             name: "value_fc2_bias"
         )
+        trainables.append(fc2W)
+        trainables.append(fc2Bias)
         x = graph.matrixMultiplication(primary: x, secondary: fc2W, name: "value_fc2")
         x = graph.addition(x, fc2Bias, name: "value_fc2_bias_add")
 

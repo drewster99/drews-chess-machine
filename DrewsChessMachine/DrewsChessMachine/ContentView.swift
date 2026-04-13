@@ -8,6 +8,80 @@ struct EvaluationResult: Sendable {
     let inputTensor: [Float]
 }
 
+/// Live progress reported from inside a sweep task. The trainer fires the
+/// progress callback before each step; we publish that to the UI so the
+/// user can see "currently sweeping batch=X, step Y, elapsed Z".
+struct SweepProgress: Sendable {
+    let batchSize: Int
+    let stepsSoFar: Int
+    let elapsedSec: Double
+}
+
+/// Lock-protected holder for the sweep's shared state across the worker
+/// thread and the SwiftUI main thread. The worker writes (progress, row
+/// completions, errors); the main-thread heartbeat polls and lifts those
+/// values into `@State`. The Stop button writes `cancel()` directly here
+/// rather than going through Task cancellation — Swift's unstructured
+/// `Task { }` doesn't inherit cancellation, so leaning on Task.isCancelled
+/// inside a worker spawned from inside another Task is unreliable.
+/// A locked Bool that the worker polls between steps is simpler and works.
+final class CancelBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _cancelled = false
+    private var _progress: SweepProgress?
+    private var _completedRows: [SweepRow] = []
+    private var _rowPeakBytes: UInt64 = 0
+
+    var isCancelled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _cancelled
+    }
+
+    func cancel() {
+        lock.lock(); defer { lock.unlock() }
+        _cancelled = true
+    }
+
+    func updateProgress(_ p: SweepProgress) {
+        lock.lock(); defer { lock.unlock() }
+        _progress = p
+    }
+
+    var latestProgress: SweepProgress? {
+        lock.lock(); defer { lock.unlock() }
+        return _progress
+    }
+
+    func appendRow(_ r: SweepRow) {
+        lock.lock(); defer { lock.unlock() }
+        _completedRows.append(r)
+    }
+
+    var completedRows: [SweepRow] {
+        lock.lock(); defer { lock.unlock() }
+        return _completedRows
+    }
+
+    /// Update the per-row peak with a new sample. The sweep's worker
+    /// thread reads and resets this between rows via `takeRowPeak()`.
+    /// Called from both the UI heartbeat (every ~100ms) and from the
+    /// trainer at row boundaries — whichever produces the higher value
+    /// wins for that row.
+    func recordPeakSample(_ bytes: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        if bytes > _rowPeakBytes { _rowPeakBytes = bytes }
+    }
+
+    /// Read the peak observed during the just-finished row and reset the
+    /// accumulator for the next one.
+    func takeRowPeak() -> UInt64 {
+        lock.lock(); defer { lock.unlock() }
+        let peak = _rowPeakBytes
+        _rowPeakBytes = 0
+        return peak
+    }
+}
+
 // MARK: - Game Watcher
 
 /// Holds live game state mutated by the ChessMachine delegate queue.
@@ -341,6 +415,33 @@ struct ContentView: View {
     @State private var continuousPlay = false
     @State private var continuousTask: Task<Void, Never>?
 
+    // Training — trainer is built lazily on first use. It owns its own
+    // training-mode ChessNetwork internally (not shared with the inference
+    // network used by Play / Forward Pass), so its weight updates do NOT
+    // flow into inference. The inference network keeps frozen-stats BN
+    // for fast play; the trainer measures realistic training-step costs
+    // through batch-stats BN and the full backward graph.
+    @State private var trainer: ChessTrainer?
+    @State private var isTrainingOnce = false
+    @State private var continuousTraining = false
+    @State private var trainingTask: Task<Void, Never>?
+    @State private var lastTrainStep: TrainStepTiming?
+    @State private var trainingStats: TrainingRunStats?
+    @State private var trainingError: String?
+    nonisolated static let trainingBatchSize = 1000
+
+    // Batch-size sweep — runs each size in `sweepSizes` for ~15 s, then
+    // displays the throughput table. Driven by its own task / cancel path
+    // so it can share the unified Stop button.
+    @State private var sweepRunning = false
+    @State private var sweepTask: Task<Void, Never>?
+    @State private var sweepResults: [SweepRow] = []
+    @State private var sweepProgress: SweepProgress?
+    @State private var sweepCancelBox: CancelBox?
+    @State private var sweepDeviceCaps: DeviceMemoryCaps?
+    nonisolated static let sweepSizes: [Int] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    nonisolated static let sweepSecondsPerSize: Double = 1.0
+
     /// 100 ms heartbeat that pulls the latest snapshot from `gameWatcher`
     /// into `gameSnapshot`. Standard SwiftUI Combine timer pattern — the
     /// publisher is created when the view struct is initialized and SwiftUI
@@ -350,8 +451,24 @@ struct ContentView: View {
     ).autoconnect()
 
     private var networkReady: Bool { network != nil }
-    private var isBusy: Bool { isBuilding || isEvaluating || gameSnapshot.isPlaying || continuousPlay }
+    private var isBusy: Bool {
+        isBuilding
+            || isEvaluating
+            || gameSnapshot.isPlaying
+            || continuousPlay
+            || isTrainingOnce
+            || continuousTraining
+            || sweepRunning
+    }
     private var isGameMode: Bool { gameSnapshot.isPlaying || gameSnapshot.totalGames > 0 }
+    private var isTrainingMode: Bool {
+        isTrainingOnce
+            || continuousTraining
+            || trainingStats != nil
+            || lastTrainStep != nil
+            || sweepRunning
+            || !sweepResults.isEmpty
+    }
 
     private var displayedPieces: [Piece?] {
         if isGameMode { return gameSnapshot.state.board }
@@ -402,12 +519,32 @@ struct ContentView: View {
                 Button("Play Game") { playSingleGame() }
                     .disabled(isBusy || !networkReady)
 
-                if continuousPlay {
-                    Button("Stop") { stopContinuousPlay() }
-                        .keyboardShortcut(.escape, modifiers: [])
-                } else {
+                if !continuousPlay && !continuousTraining {
                     Button("Play Continuous") { startContinuousPlay() }
                         .disabled(isBusy || !networkReady)
+                }
+
+                Divider().frame(height: 20)
+
+                Button("Train Once") { trainOnce() }
+                    .disabled(isBusy || !networkReady)
+
+                if !continuousTraining && !continuousPlay && !sweepRunning {
+                    Button("Train Continuous") { startContinuousTraining() }
+                        .disabled(isBusy || !networkReady)
+                }
+
+                if !sweepRunning && !continuousPlay && !continuousTraining {
+                    Button("Sweep Batch Sizes") { startSweep() }
+                        .disabled(isBusy || !networkReady)
+                }
+
+                // Single unified Stop button — handles whichever continuous
+                // loop is currently running (play, training, or sweep).
+                // Bound to escape so the same shortcut works in every mode.
+                if continuousPlay || continuousTraining || sweepRunning {
+                    Button("Stop") { stopAnyContinuous() }
+                        .keyboardShortcut(.escape, modifiers: [])
                 }
 
                 if isBusy {
@@ -460,12 +597,16 @@ struct ContentView: View {
                                 .foregroundStyle(.secondary)
                         }
 
-                        if isGameMode {
+                        if isTrainingMode {
+                            Text(trainingStatsText())
+                        } else if isGameMode {
                             Text(gameSnapshot.statsText(continuousPlay: continuousPlay))
+                        } else if let result = inferenceResult {
+                            Text(result.textOutput)
                         }
 
-                        if let result = inferenceResult, !isGameMode {
-                            Text(result.textOutput)
+                        if let trainingError {
+                            Text(trainingError).foregroundStyle(.red)
                         }
                     }
                     .font(.system(.body, design: .monospaced))
@@ -513,12 +654,37 @@ struct ContentView: View {
             // Cheap (single locked struct copy) and bounds UI work even
             // when the game loop is doing hundreds of moves per second.
             gameSnapshot = gameWatcher.snapshot()
+            // Same heartbeat pulls the sweep's worker-thread progress and
+            // any newly-completed rows into @State so the table grows live.
+            if sweepRunning, let box = sweepCancelBox {
+                sweepProgress = box.latestProgress
+                // Sample process resident memory and feed it into the
+                // sweep's per-row peak. The trainer also samples at row
+                // boundaries — we just contribute extra samples while a
+                // row is in flight so we don't miss mid-step spikes.
+                box.recordPeakSample(ChessTrainer.currentPhysFootprintBytes())
+                let rows = box.completedRows
+                if rows.count != sweepResults.count {
+                    sweepResults = rows
+                }
+            }
         }
     }
 
     private var busyLabel: String {
         if isBuilding { return "Building network..." }
         if gameSnapshot.isPlaying { return "Game \(gameSnapshot.totalGames + 1), move \(gameSnapshot.moveCount)..." }
+        if sweepRunning {
+            if let p = sweepProgress {
+                return String(format: "Sweep batch size %d, step %d, %.1f s",
+                              p.batchSize, p.stepsSoFar, p.elapsedSec)
+            }
+            return "Sweep starting..."
+        }
+        if continuousTraining {
+            return "Training step \((trainingStats?.steps ?? 0) + 1)..."
+        }
+        if isTrainingOnce { return "Training one batch..." }
         return "Running inference..."
     }
 
@@ -532,9 +698,26 @@ struct ContentView: View {
 
     // MARK: - Actions
 
+    /// Wipe every piece of training/sweep display state. Called when
+    /// switching modes (forward pass, play game, build network) so the
+    /// previous run's table doesn't linger and hide what the user actually
+    /// just did.
+    private func clearTrainingDisplay() {
+        trainingStats = nil
+        lastTrainStep = nil
+        trainingError = nil
+        sweepResults = []
+        sweepProgress = nil
+        sweepDeviceCaps = nil
+    }
+
     private func buildNetwork() {
         isBuilding = true
         networkStatus = ""
+        // Drop the trainer (it owns graph state we're about to invalidate
+        // by rebuilding) and wipe all training/sweep display state.
+        trainer = nil
+        clearTrainingDisplay()
 
         Task {
             let result = await Task.detached(priority: .userInitiated) {
@@ -565,6 +748,7 @@ struct ContentView: View {
         isEvaluating = true
         gameWatcher.resetAll()
         gameSnapshot = gameWatcher.snapshot()
+        clearTrainingDisplay()
 
         Task {
             let evalResult = await Task.detached(priority: .userInitiated) {
@@ -578,6 +762,7 @@ struct ContentView: View {
 
     private func playSingleGame() {
         inferenceResult = nil
+        clearTrainingDisplay()
         gameWatcher.resetCurrentGame()
         gameWatcher.markPlaying(true)
         // Synchronously refresh the snapshot so isBusy reflects the new
@@ -604,6 +789,7 @@ struct ContentView: View {
 
     private func startContinuousPlay() {
         inferenceResult = nil
+        clearTrainingDisplay()
         gameWatcher.resetAll()
         continuousPlay = true
 
@@ -640,6 +826,352 @@ struct ContentView: View {
     private func stopContinuousPlay() {
         continuousTask?.cancel()
         continuousTask = nil
+    }
+
+    /// Stop whichever continuous loop (play, train, or sweep) is currently
+    /// active. Bound to escape via the unified Stop button.
+    private func stopAnyContinuous() {
+        if continuousPlay { stopContinuousPlay() }
+        if continuousTraining { stopContinuousTraining() }
+        if sweepRunning { stopSweep() }
+    }
+
+    // MARK: - Training Actions
+
+    /// Build (or reuse) the trainer. The trainer manages its own
+    /// training-mode network internally — it doesn't share weights with
+    /// the inference network used by Play / Forward Pass — so the inference
+    /// network can keep its frozen-stats BN for fast play while the trainer
+    /// measures realistic training-step costs through batch-stats BN.
+    private func ensureTrainer() -> ChessTrainer? {
+        if let trainer { return trainer }
+        do {
+            let t = try ChessTrainer()
+            trainer = t
+            return t
+        } catch {
+            trainingError = "Trainer init failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    private func trainOnce() {
+        guard let trainer = ensureTrainer() else { return }
+        // Switching modes — clear any stale game/inference output and
+        // start a fresh stats run (single-step still uses TrainingRunStats
+        // so the formatter has one path to render).
+        inferenceResult = nil
+        gameWatcher.resetAll()
+        gameSnapshot = gameWatcher.snapshot()
+        clearTrainingDisplay()
+        isTrainingOnce = true
+
+        Task { [trainer] in
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.runOneTrainStep(trainer: trainer)
+            }.value
+            await MainActor.run {
+                switch result {
+                case .success(let timing):
+                    var stats = TrainingRunStats()
+                    stats.startTime = CFAbsoluteTimeGetCurrent() - timing.totalMs / 1000
+                    stats.record(timing)
+                    trainingStats = stats
+                    lastTrainStep = timing
+                case .failure(let error):
+                    trainingError = error.localizedDescription
+                }
+                isTrainingOnce = false
+            }
+        }
+    }
+
+    private func startContinuousTraining() {
+        guard let trainer = ensureTrainer() else { return }
+        inferenceResult = nil
+        gameWatcher.resetAll()
+        gameSnapshot = gameWatcher.snapshot()
+        clearTrainingDisplay()
+        trainingStats = TrainingRunStats()
+        continuousTraining = true
+
+        trainingTask = Task { [trainer] in
+            while !Task.isCancelled {
+                let result = await Task.detached(priority: .userInitiated) {
+                    Self.runOneTrainStep(trainer: trainer)
+                }.value
+                switch result {
+                case .success(let timing):
+                    await MainActor.run {
+                        trainingStats?.record(timing)
+                        lastTrainStep = timing
+                    }
+                case .failure(let error):
+                    await MainActor.run {
+                        trainingError = error.localizedDescription
+                    }
+                    break
+                }
+            }
+            await MainActor.run { continuousTraining = false }
+        }
+    }
+
+    private func stopContinuousTraining() {
+        trainingTask?.cancel()
+        trainingTask = nil
+    }
+
+    nonisolated private static func runOneTrainStep(trainer: ChessTrainer) -> Result<TrainStepTiming, Error> {
+        Result { try trainer.trainStep(batchSize: trainingBatchSize) }
+    }
+
+    // MARK: - Sweep Actions
+
+    private func startSweep() {
+        guard let trainer = ensureTrainer() else { return }
+        inferenceResult = nil
+        gameWatcher.resetAll()
+        gameSnapshot = gameWatcher.snapshot()
+        clearTrainingDisplay()
+        sweepRunning = true
+        // Snapshot device caps once at sweep start so the header has a
+        // stable reference point regardless of what else is running.
+        sweepDeviceCaps = trainer.deviceMemoryCaps()
+
+        let sizes = Self.sweepSizes
+        let secondsPerSize = Self.sweepSecondsPerSize
+        let cancelBox = CancelBox()
+        sweepCancelBox = cancelBox
+
+        sweepTask = Task { [trainer, cancelBox] in
+            // Reset the trainer's internal weights so loss starts fresh
+            // and small batches don't inherit overfit weights from prior
+            // continuous-training runs.
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try trainer.resetNetwork()
+                }.value
+            } catch {
+                await MainActor.run {
+                    trainingError = "Reset failed: \(error.localizedDescription)"
+                    sweepRunning = false
+                    sweepCancelBox = nil
+                }
+                return
+            }
+
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.runSweep(
+                    trainer: trainer,
+                    sizes: sizes,
+                    secondsPerSize: secondsPerSize,
+                    cancelBox: cancelBox
+                )
+            }.value
+
+            await MainActor.run {
+                // Pull any final completed rows out of the box (the
+                // heartbeat may have a stale cached snapshot).
+                sweepResults = cancelBox.completedRows
+                if case .failure(let error) = result {
+                    trainingError = "Sweep failed: \(error.localizedDescription)"
+                }
+                sweepProgress = nil
+                sweepCancelBox = nil
+                sweepRunning = false
+            }
+        }
+    }
+
+    private func stopSweep() {
+        // Flip the box directly — the worker polls this between steps and
+        // breaks out of the loops. Cancelling the Swift Task wouldn't help
+        // because Task.isCancelled doesn't propagate to the unstructured
+        // detached worker we spawned, and the worker doesn't await anything
+        // it could check Task.isCancelled on.
+        sweepCancelBox?.cancel()
+    }
+
+    nonisolated private static func runSweep(
+        trainer: ChessTrainer,
+        sizes: [Int],
+        secondsPerSize: Double,
+        cancelBox: CancelBox
+    ) -> Result<[SweepRow], Error> {
+        Result {
+            try trainer.runSweep(
+                sizes: sizes,
+                targetSecondsPerSize: secondsPerSize,
+                cancelled: { cancelBox.isCancelled },
+                progress: { batchSize, stepsSoFar, elapsed in
+                    cancelBox.updateProgress(
+                        SweepProgress(
+                            batchSize: batchSize,
+                            stepsSoFar: stepsSoFar,
+                            elapsedSec: elapsed
+                        )
+                    )
+                },
+                recordPeakSampleNow: {
+                    // Worker-thread sample — guarantees every row gets a
+                    // fresh reading at start and end even if no UI
+                    // heartbeat fired during the row's lifetime.
+                    cancelBox.recordPeakSample(ChessTrainer.currentPhysFootprintBytes())
+                },
+                consumeRowPeak: {
+                    cancelBox.takeRowPeak()
+                },
+                onRowCompleted: { row in
+                    // Worker thread — push the completed row into the box
+                    // so the heartbeat can pick it up. Lets the table grow
+                    // one row at a time as the sweep progresses.
+                    cancelBox.appendRow(row)
+                }
+            )
+        }
+    }
+
+    // MARK: - Training Stats Display
+
+    private func trainingStatsText() -> String {
+        let dash = "--"
+
+        // Sweep results trump the per-step display. Once a sweep starts or
+        // completes, the table is what the user came here for.
+        if sweepRunning || !sweepResults.isEmpty {
+            return sweepStatsText()
+        }
+
+        let mode = continuousTraining ? "Continuous" : "Single Step"
+        var lines: [String] = []
+        lines.append("Training (\(mode))")
+        lines.append("  Batch size:  \(Self.trainingBatchSize)")
+        lines.append("")
+
+        if let last = lastTrainStep {
+            lines.append("Last Step")
+            lines.append(String(format: "  Total:       %7.2f ms", last.totalMs))
+            lines.append(String(format: "  Data prep:   %7.2f ms", last.dataPrepMs))
+            lines.append(String(format: "  GPU run:     %7.2f ms", last.gpuRunMs))
+            lines.append(String(format: "  Readback:    %7.2f ms", last.readbackMs))
+            lines.append(String(format: "  Loss:        %+.6f", last.loss))
+            lines.append("")
+        }
+
+        if let stats = trainingStats {
+            let stepsStr = stats.steps.formatted(.number.grouping(.automatic))
+            let elapsedStr = String(format: "%.2f s", CFAbsoluteTimeGetCurrent() - stats.startTime)
+            let avgTotal = stats.steps > 0 ? String(format: "%7.2f ms", stats.avgStepMs) : dash
+            let avgGpu = stats.steps > 0 ? String(format: "%7.2f ms", stats.avgGpuMs) : dash
+            let minStr = stats.steps > 0 ? String(format: "%7.2f ms", stats.minStepMs) : dash
+            let maxStr = stats.steps > 0 ? String(format: "%7.2f ms", stats.maxStepMs) : dash
+            let rateStr = stats.steps > 0 ? String(format: "%.2f", stats.stepsPerSecond) : dash
+            let projStr = stats.steps > 0 ? String(format: "%.2f s", stats.projectedSecPer250Steps) : dash
+
+            lines.append("Run Totals")
+            lines.append("  Steps done:  \(stepsStr)")
+            lines.append("  Elapsed:     \(elapsedStr)")
+            lines.append("  Avg total:   \(avgTotal)")
+            lines.append("  Avg GPU:     \(avgGpu)")
+            lines.append("  Min step:    \(minStr)")
+            lines.append("  Max step:    \(maxStr)")
+            lines.append("  Steps/sec:   \(rateStr)")
+            lines.append("  Proj 250×:   \(projStr)")
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Format the sweep results as a fixed-column monospaced table.
+    /// Updates live as rows complete; after the run finishes, includes
+    /// the throughput peak.
+    private func sweepStatsText() -> String {
+        var lines: [String] = []
+        lines.append("Batch Size Sweep (training-mode BN)")
+        lines.append(String(format: "  Target: %.0f s per size", Self.sweepSecondsPerSize))
+        if let caps = sweepDeviceCaps {
+            lines.append(String(
+                format: "  Device:  recommendedMaxWorkingSetSize=%.2f GB,  maxBufferLength=%.2f GB",
+                Self.bytesToGB(caps.recommendedMaxWorkingSet),
+                Self.bytesToGB(caps.maxBufferLength)
+            ))
+            lines.append(String(
+                format: "           currentAllocatedSize=%.2f GB (at sweep start)",
+                Self.bytesToGB(caps.currentAllocated)
+            ))
+        }
+        lines.append("")
+
+        lines.append(" Batch    Warmup    Steps    Time   Avg/step   Avg GPU    Pos/sec     Loss      Peak")
+        lines.append(" -----    ------    -----    ----   --------   -------    -------     ----      ----")
+
+        for row in sweepResults {
+            switch row {
+            case .completed(let r):
+                let posPerSec = Int(r.positionsPerSec.rounded())
+                    .formatted(.number.grouping(.automatic))
+                    .padding(toLength: 9, withPad: " ", startingAt: 0)
+                lines.append(String(
+                    format: "%6d  %7.1f ms %6d %6.1fs  %7.2f ms %7.2f ms  %@  %+.3f  %6.2f GB",
+                    r.batchSize,
+                    r.warmupMs,
+                    r.steps,
+                    r.elapsedSec,
+                    r.avgStepMs,
+                    r.avgGpuMs,
+                    posPerSec,
+                    r.lastLoss,
+                    Self.bytesToGB(r.peakResidentBytes)
+                ))
+            case .skipped(let s):
+                let reason: String
+                if s.exceededWorkingSet && s.exceededBufferLength {
+                    reason = "working-set & buffer cap"
+                } else if s.exceededWorkingSet {
+                    reason = "working-set cap"
+                } else {
+                    reason = "buffer cap"
+                }
+                lines.append(String(
+                    format: "%6d  skipped — est RAM %6.2f GB, max buf %6.2f GB  [%@]",
+                    s.batchSize,
+                    Self.bytesToGB(s.estimatedBytes),
+                    Self.bytesToGB(s.largestBufferBytes),
+                    reason
+                ))
+            }
+        }
+
+        if sweepRunning {
+            lines.append("")
+            if let p = sweepProgress {
+                lines.append(String(
+                    format: "  Running: batch size %d, %d steps, %.1fs",
+                    p.batchSize, p.stepsSoFar, p.elapsedSec
+                ))
+            } else {
+                lines.append("  Starting...")
+            }
+        } else if !sweepResults.isEmpty {
+            let completed: [SweepResult] = sweepResults.compactMap {
+                if case .completed(let r) = $0 { return r } else { return nil }
+            }
+            if let best = completed.max(by: { $0.positionsPerSec < $1.positionsPerSec }) {
+                lines.append("")
+                lines.append(String(
+                    format: "  Best: batch size %d at %d positions/sec",
+                    best.batchSize,
+                    Int(best.positionsPerSec.rounded())
+                ))
+            }
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private static func bytesToGB(_ bytes: UInt64) -> Double {
+        Double(bytes) / 1_073_741_824.0
     }
 
     // MARK: - Background Work

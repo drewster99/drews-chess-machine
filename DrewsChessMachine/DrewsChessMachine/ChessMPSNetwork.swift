@@ -35,7 +35,7 @@ enum NetworkInitMode {
 /// Marked @unchecked Sendable — Metal objects aren't Sendable, but access is
 /// serialized (players take turns, one evaluation at a time).
 final class ChessMPSNetwork: @unchecked Sendable {
-    private let network: ChessNetwork
+    let network: ChessNetwork
 
     /// Time taken to build the graph and initialize weights, in milliseconds.
     let buildTimeMs: Double
