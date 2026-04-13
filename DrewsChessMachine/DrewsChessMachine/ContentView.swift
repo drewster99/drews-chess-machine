@@ -397,6 +397,72 @@ enum PlayAndTrainBoardMode: Sendable, Hashable {
     case candidateTest
 }
 
+// MARK: - Arena Tournament Types
+
+/// Live view of an in-progress arena tournament. Updated by the driver
+/// task after each finished game via a lock-protected `TournamentLiveBox`
+/// and mirrored into `@State` by the UI heartbeat. "Candidate" and
+/// "champion" here refer to the two networks being compared — not to
+/// any chess color. Colors alternate every game.
+struct TournamentProgress: Sendable {
+    let currentGame: Int
+    let totalGames: Int
+    let candidateWins: Int
+    let championWins: Int
+    let draws: Int
+
+    /// AlphaZero-style score: (wins + 0.5 * draws) / games_played.
+    /// Pure draws → 0.5. Candidate sweeping every decisive game with
+    /// zero losses → 1.0. Used with a 0.55 promotion threshold.
+    var candidateScore: Double {
+        let played = currentGame > 0 ? currentGame : 1
+        return (Double(candidateWins) + 0.5 * Double(draws)) / Double(played)
+    }
+}
+
+/// Historical record of a completed tournament, appended to the
+/// `tournamentHistory` array after each arena finishes. Displayed in
+/// the training stats text panel so the user can see promotion
+/// decisions across the session.
+struct TournamentRecord: Sendable, Identifiable {
+    let id = UUID()
+    /// `trainingStats.steps` at the moment the tournament finished.
+    let finishedAtStep: Int
+    let candidateWins: Int
+    let championWins: Int
+    let draws: Int
+    let score: Double
+    let promoted: Bool
+}
+
+/// Lock-protected holder for live tournament progress, shared between
+/// the driver task (writer, one update per finished game) and the UI
+/// heartbeat (reader, polling at 60 Hz). Same pattern as
+/// `TrainingLiveStatsBox` and `CancelBox` — an `NSLock` guards all
+/// state, so the class is safely `@unchecked Sendable`.
+final class TournamentLiveBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _progress: TournamentProgress?
+
+    func update(_ progress: TournamentProgress) {
+        lock.lock()
+        defer { lock.unlock() }
+        _progress = progress
+    }
+
+    func snapshot() -> TournamentProgress? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _progress
+    }
+
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        _progress = nil
+    }
+}
+
 // MARK: - Content View
 
 struct ContentView: View {
@@ -463,6 +529,46 @@ struct ContentView: View {
     /// training steps are tiny), and without a counter it's impossible
     /// to distinguish "firing but imperceptible" from "stuck".
     @State private var candidateProbeCount: Int = 0
+
+    // MARK: - Arena Tournament State
+    //
+    // Arena tournaments run inside the Play and Train driver task every
+    // `stepsPerTournament` SGD steps. They play N games candidate vs
+    // champion, alternating colors, pause self-play + training for the
+    // duration, and either promote the candidate into the champion
+    // (AlphaZero-style 0.55 score threshold) or leave the champion
+    // alone. History is appended to `tournamentHistory` for display.
+
+    /// Live progress mirrored from `tournamentBox` by the heartbeat.
+    /// Non-nil while a tournament is running; nil otherwise.
+    @State private var tournamentProgress: TournamentProgress?
+    /// Lock-protected box the driver task writes into after each arena
+    /// game completes. The heartbeat polls it and lifts the latest
+    /// progress into `tournamentProgress` so the busy label and the
+    /// text panel update live without cross-actor hops per game.
+    @State private var tournamentBox: TournamentLiveBox?
+    /// History of all completed tournaments in this session. Appended
+    /// after each arena finishes. In-memory only for now — disk
+    /// persistence is deferred.
+    @State private var tournamentHistory: [TournamentRecord] = []
+    /// Total number of games a single arena plays. 200 gives us enough
+    /// decisive games (~26 at the current ~13% decisive rate with
+    /// random networks) for the 0.55 score threshold to be meaningful.
+    /// Colors alternate every game, so candidate and champion each get
+    /// 100 games as white and 100 as black.
+    nonisolated static let tournamentGames = 200
+    /// Candidate-score threshold for promotion. The AlphaZero paper's
+    /// default. Demands the candidate score at least 110/200 points,
+    /// which in a draw-heavy regime translates to winning the large
+    /// majority of decisive games.
+    nonisolated static let tournamentPromoteThreshold = 0.55
+    /// Number of individual SGD steps between arenas. Not training
+    /// blocks — individual batches of 256 positions. At the current
+    /// throughput (~20 ms per step, 10 steps per training block, one
+    /// block per game) this fires roughly every 5 minutes of wall
+    /// clock. Checked at gap point #2 in the driver loop after a
+    /// training block finishes and `trainingStats.steps` has advanced.
+    nonisolated static let stepsPerTournament = 5000
     /// Minimum wall-clock interval between scheduled candidate-test probes.
     /// Actual cadence drifts slightly — a probe only fires at the next
     /// driver gap after the interval has elapsed — and that's fine: this
@@ -989,11 +1095,33 @@ struct ContentView: View {
                     trainingError = err
                 }
             }
+            // Arena progress mirror — cheap lock read, only updates the
+            // @State when the game index has advanced (or transitioned
+            // between non-running and running), so no redundant view
+            // invalidations between tournament games.
+            if let tBox = tournamentBox {
+                let snap = tBox.snapshot()
+                if snap?.currentGame != tournamentProgress?.currentGame
+                    || (snap == nil) != (tournamentProgress == nil) {
+                    tournamentProgress = snap
+                }
+            }
         }
     }
 
     private var busyLabel: String {
         if isBuilding { return "Building network..." }
+        if let tp = tournamentProgress {
+            // Arena tournament takes priority over normal Play and
+            // Train status. Shows live progress so the user sees the
+            // candidate's score evolve across the 200 games.
+            return String(
+                format: "Arena game %d/%d  candidate %d-%d-%d  score %.3f",
+                tp.currentGame, tp.totalGames,
+                tp.candidateWins, tp.championWins, tp.draws,
+                tp.candidateScore
+            )
+        }
         if realTraining {
             // Show both self-play and training progress at once — the
             // driver alternates between them, so either number alone is
@@ -1157,6 +1285,150 @@ struct ContentView: View {
         candidateProbeDirty = false
         lastCandidateProbeTime = Date()
         candidateProbeCount += 1
+    }
+
+    /// Run one arena tournament — 200 games candidate vs champion,
+    /// alternating colors — and promote the candidate into the champion
+    /// iff its score meets the 0.55 threshold. Called from the Play and
+    /// Train driver task at gap point #2 every `stepsPerTournament` SGD
+    /// steps. Blocks the driver (and therefore self-play and training)
+    /// for its duration so the trainer snapshot stays stable while the
+    /// tournament evaluates it — no one else touches the trainer or
+    /// either inference network while we're inside this method.
+    ///
+    /// Errors during the initial sync or the final promotion copy are
+    /// recorded via `box.recordError` and abort the tournament without
+    /// promoting. The tournament itself catches errors inside the
+    /// TournamentDriver by treating games as draws, so a stray Metal
+    /// glitch during one game doesn't crash the whole arena.
+    @MainActor
+    private func runArenaTournament(
+        atStep steps: Int,
+        trainer: ChessTrainer,
+        champion: ChessMPSNetwork,
+        tBox: TournamentLiveBox
+    ) async {
+        guard let candidateInference = candidateInferenceNetwork else { return }
+
+        // Seed live-progress state before the first game so the busy
+        // label switches to arena mode immediately.
+        let totalGames = Self.tournamentGames
+        tBox.update(TournamentProgress(
+            currentGame: 0,
+            totalGames: totalGames,
+            candidateWins: 0,
+            championWins: 0,
+            draws: 0
+        ))
+        tournamentProgress = tBox.snapshot()
+
+        // Sync trainer → candidate inference network. This is the
+        // snapshot we'll evaluate. Weights + BN running stats both get
+        // copied so the candidate's forward pass runs through proper
+        // inference-mode BN calibrated to training-time activations.
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                let weights = try trainer.network.exportWeights()
+                try candidateInference.network.loadWeights(weights)
+            }.value
+        } catch {
+            trainingBox?.recordError("Arena sync failed: \(error.localizedDescription)")
+            tBox.clear()
+            tournamentProgress = nil
+            return
+        }
+
+        // Cancellation propagation: Task.detached doesn't inherit
+        // cancellation from the outer driver task, so clicking Stop
+        // during an arena would otherwise leave the user waiting the
+        // full ~80 s for all 200 games to finish. `withTaskCancellation
+        // Handler` installs an `onCancel` block that fires as soon as
+        // the outer driver task is cancelled; it flips a CancelBox
+        // that the detached TournamentDriver checks between games,
+        // breaking the loop at the next game boundary. Partial stats
+        // come back and we skip promotion since the arena didn't
+        // complete.
+        //
+        // The TournamentDriver instance is created INSIDE the detached
+        // closure so it doesn't need to cross the main-actor boundary —
+        // it's a non-Sendable class and Swift 6 strict concurrency
+        // rejects capturing it from MainActor context into a @Sendable
+        // closure. Building it fresh in the closure is cheap (empty
+        // init) and avoids the sendability dance.
+        let cancelBox = CancelBox()
+        let stats = await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                [champion, candidateInference, tBox, cancelBox] in
+                let driver = TournamentDriver()
+                // No delegate — we don't animate arena games on the
+                // board, we just count results. The busy label
+                // reflects progress via the box + heartbeat instead.
+                // Attaching gameWatcher here would conflate arena
+                // game counts with self-play game counts in the
+                // session stats.
+                driver.delegate = nil
+                return await driver.run(
+                    playerA: { MPSChessPlayer(name: "Candidate", network: candidateInference) },
+                    playerB: { MPSChessPlayer(name: "Champion", network: champion) },
+                    games: totalGames,
+                    collectTrainingPositions: false,
+                    isCancelled: { cancelBox.isCancelled },
+                    onGameCompleted: { gameIndex, aWins, bWins, draws in
+                        tBox.update(TournamentProgress(
+                            currentGame: gameIndex,
+                            totalGames: totalGames,
+                            candidateWins: aWins,
+                            championWins: bWins,
+                            draws: draws
+                        ))
+                    }
+                )
+            }.value
+        } onCancel: {
+            cancelBox.cancel()
+        }
+
+        // Compute AlphaZero-style score and decide on promotion.
+        let playedGames = stats.gamesPlayed
+        let score: Double
+        if playedGames > 0 {
+            score = (Double(stats.playerAWins) + 0.5 * Double(stats.draws)) / Double(playedGames)
+        } else {
+            score = 0
+        }
+        var promoted = false
+        if playedGames >= totalGames && score >= Self.tournamentPromoteThreshold {
+            // Copy the candidate inference network's current state
+            // (which matches the trainer — we synced at the top of
+            // this method, and training was paused for the whole
+            // arena) into the champion. After this call, self-play's
+            // next game will use the promoted weights.
+            do {
+                try await Task.detached(priority: .userInitiated) { [candidateInference, champion] in
+                    let weights = try candidateInference.network.exportWeights()
+                    try champion.network.loadWeights(weights)
+                }.value
+                promoted = true
+            } catch {
+                trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
+            }
+        }
+
+        // Append to history and clear the live-progress box. The
+        // history entry drives the text-panel display; clearing the
+        // box lets the busy label fall back to normal Play and Train
+        // mode on the next heartbeat.
+        let record = TournamentRecord(
+            finishedAtStep: steps,
+            candidateWins: stats.playerAWins,
+            championWins: stats.playerBWins,
+            draws: stats.draws,
+            score: score,
+            promoted: promoted
+        )
+        tournamentHistory.append(record)
+        tBox.clear()
+        tournamentProgress = nil
     }
 
     /// Kick off (or coalesce) a forward pass on the current `editableState`.
@@ -1441,9 +1713,16 @@ struct ContentView: View {
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
         candidateProbeCount = 0
+        // Arena state — fresh history each session (disk persistence is
+        // deferred). Live-progress box is created here and captured by
+        // the driver task; the heartbeat polls it via @State mirroring.
+        tournamentHistory = []
+        tournamentProgress = nil
+        let tBox = TournamentLiveBox()
+        tournamentBox = tBox
         realTraining = true
 
-        realTrainingTask = Task { [trainer, network, buffer, box] in
+        realTrainingTask = Task { [trainer, network, buffer, box, tBox] in
             // --- Ensure the Candidate test inference network exists. ---
             //
             // This is a separate ChessMPSNetwork from `network` (the
@@ -1503,6 +1782,13 @@ struct ContentView: View {
                 }
                 return
             }
+
+            // Tracks `trainingStats.steps` at the end of the last arena
+            // tournament (or 0 before the first one). Lives in the task
+            // body — not @State — because only the driver reads/writes
+            // it, and we want a fresh counter each Play and Train
+            // session without threading it through SwiftUI storage.
+            var lastTournamentAtStep: Int = 0
 
             var shouldStop = false
             while !Task.isCancelled && !shouldStop {
@@ -1572,6 +1858,27 @@ struct ContentView: View {
                 // the driver doesn't pre-sync here, avoiding wasted
                 // copies on training blocks where no probe fires.
                 await fireCandidateProbeIfNeeded()
+
+                // --- Arena check ---
+                //
+                // After the training block's steps have been counted,
+                // see if we've accumulated `stepsPerTournament` SGD
+                // steps since the last arena (or since Play and Train
+                // started). If so, pause everything and run 200 games
+                // candidate vs champion, with promotion if the
+                // candidate scores ≥ 0.55. Training and self-play are
+                // both paused for the duration because the tournament
+                // wants a fixed snapshot of the trainer to evaluate.
+                let currentSteps = box.snapshot().stats.steps
+                if currentSteps - lastTournamentAtStep >= Self.stepsPerTournament {
+                    lastTournamentAtStep = currentSteps
+                    await runArenaTournament(
+                        atStep: currentSteps,
+                        trainer: trainer,
+                        champion: network,
+                        tBox: tBox
+                    )
+                }
             }
 
             await MainActor.run {
@@ -1827,6 +2134,26 @@ struct ContentView: View {
             lines.append("  Steps/sec:   \(rateStr)")
             lines.append("  Pos/sec:     \(posRateStr)")
             lines.append("  Proj 250×:   \(projStr)")
+        }
+
+        // Arena history — present only in self-play runs. One line per
+        // completed tournament, newest last. Promotion marker is
+        // visually distinct so you can scan for it.
+        if isSelfPlay, !tournamentHistory.isEmpty {
+            lines.append("")
+            lines.append("Arena History")
+            for (idx, record) in tournamentHistory.enumerated() {
+                let number = String(format: "%2d", idx + 1)
+                let stepStr = record.finishedAtStep.formatted(.number.grouping(.automatic))
+                let scoreStr = String(format: "%.3f", record.score)
+                let marker = record.promoted ? "PROMOTED" : "kept"
+                lines.append(String(
+                    format: "  #%@ @ %@ steps  %d-%d-%d  score %@  %@",
+                    number, stepStr,
+                    record.candidateWins, record.championWins, record.draws,
+                    scoreStr, marker
+                ))
+            }
         }
 
         return lines.joined(separator: "\n")

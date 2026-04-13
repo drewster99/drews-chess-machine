@@ -54,11 +54,27 @@ final class TournamentDriver {
     ///   - playerA: Factory creating player A for each game.
     ///   - playerB: Factory creating player B for each game.
     ///   - games: Total number of games to play.
+    ///   - collectTrainingPositions: Whether to gather `TrainingPosition`s
+    ///     off each MPS player after their game ends. Default `true` for
+    ///     compatibility with the training-data use case; pass `false`
+    ///     from the arena-evaluation path to avoid holding ~184 MB of
+    ///     useless tensors (arena games are played by two different
+    ///     networks and the resulting positions don't match the self-
+    ///     play replay-buffer distribution, so collecting them would
+    ///     waste memory for nothing).
+    ///   - onGameCompleted: Optional callback invoked after each finished
+    ///     game with the running totals `(gameIndex, aWins, bWins,
+    ///     draws)` (gameIndex is 1-based — "games completed so far").
+    ///     Used by the arena-evaluation caller to push live progress
+    ///     into a lock-protected box the UI heartbeat polls.
     /// - Returns: Aggregated statistics and training positions.
     func run(
         playerA: @Sendable () -> any ChessPlayer,
         playerB: @Sendable () -> any ChessPlayer,
-        games: Int
+        games: Int,
+        collectTrainingPositions: Bool = true,
+        isCancelled: (@Sendable () -> Bool)? = nil,
+        onGameCompleted: (@Sendable (Int, Int, Int, Int) -> Void)? = nil
     ) async -> TournamentStats {
         var aWins = 0
         var bWins = 0
@@ -66,7 +82,13 @@ final class TournamentDriver {
         var allPositions: [TrainingPosition] = []
 
         for gameIndex in 0..<games {
+            // Two cancellation checks: the caller's own task (if this
+            // run() is called from a non-detached context) AND an
+            // externally-provided flag (used by arena callers that run
+            // inside a detached task and therefore can't rely on
+            // Task.isCancelled propagating from the outer driver).
             guard !Task.isCancelled else { break }
+            if isCancelled?() == true { break }
 
             let aIsWhite = gameIndex % 2 == 0
             let a = playerA()
@@ -102,13 +124,16 @@ final class TournamentDriver {
                 draws += 1
             }
 
-            // Collect training positions from MPS players
-            if let mpsPlayer = a as? MPSChessPlayer {
-                allPositions.append(contentsOf: mpsPlayer.gamePositions)
+            if collectTrainingPositions {
+                if let mpsPlayer = a as? MPSChessPlayer {
+                    allPositions.append(contentsOf: mpsPlayer.gamePositions)
+                }
+                if let mpsPlayer = b as? MPSChessPlayer {
+                    allPositions.append(contentsOf: mpsPlayer.gamePositions)
+                }
             }
-            if let mpsPlayer = b as? MPSChessPlayer {
-                allPositions.append(contentsOf: mpsPlayer.gamePositions)
-            }
+
+            onGameCompleted?(gameIndex + 1, aWins, bWins, draws)
         }
 
         return TournamentStats(
