@@ -27,12 +27,44 @@ struct TrainStepTiming: Sendable {
     let dataPrepMs: Double
     /// GPU graph.run() — forward + backward + SGD weight updates.
     let gpuRunMs: Double
-    /// CPU work to read the loss scalar back from the tensor result.
+    /// CPU work to read the loss scalars back from the tensor results.
     let readbackMs: Double
     /// Total wall-clock time for the whole step.
     let totalMs: Double
-    /// Loss value reported by the graph (lets us spot NaNs / explosions).
+    /// Total loss (policy + value) reported by the graph — what SGD minimizes.
+    /// Lets us spot NaNs / explosions at a glance.
     let loss: Float
+    /// Policy-only component of the loss. Outcome-weighted cross-entropy; can
+    /// be negative when the played move already has high probability under a
+    /// winning outcome, so it's unbounded on both sides and expected to be
+    /// noisier than the value term.
+    let policyLoss: Float
+    /// Value-only component of the loss. Mean-squared error of (z − v), so
+    /// bounded in [0, 4] — if it oscillates, training is genuinely unstable.
+    let valueLoss: Float
+}
+
+// MARK: - Training Batch
+
+/// A batch of labeled real-data training examples, laid out as flat float
+/// and int32 buffers matching the shapes the training graph expects. The
+/// replay buffer packs samples into this form once so the trainer can
+/// upload straight into `MPSGraphTensorData` without any per-position
+/// gather work on the hot path.
+struct TrainingBatch: Sendable {
+    /// Flat `[batchSize, 18, 8, 8]` float32 board planes, current-player
+    /// relative (same encoding that `BoardEncoder` and the inference path
+    /// already use).
+    let boards: [Float]
+    /// Policy-target indices in the network's coordinate system (0–4095),
+    /// one per batch row. These are the already-flipped indices emitted by
+    /// `MPSChessPlayer.networkPolicyIndex(for:flip:)` so they line up with
+    /// the flipped board planes above.
+    let moves: [Int32]
+    /// Game outcome from each position's current player's perspective:
+    /// +1 win, 0 draw, −1 loss. One per batch row.
+    let zs: [Float]
+    let batchSize: Int
 }
 
 // MARK: - Sweep Result
@@ -108,6 +140,13 @@ struct SweepResult: Sendable {
 // MARK: - Continuous Training Stats
 
 /// Aggregated stats over a continuous training run. Updated after every step.
+///
+/// All time-based fields measure **training wall time only** — i.e. the sum
+/// of `TrainStepTiming.totalMs` across recorded steps. This excludes
+/// self-play and any idle gaps between steps, so in the real-training
+/// driver (which alternates play with train) these numbers reflect
+/// trainer throughput rather than session wall clock. In pure-training
+/// modes they're essentially identical to session elapsed.
 struct TrainingRunStats: Sendable {
     var steps: Int = 0
     var totalGpuMs: Double = 0
@@ -115,7 +154,6 @@ struct TrainingRunStats: Sendable {
     var minStepMs: Double = .infinity
     var maxStepMs: Double = 0
     var lastTiming: TrainStepTiming?
-    var startTime: CFAbsoluteTime = CFAbsoluteTimeGetCurrent()
 
     mutating func record(_ t: TrainStepTiming) {
         steps += 1
@@ -128,13 +166,121 @@ struct TrainingRunStats: Sendable {
 
     var avgStepMs: Double { steps > 0 ? totalStepMs / Double(steps) : 0 }
     var avgGpuMs: Double { steps > 0 ? totalGpuMs / Double(steps) : 0 }
+    /// Wall-clock seconds actually spent inside `trainStep` calls.
+    var trainingSeconds: Double { totalStepMs / 1000 }
+    /// Training throughput in steps per second of real training time.
     var stepsPerSecond: Double {
-        let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-        return elapsed > 0 ? Double(steps) / elapsed : 0
+        totalStepMs > 0 ? Double(steps) * 1000 / totalStepMs : 0
+    }
+
+    /// Training throughput in positions per second of real training time,
+    /// for a given batch size. Callers pass the batch size rather than
+    /// storing it on the stats struct so the same type works across the
+    /// random-data path, the real-data path, and any future variable-
+    /// batch paths.
+    func positionsPerSecond(batchSize: Int) -> Double {
+        stepsPerSecond * Double(batchSize)
     }
 
     /// Projected wall time for one "epoch" of 250 batches, based on average step time.
     var projectedSecPer250Steps: Double { avgStepMs * 250 / 1000 }
+}
+
+// MARK: - Training Live Stats Box
+
+/// Lock-protected holder for live training stats, shared between a
+/// background training task (writer) and the UI heartbeat (reader).
+///
+/// Same design as `CancelBox` for the sweep: the worker calls
+/// `recordStep(_:)` after each `trainStep`, which takes the lock briefly,
+/// updates the running `TrainingRunStats`, and returns — no main-actor
+/// hop per step. The SwiftUI `snapshotTimer` polls `snapshot()` at ~60 Hz
+/// and mirrors the current values into `@State`, which is what actually
+/// triggers view redraws. This decouples view-update frequency from
+/// training-step rate: a 20 ms/step training loop used to fire 50
+/// `MainActor.run` hops per second, now it fires zero.
+///
+/// The rolling-loss windows live here rather than on the view so the
+/// worker can maintain them without any main-actor round-trips. Policy
+/// and value losses are tracked in separate windows so the UI can show
+/// which head is oscillating — a bounded value MSE moving 5× means
+/// genuinely unstable training, while a noisy policy term alone is
+/// usually just metric noise from outcome-weighted CE.
+///
+/// Marked `@unchecked Sendable` for the same reason as `CancelBox` and
+/// `ReplayBuffer`: an `NSLock` guards all state.
+final class TrainingLiveStatsBox: @unchecked Sendable {
+    /// Immutable snapshot the UI reads. All fields are value types so
+    /// the snapshot is independent of further worker writes.
+    struct Snapshot: Sendable {
+        let stats: TrainingRunStats
+        let lastTiming: TrainStepTiming?
+        let rollingPolicyLoss: Double?
+        let rollingValueLoss: Double?
+        let error: String?
+    }
+
+    private let lock = NSLock()
+    private var _stats = TrainingRunStats()
+    private var _lastTiming: TrainStepTiming?
+    private var _policyLossWindow: [Double] = []
+    private var _valueLossWindow: [Double] = []
+    private var _error: String?
+    private let rollingWindow: Int
+
+    init(rollingWindow: Int) {
+        precondition(rollingWindow > 0, "Rolling window must be positive")
+        self.rollingWindow = rollingWindow
+    }
+
+    /// Record one completed training step. Called from the background
+    /// training task; takes the lock briefly and returns. No main-actor
+    /// hop and no SwiftUI invalidation — the view picks the change up on
+    /// the next heartbeat tick.
+    func recordStep(_ timing: TrainStepTiming) {
+        lock.lock()
+        defer { lock.unlock() }
+        _stats.record(timing)
+        _lastTiming = timing
+        _policyLossWindow.append(Double(timing.policyLoss))
+        if _policyLossWindow.count > rollingWindow {
+            _policyLossWindow.removeFirst(_policyLossWindow.count - rollingWindow)
+        }
+        _valueLossWindow.append(Double(timing.valueLoss))
+        if _valueLossWindow.count > rollingWindow {
+            _valueLossWindow.removeFirst(_valueLossWindow.count - rollingWindow)
+        }
+    }
+
+    /// Record a terminal training error. Also called from the worker.
+    /// The first error wins — subsequent calls are ignored so a
+    /// follow-on error doesn't clobber the original cause.
+    func recordError(_ message: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if _error == nil { _error = message }
+    }
+
+    /// Snapshot all fields atomically for the UI poller.
+    func snapshot() -> Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        let rollingPolicy = Self.mean(_policyLossWindow)
+        let rollingValue = Self.mean(_valueLossWindow)
+        return Snapshot(
+            stats: _stats,
+            lastTiming: _lastTiming,
+            rollingPolicyLoss: rollingPolicy,
+            rollingValueLoss: rollingValue,
+            error: _error
+        )
+    }
+
+    private static func mean(_ window: [Double]) -> Double? {
+        guard !window.isEmpty else { return nil }
+        let sum = window.reduce(0, +)
+        return sum / Double(window.count)
+    }
 }
 
 // MARK: - Chess Trainer
@@ -166,11 +312,13 @@ final class ChessTrainer: @unchecked Sendable {
     private var movePlayedPlaceholder: MPSGraphTensor   // [batch] int32
     private var zPlaceholder: MPSGraphTensor            // [batch, 1] float
     private var totalLoss: MPSGraphTensor               // scalar
+    private var policyLossTensor: MPSGraphTensor        // scalar
+    private var valueLossTensor: MPSGraphTensor         // scalar
     private var assignOps: [MPSGraphOperation]
 
     // MARK: Init
 
-    init(learningRate: Float = 1e-3) throws {
+    init(learningRate: Float = 1e-4) throws {
         self.learningRate = learningRate
         let net = try ChessNetwork(bnMode: .training)
         self.network = net
@@ -178,6 +326,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
         self.totalLoss = built.totalLoss
+        self.policyLossTensor = built.policyLoss
+        self.valueLossTensor = built.valueLoss
         self.assignOps = built.assignOps
     }
 
@@ -193,6 +343,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
         self.totalLoss = built.totalLoss
+        self.policyLossTensor = built.policyLoss
+        self.valueLossTensor = built.valueLoss
         self.assignOps = built.assignOps
     }
 
@@ -210,6 +362,8 @@ final class ChessTrainer: @unchecked Sendable {
         movePlayed: MPSGraphTensor,
         z: MPSGraphTensor,
         totalLoss: MPSGraphTensor,
+        policyLoss: MPSGraphTensor,
+        valueLoss: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
         let graph = network.graph
@@ -306,7 +460,7 @@ final class ChessTrainer: @unchecked Sendable {
             ops.append(assignOp)
         }
 
-        return (movePlayed, z, totalLossTensor, ops)
+        return (movePlayed, z, totalLossTensor, policyLoss, valueLoss, ops)
     }
 
     // MARK: - Training Step
@@ -343,6 +497,54 @@ final class ChessTrainer: @unchecked Sendable {
             zValues[i] = Float(Int.random(in: 0..<3) - 1)
         }
 
+        let feeds = buildFeeds(
+            batchSize: batchSize,
+            boardFloats: boardFloats,
+            moveIndices: moveIndices,
+            zValues: zValues
+        )
+        let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
+
+        return try runPreparedStep(
+            feeds: feeds,
+            prepMs: prepMs,
+            totalStart: totalStart
+        )
+    }
+
+    /// Run a single training step on a pre-built batch of real self-play
+    /// data. Same SGD update rule, same loss output — only the data source
+    /// differs from the random-data `trainStep(batchSize:)` path. Callers
+    /// are expected to draw batches from a `ReplayBuffer` and feed them
+    /// here; see `ContentView.startRealTraining` for the driver loop.
+    func trainStep(batch: TrainingBatch) throws -> TrainStepTiming {
+        let totalStart = CFAbsoluteTimeGetCurrent()
+        let prepStart = CFAbsoluteTimeGetCurrent()
+
+        let feeds = buildFeeds(
+            batchSize: batch.batchSize,
+            boardFloats: batch.boards,
+            moveIndices: batch.moves,
+            zValues: batch.zs
+        )
+        let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
+
+        return try runPreparedStep(
+            feeds: feeds,
+            prepMs: prepMs,
+            totalStart: totalStart
+        )
+    }
+
+    /// Pack the three Swift arrays for one training step into the feed
+    /// dictionary the graph expects. Shared by the random-data and
+    /// real-data paths so they can't drift out of sync.
+    private func buildFeeds(
+        batchSize: Int,
+        boardFloats: [Float],
+        moveIndices: [Int32],
+        zValues: [Float]
+    ) -> [MPSGraphTensor: MPSGraphTensorData] {
         let boardData = MPSGraphTensorData(
             device: network.graphDevice,
             data: ChessNetwork.makeWeightData(boardFloats),
@@ -371,30 +573,42 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [NSNumber(value: batchSize), 1],
             dataType: ChessNetwork.dataType
         )
-        let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
 
-        // --- GPU run: forward + backward + SGD update in one graph execution ---
+        return [
+            network.inputPlaceholder: boardData,
+            movePlayedPlaceholder: moveData,
+            zPlaceholder: zData
+        ]
+    }
 
+    /// Run the forward + backward + SGD update graph with the given feeds
+    /// and read the loss scalar back. The two public `trainStep` entry
+    /// points share this so they produce identical timing breakdowns.
+    private func runPreparedStep(
+        feeds: [MPSGraphTensor: MPSGraphTensorData],
+        prepMs: Double,
+        totalStart: CFAbsoluteTime
+    ) throws -> TrainStepTiming {
         let gpuStart = CFAbsoluteTimeGetCurrent()
         let results = network.graph.run(
             with: network.commandQueue,
-            feeds: [
-                network.inputPlaceholder: boardData,
-                movePlayedPlaceholder: moveData,
-                zPlaceholder: zData
-            ],
-            targetTensors: [totalLoss],
+            feeds: feeds,
+            targetTensors: [totalLoss, policyLossTensor, valueLossTensor],
             targetOperations: assignOps
         )
         let gpuMs = (CFAbsoluteTimeGetCurrent() - gpuStart) * 1000
 
-        // --- Read loss scalar back ---
-
         let readbackStart = CFAbsoluteTimeGetCurrent()
-        guard let lossData = results[totalLoss] else {
+        guard
+            let totalData = results[totalLoss],
+            let policyData = results[policyLossTensor],
+            let valueData = results[valueLossTensor]
+        else {
             throw ChessTrainerError.lossOutputMissing
         }
-        let lossBuf = ChessNetwork.readFloats(from: lossData, count: 1)
+        let totalBuf = ChessNetwork.readFloats(from: totalData, count: 1)
+        let policyBuf = ChessNetwork.readFloats(from: policyData, count: 1)
+        let valueBuf = ChessNetwork.readFloats(from: valueData, count: 1)
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
@@ -404,7 +618,9 @@ final class ChessTrainer: @unchecked Sendable {
             gpuRunMs: gpuMs,
             readbackMs: readbackMs,
             totalMs: totalMs,
-            loss: lossBuf[0]
+            loss: totalBuf[0],
+            policyLoss: policyBuf[0],
+            valueLoss: valueBuf[0]
         )
     }
 

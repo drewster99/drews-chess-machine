@@ -400,6 +400,18 @@ struct ContentView: View {
     @State private var inferenceResult: EvaluationResult?
     @State private var isEvaluating = false
     @State private var selectedOverlay = 0
+    /// The position the forward-pass demo is evaluating. Seeded to the
+    /// starting position on launch and NEVER auto-reset — free-placement
+    /// edits persist across Build Network, mode switches, and re-runs, so
+    /// the user can tinker with a position and come back to it. Game mode
+    /// doesn't read this (it shows `gameSnapshot.state.board` instead), and
+    /// training modes ignore it entirely.
+    @State private var editableState: GameState = .starting
+    /// Set when `reevaluateForwardPass()` is called while an inference is
+    /// already in flight. The in-flight task checks this on completion and
+    /// re-runs itself once more so the latest edit is always reflected
+    /// without us having to block drags on `isEvaluating`.
+    @State private var pendingReeval = false
 
     // Game — gameWatcher is mutated by the delegate queue and is NOT
     // SwiftUI-observed. A 100ms timer copies its `snapshot()` into
@@ -428,7 +440,52 @@ struct ContentView: View {
     @State private var lastTrainStep: TrainStepTiming?
     @State private var trainingStats: TrainingRunStats?
     @State private var trainingError: String?
-    nonisolated static let trainingBatchSize = 1000
+    /// Lock-protected live-stats holder shared with the background training
+    /// task (continuous or self-play). The worker writes via `recordStep`
+    /// with no main-actor hop; the 60 Hz `snapshotTimer` poller mirrors the
+    /// latest values into `trainingStats` / `lastTrainStep` /
+    /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
+    /// count has actually advanced.
+    @State private var trainingBox: TrainingLiveStatsBox?
+    nonisolated static let trainingBatchSize = 256
+
+    // Real (self-play) training — generates games, labels positions from the
+    // final outcome, pushes them through the shared trainer. Shares the
+    // lazily-built `trainer` with the random-data training path above so the
+    // trainer's MPSGraph is built at most once per session. Only one training
+    // mode is allowed to run at a time (enforced by the button hide rules and
+    // by `isBusy`), so there's no cross-mode concurrency on the trainer.
+    @State private var realTraining = false
+    @State private var realTrainingTask: Task<Void, Never>?
+    @State private var replayBuffer: ReplayBuffer?
+    /// Rolling-window averages of the most recent self-play training losses,
+    /// split into the policy (outcome-weighted cross-entropy) and value
+    /// (bounded MSE) components. Mirrored from `trainingBox` by the 60 Hz
+    /// poller. The windows themselves live inside the box — these are just
+    /// the most recent display values. Split so we can tell whether an
+    /// oscillating total-loss plot is the bounded value term going unstable
+    /// (training problem) or the unbounded policy term bouncing around
+    /// (usually just metric noise).
+    @State private var realRollingPolicyLoss: Double?
+    @State private var realRollingValueLoss: Double?
+    nonisolated static let replayBufferCapacity = 50_000
+    /// Don't start sampling training batches until the buffer holds at least
+    /// this many positions. At 16× the batch size, each draw covers ~6% of
+    /// the buffer, so consecutive batches share few enough samples to keep
+    /// gradient estimates meaningfully decorrelated. Also guarantees the
+    /// `ReplayBuffer.sample` call inside the train loop can never return
+    /// nil, since `minBufferBeforeTraining >= trainingBatchSize` by
+    /// construction.
+    nonisolated static let minBufferBeforeTraining = trainingBatchSize * 16
+    /// Training steps to run between self-play games. Kept modest so the
+    /// driver alternates visibly between play and train rather than
+    /// disappearing into a long training run.
+    nonisolated static let trainStepsPerGame = 10
+    /// Size of the rolling-loss window displayed in the Self-Play training
+    /// column. 512 steps × 256 batch = ~131k positions averaged per reported
+    /// number, which should be more than enough to smooth through batch-
+    /// composition noise and show the real underlying trend.
+    nonisolated static let rollingLossWindow = 512
 
     // Batch-size sweep — runs each size in `sweepSizes` for ~15 s, then
     // displays the throughput table. Driven by its own task / cancel path
@@ -459,11 +516,13 @@ struct ContentView: View {
             || isTrainingOnce
             || continuousTraining
             || sweepRunning
+            || realTraining
     }
     private var isGameMode: Bool { gameSnapshot.isPlaying || gameSnapshot.totalGames > 0 }
     private var isTrainingMode: Bool {
         isTrainingOnce
             || continuousTraining
+            || realTraining
             || trainingStats != nil
             || lastTrainStep != nil
             || sweepRunning
@@ -472,7 +531,38 @@ struct ContentView: View {
 
     private var displayedPieces: [Piece?] {
         if isGameMode { return gameSnapshot.state.board }
-        return GameState.starting.board
+        return editableState.board
+    }
+
+    /// Whether the forward-pass free-placement editor should be live: a
+    /// forward pass can run, the user isn't watching a game, and no
+    /// training mode is active. Used to gate both the drag gesture and the
+    /// side-to-move picker so they don't fight with other modes.
+    private var forwardPassEditable: Bool {
+        networkReady && !isGameMode && !isTrainingMode
+    }
+
+    /// Binding for the side-to-move segmented picker. Writes rebuild
+    /// `editableState` with the new current-player (nothing else changes)
+    /// and kick off an auto re-eval so the arrows update for the new
+    /// perspective.
+    private var sideToMoveBinding: Binding<PieceColor> {
+        Binding(
+            get: { editableState.currentPlayer },
+            set: { newValue in
+                editableState = GameState(
+                    board: editableState.board,
+                    currentPlayer: newValue,
+                    whiteKingsideCastle: editableState.whiteKingsideCastle,
+                    whiteQueensideCastle: editableState.whiteQueensideCastle,
+                    blackKingsideCastle: editableState.blackKingsideCastle,
+                    blackQueensideCastle: editableState.blackQueensideCastle,
+                    enPassantSquare: editableState.enPassantSquare,
+                    halfmoveClock: editableState.halfmoveClock
+                )
+                reevaluateForwardPass()
+            }
+        )
     }
 
     private var overlayLabel: String {
@@ -519,7 +609,7 @@ struct ContentView: View {
                 Button("Play Game") { playSingleGame() }
                     .disabled(isBusy || !networkReady)
 
-                if !continuousPlay && !continuousTraining {
+                if !continuousPlay && !continuousTraining && !realTraining {
                     Button("Play Continuous") { startContinuousPlay() }
                         .disabled(isBusy || !networkReady)
                 }
@@ -529,20 +619,26 @@ struct ContentView: View {
                 Button("Train Once") { trainOnce() }
                     .disabled(isBusy || !networkReady)
 
-                if !continuousTraining && !continuousPlay && !sweepRunning {
+                if !continuousTraining && !continuousPlay && !sweepRunning && !realTraining {
                     Button("Train Continuous") { startContinuousTraining() }
                         .disabled(isBusy || !networkReady)
                 }
 
-                if !sweepRunning && !continuousPlay && !continuousTraining {
+                if !realTraining && !continuousPlay && !continuousTraining && !sweepRunning {
+                    Button("Train on Self-Play") { startRealTraining() }
+                        .disabled(isBusy || !networkReady)
+                }
+
+                if !sweepRunning && !continuousPlay && !continuousTraining && !realTraining {
                     Button("Sweep Batch Sizes") { startSweep() }
                         .disabled(isBusy || !networkReady)
                 }
 
                 // Single unified Stop button — handles whichever continuous
-                // loop is currently running (play, training, or sweep).
-                // Bound to escape so the same shortcut works in every mode.
-                if continuousPlay || continuousTraining || sweepRunning {
+                // loop is currently running (play, training, self-play
+                // training, or sweep). Bound to escape so the same shortcut
+                // works in every mode.
+                if continuousPlay || continuousTraining || sweepRunning || realTraining {
                     Button("Stop") { stopAnyContinuous() }
                         .keyboardShortcut(.escape, modifiers: [])
                 }
@@ -561,6 +657,16 @@ struct ContentView: View {
                             .font(.system(.subheadline, design: .monospaced))
                     }
 
+                    if forwardPassEditable {
+                        Picker("To move", selection: sideToMoveBinding) {
+                            Text("White").tag(PieceColor.white)
+                            Text("Black").tag(PieceColor.black)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(maxWidth: 160)
+                    }
+
                     HStack(spacing: 8) {
                         let leftDisabled = inferenceResult == nil || selectedOverlay == 0 || isGameMode
                         Button(
@@ -574,6 +680,36 @@ struct ContentView: View {
                         .opacity(leftDisabled ? 0.2 : 0.6)
 
                         ChessBoardView(pieces: displayedPieces, overlay: currentOverlay)
+                            .overlay {
+                                // Transparent hit layer that converts drag
+                                // coordinates to squares and routes edits
+                                // through `applyFreePlacementDrag`. Sized to
+                                // match the board's square frame via the
+                                // overlay modifier, so local coordinates map
+                                // 1:1 onto board squares. Disabled outside
+                                // forward-pass mode so game/training views
+                                // aren't hijacked.
+                                GeometryReader { geo in
+                                    let boardSize = min(geo.size.width, geo.size.height)
+                                    Color.clear
+                                        .contentShape(Rectangle())
+                                        .gesture(
+                                            DragGesture(minimumDistance: 0)
+                                                .onEnded { value in
+                                                    let fromSq = Self.squareIndex(
+                                                        at: value.startLocation,
+                                                        boardSize: boardSize
+                                                    )
+                                                    let toSq = Self.squareIndex(
+                                                        at: value.location,
+                                                        boardSize: boardSize
+                                                    )
+                                                    applyFreePlacementDrag(from: fromSq, to: toSq)
+                                                }
+                                        )
+                                        .allowsHitTesting(forwardPassEditable)
+                                }
+                            }
 
                         let rightDisabled = inferenceResult == nil || selectedOverlay == 18 || isGameMode
                         Button(
@@ -589,20 +725,42 @@ struct ContentView: View {
                 }
                 .frame(minWidth: 320, maxWidth: 420)
 
-                // Text panel — single Text view for stable layout
+                // Text panel — two fixed-width columns (game stats + training
+                // stats) so a mode that shows one never changes size when a
+                // mode that shows both (real-training) is active. Each column
+                // is gated independently: whichever is relevant for the
+                // current mode is rendered, the other is simply omitted. In
+                // real-training mode both are shown side-by-side.
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 8) {
                         if !networkStatus.isEmpty {
                             Text(networkStatus)
                                 .foregroundStyle(.secondary)
                         }
 
-                        if isTrainingMode {
-                            Text(trainingStatsText())
-                        } else if isGameMode {
-                            Text(gameSnapshot.statsText(continuousPlay: continuousPlay))
-                        } else if let result = inferenceResult {
-                            Text(result.textOutput)
+                        // Fixed-width columns so the panel never reflows
+                        // between modes OR between game results. The game
+                        // column has to be wide enough for the longest
+                        // Status line the formatter can produce ("Status:
+                        // Draw by insufficient material" ≈ 37 chars at
+                        // ~8pt/char in monospaced body) — otherwise a draw
+                        // by insufficient material or threefold repetition
+                        // swells the left column at game end and pushes the
+                        // training column rightward.
+                        HStack(alignment: .top, spacing: 16) {
+                            if isGameMode {
+                                Text(gameSnapshot.statsText(
+                                    continuousPlay: continuousPlay || realTraining
+                                ))
+                                .frame(minWidth: 330, alignment: .topLeading)
+                            }
+                            if isTrainingMode {
+                                Text(trainingStatsText())
+                                    .frame(minWidth: 260, alignment: .topLeading)
+                            }
+                            if !isGameMode, !isTrainingMode, let result = inferenceResult {
+                                Text(result.textOutput)
+                            }
                         }
 
                         if let trainingError {
@@ -644,7 +802,12 @@ struct ContentView: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 900, minHeight: 600)
+        // Window minWidth raised from 900 to 1060 to give the two-column
+        // text panel (game column 330pt wide enough for the longest
+        // Status: line + training column 260pt) enough room alongside the
+        // 320-420pt board without horizontal clipping in real-training
+        // mode where both columns are visible at once.
+        .frame(minWidth: 1060, minHeight: 600)
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) { navigateOverlay(-1); return .handled }
@@ -668,11 +831,38 @@ struct ContentView: View {
                     sweepResults = rows
                 }
             }
+            // Same heartbeat pulls live training stats out of the
+            // lock-protected box the background training task is writing
+            // into. Guarded on step count so a mid-run session that
+            // hasn't advanced since the last tick doesn't trigger a
+            // useless redraw — and an idle box (after Stop or before
+            // first step) stays silent.
+            if let box = trainingBox {
+                let snap = box.snapshot()
+                if snap.stats.steps != (trainingStats?.steps ?? -1) {
+                    trainingStats = snap.stats
+                    lastTrainStep = snap.lastTiming
+                    realRollingPolicyLoss = snap.rollingPolicyLoss
+                    realRollingValueLoss = snap.rollingValueLoss
+                }
+                if let err = snap.error, trainingError == nil {
+                    trainingError = err
+                }
+            }
         }
     }
 
     private var busyLabel: String {
         if isBuilding { return "Building network..." }
+        if realTraining {
+            // Show both self-play and training progress at once — the
+            // driver alternates between them, so either number alone is
+            // misleading.
+            let games = gameSnapshot.totalGames
+            let buf = replayBuffer?.count ?? 0
+            let steps = trainingStats?.steps ?? 0
+            return "Self-play: \(games) games, \(buf) positions, \(steps) train steps..."
+        }
         if gameSnapshot.isPlaying { return "Game \(gameSnapshot.totalGames + 1), move \(gameSnapshot.moveCount)..." }
         if sweepRunning {
             if let p = sweepProgress {
@@ -706,9 +896,17 @@ struct ContentView: View {
         trainingStats = nil
         lastTrainStep = nil
         trainingError = nil
+        trainingBox = nil
         sweepResults = []
         sweepProgress = nil
         sweepDeviceCaps = nil
+        // Real-training state — dropped when switching modes so the next
+        // run starts from a fresh rolling-loss average and nil buffer
+        // reference. The previous run's final numbers are the last thing
+        // the user saw; a fresh mode shouldn't inherit them.
+        replayBuffer = nil
+        realRollingPolicyLoss = nil
+        realRollingValueLoss = nil
     }
 
     private func buildNetwork() {
@@ -744,20 +942,92 @@ struct ContentView: View {
     }
 
     private func runForwardPass() {
-        guard let runner else { return }
-        isEvaluating = true
         gameWatcher.resetAll()
         gameSnapshot = gameWatcher.snapshot()
         clearTrainingDisplay()
+        // Explicit "Run Forward Pass" click resets the overlay to Top Moves;
+        // auto re-evals from drag edits preserve whatever overlay the user
+        // is currently inspecting.
+        selectedOverlay = 0
+        reevaluateForwardPass()
+    }
 
+    /// Kick off (or coalesce) a forward pass on the current `editableState`.
+    /// Called both explicitly from the "Run Forward Pass" button and
+    /// automatically after a free-placement drag or side-to-move toggle.
+    /// If an inference is already in flight, sets `pendingReeval` so the
+    /// in-flight task re-runs once more on completion — that way rapid
+    /// drags always resolve to a final inference reflecting the last edit,
+    /// without us needing to block the UI on `isEvaluating`.
+    private func reevaluateForwardPass() {
+        guard let runner else { return }
+        if isEvaluating {
+            pendingReeval = true
+            return
+        }
+        isEvaluating = true
+        let state = editableState
         Task {
             let evalResult = await Task.detached(priority: .userInitiated) {
-                Self.performInference(with: runner)
+                Self.performInference(with: runner, state: state)
             }.value
             inferenceResult = evalResult
-            selectedOverlay = 0
             isEvaluating = false
+            if pendingReeval {
+                pendingReeval = false
+                reevaluateForwardPass()
+            }
         }
+    }
+
+    /// Apply one free-placement drag: pick up the piece at `from`, drop it
+    /// at `to`. `from` or `to` may be nil (drag started or ended outside
+    /// the board, e.g. off-edge), in which case the gesture is either a
+    /// no-op (no source) or a deletion (no destination — piece removed).
+    /// Captures replace whatever sat on the destination square. Castling
+    /// rights, en-passant, and halfmove clock are carried through
+    /// unchanged — the network just reads whatever encoding falls out,
+    /// which is exactly what a free-placement "what does the net think of
+    /// this position" tool should do. Triggers an auto re-eval afterward.
+    private func applyFreePlacementDrag(from: Int?, to: Int?) {
+        guard let from else { return }
+        guard (0..<64).contains(from) else { return }
+        if let to, to == from { return }  // Tap without movement — nothing to do.
+        var board = editableState.board
+        let piece = board[from]
+        guard piece != nil else { return }  // Empty square dragged — nothing to do.
+        board[from] = nil
+        if let to, (0..<64).contains(to) {
+            board[to] = piece
+        }
+        // else: dragged off the board → deletion.
+        editableState = GameState(
+            board: board,
+            currentPlayer: editableState.currentPlayer,
+            whiteKingsideCastle: editableState.whiteKingsideCastle,
+            whiteQueensideCastle: editableState.whiteQueensideCastle,
+            blackKingsideCastle: editableState.blackKingsideCastle,
+            blackQueensideCastle: editableState.blackQueensideCastle,
+            enPassantSquare: editableState.enPassantSquare,
+            halfmoveClock: editableState.halfmoveClock
+        )
+        reevaluateForwardPass()
+    }
+
+    /// Convert a point in the board-overlay's local coordinate space into
+    /// a 0-63 square index. Returns nil if the point lies outside the
+    /// board's square frame, which the drag handler treats as "off-board"
+    /// — a no-op on drag-start, a deletion on drag-end.
+    private static func squareIndex(at point: CGPoint, boardSize: CGFloat) -> Int? {
+        guard boardSize > 0 else { return nil }
+        guard point.x >= 0, point.y >= 0, point.x < boardSize, point.y < boardSize else {
+            return nil
+        }
+        let squareSize = boardSize / 8
+        let col = Int(point.x / squareSize)
+        let row = Int(point.y / squareSize)
+        guard (0..<8).contains(col), (0..<8).contains(row) else { return nil }
+        return row * 8 + col
     }
 
     private func playSingleGame() {
@@ -834,6 +1104,7 @@ struct ContentView: View {
         if continuousPlay { stopContinuousPlay() }
         if continuousTraining { stopContinuousTraining() }
         if sweepRunning { stopSweep() }
+        if realTraining { stopRealTraining() }
     }
 
     // MARK: - Training Actions
@@ -874,7 +1145,6 @@ struct ContentView: View {
                 switch result {
                 case .success(let timing):
                     var stats = TrainingRunStats()
-                    stats.startTime = CFAbsoluteTimeGetCurrent() - timing.totalMs / 1000
                     stats.record(timing)
                     trainingStats = stats
                     lastTrainStep = timing
@@ -892,25 +1162,28 @@ struct ContentView: View {
         gameWatcher.resetAll()
         gameSnapshot = gameWatcher.snapshot()
         clearTrainingDisplay()
+
+        // Seed trainingStats with a fresh zero so the formatter shows
+        // "Steps done: 0" immediately; the heartbeat poller replaces it
+        // with the real stats out of the box as soon as the first step
+        // lands.
+        let box = TrainingLiveStatsBox(rollingWindow: Self.rollingLossWindow)
+        trainingBox = box
         trainingStats = TrainingRunStats()
         continuousTraining = true
 
-        trainingTask = Task { [trainer] in
-            while !Task.isCancelled {
+        trainingTask = Task { [trainer, box] in
+            var shouldStop = false
+            while !Task.isCancelled && !shouldStop {
                 let result = await Task.detached(priority: .userInitiated) {
                     Self.runOneTrainStep(trainer: trainer)
                 }.value
                 switch result {
                 case .success(let timing):
-                    await MainActor.run {
-                        trainingStats?.record(timing)
-                        lastTrainStep = timing
-                    }
+                    box.recordStep(timing)
                 case .failure(let error):
-                    await MainActor.run {
-                        trainingError = error.localizedDescription
-                    }
-                    break
+                    box.recordError(error.localizedDescription)
+                    shouldStop = true
                 }
             }
             await MainActor.run { continuousTraining = false }
@@ -924,6 +1197,112 @@ struct ContentView: View {
 
     nonisolated private static func runOneTrainStep(trainer: ChessTrainer) -> Result<TrainStepTiming, Error> {
         Result { try trainer.trainStep(batchSize: trainingBatchSize) }
+    }
+
+    // MARK: - Real Training (Self-Play) Actions
+
+    /// Kick off real-data training: self-play games against the inference
+    /// network feed a replay buffer; the trainer samples minibatches out of
+    /// the buffer and steps SGD on them. Alternates one game → K train
+    /// steps → next game, so the UI shows both activities live. Trainer
+    /// weights are reset at the top of the loop so each run starts from
+    /// fresh random init and the rolling loss curve is meaningful.
+    private func startRealTraining() {
+        guard let trainer = ensureTrainer(), let network else { return }
+        inferenceResult = nil
+        gameWatcher.resetAll()
+        gameSnapshot = gameWatcher.snapshot()
+        clearTrainingDisplay()
+
+        let buffer = ReplayBuffer(capacity: Self.replayBufferCapacity)
+        replayBuffer = buffer
+        let box = TrainingLiveStatsBox(rollingWindow: Self.rollingLossWindow)
+        trainingBox = box
+        realRollingPolicyLoss = nil
+        realRollingValueLoss = nil
+        trainingStats = TrainingRunStats()
+        realTraining = true
+
+        realTrainingTask = Task { [trainer, network, buffer, box] in
+            // Fresh weights each run — otherwise the loss curve inherits
+            // whatever weights the previous session (random-data training,
+            // a sweep, or a prior self-play run) left behind and the user
+            // can't tell whether real data is actually driving loss down.
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try trainer.resetNetwork()
+                }.value
+            } catch {
+                box.recordError("Reset failed: \(error.localizedDescription)")
+                await MainActor.run {
+                    realTraining = false
+                    realTrainingTask = nil
+                }
+                return
+            }
+
+            var shouldStop = false
+            while !Task.isCancelled && !shouldStop {
+                // --- Play one self-play game with positions going into the
+                //     buffer via each MPSChessPlayer's onGameEnded push. ---
+                gameWatcher.resetCurrentGame()
+                gameWatcher.markPlaying(true)
+
+                let machine = ChessMachine()
+                machine.delegate = gameWatcher
+                let white = MPSChessPlayer(
+                    name: "White",
+                    network: network,
+                    replayBuffer: buffer
+                )
+                let black = MPSChessPlayer(
+                    name: "Black",
+                    network: network,
+                    replayBuffer: buffer
+                )
+                do {
+                    let task = try machine.beginNewGame(white: white, black: black)
+                    _ = await task.value
+                } catch {
+                    gameWatcher.markPlaying(false)
+                    break
+                }
+
+                if Task.isCancelled { break }
+
+                // --- Train K steps, if the buffer is warm enough for the
+                //     samples to cover more than one game's positions. ---
+                if buffer.count < Self.minBufferBeforeTraining { continue }
+
+                for _ in 0..<Self.trainStepsPerGame {
+                    if Task.isCancelled { break }
+                    guard let batch = buffer.sample(count: Self.trainingBatchSize) else { break }
+
+                    let result = await Task.detached(priority: .userInitiated) {
+                        Result { try trainer.trainStep(batch: batch) }
+                    }.value
+
+                    switch result {
+                    case .success(let timing):
+                        box.recordStep(timing)
+                    case .failure(let error):
+                        box.recordError(error.localizedDescription)
+                        shouldStop = true
+                    }
+                    if shouldStop { break }
+                }
+            }
+
+            await MainActor.run {
+                realTraining = false
+                realTrainingTask = nil
+            }
+        }
+    }
+
+    private func stopRealTraining() {
+        realTrainingTask?.cancel()
+        realTrainingTask = nil
     }
 
     // MARK: - Sweep Actions
@@ -1043,10 +1422,55 @@ struct ContentView: View {
             return sweepStatsText()
         }
 
-        let mode = continuousTraining ? "Continuous" : "Single Step"
+        let isSelfPlay = realTraining || replayBuffer != nil
+        let mode: String
+        if isSelfPlay {
+            mode = "Self-Play"
+        } else if continuousTraining {
+            mode = "Continuous"
+        } else {
+            mode = "Single Step"
+        }
         var lines: [String] = []
         lines.append("Training (\(mode))")
         lines.append("  Batch size:  \(Self.trainingBatchSize)")
+        // Learning rate — read off the trainer so we can't drift out of
+        // sync with what the graph is actually applying. Shown in every
+        // training mode since it's the same knob across all of them.
+        let lrStr: String
+        if let trainer {
+            lrStr = String(format: "%.1e", trainer.learningRate)
+        } else {
+            lrStr = dash
+        }
+        lines.append("  Learn rate: \(lrStr)")
+
+        // Self-Play adds two extra header lines (replay buffer fill, rolling
+        // loss). Both are present from the first render of a self-play run,
+        // so they don't cause mid-run layout shifts. They're omitted in
+        // single-step / continuous modes because those modes have no replay
+        // buffer and no meaningful rolling-loss window separate from the
+        // last-step loss shown below.
+        if isSelfPlay {
+            let bufCount = replayBuffer?.count ?? 0
+            let bufCap = replayBuffer?.capacity ?? Self.replayBufferCapacity
+            let bufStr = String(format: "%6d / %d", bufCount, bufCap)
+            lines.append("  Buffer:     \(bufStr)")
+            let policyStr: String
+            if let loss = realRollingPolicyLoss {
+                policyStr = String(format: "%+.6f", loss)
+            } else {
+                policyStr = dash
+            }
+            let valueStr: String
+            if let loss = realRollingValueLoss {
+                valueStr = String(format: "%+.6f", loss)
+            } else {
+                valueStr = dash
+            }
+            lines.append("  Roll policy: \(policyStr)")
+            lines.append("  Roll value:  \(valueStr)")
+        }
         lines.append("")
 
         if let last = lastTrainStep {
@@ -1056,27 +1480,43 @@ struct ContentView: View {
             lines.append(String(format: "  GPU run:     %7.2f ms", last.gpuRunMs))
             lines.append(String(format: "  Readback:    %7.2f ms", last.readbackMs))
             lines.append(String(format: "  Loss:        %+.6f", last.loss))
+            lines.append(String(format: "    policy:    %+.6f", last.policyLoss))
+            lines.append(String(format: "    value:     %+.6f", last.valueLoss))
             lines.append("")
         }
 
         if let stats = trainingStats {
             let stepsStr = stats.steps.formatted(.number.grouping(.automatic))
-            let elapsedStr = String(format: "%.2f s", CFAbsoluteTimeGetCurrent() - stats.startTime)
+            // Train time is the sum of per-step wall times — in real-
+            // training mode this excludes self-play, so the rate numbers
+            // below reflect trainer throughput rather than session clock.
+            let trainTimeStr = stats.steps > 0
+                ? String(format: "%.2f s", stats.trainingSeconds)
+                : dash
             let avgTotal = stats.steps > 0 ? String(format: "%7.2f ms", stats.avgStepMs) : dash
             let avgGpu = stats.steps > 0 ? String(format: "%7.2f ms", stats.avgGpuMs) : dash
             let minStr = stats.steps > 0 ? String(format: "%7.2f ms", stats.minStepMs) : dash
             let maxStr = stats.steps > 0 ? String(format: "%7.2f ms", stats.maxStepMs) : dash
             let rateStr = stats.steps > 0 ? String(format: "%.2f", stats.stepsPerSecond) : dash
+            let posRateStr: String
+            if stats.steps > 0 {
+                let posPerSec = stats.positionsPerSecond(batchSize: Self.trainingBatchSize)
+                posRateStr = Int(posPerSec.rounded())
+                    .formatted(.number.grouping(.automatic))
+            } else {
+                posRateStr = dash
+            }
             let projStr = stats.steps > 0 ? String(format: "%.2f s", stats.projectedSecPer250Steps) : dash
 
             lines.append("Run Totals")
             lines.append("  Steps done:  \(stepsStr)")
-            lines.append("  Elapsed:     \(elapsedStr)")
+            lines.append("  Train time:  \(trainTimeStr)")
             lines.append("  Avg total:   \(avgTotal)")
             lines.append("  Avg GPU:     \(avgGpu)")
             lines.append("  Min step:    \(minStr)")
             lines.append("  Max step:    \(maxStr)")
             lines.append("  Steps/sec:   \(rateStr)")
+            lines.append("  Pos/sec:     \(posRateStr)")
             lines.append("  Proj 250×:   \(projStr)")
         }
 
@@ -1180,13 +1620,17 @@ struct ContentView: View {
         Result { try ChessMPSNetwork(.randomWeights) }
     }
 
-    nonisolated private static func performInference(with runner: ChessRunner) -> EvaluationResult {
+    nonisolated private static func performInference(
+        with runner: ChessRunner,
+        state: GameState
+    ) -> EvaluationResult {
         var lines: [String] = []
         var topMoves: [MoveVisualization] = []
-        let board = BoardEncoder.encodeStartingPosition()
+        let board = BoardEncoder.encode(state)
+        let flip = state.currentPlayer == .black
 
         do {
-            let inference = try runner.evaluate(board: board)
+            let inference = try runner.evaluate(board: board, pieces: state.board, flip: flip)
             topMoves = inference.topMoves
 
             lines.append(String(format: "Forward pass: %.2f ms", inference.inferenceTimeMs))

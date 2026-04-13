@@ -26,6 +26,12 @@ final class MPSChessPlayer: ChessPlayer {
     let identifier: String
     let name: String
     private let network: ChessMPSNetwork
+    /// Optional replay buffer. When non-nil, this player pushes each finished
+    /// game's labeled positions into the buffer from `onGameEnded`. The
+    /// default-nil path is what Play Game and Play Continuous use — they
+    /// have no use for training data, and passing nil keeps their behavior
+    /// identical to before the buffer existed.
+    private let replayBuffer: ReplayBuffer?
     private var isWhite = true
 
     /// Positions recorded during the current game. Cleared on each new game.
@@ -35,10 +41,14 @@ final class MPSChessPlayer: ChessPlayer {
     /// Create a player backed by a neural network.
     /// For self-play, two players can share the same network — they take turns,
     /// and BoardEncoder.encode handles the perspective flip automatically.
-    init(name: String, network: ChessMPSNetwork) {
+    /// Pass a `replayBuffer` to have this player contribute its labeled
+    /// positions to a shared training pool at game end; leave it nil for
+    /// normal (non-training) play.
+    init(name: String, network: ChessMPSNetwork, replayBuffer: ReplayBuffer? = nil) {
         self.identifier = UUID().uuidString
         self.name = name
         self.network = network
+        self.replayBuffer = replayBuffer
     }
 
     func onNewGame(_ isWhite: Bool) {
@@ -84,6 +94,14 @@ final class MPSChessPlayer: ChessPlayer {
 
         for i in gamePositions.indices {
             gamePositions[i].outcome = myOutcome
+        }
+
+        // Push this half-game's now-labeled positions into the shared
+        // replay buffer if one was provided. Both players in a self-play
+        // session push independently so the buffer sees positions from
+        // both perspectives.
+        if let replayBuffer {
+            replayBuffer.append(contentsOf: gamePositions)
         }
     }
 
