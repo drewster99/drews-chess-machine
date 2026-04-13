@@ -410,6 +410,12 @@ struct TournamentProgress: Sendable {
     let candidateWins: Int
     let championWins: Int
     let draws: Int
+    /// Wall-clock time the tournament started, captured once in
+    /// `runArenaTournament` before the first game and carried through
+    /// every per-game update so the busy label can compute live
+    /// elapsed time via `Date().timeIntervalSince(startTime)` on each
+    /// render without needing a separate ticking timer.
+    let startTime: Date
 
     /// AlphaZero-style score: (wins + 0.5 * draws) / games_played.
     /// Pure draws → 0.5. Candidate sweeping every decisive game with
@@ -433,6 +439,10 @@ struct TournamentRecord: Sendable, Identifiable {
     let draws: Int
     let score: Double
     let promoted: Bool
+    /// Total wall-clock time the tournament took from the initial
+    /// trainer → candidate sync through the last game. Promotion copy
+    /// after the score threshold check is not included.
+    let durationSec: Double
 }
 
 /// Lock-protected holder for live tournament progress, shared between
@@ -568,7 +578,7 @@ struct ContentView: View {
     /// block per game) this fires roughly every 5 minutes of wall
     /// clock. Checked at gap point #2 in the driver loop after a
     /// training block finishes and `trainingStats.steps` has advanced.
-    nonisolated static let stepsPerTournament = 5000
+    nonisolated static let stepsPerTournament = 1250
     /// Minimum wall-clock interval between scheduled candidate-test probes.
     /// Actual cadence drifts slightly — a probe only fires at the next
     /// driver gap after the interval has elapsed — and that's fine: this
@@ -1114,12 +1124,18 @@ struct ContentView: View {
         if let tp = tournamentProgress {
             // Arena tournament takes priority over normal Play and
             // Train status. Shows live progress so the user sees the
-            // candidate's score evolve across the 200 games.
+            // candidate's score evolve across the 200 games. Elapsed
+            // time is recomputed from `tp.startTime` on every render
+            // so it ticks live between per-game box updates — the
+            // body re-runs on the 60 Hz heartbeat's snapshot writes
+            // regardless of whether the tournament box has new data.
+            let elapsed = Date().timeIntervalSince(tp.startTime)
             return String(
-                format: "Arena game %d/%d  candidate %d-%d-%d  score %.3f",
+                format: "Arena game %d/%d  candidate %d-%d-%d  score %.3f  %@",
                 tp.currentGame, tp.totalGames,
                 tp.candidateWins, tp.championWins, tp.draws,
-                tp.candidateScore
+                tp.candidateScore,
+                Self.formatElapsed(elapsed)
             )
         }
         if realTraining {
@@ -1311,14 +1327,20 @@ struct ContentView: View {
         guard let candidateInference = candidateInferenceNetwork else { return }
 
         // Seed live-progress state before the first game so the busy
-        // label switches to arena mode immediately.
+        // label switches to arena mode immediately. Start time is
+        // captured here and carried through every per-game update
+        // (and later into the history record's duration) so the busy
+        // label can show live elapsed time and the history entry can
+        // show final wall-clock duration.
         let totalGames = Self.tournamentGames
+        let startTime = Date()
         tBox.update(TournamentProgress(
             currentGame: 0,
             totalGames: totalGames,
             candidateWins: 0,
             championWins: 0,
-            draws: 0
+            draws: 0,
+            startTime: startTime
         ))
         tournamentProgress = tBox.snapshot()
 
@@ -1379,7 +1401,8 @@ struct ContentView: View {
                             totalGames: totalGames,
                             candidateWins: aWins,
                             championWins: bWins,
-                            draws: draws
+                            draws: draws,
+                            startTime: startTime
                         ))
                     }
                 )
@@ -1418,13 +1441,15 @@ struct ContentView: View {
         // history entry drives the text-panel display; clearing the
         // box lets the busy label fall back to normal Play and Train
         // mode on the next heartbeat.
+        let durationSec = Date().timeIntervalSince(startTime)
         let record = TournamentRecord(
             finishedAtStep: steps,
             candidateWins: stats.playerAWins,
             championWins: stats.playerBWins,
             draws: stats.draws,
             score: score,
-            promoted: promoted
+            promoted: promoted,
+            durationSec: durationSec
         )
         tournamentHistory.append(record)
         tBox.clear()
@@ -2147,11 +2172,12 @@ struct ContentView: View {
                 let stepStr = record.finishedAtStep.formatted(.number.grouping(.automatic))
                 let scoreStr = String(format: "%.3f", record.score)
                 let marker = record.promoted ? "PROMOTED" : "kept"
+                let durStr = Self.formatElapsed(record.durationSec)
                 lines.append(String(
-                    format: "  #%@ @ %@ steps  %d-%d-%d  score %@  %@",
+                    format: "  #%@ @ %@ steps  %d-%d-%d  score %@  %@  (%@)",
                     number, stepStr,
                     record.candidateWins, record.championWins, record.draws,
-                    scoreStr, marker
+                    scoreStr, marker, durStr
                 ))
             }
         }
@@ -2244,6 +2270,20 @@ struct ContentView: View {
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    /// Render an elapsed-time interval as a compact fixed-width string.
+    /// Under one minute: `"12.3s"` (1-decimal seconds). One minute and
+    /// up: `"1:22"` (m:ss). Keeps the arena busy label stable in width
+    /// whether the tournament has been running for 8 seconds or 2
+    /// minutes.
+    private static func formatElapsed(_ seconds: Double) -> String {
+        let s = max(0, seconds)
+        if s < 60 {
+            return String(format: "%4.1fs", s)
+        }
+        let totalSec = Int(s)
+        return String(format: "%d:%02d", totalSec / 60, totalSec % 60)
     }
 
     private static func bytesToGB(_ bytes: UInt64) -> Double {
