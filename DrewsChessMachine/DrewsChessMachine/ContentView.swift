@@ -473,6 +473,229 @@ final class TournamentLiveBox: @unchecked Sendable {
     }
 }
 
+// MARK: - Parallel Worker Coordination
+
+/// Request/ack gate used to briefly pause one of the parallel Play and
+/// Train workers (self-play or training) while another task needs
+/// exclusive access to one of the four shared networks for a few
+/// milliseconds — e.g. arena start copying trainer → candidate and
+/// champion → arena champion, or arena end copying candidate →
+/// champion on promotion. A coordinator calls `pauseAndWait()` to
+/// request + wait for the worker to enter its wait state, does its
+/// protected work, then calls `resume()`. The worker polls
+/// `isRequestedToPause` at natural iteration boundaries (between
+/// games for self-play, between SGD steps for training) and spins
+/// on a 5 ms sleep until released.
+///
+/// Cancellation-safe: the worker's spin-wait checks `Task.isCancelled`
+/// on every iteration so clicking Stop during a pause exits the
+/// wait loop immediately. Lock-protected state, `@unchecked Sendable`.
+final class WorkerPauseGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _requested = false
+    private var _isWaiting = false
+
+    /// Polled by the worker at each iteration boundary.
+    var isRequestedToPause: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _requested
+    }
+
+    /// Called by the worker when it enters its spin-wait state, so
+    /// the coordinator knows it's safe to start the protected work.
+    func markWaiting() {
+        lock.lock()
+        defer { lock.unlock() }
+        _isWaiting = true
+    }
+
+    /// Called by the worker when it leaves its spin-wait state and
+    /// resumes normal iteration.
+    func markRunning() {
+        lock.lock()
+        defer { lock.unlock() }
+        _isWaiting = false
+    }
+
+    /// Coordinator: flip the pause request and spin-wait until the
+    /// worker has acknowledged by entering its wait state. Returns
+    /// once it's safe to perform the protected work.
+    func pauseAndWait() async {
+        setRequested(true)
+        while !Task.isCancelled {
+            if readIsWaiting() { return }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    /// Synchronous helpers so `pauseAndWait()` doesn't hold an
+    /// `NSLock` across an `await` — Swift 6 strict concurrency
+    /// forbids calling `NSLock.lock()` from an async context.
+    private func setRequested(_ value: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        _requested = value
+    }
+
+    private func readIsWaiting() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _isWaiting
+    }
+
+    /// Coordinator: release the worker. Clears the request flag so
+    /// the worker's next spin-wait iteration sees it and resumes.
+    func resume() {
+        lock.lock()
+        defer { lock.unlock() }
+        _requested = false
+    }
+}
+
+/// Lock-protected trigger inbox for the arena coordinator task. The
+/// training worker fires the trigger when the 30-minute auto cadence
+/// elapses; the UI fires it via the Run Arena button. The arena
+/// coordinator task polls `consume()` in its main loop and runs an
+/// arena whenever the trigger is pending. `recordArenaCompleted()`
+/// resets the "last arena" timestamp so the auto-fire math stays
+/// accurate across both the automatic and manual paths.
+final class ArenaTriggerBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _pending = false
+    private var _lastArenaTime: Date
+
+    init(startTime: Date = Date()) {
+        self._lastArenaTime = startTime
+    }
+
+    /// Check whether enough wall clock has elapsed since the last
+    /// arena to auto-trigger another one. Returns false if a trigger
+    /// is already pending, so the training worker doesn't queue
+    /// multiple auto-triggers for the same deadline.
+    func shouldAutoTrigger(interval: TimeInterval) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if _pending { return false }
+        return Date().timeIntervalSince(_lastArenaTime) >= interval
+    }
+
+    /// Set the pending flag. The arena coordinator's next poll will
+    /// consume it and start an arena.
+    func trigger() {
+        lock.lock()
+        defer { lock.unlock() }
+        _pending = true
+    }
+
+    /// Poll the trigger. Returns true and clears the pending flag if
+    /// a trigger was waiting; returns false otherwise.
+    func consume() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if _pending {
+            _pending = false
+            return true
+        }
+        return false
+    }
+
+    /// Record that an arena just finished. Resets the wall-clock
+    /// reference for subsequent `shouldAutoTrigger` checks so the
+    /// next auto-fire happens `interval` seconds from now, not from
+    /// the previous last-arena time.
+    func recordArenaCompleted() {
+        lock.lock()
+        defer { lock.unlock() }
+        _lastArenaTime = Date()
+    }
+
+    /// True if a trigger is currently pending (used for UI
+    /// disable-while-queued semantics).
+    var isPending: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _pending
+    }
+}
+
+/// Lock-protected flag indicating an arena tournament is currently
+/// in progress. Used to mutually exclude the Candidate test probe
+/// from the arena, since both touch the candidate inference network
+/// and the probe can't write while the arena is reading.
+final class ArenaActiveFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _active = false
+
+    var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _active
+    }
+
+    func set() {
+        lock.lock()
+        defer { lock.unlock() }
+        _active = true
+    }
+
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        _active = false
+    }
+}
+
+/// Lock-protected rolling counters for the parallel self-play and
+/// training workers. Each worker increments its own counters after
+/// finishing one unit of work (one game for self-play, one SGD step
+/// for training), and the UI heartbeat reads both to compute the
+/// live positions-per-second rates shown in the busy label. Values
+/// are monotonic for the life of the Play and Train session; wall-
+/// clock rate is computed against `sessionStart`.
+final class ParallelWorkerStatsBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _selfPlayGames: Int = 0
+    private var _selfPlayPositions: Int = 0
+    private var _trainingSteps: Int = 0
+    let sessionStart: Date
+
+    init(sessionStart: Date = Date()) {
+        self.sessionStart = sessionStart
+    }
+
+    func recordSelfPlayGame(positions: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        _selfPlayGames += 1
+        _selfPlayPositions += positions
+    }
+
+    func recordTrainingStep() {
+        lock.lock()
+        defer { lock.unlock() }
+        _trainingSteps += 1
+    }
+
+    struct Snapshot: Sendable {
+        let selfPlayGames: Int
+        let selfPlayPositions: Int
+        let trainingSteps: Int
+        let sessionStart: Date
+    }
+
+    func snapshot() -> Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return Snapshot(
+            selfPlayGames: _selfPlayGames,
+            selfPlayPositions: _selfPlayPositions,
+            trainingSteps: _trainingSteps,
+            sessionStart: sessionStart
+        )
+    }
+}
+
 // MARK: - Content View
 
 struct ContentView: View {
@@ -502,6 +725,36 @@ struct ContentView: View {
     /// mode — no special-case trainer-probe branch needed now that
     /// the candidate has a dedicated inference-mode network of its own.
     @State private var candidateRunner: ChessRunner?
+    /// Fourth network — dedicated to the arena's "champion side"
+    /// player. During arena, champion is copied into this network
+    /// once at the start (under a brief self-play pause) and the
+    /// arena games run on this network alone, leaving the real
+    /// champion free for continuous self-play throughout the
+    /// tournament. Built lazily on the first Play and Train session
+    /// and cached for the life of the app.
+    @State private var arenaChampionNetwork: ChessMPSNetwork?
+    /// Live-progress snapshot from the parallel workers, mirrored
+    /// from `parallelWorkerStatsBox` by the heartbeat. Nil outside of
+    /// Play and Train sessions.
+    @State private var parallelStats: ParallelWorkerStatsBox.Snapshot?
+    /// Lock-protected counter box shared across the parallel self-
+    /// play and training worker tasks. Writers (workers) call
+    /// `recordSelfPlayGame` / `recordTrainingStep`; the UI heartbeat
+    /// polls `snapshot()` and mirrors into `parallelStats` so the
+    /// busy label shows live positions/sec rates.
+    @State private var parallelWorkerStatsBox: ParallelWorkerStatsBox?
+    /// Shared cancellation-aware flag set while an arena tournament
+    /// is in flight. The Candidate test probe checks this and skips
+    /// firing so probe and arena never contend on the candidate
+    /// inference network.
+    @State private var arenaActiveFlag: ArenaActiveFlag?
+    /// Trigger inbox the arena coordinator polls. Set by the training
+    /// worker's 30-minute auto check and by the Run Arena button.
+    @State private var arenaTriggerBox: ArenaTriggerBox?
+    /// True while an arena is running — mirror of `arenaActiveFlag`
+    /// maintained by the heartbeat for UI purposes (disabling the
+    /// Run Arena button, suppressing probe activity on screen).
+    @State private var isArenaRunning: Bool = false
 
     // Inference
     @State private var inferenceResult: EvaluationResult?
@@ -572,13 +825,15 @@ struct ContentView: View {
     /// which in a draw-heavy regime translates to winning the large
     /// majority of decisive games.
     nonisolated static let tournamentPromoteThreshold = 0.55
-    /// Number of individual SGD steps between arenas. Not training
-    /// blocks — individual batches of 256 positions. At the current
-    /// throughput (~20 ms per step, 10 steps per training block, one
-    /// block per game) this fires roughly every 5 minutes of wall
-    /// clock. Checked at gap point #2 in the driver loop after a
-    /// training block finishes and `trainingStats.steps` has advanced.
-    nonisolated static let stepsPerTournament = 1250
+    /// Wall-clock seconds between automatic arena tournaments in
+    /// parallel mode. Checked inside the training worker between SGD
+    /// steps; when `now - lastTournamentTime >= secondsPerTournament`
+    /// and no arena is already running, a new arena is spawned.
+    /// 30 minutes is the default — long enough that arenas are
+    /// consequential events rather than noise, short enough that a
+    /// session hits several of them. Also available on demand via
+    /// the Run Arena button regardless of this cadence.
+    nonisolated static let secondsPerTournament: TimeInterval = 30 * 60
     /// Minimum wall-clock interval between scheduled candidate-test probes.
     /// Actual cadence drifts slightly — a probe only fires at the next
     /// driver gap after the interval has elapsed — and that's fine: this
@@ -818,7 +1073,7 @@ struct ContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Chess Neural Network")
+            Text("Drew's Chess Machine")
                 .font(.title2)
                 .fontWeight(.semibold)
 
@@ -876,6 +1131,28 @@ struct ContentView: View {
                 if continuousPlay || continuousTraining || sweepRunning || realTraining {
                     Button("Stop") { stopAnyContinuous() }
                         .keyboardShortcut(.escape, modifiers: [])
+                }
+
+                // Run Arena — visible only during Play and Train. Fires
+                // an arena immediately (outside the 30-minute auto
+                // cadence) and is disabled while one is already
+                // running so the user can't queue overlapping
+                // tournaments. Writes to the trigger box; the arena
+                // coordinator task picks it up on its next poll.
+                //
+                // Disabled check is based on `isArenaRunning` (a @State
+                // mirror maintained by runArenaParallel) so SwiftUI
+                // actually re-evaluates it when state changes. There's
+                // a small window (~500 ms, the arena coordinator poll
+                // interval) between the user clicking and the button
+                // disabling; repeated clicks during that window just
+                // re-set the trigger flag, which is idempotent.
+                if realTraining {
+                    Button("Run Arena") {
+                        guard !isArenaRunning else { return }
+                        arenaTriggerBox?.trigger()
+                    }
+                    .disabled(isArenaRunning)
                 }
 
                 if isBusy {
@@ -1116,6 +1393,18 @@ struct ContentView: View {
                     tournamentProgress = snap
                 }
             }
+            // Parallel worker counters mirror — only updates @State
+            // when totals have actually advanced so the body isn't
+            // re-evaluated when nothing's changed. The sessionStart
+            // timestamp is embedded in the snapshot so the busy
+            // label can compute rates on every render.
+            if let pBox = parallelWorkerStatsBox {
+                let snap = pBox.snapshot()
+                if snap.selfPlayGames != (parallelStats?.selfPlayGames ?? -1)
+                    || snap.trainingSteps != (parallelStats?.trainingSteps ?? -1) {
+                    parallelStats = snap
+                }
+            }
         }
     }
 
@@ -1139,12 +1428,28 @@ struct ContentView: View {
             )
         }
         if realTraining {
-            // Show both self-play and training progress at once — the
-            // driver alternates between them, so either number alone is
-            // misleading.
+            // Parallel mode: self-play and training advance independently,
+            // each on its own task. Show both rates in the same units
+            // (positions/sec) so you can see the training loop racing
+            // ahead of the self-play loop. Rates are computed against
+            // the session start time captured in `parallelStats` so they
+            // stabilize quickly and reflect actual wall-clock throughput.
             let games = gameSnapshot.totalGames
             let buf = replayBuffer?.count ?? 0
             let steps = trainingStats?.steps ?? 0
+            if let ps = parallelStats {
+                let elapsed = max(0.1, Date().timeIntervalSince(ps.sessionStart))
+                let spMovesPerSec = Double(ps.selfPlayPositions) / elapsed
+                let trMovesPerSec = Double(ps.trainingSteps * Self.trainingBatchSize) / elapsed
+                return String(
+                    format: "Self-play: %d games, %@ moves/s  ·  Train: %d steps, %@ moves/s  ·  Buf: %d",
+                    games,
+                    Int(spMovesPerSec.rounded()).formatted(.number.grouping(.automatic)),
+                    steps,
+                    Int(trMovesPerSec.rounded()).formatted(.number.grouping(.automatic)),
+                    buf
+                )
+            }
             return "Self-play: \(games) games, \(buf) positions, \(steps) train steps..."
         }
         if gameSnapshot.isPlaying { return "Game \(gameSnapshot.totalGames + 1), move \(gameSnapshot.moveCount)..." }
@@ -1254,12 +1559,16 @@ struct ContentView: View {
         // and candidate network both available for the trainer → candidate
         // sync. All of these are normally true during Play and Train —
         // the early-return cases cover "just-started race before the
-        // candidate was built" or "trainer wasn't initialized."
+        // candidate was built" or "trainer wasn't initialized." We also
+        // skip if an arena is running because the arena is currently
+        // using the candidate inference network as its player-A; probe
+        // writes to the same network would race with arena reads.
         guard
             isCandidateTestActive,
             let candidateRunner,
             let trainer,
-            let candidateInference = candidateInferenceNetwork
+            let candidateInference = candidateInferenceNetwork,
+            arenaActiveFlag?.isActive != true
         else { return }
         let now = Date()
         let dirty = candidateProbeDirty
@@ -1303,35 +1612,45 @@ struct ContentView: View {
         candidateProbeCount += 1
     }
 
-    /// Run one arena tournament — 200 games candidate vs champion,
-    /// alternating colors — and promote the candidate into the champion
-    /// iff its score meets the 0.55 threshold. Called from the Play and
-    /// Train driver task at gap point #2 every `stepsPerTournament` SGD
-    /// steps. Blocks the driver (and therefore self-play and training)
-    /// for its duration so the trainer snapshot stays stable while the
-    /// tournament evaluates it — no one else touches the trainer or
-    /// either inference network while we're inside this method.
+    /// Run one arena tournament in parallel mode — 200 games between
+    /// the candidate (synced from trainer at start) and the arena
+    /// champion (synced from the real champion at start), while
+    /// self-play and training continue running in the background.
+    /// Promotes the candidate into the real champion iff the score
+    /// meets the 0.55 threshold.
     ///
-    /// Errors during the initial sync or the final promotion copy are
-    /// recorded via `box.recordError` and abort the tournament without
-    /// promoting. The tournament itself catches errors inside the
-    /// TournamentDriver by treating games as draws, so a stray Metal
-    /// glitch during one game doesn't crash the whole arena.
+    /// Synchronization: this is called from the arena coordinator
+    /// task, which is a peer to the self-play and training workers.
+    /// Training and self-play are briefly paused at arena start so
+    /// the method can take trainer and champion snapshots into
+    /// dedicated arena-only networks; after that the arena runs
+    /// exclusively on those two snapshots and doesn't touch the
+    /// "live" trainer or champion again until promotion (which
+    /// briefly re-pauses self-play to write into the champion).
+    /// Candidate test probes skip while `arenaFlag.isActive` so
+    /// they don't race with arena reads of the candidate inference
+    /// network.
     @MainActor
-    private func runArenaTournament(
-        atStep steps: Int,
+    private func runArenaParallel(
         trainer: ChessTrainer,
         champion: ChessMPSNetwork,
-        tBox: TournamentLiveBox
+        candidateInference: ChessMPSNetwork,
+        arenaChampion: ChessMPSNetwork,
+        tBox: TournamentLiveBox,
+        selfPlayGate: WorkerPauseGate,
+        trainingGate: WorkerPauseGate,
+        arenaFlag: ArenaActiveFlag
     ) async {
-        guard let candidateInference = candidateInferenceNetwork else { return }
+        let steps = trainingStats?.steps ?? 0
 
-        // Seed live-progress state before the first game so the busy
-        // label switches to arena mode immediately. Start time is
-        // captured here and carried through every per-game update
-        // (and later into the history record's duration) so the busy
-        // label can show live elapsed time and the history entry can
-        // show final wall-clock duration.
+        // Mark arena active and seed live progress. Arena-active
+        // suppresses the candidate test probe for the duration so
+        // probe and arena don't race on the candidate inference
+        // network. isArenaRunning is @State mirror the UI reads to
+        // disable the Run Arena button and adjust the busy label.
+        arenaFlag.set()
+        isArenaRunning = true
+
         let totalGames = Self.tournamentGames
         let startTime = Date()
         tBox.update(TournamentProgress(
@@ -1344,54 +1663,75 @@ struct ContentView: View {
         ))
         tournamentProgress = tBox.snapshot()
 
-        // Sync trainer → candidate inference network. This is the
-        // snapshot we'll evaluate. Weights + BN running stats both get
-        // copied so the candidate's forward pass runs through proper
-        // inference-mode BN calibrated to training-time activations.
+        // --- Trainer → candidate inference snapshot ---
+        //
+        // Pause the training worker briefly (a few ms, at most one
+        // SGD step) so we can export trainer weights without racing
+        // against a concurrent `trainer.trainStep`. Release training
+        // as soon as the snapshot lands — the rest of the arena
+        // runs on `candidateInference`, not on `trainer`, so training
+        // can continue through the 200 games.
+        await trainingGate.pauseAndWait()
+        if Task.isCancelled {
+            trainingGate.resume()
+            cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+            return
+        }
         do {
             try await Task.detached(priority: .userInitiated) {
                 let weights = try trainer.network.exportWeights()
                 try candidateInference.network.loadWeights(weights)
             }.value
         } catch {
-            trainingBox?.recordError("Arena sync failed: \(error.localizedDescription)")
-            tBox.clear()
-            tournamentProgress = nil
+            trainingBox?.recordError("Arena candidate sync failed: \(error.localizedDescription)")
+            trainingGate.resume()
+            cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
             return
         }
+        trainingGate.resume()
 
-        // Cancellation propagation: Task.detached doesn't inherit
-        // cancellation from the outer driver task, so clicking Stop
-        // during an arena would otherwise leave the user waiting the
-        // full ~80 s for all 200 games to finish. `withTaskCancellation
-        // Handler` installs an `onCancel` block that fires as soon as
-        // the outer driver task is cancelled; it flips a CancelBox
-        // that the detached TournamentDriver checks between games,
-        // breaking the loop at the next game boundary. Partial stats
-        // come back and we skip promotion since the arena didn't
-        // complete.
+        // --- Champion → arena champion snapshot ---
         //
-        // The TournamentDriver instance is created INSIDE the detached
-        // closure so it doesn't need to cross the main-actor boundary —
-        // it's a non-Sendable class and Swift 6 strict concurrency
-        // rejects capturing it from MainActor context into a @Sendable
-        // closure. Building it fresh in the closure is cheap (empty
-        // init) and avoids the sendability dance.
+        // Same pattern for self-play: brief pause, copy weights from
+        // the real champion into the arena-only champion network,
+        // release. Arena games from here on only read
+        // `arenaChampion`, leaving the real champion free for
+        // continuous self-play through the tournament.
+        await selfPlayGate.pauseAndWait()
+        if Task.isCancelled {
+            selfPlayGate.resume()
+            cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+            return
+        }
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                let weights = try champion.network.exportWeights()
+                try arenaChampion.network.loadWeights(weights)
+            }.value
+        } catch {
+            trainingBox?.recordError("Arena champion sync failed: \(error.localizedDescription)")
+            selfPlayGate.resume()
+            cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+            return
+        }
+        selfPlayGate.resume()
+
+        // --- Tournament games ---
+        //
+        // Cancellation: the detached tournament task is wrapped in
+        // `withTaskCancellationHandler` so clicking Stop flips a
+        // `CancelBox` that `TournamentDriver.run` checks between
+        // games. The worst-case delay from Stop to actually breaking
+        // out is one in-flight arena game (~400 ms).
         let cancelBox = CancelBox()
         let stats = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
-                [champion, candidateInference, tBox, cancelBox] in
+                [arenaChampion, candidateInference, tBox, cancelBox] in
                 let driver = TournamentDriver()
-                // No delegate — we don't animate arena games on the
-                // board, we just count results. The busy label
-                // reflects progress via the box + heartbeat instead.
-                // Attaching gameWatcher here would conflate arena
-                // game counts with self-play game counts in the
-                // session stats.
                 driver.delegate = nil
                 return await driver.run(
                     playerA: { MPSChessPlayer(name: "Candidate", network: candidateInference) },
-                    playerB: { MPSChessPlayer(name: "Champion", network: champion) },
+                    playerB: { MPSChessPlayer(name: "Champion", network: arenaChampion) },
                     games: totalGames,
                     collectTrainingPositions: false,
                     isCancelled: { cancelBox.isCancelled },
@@ -1411,7 +1751,7 @@ struct ContentView: View {
             cancelBox.cancel()
         }
 
-        // Compute AlphaZero-style score and decide on promotion.
+        // --- Score and promotion ---
         let playedGames = stats.gamesPlayed
         let score: Double
         if playedGames > 0 {
@@ -1421,26 +1761,26 @@ struct ContentView: View {
         }
         var promoted = false
         if playedGames >= totalGames && score >= Self.tournamentPromoteThreshold {
-            // Copy the candidate inference network's current state
-            // (which matches the trainer — we synced at the top of
-            // this method, and training was paused for the whole
-            // arena) into the champion. After this call, self-play's
-            // next game will use the promoted weights.
-            do {
-                try await Task.detached(priority: .userInitiated) { [candidateInference, champion] in
-                    let weights = try candidateInference.network.exportWeights()
-                    try champion.network.loadWeights(weights)
-                }.value
-                promoted = true
-            } catch {
-                trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
+            // Pause self-play briefly, copy candidate inference into
+            // the real champion, release. Self-play's next game uses
+            // the new weights.
+            await selfPlayGate.pauseAndWait()
+            if !Task.isCancelled {
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        [candidateInference, champion] in
+                        let weights = try candidateInference.network.exportWeights()
+                        try champion.network.loadWeights(weights)
+                    }.value
+                    promoted = true
+                } catch {
+                    trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
+                }
             }
+            selfPlayGate.resume()
         }
 
-        // Append to history and clear the live-progress box. The
-        // history entry drives the text-panel display; clearing the
-        // box lets the busy label fall back to normal Play and Train
-        // mode on the next heartbeat.
+        // Append to history and clear arena state.
         let durationSec = Date().timeIntervalSince(startTime)
         let record = TournamentRecord(
             finishedAtStep: steps,
@@ -1452,6 +1792,18 @@ struct ContentView: View {
             durationSec: durationSec
         )
         tournamentHistory.append(record)
+        cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+    }
+
+    /// Release arena-active state on an early return from
+    /// `runArenaParallel`. Clears the active flag (so the candidate
+    /// probe resumes), clears the live-progress box and mirror (so
+    /// the busy label reverts to normal Play and Train mode), and
+    /// resets the UI's `isArenaRunning` mirror.
+    @MainActor
+    private func cleanupArenaState(arenaFlag: ArenaActiveFlag, tBox: TournamentLiveBox) {
+        arenaFlag.clear()
+        isArenaRunning = false
         tBox.clear()
         tournamentProgress = nil
     }
@@ -1710,12 +2062,19 @@ struct ContentView: View {
 
     // MARK: - Real Training (Self-Play) Actions
 
-    /// Kick off real-data training: self-play games against the inference
-    /// network feed a replay buffer; the trainer samples minibatches out of
-    /// the buffer and steps SGD on them. Alternates one game → K train
-    /// steps → next game, so the UI shows both activities live. Trainer
-    /// weights are reset at the top of the loop so each run starts from
-    /// fresh random init and the rolling loss curve is meaningful.
+    /// Kick off real-data training in parallel mode: self-play, training,
+    /// and arena coordination run as three independent tasks inside a
+    /// `TaskGroup`, sharing state only through the lock-protected
+    /// replay buffer, stats boxes, pause gates, and arena-trigger box.
+    /// Self-play plays one game at a time on the champion network and
+    /// streams labeled positions into the replay buffer. Training runs
+    /// a tight-loop SGD on the trainer network, sampling the buffer
+    /// for each batch. The arena coordinator sleeps until triggered
+    /// (either by the 30-minute auto-fire or the Run Arena button),
+    /// then runs 200 games between the candidate inference network
+    /// and a fourth "arena champion" network — both snapshots taken
+    /// under brief per-worker pauses so game play and training never
+    /// actually stop, even during a tournament.
     private func startRealTraining() {
         guard let trainer = ensureTrainer(), let network else { return }
         inferenceResult = nil
@@ -1730,33 +2089,32 @@ struct ContentView: View {
         realRollingPolicyLoss = nil
         realRollingValueLoss = nil
         trainingStats = TrainingRunStats()
-        // Play and Train always launches on Game run. Candidate test state
-        // is reset too so the first user switch to it fires an immediate
-        // probe on the next driver gap (lastProbeTime = .distantPast makes
-        // `intervalElapsed` true on first check regardless of interval).
         playAndTrainBoardMode = .gameRun
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
         candidateProbeCount = 0
-        // Arena state — fresh history each session (disk persistence is
-        // deferred). Live-progress box is created here and captured by
-        // the driver task; the heartbeat polls it via @State mirroring.
         tournamentHistory = []
         tournamentProgress = nil
         let tBox = TournamentLiveBox()
         tournamentBox = tBox
+        let pStatsBox = ParallelWorkerStatsBox(sessionStart: Date())
+        parallelWorkerStatsBox = pStatsBox
+        parallelStats = pStatsBox.snapshot()
+        let selfPlayGate = WorkerPauseGate()
+        let trainingGate = WorkerPauseGate()
+        let arenaFlag = ArenaActiveFlag()
+        arenaActiveFlag = arenaFlag
+        let triggerBox = ArenaTriggerBox()
+        arenaTriggerBox = triggerBox
+        isArenaRunning = false
         realTraining = true
 
-        realTrainingTask = Task { [trainer, network, buffer, box, tBox] in
-            // --- Ensure the Candidate test inference network exists. ---
-            //
-            // This is a separate ChessMPSNetwork from `network` (the
-            // champion used by self-play). Built lazily on the first
-            // Play and Train session and cached in @State so subsequent
-            // sessions reuse it — construction cost is ~100 ms, only
-            // paid once per app launch. The driver itself never reads
-            // it directly; only `fireCandidateProbeIfNeeded` does,
-            // through @State.
+        realTrainingTask = Task {
+            [trainer, network, buffer, box, tBox, pStatsBox,
+             selfPlayGate, trainingGate, arenaFlag, triggerBox] in
+
+            // --- Setup: build any missing networks, reset the trainer ---
+
             let needsCandidateBuild = await MainActor.run { candidateInferenceNetwork == nil }
             if needsCandidateBuild {
                 do {
@@ -1777,24 +2135,25 @@ struct ContentView: View {
                 }
             }
 
-            // --- Reset trainer. ---
-            //
-            // Fresh trainer weights each run — otherwise the loss
-            // curve inherits whatever weights the previous session
-            // (random-data training, a sweep, or a prior self-play
-            // run) left behind, and the user can't tell whether real
-            // data is actually driving loss down.
-            //
-            // The candidate inference network is NOT synced here. Its
-            // contents are whatever the previous session left behind
-            // (or random init on first build). That's fine because the
-            // Candidate test probe does its own trainer → candidate
-            // sync inside `fireCandidateProbeIfNeeded` right before
-            // each forward pass — the candidate only needs to be
-            // current at probe time, not continuously. The champion
-            // (`network`) is also deliberately untouched so self-play
-            // stays on a stable baseline until a future arena match
-            // decides to promote the candidate.
+            let needsArenaChampionBuild = await MainActor.run { arenaChampionNetwork == nil }
+            if needsArenaChampionBuild {
+                do {
+                    let built = try await Task.detached(priority: .userInitiated) {
+                        try ChessMPSNetwork(.randomWeights)
+                    }.value
+                    await MainActor.run {
+                        arenaChampionNetwork = built
+                    }
+                } catch {
+                    box.recordError("Arena champion init failed: \(error.localizedDescription)")
+                    await MainActor.run {
+                        realTraining = false
+                        realTrainingTask = nil
+                    }
+                    return
+                }
+            }
+
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try trainer.resetNetwork()
@@ -1808,107 +2167,183 @@ struct ContentView: View {
                 return
             }
 
-            // Tracks `trainingStats.steps` at the end of the last arena
-            // tournament (or 0 before the first one). Lives in the task
-            // body — not @State — because only the driver reads/writes
-            // it, and we want a fresh counter each Play and Train
-            // session without threading it through SwiftUI storage.
-            var lastTournamentAtStep: Int = 0
-
-            var shouldStop = false
-            while !Task.isCancelled && !shouldStop {
-                // --- Play one self-play game with positions going into the
-                //     buffer via each MPSChessPlayer's onGameEnded push. ---
-                gameWatcher.resetCurrentGame()
-                gameWatcher.markPlaying(true)
-
-                let machine = ChessMachine()
-                machine.delegate = gameWatcher
-                let white = MPSChessPlayer(
-                    name: "White",
-                    network: network,
-                    replayBuffer: buffer
-                )
-                let black = MPSChessPlayer(
-                    name: "Black",
-                    network: network,
-                    replayBuffer: buffer
-                )
-                do {
-                    let task = try machine.beginNewGame(white: white, black: black)
-                    _ = await task.value
-                } catch {
-                    gameWatcher.markPlaying(false)
-                    break
+            // Grab the candidate inference network and arena champion
+            // network references on the main actor once — both are
+            // now guaranteed non-nil from the setup above. The
+            // workers capture them as values for the duration of the
+            // session.
+            let candidateInference = await MainActor.run { candidateInferenceNetwork }
+            let arenaChampion = await MainActor.run { arenaChampionNetwork }
+            guard let candidateInference, let arenaChampion else {
+                box.recordError("Networks missing after setup")
+                await MainActor.run {
+                    realTraining = false
+                    realTrainingTask = nil
                 }
+                return
+            }
 
-                if Task.isCancelled { break }
+            // --- Spawn the three worker tasks ---
 
-                // Cooperative gap point #1 — end of a self-play game. The
-                // driver is guaranteed not to touch the network again
-                // until we return from this await, so the probe has
-                // exclusive access to the ChessNetwork graph.
-                await fireCandidateProbeIfNeeded()
-
-                // --- Train K steps, if the buffer is warm enough for the
-                //     samples to cover more than one game's positions. ---
-                if buffer.count < Self.minBufferBeforeTraining { continue }
-
-                for _ in 0..<Self.trainStepsPerGame {
-                    if Task.isCancelled { break }
-                    guard let batch = buffer.sample(count: Self.trainingBatchSize) else { break }
-
-                    let result = await Task.detached(priority: .userInitiated) {
-                        Result { try trainer.trainStep(batch: batch) }
-                    }.value
-
-                    switch result {
-                    case .success(let timing):
-                        box.recordStep(timing)
-                    case .failure(let error):
-                        box.recordError(error.localizedDescription)
-                        shouldStop = true
-                    }
-                    if shouldStop { break }
-                }
-
-                if shouldStop { break }
-
-                // Cooperative gap point #2 — end of a training block.
-                // Same safety argument as gap #1: exclusive network
-                // access while the probe runs. The probe itself does
-                // the trainer → candidate sync internally when it
-                // decides to fire (at the 15-second cadence or when
-                // dirtied by drag / side-to-move / Board-picker flip);
-                // the driver doesn't pre-sync here, avoiding wasted
-                // copies on training blocks where no probe fires.
-                await fireCandidateProbeIfNeeded()
-
-                // --- Arena check ---
+            await withTaskGroup(of: Void.self) { group in
+                // Self-play worker: plays one game at a time on the
+                // champion, streams positions into the replay buffer.
+                // Checks `selfPlayGate` between games so the arena
+                // coordinator can briefly pause for the champion →
+                // arena-champion snapshot and for promotion.
                 //
-                // After the training block's steps have been counted,
-                // see if we've accumulated `stepsPerTournament` SGD
-                // steps since the last arena (or since Play and Train
-                // started). If so, pause everything and run 200 games
-                // candidate vs champion, with promotion if the
-                // candidate scores ≥ 0.55. Training and self-play are
-                // both paused for the duration because the tournament
-                // wants a fixed snapshot of the trainer to evaluate.
-                let currentSteps = box.snapshot().stats.steps
-                if currentSteps - lastTournamentAtStep >= Self.stepsPerTournament {
-                    lastTournamentAtStep = currentSteps
-                    await runArenaTournament(
-                        atStep: currentSteps,
-                        trainer: trainer,
-                        champion: network,
-                        tBox: tBox
-                    )
+                // `gameWatcher` is captured once here — GameWatcher is
+                // @unchecked Sendable so we can call its methods from
+                // any context, avoiding a MainActor hop per game to
+                // re-read the @State reference.
+                group.addTask {
+                    [network, buffer, pStatsBox, selfPlayGate, gameWatcher] in
+                    while !Task.isCancelled {
+                        // Pause gate check (between games).
+                        if selfPlayGate.isRequestedToPause {
+                            selfPlayGate.markWaiting()
+                            while selfPlayGate.isRequestedToPause && !Task.isCancelled {
+                                try? await Task.sleep(for: .milliseconds(5))
+                            }
+                            selfPlayGate.markRunning()
+                        }
+                        if Task.isCancelled { break }
+
+                        gameWatcher.resetCurrentGame()
+                        gameWatcher.markPlaying(true)
+
+                        let machine = ChessMachine()
+                        machine.delegate = gameWatcher
+                        let white = MPSChessPlayer(
+                            name: "White",
+                            network: network,
+                            replayBuffer: buffer
+                        )
+                        let black = MPSChessPlayer(
+                            name: "Black",
+                            network: network,
+                            replayBuffer: buffer
+                        )
+
+                        do {
+                            let task = try machine.beginNewGame(white: white, black: black)
+                            _ = await task.value
+                        } catch {
+                            gameWatcher.markPlaying(false)
+                            break
+                        }
+
+                        // Record the completed game for the parallel
+                        // rate display. Position count is the total
+                        // plies across both players in this game.
+                        let positions = white.gamePositions.count + black.gamePositions.count
+                        pStatsBox.recordSelfPlayGame(positions: positions)
+                    }
                 }
+
+                // Training worker: tight-loop SGD on the trainer,
+                // sampling batches from the replay buffer. Fires the
+                // candidate probe at its own 15 s cadence between
+                // steps, and nudges the arena trigger box when the
+                // 30 min auto cadence elapses. Pauses at `trainingGate`
+                // so the arena coordinator can briefly snapshot
+                // trainer weights.
+                group.addTask { [trainer, buffer, box, pStatsBox, trainingGate, triggerBox] in
+                    while !Task.isCancelled {
+                        // Pause gate check (between steps).
+                        if trainingGate.isRequestedToPause {
+                            trainingGate.markWaiting()
+                            while trainingGate.isRequestedToPause && !Task.isCancelled {
+                                try? await Task.sleep(for: .milliseconds(5))
+                            }
+                            trainingGate.markRunning()
+                        }
+                        if Task.isCancelled { break }
+
+                        // Wait for the replay buffer to warm up before
+                        // starting to train — the first few games
+                        // haven't produced enough decorrelated samples
+                        // yet. Short sleep + retry keeps the worker
+                        // responsive to Stop and to pause requests.
+                        if buffer.count < Self.minBufferBeforeTraining {
+                            try? await Task.sleep(for: .milliseconds(100))
+                            continue
+                        }
+
+                        guard let batch = buffer.sample(count: Self.trainingBatchSize) else {
+                            try? await Task.sleep(for: .milliseconds(100))
+                            continue
+                        }
+
+                        let result = await Task.detached(priority: .userInitiated) {
+                            Result { try trainer.trainStep(batch: batch) }
+                        }.value
+
+                        switch result {
+                        case .success(let timing):
+                            box.recordStep(timing)
+                            pStatsBox.recordTrainingStep()
+                        case .failure(let error):
+                            box.recordError(error.localizedDescription)
+                            return
+                        }
+
+                        // Candidate-test probe firing check. Method
+                        // guards internally on all preconditions
+                        // including arena-active, so an unconditional
+                        // call here is safe — it no-ops when nothing
+                        // is due or when the arena is running.
+                        await fireCandidateProbeIfNeeded()
+
+                        // Auto-trigger the arena on the 30-min cadence.
+                        // Fires the trigger inbox; the arena coordinator
+                        // task picks it up and runs the tournament.
+                        if triggerBox.shouldAutoTrigger(interval: Self.secondsPerTournament) {
+                            triggerBox.trigger()
+                        }
+                    }
+                }
+
+                // Arena coordinator: polls the trigger inbox and runs
+                // a tournament whenever one is pending. Blocks its
+                // own loop (not the worker tasks) during arena
+                // execution. Both the 30-minute auto-fire and the
+                // Run Arena button enter here via `triggerBox.trigger()`.
+                group.addTask {
+                    [trainer, network, tBox, selfPlayGate, trainingGate, arenaFlag, triggerBox,
+                     candidateInference, arenaChampion] in
+                    while !Task.isCancelled {
+                        if triggerBox.consume() {
+                            await self.runArenaParallel(
+                                trainer: trainer,
+                                champion: network,
+                                candidateInference: candidateInference,
+                                arenaChampion: arenaChampion,
+                                tBox: tBox,
+                                selfPlayGate: selfPlayGate,
+                                trainingGate: trainingGate,
+                                arenaFlag: arenaFlag
+                            )
+                            triggerBox.recordArenaCompleted()
+                        } else {
+                            try? await Task.sleep(for: .milliseconds(500))
+                        }
+                    }
+                }
+
+                // Wait for all three tasks to complete (only happens
+                // on cancellation since each loops forever).
+                for await _ in group { }
             }
 
             await MainActor.run {
                 realTraining = false
                 realTrainingTask = nil
+                isArenaRunning = false
+                arenaActiveFlag = nil
+                arenaTriggerBox = nil
+                parallelWorkerStatsBox = nil
+                parallelStats = nil
             }
         }
     }
@@ -2095,8 +2530,8 @@ struct ContentView: View {
                 totalStr = dash
             }
             lines.append("  Loss total:  \(totalStr)")
-            lines.append("    Loss policy: \(policyStr)")
-            lines.append("    Loss value:  \(valueStr)")
+            lines.append("    Loss policy:   \(policyStr)")
+            lines.append("    Loss value:    \(valueStr)")
             // Candidate-test probe counter + time-since-last, so the user
             // can distinguish "probes firing but imperceptible" from "probes
             // stuck". Shown in both Game run and Candidate test modes so
@@ -2139,13 +2574,17 @@ struct ContentView: View {
             let minStr = stats.steps > 0 ? String(format: "%7.2f ms", stats.minStepMs) : dash
             let maxStr = stats.steps > 0 ? String(format: "%7.2f ms", stats.maxStepMs) : dash
             let rateStr = stats.steps > 0 ? String(format: "%.2f", stats.stepsPerSecond) : dash
-            let posRateStr: String
+            let movesSecStr: String
+            let movesHrStr: String
             if stats.steps > 0 {
-                let posPerSec = stats.positionsPerSecond(batchSize: Self.trainingBatchSize)
-                posRateStr = Int(posPerSec.rounded())
+                let movesPerSec = stats.positionsPerSecond(batchSize: Self.trainingBatchSize)
+                movesSecStr = Int(movesPerSec.rounded())
+                    .formatted(.number.grouping(.automatic))
+                movesHrStr = Int((movesPerSec * 3600).rounded())
                     .formatted(.number.grouping(.automatic))
             } else {
-                posRateStr = dash
+                movesSecStr = dash
+                movesHrStr = dash
             }
             let projStr = stats.steps > 0 ? String(format: "%.2f s", stats.projectedSecPer250Steps) : dash
 
@@ -2157,7 +2596,14 @@ struct ContentView: View {
             lines.append("  Min step:    \(minStr)")
             lines.append("  Max step:    \(maxStr)")
             lines.append("  Steps/sec:   \(rateStr)")
-            lines.append("  Pos/sec:     \(posRateStr)")
+            // Moves/sec and moves/hr match the game side's session-
+            // stats format (which shows Games/hr and Moves/hr) so the
+            // two tables speak the same language. "Moves" here means
+            // the same thing as "positions consumed": each training
+            // sample is one position, which is equivalent to one
+            // move played in the original game.
+            lines.append("  Moves/sec:   \(movesSecStr)")
+            lines.append("  Moves/hr:    \(movesHrStr)")
             lines.append("  Proj 250×:   \(projStr)")
         }
 
