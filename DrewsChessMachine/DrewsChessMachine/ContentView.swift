@@ -387,6 +387,16 @@ extension GameWatcher.Snapshot {
     }
 }
 
+/// Which board the Play and Train UI is showing. `.gameRun` is the
+/// live self-play game (the only option before this feature existed);
+/// `.candidateTest` swaps in the free-placement forward-pass editor so
+/// the user can probe a fixed test position and watch the network's
+/// evaluation of it drift as training progresses in the background.
+enum PlayAndTrainBoardMode: Sendable, Hashable {
+    case gameRun
+    case candidateTest
+}
+
 // MARK: - Content View
 
 struct ContentView: View {
@@ -395,6 +405,27 @@ struct ContentView: View {
     @State private var runner: ChessRunner?
     @State private var networkStatus = ""
     @State private var isBuilding = false
+    /// Separate inference-mode network used *only* by the Candidate test
+    /// probe during Play and Train. Distinct from `network` (the
+    /// "champion" used by self-play / Play Game / Run Forward Pass)
+    /// because we explicitly want the champion to stay frozen at
+    /// whatever weights it was built with until a future arena-based
+    /// promotion step decides otherwise. The trainer's current SGD
+    /// state is copied into this candidate inference network after
+    /// each training block, so the probe reflects "what the
+    /// candidate-in-training thinks right now" without disturbing the
+    /// network that's actually generating self-play data.
+    ///
+    /// Cached across Play and Train sessions so the ~100 ms
+    /// MPSGraph-build cost only happens once per app launch, not on
+    /// every start.
+    @State private var candidateInferenceNetwork: ChessMPSNetwork?
+    /// ChessRunner wrapping `candidateInferenceNetwork`. Built alongside
+    /// the network and used by `fireCandidateProbeIfNeeded` via the
+    /// same `performInference` code path as the pure forward-pass
+    /// mode — no special-case trainer-probe branch needed now that
+    /// the candidate has a dedicated inference-mode network of its own.
+    @State private var candidateRunner: ChessRunner?
 
     // Inference
     @State private var inferenceResult: EvaluationResult?
@@ -407,6 +438,36 @@ struct ContentView: View {
     /// doesn't read this (it shows `gameSnapshot.state.board` instead), and
     /// training modes ignore it entirely.
     @State private var editableState: GameState = .starting
+    /// Which board the Play and Train view is showing. `.gameRun` is the
+    /// live self-play game (current behavior); `.candidateTest` shows the
+    /// editable forward-pass board alongside the still-running training
+    /// loop so the user can watch the network's evaluation of a fixed
+    /// test position evolve as the weights update.
+    @State private var playAndTrainBoardMode: PlayAndTrainBoardMode = .gameRun
+    /// Set when the user edits the candidate test board (drag, side-to-move
+    /// toggle, Board picker flip) while Play and Train is running. The
+    /// Play and Train driver task checks this at natural gap points (end
+    /// of game, end of training block) and fires a forward-pass probe
+    /// there — cooperatively, so inference never races with self-play or
+    /// training on the shared network graph.
+    @State private var candidateProbeDirty: Bool = false
+    /// Wall-clock timestamp of the last candidate-test probe. Combined
+    /// with `candidateProbeIntervalSec` to enforce the 15-second cadence:
+    /// gap-point checks fire a probe whenever this elapsed interval has
+    /// passed, regardless of whether the user has edited anything.
+    @State private var lastCandidateProbeTime: Date = .distantPast
+    /// Number of candidate-test probes that have actually fired since
+    /// Play and Train started. Displayed in the training stats text so
+    /// the user can confirm probes are running — the visible arrows may
+    /// barely change between 15-second probes (network deltas per 10
+    /// training steps are tiny), and without a counter it's impossible
+    /// to distinguish "firing but imperceptible" from "stuck".
+    @State private var candidateProbeCount: Int = 0
+    /// Minimum wall-clock interval between scheduled candidate-test probes.
+    /// Actual cadence drifts slightly — a probe only fires at the next
+    /// driver gap after the interval has elapsed — and that's fine: this
+    /// is a cheap eval-drift visualization, not a precision timer.
+    nonisolated static let candidateProbeIntervalSec: TimeInterval = 15
     /// Set when `reevaluateForwardPass()` is called while an inference is
     /// already in flight. The in-flight task checks this on completion and
     /// re-runs itself once more so the latest edit is always reflected
@@ -530,16 +591,56 @@ struct ContentView: View {
     }
 
     private var displayedPieces: [Piece?] {
+        // Candidate test mode pulls from the editable state even though
+        // Play and Train is running a game in the background — that's
+        // the whole point of the mode, to look at a fixed test position.
+        if isCandidateTestActive { return editableState.board }
         if isGameMode { return gameSnapshot.state.board }
         return editableState.board
     }
 
-    /// Whether the forward-pass free-placement editor should be live: a
-    /// forward pass can run, the user isn't watching a game, and no
-    /// training mode is active. Used to gate both the drag gesture and the
-    /// side-to-move picker so they don't fight with other modes.
+    /// True when the Play and Train Board picker is currently showing
+    /// the editable Candidate test board (as opposed to the live
+    /// self-play game). Centralizes the "override game mode with forward-
+    /// pass UI" decision so every site that needs to branch on it reads
+    /// the same condition.
+    private var isCandidateTestActive: Bool {
+        realTraining && playAndTrainBoardMode == .candidateTest
+    }
+
+    /// True when the forward-pass UI elements (overlay, channel strip,
+    /// side-to-move picker, chevrons, editable drag) should be visible —
+    /// either in pure forward-pass mode or in Candidate test mode during
+    /// Play and Train. Pure training modes (Train Once, Train Continuous,
+    /// Sweep) don't set this, and neither does game-run-mode Play and
+    /// Train.
+    private var showForwardPassUI: Bool {
+        isCandidateTestActive || (!isGameMode && !isTrainingMode)
+    }
+
+    /// Whether the forward-pass free-placement editor should be live: the
+    /// forward-pass UI is visible AND the network is built so inference
+    /// can actually run. Gates the drag gesture, the side-to-move picker,
+    /// and anything else that directly mutates `editableState`.
     private var forwardPassEditable: Bool {
-        networkReady && !isGameMode && !isTrainingMode
+        networkReady && showForwardPassUI
+    }
+
+    /// Binding that drives the Play and Train Board picker. Writes that
+    /// flip the mode to `.candidateTest` mark the probe dirty so the
+    /// driver fires an immediate forward pass on the next gap — that way
+    /// the user sees arrows the moment they switch, rather than having
+    /// to wait up to 15 s for the interval probe to trigger.
+    private var playAndTrainBoardBinding: Binding<PlayAndTrainBoardMode> {
+        Binding(
+            get: { playAndTrainBoardMode },
+            set: { newValue in
+                playAndTrainBoardMode = newValue
+                if newValue == .candidateTest {
+                    candidateProbeDirty = true
+                }
+            }
+        )
     }
 
     /// Binding for the side-to-move segmented picker. Writes rebuild
@@ -560,9 +661,24 @@ struct ContentView: View {
                     enPassantSquare: editableState.enPassantSquare,
                     halfmoveClock: editableState.halfmoveClock
                 )
-                reevaluateForwardPass()
+                requestForwardPassReeval()
             }
         )
+    }
+
+    /// Route a forward-pass re-eval request through the correct path for
+    /// the current mode. In pure forward-pass mode we fire immediately
+    /// via `reevaluateForwardPass()`, which runs on a detached task. In
+    /// Candidate test mode during Play and Train we set
+    /// `candidateProbeDirty` instead — the Play and Train driver task
+    /// picks it up at the next cooperative gap point, so the probe
+    /// never races with self-play or training on the shared network.
+    private func requestForwardPassReeval() {
+        if isCandidateTestActive {
+            candidateProbeDirty = true
+            return
+        }
+        reevaluateForwardPass()
     }
 
     private var overlayLabel: String {
@@ -571,7 +687,10 @@ struct ContentView: View {
     }
 
     private var currentOverlay: BoardOverlay {
-        if isGameMode { return .none }
+        // Candidate test mode overrides the game-mode blackout: we want
+        // to see the forward-pass arrows/channels on the edit board even
+        // though a game is running in the background.
+        if !showForwardPassUI { return .none }
         guard let result = inferenceResult else { return .none }
         if selectedOverlay == 0 {
             return .topMoves(result.topMoves)
@@ -625,7 +744,7 @@ struct ContentView: View {
                 }
 
                 if !realTraining && !continuousPlay && !continuousTraining && !sweepRunning {
-                    Button("Train on Self-Play") { startRealTraining() }
+                    Button("Play and Train") { startRealTraining() }
                         .disabled(isBusy || !networkReady)
                 }
 
@@ -652,7 +771,17 @@ struct ContentView: View {
             // Board + text side by side
             HStack(alignment: .top, spacing: 24) {
                 VStack(spacing: 6) {
-                    if inferenceResult != nil, !isGameMode {
+                    if realTraining {
+                        Picker("Board", selection: playAndTrainBoardBinding) {
+                            Text("Game run").tag(PlayAndTrainBoardMode.gameRun)
+                            Text("Candidate test").tag(PlayAndTrainBoardMode.candidateTest)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(maxWidth: 240)
+                    }
+
+                    if inferenceResult != nil, showForwardPassUI {
                         Text(overlayLabel)
                             .font(.system(.subheadline, design: .monospaced))
                     }
@@ -668,7 +797,7 @@ struct ContentView: View {
                     }
 
                     HStack(spacing: 8) {
-                        let leftDisabled = inferenceResult == nil || selectedOverlay == 0 || isGameMode
+                        let leftDisabled = inferenceResult == nil || selectedOverlay == 0 || !showForwardPassUI
                         Button(
                             action: { navigateOverlay(-1) },
                             label: {
@@ -711,7 +840,7 @@ struct ContentView: View {
                                 }
                             }
 
-                        let rightDisabled = inferenceResult == nil || selectedOverlay == 18 || isGameMode
+                        let rightDisabled = inferenceResult == nil || selectedOverlay == 18 || !showForwardPassUI
                         Button(
                             action: { navigateOverlay(1) },
                             label: {
@@ -748,11 +877,22 @@ struct ContentView: View {
                         // swells the left column at game end and pushes the
                         // training column rightward.
                         HStack(alignment: .top, spacing: 16) {
-                            if isGameMode {
+                            // Candidate test mode replaces the game-stats
+                            // column with the inference-result column so
+                            // the user sees what the network thinks of the
+                            // probe position alongside the running training
+                            // stats. Same min-width as the game column so
+                            // the overall text panel doesn't reflow when
+                            // toggling between Game run and Candidate test.
+                            if isGameMode && !isCandidateTestActive {
                                 Text(gameSnapshot.statsText(
                                     continuousPlay: continuousPlay || realTraining
                                 ))
                                 .frame(minWidth: 330, alignment: .topLeading)
+                            }
+                            if isCandidateTestActive, let result = inferenceResult {
+                                Text(result.textOutput)
+                                    .frame(minWidth: 330, alignment: .topLeading)
                             }
                             if isTrainingMode {
                                 Text(trainingStatsText())
@@ -775,7 +915,7 @@ struct ContentView: View {
             .layoutPriority(1)
 
             // Input tensor channel strip
-            if let result = inferenceResult, !isGameMode {
+            if let result = inferenceResult, showForwardPassUI {
                 Divider()
                 HStack(spacing: 2) {
                     ForEach(0..<18, id: \.self) { channel in
@@ -952,6 +1092,73 @@ struct ContentView: View {
         reevaluateForwardPass()
     }
 
+    /// Cooperative candidate-test probe, called from the Play and Train
+    /// driver task at natural gap points (end of a self-play game, end of
+    /// a training block). Fires a forward pass on the current editable
+    /// state iff Candidate test mode is active AND either the user has
+    /// dirtied the probe (drag / side-to-move / Board-picker flip) or the
+    /// 15-second interval has elapsed since the last probe.
+    ///
+    /// Serialization: this runs from the driver task, which is paused on
+    /// the `await` for the duration of the inference. No game or training
+    /// step can run concurrently with the probe, so there's no contention
+    /// on the shared ChessNetwork graph — which is exactly why we chose
+    /// the cooperative-gap model over a parallel timer.
+    @MainActor
+    private func fireCandidateProbeIfNeeded() async {
+        // Guards: Candidate test active, candidate runner built, trainer
+        // and candidate network both available for the trainer → candidate
+        // sync. All of these are normally true during Play and Train —
+        // the early-return cases cover "just-started race before the
+        // candidate was built" or "trainer wasn't initialized."
+        guard
+            isCandidateTestActive,
+            let candidateRunner,
+            let trainer,
+            let candidateInference = candidateInferenceNetwork
+        else { return }
+        let now = Date()
+        let dirty = candidateProbeDirty
+        let intervalElapsed = now.timeIntervalSince(lastCandidateProbeTime)
+            >= Self.candidateProbeIntervalSec
+        guard dirty || intervalElapsed else { return }
+
+        let state = editableState
+        let result: EvaluationResult
+        do {
+            // Snapshot the trainer's current state into the candidate
+            // inference network, then immediately run the probe. Doing
+            // the copy here — rather than after every training block —
+            // means the ~11.6 MB trainer → candidate transfer happens
+            // only when the probe is actually about to fire (every 15 s
+            // or on drag/side-to-move/mode-flip), not at the ~per-second
+            // cadence of training blocks. Copy cost is still trivial but
+            // the pattern is cleaner: "no one looks at the candidate
+            // except the probe, so no one needs to update it except the
+            // probe."
+            //
+            // Both the sync and the forward pass run on a detached task
+            // so we don't stall MainActor while they execute. The driver
+            // task is awaiting this whole method, so no other user of
+            // the trainer or candidate network can run concurrently.
+            result = try await Task.detached(priority: .userInitiated) {
+                let weights = try trainer.network.exportWeights()
+                try candidateInference.network.loadWeights(weights)
+                return Self.performInference(with: candidateRunner, state: state)
+            }.value
+        } catch {
+            // Leave probe state unchanged so the previous result stays
+            // on screen; the next gap-point call will retry. The error
+            // lands in trainingBox via the driver loop's existing
+            // plumbing if something structural broke.
+            return
+        }
+        inferenceResult = result
+        candidateProbeDirty = false
+        lastCandidateProbeTime = Date()
+        candidateProbeCount += 1
+    }
+
     /// Kick off (or coalesce) a forward pass on the current `editableState`.
     /// Called both explicitly from the "Run Forward Pass" button and
     /// automatically after a free-placement drag or side-to-move toggle.
@@ -969,6 +1176,11 @@ struct ContentView: View {
         let state = editableState
         Task {
             let evalResult = await Task.detached(priority: .userInitiated) {
+                // Pure forward-pass mode runs through the champion via
+                // `runner`. Candidate test mode takes a different path
+                // via `fireCandidateProbeIfNeeded`, which uses
+                // `candidateRunner` → the dedicated candidate inference
+                // network.
                 Self.performInference(with: runner, state: state)
             }.value
             inferenceResult = evalResult
@@ -1011,7 +1223,7 @@ struct ContentView: View {
             enPassantSquare: editableState.enPassantSquare,
             halfmoveClock: editableState.halfmoveClock
         )
-        reevaluateForwardPass()
+        requestForwardPassReeval()
     }
 
     /// Convert a point in the board-overlay's local coordinate space into
@@ -1221,13 +1433,64 @@ struct ContentView: View {
         realRollingPolicyLoss = nil
         realRollingValueLoss = nil
         trainingStats = TrainingRunStats()
+        // Play and Train always launches on Game run. Candidate test state
+        // is reset too so the first user switch to it fires an immediate
+        // probe on the next driver gap (lastProbeTime = .distantPast makes
+        // `intervalElapsed` true on first check regardless of interval).
+        playAndTrainBoardMode = .gameRun
+        candidateProbeDirty = false
+        lastCandidateProbeTime = .distantPast
+        candidateProbeCount = 0
         realTraining = true
 
         realTrainingTask = Task { [trainer, network, buffer, box] in
-            // Fresh weights each run — otherwise the loss curve inherits
-            // whatever weights the previous session (random-data training,
-            // a sweep, or a prior self-play run) left behind and the user
-            // can't tell whether real data is actually driving loss down.
+            // --- Ensure the Candidate test inference network exists. ---
+            //
+            // This is a separate ChessMPSNetwork from `network` (the
+            // champion used by self-play). Built lazily on the first
+            // Play and Train session and cached in @State so subsequent
+            // sessions reuse it — construction cost is ~100 ms, only
+            // paid once per app launch. The driver itself never reads
+            // it directly; only `fireCandidateProbeIfNeeded` does,
+            // through @State.
+            let needsCandidateBuild = await MainActor.run { candidateInferenceNetwork == nil }
+            if needsCandidateBuild {
+                do {
+                    let built = try await Task.detached(priority: .userInitiated) {
+                        try ChessMPSNetwork(.randomWeights)
+                    }.value
+                    await MainActor.run {
+                        candidateInferenceNetwork = built
+                        candidateRunner = ChessRunner(network: built)
+                    }
+                } catch {
+                    box.recordError("Candidate network init failed: \(error.localizedDescription)")
+                    await MainActor.run {
+                        realTraining = false
+                        realTrainingTask = nil
+                    }
+                    return
+                }
+            }
+
+            // --- Reset trainer. ---
+            //
+            // Fresh trainer weights each run — otherwise the loss
+            // curve inherits whatever weights the previous session
+            // (random-data training, a sweep, or a prior self-play
+            // run) left behind, and the user can't tell whether real
+            // data is actually driving loss down.
+            //
+            // The candidate inference network is NOT synced here. Its
+            // contents are whatever the previous session left behind
+            // (or random init on first build). That's fine because the
+            // Candidate test probe does its own trainer → candidate
+            // sync inside `fireCandidateProbeIfNeeded` right before
+            // each forward pass — the candidate only needs to be
+            // current at probe time, not continuously. The champion
+            // (`network`) is also deliberately untouched so self-play
+            // stays on a stable baseline until a future arena match
+            // decides to promote the candidate.
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try trainer.resetNetwork()
@@ -1270,6 +1533,12 @@ struct ContentView: View {
 
                 if Task.isCancelled { break }
 
+                // Cooperative gap point #1 — end of a self-play game. The
+                // driver is guaranteed not to touch the network again
+                // until we return from this await, so the probe has
+                // exclusive access to the ChessNetwork graph.
+                await fireCandidateProbeIfNeeded()
+
                 // --- Train K steps, if the buffer is warm enough for the
                 //     samples to cover more than one game's positions. ---
                 if buffer.count < Self.minBufferBeforeTraining { continue }
@@ -1291,6 +1560,18 @@ struct ContentView: View {
                     }
                     if shouldStop { break }
                 }
+
+                if shouldStop { break }
+
+                // Cooperative gap point #2 — end of a training block.
+                // Same safety argument as gap #1: exclusive network
+                // access while the probe runs. The probe itself does
+                // the trainer → candidate sync internally when it
+                // decides to fire (at the 15-second cadence or when
+                // dirtied by drag / side-to-move / Board-picker flip);
+                // the driver doesn't pre-sync here, avoiding wasted
+                // copies on training blocks where no probe fires.
+                await fireCandidateProbeIfNeeded()
             }
 
             await MainActor.run {
@@ -1468,8 +1749,36 @@ struct ContentView: View {
             } else {
                 valueStr = dash
             }
-            lines.append("  Roll policy: \(policyStr)")
-            lines.append("  Roll value:  \(valueStr)")
+            // Rolling total derived from the two component windows —
+            // since the mean operator is linear, mean(policy + value)
+            // equals mean(policy) + mean(value), so no third window is
+            // needed on the TrainingLiveStatsBox side. Only display it
+            // when both components have at least one sample; otherwise
+            // the components disagree on sample count and the derived
+            // sum would be misleading.
+            let totalStr: String
+            if let p = realRollingPolicyLoss, let v = realRollingValueLoss {
+                totalStr = String(format: "%+.6f", p + v)
+            } else {
+                totalStr = dash
+            }
+            lines.append("  Loss total:  \(totalStr)")
+            lines.append("    Loss policy: \(policyStr)")
+            lines.append("    Loss value:  \(valueStr)")
+            // Candidate-test probe counter + time-since-last, so the user
+            // can distinguish "probes firing but imperceptible" from "probes
+            // stuck". Shown in both Game run and Candidate test modes so
+            // the count is visible while Play and Train is running; the
+            // count only advances when Candidate test is active and a
+            // gap check actually fires a probe.
+            let probeLine: String
+            if candidateProbeCount == 0 {
+                probeLine = dash
+            } else {
+                let ageSec = Date().timeIntervalSince(lastCandidateProbeTime)
+                probeLine = String(format: "%4d  (last %5.1f s ago)", candidateProbeCount, ageSec)
+            }
+            lines.append("  Probes:      \(probeLine)")
         }
         lines.append("")
 
@@ -1637,7 +1946,7 @@ struct ContentView: View {
             lines.append("")
             lines.append("Value Head")
             lines.append(String(format: "  Output: %+.6f", inference.value))
-            lines.append(String(format: "  %.1f%% win / %.1f%% loss",
+            lines.append(String(format: "  %.3f%% win / %.3f%% loss",
                                 (inference.value + 1) / 2 * 100, (1 - inference.value) / 2 * 100))
             lines.append("")
             lines.append("Policy Head (Top 4)")
@@ -1646,16 +1955,24 @@ struct ContentView: View {
                 let toName = BoardEncoder.squareName(move.toRow * 8 + move.toCol)
                 let rankCol = String(rank + 1).padding(toLength: 4, withPad: " ", startingAt: 0)
                 let moveCol = "\(fromName)-\(toName)".padding(toLength: 8, withPad: " ", startingAt: 0)
-                lines.append("  \(rankCol)\(moveCol)\(String(format: "%.4f%%", move.probability * 100))")
+                lines.append("  \(rankCol)\(moveCol)\(String(format: "%.6f%%", move.probability * 100))")
             }
+            // Sum of the top-100 move probabilities. With a freshly-
+            // initialized network this sits near 100/4096 ≈ 2.44%; as the
+            // policy head learns to concentrate mass on promising moves,
+            // this number climbs — a cheap scalar that changes visibly
+            // between candidate-test probes even when the top-4 move
+            // ordering stays stable.
+            let top100Sum = inference.policy.sorted(by: >).prefix(100).reduce(0, +)
+            lines.append(String(format: "  Top 100 sum: %.6f%%", top100Sum * 100))
             lines.append("")
             lines.append("Policy Stats")
-            lines.append(String(format: "  Sum: %.6f", inference.policy.reduce(0, +)))
+            lines.append(String(format: "  Sum: %.8f", inference.policy.reduce(0, +)))
             let nonZeroCount = inference.policy.filter { $0 > 1e-10 }.count
             lines.append(String(format: "  Non-negligible: %d / 4096", nonZeroCount))
             if let maxProb = inference.policy.max(), let minProb = inference.policy.min() {
-                lines.append(String(format: "  Min: %.6f", minProb))
-                lines.append(String(format: "  Max: %.6f", maxProb))
+                lines.append(String(format: "  Min: %.8f", minProb))
+                lines.append(String(format: "  Max: %.8f", maxProb))
             }
         } catch {
             lines.append("Error: \(error.localizedDescription)")

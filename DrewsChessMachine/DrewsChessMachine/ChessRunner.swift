@@ -34,10 +34,34 @@ final class ChessRunner: @unchecked Sendable {
         let start = CFAbsoluteTimeGetCurrent()
         let (logits, value) = try network.evaluate(board: board)
         let inferenceTimeMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        return Self.makeInferenceResult(
+            logits: logits,
+            value: value,
+            pieces: pieces,
+            flip: flip,
+            inferenceTimeMs: inferenceTimeMs
+        )
+    }
 
-        let policy = Self.softmax(logits)
+    /// Package raw logits + value from any forward pass into the
+    /// `InferenceResult` the UI consumes: softmaxes the logits, extracts
+    /// the top-4 move visualizations (un-flipped when needed), and records
+    /// the inference wall time. Shared between the inference-network path
+    /// (`evaluate(board:pieces:flip:)`, which uses the frozen-BN inference
+    /// network) and the Candidate test probe path in ContentView, which
+    /// runs forward directly on the trainer's internal training-mode
+    /// network so the user sees the candidate-in-training's opinion
+    /// without any weight copy.
+    static func makeInferenceResult(
+        logits: [Float],
+        value: Float,
+        pieces: [Piece?],
+        flip: Bool,
+        inferenceTimeMs: Double
+    ) -> InferenceResult {
+        let policy = softmax(logits)
         return InferenceResult(
-            topMoves: Self.extractTopMoves(from: policy, pieces: pieces, flip: flip, count: 4),
+            topMoves: extractTopMoves(from: policy, pieces: pieces, flip: flip, count: 4),
             policy: policy,
             value: value,
             inferenceTimeMs: inferenceTimeMs
@@ -45,7 +69,7 @@ final class ChessRunner: @unchecked Sendable {
     }
 
     /// Numerically stable softmax over the full vector.
-    private static func softmax(_ logits: [Float]) -> [Float] {
+    static func softmax(_ logits: [Float]) -> [Float] {
         guard let maxLogit = logits.max() else { return logits }
         var out = logits.map { expf($0 - maxLogit) }
         let sum = out.reduce(0, +)
@@ -57,7 +81,7 @@ final class ChessRunner: @unchecked Sendable {
 
     // MARK: - Move Extraction
 
-    private static func extractTopMoves(
+    static func extractTopMoves(
         from policy: [Float],
         pieces: [Piece?],
         flip: Bool,

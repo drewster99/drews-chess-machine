@@ -460,6 +460,16 @@ final class ChessTrainer: @unchecked Sendable {
             ops.append(assignOp)
         }
 
+        // Include BN running-stat EMA updates from ChessNetwork's
+        // training-mode BN layers. These run as targetOperations on
+        // every trainStep alongside the SGD assigns, so the running
+        // stats converge toward typical per-channel activation
+        // statistics as training progresses — giving a sibling
+        // inference network the calibration data it needs to produce
+        // outputs matching training-time forward passes after
+        // loadWeights().
+        ops.append(contentsOf: network.bnRunningStatsAssignOps)
+
         return (movePlayed, z, totalLossTensor, policyLoss, valueLoss, ops)
     }
 
