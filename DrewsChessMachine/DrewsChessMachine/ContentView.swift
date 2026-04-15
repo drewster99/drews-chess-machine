@@ -553,6 +553,40 @@ final class WorkerPauseGate: @unchecked Sendable {
     }
 }
 
+/// Lock-protected current-N holder shared between the SwiftUI
+/// Stepper (which mutates the value on the main actor) and the
+/// concurrent self-play worker tasks (which poll it between games).
+/// Workers above the current count idle in their pause loop until
+/// either the count grows enough to include them or the session
+/// stops. Decoupling the box from `@State selfPlayWorkerCount` is
+/// what lets the value cross the actor boundary without forcing
+/// every worker to hop back to the main actor on each game.
+final class WorkerCountBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count: Int
+
+    init(initial: Int) {
+        precondition(initial >= 1, "WorkerCountBox initial count must be >= 1")
+        _count = initial
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _count
+    }
+
+    /// Set the active worker count. Clamped at the bottom to 1 so a
+    /// stuck Stepper or a sloppy caller can never zero out self-play
+    /// (the upper bound is enforced by the Stepper and the spawn
+    /// loop's `absoluteMaxSelfPlayWorkers` constant, not here).
+    func set(_ value: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        _count = max(1, value)
+    }
+}
+
 /// Lock-protected trigger inbox for the arena coordinator task. The
 /// training worker fires the trigger when the 30-minute auto cadence
 /// elapses; the UI fires it via the Run Arena button. The arena
@@ -625,6 +659,27 @@ final class ArenaTriggerBox: @unchecked Sendable {
     }
 }
 
+/// One refresh of the memory stats line shown in the top busy row
+/// during Play and Train. Sampled every ~10 s by the snapshot
+/// timer (not every frame) so the displayed numbers stay stable.
+/// Bytes are stored at the granularity the source APIs return so
+/// the formatter can round consistently regardless of when it ran.
+struct MemoryStatsSnapshot: Sendable {
+    /// Process resident memory from `task_info(TASK_VM_INFO).phys_footprint`.
+    let appFootprintBytes: UInt64
+    /// `MTLDevice.currentAllocatedSize` — the live GPU working set.
+    let gpuAllocatedBytes: UInt64
+    /// `MTLDevice.recommendedMaxWorkingSetSize` — the soft cap Metal
+    /// asks us to stay under for this device.
+    let gpuMaxTargetBytes: UInt64
+    /// Total physical memory available to the process, from
+    /// `ProcessInfo.processInfo.physicalMemory`. On Apple Silicon
+    /// this is the unified-memory total (CPU and GPU draw from the
+    /// same pool), so it doubles as "GPU total RAM" for the user-
+    /// facing display.
+    let gpuTotalBytes: UInt64
+}
+
 /// Lock-protected flag indicating an arena tournament is currently
 /// in progress. Used to mutually exclude the Candidate test probe
 /// from the arena, since both touch the candidate inference network
@@ -660,21 +715,74 @@ final class ArenaActiveFlag: @unchecked Sendable {
 /// are monotonic for the life of the Play and Train session; wall-
 /// clock rate is computed against `sessionStart`.
 final class ParallelWorkerStatsBox: @unchecked Sendable {
+    /// Rolling-window length in seconds for the "recent" rate column
+    /// shown next to the lifetime rates in the Session panel. Fixed at
+    /// 10 minutes so short-term throughput shifts (e.g. after an arena
+    /// pause, or when training/self-play contention changes) become
+    /// visible without having to watch the lifetime number drift.
+    static let recentWindow: TimeInterval = 600
+
+    /// One completed game, stored in the rolling window. Drops out of
+    /// the window once its `timestamp` is more than `recentWindow`
+    /// seconds behind `Date()`. Storage is O(games in the last 10
+    /// minutes); at typical self-play rates this is a few thousand
+    /// records max.
+    private struct GameRecord {
+        let timestamp: Date
+        let moves: Int
+        let durationMs: Double
+    }
+
     private let lock = NSLock()
-    private var _selfPlayGames: Int = 0
-    private var _selfPlayPositions: Int = 0
+    private var _totalGames: Int = 0
+    private var _totalMoves: Int = 0
+    private var _totalGameWallMs: Double = 0
+    private var _whiteCheckmates: Int = 0
+    private var _blackCheckmates: Int = 0
+    private var _stalemates: Int = 0
+    private var _fiftyMoveDraws: Int = 0
+    private var _threefoldRepetitionDraws: Int = 0
+    private var _insufficientMaterialDraws: Int = 0
     private var _trainingSteps: Int = 0
+    private var _recentGames: [GameRecord] = []
     let sessionStart: Date
 
     init(sessionStart: Date = Date()) {
         self.sessionStart = sessionStart
     }
 
-    func recordSelfPlayGame(positions: Int) {
+    /// Record one completed self-play game. Called from every worker
+    /// at game-end with the game's total moves, wall-clock duration,
+    /// and final result. Bumps lifetime totals, the per-outcome
+    /// counters, and the rolling 10-minute window. Thread-safe via
+    /// the box's `NSLock`.
+    func recordCompletedGame(moves: Int, durationMs: Double, result: GameResult) {
         lock.lock()
         defer { lock.unlock() }
-        _selfPlayGames += 1
-        _selfPlayPositions += positions
+        _totalGames += 1
+        _totalMoves += moves
+        _totalGameWallMs += durationMs
+
+        switch result {
+        case .checkmate(let winner):
+            if winner == .white {
+                _whiteCheckmates += 1
+            } else {
+                _blackCheckmates += 1
+            }
+        case .stalemate:
+            _stalemates += 1
+        case .drawByFiftyMoveRule:
+            _fiftyMoveDraws += 1
+        case .drawByInsufficientMaterial:
+            _insufficientMaterialDraws += 1
+        case .drawByThreefoldRepetition:
+            _threefoldRepetitionDraws += 1
+        }
+
+        let now = Date()
+        _recentGames.append(GameRecord(timestamp: now, moves: moves, durationMs: durationMs))
+        pruneRecentLocked(now: now)
     }
 
     func recordTrainingStep() {
@@ -683,21 +791,76 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         _trainingSteps += 1
     }
 
+    /// Drop rolling-window entries older than `now - recentWindow`.
+    /// Caller must hold `lock`. Records are appended in monotonic
+    /// timestamp order so this is a prefix removal — O(k) where k is
+    /// the expired count.
+    private func pruneRecentLocked(now: Date) {
+        let cutoff = now.addingTimeInterval(-Self.recentWindow)
+        while let first = _recentGames.first, first.timestamp < cutoff {
+            _recentGames.removeFirst()
+        }
+    }
+
     struct Snapshot: Sendable {
+        // Lifetime totals
         let selfPlayGames: Int
         let selfPlayPositions: Int
+        let totalGameWallMs: Double
+        let whiteCheckmates: Int
+        let blackCheckmates: Int
+        let stalemates: Int
+        let fiftyMoveDraws: Int
+        let threefoldRepetitionDraws: Int
+        let insufficientMaterialDraws: Int
         let trainingSteps: Int
         let sessionStart: Date
+        // Rolling 10-minute window aggregates
+        let recentGames: Int
+        let recentMoves: Int
+        let recentGameWallMs: Double
+        /// Effective denominator for rolling rate calculations, in
+        /// seconds: `min(recentWindow, now - oldest-entry-timestamp)`.
+        /// Starts at 0 and grows to `recentWindow` over the first 10
+        /// minutes of a session. `0` means the window holds no games.
+        let recentWindowSeconds: Double
     }
 
     func snapshot() -> Snapshot {
         lock.lock()
         defer { lock.unlock() }
+        let now = Date()
+        pruneRecentLocked(now: now)
+
+        var recentMoves = 0
+        var recentGameWallMs: Double = 0
+        for r in _recentGames {
+            recentMoves += r.moves
+            recentGameWallMs += r.durationMs
+        }
+        let recentWindowSec: Double
+        if let oldest = _recentGames.first?.timestamp {
+            recentWindowSec = min(Self.recentWindow, now.timeIntervalSince(oldest))
+        } else {
+            recentWindowSec = 0
+        }
+
         return Snapshot(
-            selfPlayGames: _selfPlayGames,
-            selfPlayPositions: _selfPlayPositions,
+            selfPlayGames: _totalGames,
+            selfPlayPositions: _totalMoves,
+            totalGameWallMs: _totalGameWallMs,
+            whiteCheckmates: _whiteCheckmates,
+            blackCheckmates: _blackCheckmates,
+            stalemates: _stalemates,
+            fiftyMoveDraws: _fiftyMoveDraws,
+            threefoldRepetitionDraws: _threefoldRepetitionDraws,
+            insufficientMaterialDraws: _insufficientMaterialDraws,
             trainingSteps: _trainingSteps,
-            sessionStart: sessionStart
+            sessionStart: sessionStart,
+            recentGames: _recentGames.count,
+            recentMoves: recentMoves,
+            recentGameWallMs: recentGameWallMs,
+            recentWindowSeconds: recentWindowSec
         )
     }
 }
@@ -739,6 +902,15 @@ struct ContentView: View {
     /// tournament. Built lazily on the first Play and Train session
     /// and cached for the life of the app.
     @State private var arenaChampionNetwork: ChessMPSNetwork?
+    /// Additional inference networks for concurrent self-play workers
+    /// 1..N-1 (worker 0 still uses `network`, the champion). One
+    /// entry per extra worker beyond the first; built lazily the
+    /// first time a Play and Train session needs more than one
+    /// worker and cached for the life of the app. Kept in weight
+    /// lock-step with `network` via the session-start fork and the
+    /// arena promotion branch — each secondary receives a
+    /// `loadWeights` copy of whatever goes into the champion.
+    @State private var secondarySelfPlayNetworks: [ChessMPSNetwork] = []
     /// Live-progress snapshot from the parallel workers, mirrored
     /// from `parallelWorkerStatsBox` by the heartbeat. Nil outside of
     /// Play and Train sessions.
@@ -916,10 +1088,69 @@ struct ContentView: View {
     /// >= trainingBatchSize` by construction, so the `ReplayBuffer.sample`
     /// call inside the train loop can never return nil.
     nonisolated static let minBufferBeforeTraining = max(25_000, replayBufferCapacity / 5)
-    /// Training steps to run between self-play games. Kept modest so the
-    /// driver alternates visibly between play and train rather than
-    /// disappearing into a long training run.
-    nonisolated static let trainStepsPerGame = 10
+    /// Default number of active self-play workers when a new
+    /// Play and Train session starts. The Stepper and
+    /// `@State selfPlayWorkerCount` below both default to this
+    /// value — it's the *initial* setting, **not** an upper
+    /// bound. The user can raise or lower the live count at any
+    /// time via the Stepper, and changes take effect at each
+    /// worker's next game-end check. Edit to change the default.
+    nonisolated static let initialSelfPlayWorkerCount: Int = 6
+    /// Hard ceiling on how many self-play workers can run
+    /// concurrently in a single session. We pre-build this many
+    /// inference networks (one champion plus
+    /// `absoluteMaxSelfPlayWorkers - 1` secondaries) and spawn
+    /// this many worker tasks at session start, idling any above
+    /// the current active count. The only reason this is capped
+    /// at all is the steady-state memory footprint — each extra
+    /// inference network costs ~12 MB of unified memory plus
+    /// some MPSGraph scratch. Raise for headroom, lower to save
+    /// memory. Must be ≥ `initialSelfPlayWorkerCount`.
+    nonisolated static let absoluteMaxSelfPlayWorkers: Int = 16
+    /// Current active self-play worker count for the running
+    /// session. The Stepper writes through `workerCountBinding`
+    /// which updates this @State and `workerCountBox` atomically;
+    /// workers poll the box at the top of each iteration to
+    /// decide whether to play another game or sit in their idle
+    /// wait state. Defaults to `initialSelfPlayWorkerCount`;
+    /// bounded at runtime by `absoluteMaxSelfPlayWorkers`.
+    @State private var selfPlayWorkerCount: Int = Self.initialSelfPlayWorkerCount
+    /// Shared lock-protected mirror of `selfPlayWorkerCount` that
+    /// the self-play worker tasks read between games. The Stepper
+    /// updates `selfPlayWorkerCount` AND this box atomically (via
+    /// the binding side-effect); workers poll the box at the top
+    /// of each iteration to decide whether to play another game
+    /// or stay in their idle wait state. Allocated at session
+    /// start, cleared on session end.
+    @State private var workerCountBox: WorkerCountBox?
+    /// Cached memory-stats line shown in the top busy row during
+    /// Play and Train. Refreshed at most every
+    /// `memoryStatsRefreshSec` seconds via
+    /// `refreshMemoryStatsIfNeeded()` (called from the snapshot
+    /// timer) so the displayed numbers don't churn at 60 Hz.
+    @State private var memoryStatsSnap: MemoryStatsSnapshot?
+    /// Wall-clock timestamp of the most recent `memoryStatsSnap`
+    /// refresh. Defaults to `.distantPast` so the first refresh
+    /// always fires. Compared against `now - memoryStatsRefreshSec`
+    /// inside the heartbeat to decide whether to take a new sample.
+    @State private var memoryStatsLastFetch: Date = .distantPast
+    /// How long the cached memory stats are reused before the
+    /// next sample. The user explicitly asked for a 10-second
+    /// cadence — RAM and GPU footprint don't change visibly more
+    /// often than that, and resampling 60×/s would just churn
+    /// the display.
+    nonisolated static let memoryStatsRefreshSec: Double = 10
+    /// Wall-clock seconds the Play and Train Session panel waits
+    /// after session start before showing rate-based stats fields
+    /// (Moves/hr, Games/hr in both lifetime and 10-min columns).
+    /// Below this threshold the very first game's near-zero
+    /// elapsed denominator would print absurd millions-of-moves/hr
+    /// values; the dashes fade in once the session has had enough
+    /// wall clock for the rates to be meaningful. Per-game and
+    /// per-move averages aren't gated — they don't divide by wall
+    /// clock so they're correct from the first completed game.
+    nonisolated static let statsWarmupSeconds: Double = 5.0
+
     /// Size of the rolling-loss window displayed in the Self-Play training
     /// column. 512 steps × 256 batch = ~131k positions averaged per reported
     /// number, which should be more than enough to smooth through batch-
@@ -957,7 +1188,11 @@ struct ContentView: View {
             || sweepRunning
             || realTraining
     }
-    private var isGameMode: Bool { gameSnapshot.isPlaying || gameSnapshot.totalGames > 0 }
+    private var isGameMode: Bool {
+        gameSnapshot.isPlaying
+            || gameSnapshot.totalGames > 0
+            || realTraining
+    }
     private var isTrainingMode: Bool {
         isTrainingOnce
             || continuousTraining
@@ -1017,6 +1252,24 @@ struct ContentView: View {
                 if newValue == .candidateTest {
                     candidateProbeDirty = true
                 }
+            }
+        )
+    }
+
+    /// Binding for the live worker count Stepper. Writes update both
+    /// `@State selfPlayWorkerCount` (so the body re-renders with the
+    /// new N immediately) and `workerCountBox` (so the self-play
+    /// workers see the change on their next game-end check). The
+    /// box is nil between sessions, so writes outside Play and
+    /// Train just update the @State and take effect on the next
+    /// session start.
+    private var workerCountBinding: Binding<Int> {
+        Binding(
+            get: { selfPlayWorkerCount },
+            set: { newValue in
+                let clamped = max(1, min(Self.absoluteMaxSelfPlayWorkers, newValue))
+                selfPlayWorkerCount = clamped
+                workerCountBox?.set(clamped)
             }
         )
     }
@@ -1161,6 +1414,27 @@ struct ContentView: View {
                         arenaTriggerBox?.trigger()
                     }
                     .disabled(isArenaRunning)
+
+                    // Live N adjustment. The Stepper writes the new
+                    // value through `workerCountBinding`, which
+                    // updates `@State selfPlayWorkerCount` *and*
+                    // pushes the value into `workerCountBox` so the
+                    // self-play workers see it on their next
+                    // game-end check. Bound to the [1,
+                    // absoluteMaxSelfPlayWorkers] range; clicking past
+                    // either end is a no-op via the Stepper itself.
+                    HStack(spacing: 6) {
+                        Text("Workers:")
+                        Text("\(selfPlayWorkerCount)")
+                            .monospacedDigit()
+                            .frame(minWidth: 16, alignment: .trailing)
+                        Stepper(
+                            "Workers",
+                            value: workerCountBinding,
+                            in: 1...Self.absoluteMaxSelfPlayWorkers
+                        )
+                        .labelsHidden()
+                    }
                 }
 
                 if isBusy {
@@ -1240,6 +1514,33 @@ struct ContentView: View {
                                         .allowsHitTesting(forwardPassEditable)
                                 }
                             }
+                            .overlay {
+                                // Multi-worker placeholder — the live
+                                // animated game board only works with
+                                // one driving worker (N=1), because a
+                                // single `GameWatcher` can't track
+                                // multiple concurrent games without
+                                // flicker. When N>1 we still show the
+                                // board slot (so the Candidate test
+                                // picker remains usable and the layout
+                                // doesn't shift) but overlay a centered
+                                // label indicating how many workers
+                                // are running. Hidden in candidate-test
+                                // mode so the probe board stays clean.
+                                if realTraining
+                                    && !isCandidateTestActive
+                                    && selfPlayWorkerCount > 1 {
+                                    Text("N = \(selfPlayWorkerCount) concurrent games\nLive board hidden")
+                                        .font(.system(.body, design: .monospaced))
+                                        .multilineTextAlignment(.center)
+                                        .foregroundStyle(.white)
+                                        .padding(14)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .fill(Color.black.opacity(0.7))
+                                        )
+                                }
+                            }
 
                         let rightDisabled = inferenceResult == nil || selectedOverlay == 18 || !showForwardPassUI
                         Button(
@@ -1286,10 +1587,26 @@ struct ContentView: View {
                             // the overall text panel doesn't reflow when
                             // toggling between Game run and Candidate test.
                             if isGameMode && !isCandidateTestActive {
-                                Text(gameSnapshot.statsText(
-                                    continuousPlay: continuousPlay || realTraining
-                                ))
-                                .frame(minWidth: 330, alignment: .topLeading)
+                                // Play and Train uses the aggregate
+                                // stats text — all N workers feed
+                                // into `parallelStats`, and the text
+                                // builder shows a Status line only
+                                // when N=1. Non-realTraining modes
+                                // (Play Game / Play Continuous) still
+                                // use `gameSnapshot.statsText`, which
+                                // is their single source of truth.
+                                if realTraining, let session = parallelStats {
+                                    Text(playAndTrainStatsText(
+                                        game: gameSnapshot,
+                                        session: session
+                                    ))
+                                    .frame(minWidth: 330, alignment: .topLeading)
+                                } else {
+                                    Text(gameSnapshot.statsText(
+                                        continuousPlay: continuousPlay || realTraining
+                                    ))
+                                    .frame(minWidth: 330, alignment: .topLeading)
+                                }
                             }
                             if isCandidateTestActive, let result = inferenceResult {
                                 Text(result.textOutput)
@@ -1404,16 +1721,50 @@ struct ContentView: View {
             // Parallel worker counters mirror — only updates @State
             // when totals have actually advanced so the body isn't
             // re-evaluated when nothing's changed. The sessionStart
-            // timestamp is embedded in the snapshot so the busy
-            // label can compute rates on every render.
+            // timestamp is embedded in the snapshot so the Session
+            // panel and busy label can compute wall-clock rates on
+            // every render. Dirty check compares the fields that
+            // advance on self-play and training events; if either
+            // has changed (or the rolling-window count has shifted
+            // because an entry aged out), push a new snapshot.
             if let pBox = parallelWorkerStatsBox {
                 let snap = pBox.snapshot()
-                if snap.selfPlayGames != (parallelStats?.selfPlayGames ?? -1)
-                    || snap.trainingSteps != (parallelStats?.trainingSteps ?? -1) {
+                let prev = parallelStats
+                let changed = snap.selfPlayGames != (prev?.selfPlayGames ?? -1)
+                    || snap.trainingSteps != (prev?.trainingSteps ?? -1)
+                    || snap.recentGames != (prev?.recentGames ?? -1)
+                if changed {
                     parallelStats = snap
                 }
             }
+            // Memory stats refresh. Throttled internally to
+            // `memoryStatsRefreshSec` so this is a cheap timestamp
+            // compare on most heartbeats.
+            refreshMemoryStatsIfNeeded()
         }
+    }
+
+    /// Sample app and GPU memory at most every
+    /// `memoryStatsRefreshSec` seconds, caching the result in
+    /// `memoryStatsSnap` for the busy label to read. Cheap on a
+    /// no-op tick (a single timestamp diff) so it's fine to call
+    /// from the 60 Hz heartbeat. The actual sampling reads
+    /// `task_info` and a couple of `MTLDevice` properties via
+    /// the trainer's existing helpers.
+    private func refreshMemoryStatsIfNeeded() {
+        let now = Date()
+        if now.timeIntervalSince(memoryStatsLastFetch) < Self.memoryStatsRefreshSec {
+            return
+        }
+        let app = ChessTrainer.currentPhysFootprintBytes()
+        let caps = trainer?.deviceMemoryCaps()
+        memoryStatsSnap = MemoryStatsSnapshot(
+            appFootprintBytes: app,
+            gpuAllocatedBytes: caps?.currentAllocated ?? 0,
+            gpuMaxTargetBytes: caps?.recommendedMaxWorkingSet ?? 0,
+            gpuTotalBytes: ProcessInfo.processInfo.physicalMemory
+        )
+        memoryStatsLastFetch = now
     }
 
     /// Colored status line for the busy row. Returns a `Text` so the
@@ -1448,35 +1799,57 @@ struct ContentView: View {
 
             return head + score + tail
         }
-        return Text(busyLabel).foregroundStyle(.secondary)
+        // Tabular figures so the elapsed timer and memory sizes
+        // don't jitter as digits roll. `monospacedDigit()` keeps
+        // letters in the normal proportional font while forcing
+        // digits to a fixed cell width — less jarring than
+        // switching the whole label to a monospaced face.
+        return Text(busyLabel)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
     }
 
     private var busyLabel: String {
         if isBuilding { return "Building network..." }
         if realTraining {
-            // Parallel mode: self-play and training advance independently,
-            // each on its own task. Show both rates in the same units
-            // (positions/sec) so you can see the training loop racing
-            // ahead of the self-play loop. Rates are computed against
-            // the session start time captured in `parallelStats` so they
-            // stabilize quickly and reflect actual wall-clock throughput.
-            let games = gameSnapshot.totalGames
-            let buf = replayBuffer?.count ?? 0
-            let steps = trainingStats?.steps ?? 0
+            // Play and Train (no arena): show total session time
+            // and a memory-usage line. The detailed self-play and
+            // training rates that used to live here have moved
+            // into the Self Play and Training panels below; the
+            // top row's job now is "how long has this session
+            // been running, and is memory healthy."
+            //
+            // The session time uses wall clock since
+            // `parallelStats.sessionStart`, formatted as HH:MM:SS
+            // for legibility (this is the same denominator the
+            // panels use, so the user can correlate). The memory
+            // stats are sampled out-of-band by
+            // `refreshMemoryStatsIfNeeded()` at ~10 s intervals
+            // and read here from `memoryStatsSnap`. Missing
+            // (nil) memory snapshot just renders without that
+            // section so the line still shows session time
+            // immediately on startup.
+            let timeStr: String
             if let ps = parallelStats {
-                let elapsed = max(0.1, Date().timeIntervalSince(ps.sessionStart))
-                let spMovesPerSec = Double(ps.selfPlayPositions) / elapsed
-                let trMovesPerSec = Double(ps.trainingSteps * Self.trainingBatchSize) / elapsed
-                return String(
-                    format: "Self-play: %d games, %@ moves/s  ·  Train: %d steps, %@ moves/s  ·  Buf: %d",
-                    games,
-                    Int(spMovesPerSec.rounded()).formatted(.number.grouping(.automatic)),
-                    steps,
-                    Int(trMovesPerSec.rounded()).formatted(.number.grouping(.automatic)),
-                    buf
-                )
+                let elapsed = max(0, Date().timeIntervalSince(ps.sessionStart))
+                timeStr = "Total session time: \(GameWatcher.Snapshot.formatHMS(seconds: elapsed))"
+            } else {
+                timeStr = "Total session time: --"
             }
-            return "Self-play: \(games) games, \(buf) positions, \(steps) train steps..."
+            guard let mem = memoryStatsSnap else {
+                return timeStr
+            }
+            let appGB = Self.bytesToGB(mem.appFootprintBytes)
+            let gpuGB = Self.bytesToGB(mem.gpuAllocatedBytes)
+            let gpuMaxGB = Self.bytesToGB(mem.gpuMaxTargetBytes)
+            let gpuTotalGB = Self.bytesToGB(mem.gpuTotalBytes)
+            let gpuPct = mem.gpuMaxTargetBytes > 0
+                ? Int((Double(mem.gpuAllocatedBytes) / Double(mem.gpuMaxTargetBytes) * 100).rounded())
+                : 0
+            return String(
+                format: "%@  ·  App: %.2f GB  ·  GPU: %.2f / %.2f GB (%d%%)  ·  Total: %.1f GB",
+                timeStr, appGB, gpuGB, gpuMaxGB, gpuPct, gpuTotalGB
+            )
         }
         if gameSnapshot.isPlaying { return "Game \(gameSnapshot.totalGames + 1), move \(gameSnapshot.moveCount)..." }
         if sweepRunning {
@@ -1672,6 +2045,8 @@ struct ContentView: View {
         champion: ChessMPSNetwork,
         candidateInference: ChessMPSNetwork,
         arenaChampion: ChessMPSNetwork,
+        secondarySelfPlayNetworks: [ChessMPSNetwork],
+        secondarySelfPlayGates: [WorkerPauseGate],
         tBox: TournamentLiveBox,
         selfPlayGate: WorkerPauseGate,
         trainingGate: WorkerPauseGate,
@@ -1812,24 +2187,44 @@ struct ContentView: View {
         }
         var promoted = false
         if playedGames >= totalGames && score >= Self.tournamentPromoteThreshold {
-            // Pause self-play briefly, copy candidate inference into
-            // the real champion, release. Self-play's next game uses
-            // the new weights.
+            // Pause every self-play worker briefly, copy candidate
+            // inference into the champion AND every secondary
+            // self-play network, release. Each worker's next game
+            // uses the new weights. All workers must be paused
+            // before the loadWeights calls because loadWeights
+            // mutates MPSGraph variable state in place, and any
+            // concurrent `evaluate` on the same network would race
+            // the assign ops. Pause worker 0 first, then the
+            // secondaries; resume in reverse so the primary is
+            // always the last one released (mirrors the
+            // "worker 0 leads" pattern used elsewhere for UI
+            // ownership).
             await selfPlayGate.pauseAndWait()
+            for gate in secondarySelfPlayGates {
+                await gate.pauseAndWait()
+            }
             if !Task.isCancelled {
                 do {
                     try await Task.detached(priority: .userInitiated) {
-                        [candidateInference, champion] in
+                        [candidateInference, champion, secondarySelfPlayNetworks] in
                         let weights = try candidateInference.network.exportWeights()
                         try champion.network.loadWeights(weights)
+                        for net in secondarySelfPlayNetworks {
+                            try net.network.loadWeights(weights)
+                        }
                     }.value
                     // Promoted: champion now holds the arena candidate's
                     // exact weights, so it inherits that snapshot ID.
+                    // Secondaries are pure mirrors of the champion and
+                    // don't carry their own identity.
                     champion.identifier = candidateInference.identifier
                     promoted = true
                 } catch {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
                 }
+            }
+            for gate in secondarySelfPlayGates.reversed() {
+                gate.resume()
             }
             selfPlayGate.resume()
         }
@@ -2203,6 +2598,18 @@ struct ContentView: View {
     /// actually stop, even during a tournament.
     private func startRealTraining() {
         SessionLogger.shared.log("[BUTTON] Play and Train")
+        precondition(
+            Self.absoluteMaxSelfPlayWorkers >= 1,
+            "absoluteMaxSelfPlayWorkers must be >= 1; got \(Self.absoluteMaxSelfPlayWorkers)"
+        )
+        // Snap the live N into the [1, absoluteMaxSelfPlayWorkers] range
+        // before doing anything else. The Stepper enforces this
+        // for user input but `selfPlayWorkerCount` is plain @State
+        // so the value could in principle be edited elsewhere.
+        let initialWorkerCount = max(1, min(Self.absoluteMaxSelfPlayWorkers, selfPlayWorkerCount))
+        if initialWorkerCount != selfPlayWorkerCount {
+            selfPlayWorkerCount = initialWorkerCount
+        }
         guard let trainer = ensureTrainer(), let network else { return }
         inferenceResult = nil
         gameWatcher.resetAll()
@@ -2228,6 +2635,27 @@ struct ContentView: View {
         parallelWorkerStatsBox = pStatsBox
         parallelStats = pStatsBox.snapshot()
         let selfPlayGate = WorkerPauseGate()
+        // One pause gate per secondary self-play worker (workers
+        // 1..absoluteMaxSelfPlayWorkers-1). Worker 0 uses `selfPlayGate`.
+        // We size to the hard maximum (not the current N) because
+        // every potentially-active worker is spawned at session
+        // start and idles in its own gate's wait state until the
+        // user grows N enough to include it. Each secondary worker
+        // polls its own gate, so the arena coordinator can still
+        // pause exactly the workers whose networks a given sync
+        // point touches. Promotion pauses all of them; the
+        // champion → arena-champion snapshot only pauses worker 0
+        // because secondary workers don't touch `network`.
+        let secondarySelfPlayGates: [WorkerPauseGate] = (0..<max(0, Self.absoluteMaxSelfPlayWorkers - 1))
+            .map { _ in WorkerPauseGate() }
+        // Shared current-N holder. Workers poll this to decide
+        // whether to play another game or sit in their idle wait.
+        // The Stepper writes through it (and to `@State
+        // selfPlayWorkerCount` simultaneously). Exposed via @State
+        // so the UI can disable the buttons when the box is gone
+        // (between sessions).
+        let countBox = WorkerCountBox(initial: initialWorkerCount)
+        workerCountBox = countBox
         let trainingGate = WorkerPauseGate()
         let arenaFlag = ArenaActiveFlag()
         arenaActiveFlag = arenaFlag
@@ -2238,7 +2666,7 @@ struct ContentView: View {
 
         realTrainingTask = Task(priority: .userInitiated) {
             [trainer, network, buffer, box, tBox, pStatsBox,
-             selfPlayGate, trainingGate, arenaFlag, triggerBox] in
+             selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, countBox] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
@@ -2281,6 +2709,60 @@ struct ContentView: View {
                 }
             }
 
+            // Build secondary self-play networks up to the hard
+            // maximum. Worker 0 uses `network`, so we need
+            // `absoluteMaxSelfPlayWorkers - 1` extras. The array is
+            // @State so it persists across sessions — if a prior
+            // session already built enough, we reuse them. We
+            // pre-build to the *max*, not the current N, because
+            // every worker is spawned at session start and idles
+            // until the user grows N enough to include it. That
+            // means the first session pays the full one-time
+            // build cost, and subsequent sessions are instant.
+            let neededSecondaryCount = max(0, Self.absoluteMaxSelfPlayWorkers - 1)
+            let existingSecondaryCount = await MainActor.run { secondarySelfPlayNetworks.count }
+            if existingSecondaryCount < neededSecondaryCount {
+                let toBuild = neededSecondaryCount - existingSecondaryCount
+                do {
+                    let built = try await Task.detached(priority: .userInitiated) {
+                        var out: [ChessMPSNetwork] = []
+                        out.reserveCapacity(toBuild)
+                        for _ in 0..<toBuild {
+                            out.append(try ChessMPSNetwork(.randomWeights))
+                        }
+                        return out
+                    }.value
+                    await MainActor.run {
+                        secondarySelfPlayNetworks.append(contentsOf: built)
+                    }
+                } catch {
+                    box.recordError("Secondary self-play network init failed: \(error.localizedDescription)")
+                    await MainActor.run {
+                        realTraining = false
+                        realTrainingTask = nil
+                    }
+                    return
+                }
+            }
+
+            // Grab the secondary self-play networks for this
+            // session — `absoluteMaxSelfPlayWorkers - 1` of them, one per
+            // potential worker beyond worker 0. Workers above the
+            // currently active count idle until the user grows N
+            // via the Stepper. The pause-gate array captured
+            // above already carries a matching count.
+            let secondaries: [ChessMPSNetwork] = await MainActor.run {
+                Array(secondarySelfPlayNetworks.prefix(max(0, Self.absoluteMaxSelfPlayWorkers - 1)))
+            }
+            guard secondaries.count == max(0, Self.absoluteMaxSelfPlayWorkers - 1) else {
+                box.recordError("Secondary self-play networks missing after setup")
+                await MainActor.run {
+                    realTraining = false
+                    realTrainingTask = nil
+                }
+                return
+            }
+
             // Reset the trainer's graph AND initialize its weights from
             // the champion. Pre-ID this was `resetNetwork()` alone, which
             // re-randomized the trainer independently of the champion —
@@ -2289,11 +2771,22 @@ struct ContentView: View {
             // Copying champion weights makes arena-at-step-0 a fair
             // tie by construction and establishes the trainer's
             // starting point as a true fork of the champion.
+            //
+            // Secondary self-play networks are synced here too so
+            // every worker starts the session on exactly the same
+            // champion weights; without this sync the secondaries
+            // would still hold whatever was last loaded into them
+            // (random weights on first build, or the previous
+            // session's final champion on a subsequent run).
             do {
                 try await Task.detached(priority: .userInitiated) {
+                    [secondaries] in
                     try trainer.resetNetwork()
                     let championWeights = try network.network.exportWeights()
                     try trainer.network.loadWeights(championWeights)
+                    for net in secondaries {
+                        try net.network.loadWeights(championWeights)
+                    }
                 }.value
             } catch {
                 box.recordError("Reset failed: \(error.localizedDescription)")
@@ -2329,63 +2822,149 @@ struct ContentView: View {
                 return
             }
 
-            // --- Spawn the three worker tasks ---
+            // --- Spawn the worker tasks ---
+            //
+            // absoluteMaxSelfPlayWorkers self-play tasks, one training
+            // worker, one arena coordinator, one session-log
+            // ticker. The Stepper picks how many of the self-play
+            // tasks are *active* at any moment — the rest sit in
+            // their pause gate's wait state until the user raises
+            // N enough to include them.
 
             await withTaskGroup(of: Void.self) { group in
-                // Self-play worker: plays one game at a time on the
-                // champion, streams positions into the replay buffer.
-                // Checks `selfPlayGate` between games so the arena
-                // coordinator can briefly pause for the champion →
-                // arena-champion snapshot and for promotion.
+                // Self-play workers: each plays one game at a time
+                // on its own dedicated inference network, streams
+                // positions into the shared replay buffer, and
+                // polls (a) its own `WorkerPauseGate` for arena
+                // coordination and (b) the shared `WorkerCountBox`
+                // for live N adjustment. Workers above the current
+                // active count idle in their pause-wait state;
+                // workers within the count play games normally.
                 //
-                // `gameWatcher` is captured once here — GameWatcher is
-                // @unchecked Sendable so we can call its methods from
-                // any context, avoiding a MainActor hop per game to
-                // re-read the @State reference.
-                group.addTask(priority: .userInitiated) {
-                    [network, buffer, pStatsBox, selfPlayGate, gameWatcher] in
-                    while !Task.isCancelled {
-                        // Pause gate check (between games).
-                        if selfPlayGate.isRequestedToPause {
-                            selfPlayGate.markWaiting()
-                            while selfPlayGate.isRequestedToPause && !Task.isCancelled {
-                                try? await Task.sleep(for: .milliseconds(5))
-                            }
-                            selfPlayGate.markRunning()
-                        }
-                        if Task.isCancelled { break }
+                // Worker 0 uses `network` (the champion, which also
+                // serves as the arena-champion snapshot source);
+                // workers 1..absoluteMaxSelfPlayWorkers-1 use dedicated
+                // secondary inference networks mirrored from the
+                // champion at session start and at every promotion.
+                //
+                // Each worker allocates its two `MPSChessPlayer`
+                // instances once before the loop and reuses them
+                // across every game — `ChessMachine.beginNewGame`
+                // calls `onNewGame` internally, which resets
+                // per-game scratch state while keeping backing
+                // storage alive (see `MPSChessPlayer.onNewGame`).
+                //
+                // Worker 0 is always the one wired to `GameWatcher`
+                // for the live-game animated board. The board view
+                // is hidden when `selfPlayWorkerCount > 1`, but we
+                // keep feeding GameWatcher so dropping back to N=1
+                // restores a valid live state immediately on the
+                // next game (no warmup needed). All workers — not
+                // just worker 0 — contribute identically to the
+                // aggregate stats box via `recordCompletedGame`.
+                for workerIndex in 0..<Self.absoluteMaxSelfPlayWorkers {
+                    let workerNetwork: ChessMPSNetwork = workerIndex == 0
+                        ? network
+                        : secondaries[workerIndex - 1]
+                    let workerGate: WorkerPauseGate = workerIndex == 0
+                        ? selfPlayGate
+                        : secondarySelfPlayGates[workerIndex - 1]
+                    let isWorker0 = workerIndex == 0
 
-                        gameWatcher.resetCurrentGame()
-                        gameWatcher.markPlaying(true)
+                    group.addTask(priority: .userInitiated) {
+                        [workerNetwork, workerGate, buffer, pStatsBox, gameWatcher,
+                         isWorker0, countBox] in
 
-                        let machine = ChessMachine()
-                        machine.delegate = gameWatcher
+                        // Reusable players, allocated once per
+                        // worker. `ChessMachine.beginNewGame` calls
+                        // `onNewGame` on each before the next game
+                        // starts, resetting per-game scratch state
+                        // without reallocating.
                         let white = MPSChessPlayer(
                             name: "White",
-                            network: network,
+                            network: workerNetwork,
                             replayBuffer: buffer,
                             schedule: .selfPlay
                         )
                         let black = MPSChessPlayer(
                             name: "Black",
-                            network: network,
+                            network: workerNetwork,
                             replayBuffer: buffer,
                             schedule: .selfPlay
                         )
 
-                        do {
-                            let task = try machine.beginNewGame(white: white, black: black)
-                            _ = await task.value
-                        } catch {
-                            gameWatcher.markPlaying(false)
-                            break
-                        }
+                        while !Task.isCancelled {
+                            // Combined wait check. The worker is
+                            // ready to play iff (a) no arena
+                            // coordinator has requested a pause
+                            // AND (b) its index is below the
+                            // current active count. Either
+                            // condition false → enter the wait
+                            // state (`markWaiting` so arena
+                            // `pauseAndWait` succeeds even on
+                            // permanently-inactive workers) and
+                            // poll until both clear.
+                            var shouldPlay = !workerGate.isRequestedToPause
+                                && countBox.count > workerIndex
+                            if !shouldPlay {
+                                workerGate.markWaiting()
+                                while !Task.isCancelled && !shouldPlay {
+                                    try? await Task.sleep(for: .milliseconds(50))
+                                    shouldPlay = !workerGate.isRequestedToPause
+                                        && countBox.count > workerIndex
+                                }
+                                workerGate.markRunning()
+                            }
+                            if Task.isCancelled { break }
 
-                        // Record the completed game for the parallel
-                        // rate display. Position count is the total
-                        // plies across both players in this game.
-                        let positions = white.recordedPliesCount + black.recordedPliesCount
-                        pStatsBox.recordSelfPlayGame(positions: positions)
+                            // Live-display decision: only wire
+                            // `GameWatcher` when the current
+                            // concurrency is exactly 1 and this is
+                            // worker 0. Evaluated here (not at
+                            // spawn) so toggling N between 1 and
+                            // >1 at runtime immediately stops or
+                            // restarts the animated board on the
+                            // next game, rather than carrying a
+                            // spawn-time captured flag forever.
+                            let liveDisplay = isWorker0 && countBox.count == 1
+
+                            if liveDisplay {
+                                gameWatcher.resetCurrentGame()
+                                gameWatcher.markPlaying(true)
+                            }
+
+                            let machine = ChessMachine()
+                            if liveDisplay {
+                                machine.delegate = gameWatcher
+                            }
+
+                            let gameStart = CFAbsoluteTimeGetCurrent()
+                            let result: GameResult
+                            do {
+                                let task = try machine.beginNewGame(white: white, black: black)
+                                result = await task.value
+                            } catch {
+                                if liveDisplay {
+                                    gameWatcher.markPlaying(false)
+                                }
+                                break
+                            }
+                            let gameDurationMs = (CFAbsoluteTimeGetCurrent() - gameStart) * 1000
+
+                            // Every worker contributes to the
+                            // aggregate session stats identically —
+                            // no delegate indirection, no worker
+                            // specialness. Move count = total plies
+                            // across both players' recorded-moves
+                            // counters, read before the next
+                            // `beginNewGame` resets them.
+                            let positions = white.recordedPliesCount + black.recordedPliesCount
+                            pStatsBox.recordCompletedGame(
+                                moves: positions,
+                                durationMs: gameDurationMs,
+                                result: result
+                            )
+                        }
                     }
                 }
 
@@ -2467,8 +3046,8 @@ struct ContentView: View {
                 // execution. Both the 30-minute auto-fire and the
                 // Run Arena button enter here via `triggerBox.trigger()`.
                 group.addTask(priority: .userInitiated) {
-                    [trainer, network, tBox, selfPlayGate, trainingGate, arenaFlag, triggerBox,
-                     candidateInference, arenaChampion] in
+                    [trainer, network, tBox, selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox,
+                     candidateInference, arenaChampion, secondaries] in
                     while !Task.isCancelled {
                         if triggerBox.consume() {
                             await self.runArenaParallel(
@@ -2476,6 +3055,8 @@ struct ContentView: View {
                                 champion: network,
                                 candidateInference: candidateInference,
                                 arenaChampion: arenaChampion,
+                                secondarySelfPlayNetworks: secondaries,
+                                secondarySelfPlayGates: secondarySelfPlayGates,
                                 tBox: tBox,
                                 selfPlayGate: selfPlayGate,
                                 trainingGate: trainingGate,
@@ -2580,6 +3161,7 @@ struct ContentView: View {
                 arenaTriggerBox = nil
                 parallelWorkerStatsBox = nil
                 parallelStats = nil
+                workerCountBox = nil
             }
         }
     }
@@ -2708,20 +3290,15 @@ struct ContentView: View {
         }
 
         let isSelfPlay = realTraining || replayBuffer != nil
-        let mode: String
-        if isSelfPlay {
-            mode = "Self-Play"
-        } else if continuousTraining {
-            mode = "Continuous"
-        } else {
-            mode = "Single Step"
-        }
         var lines: [String] = []
-        lines.append("Training (\(mode))")
+        // Header is labelled with the trainer's model ID — the
+        // moving SGD copy that arena promotion turns into a
+        // champion. The separate Trainer ID / Champion ID rows
+        // are dropped: the trainer ID is in the header, and the
+        // champion ID is already shown as the Self Play column
+        // header.
         let trainerIDStr = trainer?.identifier?.description ?? dash
-        let championIDStr = network?.identifier?.description ?? dash
-        lines.append("  Trainer ID:  \(trainerIDStr)")
-        lines.append("  Champion ID: \(championIDStr)")
+        lines.append("Training [\(trainerIDStr)]")
         lines.append("  Batch size:  \(Self.trainingBatchSize)")
         // Learning rate — read off the trainer so we can't drift out of
         // sync with what the graph is actually applying. Shown in every
@@ -2793,33 +3370,49 @@ struct ContentView: View {
         if let last = lastTrainStep {
             lines.append("Last Step")
             lines.append(String(format: "  Total:       %7.2f ms", last.totalMs))
-            lines.append(String(format: "  Data prep:   %7.2f ms", last.dataPrepMs))
-            lines.append(String(format: "  GPU run:     %7.2f ms", last.gpuRunMs))
-            lines.append(String(format: "  Readback:    %7.2f ms", last.readbackMs))
-            lines.append(String(format: "  Loss:        %+.6f", last.loss))
-            lines.append(String(format: "    policy:    %+.6f", last.policyLoss))
-            lines.append(String(format: "    value:     %+.6f", last.valueLoss))
-            lines.append(String(format: "    entropy:   %.6f", last.policyEntropy))
+            lines.append(String(format: "  Entropy:     %.6f", last.policyEntropy))
             lines.append("")
         }
 
         if let stats = trainingStats {
             let stepsStr = stats.steps.formatted(.number.grouping(.automatic))
-            // Train time is the sum of per-step wall times — in real-
-            // training mode this excludes self-play, so the rate numbers
-            // below reflect trainer throughput rather than session clock.
+            // Train time is the sum of per-step wall times — wall time
+            // the trainer actually spent inside `trainStep`, exclusive
+            // of buffer warmup, gate pauses, and any other idle gaps.
+            // Useful as "cumulative GPU training cost"; intentionally
+            // not the rate denominator below.
             let trainTimeStr = stats.steps > 0
                 ? String(format: "%.2f s", stats.trainingSeconds)
                 : dash
             let avgTotal = stats.steps > 0 ? String(format: "%7.2f ms", stats.avgStepMs) : dash
-            let avgGpu = stats.steps > 0 ? String(format: "%7.2f ms", stats.avgGpuMs) : dash
-            let minStr = stats.steps > 0 ? String(format: "%7.2f ms", stats.minStepMs) : dash
-            let maxStr = stats.steps > 0 ? String(format: "%7.2f ms", stats.maxStepMs) : dash
-            let rateStr = stats.steps > 0 ? String(format: "%.2f", stats.stepsPerSecond) : dash
+
+            // Rate denominator: prefer session wall clock from the
+            // parallel-worker stats box when one is present (Play
+            // and Train mode), so Steps/sec and Moves/sec are
+            // directly comparable to the self-play moves/sec figures
+            // shown elsewhere — both use "now - sessionStart". In
+            // pure training modes (Train Once / Train Continuous)
+            // there is no sessionStart, so we fall back to
+            // `trainingSeconds`, which in those modes IS the session
+            // time anyway because the trainer is the only worker.
+            let rateDenomSec: Double
+            if let ps = parallelStats {
+                rateDenomSec = max(0.1, Date().timeIntervalSince(ps.sessionStart))
+            } else {
+                rateDenomSec = max(0.1, stats.trainingSeconds)
+            }
+
+            let stepsPerSec: Double = stats.steps > 0
+                ? Double(stats.steps) / rateDenomSec
+                : 0
+            let movesPerSec: Double = stats.steps > 0
+                ? Double(stats.steps * Self.trainingBatchSize) / rateDenomSec
+                : 0
+
+            let rateStr = stats.steps > 0 ? String(format: "%.2f", stepsPerSec) : dash
             let movesSecStr: String
             let movesHrStr: String
             if stats.steps > 0 {
-                let movesPerSec = stats.positionsPerSecond(batchSize: Self.trainingBatchSize)
                 movesSecStr = Int(movesPerSec.rounded())
                     .formatted(.number.grouping(.automatic))
                 movesHrStr = Int((movesPerSec * 3600).rounded())
@@ -2828,15 +3421,11 @@ struct ContentView: View {
                 movesSecStr = dash
                 movesHrStr = dash
             }
-            let projStr = stats.steps > 0 ? String(format: "%.2f s", stats.projectedSecPer250Steps) : dash
 
             lines.append("Run Totals")
             lines.append("  Steps done:  \(stepsStr)")
             lines.append("  Train time:  \(trainTimeStr)")
             lines.append("  Avg total:   \(avgTotal)")
-            lines.append("  Avg GPU:     \(avgGpu)")
-            lines.append("  Min step:    \(minStr)")
-            lines.append("  Max step:    \(maxStr)")
             lines.append("  Steps/sec:   \(rateStr)")
             // Moves/sec and moves/hr match the game side's session-
             // stats format (which shows Games/hr and Moves/hr) so the
@@ -2846,7 +3435,6 @@ struct ContentView: View {
             // move played in the original game.
             lines.append("  Moves/sec:   \(movesSecStr)")
             lines.append("  Moves/hr:    \(movesHrStr)")
-            lines.append("  Proj 250×:   \(projStr)")
         }
 
         // Arena history — present only in self-play runs. One line per
@@ -2869,6 +3457,181 @@ struct ContentView: View {
                 ))
             }
         }
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Play and Train self-play stats text. Built from the aggregate
+    /// `ParallelWorkerStatsBox` snapshot so all N workers contribute
+    /// identically, plus the live `GameWatcher` snapshot used only
+    /// when `selfPlayWorkerCount == 1` to render the current-game
+    /// Status line. Session rates are computed against wall clock
+    /// since `sessionStart` (not the old `GameWatcher` stopwatch,
+    /// which was worker-0-only and had an async-dispatch race); a
+    /// second column shows the same rates restricted to the rolling
+    /// 10-minute window for short-term throughput visibility.
+    private func playAndTrainStatsText(
+        game: GameWatcher.Snapshot,
+        session: ParallelWorkerStatsBox.Snapshot
+    ) -> String {
+        let dash = "--"
+        var lines: [String] = []
+
+        // Status line — only meaningful with a single live-driven
+        // game. Under N>1 GameWatcher is still fed by worker 0 (so
+        // the live board can re-appear instantly when the user
+        // drops back to N=1) but the Status line is hidden because
+        // it would only describe one of N concurrent games.
+        if selfPlayWorkerCount == 1 {
+            let status: String
+            if game.isPlaying {
+                let turn = game.state.currentPlayer == .white ? "White" : "Black"
+                let check = MoveGenerator.isInCheck(game.state, color: game.state.currentPlayer) ? " CHECK" : ""
+                status = "\(turn) to move (move \(game.moveCount + 1))\(check)"
+            } else if let result = game.result {
+                switch result {
+                case .checkmate(let winner):
+                    status = "\(winner == .white ? "White" : "Black") wins by checkmate"
+                case .stalemate:
+                    status = "Draw by stalemate"
+                case .drawByFiftyMoveRule:
+                    status = "Draw by fifty-move rule"
+                case .drawByInsufficientMaterial:
+                    status = "Draw by insufficient material"
+                case .drawByThreefoldRepetition:
+                    status = "Draw by threefold repetition"
+                }
+            } else {
+                status = dash
+            }
+            lines.append("Status: \(status)")
+            lines.append("")
+        }
+
+        // Section header — labelled with the champion model ID
+        // (the network worker 0 plays on; secondaries are
+        // weight-mirror copies of it). Concurrency appears as the
+        // first row inside the section so it lives next to the
+        // counts it scales. The lifetime "Time" field used to live
+        // here too but moved to the top busy row alongside memory
+        // stats — see `busyLabel` for that.
+        let championIDStr = network?.identifier?.description ?? "no id"
+        lines.append("Self Play [\(championIDStr)]")
+
+        let games = session.selfPlayGames
+        let moves = session.selfPlayPositions
+        let elapsed = max(0.1, Date().timeIntervalSince(session.sessionStart))
+
+        let sGames = games > 0 ? games.formatted(.number.grouping(.automatic)) : dash
+        let sMoves = moves > 0 ? moves.formatted(.number.grouping(.automatic)) : dash
+        // `Time` left this panel on the layout refactor — it now
+        // lives in the top busy row next to memory stats. The
+        // formatHMS helper still drives that display, just not
+        // from here.
+
+        // Wall-clock-derived rate denominator. Rate fields show "--"
+        // for the first few seconds of a session so the first game
+        // (with elapsed near zero) doesn't flash an absurd
+        // millions-of-moves/hr value.
+        let ratesValid = elapsed >= Self.statsWarmupSeconds && games > 0
+
+        // System-level averages: every metric measures the
+        // collective rate the N workers produce, not the per-worker
+        // average. With N workers, "Avg move" is wall-clock seconds
+        // divided by total moves (N times faster than per-worker
+        // move time), and "Avg game" is wall-clock seconds divided
+        // by total games. This matches the user's natural reading:
+        // "the system pops out a move every X ms" / "a game every
+        // Y ms," which is what the busy label's positions/sec also
+        // reports. Per-worker averages are not displayed.
+        let elapsedMs = elapsed * 1000
+        let lifetimeAvgMoveMs = moves > 0 ? elapsedMs / Double(moves) : 0
+        let lifetimeAvgGameMs = games > 0 ? elapsedMs / Double(games) : 0
+        let lifetimeMovesPerHour = Double(moves) / elapsed * 3600
+        let lifetimeGamesPerHour = Double(games) / elapsed * 3600
+
+        // Rolling-window aggregates. The right denominator for "rate
+        // over the last 10 minutes" is `min(recentWindow, elapsed)`,
+        // *not* the gap between the oldest stored entry and now —
+        // the gap form collapses to zero on the first game and
+        // understates the window in steady state. With min(window,
+        // elapsed): during the first 10 minutes of a session the
+        // rolling values equal the lifetime values (the window
+        // covers everything since sessionStart); after 10 minutes
+        // the rolling window is exactly 10 minutes wide.
+        let recentGames = session.recentGames
+        let recentMoves = session.recentMoves
+        let recentDenom = min(ParallelWorkerStatsBox.recentWindow, elapsed)
+        let recentDenomMs = recentDenom * 1000
+
+        let recentAvgMoveMs = recentMoves > 0 ? recentDenomMs / Double(recentMoves) : 0
+        let recentAvgGameMs = recentGames > 0 ? recentDenomMs / Double(recentGames) : 0
+        let recentMovesPerHour = recentDenom > 0 ? Double(recentMoves) / recentDenom * 3600 : 0
+        let recentGamesPerHour = recentDenom > 0 ? Double(recentGames) / recentDenom * 3600 : 0
+
+        let sAvgMove = ratesValid && moves > 0
+            ? String(format: "%.2f ms", lifetimeAvgMoveMs)
+            : dash
+        let sAvgGame = ratesValid && games > 0
+            ? String(format: "%.1f ms", lifetimeAvgGameMs)
+            : dash
+        let sMovesHr = ratesValid
+            ? Int(lifetimeMovesPerHour.rounded()).formatted(.number.grouping(.automatic))
+            : dash
+        let sGamesHr = ratesValid
+            ? Int(lifetimeGamesPerHour.rounded()).formatted(.number.grouping(.automatic))
+            : dash
+
+        let sAvgMoveR = ratesValid && recentGames > 0
+            ? String(format: "%.2f ms", recentAvgMoveMs)
+            : dash
+        let sAvgGameR = ratesValid && recentGames > 0
+            ? String(format: "%.1f ms", recentAvgGameMs)
+            : dash
+        let sMovesHrR = ratesValid && recentGames > 0
+            ? Int(recentMovesPerHour.rounded()).formatted(.number.grouping(.automatic))
+            : dash
+        let sGamesHrR = ratesValid && recentGames > 0
+            ? Int(recentGamesPerHour.rounded()).formatted(.number.grouping(.automatic))
+            : dash
+
+        // Column-aligned output. First rate column is right-padded
+        // to 12 chars so the 10-min column starts at a consistent
+        // offset regardless of first-column width; second column
+        // renders its value directly (no padding needed — it's the
+        // last thing on the line).
+        func rjust(_ value: String, _ width: Int) -> String {
+            guard value.count < width else { return value }
+            return String(repeating: " ", count: width - value.count) + value
+        }
+
+        lines.append("  Concurrency: \(rjust("\(selfPlayWorkerCount)", 10))")
+        lines.append("  Games:     \(rjust(sGames, 12))")
+        lines.append("  Moves:     \(rjust(sMoves, 12))")
+        lines.append("                             (last 10m)")
+        lines.append("  Avg move:  \(rjust(sAvgMove, 12))  \(rjust(sAvgMoveR, 12))")
+        lines.append("  Avg game:  \(rjust(sAvgGame, 12))  \(rjust(sAvgGameR, 12))")
+        lines.append("  Moves/hr:  \(rjust(sMovesHr, 12))  \(rjust(sMovesHrR, 12))")
+        lines.append("  Games/hr:  \(rjust(sGamesHr, 12))  \(rjust(sGamesHrR, 12))")
+        lines.append("")
+
+        // Results — per-outcome counters from the aggregate box,
+        // formatted exactly like the old GameWatcher rendering so
+        // the display layout is unchanged.
+        let totalCheckmates = session.whiteCheckmates + session.blackCheckmates
+        func pct(_ count: Int) -> String {
+            guard games > 0 else { return "" }
+            return String(format: "  (%.1f%%)", Double(count) / Double(games) * 100)
+        }
+
+        lines.append("Results")
+        lines.append("  Checkmate:      \(totalCheckmates)\(pct(totalCheckmates))")
+        lines.append("    White wins:     \(session.whiteCheckmates)\(pct(session.whiteCheckmates))")
+        lines.append("    Black wins:     \(session.blackCheckmates)\(pct(session.blackCheckmates))")
+        lines.append("  Stalemate:      \(session.stalemates)\(pct(session.stalemates))")
+        lines.append("  50-move draw:   \(session.fiftyMoveDraws)\(pct(session.fiftyMoveDraws))")
+        lines.append("  Threefold rep:  \(session.threefoldRepetitionDraws)\(pct(session.threefoldRepetitionDraws))")
+        lines.append("  Insufficient:   \(session.insufficientMaterialDraws)\(pct(session.insufficientMaterialDraws))")
 
         return lines.joined(separator: "\n")
     }
