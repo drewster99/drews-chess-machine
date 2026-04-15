@@ -1346,23 +1346,23 @@ struct ContentView: View {
             set: { newValue in
                 let ladder = Self.stepDelayLadder
                 let current = trainingStepDelayMs
-                let snapped: Int
-                if let currentIdx = ladder.firstIndex(of: current) {
-                    if newValue > current {
-                        snapped = ladder[min(currentIdx + 1, ladder.count - 1)]
-                    } else if newValue < current {
-                        snapped = ladder[max(currentIdx - 1, 0)]
-                    } else {
-                        snapped = current
-                    }
-                } else {
-                    // Current value isn't on the ladder (shouldn't
-                    // happen in practice — the @State default is 0
-                    // and every write goes through this binding —
-                    // but snap to the nearest rung defensively so a
-                    // manual write can't strand the Stepper.)
-                    snapped = ladder.min(by: { abs($0 - newValue) < abs($1 - newValue) }) ?? 0
+                // `trainingStepDelayMs` is seeded with a ladder rung
+                // (0) and every write below snaps to another ladder
+                // rung, so `firstIndex(of:)` is invariant-guaranteed
+                // non-nil. A violation here would be a programmer
+                // error, so crash loudly rather than silently drifting.
+                guard let currentIdx = ladder.firstIndex(of: current) else {
+                    preconditionFailure("trainingStepDelayMs (\(current)) is not a rung in stepDelayLadder")
                 }
+                let nextIdx: Int
+                if newValue > current {
+                    nextIdx = min(currentIdx + 1, ladder.count - 1)
+                } else if newValue < current {
+                    nextIdx = max(currentIdx - 1, 0)
+                } else {
+                    nextIdx = currentIdx
+                }
+                let snapped = ladder[nextIdx]
                 trainingStepDelayMs = snapped
                 trainingStepDelayBox?.set(snapped)
             }
@@ -3161,6 +3161,20 @@ struct ContentView: View {
                         if triggerBox.shouldAutoTrigger(interval: Self.secondsPerTournament) {
                             triggerBox.trigger()
                         }
+
+                        // User-adjustable post-step pause. Read live
+                        // from the delay box so a Stepper click takes
+                        // effect on the very next iteration. Skip the
+                        // sleep entirely at 0 ms so the default case
+                        // adds no scheduler hop. The try? mirrors the
+                        // other sleeps in this loop — Task.sleep throws
+                        // CancellationError, and the `while
+                        // !Task.isCancelled` at the top already handles
+                        // shutdown on the next iteration.
+                        let stepDelayMs = stepDelayBox.milliseconds
+                        if stepDelayMs > 0 {
+                            try? await Task.sleep(for: .milliseconds(stepDelayMs))
+                        }
                     }
                 }
 
@@ -3286,6 +3300,7 @@ struct ContentView: View {
                 parallelWorkerStatsBox = nil
                 parallelStats = nil
                 workerCountBox = nil
+                trainingStepDelayBox = nil
             }
         }
     }
