@@ -1124,7 +1124,7 @@ struct ContentView: View {
     /// bound. The user can raise or lower the live count at any
     /// time via the Stepper, and changes take effect at each
     /// worker's next game-end check. Edit to change the default.
-    nonisolated static let initialSelfPlayWorkerCount: Int = 6
+    nonisolated static let initialSelfPlayWorkerCount: Int = 5
     /// Hard ceiling on how many self-play workers can run
     /// concurrently in a single session. We pre-build this many
     /// inference networks (one champion plus
@@ -1162,8 +1162,12 @@ struct ContentView: View {
     /// `trainingStepDelayBox` so the training worker task reads
     /// the live value between steps. Always a member of
     /// `stepDelayLadder`. Persists across sessions (@State) so the
-    /// user doesn't have to re-pick the delay on every start.
-    @State private var trainingStepDelayMs: Int = 0
+    /// user doesn't have to re-pick the delay on every start. The
+    /// 50 ms default holds the training worker to a modest ~20
+    /// steps/s ceiling so it doesn't starve the N self-play workers
+    /// of GPU time on a fresh session start; the user can drop it
+    /// to 0 ms once the self-play throughput has stabilized.
+    @State private var trainingStepDelayMs: Int = 50
     /// Shared lock-protected mirror of `trainingStepDelayMs` that
     /// the training worker task reads at the bottom of each step
     /// to decide how long to sleep before looping. Allocated at
@@ -1509,50 +1513,6 @@ struct ContentView: View {
                         arenaTriggerBox?.trigger()
                     }
                     .disabled(isArenaRunning)
-
-                    // Live N adjustment. The Stepper writes the new
-                    // value through `workerCountBinding`, which
-                    // updates `@State selfPlayWorkerCount` *and*
-                    // pushes the value into `workerCountBox` so the
-                    // self-play workers see it on their next
-                    // game-end check. Bound to the [1,
-                    // absoluteMaxSelfPlayWorkers] range; clicking past
-                    // either end is a no-op via the Stepper itself.
-                    HStack(spacing: 6) {
-                        Text("Workers:")
-                        Text("\(selfPlayWorkerCount)")
-                            .monospacedDigit()
-                            .frame(minWidth: 16, alignment: .trailing)
-                        Stepper(
-                            "Workers",
-                            value: workerCountBinding,
-                            in: 1...Self.absoluteMaxSelfPlayWorkers
-                        )
-                        .labelsHidden()
-                    }
-
-                    // Adjustable pause inserted after each training
-                    // step. The Stepper walks `stepDelayLadder`
-                    // (0/5/10/15/20/25 then +25 up to 500 ms) via
-                    // `trainingStepDelayBinding`; the worker task
-                    // reads the current value from
-                    // `trainingStepDelayBox` at the end of every
-                    // step and sleeps for that many milliseconds
-                    // before looping, so changes take effect on the
-                    // very next step without restarting the session.
-                    HStack(spacing: 6) {
-                        Text("Step Delay:")
-                        Text("\(trainingStepDelayMs)")
-                            .monospacedDigit()
-                            .frame(minWidth: 28, alignment: .trailing)
-                        Text("ms")
-                        Stepper(
-                            "Step Delay",
-                            value: trainingStepDelayBinding,
-                            in: 0...Self.stepDelayMaxMs
-                        )
-                        .labelsHidden()
-                    }
                 }
 
                 if isBusy {
@@ -1714,10 +1674,36 @@ struct ContentView: View {
                                 // use `gameSnapshot.statsText`, which
                                 // is their single source of truth.
                                 if realTraining, let session = parallelStats {
-                                    Text(playAndTrainStatsText(
+                                    let column = playAndTrainStatsText(
                                         game: gameSnapshot,
                                         session: session
-                                    ))
+                                    )
+                                    // Split layout: header Text, then the
+                                    // Concurrency control row with the live
+                                    // N Stepper, then the body Text. Zero
+                                    // spacing so the three pieces read as a
+                                    // single continuous block. The HStack's
+                                    // leading "  " mirrors the body's two-
+                                    // space label indent, and the minWidth
+                                    // on the value Text keeps the Stepper
+                                    // from jittering horizontally when the
+                                    // count changes width (1 ↔ 16).
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        Text(column.header)
+                                        HStack(spacing: 6) {
+                                            Text("  Concurrency:")
+                                            Text("\(selfPlayWorkerCount)")
+                                                .monospacedDigit()
+                                                .frame(minWidth: 24, alignment: .trailing)
+                                            Stepper(
+                                                "Concurrency",
+                                                value: workerCountBinding,
+                                                in: 1...Self.absoluteMaxSelfPlayWorkers
+                                            )
+                                            .labelsHidden()
+                                        }
+                                        Text(column.body)
+                                    }
                                     .frame(minWidth: 330, alignment: .topLeading)
                                 } else {
                                     Text(gameSnapshot.statsText(
@@ -1731,8 +1717,36 @@ struct ContentView: View {
                                     .frame(minWidth: 330, alignment: .topLeading)
                             }
                             if isTrainingMode {
-                                Text(trainingStatsText())
-                                    .frame(minWidth: 260, alignment: .topLeading)
+                                let column = trainingStatsText()
+                                // Split layout mirroring the Self Play
+                                // column: header, then the Step Delay row
+                                // (only during Play and Train — the delay
+                                // only affects the live training worker),
+                                // then the body. Sweep mode still runs
+                                // through this branch but `realTraining`
+                                // is false there, so the control row is
+                                // omitted and the sweep table renders
+                                // exactly as before.
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text(column.header)
+                                    if realTraining {
+                                        HStack(spacing: 6) {
+                                            Text("  Step Delay:")
+                                            Text("\(trainingStepDelayMs)")
+                                                .monospacedDigit()
+                                                .frame(minWidth: 32, alignment: .trailing)
+                                            Text("ms")
+                                            Stepper(
+                                                "Step Delay",
+                                                value: trainingStepDelayBinding,
+                                                in: 0...Self.stepDelayMaxMs
+                                            )
+                                            .labelsHidden()
+                                        }
+                                    }
+                                    Text(column.body)
+                                }
+                                .frame(minWidth: 260, alignment: .topLeading)
                             }
                             if !isGameMode, !isTrainingMode, let result = inferenceResult {
                                 Text(result.textOutput)
@@ -3419,13 +3433,22 @@ struct ContentView: View {
 
     // MARK: - Training Stats Display
 
-    private func trainingStatsText() -> String {
+    private func trainingStatsText() -> (header: String, body: String) {
         let dash = "--"
 
         // Sweep results trump the per-step display. Once a sweep starts or
-        // completes, the table is what the user came here for.
+        // completes, the table is what the user came here for. The sweep
+        // formatter produces its own header line (the "Batch Size Sweep"
+        // title) as its first line, so we split it off here so callers can
+        // render the split-header layout uniformly across modes.
         if sweepRunning || !sweepResults.isEmpty {
-            return sweepStatsText()
+            let sweepText = sweepStatsText()
+            let newlineIdx = sweepText.firstIndex(of: "\n") ?? sweepText.endIndex
+            let header = String(sweepText[..<newlineIdx])
+            let body = newlineIdx == sweepText.endIndex
+                ? ""
+                : String(sweepText[sweepText.index(after: newlineIdx)...])
+            return (header: header, body: body)
         }
 
         let isSelfPlay = realTraining || replayBuffer != nil
@@ -3437,7 +3460,7 @@ struct ContentView: View {
         // champion ID is already shown as the Self Play column
         // header.
         let trainerIDStr = trainer?.identifier?.description ?? dash
-        lines.append("Training [\(trainerIDStr)]")
+        let header = "Training [\(trainerIDStr)]"
         lines.append("  Batch size:  \(Self.trainingBatchSize)")
         // Learning rate — read off the trainer so we can't drift out of
         // sync with what the graph is actually applying. Shown in every
@@ -3597,7 +3620,7 @@ struct ContentView: View {
             }
         }
 
-        return lines.joined(separator: "\n")
+        return (header: header, body: lines.joined(separator: "\n"))
     }
 
     /// Play and Train self-play stats text. Built from the aggregate
@@ -3612,7 +3635,7 @@ struct ContentView: View {
     private func playAndTrainStatsText(
         game: GameWatcher.Snapshot,
         session: ParallelWorkerStatsBox.Snapshot
-    ) -> String {
+    ) -> (header: String, body: String) {
         let dash = "--"
         var lines: [String] = []
 
@@ -3649,13 +3672,15 @@ struct ContentView: View {
 
         // Section header — labelled with the champion model ID
         // (the network worker 0 plays on; secondaries are
-        // weight-mirror copies of it). Concurrency appears as the
-        // first row inside the section so it lives next to the
-        // counts it scales. The lifetime "Time" field used to live
-        // here too but moved to the top busy row alongside memory
-        // stats — see `busyLabel` for that.
+        // weight-mirror copies of it). The lifetime "Time" field
+        // used to live here too but moved to the top busy row
+        // alongside memory stats — see `busyLabel` for that. The
+        // Concurrency row used to live as the first body line but
+        // is now rendered outside this string as a SwiftUI HStack
+        // with an inline Stepper so the user can adjust N without
+        // leaving the stats panel.
         let championIDStr = network?.identifier?.description ?? "no id"
-        lines.append("Self Play [\(championIDStr)]")
+        let header = "Self Play [\(championIDStr)]"
 
         let games = session.selfPlayGames
         let moves = session.selfPlayPositions
@@ -3744,7 +3769,6 @@ struct ContentView: View {
             return String(repeating: " ", count: width - value.count) + value
         }
 
-        lines.append("  Concurrency: \(rjust("\(selfPlayWorkerCount)", 10))")
         lines.append("  Games:     \(rjust(sGames, 12))")
         lines.append("  Moves:     \(rjust(sMoves, 12))")
         lines.append("                             (last 10m)")
@@ -3772,7 +3796,7 @@ struct ContentView: View {
         lines.append("  Threefold rep:  \(session.threefoldRepetitionDraws)\(pct(session.threefoldRepetitionDraws))")
         lines.append("  Insufficient:   \(session.insufficientMaterialDraws)\(pct(session.insufficientMaterialDraws))")
 
-        return lines.joined(separator: "\n")
+        return (header: header, body: lines.joined(separator: "\n"))
     }
 
     /// Format the sweep results as a fixed-column monospaced table.
