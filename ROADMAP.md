@@ -75,25 +75,62 @@ Long-term goals, deferred work, and notes on decisions.
   was sampled ~8.4× on average before eviction — far above the 2–4×
   replay ratio common for off-policy RL, and the buffer also covered only
   ~625 games of play diversity. The fix is to spawn `N` concurrent
-  self-play workers (`ContentView.selfPlayWorkerCount`, currently `3`),
-  each with its own dedicated `ChessMPSNetwork` instance so no two
-  concurrent `evaluate` calls share MPSGraph state. Topology is
-  asymmetric: worker 0 reuses the existing `network` (the champion, also
-  the arena snapshot source), and workers `1..N-1` use new
-  `secondarySelfPlayNetworks` mirrored from the champion at session start
-  and at every arena promotion. Each worker owns its own
-  `WorkerPauseGate`, so the arena-champion snapshot path (which only
-  reads `network`) still pauses only worker 0, and only the promotion
-  branch pauses every worker to loadWeights into every self-play
-  network. Players (`MPSChessPlayer` white/black) are now allocated
-  once per worker and reused across games — `ChessMachine.beginNewGame`
-  already calls `onNewGame` on each, which resets per-game scratches
-  while keeping backing storage alive. Only worker 0 drives the
-  `GameWatcher` live display to avoid two workers fighting over per-game
-  state; aggregate self-play rates still accumulate through the
-  thread-safe `ParallelWorkerStatsBox`. `ReplayBuffer` already
-  serializes `append` calls under its `NSLock`, so multiple concurrent
-  writers need no changes there. Setting `selfPlayWorkerCount = 1`
-  reproduces the pre-change behavior exactly (modulo the per-game player
+  self-play workers at session start, each with its own dedicated
+  `ChessMPSNetwork` instance so no two concurrent `evaluate` calls share
+  MPSGraph state. `ContentView.initialSelfPlayWorkerCount` (currently
+  `6`) sets the default active count when a session begins;
+  `ContentView.absoluteMaxSelfPlayWorkers` (currently `16`) is the hard
+  ceiling — we pre-build that many inference networks and spawn that
+  many worker tasks so the user can live-tune N inside
+  `[1, absoluteMaxSelfPlayWorkers]` via a Stepper next to Run Arena
+  without restarting the session. Topology is asymmetric: worker 0
+  reuses the existing `network` (the champion, also the arena snapshot
+  source), and workers `1..N-1` use new `secondarySelfPlayNetworks`
+  mirrored from the champion at session start and at every arena
+  promotion. Each worker owns its own `WorkerPauseGate`, so the
+  arena-champion snapshot path (which only reads `network`) still
+  pauses only worker 0, and only the promotion branch pauses every
+  worker to `loadWeights` into every self-play network. Players
+  (`MPSChessPlayer` white/black) are now allocated once per worker and
+  reused across games — `ChessMachine.beginNewGame` already calls
+  `onNewGame` on each, which resets per-game scratches while keeping
+  backing storage alive. Under N=1 (checked live per game via
+  `countBox.count == 1`, not captured at spawn), worker 0 wires
+  `GameWatcher` as its `ChessMachine` delegate for the animated board;
+  under N>1 no worker does, and a placeholder overlay "N = X concurrent
+  games" hides the static board slot so the Candidate test picker
+  remains usable. Aggregate self-play rates accumulate through the
+  thread-safe `ParallelWorkerStatsBox`, which every worker calls
+  identically via `recordCompletedGame(moves:durationMs:result:)` —
+  no worker-0 specialness in the stats path. Setting N to 1
+  reproduces the pre-change behavior (modulo the per-game player
   reuse cleanup). Memory cost is ~12 MB per additional inference
   network, trivial on unified memory.
+
+  **Idle workers stay allocated deliberately.** When the user drops N
+  from 6 to 3 via the Stepper, workers 3–5 finish their current game,
+  then on their next iteration evaluate `countBox.count > workerIndex`,
+  see false, and enter `WorkerPauseGate.markWaiting()` — a 50 ms
+  sleep-poll loop that costs near-zero CPU. Their `ChessMPSNetwork`
+  instances, `MPSChessPlayer` scratches, `WorkerPauseGate` state, and
+  Swift tasks **all stay alive for the life of the session.** Only GPU
+  cycles, CPU cycles for move generation / encoding / sampling, and
+  replay-buffer lock contention are freed. Networks are only actually
+  deallocated when Play and Train stops — and even then
+  `secondarySelfPlayNetworks` persists in `@State` across sessions so
+  re-entering Play and Train doesn't re-pay the MPSGraph build cost
+  (~100 ms + per-network kernel JIT).
+
+  This is a deliberate memory-vs-latency trade. The alternative design
+  would cancel tasks and release networks on Stepper-down, then rebuild
+  on Stepper-up — saving ~12 MB per idled worker but costing ~100–300 ms
+  per + click for MPSGraph construction, first-run kernel JIT, and
+  weight sync from the champion. Keeping everything pre-spawned means +
+  and − clicks are effectively instant (≤50 ms, bounded by the idle
+  poll interval) with no visible latency on the UI. At
+  `absoluteMaxSelfPlayWorkers = 16` the steady-state memory cost is
+  ~180 MB of idle network state plus ~74 MB of `MPSChessPlayer` scratch
+  buffers, which is fine on Apple Silicon unified-memory systems. If
+  that footprint ever becomes a problem on tighter hardware, the
+  release-on-shrink design is the fallback; for now the latency win on
+  live tuning is worth the static allocation.
