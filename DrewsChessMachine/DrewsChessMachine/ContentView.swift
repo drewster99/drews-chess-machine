@@ -2291,6 +2291,12 @@ struct ContentView: View {
         Chart(progressRateSamples) { sample in
             LineMark(
                 x: .value("Elapsed", sample.elapsedSec),
+                y: .value("Moves/hr", sample.combinedMovesPerHour)
+            )
+            .foregroundStyle(by: .value("Series", "Combined"))
+
+            LineMark(
+                x: .value("Elapsed", sample.elapsedSec),
                 y: .value("Moves/hr", sample.selfPlayMovesPerHour)
             )
             .foregroundStyle(by: .value("Series", "Self-play"))
@@ -2300,12 +2306,6 @@ struct ContentView: View {
                 y: .value("Moves/hr", sample.trainingMovesPerHour)
             )
             .foregroundStyle(by: .value("Series", "Training"))
-
-            LineMark(
-                x: .value("Elapsed", sample.elapsedSec),
-                y: .value("Moves/hr", sample.combinedMovesPerHour)
-            )
-            .foregroundStyle(by: .value("Series", "Combined"))
         }
         .chartForegroundStyleScale([
             "Self-play": Color.blue,
