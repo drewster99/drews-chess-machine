@@ -823,10 +823,28 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     private var _insufficientMaterialDraws: Int = 0
     private var _trainingSteps: Int = 0
     private var _recentGames: [GameRecord] = []
-    let sessionStart: Date
+    /// Wall-clock anchor used as the denominator for every session
+    /// rate the UI shows (games/hr, moves/hr, steps/sec, avg move ms,
+    /// "Total session time", ...). Initially set to the moment the
+    /// box is created, then advanced by `markWorkersStarted()` to
+    /// the moment the worker task group actually begins — Play-and-
+    /// Train setup (network builds, trainer reset, weight copies)
+    /// would otherwise inflate the denominator by several seconds
+    /// and pull every rate down proportionally.
+    private var _sessionStart: Date
 
     init(sessionStart: Date = Date()) {
-        self.sessionStart = sessionStart
+        self._sessionStart = sessionStart
+    }
+
+    /// Advance `sessionStart` to `Date()`. Called once from inside
+    /// the Play-and-Train task, immediately before the worker group
+    /// is spawned, so that rate denominators only cover the window
+    /// in which workers are actually running.
+    func markWorkersStarted() {
+        lock.lock()
+        defer { lock.unlock() }
+        _sessionStart = Date()
     }
 
     /// Record one completed self-play game. Called from every worker
@@ -934,7 +952,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             threefoldRepetitionDraws: _threefoldRepetitionDraws,
             insufficientMaterialDraws: _insufficientMaterialDraws,
             trainingSteps: _trainingSteps,
-            sessionStart: sessionStart,
+            sessionStart: _sessionStart,
             recentGames: _recentGames.count,
             recentMoves: recentMoves,
             recentGameWallMs: recentGameWallMs,
@@ -1984,9 +2002,15 @@ struct ContentView: View {
             if let pBox = parallelWorkerStatsBox {
                 let snap = pBox.snapshot()
                 let prev = parallelStats
+                // `sessionStart` is included in the dirty check so
+                // the one-time shift performed by
+                // `markWorkersStarted()` (right before the worker
+                // group spawns) lands in @State immediately, even
+                // if no game or training step has recorded yet.
                 let changed = snap.selfPlayGames != (prev?.selfPlayGames ?? -1)
                     || snap.trainingSteps != (prev?.trainingSteps ?? -1)
                     || snap.recentGames != (prev?.recentGames ?? -1)
+                    || snap.sessionStart != prev?.sessionStart
                 if changed {
                     parallelStats = snap
                 }
@@ -3507,6 +3531,15 @@ struct ContentView: View {
             // tasks are *active* at any moment — the rest sit in
             // their pause gate's wait state until the user raises
             // N enough to include them.
+
+            // Anchor the session wall-clock to *now*, after all the
+            // synchronous and MainActor-hop setup above has finished.
+            // Rate denominators ("steps/sec", "games/hr", "avg move
+            // ms", "Total session time", ...) are computed as `Date()
+            // - sessionStart`, so leaving the original `Date()`-at-
+            // button-press anchor in place would bake the setup
+            // delay into every average for the life of the session.
+            pStatsBox.markWorkersStarted()
 
             await withTaskGroup(of: Void.self) { group in
                 // Self-play workers: each plays one game at a time
