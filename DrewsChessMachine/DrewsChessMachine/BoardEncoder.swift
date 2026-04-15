@@ -103,9 +103,38 @@ struct GameState: Sendable {
 /// - Plane 17: halfmove clock (normalized 0.0-1.0)
 enum BoardEncoder {
 
-    /// Encode a game state into an 18x8x8 = 1,152 float tensor.
-    static func encode(_ state: GameState) -> [Float] {
-        var tensor = [Float](repeating: 0, count: 18 * 64)
+    /// Number of floats one encoded position occupies: 18 planes × 64 squares.
+    static let tensorLength = 18 * 64
+
+    /// Encode a game state into a caller-owned slice of 1,152 floats.
+    ///
+    /// The per-move inference hot path uses this variant so the encoded
+    /// tensor can live in a pre-allocated per-game scratch buffer,
+    /// avoiding a fresh `[Float](1152)` allocation on every ply. The
+    /// buffer is zero-filled in place first — callers do not need to
+    /// clear it themselves — then the occupancy, castling, en-passant
+    /// and halfmove planes are written according to the standard
+    /// encoding. The buffer must have at least `tensorLength` elements.
+    static func encode(
+        _ state: GameState,
+        into buffer: UnsafeMutableBufferPointer<Float>
+    ) {
+        precondition(
+            buffer.count >= tensorLength,
+            "BoardEncoder.encode(into:): buffer must hold at least \(tensorLength) floats (got \(buffer.count))"
+        )
+        // Pointer form once, then reuse — `UnsafeMutableBufferPointer`
+        // subscripting bounds-checks every access, which adds up over
+        // 1,152 writes per ply.
+        guard let base = buffer.baseAddress else { return }
+
+        // Zero the 1152-slot tensor region. Sparse planes (pieces, EP)
+        // rely on this being cleared first. Uses `update` (not
+        // `initialize`) because callers pass in already-initialized
+        // storage — a slice of a reused `[Float]` array or a
+        // previously-initialized `UnsafeMutablePointer` allocation.
+        base.update(repeating: 0, count: tensorLength)
+
         let flip = state.currentPlayer == .black
 
         // Planes 0-11: pieces
@@ -118,7 +147,7 @@ enum BoardEncoder {
 
                 let isMine = piece.color == state.currentPlayer
                 let plane = (isMine ? 0 : 6) + piece.type.rawValue
-                tensor[plane * 64 + destRowBase + col] = 1.0
+                base[plane * 64 + destRowBase + col] = 1.0
             }
         }
 
@@ -140,23 +169,35 @@ enum BoardEncoder {
             oppQueenside = state.blackQueensideCastle
         }
 
-        if myKingside { fillPlane(&tensor, plane: 12) }
-        if myQueenside { fillPlane(&tensor, plane: 13) }
-        if oppKingside { fillPlane(&tensor, plane: 14) }
-        if oppQueenside { fillPlane(&tensor, plane: 15) }
+        if myKingside { fillPlane(base, plane: 12) }
+        if myQueenside { fillPlane(base, plane: 13) }
+        if oppKingside { fillPlane(base, plane: 14) }
+        if oppQueenside { fillPlane(base, plane: 15) }
 
         // Plane 16: en passant target square
         if let ep = state.enPassantSquare {
             let epRow = flip ? (7 - ep.row) : ep.row
-            tensor[16 * 64 + epRow * 8 + ep.col] = 1.0
+            base[16 * 64 + epRow * 8 + ep.col] = 1.0
         }
 
         // Plane 17: halfmove clock (normalized, 100 = fifty-move rule limit)
         let normalized = Float(min(state.halfmoveClock, 100)) / 100.0
         if normalized > 0 {
-            fillPlane(&tensor, plane: 17, value: normalized)
+            fillPlane(base, plane: 17, value: normalized)
         }
+    }
 
+    /// Encode a game state into an 18x8x8 = 1,152 float tensor.
+    ///
+    /// Allocating variant — delegates to `encode(_:into:)` so both
+    /// paths share the same encoding logic. Used by non-hot-path
+    /// callers (tests, the Forward Pass demo UI). Hot-path callers
+    /// should use `encode(_:into:)` with a pre-allocated scratch.
+    static func encode(_ state: GameState) -> [Float] {
+        var tensor = [Float](repeating: 0, count: tensorLength)
+        tensor.withUnsafeMutableBufferPointer { buf in
+            encode(state, into: buf)
+        }
         return tensor
     }
 
@@ -192,10 +233,14 @@ enum BoardEncoder {
 
     // MARK: - Private Helpers
 
-    private static func fillPlane(_ tensor: inout [Float], plane: Int, value: Float = 1.0) {
+    private static func fillPlane(
+        _ base: UnsafeMutablePointer<Float>,
+        plane: Int,
+        value: Float = 1.0
+    ) {
         let start = plane * 64
         for i in start..<(start + 64) {
-            tensor[i] = value
+            base[i] = value
         }
     }
 }

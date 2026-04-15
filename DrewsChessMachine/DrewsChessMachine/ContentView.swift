@@ -1149,6 +1149,7 @@ struct ContentView: View {
                 // re-set the trigger flag, which is idempotent.
                 if realTraining {
                     Button("Run Arena") {
+                        SessionLogger.shared.log("[BUTTON] Run Arena")
                         guard !isArenaRunning else { return }
                         arenaTriggerBox?.trigger()
                     }
@@ -1157,7 +1158,7 @@ struct ContentView: View {
 
                 if isBusy {
                     ProgressView().controlSize(.small)
-                    Text(busyLabel).foregroundStyle(.secondary)
+                    busyLabelView
                 }
             }
 
@@ -1408,25 +1409,43 @@ struct ContentView: View {
         }
     }
 
+    /// Colored status line for the busy row. Returns a `Text` so the
+    /// arena path can use multiple foreground colors in one line — the
+    /// header and elapsed-time suffix in an "arena running" accent
+    /// color, and the running score emphasized in green (at or above
+    /// the promotion threshold) or red (below). All non-arena states
+    /// fall through to `busyLabel` rendered in the usual secondary
+    /// color. The promotion threshold is read from
+    /// `Self.tournamentPromoteThreshold` so flipping it in one place
+    /// re-colors the UI automatically.
+    private var busyLabelView: Text {
+        if let tp = tournamentProgress {
+            let elapsed = Date().timeIntervalSince(tp.startTime)
+            let scorePercent = tp.candidateScore * 100
+            let thresholdPercent = Self.tournamentPromoteThreshold * 100
+            let scoreColor: Color = scorePercent >= thresholdPercent ? .green : .red
+
+            let head = Text(String(
+                format: "Arena game %d/%d  candidate %d-%d-%d  score ",
+                tp.currentGame, tp.totalGames,
+                tp.candidateWins, tp.championWins, tp.draws
+            ))
+            .foregroundStyle(Color.blue)
+
+            let score = Text(String(format: "%.2f%%", scorePercent))
+                .foregroundStyle(scoreColor)
+                .bold()
+
+            let tail = Text("  " + Self.formatElapsed(elapsed))
+                .foregroundStyle(Color.blue)
+
+            return head + score + tail
+        }
+        return Text(busyLabel).foregroundStyle(.secondary)
+    }
+
     private var busyLabel: String {
         if isBuilding { return "Building network..." }
-        if let tp = tournamentProgress {
-            // Arena tournament takes priority over normal Play and
-            // Train status. Shows live progress so the user sees the
-            // candidate's score evolve across the 200 games. Elapsed
-            // time is recomputed from `tp.startTime` on every render
-            // so it ticks live between per-game box updates — the
-            // body re-runs on the 60 Hz heartbeat's snapshot writes
-            // regardless of whether the tournament box has new data.
-            let elapsed = Date().timeIntervalSince(tp.startTime)
-            return String(
-                format: "Arena game %d/%d  candidate %d-%d-%d  score %.3f  %@",
-                tp.currentGame, tp.totalGames,
-                tp.candidateWins, tp.championWins, tp.draws,
-                tp.candidateScore,
-                Self.formatElapsed(elapsed)
-            )
-        }
         if realTraining {
             // Parallel mode: self-play and training advance independently,
             // each on its own task. Show both rates in the same units
@@ -1499,6 +1518,7 @@ struct ContentView: View {
     }
 
     private func buildNetwork() {
+        SessionLogger.shared.log("[BUTTON] Build Network")
         isBuilding = true
         networkStatus = ""
         // Drop the trainer (it owns graph state we're about to invalidate
@@ -1513,10 +1533,13 @@ struct ContentView: View {
 
             switch result {
             case .success(let net):
+                net.identifier = ModelIDMinter.mint()
                 network = net
                 runner = ChessRunner(network: net)
+                let idStr = net.identifier?.description ?? "?"
                 networkStatus = """
                     Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
+                    ID: \(idStr)
                     Parameters: ~2,917,383 (~2.9M)
                     Architecture: 18x8x8 -> stem(128)
                       -> 8 res blocks -> policy(4096) + value(1)
@@ -1531,6 +1554,7 @@ struct ContentView: View {
     }
 
     private func runForwardPass() {
+        SessionLogger.shared.log("[BUTTON] Run Forward Pass")
         gameWatcher.resetAll()
         gameSnapshot = gameWatcher.snapshot()
         clearTrainingDisplay()
@@ -1606,6 +1630,11 @@ struct ContentView: View {
             // plumbing if something structural broke.
             return
         }
+        // Probe is a transient read-only snapshot, not a checkpoint —
+        // candidateInference inherits the trainer's current ID rather
+        // than minting a fresh one. (Arena snapshots, by contrast,
+        // do mint — see runArenaParallel.)
+        candidateInference.identifier = trainer.identifier
         inferenceResult = result
         candidateProbeDirty = false
         lastCandidateProbeTime = Date()
@@ -1642,6 +1671,12 @@ struct ContentView: View {
         arenaFlag: ArenaActiveFlag
     ) async {
         let steps = trainingStats?.steps ?? 0
+
+        let trainerIDStart = trainer.identifier?.description ?? "?"
+        let championIDStart = champion.identifier?.description ?? "?"
+        SessionLogger.shared.log(
+            "[ARENA] start  step=\(steps) trainer=\(trainerIDStart) champion=\(championIDStart)"
+        )
 
         // Mark arena active and seed live progress. Arena-active
         // suppresses the candidate test probe for the duration so
@@ -1690,6 +1725,12 @@ struct ContentView: View {
         }
         trainingGate.resume()
 
+        // Mint a fresh ID for the arena candidate — this snapshot
+        // represents the specific checkpoint being evaluated in this
+        // tournament. The trainer keeps its own ID (the current training
+        // lineage) and continues SGD in the background.
+        candidateInference.identifier = ModelIDMinter.mint()
+
         // --- Champion → arena champion snapshot ---
         //
         // Same pattern for self-play: brief pause, copy weights from
@@ -1716,6 +1757,10 @@ struct ContentView: View {
         }
         selfPlayGate.resume()
 
+        // arenaChampion is a pure copy of champion's current weights,
+        // so it inherits the champion's ID verbatim — no mint.
+        arenaChampion.identifier = champion.identifier
+
         // --- Tournament games ---
         //
         // Cancellation: the detached tournament task is wrapped in
@@ -1730,10 +1775,9 @@ struct ContentView: View {
                 let driver = TournamentDriver()
                 driver.delegate = nil
                 return await driver.run(
-                    playerA: { MPSChessPlayer(name: "Candidate", network: candidateInference) },
-                    playerB: { MPSChessPlayer(name: "Champion", network: arenaChampion) },
+                    playerA: { MPSChessPlayer(name: "Candidate", network: candidateInference, schedule: .arena) },
+                    playerB: { MPSChessPlayer(name: "Champion", network: arenaChampion, schedule: .arena) },
                     games: totalGames,
-                    collectTrainingPositions: false,
                     isCancelled: { cancelBox.isCancelled },
                     onGameCompleted: { gameIndex, aWins, bWins, draws in
                         tBox.update(TournamentProgress(
@@ -1772,6 +1816,9 @@ struct ContentView: View {
                         let weights = try candidateInference.network.exportWeights()
                         try champion.network.loadWeights(weights)
                     }.value
+                    // Promoted: champion now holds the arena candidate's
+                    // exact weights, so it inherits that snapshot ID.
+                    champion.identifier = candidateInference.identifier
                     promoted = true
                 } catch {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
@@ -1792,7 +1839,74 @@ struct ContentView: View {
             durationSec: durationSec
         )
         tournamentHistory.append(record)
+        logArenaResult(
+            record: record,
+            index: tournamentHistory.count,
+            trainer: trainer,
+            candidate: candidateInference,
+            championSide: arenaChampion
+        )
         cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+    }
+
+    /// Emit a three-line summary of a just-finished arena tournament to
+    /// stdout (visible in Xcode's console). First line has the human-
+    /// readable result, second line has the training + sampling
+    /// parameters, third line has the model IDs of both arena sides
+    /// plus the trainer's current lineage ID. Running a long
+    /// Play-and-Train session leaves behind a greppable audit trail
+    /// of `[ARENA] …` lines correlating each result with its
+    /// configuration and the exact checkpoint it evaluated. Kept
+    /// deliberately on stdout rather than the UI
+    /// `TrainingLiveStatsBox` so external tooling can `tee` the log.
+    @MainActor
+    private func logArenaResult(
+        record: TournamentRecord,
+        index: Int,
+        trainer: ChessTrainer,
+        candidate: ChessMPSNetwork,
+        championSide: ChessMPSNetwork
+    ) {
+        let durMin = Int(record.durationSec) / 60
+        let durSec = Int(record.durationSec) % 60
+        let durationStr = String(format: "%d:%02d", durMin, durSec)
+        let statusStr = record.promoted ? "PROMOTED" : "kept"
+        let sp = SamplingSchedule.selfPlay
+        let ar = SamplingSchedule.arena
+        let lrStr = String(format: "%.1e", trainer.learningRate)
+        let scoreStr = String(format: "%.3f", record.score)
+        let threshStr = String(format: "%.2f", Self.tournamentPromoteThreshold)
+        let spTauStr = String(
+            format: "%.2f/%.2f@%d",
+            Double(sp.openingTau),
+            Double(sp.mainTau),
+            sp.openingPliesPerPlayer
+        )
+        let arTauStr = String(
+            format: "%.2f/%.2f@%d",
+            Double(ar.openingTau),
+            Double(ar.mainTau),
+            ar.openingPliesPerPlayer
+        )
+        let candidateIDStr = candidate.identifier?.description ?? "?"
+        let championIDStr = championSide.identifier?.description ?? "?"
+        let trainerIDStr = trainer.identifier?.description ?? "?"
+
+        let wld = "\(record.candidateWins)-\(record.championWins)-\(record.draws)"
+        let header = "[ARENA] #\(index) @ step \(record.finishedAtStep)  W/L/D=\(wld)  score=\(scoreStr)  \(statusStr)  dur=\(durationStr)"
+        let params = "        batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(threshStr) games=\(Self.tournamentGames) sp.tau=\(spTauStr) ar.tau=\(arTauStr)"
+        let ids = "        candidate=\(candidateIDStr)  champion=\(championIDStr)  trainer=\(trainerIDStr)"
+
+        print(header)
+        print(params)
+        print(ids)
+
+        // Mirror the same three lines into the session log so the
+        // on-disk file carries the full arena history even when the
+        // Xcode console isn't being captured.
+        SessionLogger.shared.log(header)
+        SessionLogger.shared.log(params)
+        SessionLogger.shared.log(ids)
     }
 
     /// Release arena-active state on an early return from
@@ -1892,6 +2006,7 @@ struct ContentView: View {
     }
 
     private func playSingleGame() {
+        SessionLogger.shared.log("[BUTTON] Play Game")
         inferenceResult = nil
         clearTrainingDisplay()
         gameWatcher.resetCurrentGame()
@@ -1919,6 +2034,7 @@ struct ContentView: View {
     }
 
     private func startContinuousPlay() {
+        SessionLogger.shared.log("[BUTTON] Play Continuous")
         inferenceResult = nil
         clearTrainingDisplay()
         gameWatcher.resetAll()
@@ -1962,6 +2078,7 @@ struct ContentView: View {
     /// Stop whichever continuous loop (play, train, or sweep) is currently
     /// active. Bound to escape via the unified Stop button.
     private func stopAnyContinuous() {
+        SessionLogger.shared.log("[BUTTON] Stop")
         if continuousPlay { stopContinuousPlay() }
         if continuousTraining { stopContinuousTraining() }
         if sweepRunning { stopSweep() }
@@ -1988,6 +2105,7 @@ struct ContentView: View {
     }
 
     private func trainOnce() {
+        SessionLogger.shared.log("[BUTTON] Train Once")
         guard let trainer = ensureTrainer() else { return }
         // Switching modes — clear any stale game/inference output and
         // start a fresh stats run (single-step still uses TrainingRunStats
@@ -2018,6 +2136,7 @@ struct ContentView: View {
     }
 
     private func startContinuousTraining() {
+        SessionLogger.shared.log("[BUTTON] Train Continuous")
         guard let trainer = ensureTrainer() else { return }
         inferenceResult = nil
         gameWatcher.resetAll()
@@ -2076,6 +2195,7 @@ struct ContentView: View {
     /// under brief per-worker pauses so game play and training never
     /// actually stop, even during a tournament.
     private func startRealTraining() {
+        SessionLogger.shared.log("[BUTTON] Play and Train")
         guard let trainer = ensureTrainer(), let network else { return }
         inferenceResult = nil
         gameWatcher.resetAll()
@@ -2109,7 +2229,7 @@ struct ContentView: View {
         isArenaRunning = false
         realTraining = true
 
-        realTrainingTask = Task {
+        realTrainingTask = Task(priority: .userInitiated) {
             [trainer, network, buffer, box, tBox, pStatsBox,
              selfPlayGate, trainingGate, arenaFlag, triggerBox] in
 
@@ -2154,9 +2274,19 @@ struct ContentView: View {
                 }
             }
 
+            // Reset the trainer's graph AND initialize its weights from
+            // the champion. Pre-ID this was `resetNetwork()` alone, which
+            // re-randomized the trainer independently of the champion —
+            // meaning step 0 of every Play-and-Train session pitted two
+            // different random inits against each other in the arena.
+            // Copying champion weights makes arena-at-step-0 a fair
+            // tie by construction and establishes the trainer's
+            // starting point as a true fork of the champion.
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try trainer.resetNetwork()
+                    let championWeights = try network.network.exportWeights()
+                    try trainer.network.loadWeights(championWeights)
                 }.value
             } catch {
                 box.recordError("Reset failed: \(error.localizedDescription)")
@@ -2165,6 +2295,15 @@ struct ContentView: View {
                     realTrainingTask = nil
                 }
                 return
+            }
+
+            // Mint a fresh ID for the trainer now that its weights are
+            // loaded from the champion. The trainer's ID represents the
+            // "current training lineage" — stable from here until the
+            // next Play-and-Train restart; individual arena snapshots
+            // get their own minted IDs inside `runArenaParallel`.
+            await MainActor.run {
+                trainer.identifier = ModelIDMinter.mint()
             }
 
             // Grab the candidate inference network and arena champion
@@ -2196,7 +2335,7 @@ struct ContentView: View {
                 // @unchecked Sendable so we can call its methods from
                 // any context, avoiding a MainActor hop per game to
                 // re-read the @State reference.
-                group.addTask {
+                group.addTask(priority: .userInitiated) {
                     [network, buffer, pStatsBox, selfPlayGate, gameWatcher] in
                     while !Task.isCancelled {
                         // Pause gate check (between games).
@@ -2217,12 +2356,14 @@ struct ContentView: View {
                         let white = MPSChessPlayer(
                             name: "White",
                             network: network,
-                            replayBuffer: buffer
+                            replayBuffer: buffer,
+                            schedule: .selfPlay
                         )
                         let black = MPSChessPlayer(
                             name: "Black",
                             network: network,
-                            replayBuffer: buffer
+                            replayBuffer: buffer,
+                            schedule: .selfPlay
                         )
 
                         do {
@@ -2236,7 +2377,7 @@ struct ContentView: View {
                         // Record the completed game for the parallel
                         // rate display. Position count is the total
                         // plies across both players in this game.
-                        let positions = white.gamePositions.count + black.gamePositions.count
+                        let positions = white.recordedPliesCount + black.recordedPliesCount
                         pStatsBox.recordSelfPlayGame(positions: positions)
                     }
                 }
@@ -2248,7 +2389,8 @@ struct ContentView: View {
                 // 30 min auto cadence elapses. Pauses at `trainingGate`
                 // so the arena coordinator can briefly snapshot
                 // trainer weights.
-                group.addTask { [trainer, buffer, box, pStatsBox, trainingGate, triggerBox] in
+                group.addTask(priority: .userInitiated) {
+                    [trainer, buffer, box, pStatsBox, trainingGate, triggerBox] in
                     while !Task.isCancelled {
                         // Pause gate check (between steps).
                         if trainingGate.isRequestedToPause {
@@ -2275,9 +2417,17 @@ struct ContentView: View {
                             continue
                         }
 
-                        let result = await Task.detached(priority: .userInitiated) {
-                            Result { try trainer.trainStep(batch: batch) }
-                        }.value
+                        // The enclosing worker already runs at
+                        // `.userInitiated` so there's nothing to escape
+                        // to — run the SGD step inline and skip the
+                        // per-step detached-task + continuation
+                        // allocation pair.
+                        let result: Result<TrainStepTiming, Error>
+                        do {
+                            result = .success(try trainer.trainStep(batch: batch))
+                        } catch {
+                            result = .failure(error)
+                        }
 
                         switch result {
                         case .success(let timing):
@@ -2309,7 +2459,7 @@ struct ContentView: View {
                 // own loop (not the worker tasks) during arena
                 // execution. Both the 30-minute auto-fire and the
                 // Run Arena button enter here via `triggerBox.trigger()`.
-                group.addTask {
+                group.addTask(priority: .userInitiated) {
                     [trainer, network, tBox, selfPlayGate, trainingGate, arenaFlag, triggerBox,
                      candidateInference, arenaChampion] in
                     while !Task.isCancelled {
@@ -2331,7 +2481,80 @@ struct ContentView: View {
                     }
                 }
 
-                // Wait for all three tasks to complete (only happens
+                // Periodic session-log ticker. Fires at 30s, 1m, 2m,
+                // 5m, 15m, 30m, 60m from Play-and-Train start and
+                // then once per hour for the rest of the session.
+                // Each wake-up snapshots the thread-safe stats boxes
+                // and writes one `[STATS]` line to the on-disk
+                // session log. Identifiers are pulled through a brief
+                // MainActor hop since they live on classes whose var
+                // mutation is otherwise main-actor-driven.
+                group.addTask(priority: .utility) {
+                    [trainer, network, box, pStatsBox, buffer] in
+                    let sessionStart = Date()
+                    let fixedTargets: [TimeInterval] = [30, 60, 120, 300, 900, 1800, 3600]
+
+                    func logOne(elapsedTarget: TimeInterval) async {
+                        let trainingSnap = box.snapshot()
+                        let parallelSnap = pStatsBox.snapshot()
+                        let bufCount = buffer.count
+                        let bufCap = buffer.capacity
+                        let (trainerID, championID) = await MainActor.run {
+                            (
+                                trainer.identifier?.description ?? "?",
+                                network.identifier?.description ?? "?"
+                            )
+                        }
+                        let policyStr: String
+                        if let p = trainingSnap.rollingPolicyLoss {
+                            policyStr = String(format: "%+.4f", p)
+                        } else {
+                            policyStr = "--"
+                        }
+                        let valueStr: String
+                        if let v = trainingSnap.rollingValueLoss {
+                            valueStr = String(format: "%+.4f", v)
+                        } else {
+                            valueStr = "--"
+                        }
+                        let h = Int(elapsedTarget) / 3600
+                        let m = (Int(elapsedTarget) % 3600) / 60
+                        let s = Int(elapsedTarget) % 60
+                        let elapsedStr = String(format: "%d:%02d:%02d", h, m, s)
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) trainer=\(trainerID) champion=\(championID)"
+                        SessionLogger.shared.log(line)
+                    }
+
+                    func sleepUntil(elapsed: TimeInterval) async -> Bool {
+                        let remaining = elapsed - Date().timeIntervalSince(sessionStart)
+                        if remaining > 0 {
+                            do {
+                                try await Task.sleep(for: .seconds(remaining))
+                            } catch {
+                                return false
+                            }
+                        }
+                        return !Task.isCancelled
+                    }
+
+                    // Fixed schedule.
+                    for target in fixedTargets {
+                        if Task.isCancelled { return }
+                        guard await sleepUntil(elapsed: target) else { return }
+                        await logOne(elapsedTarget: target)
+                    }
+
+                    // Hourly after the fixed schedule (2h, 3h, 4h, ...).
+                    var hourNumber = 2
+                    while !Task.isCancelled {
+                        let target = TimeInterval(hourNumber) * 3600
+                        guard await sleepUntil(elapsed: target) else { return }
+                        await logOne(elapsedTarget: target)
+                        hourNumber += 1
+                    }
+                }
+
+                // Wait for all four tasks to complete (only happens
                 // on cancellation since each loops forever).
                 for await _ in group { }
             }
@@ -2356,6 +2579,7 @@ struct ContentView: View {
     // MARK: - Sweep Actions
 
     private func startSweep() {
+        SessionLogger.shared.log("[BUTTON] Sweep Batch Sizes")
         guard let trainer = ensureTrainer() else { return }
         inferenceResult = nil
         gameWatcher.resetAll()
@@ -2481,6 +2705,10 @@ struct ContentView: View {
         }
         var lines: [String] = []
         lines.append("Training (\(mode))")
+        let trainerIDStr = trainer?.identifier?.description ?? dash
+        let championIDStr = network?.identifier?.description ?? dash
+        lines.append("  Trainer ID:  \(trainerIDStr)")
+        lines.append("  Champion ID: \(championIDStr)")
         lines.append("  Batch size:  \(Self.trainingBatchSize)")
         // Learning rate — read off the trainer so we can't drift out of
         // sync with what the graph is actually applying. Shown in every

@@ -46,24 +46,31 @@ struct TrainStepTiming: Sendable {
 
 // MARK: - Training Batch
 
-/// A batch of labeled real-data training examples, laid out as flat float
-/// and int32 buffers matching the shapes the training graph expects. The
-/// replay buffer packs samples into this form once so the trainer can
-/// upload straight into `MPSGraphTensorData` without any per-position
-/// gather work on the hot path.
-struct TrainingBatch: Sendable {
+/// A batch of labeled real-data training examples as non-owning views
+/// over `ReplayBuffer`'s reusable sample storage. The pointers are
+/// valid only until the next `ReplayBuffer.sample` call on the buffer
+/// that produced them; the trainer must consume the batch synchronously
+/// and not retain any of the pointers past `trainStep(batch:)`.
+///
+/// Marked `@unchecked Sendable` because the raw pointers make the
+/// default Sendable inference fail, but the actual use is safe: the
+/// training worker is a single task that samples, trains, and drops
+/// the batch within one loop iteration. The batch is never shared
+/// across tasks and never held past the next `sample()` call that
+/// would invalidate its pointers.
+struct TrainingBatch: @unchecked Sendable {
     /// Flat `[batchSize, 18, 8, 8]` float32 board planes, current-player
     /// relative (same encoding that `BoardEncoder` and the inference path
-    /// already use).
-    let boards: [Float]
+    /// already use). Aliases the replay buffer's reusable output array.
+    let boards: UnsafePointer<Float>
     /// Policy-target indices in the network's coordinate system (0–4095),
     /// one per batch row. These are the already-flipped indices emitted by
     /// `MPSChessPlayer.networkPolicyIndex(for:flip:)` so they line up with
     /// the flipped board planes above.
-    let moves: [Int32]
+    let moves: UnsafePointer<Int32>
     /// Game outcome from each position's current player's perspective:
     /// +1 win, 0 draw, −1 loss. One per batch row.
-    let zs: [Float]
+    let zs: UnsafePointer<Float>
     let batchSize: Int
 }
 
@@ -306,6 +313,14 @@ final class ChessTrainer: @unchecked Sendable {
 
     let learningRate: Float
 
+    /// Optional stable identity for the trainer's internal network.
+    /// Assigned by the UI layer at Play-and-Train start (after loading
+    /// champion weights) and then kept stable for the lifetime of the
+    /// Play-and-Train session — it represents the "current training
+    /// lineage" rather than a specific byte-exact weight snapshot.
+    /// See `sampling-parameters.md` for the full rule set.
+    var identifier: ModelID?
+
     // MARK: Graph Tensors
 
     private(set) var network: ChessNetwork
@@ -317,12 +332,15 @@ final class ChessTrainer: @unchecked Sendable {
     private var assignOps: [MPSGraphOperation]
 
     /// Pre-allocated ND-array-backed tensor data for the three training
-    /// placeholders at a given batch size. `buildFeeds(...)` looks these
-    /// up (or lazily creates them on the first call for each batch
-    /// size) and writes new Swift-array values into them in place, so
-    /// steady-state training and the timed portion of the batch-size
-    /// sweep allocate no MPS objects per step. The warmup step of a
-    /// new batch size pays the allocation exactly once.
+    /// placeholders at a given batch size, plus the pre-built
+    /// `[MPSGraphTensor: MPSGraphTensorData]` feed dict the trainer
+    /// hands to `graph.run`. `buildFeeds(...)` looks one of these up
+    /// (or lazily creates it on the first call for each batch size)
+    /// and writes new Swift-array values into the ND arrays in place,
+    /// so steady-state training and the timed portion of the batch-size
+    /// sweep allocate no MPS objects and no Swift dictionaries per
+    /// step. The warmup step of a new batch size pays the allocation
+    /// exactly once.
     private struct BatchFeeds {
         let boardND: MPSNDArray
         let boardTD: MPSGraphTensorData
@@ -330,8 +348,21 @@ final class ChessTrainer: @unchecked Sendable {
         let moveTD: MPSGraphTensorData
         let zND: MPSNDArray
         let zTD: MPSGraphTensorData
+        let feedsDict: [MPSGraphTensor: MPSGraphTensorData]
     }
     private var feedCache: [Int: BatchFeeds] = [:]
+
+    /// Readback scratch for the three scalar losses (`totalLoss`,
+    /// `policyLoss`, `valueLoss`). `runPreparedStep` asks MPSGraph to
+    /// write each scalar directly into its slot here so the hot path
+    /// does not allocate a fresh `[Float](1)` three times per step.
+    /// Allocated once in `init` and freed in `deinit`; `resetNetwork`
+    /// does not touch it (the loss scalar type is network-independent).
+    private let lossReadbackScratchPtr: UnsafeMutablePointer<Float>
+    private static let lossReadbackSlotTotal: Int = 0
+    private static let lossReadbackSlotPolicy: Int = 1
+    private static let lossReadbackSlotValue: Int = 2
+    private static let lossReadbackSlotCount: Int = 3
 
     // MARK: Init
 
@@ -346,6 +377,17 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
         self.assignOps = built.assignOps
+
+        let lossPtr = UnsafeMutablePointer<Float>.allocate(
+            capacity: Self.lossReadbackSlotCount
+        )
+        lossPtr.initialize(repeating: 0, count: Self.lossReadbackSlotCount)
+        self.lossReadbackScratchPtr = lossPtr
+    }
+
+    deinit {
+        lossReadbackScratchPtr.deinitialize(count: Self.lossReadbackSlotCount)
+        lossReadbackScratchPtr.deallocate()
     }
 
     /// Tear down the current training-mode network and build a fresh one.
@@ -529,19 +571,45 @@ final class ChessTrainer: @unchecked Sendable {
             zValues[i] = Float(Int.random(in: 0..<3) - 1)
         }
 
-        let feeds = buildFeeds(
-            batchSize: batchSize,
-            boardFloats: boardFloats,
-            moveIndices: moveIndices,
-            zValues: zValues
-        )
-        let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
-
-        return try runPreparedStep(
-            feeds: feeds,
-            prepMs: prepMs,
-            totalStart: totalStart
-        )
+        // Unbox the three Swift arrays into raw pointers and feed
+        // them through the shared pointer-based `buildFeeds` /
+        // `runPreparedStep` pipeline. The nested `withUnsafeBufferPointer`
+        // calls keep all three buffers pinned for the GPU run, so the
+        // random-data path allocates (for the arrays above) but still
+        // uses the same allocation-free feeds dict reuse as the real-
+        // data path.
+        return try boardFloats.withUnsafeBufferPointer { boardsBuf in
+            try moveIndices.withUnsafeBufferPointer { movesBuf in
+                try zValues.withUnsafeBufferPointer { zsBuf in
+                    // The three arrays were allocated just above with
+                    // positive batch size, so their `baseAddress`es
+                    // are guaranteed non-nil. `preconditionFailure`
+                    // documents the invariant; the guard only fires
+                    // if a future refactor breaks it.
+                    guard
+                        let boardsBase = boardsBuf.baseAddress,
+                        let movesBase = movesBuf.baseAddress,
+                        let zsBase = zsBuf.baseAddress
+                    else {
+                        preconditionFailure(
+                            "ChessTrainer.trainStep(batchSize:): non-empty inputs should have baseAddress"
+                        )
+                    }
+                    let feeds = buildFeeds(
+                        batchSize: batchSize,
+                        boards: boardsBase,
+                        moves: movesBase,
+                        zs: zsBase
+                    )
+                    let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
+                    return try runPreparedStep(
+                        feeds: feeds,
+                        prepMs: prepMs,
+                        totalStart: totalStart
+                    )
+                }
+            }
+        }
     }
 
     /// Run a single training step on a pre-built batch of real self-play
@@ -549,15 +617,20 @@ final class ChessTrainer: @unchecked Sendable {
     /// differs from the random-data `trainStep(batchSize:)` path. Callers
     /// are expected to draw batches from a `ReplayBuffer` and feed them
     /// here; see `ContentView.startRealTraining` for the driver loop.
+    ///
+    /// The `batch` is a non-owning view over the replay buffer's reusable
+    /// output storage — this function consumes the pointers synchronously
+    /// inside `buildFeeds` (via `writeBytes` into the cached training ND
+    /// arrays) and does not retain them past the call.
     func trainStep(batch: TrainingBatch) throws -> TrainStepTiming {
         let totalStart = CFAbsoluteTimeGetCurrent()
         let prepStart = CFAbsoluteTimeGetCurrent()
 
         let feeds = buildFeeds(
             batchSize: batch.batchSize,
-            boardFloats: batch.boards,
-            moveIndices: batch.moves,
-            zValues: batch.zs
+            boards: batch.boards,
+            moves: batch.moves,
+            zs: batch.zs
         )
         let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
 
@@ -568,67 +641,59 @@ final class ChessTrainer: @unchecked Sendable {
         )
     }
 
-    /// Pack the three Swift arrays for one training step into the feed
+    /// Pack one training step's raw float/int32 buffers into the feed
     /// dictionary the graph expects. Shared by the random-data and
     /// real-data paths so they can't drift out of sync.
     ///
-    /// The ND-array wrappers for this batch size are allocated once on
-    /// first use and cached in `feedCache`; every subsequent call at
-    /// the same batch size reuses them by writing new values into
-    /// their storage in place via `writeBytes`. The batch-size sweep's
-    /// warmup step covers the first allocation; the timed window then
-    /// runs allocation-free.
+    /// The ND-array wrappers *and* the feeds dictionary for this batch
+    /// size are allocated once on first use and cached in `feedCache`;
+    /// every subsequent call at the same batch size reuses them by
+    /// writing new values into the ND-array storage in place via
+    /// `writeBytes` and returning the cached dict unchanged. The
+    /// batch-size sweep's warmup step covers the first allocation;
+    /// the timed window then runs allocation-free.
+    ///
+    /// Takes raw pointers so both the `[Float]`-backed random-data
+    /// path and the `ReplayBuffer`-backed real-data path can feed
+    /// through without any Swift Array CoW concerns.
     private func buildFeeds(
         batchSize: Int,
-        boardFloats: [Float],
-        moveIndices: [Int32],
-        zValues: [Float]
+        boards: UnsafePointer<Float>,
+        moves: UnsafePointer<Int32>,
+        zs: UnsafePointer<Float>
     ) -> [MPSGraphTensor: MPSGraphTensorData] {
         let cached = feedsForBatch(batchSize)
 
         // Float32-only hot path. The ND array's element type matches
         // ChessNetwork.dataType, so on .float32 we can hand it the raw
-        // Swift-array bytes directly. A .float16 flip would need a
-        // reused [UInt16] scratch buffer here and in ChessNetwork's
+        // bytes directly. A .float16 flip would need a reused
+        // [UInt16] scratch buffer here and in ChessNetwork's
         // inference writer — fail loud until that exists.
         guard ChessNetwork.dataType == .float32 else {
             fatalError("ChessTrainer.buildFeeds: only .float32 is currently supported; got \(ChessNetwork.dataType)")
         }
 
-        boardFloats.withUnsafeBytes { buf in
-            guard let base = buf.baseAddress else { return }
-            cached.boardND.writeBytes(
-                UnsafeMutableRawPointer(mutating: base),
-                strideBytes: nil
-            )
-        }
-        moveIndices.withUnsafeBytes { buf in
-            guard let base = buf.baseAddress else { return }
-            cached.moveND.writeBytes(
-                UnsafeMutableRawPointer(mutating: base),
-                strideBytes: nil
-            )
-        }
-        zValues.withUnsafeBytes { buf in
-            guard let base = buf.baseAddress else { return }
-            cached.zND.writeBytes(
-                UnsafeMutableRawPointer(mutating: base),
-                strideBytes: nil
-            )
-        }
+        cached.boardND.writeBytes(
+            UnsafeMutableRawPointer(mutating: boards),
+            strideBytes: nil
+        )
+        cached.moveND.writeBytes(
+            UnsafeMutableRawPointer(mutating: moves),
+            strideBytes: nil
+        )
+        cached.zND.writeBytes(
+            UnsafeMutableRawPointer(mutating: zs),
+            strideBytes: nil
+        )
 
-        return [
-            network.inputPlaceholder: cached.boardTD,
-            movePlayedPlaceholder: cached.moveTD,
-            zPlaceholder: cached.zTD
-        ]
+        return cached.feedsDict
     }
 
     /// Return the cached `BatchFeeds` for `batchSize`, allocating it
     /// lazily on first use. The three ND arrays are sized exactly for
-    /// this batch size; the wrappers are built once per size and kept
-    /// for the trainer's lifetime (or until `resetNetwork()` clears
-    /// the cache).
+    /// this batch size; the wrappers and the feeds dict are built
+    /// once per size and kept for the trainer's lifetime (or until
+    /// `resetNetwork()` clears the cache).
     private func feedsForBatch(_ batchSize: Int) -> BatchFeeds {
         if let existing = feedCache[batchSize] {
             return existing
@@ -646,26 +711,42 @@ final class ChessTrainer: @unchecked Sendable {
             ]
         )
         let boardND = MPSNDArray(device: mtlDevice, descriptor: boardDesc)
+        let boardTD = MPSGraphTensorData(boardND)
 
         let moveDesc = MPSNDArrayDescriptor(
             dataType: .int32,
             shape: [NSNumber(value: batchSize)]
         )
         let moveND = MPSNDArray(device: mtlDevice, descriptor: moveDesc)
+        let moveTD = MPSGraphTensorData(moveND)
 
         let zDesc = MPSNDArrayDescriptor(
             dataType: dtype,
             shape: [NSNumber(value: batchSize), 1]
         )
         let zND = MPSNDArray(device: mtlDevice, descriptor: zDesc)
+        let zTD = MPSGraphTensorData(zND)
+
+        // Pre-build the feeds dictionary so `buildFeeds` can return it
+        // unchanged on every subsequent call at this batch size. The
+        // keys (graph placeholders) and values (tensor data wrappers)
+        // are all stable for the lifetime of the trainer network;
+        // `resetNetwork` clears `feedCache` so a new trainer network
+        // rebuilds fresh entries against its own placeholders.
+        let feedsDict: [MPSGraphTensor: MPSGraphTensorData] = [
+            network.inputPlaceholder: boardTD,
+            movePlayedPlaceholder: moveTD,
+            zPlaceholder: zTD
+        ]
 
         let feeds = BatchFeeds(
             boardND: boardND,
-            boardTD: MPSGraphTensorData(boardND),
+            boardTD: boardTD,
             moveND: moveND,
-            moveTD: MPSGraphTensorData(moveND),
+            moveTD: moveTD,
             zND: zND,
-            zTD: MPSGraphTensorData(zND)
+            zTD: zTD,
+            feedsDict: feedsDict
         )
         feedCache[batchSize] = feeds
         return feeds
@@ -696,9 +777,28 @@ final class ChessTrainer: @unchecked Sendable {
         else {
             throw ChessTrainerError.lossOutputMissing
         }
-        let totalBuf = ChessNetwork.readFloats(from: totalData, count: 1)
-        let policyBuf = ChessNetwork.readFloats(from: policyData, count: 1)
-        let valueBuf = ChessNetwork.readFloats(from: valueData, count: 1)
+        // Write each scalar loss directly into its pre-allocated slot
+        // in `lossReadbackScratchPtr` — avoids three `[Float](1)`
+        // allocations per training step. The three slots are disjoint
+        // regions of the same buffer so MPSGraph won't read past them.
+        ChessNetwork.readFloats(
+            from: totalData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotTotal),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: policyData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicy),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: valueData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValue),
+            count: 1
+        )
+        let totalBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotTotal]
+        let policyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicy]
+        let valueBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValue]
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
@@ -708,9 +808,9 @@ final class ChessTrainer: @unchecked Sendable {
             gpuRunMs: gpuMs,
             readbackMs: readbackMs,
             totalMs: totalMs,
-            loss: totalBuf[0],
-            policyLoss: policyBuf[0],
-            valueLoss: valueBuf[0]
+            loss: totalBufValue,
+            policyLoss: policyBufValue,
+            valueLoss: valueBufValue
         )
     }
 

@@ -40,6 +40,12 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// Time taken to build the graph and initialize weights, in milliseconds.
     let buildTimeMs: Double
 
+    /// Optional stable identity assigned externally by the UI layer.
+    /// See `ModelID` and `sampling-parameters.md` for the mint /
+    /// inherit rules. Mutated at well-defined checkpoint events
+    /// (Build, arena snapshot, promotion). Nil until a caller sets it.
+    var identifier: ModelID?
+
     /// Create a network with the specified initialization mode.
     init(_ mode: NetworkInitMode) throws {
         let start = CFAbsoluteTimeGetCurrent()
@@ -61,9 +67,26 @@ final class ChessMPSNetwork: @unchecked Sendable {
     }
 
     /// Run the forward pass on a board tensor.
-    /// - Parameter board: 18×8×8 = 1,152 floats (from BoardEncoder.encode)
-    /// - Returns: Policy probabilities (4096 values) and position value in [-1, +1]
-    func evaluate(board: [Float]) throws -> (policy: [Float], value: Float) {
+    ///
+    /// **Not re-entrant.** The returned policy buffer aliases the
+    /// underlying `ChessNetwork`'s shared readback scratch and is valid
+    /// only until the next `evaluate` call on this wrapper. See
+    /// `ChessNetwork.evaluate(board:)` for the full contract.
+    ///
+    /// - Parameter board: 18×8×8 = 1,152 floats (from `BoardEncoder.encode`).
+    /// - Returns: 4,096 raw policy logits and the scalar value head.
+    func evaluate(
+        board: UnsafeBufferPointer<Float>
+    ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
+        try network.evaluate(board: board)
+    }
+
+    /// `[Float]`-input overload for non-hot-path callers (the Forward
+    /// Pass demo, tests). Delegates to the pointer-based primary entry
+    /// point — no copy on `.float32`.
+    func evaluate(
+        board: [Float]
+    ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
         try network.evaluate(board: board)
     }
 }

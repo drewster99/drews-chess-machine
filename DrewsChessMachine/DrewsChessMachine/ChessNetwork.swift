@@ -143,6 +143,29 @@ final class ChessNetwork {
     private let inferenceInputNDArray: MPSNDArray
     private let inferenceInputTensorData: MPSGraphTensorData
 
+    /// Cached feeds dictionary and target tensor list for `evaluate(board:)`.
+    /// Built once at init; every inference call feeds these unchanged so
+    /// the hot path allocates no Swift `Dictionary` or `Array` on each
+    /// call. The ND array backing `inferenceInputTensorData` has its
+    /// bytes overwritten in place before each `graph.run`.
+    private let inferenceFeeds: [MPSGraphTensor: MPSGraphTensorData]
+    private let inferenceTargets: [MPSGraphTensor]
+
+    /// Readback scratch for the policy logits. `evaluate(board:)` asks
+    /// MPSGraph to write the 4096-element policy output directly into
+    /// this buffer and returns an `UnsafeBufferPointer` over it to the
+    /// caller. The buffer is reused across calls — **not re-entrant**;
+    /// the returned pointer is valid only until the next `evaluate` call
+    /// on this network. Allocated via `UnsafeMutablePointer` rather than
+    /// a `[Float]` so we can return a stable pointer without hitting
+    /// Swift array CoW.
+    private let inferencePolicyScratchPtr: UnsafeMutablePointer<Float>
+
+    /// Readback scratch for the value scalar. Same contract as the
+    /// policy scratch; returned to the caller by value rather than as a
+    /// pointer, so the aliasing concern does not apply there.
+    private let inferenceValueScratchPtr: UnsafeMutablePointer<Float>
+
     /// Zero-filled `[1, 18, 8, 8]` feed shared by `exportWeights()` and
     /// `loadWeights(_:)` to satisfy MPSGraph's requirement that every
     /// graph placeholder be fed even when the target ops don't consume
@@ -315,14 +338,56 @@ final class ChessNetwork {
             into: dummyND
         )
         dummyInferenceInputTensorData = MPSGraphTensorData(dummyND)
+
+        // Cache the feeds dict and target tensor list so the per-move
+        // inference path doesn't rebuild them. Both are immutable — the
+        // ND array backing `inferenceInputTensorData` is written
+        // through `writeBytes` on the same underlying storage every
+        // call.
+        inferenceFeeds = [inputPlaceholder: inferenceInputTensorData]
+        inferenceTargets = [policyOutput, valueOutput]
+
+        // Raw-pointer readback scratches for the policy logits and
+        // value scalar. UnsafeMutablePointer avoids Swift array CoW so
+        // `evaluate(board:)` can hand a stable UnsafeBufferPointer back
+        // to the caller without triggering an allocation.
+        let policyScratch = UnsafeMutablePointer<Float>.allocate(capacity: Self.policySize)
+        policyScratch.initialize(repeating: 0, count: Self.policySize)
+        inferencePolicyScratchPtr = policyScratch
+        let valueScratch = UnsafeMutablePointer<Float>.allocate(capacity: 1)
+        valueScratch.initialize(repeating: 0, count: 1)
+        inferenceValueScratchPtr = valueScratch
+    }
+
+    deinit {
+        inferencePolicyScratchPtr.deinitialize(count: Self.policySize)
+        inferencePolicyScratchPtr.deallocate()
+        inferenceValueScratchPtr.deinitialize(count: 1)
+        inferenceValueScratchPtr.deallocate()
     }
 
     // MARK: - Inference
 
     /// Evaluate a single board position.
-    /// - Parameter board: 18x8x8 = 1,152 floats in NCHW order (planes, rows, cols)
-    /// - Returns: Policy probabilities (4096 move slots) and position value in [-1, +1]
-    func evaluate(board: [Float]) throws -> (policy: [Float], value: Float) {
+    ///
+    /// **Not re-entrant.** The returned `policy` buffer aliases this
+    /// network's shared readback scratch — it is valid only until the
+    /// next `evaluate` call on this same network. Callers must consume
+    /// the policy vector before issuing another `evaluate`. The `value`
+    /// scalar is returned by copy and is not subject to this constraint.
+    ///
+    /// In self-play both `MPSChessPlayer` instances share one
+    /// `ChessNetwork` but are driven sequentially inside a single
+    /// `ChessMachine.runGameLoop`, so only one side evaluates at a
+    /// time. Any future refactor that runs two games concurrently on
+    /// one network must give each game its own `ChessNetwork` or add
+    /// explicit serialization here.
+    ///
+    /// - Parameter board: 18×8×8 = 1,152 floats in NCHW order (planes, rows, cols).
+    /// - Returns: `UnsafeBufferPointer` over 4,096 policy logits plus the scalar value in [-1, +1].
+    func evaluate(
+        board: UnsafeBufferPointer<Float>
+    ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
         let expected = 1 * Self.inputPlanes * Self.boardSize * Self.boardSize
         guard board.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: board.count)
@@ -332,8 +397,8 @@ final class ChessNetwork {
 
         let results = graph.run(
             with: commandQueue,
-            feeds: [inputPlaceholder: inferenceInputTensorData],
-            targetTensors: [policyOutput, valueOutput],
+            feeds: inferenceFeeds,
+            targetTensors: inferenceTargets,
             targetOperations: nil
         )
 
@@ -344,9 +409,24 @@ final class ChessNetwork {
             throw ChessNetworkError.outputMissing("value")
         }
 
-        let policy = Self.readFloats(from: policyData, count: Self.policySize)
-        let valueBuf = Self.readFloats(from: valueData, count: 1)
-        return (policy, valueBuf[0])
+        Self.readFloats(from: policyData, into: inferencePolicyScratchPtr, count: Self.policySize)
+        Self.readFloats(from: valueData, into: inferenceValueScratchPtr, count: 1)
+
+        return (
+            policy: UnsafeBufferPointer(start: inferencePolicyScratchPtr, count: Self.policySize),
+            value: inferenceValueScratchPtr.pointee
+        )
+    }
+
+    /// `[Float]`-input overload for callers outside the hot path (tests,
+    /// the Forward Pass demo). Delegates to the pointer-based primary
+    /// entry point via `withUnsafeBufferPointer` — no copy.
+    func evaluate(
+        board: [Float]
+    ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
+        try board.withUnsafeBufferPointer { buf in
+            try evaluate(board: buf)
+        }
     }
 
     // MARK: - Weight Transfer
@@ -901,25 +981,36 @@ final class ChessNetwork {
         makeWeightData([Float](repeating: 0.0, count: count))
     }
 
-    /// Write `floats` directly into `array`'s storage. Used on the
-    /// inference hot path to avoid the intermediate `Data` copy inside
-    /// `makeWeightData`. On `.float32` we hand the Swift array's bytes
-    /// straight to `writeBytes`; `.float16` would need a reused
+    /// Write raw float bytes from `buffer` directly into `array`'s
+    /// storage. Primary inference-hot-path writer: the caller passes a
+    /// pre-encoded `UnsafeBufferPointer<Float>` (e.g. a slice of a
+    /// per-game scratch) and the bytes flow straight into the MPSNDArray
+    /// with zero intermediate copies. On `.float32` the data is handed
+    /// unchanged to `writeBytes`; `.float16` would need a reused
     /// `[UInt16]` scratch buffer (not yet implemented because dataType
     /// is currently `.float32`).
-    static func writeInferenceInput(_ floats: [Float], into array: MPSNDArray) {
+    static func writeInferenceInput(
+        _ buffer: UnsafeBufferPointer<Float>,
+        into array: MPSNDArray
+    ) {
         switch dataType {
         case .float32:
-            floats.withUnsafeBytes { buf in
-                guard let base = buf.baseAddress else { return }
-                array.writeBytes(
-                    UnsafeMutableRawPointer(mutating: base),
-                    strideBytes: nil
-                )
-            }
+            guard let base = buffer.baseAddress else { return }
+            array.writeBytes(
+                UnsafeMutableRawPointer(mutating: base),
+                strideBytes: nil
+            )
         default:
             fatalError("writeInferenceInput: unsupported dataType \(dataType). "
                 + "Implement a reused half-scratch buffer before flipping to .float16.")
+        }
+    }
+
+    /// `[Float]`-input overload for callers outside the hot path. Wraps
+    /// `withUnsafeBufferPointer` and delegates — no copy on `.float32`.
+    static func writeInferenceInput(_ floats: [Float], into array: MPSNDArray) {
+        floats.withUnsafeBufferPointer { buf in
+            writeInferenceInput(buf, into: array)
         }
     }
 
@@ -1014,6 +1105,33 @@ final class ChessNetwork {
 
         default:
             fatalError("Unsupported ChessNetwork.dataType: \(dataType)")
+        }
+    }
+
+    /// Read inference output into a caller-owned float buffer. Used by
+    /// the hot inference and training paths so the readback doesn't
+    /// allocate a fresh Swift array on every call. The `count` argument
+    /// must match the underlying tensor's element count (it's validated
+    /// only in debug via the MPSNDArray shape, not here).
+    ///
+    /// On `.float16` this would need a reused `[UInt16]` scratch; not
+    /// yet implemented because `dataType` is currently `.float32`. The
+    /// fatal matches the pattern used by `writeInferenceInput` so a
+    /// future `.float16` flip fails loudly rather than silently.
+    static func readFloats(
+        from data: MPSGraphTensorData,
+        into pointer: UnsafeMutablePointer<Float>,
+        count: Int
+    ) {
+        switch dataType {
+        case .float32:
+            data.mpsndarray().readBytes(
+                UnsafeMutableRawPointer(pointer),
+                strideBytes: nil
+            )
+        default:
+            fatalError("readFloats(from:into:count:): unsupported dataType \(dataType). "
+                + "Implement a reused half-scratch buffer before flipping to .float16.")
         }
     }
 }

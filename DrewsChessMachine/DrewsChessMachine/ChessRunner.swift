@@ -32,7 +32,13 @@ final class ChessRunner: @unchecked Sendable {
         flip: Bool
     ) throws -> InferenceResult {
         let start = CFAbsoluteTimeGetCurrent()
-        let (logits, value) = try network.evaluate(board: board)
+        let (policyBuf, value) = try network.evaluate(board: board)
+        // Copy the non-owning policy view into an owned array before
+        // returning — the Forward Pass UI is the only consumer and is
+        // cold path, so the one-time copy doesn't matter, and this
+        // frees the next `evaluate` call to reuse the network's
+        // scratch without invalidating our result.
+        let logits = Array(policyBuf)
         let inferenceTimeMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
         return Self.makeInferenceResult(
             logits: logits,
