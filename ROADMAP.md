@@ -4,6 +4,99 @@ Long-term goals, deferred work, and notes on decisions.
 
 ## Future improvements
 
+- **Model and session save/load.** Today nothing persists across app
+  launches — quit mid-training and you lose the champion, the trainer,
+  every accumulated counter, and the replay buffer. Two file formats,
+  one underlying primitive.
+
+  **Single model — `.dcmmodel` (flat binary file).** Wraps one network's
+  weights plus identity and metadata. Fixed binary header, then the 37
+  tensors that come out of `ChessMPSNetwork.exportWeights()` in declared
+  order, then a trailing 32-byte SHA-256 over all preceding bytes for
+  integrity. Header carries: magic `"DCMMODEL"`, format version,
+  `archHash` (hash of filters / blocks / input channels / policy dim —
+  hard-refuses to load on mismatch, no migration), `numTensors`
+  sanity-check, creation wall-clock time, `ModelID`, parent `ModelID` at
+  time of save, and a JSON metadata blob (arena stats at mint,
+  training-step count, creator tag). Loadable into any training- or
+  inference-mode `ChessNetwork` via the existing `loadWeights` path —
+  this is the unit for "take any model at any point and use for
+  inference."
+
+  **Training session — `.dcmsession` (directory).** Holds
+  `champion.dcmmodel`, `trainer.dcmmodel`, and `session.json`. Making a
+  session a directory of `.dcmmodel` files rather than a custom bundle
+  means (a) extraction is free — Finder-copy any model out of a session
+  — and (b) only one binary format to debug. `session.json` is a
+  Codable blob with the session's stable `sessionID`, format version,
+  save and session-start wall-clock timestamps, accumulated training
+  time, all STATS-line counters (trainingSteps, selfPlayGames,
+  selfPlayMoves, trainingPositionsSeen), all hyperparameters that
+  appear in the arena footer (batch, lr, promote threshold, arena
+  games, sp/arena tau configs, self-play worker count), both network
+  IDs duplicated from the `.dcmmodel` headers for fast index reads,
+  and a light arena history (W/L/D + kept/promoted + step-at-run for
+  each arena so far). Excluded from v1: the 500k-position replay
+  buffer (~2.3 GB — resume warmup cost is ~5 min of self-play to
+  refill, acceptable), the candidate network (only exists mid-arena —
+  saving mid-arena is disallowed), and in-flight self-play games
+  (workers abandon on save, same behavior as Stop).
+
+  **Save triggers.** Menu items: Save Session, Save Champion as Model,
+  Load Session, Load Model. Autosave on arena promotion defaults **on**
+  — every promotion writes a full session snapshot alongside the manual
+  saves. Save Session is disabled mid-arena; Load Session and Load Model
+  require Play-and-Train to be stopped.
+
+  **File locations.** All saves — manual and auto — land in a fixed
+  Library path so there's one canonical place to find them:
+  `~/Library/Application Support/DrewsChessMachine/Sessions/` for
+  sessions, `~/Library/Application Support/DrewsChessMachine/Models/`
+  for single models. **Every save keeps the old file** — nothing is
+  ever overwritten. Users prune manually. Naming scheme is
+  `<YYYYMMDD-HHMMSS>-<modelID>-<trigger>.<ext>` where trigger is
+  `manual` or `promote`; the wall-clock prefix gives natural Finder
+  sort order. A "Reveal Saves in Finder" button opens the relevant
+  folder so the hidden `Application Support` location is discoverable.
+  Load uses the standard `fileImporter` sheet so you can drag in a
+  file from anywhere (Downloads, AirDrop, another machine) without
+  having to move it into the canonical folder first.
+
+  **Every save is self-verified before it's marked successful.** After
+  writing the file(s) atomically (tmp + fsync + rename), the save code
+  (1) re-reads the file from disk, (2) bit-compares the re-read tensors
+  byte-for-byte against the `[[Float]]` that was exported pre-write,
+  and (3) loads the saved weights into a throwaway
+  `ChessMPSNetwork` and runs a forward pass on a canonical test
+  position (starting position + one fixed mid-game FEN), comparing
+  policy and value outputs bit-exact to the same forward pass on the
+  source network. Any mismatch deletes the freshly-written `.tmp`,
+  leaves any prior save in the folder untouched (since we keep
+  history), and surfaces a user-visible error. This gives us production
+  round-trip correctness checking for free on every save — a
+  `loadWeights` regression shows up on the user's next save attempt,
+  not three hours later on resume.
+
+  **Validation — this plan doesn't complete until all of these pass.**
+  (1) Build succeeds. (2) Round-trip a single model: Save Champion as
+  Model → quit → relaunch → Load Model → run Forward Pass on a fixed
+  FEN → policy and value outputs are bit-exact identical to pre-save.
+  (3) Round-trip a session: Play-and-Train for a few minutes → Save
+  Session → quit → relaunch → Load Session → `session.json` counters
+  and ModelIDs match → champion and trainer Forward Pass outputs are
+  bit-exact on a fixed FEN → Play-and-Train resumes, buffer refills,
+  a subsequent arena runs and can promote. (4) Arch-mismatch file —
+  hand-edit `archHash` or build with different filter/block counts —
+  refuses to load with a clear user-facing error, no crash, no
+  silent success. (5) Truncated file — cut the last 1 KB of a
+  `.dcmmodel` — refuses to load with a clear error, no crash.
+  (6) SHA mismatch — flip one byte in the middle of a `.dcmmodel` —
+  refuses to load with a clear error. (7) Save-mid-arena is
+  disallowed — menu item is disabled or errors clearly during an
+  arena. (8) Save atomicity — kill the process mid-save (`SIGKILL`
+  while writing `.tmp`) → prior save on disk is still intact, no
+  half-written file left behind. (9) Every existing test still passes.
+
 - **Bitboard board representation.** `GameState.board` is currently a flat
   `[Piece?]` of 64 entries. The next step for performance is twelve `UInt64`
   bitboards (one per piece kind/color), with attack tables. Move generation,
