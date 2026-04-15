@@ -2280,240 +2280,89 @@ struct ContentView: View {
 
     /// The Progress rate chart. Three line series (self-play,
     /// training, combined) plotted against elapsed session time.
-    /// `.chartXScale(domain:)` is driven by `progressRateXDomain`
-    /// when the user has pinched/panned; when that's `nil` the
-    /// chart auto-fits from 0 to the latest sample's elapsedSec.
-    ///
-    /// The chart overlay layer intercepts pinch and drag gestures
-    /// for zoom/pan. The "Reset zoom" button below the chart
-    /// clears the custom domain.
-    @ViewBuilder
+    /// Horizontal scrolling is native: `chartScrollableAxes` +
+    /// `chartXVisibleDomain` set a 10-minute visible window and
+    /// let Swift Charts handle the trackpad / mouse / keyboard
+    /// scroll gestures. `chartScrollPosition(x:)` is two-way
+    /// bound to `progressRateScrollX`; the binding's setter is
+    /// where we detect a manual scroll and pause auto-follow so
+    /// reading history doesn't fight the 1 Hz sampler tick.
     private var progressRateChartView: some View {
-        let samples = progressRateSamples
-        let lastElapsed = samples.last?.elapsedSec ?? 0
-        // Guarantee a non-degenerate full domain — a session with
-        // a single sample would otherwise produce 0...0 which
-        // Swift Charts draws as a zero-width plot.
-        let fullUpper = max(1.0, lastElapsed)
-        let fullDomain: ClosedRange<Double> = 0.0...fullUpper
-        let effectiveDomain = progressRateXDomain ?? fullDomain
+        Chart(progressRateSamples) { sample in
+            LineMark(
+                x: .value("Elapsed", sample.elapsedSec),
+                y: .value("Moves/hr", sample.selfPlayMovesPerHour)
+            )
+            .foregroundStyle(by: .value("Series", "Self-play"))
 
-        VStack(spacing: 6) {
-            if samples.isEmpty {
-                // Placeholder while the first tick hasn't fired
-                // yet. Sized to match the active chart's frame so
-                // the left column doesn't jump when the chart
-                // appears.
-                Rectangle()
-                    .fill(Color.gray.opacity(0.05))
-                    .frame(height: 320)
-                    .overlay {
-                        Text("Collecting samples…")
-                            .foregroundStyle(.secondary)
-                    }
-            } else {
-                Chart {
-                    ForEach(samples) { sample in
-                        LineMark(
-                            x: .value("Elapsed", sample.elapsedSec),
-                            y: .value("Moves/hr", sample.selfPlayMovesPerHour)
-                        )
-                        .foregroundStyle(by: .value("Series", "Self-play"))
+            LineMark(
+                x: .value("Elapsed", sample.elapsedSec),
+                y: .value("Moves/hr", sample.trainingMovesPerHour)
+            )
+            .foregroundStyle(by: .value("Series", "Training"))
 
-                        LineMark(
-                            x: .value("Elapsed", sample.elapsedSec),
-                            y: .value("Moves/hr", sample.trainingMovesPerHour)
-                        )
-                        .foregroundStyle(by: .value("Series", "Training"))
-
-                        LineMark(
-                            x: .value("Elapsed", sample.elapsedSec),
-                            y: .value("Moves/hr", sample.combinedMovesPerHour)
-                        )
-                        .foregroundStyle(by: .value("Series", "Combined"))
+            LineMark(
+                x: .value("Elapsed", sample.elapsedSec),
+                y: .value("Moves/hr", sample.combinedMovesPerHour)
+            )
+            .foregroundStyle(by: .value("Series", "Combined"))
+        }
+        .chartForegroundStyleScale([
+            "Self-play": Color.blue,
+            "Training": Color.orange,
+            "Combined": Color.green
+        ])
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 6)) { value in
+                AxisGridLine()
+                AxisTick()
+                AxisValueLabel {
+                    if let secs = value.as(Double.self) {
+                        Text(Self.formatElapsedAxis(secs))
+                            .monospacedDigit()
                     }
                 }
-                .chartForegroundStyleScale([
-                    "Self-play": Color.blue,
-                    "Training": Color.orange,
-                    "Combined": Color.green
-                ])
-                .chartXScale(domain: effectiveDomain)
-                .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 6)) { value in
-                        AxisGridLine()
-                        AxisTick()
-                        AxisValueLabel {
-                            if let secs = value.as(Double.self) {
-                                Text(Self.formatElapsedAxis(secs))
-                                    .monospacedDigit()
-                            }
-                        }
-                    }
-                }
-                .chartYAxis {
-                    AxisMarks(position: .leading, values: .automatic(desiredCount: 6)) { value in
-                        AxisGridLine()
-                        AxisTick()
-                        AxisValueLabel {
-                            if let v = value.as(Double.self) {
-                                Text(v.formatted(.number.notation(.compactName)))
-                                    .monospacedDigit()
-                            }
-                        }
-                    }
-                }
-                .chartXAxisLabel("Session time", position: .bottom, alignment: .center)
-                .chartYAxisLabel("Moves / hour", position: .leading, alignment: .center)
-                .chartLegend(position: .bottom, alignment: .center, spacing: 10)
-                .chartOverlay { proxy in
-                    GeometryReader { _ in
-                        Rectangle()
-                            .fill(Color.clear)
-                            .contentShape(Rectangle())
-                            .gesture(
-                                MagnificationGesture()
-                                    .onChanged { scale in
-                                        handleProgressRatePinch(
-                                            scale: scale,
-                                            fullDomain: fullDomain
-                                        )
-                                    }
-                                    .onEnded { _ in
-                                        progressRateZoomStartDomain = nil
-                                    }
-                            )
-                            .simultaneousGesture(
-                                DragGesture(minimumDistance: 2)
-                                    .onChanged { value in
-                                        handleProgressRatePan(
-                                            translation: value.translation,
-                                            proxy: proxy,
-                                            fullDomain: fullDomain
-                                        )
-                                    }
-                                    .onEnded { _ in
-                                        progressRatePanStartDomain = nil
-                                    }
-                            )
-                    }
-                }
-                .frame(height: 320)
-            }
-
-            HStack(spacing: 10) {
-                Button("Reset zoom") {
-                    progressRateXDomain = nil
-                    progressRateZoomStartDomain = nil
-                    progressRatePanStartDomain = nil
-                }
-                .disabled(progressRateXDomain == nil)
-
-                Spacer()
-
-                Text(progressRateZoomStatus(
-                    effective: effectiveDomain,
-                    full: fullDomain
-                ))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
             }
         }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 6)) { value in
+                AxisGridLine()
+                AxisTick()
+                AxisValueLabel {
+                    if let v = value.as(Double.self) {
+                        Text(v.formatted(.number.notation(.compactName)))
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .chartXAxisLabel("Session time", position: .bottom, alignment: .center)
+        .chartYAxisLabel("Moves / hour", position: .leading, alignment: .center)
+        .chartLegend(position: .bottom, alignment: .center, spacing: 10)
+        .chartScrollableAxes(.horizontal)
+        .chartXVisibleDomain(length: Self.progressRateVisibleDomainSec)
+        .chartScrollPosition(x: progressRateScrollBinding)
+        .frame(height: 320)
     }
 
-    /// One-line status shown below the chart. Reports either
-    /// "Full session · N samples" when no zoom is applied, or
-    /// "Showing MM:SS – MM:SS · N samples" when a narrower
-    /// window is visible — useful feedback that the gestures
-    /// actually landed.
-    private func progressRateZoomStatus(
-        effective: ClosedRange<Double>,
-        full: ClosedRange<Double>
-    ) -> String {
-        let count = progressRateSamples.count
-        let samplesSuffix = "\(count) sample\(count == 1 ? "" : "s")"
-        if progressRateXDomain == nil {
-            return "Full session  ·  \(samplesSuffix)"
-        }
-        let lo = Self.formatElapsedAxis(effective.lowerBound)
-        let hi = Self.formatElapsedAxis(effective.upperBound)
-        return "Showing \(lo) – \(hi)  ·  \(samplesSuffix)"
-    }
-
-    /// Pinch-to-zoom handler for the Progress rate chart. Scales
-    /// the X domain around its midpoint by the gesture's
-    /// cumulative `scale`, captured against a baseline domain
-    /// stored at gesture start. Clamps the result so zoom in
-    /// can't collapse the domain to a point, zoom out can't
-    /// overshoot the session bounds, and either end can't
-    /// exceed the full data range.
-    private func handleProgressRatePinch(
-        scale: CGFloat,
-        fullDomain: ClosedRange<Double>
-    ) {
-        let base = progressRateZoomStartDomain
-            ?? progressRateXDomain
-            ?? fullDomain
-        if progressRateZoomStartDomain == nil {
-            progressRateZoomStartDomain = base
-        }
-        let mid = (base.lowerBound + base.upperBound) / 2
-        let baseHalf = (base.upperBound - base.lowerBound) / 2
-        // Clamp the cumulative scale so extreme pinches don't
-        // produce degenerate (or absurd) domains. 0.1x collapses
-        // all the way back toward "full zoom out"; 50x clamps
-        // zoom-in at ~50× the original detail.
-        let clampedScale = max(0.1, min(50.0, Double(scale)))
-        let newHalf = max(0.5, baseHalf / clampedScale)
-        var newLo = mid - newHalf
-        var newHi = mid + newHalf
-        if newLo < fullDomain.lowerBound {
-            newHi += (fullDomain.lowerBound - newLo)
-            newLo = fullDomain.lowerBound
-        }
-        if newHi > fullDomain.upperBound {
-            newLo -= (newHi - fullDomain.upperBound)
-            newHi = fullDomain.upperBound
-        }
-        newLo = max(fullDomain.lowerBound, newLo)
-        newHi = min(fullDomain.upperBound, newHi)
-        guard newHi > newLo else { return }
-        progressRateXDomain = newLo...newHi
-    }
-
-    /// Drag-to-pan handler for the Progress rate chart. Converts
-    /// the drag's horizontal translation into an X-domain shift
-    /// using the chart's plot-area width from `ChartProxy`, then
-    /// clamps so the pan can't run off either end of the data.
-    private func handleProgressRatePan(
-        translation: CGSize,
-        proxy: ChartProxy,
-        fullDomain: ClosedRange<Double>
-    ) {
-        let base = progressRatePanStartDomain
-            ?? progressRateXDomain
-            ?? fullDomain
-        if progressRatePanStartDomain == nil {
-            progressRatePanStartDomain = base
-        }
-        let plotWidth = proxy.plotSize.width
-        guard plotWidth > 0 else { return }
-        let dataWidth = base.upperBound - base.lowerBound
-        let dataDelta = Double(-translation.width) * (dataWidth / Double(plotWidth))
-        var newLo = base.lowerBound + dataDelta
-        var newHi = base.upperBound + dataDelta
-        if newLo < fullDomain.lowerBound {
-            let shift = fullDomain.lowerBound - newLo
-            newLo += shift
-            newHi += shift
-        }
-        if newHi > fullDomain.upperBound {
-            let shift = newHi - fullDomain.upperBound
-            newLo -= shift
-            newHi -= shift
-        }
-        progressRateXDomain = newLo...newHi
+    /// Two-way binding between `progressRateScrollX` and the
+    /// chart's `chartScrollPosition(x:)`. The setter is where
+    /// user scrolls land: if the new position is more than 1 s
+    /// away from the "latest" scroll position, auto-follow
+    /// pauses; if they scroll back to (within 1 s of) the right
+    /// edge, it resumes. 1 s matches the sampler cadence, so
+    /// one tick of slack lines up with one natural scroll-by-
+    /// one-sample gesture.
+    private var progressRateScrollBinding: Binding<Double> {
+        Binding(
+            get: { progressRateScrollX },
+            set: { newValue in
+                progressRateScrollX = newValue
+                let latest = progressRateSamples.last?.elapsedSec ?? 0
+                let latestScrollX = max(0, latest - Self.progressRateVisibleDomainSec)
+                progressRateFollowLatest = abs(newValue - latestScrollX) < 1.0
+            }
+        )
     }
 
     /// Sample process CPU + GPU time at most every
@@ -3485,9 +3334,8 @@ struct ContentView: View {
         progressRateSamples = []
         progressRateLastFetch = .distantPast
         progressRateNextId = 0
-        progressRateXDomain = nil
-        progressRateZoomStartDomain = nil
-        progressRatePanStartDomain = nil
+        progressRateScrollX = 0
+        progressRateFollowLatest = true
         let selfPlayGate = WorkerPauseGate()
         // One pause gate per secondary self-play worker (workers
         // 1..absoluteMaxSelfPlayWorkers-1). Worker 0 uses `selfPlayGate`.
