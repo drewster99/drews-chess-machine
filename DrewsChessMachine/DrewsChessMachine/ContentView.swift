@@ -488,6 +488,13 @@ struct TournamentRecord: Sendable, Identifiable {
     let draws: Int
     let score: Double
     let promoted: Bool
+    /// ID of the candidate network when a promotion happened — the
+    /// model the champion was replaced with. `nil` when `promoted`
+    /// is false, so the arena history / logs can surface "which
+    /// network just became the champion" alongside the kept/PROMOTED
+    /// marker. Captured at the moment of promotion, before any
+    /// subsequent trainer re-mint can change the candidate's ID.
+    let promotedID: ModelID?
     /// Total wall-clock time the tournament took from the initial
     /// trainer → candidate sync through the last game. Promotion copy
     /// after the score threshold check is not included.
@@ -734,6 +741,70 @@ final class ArenaTriggerBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return _pending
+    }
+}
+
+/// Lock-protected user-override inbox for an in-flight arena
+/// tournament. Exactly two user actions can end a tournament early:
+/// `abort()` ends it with no promotion regardless of the score, and
+/// `promote()` ends it early and forces promotion regardless of the
+/// score. The decision is set-once — whichever of the two buttons
+/// lands first wins, and the second is a no-op — so rapid conflicting
+/// clicks can't produce contradictory state. `runArenaParallel`
+/// clears the box at the start of every tournament and consumes
+/// the decision once the driver returns.
+final class ArenaOverrideBox: @unchecked Sendable {
+    enum Decision: Sendable {
+        case abort
+        case promote
+    }
+
+    private let lock = NSLock()
+    private var _decision: Decision?
+
+    /// Request abort: end the current tournament early with no
+    /// promotion. No-op if a decision (abort or promote) is already
+    /// set for this tournament.
+    func abort() {
+        lock.lock()
+        defer { lock.unlock() }
+        if _decision == nil {
+            _decision = .abort
+        }
+    }
+
+    /// Request forced promotion: end the current tournament early
+    /// and promote the candidate unconditionally. No-op if a decision
+    /// (abort or promote) is already set for this tournament.
+    func promote() {
+        lock.lock()
+        defer { lock.unlock() }
+        if _decision == nil {
+            _decision = .promote
+        }
+    }
+
+    /// True once either `abort()` or `promote()` has been called,
+    /// until `consume()` resets the box. Polled by the tournament
+    /// driver's `isCancelled` closure so the game loop breaks out
+    /// between games the moment the user clicks one of the buttons.
+    var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _decision != nil
+    }
+
+    /// Read-and-clear the decision. Returns `nil` if no override
+    /// was set (normal tournament completion), or the decision the
+    /// user made. Called once by `runArenaParallel` after the
+    /// driver returns, both to branch on the decision and to reset
+    /// the box for the next tournament.
+    func consume() -> Decision? {
+        lock.lock()
+        defer { lock.unlock() }
+        let d = _decision
+        _decision = nil
+        return d
     }
 }
 
@@ -1025,6 +1096,12 @@ struct ContentView: View {
     /// Trigger inbox the arena coordinator polls. Set by the training
     /// worker's 30-minute auto check and by the Run Arena button.
     @State private var arenaTriggerBox: ArenaTriggerBox?
+    /// User-override inbox for an in-flight arena. The Abort and
+    /// Promote buttons (visible only while an arena is running) write
+    /// to this box; `runArenaParallel` polls it to break the game
+    /// loop early and to branch on promote-vs-no-promote once the
+    /// driver returns. Nil between Play-and-Train sessions.
+    @State private var arenaOverrideBox: ArenaOverrideBox?
     /// True while an arena is running — mirror of `arenaActiveFlag`
     /// maintained by the heartbeat for UI purposes (disabling the
     /// Run Arena button, suppressing probe activity on screen).
@@ -1301,23 +1378,24 @@ struct ContentView: View {
     /// Next `id` to assign when appending to `progressRateSamples`.
     /// Monotonic counter, reset alongside the sample list.
     @State private var progressRateNextId: Int = 0
-    /// Current visible X domain for the Progress rate chart, in
-    /// elapsed seconds since session start. `nil` means "auto fit"
-    /// — the chart shows everything from 0 to the latest sample.
-    /// Set by pinch-zoom / pan gestures and cleared by the Reset
-    /// zoom button.
-    @State private var progressRateXDomain: ClosedRange<Double>?
-    /// Snapshot of `progressRateXDomain` captured at the start of
-    /// a pinch gesture. The incremental `scale` value reported by
-    /// `MagnificationGesture` is cumulative from gesture start,
-    /// so we apply it against this frozen baseline rather than
-    /// the previous tick's domain — otherwise the domain would
-    /// shrink / grow super-linearly.
-    @State private var progressRateZoomStartDomain: ClosedRange<Double>?
-    /// Same idea for drag-to-pan — the domain at drag start.
-    /// Captured so intermediate `translation` values from the
-    /// drag gesture apply against a stable baseline.
-    @State private var progressRatePanStartDomain: ClosedRange<Double>?
+    /// Current scroll position on the Progress rate chart, in
+    /// elapsed seconds since session start. Acts as the X
+    /// coordinate that maps to the *left edge* of the visible
+    /// window (so `scrollX = 0` shows t=0..window, and
+    /// `scrollX = lastElapsed - window` shows the latest
+    /// window). Two-way bound to `.chartScrollPosition(x:)` so
+    /// `Swift Charts` handles the native scroll gestures
+    /// (trackpad two-finger scroll, scroll wheel, arrow keys)
+    /// without any custom DragGesture of our own.
+    @State private var progressRateScrollX: Double = 0
+    /// Whether the chart should auto-advance `progressRateScrollX`
+    /// to keep the newest sample in view. Starts `true`; flips
+    /// to `false` when the user scrolls backward past a small
+    /// tolerance, and flips back to `true` when they scroll
+    /// forward to the right edge again. Without this, a user
+    /// scrolling back to inspect history would get yanked
+    /// forward on every 1 Hz tick.
+    @State private var progressRateFollowLatest: Bool = true
     /// Cadence for the progress-rate sampler: one sample per
     /// second. Matches the user's spec.
     nonisolated static let progressRateRefreshSec: Double = 1.0
@@ -1325,6 +1403,13 @@ struct ContentView: View {
     /// moves/hr from the delta between "now" and "the sample
     /// closest to 3 minutes ago". 180 s, as requested.
     nonisolated static let progressRateWindowSec: Double = 180.0
+    /// Visible X-axis length shown on the Progress rate chart
+    /// at any one time, in elapsed seconds. The chart scrolls
+    /// horizontally through the full session's data in chunks
+    /// of this size. 10 minutes matches the existing "last 10m"
+    /// rolling column in the Self Play stats panel, so the eye
+    /// can correlate chart movement with the numeric column.
+    nonisolated static let progressRateVisibleDomainSec: Double = 600
     /// Wall-clock seconds the Play and Train Session panel waits
     /// after session start before showing rate-based stats fields
     /// (Moves/hr, Games/hr in both lifetime and 10-min columns).
@@ -1648,6 +1733,26 @@ struct ContentView: View {
                         arenaTriggerBox?.trigger()
                     }
                     .disabled(isArenaRunning)
+                }
+
+                // Abort / Promote — visible only while an arena is in
+                // flight, so the user can terminate it early without
+                // waiting for the full 200-game tournament. Abort ends
+                // with no promotion regardless of score; Promote ends
+                // early and forcibly promotes the candidate. Both go
+                // through `ArenaOverrideBox` which the driver's
+                // `isCancelled` closure polls between games, so the
+                // actual end-of-arena happens one in-flight game later
+                // (the same ~400 ms granularity Stop has).
+                if realTraining && isArenaRunning {
+                    Button("Abort Arena") {
+                        SessionLogger.shared.log("[BUTTON] Abort Arena")
+                        arenaOverrideBox?.abort()
+                    }
+                    Button("Promote") {
+                        SessionLogger.shared.log("[BUTTON] Promote")
+                        arenaOverrideBox?.promote()
+                    }
                 }
 
                 if isBusy {
@@ -2134,6 +2239,16 @@ struct ContentView: View {
         )
         progressRateSamples.append(sample)
         progressRateNextId += 1
+
+        // Auto-follow: pin the scroll position so the latest
+        // sample sits at the right edge of the visible window.
+        // Disabled when the user has manually scrolled backward
+        // (the binding on `.chartScrollPosition(x:)` flips this
+        // flag when it sees a backward jump), so inspecting
+        // history doesn't fight the 1 Hz tick.
+        if progressRateFollowLatest {
+            progressRateScrollX = max(0, sample.elapsedSec - Self.progressRateVisibleDomainSec)
+        }
     }
 
     /// Format a number of elapsed seconds for the Progress rate
@@ -2734,8 +2849,15 @@ struct ContentView: View {
         tBox: TournamentLiveBox,
         selfPlayGate: WorkerPauseGate,
         trainingGate: WorkerPauseGate,
-        arenaFlag: ArenaActiveFlag
+        arenaFlag: ArenaActiveFlag,
+        overrideBox: ArenaOverrideBox
     ) async {
+        // Clear any stale decision from a previous tournament so this
+        // run starts with a clean override slate. Normal completion
+        // `consume()`s the box at the end, but early-return paths
+        // (cancellation, sync errors) don't — clearing here keeps
+        // all exit paths honest.
+        _ = overrideBox.consume()
         let steps = trainingStats?.steps ?? 0
 
         let trainerIDStart = trainer.identifier?.description ?? "?"
@@ -2837,14 +2959,19 @@ struct ContentView: View {
         let cancelBox = CancelBox()
         let stats = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
-                [arenaChampion, candidateInference, tBox, cancelBox] in
+                [arenaChampion, candidateInference, tBox, cancelBox, overrideBox] in
                 let driver = TournamentDriver()
                 driver.delegate = nil
                 return await driver.run(
                     playerA: { MPSChessPlayer(name: "Candidate", network: candidateInference, schedule: .arena) },
                     playerB: { MPSChessPlayer(name: "Champion", network: arenaChampion, schedule: .arena) },
                     games: totalGames,
-                    isCancelled: { cancelBox.isCancelled },
+                    // The driver checks this between games. Either a
+                    // task-cancel (session Stop) or a user Abort /
+                    // Promote click breaks the game loop early; the
+                    // caller below disambiguates the two via the
+                    // override box's `consume()`.
+                    isCancelled: { cancelBox.isCancelled || overrideBox.isActive },
                     onGameCompleted: { gameIndex, aWins, bWins, draws in
                         tBox.update(TournamentProgress(
                             currentGame: gameIndex,
@@ -2862,6 +2989,14 @@ struct ContentView: View {
         }
 
         // --- Score and promotion ---
+        //
+        // Branch on the user override first. `.abort` ends the
+        // tournament with no promotion regardless of score; `.promote`
+        // forces promotion regardless of score and games played; `nil`
+        // is the normal path where the usual score-threshold check
+        // decides. The consume also clears the box for the next
+        // tournament.
+        let overrideDecision = overrideBox.consume()
         let playedGames = stats.gamesPlayed
         let score: Double
         if playedGames > 0 {
@@ -2870,7 +3005,17 @@ struct ContentView: View {
             score = 0
         }
         var promoted = false
-        if playedGames >= totalGames && score >= Self.tournamentPromoteThreshold {
+        var promotedID: ModelID?
+        let shouldPromote: Bool
+        switch overrideDecision {
+        case .abort:
+            shouldPromote = false
+        case .promote:
+            shouldPromote = true
+        case .none:
+            shouldPromote = playedGames >= totalGames && score >= Self.tournamentPromoteThreshold
+        }
+        if shouldPromote {
             // Pause every self-play worker briefly, copy candidate
             // inference into the champion AND every secondary
             // self-play network, release. Each worker's next game
@@ -2903,6 +3048,7 @@ struct ContentView: View {
                     // don't carry their own identity.
                     champion.identifier = candidateInference.identifier
                     promoted = true
+                    promotedID = candidateInference.identifier
                 } catch {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
                 }
@@ -2922,6 +3068,7 @@ struct ContentView: View {
             draws: stats.draws,
             score: score,
             promoted: promoted,
+            promotedID: promotedID,
             durationSec: durationSec
         )
         tournamentHistory.append(record)
@@ -2956,7 +3103,19 @@ struct ContentView: View {
         let durMin = Int(record.durationSec) / 60
         let durSec = Int(record.durationSec) % 60
         let durationStr = String(format: "%d:%02d", durMin, durSec)
-        let statusStr = record.promoted ? "PROMOTED" : "kept"
+        // Promotion marker carries the promoted model's ID inline so
+        // the single-line header identifies exactly which checkpoint
+        // just took over as the champion — the same ID that already
+        // shows up in the trailing `ids` line, pulled forward so a
+        // `grep PROMOTED` on the session log is self-contained.
+        let statusStr: String
+        if record.promoted, let pid = record.promotedID {
+            statusStr = "PROMOTED=\(pid.description)"
+        } else if record.promoted {
+            statusStr = "PROMOTED"
+        } else {
+            statusStr = "kept"
+        }
         let sp = SamplingSchedule.selfPlay
         let ar = SamplingSchedule.arena
         let lrStr = String(format: "%.1e", trainer.learningRate)
@@ -3362,12 +3521,14 @@ struct ContentView: View {
         arenaActiveFlag = arenaFlag
         let triggerBox = ArenaTriggerBox()
         arenaTriggerBox = triggerBox
+        let overrideBox = ArenaOverrideBox()
+        arenaOverrideBox = overrideBox
         isArenaRunning = false
         realTraining = true
 
         realTrainingTask = Task(priority: .userInitiated) {
             [trainer, network, buffer, box, tBox, pStatsBox,
-             selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, countBox, stepDelayBox] in
+             selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, overrideBox, countBox, stepDelayBox] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
@@ -3770,7 +3931,7 @@ struct ContentView: View {
                 // execution. Both the 30-minute auto-fire and the
                 // Run Arena button enter here via `triggerBox.trigger()`.
                 group.addTask(priority: .userInitiated) {
-                    [trainer, network, tBox, selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox,
+                    [trainer, network, tBox, selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, overrideBox,
                      candidateInference, arenaChampion, secondaries] in
                     while !Task.isCancelled {
                         if triggerBox.consume() {
@@ -3784,7 +3945,8 @@ struct ContentView: View {
                                 tBox: tBox,
                                 selfPlayGate: selfPlayGate,
                                 trainingGate: trainingGate,
-                                arenaFlag: arenaFlag
+                                arenaFlag: arenaFlag,
+                                overrideBox: overrideBox
                             )
                             triggerBox.recordArenaCompleted()
                         } else {
@@ -3883,6 +4045,7 @@ struct ContentView: View {
                 isArenaRunning = false
                 arenaActiveFlag = nil
                 arenaTriggerBox = nil
+                arenaOverrideBox = nil
                 parallelWorkerStatsBox = nil
                 parallelStats = nil
                 workerCountBox = nil
@@ -4181,7 +4344,18 @@ struct ContentView: View {
                 let number = String(format: "%2d", idx + 1)
                 let stepStr = record.finishedAtStep.formatted(.number.grouping(.automatic))
                 let scoreStr = String(format: "%.3f", record.score)
-                let marker = record.promoted ? "PROMOTED" : "kept"
+                // Promoted rows append the ID of the new champion
+                // so the stats panel shows the same "which model
+                // just took over" information as the session log's
+                // [ARENA] lines.
+                let marker: String
+                if record.promoted, let pid = record.promotedID {
+                    marker = "PROMOTED=\(pid.description)"
+                } else if record.promoted {
+                    marker = "PROMOTED"
+                } else {
+                    marker = "kept"
+                }
                 let durStr = Self.formatElapsed(record.durationSec)
                 lines.append(String(
                     format: "  #%@ @ %@ steps  %d-%d-%d  score %@  %@  (%@)",
