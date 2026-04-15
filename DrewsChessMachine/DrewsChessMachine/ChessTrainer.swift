@@ -501,18 +501,63 @@ final class ChessTrainer: @unchecked Sendable {
 
         // --- Policy loss: L = mean( z * -log_softmax(logits)[a*] ) ---
         //
-        // Standard outcome-weighted cross entropy. logSoftMax gives us
-        // numerically stable log probabilities. We one-hot the played move
-        // and sum across the move axis to pull out p(a*). Multiplying by z
-        // applies the outcome weighting from chess-engine-design.md:
+        // Standard outcome-weighted cross entropy. We one-hot the played
+        // move and feed the (logits, one-hot labels) pair to MPSGraph's
+        // fused softMaxCrossEntropy, which ships its own autodiff
+        // implementation. That matters because MPSGraph's autodiff has no
+        // gradient for reductionMaximum — a manual stable log-softmax
+        // built with max-subtraction would compile but crash inside
+        // gradientForPrimaryTensor. The fused op sidesteps the issue and
+        // is numerically stable by construction.
+        //
+        // Multiplying by z applies the outcome weighting from
+        // chess-engine-design.md:
         //   z=+1 → push p(a*) up, z=-1 → push it down, z=0 → no contribution.
 
-        // Compute log_softmax stably as x − max(x) − log(Σ exp(x − max(x))).
-        // The naive softMax → log path underflows to log(0) = −∞ as soon as
-        // any logit gets large enough for its siblings to round to zero,
-        // which happens quickly once the policy head starts receiving
-        // non-trivial gradients. Recover softmax as exp(logSoftmax) for the
-        // entropy diagnostic below.
+        let oneHot = graph.oneHot(
+            withIndicesTensor: movePlayed,
+            depth: 4096,
+            axis: 1,
+            dataType: dtype,
+            onValue: 1.0,
+            offValue: 0.0,
+            name: "move_onehot"
+        )
+        let ceLossRaw = graph.softMaxCrossEntropy(
+            network.policyOutput,
+            labels: oneHot,
+            axis: 1,
+            reuctionType: .none,
+            name: "policy_ce_raw"
+        )
+        // softMaxCrossEntropy with .none reduces the class axis, leaving
+        // one loss per batch element. Reshape to [batch, 1] so it lines up
+        // with z for the outcome-weighted multiply.
+        let negLogProb = graph.reshape(
+            ceLossRaw,
+            shape: [-1, 1],
+            name: "policy_ce_per_pos"
+        )
+        let weightedCE = graph.multiplication(z, negLogProb, name: "z_weighted_ce")
+        let policyLoss = graph.mean(of: weightedCE, axes: [0, 1], name: "policy_loss")
+
+        // --- Value loss: L = mean( (z - v)^2 ) ---
+
+        let diff = graph.subtraction(z, network.valueOutput, name: "value_diff")
+        let sq = graph.square(with: diff, name: "value_sq")
+        let valueLoss = graph.mean(of: sq, axes: [0, 1], name: "value_loss")
+
+        // --- Policy entropy (diagnostic; not in totalLoss) ---
+        //
+        // H(p) = −Σ p · log p, per position, then mean across batch.
+        // Range is [0, log(4096)] ≈ [0, 8.32] nats; random init sits near
+        // the ceiling, a collapsed policy heads toward 0.
+        //
+        // This path is read via run-time fetch but is NOT an input to
+        // totalLoss, so the autodiff walk from totalLoss never enters it.
+        // That lets us build a numerically stable log-softmax here using
+        // max-subtraction (reductionMaximum has no gradient implementation
+        // in MPSGraph, but we don't need one for a diagnostic tensor).
         let logitsMax = graph.reductionMaximum(
             with: network.policyOutput,
             axis: 1,
@@ -523,7 +568,10 @@ final class ChessTrainer: @unchecked Sendable {
             logitsMax,
             name: "policy_logits_shifted"
         )
-        let expShifted = graph.exponent(with: shiftedLogits, name: "policy_exp_shifted")
+        let expShifted = graph.exponent(
+            with: shiftedLogits,
+            name: "policy_exp_shifted"
+        )
         let sumExpShifted = graph.reductionSum(
             with: expShifted,
             axis: 1,
@@ -539,43 +587,6 @@ final class ChessTrainer: @unchecked Sendable {
             name: "policy_log_softmax"
         )
         let softmax = graph.exponent(with: logSoftmax, name: "policy_softmax")
-
-        let oneHot = graph.oneHot(
-            withIndicesTensor: movePlayed,
-            depth: 4096,
-            axis: 1,
-            dataType: dtype,
-            onValue: 1.0,
-            offValue: 0.0,
-            name: "move_onehot"
-        )
-
-        let ceProduct = graph.multiplication(oneHot, logSoftmax, name: "ce_product")
-        let logProbAtMove = graph.reductionSum(
-            with: ceProduct,
-            axis: 1,
-            name: "log_prob_at_move"
-        )
-        // logProbAtMove shape: [batch, 1] (axis-1 reduction keeps the dim)
-        let negLogProb = graph.negative(with: logProbAtMove, name: "neg_log_prob")
-        let weightedCE = graph.multiplication(z, negLogProb, name: "z_weighted_ce")
-        let policyLoss = graph.mean(of: weightedCE, axes: [0, 1], name: "policy_loss")
-
-        // --- Value loss: L = mean( (z - v)^2 ) ---
-
-        let diff = graph.subtraction(z, network.valueOutput, name: "value_diff")
-        let sq = graph.square(with: diff, name: "value_sq")
-        let valueLoss = graph.mean(of: sq, axes: [0, 1], name: "value_loss")
-
-        // --- Policy entropy (diagnostic; not in totalLoss) ---
-        //
-        // H(p) = −Σ p · log p, per position, then mean across batch.
-        // Reuses the softmax/logSoftmax we already built for the policy
-        // loss, so the extra cost is one elementwise multiply, one
-        // axis-1 sum, one negate, and one mean — negligible next to
-        // the forward + backward pass. Range is [0, log(4096)] ≈ [0, 8.32]
-        // nats; random init sits near the ceiling, a collapsed policy
-        // heads toward 0.
         let pLogP = graph.multiplication(softmax, logSoftmax, name: "p_log_p")
         let negEntropyPerPos = graph.reductionSum(
             with: pLogP,
