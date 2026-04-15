@@ -587,6 +587,35 @@ final class WorkerCountBox: @unchecked Sendable {
     }
 }
 
+/// Lock-protected holder for the live training-step delay in
+/// milliseconds. The training worker reads this at the bottom of
+/// every step to decide how long to pause before looping; the
+/// Stepper in the Play and Train row writes through it whenever
+/// the user nudges the value. Decoupled from `@State
+/// trainingStepDelayMs` so the worker task doesn't have to hop back
+/// to the main actor to read a single Int per step. Clamped at the
+/// bottom to 0 — negative delays are meaningless.
+final class TrainingStepDelayBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _ms: Int
+
+    init(initial: Int) {
+        _ms = max(0, initial)
+    }
+
+    var milliseconds: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _ms
+    }
+
+    func set(_ value: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        _ms = max(0, value)
+    }
+}
+
 /// Lock-protected trigger inbox for the arena coordinator task. The
 /// training worker fires the trigger when the 30-minute auto cadence
 /// elapses; the UI fires it via the Run Arena button. The arena
@@ -1115,6 +1144,31 @@ struct ContentView: View {
     /// wait state. Defaults to `initialSelfPlayWorkerCount`;
     /// bounded at runtime by `absoluteMaxSelfPlayWorkers`.
     @State private var selfPlayWorkerCount: Int = Self.initialSelfPlayWorkerCount
+    /// Upper bound on the adjustable training-step delay. 500 ms
+    /// already turns a ~60 steps/s training worker into roughly
+    /// 2 steps/s, which is as slow as anyone reasonably wants to
+    /// crawl the learning rate while still making progress.
+    nonisolated static let stepDelayMaxMs: Int = 500
+    /// Discrete ladder of valid training-step delay values in
+    /// milliseconds. Fine-grained 5 ms increments at the low end
+    /// where small delays matter most, then 25 ms increments all
+    /// the way up to `stepDelayMaxMs`. The Stepper's +/- clicks
+    /// walk this ladder one rung at a time via
+    /// `trainingStepDelayBinding`.
+    nonisolated static let stepDelayLadder: [Int] =
+        [0, 5, 10, 15, 20] + Array(stride(from: 25, through: Self.stepDelayMaxMs, by: 25))
+    /// Current training-step delay in milliseconds, written by
+    /// the Stepper via `trainingStepDelayBinding` and mirrored into
+    /// `trainingStepDelayBox` so the training worker task reads
+    /// the live value between steps. Always a member of
+    /// `stepDelayLadder`. Persists across sessions (@State) so the
+    /// user doesn't have to re-pick the delay on every start.
+    @State private var trainingStepDelayMs: Int = 0
+    /// Shared lock-protected mirror of `trainingStepDelayMs` that
+    /// the training worker task reads at the bottom of each step
+    /// to decide how long to sleep before looping. Allocated at
+    /// session start, cleared on session end.
+    @State private var trainingStepDelayBox: TrainingStepDelayBox?
     /// Shared lock-protected mirror of `selfPlayWorkerCount` that
     /// the self-play worker tasks read between games. The Stepper
     /// updates `selfPlayWorkerCount` AND this box atomically (via
@@ -1270,6 +1324,47 @@ struct ContentView: View {
                 let clamped = max(1, min(Self.absoluteMaxSelfPlayWorkers, newValue))
                 selfPlayWorkerCount = clamped
                 workerCountBox?.set(clamped)
+            }
+        )
+    }
+
+    /// Binding for the training-step delay Stepper. The Stepper is
+    /// configured with `step: 1` over the full 0...stepDelayMaxMs
+    /// range, but the valid values are the discrete rungs in
+    /// `stepDelayLadder`. This binding translates a raw Stepper
+    /// delta (current ± 1) into "advance/retreat one ladder rung",
+    /// snapping the displayed value to the nearest rung and writing
+    /// through to both `@State trainingStepDelayMs` (so the row
+    /// re-renders immediately) and `trainingStepDelayBox` (so the
+    /// training worker task sees the new delay on its next step).
+    /// The box is nil between sessions, so writes outside Play and
+    /// Train just update the @State and take effect when the next
+    /// session starts.
+    private var trainingStepDelayBinding: Binding<Int> {
+        Binding(
+            get: { trainingStepDelayMs },
+            set: { newValue in
+                let ladder = Self.stepDelayLadder
+                let current = trainingStepDelayMs
+                let snapped: Int
+                if let currentIdx = ladder.firstIndex(of: current) {
+                    if newValue > current {
+                        snapped = ladder[min(currentIdx + 1, ladder.count - 1)]
+                    } else if newValue < current {
+                        snapped = ladder[max(currentIdx - 1, 0)]
+                    } else {
+                        snapped = current
+                    }
+                } else {
+                    // Current value isn't on the ladder (shouldn't
+                    // happen in practice — the @State default is 0
+                    // and every write goes through this binding —
+                    // but snap to the nearest rung defensively so a
+                    // manual write can't strand the Stepper.)
+                    snapped = ladder.min(by: { abs($0 - newValue) < abs($1 - newValue) }) ?? 0
+                }
+                trainingStepDelayMs = snapped
+                trainingStepDelayBox?.set(snapped)
             }
         )
     }
@@ -1432,6 +1527,29 @@ struct ContentView: View {
                             "Workers",
                             value: workerCountBinding,
                             in: 1...Self.absoluteMaxSelfPlayWorkers
+                        )
+                        .labelsHidden()
+                    }
+
+                    // Adjustable pause inserted after each training
+                    // step. The Stepper walks `stepDelayLadder`
+                    // (0/5/10/15/20/25 then +25 up to 500 ms) via
+                    // `trainingStepDelayBinding`; the worker task
+                    // reads the current value from
+                    // `trainingStepDelayBox` at the end of every
+                    // step and sleeps for that many milliseconds
+                    // before looping, so changes take effect on the
+                    // very next step without restarting the session.
+                    HStack(spacing: 6) {
+                        Text("Step Delay:")
+                        Text("\(trainingStepDelayMs)")
+                            .monospacedDigit()
+                            .frame(minWidth: 28, alignment: .trailing)
+                        Text("ms")
+                        Stepper(
+                            "Step Delay",
+                            value: trainingStepDelayBinding,
+                            in: 0...Self.stepDelayMaxMs
                         )
                         .labelsHidden()
                     }
@@ -2656,6 +2774,12 @@ struct ContentView: View {
         // (between sessions).
         let countBox = WorkerCountBox(initial: initialWorkerCount)
         workerCountBox = countBox
+        // Shared live delay holder. The Stepper writes through to
+        // both `@State trainingStepDelayMs` and this box; the
+        // training worker reads from the box at the bottom of each
+        // step to decide how long to pause.
+        let stepDelayBox = TrainingStepDelayBox(initial: trainingStepDelayMs)
+        trainingStepDelayBox = stepDelayBox
         let trainingGate = WorkerPauseGate()
         let arenaFlag = ArenaActiveFlag()
         arenaActiveFlag = arenaFlag
@@ -2666,7 +2790,7 @@ struct ContentView: View {
 
         realTrainingTask = Task(priority: .userInitiated) {
             [trainer, network, buffer, box, tBox, pStatsBox,
-             selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, countBox] in
+             selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, countBox, stepDelayBox] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
@@ -2976,7 +3100,7 @@ struct ContentView: View {
                 // so the arena coordinator can briefly snapshot
                 // trainer weights.
                 group.addTask(priority: .userInitiated) {
-                    [trainer, buffer, box, pStatsBox, trainingGate, triggerBox] in
+                    [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, stepDelayBox] in
                     while !Task.isCancelled {
                         // Pause gate check (between steps).
                         if trainingGate.isRequestedToPause {
