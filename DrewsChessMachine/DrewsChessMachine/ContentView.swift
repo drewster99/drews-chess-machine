@@ -603,11 +603,17 @@ final class ArenaTriggerBox: @unchecked Sendable {
     /// Record that an arena just finished. Resets the wall-clock
     /// reference for subsequent `shouldAutoTrigger` checks so the
     /// next auto-fire happens `interval` seconds from now, not from
-    /// the previous last-arena time.
+    /// the previous last-arena time. Also clears the pending flag:
+    /// the training worker runs in parallel with the arena and can
+    /// stamp `_pending` mid-arena once elapsed time crosses `interval`
+    /// against the stale `_lastArenaTime`. Without clearing it here,
+    /// that stale trigger would fire a back-to-back arena the instant
+    /// the coordinator loops back.
     func recordArenaCompleted() {
         lock.lock()
         defer { lock.unlock() }
         _lastArenaTime = Date()
+        _pending = false
     }
 
     /// True if a trigger is currently pending (used for UI
