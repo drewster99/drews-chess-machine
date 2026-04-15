@@ -28,23 +28,24 @@ struct SamplingSchedule: Sendable {
     /// Softmax temperature after the opening phase ends. Must be > 0.
     let mainTau: Float
 
-    /// Self-play data-generation schedule: tau=1.0 for the first 8 moves
-    /// per player (opening diversity for replay-buffer coverage), then
-    /// tau=0.5 for the rest of the game (sharper preferences, fewer
-    /// drawn technical-endgames, more non-zero `z` in training).
+    /// Self-play data-generation schedule: tau=1.0 for the first 25 moves
+    /// per player (broad opening + early-middlegame diversity for
+    /// replay-buffer coverage), then tau=0.25 for the rest of the game
+    /// (near-greedy preferences, fewer drawn technical-endgames, more
+    /// non-zero `z` in training).
     static let selfPlay = SamplingSchedule(
-        openingPliesPerPlayer: 8,
+        openingPliesPerPlayer: 25,
         openingTau: 1.0,
-        mainTau: 0.5
+        mainTau: 0.25
     )
 
-    /// Arena-evaluation schedule: tau=1.0 for the first 4 moves per
+    /// Arena-evaluation schedule: tau=1.0 for the first 15 moves per
     /// player so color-alternating tournaments can't collapse into
     /// identical deterministic lines, then tau=0.1 (near-argmax) so
     /// the score reflects the networks' actual preferences instead of
     /// being washed out by sampling noise.
     static let arena = SamplingSchedule(
-        openingPliesPerPlayer: 4,
+        openingPliesPerPlayer: 15,
         openingTau: 1.0,
         mainTau: 0.1
     )
