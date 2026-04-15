@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 
 // MARK: - Result Types
@@ -391,10 +392,58 @@ extension GameWatcher.Snapshot {
 /// live self-play game (the only option before this feature existed);
 /// `.candidateTest` swaps in the free-placement forward-pass editor so
 /// the user can probe a fixed test position and watch the network's
-/// evaluation of it drift as training progresses in the background.
+/// evaluation of it drift as training progresses in the background;
+/// `.progressRate` replaces the board with a line chart of rolling
+/// moves/hr for self-play, training, and combined, sampled once per
+/// second across the life of the session.
 enum PlayAndTrainBoardMode: Sendable, Hashable {
     case gameRun
     case candidateTest
+    case progressRate
+}
+
+/// One point on the Progress rate chart. Sampled once per second
+/// from the heartbeat during a Play and Train session; cleared at
+/// each new session. The `*MovesPerHour` fields are *rolling-window*
+/// rates — over the last 3 minutes leading up to `timestamp`, not
+/// lifetime averages — so the chart shows how throughput changes
+/// over time rather than asymptoting to the session mean.
+struct ProgressRateSample: Identifiable, Sendable {
+    /// Monotonic identity for SwiftUI's `ForEach` / `Chart` — the
+    /// index the sample was appended at. Stable for the life of
+    /// the session and never reused.
+    let id: Int
+    /// Wall-clock instant this sample was taken. Used as the
+    /// reference point when locating the 3-minute-ago sample that
+    /// defines the lower edge of this point's rolling window.
+    let timestamp: Date
+    /// Seconds elapsed since `sessionStart`. Used as the X
+    /// coordinate on the chart so each session starts fresh at 0
+    /// rather than showing wall-clock time.
+    let elapsedSec: Double
+    /// Cumulative self-play moves at `timestamp`. Stored per
+    /// sample so the next tick can subtract from "the sample that
+    /// was 3 minutes ago" to get a windowed delta without needing
+    /// a parallel cumulative-counters buffer.
+    let selfPlayCumulativeMoves: Int
+    /// Cumulative training-positions at `timestamp` — training
+    /// steps × batch size. Same reason to store per-sample as
+    /// `selfPlayCumulativeMoves`.
+    let trainingCumulativeMoves: Int
+    /// Rolling self-play moves/hr over the last 3 minutes. Before
+    /// the session has 3 minutes of data, the window covers
+    /// "everything so far" and this degrades gracefully to the
+    /// lifetime rate; after 3 minutes it's strictly a 3-minute
+    /// trailing average.
+    let selfPlayMovesPerHour: Double
+    /// Rolling training moves/hr over the same window.
+    let trainingMovesPerHour: Double
+    /// Sum of `selfPlayMovesPerHour` and `trainingMovesPerHour`.
+    /// Derived rather than stored so changes to the definition of
+    /// "combined" only have to happen in one place.
+    var combinedMovesPerHour: Double {
+        selfPlayMovesPerHour + trainingMovesPerHour
+    }
 }
 
 // MARK: - Arena Tournament Types
@@ -1198,6 +1247,66 @@ struct ContentView: View {
     /// often than that, and resampling 60×/s would just churn
     /// the display.
     nonisolated static let memoryStatsRefreshSec: Double = 10
+    /// Previous `ProcessUsageSample` held so the next heartbeat
+    /// can compute %CPU and %GPU from the delta. `nil` until the
+    /// first successful sample lands; after that it rolls forward
+    /// at the `usageStatsRefreshSec` cadence.
+    @State private var lastUsageSample: ProcessUsageSample?
+    /// Wall-clock timestamp of the most recent usage refresh.
+    /// Defaults to `.distantPast` so the first heartbeat tick
+    /// always fires a sample.
+    @State private var usageStatsLastFetch: Date = .distantPast
+    /// Last-computed %CPU over the real wall-clock elapsed since
+    /// the previous sample. Relative to one core, so on multi-core
+    /// CPUs this can exceed 100% (matching `top`'s convention).
+    /// `nil` until the second sample lands — no delta to divide
+    /// from a single reading.
+    @State private var cpuPercent: Double?
+    /// Last-computed %GPU over the same interval as `cpuPercent`.
+    /// Relative to one GPU engine; workloads that keep several
+    /// engines busy can exceed 100%. `nil` until the second sample.
+    @State private var gpuPercent: Double?
+    /// Cadence at which the CPU/GPU utilisation refreshes.
+    /// The user asked for ~5 s; the computed percentages always
+    /// divide by the actual wall-clock gap between samples, so
+    /// heartbeat drift or a paused app don't bias the result.
+    nonisolated static let usageStatsRefreshSec: Double = 5
+    /// Append-only list of progress-rate samples for the Progress
+    /// rate chart. Grows by one entry per `progressRateRefreshSec`
+    /// during a Play and Train session; cleared to `[]` at each
+    /// new session start in `startRealTraining()`.
+    @State private var progressRateSamples: [ProgressRateSample] = []
+    /// Wall-clock timestamp of the last progress-rate sample.
+    /// Defaults to `.distantPast` so the first heartbeat tick of
+    /// a new session always fires.
+    @State private var progressRateLastFetch: Date = .distantPast
+    /// Next `id` to assign when appending to `progressRateSamples`.
+    /// Monotonic counter, reset alongside the sample list.
+    @State private var progressRateNextId: Int = 0
+    /// Current visible X domain for the Progress rate chart, in
+    /// elapsed seconds since session start. `nil` means "auto fit"
+    /// — the chart shows everything from 0 to the latest sample.
+    /// Set by pinch-zoom / pan gestures and cleared by the Reset
+    /// zoom button.
+    @State private var progressRateXDomain: ClosedRange<Double>?
+    /// Snapshot of `progressRateXDomain` captured at the start of
+    /// a pinch gesture. The incremental `scale` value reported by
+    /// `MagnificationGesture` is cumulative from gesture start,
+    /// so we apply it against this frozen baseline rather than
+    /// the previous tick's domain — otherwise the domain would
+    /// shrink / grow super-linearly.
+    @State private var progressRateZoomStartDomain: ClosedRange<Double>?
+    /// Same idea for drag-to-pan — the domain at drag start.
+    /// Captured so intermediate `translation` values from the
+    /// drag gesture apply against a stable baseline.
+    @State private var progressRatePanStartDomain: ClosedRange<Double>?
+    /// Cadence for the progress-rate sampler: one sample per
+    /// second. Matches the user's spec.
+    nonisolated static let progressRateRefreshSec: Double = 1.0
+    /// Rolling window width used to compute each sample's
+    /// moves/hr from the delta between "now" and "the sample
+    /// closest to 3 minutes ago". 180 s, as requested.
+    nonisolated static let progressRateWindowSec: Double = 180.0
     /// Wall-clock seconds the Play and Train Session panel waits
     /// after session start before showing rate-based stats fields
     /// (Moves/hr, Games/hr in both lifetime and 10-min columns).
@@ -1277,6 +1386,14 @@ struct ContentView: View {
     /// the same condition.
     private var isCandidateTestActive: Bool {
         realTraining && playAndTrainBoardMode == .candidateTest
+    }
+
+    /// True when the Play and Train Board picker is currently on the
+    /// Progress rate line-chart tab. The chart takes over the board
+    /// slot in the left column, so the live game board and the
+    /// forward-pass editor are both suppressed while this is active.
+    private var isProgressRateActive: Bool {
+        realTraining && playAndTrainBoardMode == .progressRate
     }
 
     /// True when the forward-pass UI elements (overlay, channel strip,
@@ -1528,10 +1645,11 @@ struct ContentView: View {
                         Picker("Board", selection: playAndTrainBoardBinding) {
                             Text("Game run").tag(PlayAndTrainBoardMode.gameRun)
                             Text("Candidate test").tag(PlayAndTrainBoardMode.candidateTest)
+                            Text("Progress rate").tag(PlayAndTrainBoardMode.progressRate)
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-                        .frame(maxWidth: 240)
+                        .frame(maxWidth: 360)
                     }
 
                     if inferenceResult != nil, showForwardPassUI {
@@ -1549,6 +1667,9 @@ struct ContentView: View {
                         .frame(maxWidth: 160)
                     }
 
+                    if isProgressRateActive {
+                        progressRateChartView
+                    } else {
                     HStack(spacing: 8) {
                         let leftDisabled = inferenceResult == nil || selectedOverlay == 0 || !showForwardPassUI
                         Button(
@@ -1630,6 +1751,7 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .disabled(rightDisabled)
                         .opacity(rightDisabled ? 0.2 : 0.6)
+                    }
                     }
                 }
                 .frame(minWidth: 320, maxWidth: 420)
@@ -1873,6 +1995,16 @@ struct ContentView: View {
             // `memoryStatsRefreshSec` so this is a cheap timestamp
             // compare on most heartbeats.
             refreshMemoryStatsIfNeeded()
+            // Process %CPU / %GPU refresh — separate (5 s) cadence
+            // from memory stats (10 s) so the utilisation line
+            // updates twice as often without dragging the heavier
+            // Metal property reads along with it.
+            refreshUsagePercentsIfNeeded()
+            // Progress-rate chart sampler. 1 Hz during Play and
+            // Train; each sample carries the moves/hr averaged
+            // over the last 3 minutes of work. No-op outside of
+            // realTraining.
+            refreshProgressRateIfNeeded()
         }
     }
 
@@ -1897,6 +2029,390 @@ struct ContentView: View {
             gpuTotalBytes: ProcessInfo.processInfo.physicalMemory
         )
         memoryStatsLastFetch = now
+    }
+
+    /// Append a new progress-rate sample at most once per
+    /// `progressRateRefreshSec` during a Play and Train session.
+    /// The moves/hr fields are computed over a real trailing
+    /// 3-minute window: we walk backward from the newest stored
+    /// sample until we find the first one whose `timestamp` is
+    /// still inside the window, then subtract its cumulative
+    /// counters from the current cumulative counters and divide
+    /// by the actual elapsed seconds between the two samples.
+    ///
+    /// Before the session has 3 minutes of history, the window
+    /// shrinks gracefully to "whatever we have" — the first
+    /// sample reports zero (no earlier sample to subtract from),
+    /// the second reports over ~1 s, and so on until the window
+    /// reaches its full 180 s width.
+    ///
+    /// No-op outside of `realTraining`. Sampler state is cleared
+    /// by `startRealTraining()` so each session's chart starts
+    /// fresh from t=0.
+    private func refreshProgressRateIfNeeded() {
+        guard realTraining else { return }
+        let now = Date()
+        if now.timeIntervalSince(progressRateLastFetch) < Self.progressRateRefreshSec {
+            return
+        }
+        progressRateLastFetch = now
+
+        guard let session = parallelStats else { return }
+        let elapsed = max(0, now.timeIntervalSince(session.sessionStart))
+        let curSp = session.selfPlayPositions
+        let curTr = (trainingStats?.steps ?? 0) * Self.trainingBatchSize
+
+        // Walk newest → oldest, recording the last sample we see
+        // that still falls inside the 3-minute window. Breaks out
+        // as soon as we hit a sample older than the cutoff — the
+        // list is timestamp-sorted, so anything older is also
+        // out of window. Bounded at ~180 iterations per call in
+        // steady state regardless of total session length.
+        let cutoff = now.addingTimeInterval(-Self.progressRateWindowSec)
+        var windowStart: ProgressRateSample?
+        for sample in progressRateSamples.reversed() {
+            if sample.timestamp >= cutoff {
+                windowStart = sample
+            } else {
+                break
+            }
+        }
+
+        let spRate: Double
+        let trRate: Double
+        if let ws = windowStart {
+            let dt = now.timeIntervalSince(ws.timestamp)
+            if dt > 0 {
+                let spDelta = max(0, curSp - ws.selfPlayCumulativeMoves)
+                let trDelta = max(0, curTr - ws.trainingCumulativeMoves)
+                spRate = Double(spDelta) / dt * 3600
+                trRate = Double(trDelta) / dt * 3600
+            } else {
+                spRate = 0
+                trRate = 0
+            }
+        } else {
+            // First sample of the session — nothing to diff
+            // against yet. Rate reads as zero for this one tick
+            // and the chart picks up real values from the next.
+            spRate = 0
+            trRate = 0
+        }
+
+        let sample = ProgressRateSample(
+            id: progressRateNextId,
+            timestamp: now,
+            elapsedSec: elapsed,
+            selfPlayCumulativeMoves: curSp,
+            trainingCumulativeMoves: curTr,
+            selfPlayMovesPerHour: spRate,
+            trainingMovesPerHour: trRate
+        )
+        progressRateSamples.append(sample)
+        progressRateNextId += 1
+    }
+
+    /// Format a number of elapsed seconds for the Progress rate
+    /// chart's X-axis. Picks a display granularity that matches
+    /// the magnitude of the value so early-session axis labels
+    /// read "0:15 / 0:30 / 0:45" rather than "0.0 / 0.0 / 0.0":
+    ///
+    /// * < 60 s: "0:SS"
+    /// * < 3600 s: "M:SS"
+    /// * ≥ 3600 s: "H:MM:SS"
+    ///
+    /// Negative values are clamped to 0 — shouldn't happen given
+    /// the sampler only produces non-negative elapsed values, but
+    /// the chart's axis automatic-ticks can overshoot into negative
+    /// space briefly during pan gestures at the left edge.
+    static func formatElapsedAxis(_ seconds: Double) -> String {
+        let secs = max(0, Int(seconds.rounded()))
+        let h = secs / 3600
+        let m = (secs % 3600) / 60
+        let s = secs % 60
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        } else if secs >= 60 {
+            return String(format: "%d:%02d", m, s)
+        } else {
+            return String(format: "0:%02d", s)
+        }
+    }
+
+    /// The Progress rate chart. Three line series (self-play,
+    /// training, combined) plotted against elapsed session time.
+    /// `.chartXScale(domain:)` is driven by `progressRateXDomain`
+    /// when the user has pinched/panned; when that's `nil` the
+    /// chart auto-fits from 0 to the latest sample's elapsedSec.
+    ///
+    /// The chart overlay layer intercepts pinch and drag gestures
+    /// for zoom/pan. The "Reset zoom" button below the chart
+    /// clears the custom domain.
+    @ViewBuilder
+    private var progressRateChartView: some View {
+        let samples = progressRateSamples
+        let lastElapsed = samples.last?.elapsedSec ?? 0
+        // Guarantee a non-degenerate full domain — a session with
+        // a single sample would otherwise produce 0...0 which
+        // Swift Charts draws as a zero-width plot.
+        let fullUpper = max(1.0, lastElapsed)
+        let fullDomain: ClosedRange<Double> = 0.0...fullUpper
+        let effectiveDomain = progressRateXDomain ?? fullDomain
+
+        VStack(spacing: 6) {
+            if samples.isEmpty {
+                // Placeholder while the first tick hasn't fired
+                // yet. Sized to match the active chart's frame so
+                // the left column doesn't jump when the chart
+                // appears.
+                Rectangle()
+                    .fill(Color.gray.opacity(0.05))
+                    .frame(height: 320)
+                    .overlay {
+                        Text("Collecting samples…")
+                            .foregroundStyle(.secondary)
+                    }
+            } else {
+                Chart {
+                    ForEach(samples) { sample in
+                        LineMark(
+                            x: .value("Elapsed", sample.elapsedSec),
+                            y: .value("Moves/hr", sample.selfPlayMovesPerHour)
+                        )
+                        .foregroundStyle(by: .value("Series", "Self-play"))
+
+                        LineMark(
+                            x: .value("Elapsed", sample.elapsedSec),
+                            y: .value("Moves/hr", sample.trainingMovesPerHour)
+                        )
+                        .foregroundStyle(by: .value("Series", "Training"))
+
+                        LineMark(
+                            x: .value("Elapsed", sample.elapsedSec),
+                            y: .value("Moves/hr", sample.combinedMovesPerHour)
+                        )
+                        .foregroundStyle(by: .value("Series", "Combined"))
+                    }
+                }
+                .chartForegroundStyleScale([
+                    "Self-play": Color.blue,
+                    "Training": Color.orange,
+                    "Combined": Color.green
+                ])
+                .chartXScale(domain: effectiveDomain)
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 6)) { value in
+                        AxisGridLine()
+                        AxisTick()
+                        AxisValueLabel {
+                            if let secs = value.as(Double.self) {
+                                Text(Self.formatElapsedAxis(secs))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 6)) { value in
+                        AxisGridLine()
+                        AxisTick()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(v.formatted(.number.notation(.compactName)))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartXAxisLabel("Session time", position: .bottom, alignment: .center)
+                .chartYAxisLabel("Moves / hour", position: .leading, alignment: .center)
+                .chartLegend(position: .bottom, alignment: .center, spacing: 10)
+                .chartOverlay { proxy in
+                    GeometryReader { _ in
+                        Rectangle()
+                            .fill(Color.clear)
+                            .contentShape(Rectangle())
+                            .gesture(
+                                MagnificationGesture()
+                                    .onChanged { scale in
+                                        handleProgressRatePinch(
+                                            scale: scale,
+                                            fullDomain: fullDomain
+                                        )
+                                    }
+                                    .onEnded { _ in
+                                        progressRateZoomStartDomain = nil
+                                    }
+                            )
+                            .simultaneousGesture(
+                                DragGesture(minimumDistance: 2)
+                                    .onChanged { value in
+                                        handleProgressRatePan(
+                                            translation: value.translation,
+                                            proxy: proxy,
+                                            fullDomain: fullDomain
+                                        )
+                                    }
+                                    .onEnded { _ in
+                                        progressRatePanStartDomain = nil
+                                    }
+                            )
+                    }
+                }
+                .frame(height: 320)
+            }
+
+            HStack(spacing: 10) {
+                Button("Reset zoom") {
+                    progressRateXDomain = nil
+                    progressRateZoomStartDomain = nil
+                    progressRatePanStartDomain = nil
+                }
+                .disabled(progressRateXDomain == nil)
+
+                Spacer()
+
+                Text(progressRateZoomStatus(
+                    effective: effectiveDomain,
+                    full: fullDomain
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            }
+        }
+    }
+
+    /// One-line status shown below the chart. Reports either
+    /// "Full session · N samples" when no zoom is applied, or
+    /// "Showing MM:SS – MM:SS · N samples" when a narrower
+    /// window is visible — useful feedback that the gestures
+    /// actually landed.
+    private func progressRateZoomStatus(
+        effective: ClosedRange<Double>,
+        full: ClosedRange<Double>
+    ) -> String {
+        let count = progressRateSamples.count
+        let samplesSuffix = "\(count) sample\(count == 1 ? "" : "s")"
+        if progressRateXDomain == nil {
+            return "Full session  ·  \(samplesSuffix)"
+        }
+        let lo = Self.formatElapsedAxis(effective.lowerBound)
+        let hi = Self.formatElapsedAxis(effective.upperBound)
+        return "Showing \(lo) – \(hi)  ·  \(samplesSuffix)"
+    }
+
+    /// Pinch-to-zoom handler for the Progress rate chart. Scales
+    /// the X domain around its midpoint by the gesture's
+    /// cumulative `scale`, captured against a baseline domain
+    /// stored at gesture start. Clamps the result so zoom in
+    /// can't collapse the domain to a point, zoom out can't
+    /// overshoot the session bounds, and either end can't
+    /// exceed the full data range.
+    private func handleProgressRatePinch(
+        scale: CGFloat,
+        fullDomain: ClosedRange<Double>
+    ) {
+        let base = progressRateZoomStartDomain
+            ?? progressRateXDomain
+            ?? fullDomain
+        if progressRateZoomStartDomain == nil {
+            progressRateZoomStartDomain = base
+        }
+        let mid = (base.lowerBound + base.upperBound) / 2
+        let baseHalf = (base.upperBound - base.lowerBound) / 2
+        // Clamp the cumulative scale so extreme pinches don't
+        // produce degenerate (or absurd) domains. 0.1x collapses
+        // all the way back toward "full zoom out"; 50x clamps
+        // zoom-in at ~50× the original detail.
+        let clampedScale = max(0.1, min(50.0, Double(scale)))
+        let newHalf = max(0.5, baseHalf / clampedScale)
+        var newLo = mid - newHalf
+        var newHi = mid + newHalf
+        if newLo < fullDomain.lowerBound {
+            newHi += (fullDomain.lowerBound - newLo)
+            newLo = fullDomain.lowerBound
+        }
+        if newHi > fullDomain.upperBound {
+            newLo -= (newHi - fullDomain.upperBound)
+            newHi = fullDomain.upperBound
+        }
+        newLo = max(fullDomain.lowerBound, newLo)
+        newHi = min(fullDomain.upperBound, newHi)
+        guard newHi > newLo else { return }
+        progressRateXDomain = newLo...newHi
+    }
+
+    /// Drag-to-pan handler for the Progress rate chart. Converts
+    /// the drag's horizontal translation into an X-domain shift
+    /// using the chart's plot-area width from `ChartProxy`, then
+    /// clamps so the pan can't run off either end of the data.
+    private func handleProgressRatePan(
+        translation: CGSize,
+        proxy: ChartProxy,
+        fullDomain: ClosedRange<Double>
+    ) {
+        let base = progressRatePanStartDomain
+            ?? progressRateXDomain
+            ?? fullDomain
+        if progressRatePanStartDomain == nil {
+            progressRatePanStartDomain = base
+        }
+        let plotWidth = proxy.plotSize.width
+        guard plotWidth > 0 else { return }
+        let dataWidth = base.upperBound - base.lowerBound
+        let dataDelta = Double(-translation.width) * (dataWidth / Double(plotWidth))
+        var newLo = base.lowerBound + dataDelta
+        var newHi = base.upperBound + dataDelta
+        if newLo < fullDomain.lowerBound {
+            let shift = fullDomain.lowerBound - newLo
+            newLo += shift
+            newHi += shift
+        }
+        if newHi > fullDomain.upperBound {
+            let shift = newHi - fullDomain.upperBound
+            newLo -= shift
+            newHi -= shift
+        }
+        progressRateXDomain = newLo...newHi
+    }
+
+    /// Sample process CPU + GPU time at most every
+    /// `usageStatsRefreshSec` seconds, compute the percentage over
+    /// the real wall-clock elapsed since the previous sample, and
+    /// publish the result into `cpuPercent` / `gpuPercent`. The
+    /// math always uses the real `timestamp` delta (not the nominal
+    /// cadence), so a paused heartbeat, a missed tick, or a session
+    /// restart doesn't skew the reading. If the gap between samples
+    /// is more than 3× the cadence — e.g. the app was idle for a
+    /// while — the previous sample is discarded rather than used,
+    /// because an interval much larger than the polling window is
+    /// usually not what the user wants averaged over.
+    private func refreshUsagePercentsIfNeeded() {
+        let now = Date()
+        if now.timeIntervalSince(usageStatsLastFetch) < Self.usageStatsRefreshSec {
+            return
+        }
+        usageStatsLastFetch = now
+        guard let sample = ChessTrainer.sampleCurrentProcessUsage() else {
+            return
+        }
+        if let prev = lastUsageSample {
+            let wallDeltaS = sample.timestamp.timeIntervalSince(prev.timestamp)
+            let maxUsefulGapS = Self.usageStatsRefreshSec * 3
+            if wallDeltaS > 0 && wallDeltaS <= maxUsefulGapS {
+                let wallDeltaNs = wallDeltaS * 1_000_000_000
+                let cpuDeltaNs = sample.cpuNs >= prev.cpuNs
+                    ? Double(sample.cpuNs - prev.cpuNs)
+                    : 0
+                let gpuDeltaNs = sample.gpuNs >= prev.gpuNs
+                    ? Double(sample.gpuNs - prev.gpuNs)
+                    : 0
+                cpuPercent = cpuDeltaNs / wallDeltaNs * 100
+                gpuPercent = gpuDeltaNs / wallDeltaNs * 100
+            }
+        }
+        lastUsageSample = sample
     }
 
     /// Colored status line for the busy row. Returns a `Text` so the
@@ -1968,20 +2484,32 @@ struct ContentView: View {
             } else {
                 timeStr = "Total session time: --"
             }
-            guard let mem = memoryStatsSnap else {
-                return timeStr
+            let memLine: String
+            if let mem = memoryStatsSnap {
+                let appGB = Self.bytesToGB(mem.appFootprintBytes)
+                let gpuGB = Self.bytesToGB(mem.gpuAllocatedBytes)
+                let gpuMaxGB = Self.bytesToGB(mem.gpuMaxTargetBytes)
+                let gpuTotalGB = Self.bytesToGB(mem.gpuTotalBytes)
+                let gpuPct = mem.gpuMaxTargetBytes > 0
+                    ? Int((Double(mem.gpuAllocatedBytes) / Double(mem.gpuMaxTargetBytes) * 100).rounded())
+                    : 0
+                memLine = String(
+                    format: "%@  ·  App: %.2f GB  ·  GPU RAM: %.2f / %.2f GB (%d%%)  ·  Total: %.1f GB",
+                    timeStr, appGB, gpuGB, gpuMaxGB, gpuPct, gpuTotalGB
+                )
+            } else {
+                memLine = timeStr
             }
-            let appGB = Self.bytesToGB(mem.appFootprintBytes)
-            let gpuGB = Self.bytesToGB(mem.gpuAllocatedBytes)
-            let gpuMaxGB = Self.bytesToGB(mem.gpuMaxTargetBytes)
-            let gpuTotalGB = Self.bytesToGB(mem.gpuTotalBytes)
-            let gpuPct = mem.gpuMaxTargetBytes > 0
-                ? Int((Double(mem.gpuAllocatedBytes) / Double(mem.gpuMaxTargetBytes) * 100).rounded())
-                : 0
-            return String(
-                format: "%@  ·  App: %.2f GB  ·  GPU: %.2f / %.2f GB (%d%%)  ·  Total: %.1f GB",
-                timeStr, appGB, gpuGB, gpuMaxGB, gpuPct, gpuTotalGB
-            )
+            // Second line: %CPU and %GPU time utilisation since the
+            // previous usage sample. "GPU" here is the GPU-time
+            // percentage (different from "GPU RAM" on line 1, which
+            // is the unified-memory working set). `%4.0f%%` pads to
+            // 5 characters so values from "   0%" through "1600%"
+            // align under the monospacedDigit() renderer.
+            let cpuStr = cpuPercent.map { String(format: "%4.0f%%", $0) } ?? "  --%"
+            let gpuUsageStr = gpuPercent.map { String(format: "%4.0f%%", $0) } ?? "  --%"
+            let usageLine = "CPU: \(cpuStr)  ·  GPU: \(gpuUsageStr)"
+            return "\(memLine)\n\(usageLine)"
         }
         if gameSnapshot.isPlaying { return "Game \(gameSnapshot.totalGames + 1), move \(gameSnapshot.moveCount)..." }
         if sweepRunning {
@@ -2766,6 +3294,17 @@ struct ContentView: View {
         let pStatsBox = ParallelWorkerStatsBox(sessionStart: Date())
         parallelWorkerStatsBox = pStatsBox
         parallelStats = pStatsBox.snapshot()
+        // Reset progress-rate sampler state so the new session's
+        // chart starts fresh at t=0. Leaving old samples in place
+        // would show up as a visible "step" from the previous
+        // session's trailing values to the new session's zero
+        // reading.
+        progressRateSamples = []
+        progressRateLastFetch = .distantPast
+        progressRateNextId = 0
+        progressRateXDomain = nil
+        progressRateZoomStartDomain = nil
+        progressRatePanStartDomain = nil
         let selfPlayGate = WorkerPauseGate()
         // One pause gate per secondary self-play worker (workers
         // 1..absoluteMaxSelfPlayWorkers-1). Worker 0 uses `selfPlayGate`.
@@ -3531,7 +4070,7 @@ struct ContentView: View {
 
         if let last = lastTrainStep {
             lines.append("Last Step")
-            lines.append(String(format: "  Total:       %7.2f ms", last.totalMs))
+            lines.append(String(format: "  Total:       %.2f ms", last.totalMs))
             lines.append(String(format: "  Entropy:     %.6f", last.policyEntropy))
             lines.append("")
         }

@@ -123,6 +123,38 @@ struct DeviceMemoryCaps: Sendable {
     let maxBufferLength: UInt64
 }
 
+/// Cumulative CPU and GPU time for the current process at a single
+/// wall-clock instant. Subtract two samples to compute %CPU / %GPU
+/// over the interval between them:
+///
+/// ```
+/// let wallS = cur.timestamp.timeIntervalSince(prev.timestamp)
+/// let cpuPct = Double(cur.cpuNs - prev.cpuNs) / (wallS * 1e9) * 100
+/// ```
+///
+/// Percentages follow the `top` / Activity Monitor convention — they
+/// are relative to one core / one GPU engine, so a fully loaded
+/// multi-core CPU can report well over 100%, and a multi-engine GPU
+/// can too. `cpuNs` sums user + system time; `gpuNs` sums across all
+/// GPU engines for this process.
+struct ProcessUsageSample: Sendable {
+    /// Wall-clock instant this sample was taken. Serves as the
+    /// denominator when converting nanosecond counters into a
+    /// percentage over an interval.
+    let timestamp: Date
+    /// Cumulative user + system CPU time for this process, in
+    /// nanoseconds. Read from `proc_pid_rusage(RUSAGE_INFO_V4)`,
+    /// which documents both fields as nanoseconds and accumulates
+    /// across every thread the process has ever spawned.
+    let cpuNs: UInt64
+    /// Cumulative GPU execution time for this process, in
+    /// nanoseconds. Read from `task_info(TASK_POWER_INFO_V2)` —
+    /// `gpu_energy.task_gpu_utilisation`, which the kernel
+    /// populates from each thread's `gpu_ns` counter summed
+    /// across all GPU engines.
+    let gpuNs: UInt64
+}
+
 /// One row of a batch-size sweep — what we measured at one fixed batch size.
 struct SweepResult: Sendable {
     let batchSize: Int
@@ -1123,6 +1155,46 @@ final class ChessTrainer: @unchecked Sendable {
         }
         guard kr == KERN_SUCCESS else { return 0 }
         return UInt64(info.phys_footprint)
+    }
+
+    /// Sample cumulative CPU and GPU time for the current process.
+    /// Two kernel reads: `proc_pid_rusage` for CPU time (documented
+    /// to return nanoseconds in `ri_user_time` / `ri_system_time`),
+    /// and `task_info(TASK_POWER_INFO_V2)` for
+    /// `gpu_energy.task_gpu_utilisation` (also nanoseconds, summed
+    /// across all GPU engines). Returns `nil` if either call fails —
+    /// the caller polls out-of-band, so a dropped sample just skips
+    /// one update tick.
+    static func sampleCurrentProcessUsage() -> ProcessUsageSample? {
+        var rusage = rusage_info_v4()
+        let rusageRC = withUnsafeMutablePointer(to: &rusage) { ptr -> Int32 in
+            ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { rebased in
+                proc_pid_rusage(getpid(), RUSAGE_INFO_V4, rebased)
+            }
+        }
+        guard rusageRC == 0 else { return nil }
+
+        var power = task_power_info_v2_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_power_info_v2_data_t>.size / MemoryLayout<natural_t>.size
+        )
+        let powerRC = withUnsafeMutablePointer(to: &power) { infoPtr -> kern_return_t in
+            infoPtr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+                task_info(
+                    mach_task_self_,
+                    task_flavor_t(TASK_POWER_INFO_V2),
+                    intPtr,
+                    &count
+                )
+            }
+        }
+        guard powerRC == KERN_SUCCESS else { return nil }
+
+        return ProcessUsageSample(
+            timestamp: Date(),
+            cpuNs: rusage.ri_user_time &+ rusage.ri_system_time,
+            gpuNs: power.gpu_energy.task_gpu_utilisation
+        )
     }
 
     /// Snapshot the device's memory caps right now. Read once at the start
