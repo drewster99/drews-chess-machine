@@ -66,3 +66,34 @@ Long-term goals, deferred work, and notes on decisions.
   which is post-step and undercounts. Skipped rows still appear in the
   table with the prediction and the reason they were skipped, so the
   sweep walks the full ladder and makes its limits visible.
+
+## Completed
+
+- **N-worker concurrent self-play in Play and Train.** Play and Train
+  previously ran a single self-play worker, which at ~357 moves/sec against
+  a 3,012 moves/sec training consumer meant every replay-buffer position
+  was sampled ~8.4× on average before eviction — far above the 2–4×
+  replay ratio common for off-policy RL, and the buffer also covered only
+  ~625 games of play diversity. The fix is to spawn `N` concurrent
+  self-play workers (`ContentView.selfPlayWorkerCount`, currently `3`),
+  each with its own dedicated `ChessMPSNetwork` instance so no two
+  concurrent `evaluate` calls share MPSGraph state. Topology is
+  asymmetric: worker 0 reuses the existing `network` (the champion, also
+  the arena snapshot source), and workers `1..N-1` use new
+  `secondarySelfPlayNetworks` mirrored from the champion at session start
+  and at every arena promotion. Each worker owns its own
+  `WorkerPauseGate`, so the arena-champion snapshot path (which only
+  reads `network`) still pauses only worker 0, and only the promotion
+  branch pauses every worker to loadWeights into every self-play
+  network. Players (`MPSChessPlayer` white/black) are now allocated
+  once per worker and reused across games — `ChessMachine.beginNewGame`
+  already calls `onNewGame` on each, which resets per-game scratches
+  while keeping backing storage alive. Only worker 0 drives the
+  `GameWatcher` live display to avoid two workers fighting over per-game
+  state; aggregate self-play rates still accumulate through the
+  thread-safe `ParallelWorkerStatsBox`. `ReplayBuffer` already
+  serializes `append` calls under its `NSLock`, so multiple concurrent
+  writers need no changes there. Setting `selfPlayWorkerCount = 1`
+  reproduces the pre-change behavior exactly (modulo the per-game player
+  reuse cleanup). Memory cost is ~12 MB per additional inference
+  network, trivial on unified memory.
