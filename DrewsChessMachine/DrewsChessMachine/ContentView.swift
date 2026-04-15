@@ -906,15 +906,16 @@ struct ContentView: View {
     /// (usually just metric noise).
     @State private var realRollingPolicyLoss: Double?
     @State private var realRollingValueLoss: Double?
-    nonisolated static let replayBufferCapacity = 50_000
+    nonisolated static let replayBufferCapacity = 500_000
     /// Don't start sampling training batches until the buffer holds at least
-    /// this many positions. At 16× the batch size, each draw covers ~6% of
-    /// the buffer, so consecutive batches share few enough samples to keep
-    /// gradient estimates meaningfully decorrelated. Also guarantees the
-    /// `ReplayBuffer.sample` call inside the train loop can never return
-    /// nil, since `minBufferBeforeTraining >= trainingBatchSize` by
-    /// construction.
-    nonisolated static let minBufferBeforeTraining = trainingBatchSize * 16
+    /// this many positions — the greater of a 25k-position floor and 20% of
+    /// the ring's capacity. The floor keeps small buffers from training on a
+    /// tiny, heavily-correlated warmup cohort; the 20% fraction keeps larger
+    /// buffers from starting to train before the ring has enough diversity
+    /// to produce meaningfully decorrelated minibatches. `minBufferBeforeTraining
+    /// >= trainingBatchSize` by construction, so the `ReplayBuffer.sample`
+    /// call inside the train loop can never return nil.
+    nonisolated static let minBufferBeforeTraining = max(25_000, replayBufferCapacity / 5)
     /// Training steps to run between self-play games. Kept modest so the
     /// driver alternates visibly between play and train rather than
     /// disappearing into a long training run.
