@@ -507,14 +507,38 @@ final class ChessTrainer: @unchecked Sendable {
         // applies the outcome weighting from chess-engine-design.md:
         //   z=+1 → push p(a*) up, z=-1 → push it down, z=0 → no contribution.
 
-        // Compute log_softmax manually: softMax then log. (MPSGraph has
-        // softMax + logarithm but no fused logSoftMax wrapper.)
-        let softmax = graph.softMax(
+        // Compute log_softmax stably as x − max(x) − log(Σ exp(x − max(x))).
+        // The naive softMax → log path underflows to log(0) = −∞ as soon as
+        // any logit gets large enough for its siblings to round to zero,
+        // which happens quickly once the policy head starts receiving
+        // non-trivial gradients. Recover softmax as exp(logSoftmax) for the
+        // entropy diagnostic below.
+        let logitsMax = graph.reductionMaximum(
             with: network.policyOutput,
             axis: 1,
-            name: "policy_softmax"
+            name: "policy_logits_max"
         )
-        let logSoftmax = graph.logarithm(with: softmax, name: "policy_log_softmax")
+        let shiftedLogits = graph.subtraction(
+            network.policyOutput,
+            logitsMax,
+            name: "policy_logits_shifted"
+        )
+        let expShifted = graph.exponent(with: shiftedLogits, name: "policy_exp_shifted")
+        let sumExpShifted = graph.reductionSum(
+            with: expShifted,
+            axis: 1,
+            name: "policy_sum_exp_shifted"
+        )
+        let logSumExpShifted = graph.logarithm(
+            with: sumExpShifted,
+            name: "policy_log_sum_exp_shifted"
+        )
+        let logSoftmax = graph.subtraction(
+            shiftedLogits,
+            logSumExpShifted,
+            name: "policy_log_softmax"
+        )
+        let softmax = graph.exponent(with: logSoftmax, name: "policy_softmax")
 
         let oneHot = graph.oneHot(
             withIndicesTensor: movePlayed,
@@ -569,8 +593,20 @@ final class ChessTrainer: @unchecked Sendable {
         )
 
         // --- Total loss ---
-
-        let totalLossTensor = graph.addition(valueLoss, policyLoss, name: "total_loss")
+        //
+        // Policy loss is REINFORCE on the played move over a 4096-way
+        // softmax, so per-logit gradient magnitude is ~1/(N·batch) — about
+        // three orders of magnitude weaker than the value head's (z−v)²
+        // gradient. Scale the policy term up so both heads actually learn
+        // during the pre-MCTS bootstrap phase. Revisit when visit-count
+        // targets replace the one-hot.
+        let policyLossWeight = graph.constant(1000.0, dataType: dtype)
+        let weightedPolicyLoss = graph.multiplication(
+            policyLossWeight,
+            policyLoss,
+            name: "weighted_policy_loss"
+        )
+        let totalLossTensor = graph.addition(valueLoss, weightedPolicyLoss, name: "total_loss")
 
         // --- Gradients w.r.t. trainable variables ---
 
