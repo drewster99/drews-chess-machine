@@ -42,6 +42,13 @@ struct TrainStepTiming: Sendable {
     /// Value-only component of the loss. Mean-squared error of (z − v), so
     /// bounded in [0, 4] — if it oscillates, training is genuinely unstable.
     let valueLoss: Float
+    /// Mean Shannon entropy (in nats) of the trainee's policy softmax over
+    /// this batch. Diagnostic only — not part of `loss`. Range is
+    /// [0, log(4096)] ≈ [0, 8.32]. Random init sits near the ceiling;
+    /// a collapsed policy heads toward 0. Watch for monotonic drift to
+    /// either extreme — that's the signature of policy collapse or a
+    /// stuck-at-uniform learning failure.
+    let policyEntropy: Float
 }
 
 // MARK: - Training Batch
@@ -224,6 +231,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let lastTiming: TrainStepTiming?
         let rollingPolicyLoss: Double?
         let rollingValueLoss: Double?
+        let rollingPolicyEntropy: Double?
         let error: String?
     }
 
@@ -232,6 +240,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _lastTiming: TrainStepTiming?
     private var _policyLossWindow: [Double] = []
     private var _valueLossWindow: [Double] = []
+    private var _policyEntropyWindow: [Double] = []
     private var _error: String?
     private let rollingWindow: Int
 
@@ -257,6 +266,10 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         if _valueLossWindow.count > rollingWindow {
             _valueLossWindow.removeFirst(_valueLossWindow.count - rollingWindow)
         }
+        _policyEntropyWindow.append(Double(timing.policyEntropy))
+        if _policyEntropyWindow.count > rollingWindow {
+            _policyEntropyWindow.removeFirst(_policyEntropyWindow.count - rollingWindow)
+        }
     }
 
     /// Record a terminal training error. Also called from the worker.
@@ -274,11 +287,13 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         defer { lock.unlock() }
         let rollingPolicy = Self.mean(_policyLossWindow)
         let rollingValue = Self.mean(_valueLossWindow)
+        let rollingEntropy = Self.mean(_policyEntropyWindow)
         return Snapshot(
             stats: _stats,
             lastTiming: _lastTiming,
             rollingPolicyLoss: rollingPolicy,
             rollingValueLoss: rollingValue,
+            rollingPolicyEntropy: rollingEntropy,
             error: _error
         )
     }
@@ -329,6 +344,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var totalLoss: MPSGraphTensor               // scalar
     private var policyLossTensor: MPSGraphTensor        // scalar
     private var valueLossTensor: MPSGraphTensor         // scalar
+    private var policyEntropyTensor: MPSGraphTensor     // scalar (diagnostic)
     private var assignOps: [MPSGraphOperation]
 
     /// Pre-allocated ND-array-backed tensor data for the three training
@@ -352,17 +368,19 @@ final class ChessTrainer: @unchecked Sendable {
     }
     private var feedCache: [Int: BatchFeeds] = [:]
 
-    /// Readback scratch for the three scalar losses (`totalLoss`,
-    /// `policyLoss`, `valueLoss`). `runPreparedStep` asks MPSGraph to
-    /// write each scalar directly into its slot here so the hot path
-    /// does not allocate a fresh `[Float](1)` three times per step.
-    /// Allocated once in `init` and freed in `deinit`; `resetNetwork`
-    /// does not touch it (the loss scalar type is network-independent).
+    /// Readback scratch for the per-step scalar outputs (`totalLoss`,
+    /// `policyLoss`, `valueLoss`, and the diagnostic `policyEntropy`).
+    /// `runPreparedStep` asks MPSGraph to write each scalar directly
+    /// into its slot here so the hot path does not allocate a fresh
+    /// `[Float](1)` per output per step. Allocated once in `init` and
+    /// freed in `deinit`; `resetNetwork` does not touch it (the scalar
+    /// type is network-independent).
     private let lossReadbackScratchPtr: UnsafeMutablePointer<Float>
     private static let lossReadbackSlotTotal: Int = 0
     private static let lossReadbackSlotPolicy: Int = 1
     private static let lossReadbackSlotValue: Int = 2
-    private static let lossReadbackSlotCount: Int = 3
+    private static let lossReadbackSlotEntropy: Int = 3
+    private static let lossReadbackSlotCount: Int = 4
 
     // MARK: Init
 
@@ -376,6 +394,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
+        self.policyEntropyTensor = built.policyEntropy
         self.assignOps = built.assignOps
 
         let lossPtr = UnsafeMutablePointer<Float>.allocate(
@@ -404,6 +423,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
+        self.policyEntropyTensor = built.policyEntropy
         self.assignOps = built.assignOps
         // The cached ND arrays were allocated against the old network's
         // device and are keyed by batch size against the old graph's
@@ -428,6 +448,7 @@ final class ChessTrainer: @unchecked Sendable {
         totalLoss: MPSGraphTensor,
         policyLoss: MPSGraphTensor,
         valueLoss: MPSGraphTensor,
+        policyEntropy: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
         let graph = network.graph
@@ -490,6 +511,31 @@ final class ChessTrainer: @unchecked Sendable {
         let sq = graph.square(with: diff, name: "value_sq")
         let valueLoss = graph.mean(of: sq, axes: [0, 1], name: "value_loss")
 
+        // --- Policy entropy (diagnostic; not in totalLoss) ---
+        //
+        // H(p) = −Σ p · log p, per position, then mean across batch.
+        // Reuses the softmax/logSoftmax we already built for the policy
+        // loss, so the extra cost is one elementwise multiply, one
+        // axis-1 sum, one negate, and one mean — negligible next to
+        // the forward + backward pass. Range is [0, log(4096)] ≈ [0, 8.32]
+        // nats; random init sits near the ceiling, a collapsed policy
+        // heads toward 0.
+        let pLogP = graph.multiplication(softmax, logSoftmax, name: "p_log_p")
+        let negEntropyPerPos = graph.reductionSum(
+            with: pLogP,
+            axis: 1,
+            name: "neg_entropy_per_pos"
+        )
+        let entropyPerPos = graph.negative(
+            with: negEntropyPerPos,
+            name: "entropy_per_pos"
+        )
+        let policyEntropy = graph.mean(
+            of: entropyPerPos,
+            axes: [0, 1],
+            name: "policy_entropy"
+        )
+
         // --- Total loss ---
 
         let totalLossTensor = graph.addition(valueLoss, policyLoss, name: "total_loss")
@@ -534,7 +580,7 @@ final class ChessTrainer: @unchecked Sendable {
         // loadWeights().
         ops.append(contentsOf: network.bnRunningStatsAssignOps)
 
-        return (movePlayed, z, totalLossTensor, policyLoss, valueLoss, ops)
+        return (movePlayed, z, totalLossTensor, policyLoss, valueLoss, policyEntropy, ops)
     }
 
     // MARK: - Training Step
@@ -764,7 +810,7 @@ final class ChessTrainer: @unchecked Sendable {
         let results = network.graph.run(
             with: network.commandQueue,
             feeds: feeds,
-            targetTensors: [totalLoss, policyLossTensor, valueLossTensor],
+            targetTensors: [totalLoss, policyLossTensor, valueLossTensor, policyEntropyTensor],
             targetOperations: assignOps
         )
         let gpuMs = (CFAbsoluteTimeGetCurrent() - gpuStart) * 1000
@@ -773,7 +819,8 @@ final class ChessTrainer: @unchecked Sendable {
         guard
             let totalData = results[totalLoss],
             let policyData = results[policyLossTensor],
-            let valueData = results[valueLossTensor]
+            let valueData = results[valueLossTensor],
+            let entropyData = results[policyEntropyTensor]
         else {
             throw ChessTrainerError.lossOutputMissing
         }
@@ -796,9 +843,15 @@ final class ChessTrainer: @unchecked Sendable {
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValue),
             count: 1
         )
+        ChessNetwork.readFloats(
+            from: entropyData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotEntropy),
+            count: 1
+        )
         let totalBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotTotal]
         let policyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicy]
         let valueBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValue]
+        let entropyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotEntropy]
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
@@ -810,7 +863,8 @@ final class ChessTrainer: @unchecked Sendable {
             totalMs: totalMs,
             loss: totalBufValue,
             policyLoss: policyBufValue,
-            valueLoss: valueBufValue
+            valueLoss: valueBufValue,
+            policyEntropy: entropyBufValue
         )
     }
 

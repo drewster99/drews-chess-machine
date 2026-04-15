@@ -2517,11 +2517,17 @@ struct ContentView: View {
                         } else {
                             valueStr = "--"
                         }
+                        let entropyStr: String
+                        if let e = trainingSnap.rollingPolicyEntropy {
+                            entropyStr = String(format: "%.4f", e)
+                        } else {
+                            entropyStr = "--"
+                        }
                         let h = Int(elapsedTarget) / 3600
                         let m = (Int(elapsedTarget) % 3600) / 60
                         let s = Int(elapsedTarget) % 60
                         let elapsedStr = String(format: "%d:%02d:%02d", h, m, s)
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
                     }
 
@@ -2786,6 +2792,7 @@ struct ContentView: View {
             lines.append(String(format: "  Loss:        %+.6f", last.loss))
             lines.append(String(format: "    policy:    %+.6f", last.policyLoss))
             lines.append(String(format: "    value:     %+.6f", last.valueLoss))
+            lines.append(String(format: "    entropy:   %.6f", last.policyEntropy))
             lines.append("")
         }
 
