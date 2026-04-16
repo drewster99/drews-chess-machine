@@ -124,6 +124,25 @@ final class ReplayBuffer: @unchecked Sendable {
         return storedCount
     }
 
+    /// Monotonically increasing count of all positions ever appended
+    /// (not capped at `capacity` — includes positions that have since
+    /// been overwritten by the ring). Read by the replay-ratio
+    /// controller to compute the 1-minute self-play production rate
+    /// without any coupling between self-play workers and the
+    /// training worker.
+    private var _totalPositionsAdded: Int = 0
+    var totalPositionsAdded: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _totalPositionsAdded
+    }
+
+    /// Per-position storage cost in bytes: board floats + move int32 +
+    /// outcome float. Used by the UI to estimate buffer RAM usage.
+    static let bytesPerPosition: Int = floatsPerBoard * MemoryLayout<Float>.size
+        + MemoryLayout<Int32>.size
+        + MemoryLayout<Float>.size
+
     // MARK: - Append
 
     /// Append one finished game's positions in bulk. The caller passes
@@ -184,6 +203,7 @@ final class ReplayBuffer: @unchecked Sendable {
             if storedCount < capacity {
                 storedCount = min(capacity, storedCount + chunk)
             }
+            _totalPositionsAdded += chunk
         }
     }
 

@@ -585,6 +585,31 @@ final class WorkerPauseGate: @unchecked Sendable {
         }
     }
 
+    /// Bounded variant of `pauseAndWait` — returns `true` if the
+    /// worker entered its wait state within `timeoutMs`, `false`
+    /// on timeout (or task cancellation). Used by code paths that
+    /// must not deadlock if the worker has exited its loop without
+    /// acknowledging the pause (e.g. a Play-and-Train session
+    /// ending mid-save via `realTrainingTask.cancel()` — that
+    /// cancellation does not propagate to unstructured save
+    /// Tasks, so they need their own escape hatch). On timeout
+    /// the request flag is cleared so a later-returning worker
+    /// doesn't get stuck in a stale pause request.
+    func pauseAndWait(timeoutMs: Int) async -> Bool {
+        setRequested(true)
+        let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
+        while !Task.isCancelled {
+            if readIsWaiting() { return true }
+            if Date() >= deadline {
+                setRequested(false)
+                return false
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        setRequested(false)
+        return false
+    }
+
     /// Synchronous helpers so `pauseAndWait()` doesn't hold an
     /// `NSLock` across an `await` — Swift 6 strict concurrency
     /// forbids calling `NSLock.lock()` from an async context.
@@ -1230,7 +1255,8 @@ struct ContentView: View {
     /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
     /// count has actually advanced.
     @State private var trainingBox: TrainingLiveStatsBox?
-    nonisolated static let trainingBatchSize = 256
+    nonisolated static let trainerLearningRate: Float = 0.01
+    nonisolated static let trainingBatchSize = 1024
 
     // Real (self-play) training — generates games, labels positions from the
     // final outcome, pushes them through the shared trainer. Shares the
@@ -1251,7 +1277,7 @@ struct ContentView: View {
     /// (usually just metric noise).
     @State private var realRollingPolicyLoss: Double?
     @State private var realRollingValueLoss: Double?
-    nonisolated static let replayBufferCapacity = 500_000
+    nonisolated static let replayBufferCapacity = 1_000_000
     /// Don't start sampling training batches until the buffer holds at least
     /// this many positions — the greater of a 25k-position floor and 20% of
     /// the ring's capacity. The floor keeps small buffers from training on a
@@ -1439,6 +1465,86 @@ struct ContentView: View {
     nonisolated static let sweepSizes: [Int] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
     nonisolated static let sweepSecondsPerSize: Double = 1.0
 
+    // MARK: - Checkpoint state (save / load models and sessions)
+
+    /// Stable session identifier, minted at Play-and-Train start and
+    /// carried through every autosave and manual session save for
+    /// the life of that run. Re-minted on the next start. Used as
+    /// the middle token in `.dcmsession` directory names so
+    /// successive saves from the same run cluster together
+    /// alphabetically in Finder.
+    @State private var currentSessionID: String?
+
+    /// Wall-clock anchor for the current session, captured at
+    /// startRealTraining time before worker setup. Used by the
+    /// session-save path to compute `elapsedTrainingSec`.
+    @State private var currentSessionStart: Date?
+
+    /// A parsed session that was loaded from disk but not yet
+    /// applied. The user loads a session while Play-and-Train is
+    /// stopped; the next `startRealTraining` call consumes this
+    /// and seeds the trainer / counters / IDs from it, then
+    /// clears it.
+    @State private var pendingLoadedSession: LoadedSession?
+
+    /// A parsed standalone model that was loaded from disk but
+    /// not yet applied. Consumed by a follow-up network build
+    /// or by `startRealTraining` to initialize the champion's
+    /// weights from the loaded file. Cleared on apply.
+    @State private var pendingLoadedModel: ModelCheckpointFile?
+
+    /// Last user-facing checkpoint status message. Shown briefly
+    /// in the busy row. Cleared after a few seconds.
+    @State private var checkpointStatusMessage: String?
+
+    /// True when the last checkpoint status message represents an
+    /// error (shown in red rather than secondary).
+    @State private var checkpointStatusIsError: Bool = false
+
+    /// Drives the Load Model file importer sheet.
+    @State private var showingLoadModelImporter: Bool = false
+
+    /// Drives the Load Session file importer sheet.
+    @State private var showingLoadSessionImporter: Bool = false
+
+    /// Whether an autosave is currently in flight, so repeated
+    /// promotions or rapid manual saves don't overlap. Advisory only
+    /// — the save path is idempotent except for the "already exists"
+    /// check which throws cleanly.
+    @State private var checkpointSaveInFlight: Bool = false
+
+    /// Live reference to worker 0's self-play pause gate for the
+    /// current Play-and-Train session. Set at session start by
+    /// `startRealTraining` and cleared at session end. Used by
+    /// the checkpoint save path to briefly pause champion exports
+    /// without having to reach into the task-group closure.
+    @State private var activeSelfPlayGate: WorkerPauseGate?
+
+    /// Live reference to the training worker's pause gate for
+    /// the current Play-and-Train session. Set at session start
+    /// and cleared at session end. Used by the checkpoint save
+    /// path to briefly pause trainer weight exports.
+    @State private var activeTrainingGate: WorkerPauseGate?
+
+    /// Replay-ratio controller that tracks the 1-minute rolling
+    /// ratio of training consumption to self-play production and
+    /// auto-adjusts the training step delay to keep them balanced.
+    /// Created at session start, polled by the UI heartbeat for
+    /// display, and cleared at session end.
+    @State private var replayRatioController: ReplayRatioController?
+    /// Latest snapshot from `replayRatioController`, mirrored by
+    /// the heartbeat for UI display.
+    @State private var replayRatioSnapshot: ReplayRatioController.RatioSnapshot?
+    /// User-adjustable target consumption/production ratio.
+    /// Default 1.0 = balanced. Values >1 let training outpace
+    /// self-play (higher replay ratio); <1 the opposite. Persisted
+    /// in session checkpoints.
+    @State private var replayRatioTarget: Double = 1.0
+    /// Whether the ratio controller auto-adjusts the training step
+    /// delay. When off, the manual Stepper controls the delay
+    /// directly. Persisted in session checkpoints.
+    @State private var replayRatioAutoAdjust: Bool = true
+
     /// 100 ms heartbeat that pulls the latest snapshot from `gameWatcher`
     /// into `gameSnapshot`. Standard SwiftUI Combine timer pattern — the
     /// publisher is created when the view struct is initialized and SwiftUI
@@ -1446,6 +1552,12 @@ struct ContentView: View {
     private let snapshotTimer = Timer.publish(
         every: 1.0/60.0, on: .main, in: .common
     ).autoconnect()
+
+    /// Default on/off toggle for "autosave the full session after
+    /// every arena promotion." Off would skip the save; on writes a
+    /// `.dcmsession` next to every manual save. Defaulting to true
+    /// means promoted models are never lost by default.
+    nonisolated static let autosaveSessionsOnPromote: Bool = true
 
     private var networkReady: Bool { network != nil }
     private var isBusy: Bool {
@@ -1589,6 +1701,40 @@ struct ContentView: View {
                 let snapped = ladder[nextIdx]
                 trainingStepDelayMs = snapped
                 trainingStepDelayBox?.set(snapped)
+                replayRatioController?.manualDelayMs = snapped
+            }
+        )
+    }
+
+    /// Binding for the replay-ratio target stepper. Writes through
+    /// to both `@State replayRatioTarget` (so the label re-renders
+    /// immediately) and the live controller (so the next training
+    /// step sees the updated target).
+    private var replayRatioTargetBinding: Binding<Double> {
+        Binding(
+            get: { replayRatioTarget },
+            set: { newValue in
+                let clamped = max(0.1, min(5.0, newValue))
+                replayRatioTarget = clamped
+                replayRatioController?.targetRatio = clamped
+            }
+        )
+    }
+
+    /// Binding for the replay-ratio auto-adjust toggle. Mirrors
+    /// the toggle into both `@State` and the live controller, and
+    /// when turning auto OFF, also syncs the current manual delay
+    /// into the controller so subsequent delay reads fall back to
+    /// the Stepper's value.
+    private var replayRatioAutoAdjustBinding: Binding<Bool> {
+        Binding(
+            get: { replayRatioAutoAdjust },
+            set: { newValue in
+                replayRatioAutoAdjust = newValue
+                replayRatioController?.autoAdjust = newValue
+                if !newValue {
+                    replayRatioController?.manualDelayMs = trainingStepDelayMs
+                }
             }
         )
     }
@@ -1760,6 +1906,103 @@ struct ContentView: View {
                     busyLabelView
                 }
             }
+
+            // Checkpoint row: save/load buttons for models and
+            // sessions plus a Reveal button that opens the
+            // Library folder in Finder. See ROADMAP "Model and
+            // session save/load" for format and trigger details.
+            HStack(spacing: 8) {
+                // Save Session is only meaningful while a
+                // Play-and-Train session is running, and never
+                // during an arena (mid-arena saves would have to
+                // snapshot a live candidate whose weights are
+                // being modified by the trainer).
+                if realTraining {
+                    Button("Save Session") {
+                        SessionLogger.shared.log("[BUTTON] Save Session")
+                        handleSaveSessionManual()
+                    }
+                    .disabled(isArenaRunning || checkpointSaveInFlight)
+                }
+
+                // Save Champion as a standalone .dcmmodel works
+                // whenever the network exists. It's race-safe
+                // during Play-and-Train because we pause
+                // worker 0 via `activeSelfPlayGate`. We
+                // additionally disable during an arena because
+                // `runArenaParallel` is already using the same
+                // gate as its own coordinator, and
+                // `WorkerPauseGate` is not reentrant for
+                // multiple concurrent pauseAndWait callers. In
+                // other active modes (Play Game, Play
+                // Continuous, Run Forward Pass) there is no
+                // coordinating gate and a concurrent `evaluate`
+                // would race against the export, so we disable
+                // the button there too.
+                if networkReady {
+                    Button("Save Champion") {
+                        SessionLogger.shared.log("[BUTTON] Save Champion")
+                        handleSaveChampionAsModel()
+                    }
+                    .disabled(
+                        checkpointSaveInFlight
+                        || isArenaRunning
+                        || (isBusy && !realTraining)
+                    )
+                }
+
+                Divider().frame(height: 20)
+
+                // Load is only offered when nothing else is
+                // running — we don't support hot-swapping weights
+                // into an in-flight training session.
+                if !realTraining && !continuousPlay && !continuousTraining && !sweepRunning && !gameSnapshot.isPlaying {
+                    Button("Load Session…") {
+                        SessionLogger.shared.log("[BUTTON] Load Session")
+                        showingLoadSessionImporter = true
+                    }
+                    .disabled(isBuilding || checkpointSaveInFlight)
+
+                    Button("Load Model…") {
+                        SessionLogger.shared.log("[BUTTON] Load Model")
+                        showingLoadModelImporter = true
+                    }
+                    .disabled(isBuilding || checkpointSaveInFlight || !networkReady)
+                }
+
+                Divider().frame(height: 20)
+
+                // Always available so the user can open Finder to
+                // the canonical save location even when nothing is
+                // saved yet.
+                Button("Reveal Saves") {
+                    handleRevealSaves()
+                }
+
+                if let msg = checkpointStatusMessage {
+                    Text(msg)
+                        .font(.callout)
+                        .foregroundStyle(checkpointStatusIsError ? .red : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .fileImporter(
+                isPresented: $showingLoadModelImporter,
+                allowedContentTypes: [.data, .item],
+                allowsMultipleSelection: false,
+                onCompletion: { result in
+                    handleLoadModelPickResult(result)
+                }
+            )
+            .fileImporter(
+                isPresented: $showingLoadSessionImporter,
+                allowedContentTypes: [.folder],
+                allowsMultipleSelection: false,
+                onCompletion: { result in
+                    handleLoadSessionPickResult(result)
+                }
+            )
 
             // Board + text side by side
             HStack(alignment: .top, spacing: 24) {
@@ -1977,16 +2220,55 @@ struct ContentView: View {
                                     if realTraining {
                                         HStack(spacing: 6) {
                                             Text("  Step Delay:")
-                                            Text("\(trainingStepDelayMs)")
-                                                .monospacedDigit()
-                                                .frame(minWidth: 32, alignment: .trailing)
-                                            Text("ms")
+                                            if let snap = replayRatioSnapshot, snap.autoAdjust {
+                                                Text("\(snap.computedDelayMs)")
+                                                    .monospacedDigit()
+                                                    .frame(minWidth: 32, alignment: .trailing)
+                                                Text("ms (auto)")
+                                                    .foregroundStyle(.secondary)
+                                            } else {
+                                                Text("\(trainingStepDelayMs)")
+                                                    .monospacedDigit()
+                                                    .frame(minWidth: 32, alignment: .trailing)
+                                                Text("ms")
+                                            }
                                             Stepper(
                                                 "Step Delay",
                                                 value: trainingStepDelayBinding,
                                                 in: 0...Self.stepDelayMaxMs
                                             )
                                             .labelsHidden()
+                                            .disabled(replayRatioAutoAdjust)
+                                        }
+                                        HStack(spacing: 6) {
+                                            Text("  Replay Ratio:")
+                                            if let snap = replayRatioSnapshot {
+                                                Text(String(format: "%.2f", snap.currentRatio))
+                                                    .monospacedDigit()
+                                                    .frame(minWidth: 40, alignment: .trailing)
+                                                    .foregroundStyle(
+                                                        abs(snap.currentRatio - snap.targetRatio) < 0.3
+                                                            ? Color.primary : Color.red
+                                                    )
+                                            } else {
+                                                Text("--")
+                                                    .monospacedDigit()
+                                                    .frame(minWidth: 40, alignment: .trailing)
+                                            }
+                                            Text("target:")
+                                                .foregroundStyle(.secondary)
+                                            Text(String(format: "%.1f", replayRatioTarget))
+                                                .monospacedDigit()
+                                                .frame(minWidth: 24, alignment: .trailing)
+                                            Stepper(
+                                                "Target Ratio",
+                                                value: replayRatioTargetBinding,
+                                                in: 0.1...5.0,
+                                                step: 0.1
+                                            )
+                                            .labelsHidden()
+                                            Toggle("Auto", isOn: replayRatioAutoAdjustBinding)
+                                                .toggleStyle(.checkbox)
                                         }
                                     }
                                     Text(column.body)
@@ -2134,6 +2416,10 @@ struct ContentView: View {
             // over the last 3 minutes of work. No-op outside of
             // realTraining.
             refreshProgressRateIfNeeded()
+            // Replay-ratio snapshot for the UI.
+            if let rc = replayRatioController {
+                replayRatioSnapshot = rc.snapshot()
+            }
         }
     }
 
@@ -2357,6 +2643,15 @@ struct ContentView: View {
         Binding(
             get: { progressRateScrollX },
             set: { newValue in
+                // Swift Charts echoes the binding back with its own
+                // (sometimes identical) value on the same frame we
+                // advanced auto-follow. Without this guard the chart's
+                // internal onChange(of: ChartScrollPositionConfiguration)
+                // sees two writes per frame and logs a warning. Only
+                // propagate the write if the position actually moved.
+                if progressRateScrollX == newValue {
+                    return
+                }
                 progressRateScrollX = newValue
                 let latest = progressRateSamples.last?.elapsedSec ?? 0
                 let latestScrollX = max(0, latest - Self.progressRateVisibleDomainSec)
@@ -2543,6 +2838,466 @@ struct ContentView: View {
         replayBuffer = nil
         realRollingPolicyLoss = nil
         realRollingValueLoss = nil
+    }
+
+    // MARK: - Checkpoint save / load handlers
+
+    /// Publish a user-visible status line in the checkpoint row
+    /// and clear it after a few seconds. Safe to call repeatedly
+    /// — the latest message wins.
+    @MainActor
+    private func setCheckpointStatus(_ message: String, isError: Bool) {
+        checkpointStatusMessage = message
+        checkpointStatusIsError = isError
+        // Auto-clear after 6 seconds. Grabs the current message at
+        // schedule time so a later message isn't wiped out by an
+        // earlier one's timer.
+        let snapshotMessage = message
+        Task {
+            try? await Task.sleep(for: .seconds(isError ? 12 : 6))
+            if checkpointStatusMessage == snapshotMessage {
+                checkpointStatusMessage = nil
+                checkpointStatusIsError = false
+            }
+        }
+    }
+
+    /// Build the Codable snapshot of the current session state,
+    /// including counters, hyperparameters, and arena history.
+    /// Called at save time with the live state read off the main
+    /// actor. `championIDOverride` / `trainerIDOverride` let the
+    /// caller inject specific IDs when the on-disk identity should
+    /// differ from the live network identifiers (not currently used
+    /// but kept for future "rename on save" flows).
+    @MainActor
+    private func buildCurrentSessionState(
+        championID: String,
+        trainerID: String
+    ) -> SessionCheckpointState {
+        let now = Date()
+        let sessionStart = currentSessionStart ?? (parallelStats?.sessionStart ?? now)
+        let elapsedSec = max(0, now.timeIntervalSince(sessionStart))
+        let snap = parallelStats
+        let trainingSnap = trainingStats
+        let history = tournamentHistory.map { record in
+            ArenaHistoryEntryCodable(
+                finishedAtStep: record.finishedAtStep,
+                candidateWins: record.candidateWins,
+                championWins: record.championWins,
+                draws: record.draws,
+                score: record.score,
+                promoted: record.promoted,
+                promotedID: record.promotedID?.description,
+                durationSec: record.durationSec
+            )
+        }
+        let lr = trainer?.learningRate ?? Self.trainerLearningRate
+        return SessionCheckpointState(
+            formatVersion: SessionCheckpointState.currentFormatVersion,
+            sessionID: currentSessionID ?? "unknown-session",
+            savedAtUnix: Int64(now.timeIntervalSince1970),
+            sessionStartUnix: Int64(sessionStart.timeIntervalSince1970),
+            elapsedTrainingSec: elapsedSec,
+            trainingSteps: trainingSnap?.steps ?? 0,
+            selfPlayGames: snap?.selfPlayGames ?? 0,
+            selfPlayMoves: snap?.selfPlayPositions ?? 0,
+            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * Self.trainingBatchSize,
+            batchSize: Self.trainingBatchSize,
+            learningRate: lr,
+            promoteThreshold: Self.tournamentPromoteThreshold,
+            arenaGames: Self.tournamentGames,
+            selfPlayTau: TauConfigCodable(SamplingSchedule.selfPlay),
+            arenaTau: TauConfigCodable(SamplingSchedule.arena),
+            selfPlayWorkerCount: selfPlayWorkerCount,
+            replayRatioTarget: replayRatioTarget,
+            replayRatioAutoAdjust: replayRatioAutoAdjust,
+            championID: championID,
+            trainerID: trainerID,
+            arenaHistory: history
+        )
+    }
+
+    /// Manual "Save Champion as Model" — writes a standalone
+    /// `.dcmmodel` containing the current champion's weights.
+    /// If Play-and-Train is active, pauses self-play worker 0
+    /// briefly so the export doesn't race with in-flight
+    /// inference calls on the shared champion graph, then
+    /// resumes. Uses `pauseAndWait(timeoutMs:)` so a
+    /// mid-save session end can't deadlock the save task.
+    private func handleSaveChampionAsModel() {
+        guard let champion = network else {
+            setCheckpointStatus("No network to save", isError: true)
+            return
+        }
+        let championID = champion.identifier?.description ?? "unknown"
+        // Snapshot the active self-play gate up front. If there
+        // is no active session, we can safely export directly —
+        // nobody is racing against us.
+        let gate = activeSelfPlayGate
+        checkpointSaveInFlight = true
+        setCheckpointStatus("Saving champion…", isError: false)
+
+        Task {
+            // Pause worker 0 if a session is running. Bail with a
+            // user-visible error on timeout (indicates the session
+            // has already ended or the worker is stuck — either way
+            // we shouldn't spin forever).
+            if let gate {
+                let acquired = await gate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
+                if !acquired {
+                    checkpointSaveInFlight = false
+                    setCheckpointStatus("Save aborted: could not pause self-play (timeout)", isError: true)
+                    return
+                }
+            }
+
+            var championWeights: [[Float]] = []
+            var exportError: Error?
+            do {
+                championWeights = try await Task.detached(priority: .userInitiated) {
+                    try champion.network.exportWeights()
+                }.value
+            } catch {
+                exportError = error
+            }
+            gate?.resume()
+
+            if let exportError {
+                checkpointSaveInFlight = false
+                setCheckpointStatus("Save failed (export): \(exportError.localizedDescription)", isError: true)
+                SessionLogger.shared.log("[CHECKPOINT] Save champion export failed: \(exportError.localizedDescription)")
+                return
+            }
+
+            let metadata = ModelCheckpointMetadata(
+                creator: "manual",
+                trainingStep: trainingStats?.steps,
+                parentModelID: "",
+                notes: "Manual Save Champion export"
+            )
+            let createdAtUnix = Int64(Date().timeIntervalSince1970)
+
+            let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
+                do {
+                    let url = try CheckpointManager.saveModel(
+                        weights: championWeights,
+                        modelID: championID,
+                        createdAtUnix: createdAtUnix,
+                        metadata: metadata,
+                        trigger: "manual"
+                    )
+                    return .success(url)
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            checkpointSaveInFlight = false
+            switch outcome {
+            case .success(let url):
+                setCheckpointStatus("Saved \(url.lastPathComponent)", isError: false)
+                SessionLogger.shared.log("[CHECKPOINT] Saved champion: \(url.lastPathComponent)")
+            case .failure(let error):
+                setCheckpointStatus("Save failed: \(error.localizedDescription)", isError: true)
+                SessionLogger.shared.log("[CHECKPOINT] Save champion failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Upper bound on how long a save path will wait for a
+    /// worker to acknowledge a pause request. Has to cover one
+    /// in-flight self-play game or training step, so 15 s is a
+    /// comfortable margin above the worst-case game length at
+    /// typical self-play rates. On timeout the save bails with
+    /// a user-visible error rather than blocking forever.
+    nonisolated static let saveGateTimeoutMs: Int = 15_000
+
+    /// Manual "Save Session" — writes a full `.dcmsession` with
+    /// champion and trainer model files plus `session.json`.
+    /// Requires an active Play-and-Train session and an available
+    /// trainer. Briefly pauses both self-play worker 0 and the
+    /// training gate to snapshot the two networks' weights.
+    private func handleSaveSessionManual() {
+        guard realTraining,
+              let champion = network,
+              let trainer,
+              let selfPlayGate = activeSelfPlayGate,
+              let trainingGate = activeTrainingGate else {
+            setCheckpointStatus("No active session to save", isError: true)
+            return
+        }
+        saveSessionInternal(
+            champion: champion,
+            trainer: trainer,
+            selfPlayGate: selfPlayGate,
+            trainingGate: trainingGate,
+            trigger: "manual"
+        )
+    }
+
+    /// Shared save-session internal used by both the manual save
+    /// button and the post-promotion autosave hook. Handles the
+    /// gate dance, exports both networks, builds the session
+    /// state on the main actor, and fires off the actual write to
+    /// a detached task.
+    private func saveSessionInternal(
+        champion: ChessMPSNetwork,
+        trainer: ChessTrainer,
+        selfPlayGate: WorkerPauseGate,
+        trainingGate: WorkerPauseGate,
+        trigger: String
+    ) {
+        let championID = champion.identifier?.description ?? "unknown"
+        let trainerID = trainer.identifier?.description ?? "unknown"
+        checkpointSaveInFlight = true
+        setCheckpointStatus("Saving session (\(trigger))…", isError: false)
+
+        // Build the state snapshot on the main actor before
+        // jumping to detached work.
+        let sessionState = buildCurrentSessionState(
+            championID: championID,
+            trainerID: trainerID
+        )
+        let trainingStep = trainingStats?.steps ?? 0
+
+        Task {
+            // Pause self-play briefly so the champion export is
+            // race-free, snapshot weights, then resume. Uses the
+            // bounded variant so a session end mid-save doesn't
+            // spin forever waiting for workers that have exited.
+            let selfPlayAcquired = await selfPlayGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
+            guard selfPlayAcquired else {
+                checkpointSaveInFlight = false
+                setCheckpointStatus("Save aborted: could not pause self-play (timeout)", isError: true)
+                SessionLogger.shared.log("[CHECKPOINT] Save session aborted at self-play pause timeout")
+                return
+            }
+            var championWeights: [[Float]] = []
+            var championError: Error?
+            do {
+                championWeights = try await Task.detached(priority: .userInitiated) {
+                    try champion.network.exportWeights()
+                }.value
+            } catch {
+                championError = error
+            }
+            selfPlayGate.resume()
+
+            if let championError {
+                checkpointSaveInFlight = false
+                setCheckpointStatus("Save failed (champion export): \(championError.localizedDescription)", isError: true)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed at champion export: \(championError.localizedDescription)")
+                return
+            }
+
+            // Pause training briefly to snapshot trainer weights.
+            let trainingAcquired = await trainingGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
+            guard trainingAcquired else {
+                checkpointSaveInFlight = false
+                setCheckpointStatus("Save aborted: could not pause training (timeout)", isError: true)
+                SessionLogger.shared.log("[CHECKPOINT] Save session aborted at training pause timeout")
+                return
+            }
+            var trainerWeights: [[Float]] = []
+            var trainerError: Error?
+            do {
+                trainerWeights = try await Task.detached(priority: .userInitiated) {
+                    try trainer.network.exportWeights()
+                }.value
+            } catch {
+                trainerError = error
+            }
+            trainingGate.resume()
+
+            if let trainerError {
+                checkpointSaveInFlight = false
+                setCheckpointStatus("Save failed (trainer export): \(trainerError.localizedDescription)", isError: true)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed at trainer export: \(trainerError.localizedDescription)")
+                return
+            }
+
+            // Final write + verify on a detached task so UI stays
+            // responsive during the ~150 ms scratch-network build.
+            let championMetadata = ModelCheckpointMetadata(
+                creator: trigger,
+                trainingStep: trainingStep,
+                parentModelID: "",
+                notes: "Session checkpoint (\(trigger))"
+            )
+            let trainerMetadata = ModelCheckpointMetadata(
+                creator: trigger,
+                trainingStep: trainingStep,
+                parentModelID: championID,
+                notes: "Trainer lineage at session checkpoint (\(trigger))"
+            )
+            let now = Int64(Date().timeIntervalSince1970)
+            let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
+                do {
+                    let url = try CheckpointManager.saveSession(
+                        championWeights: championWeights,
+                        championID: championID,
+                        championMetadata: championMetadata,
+                        championCreatedAtUnix: now,
+                        trainerWeights: trainerWeights,
+                        trainerID: trainerID,
+                        trainerMetadata: trainerMetadata,
+                        trainerCreatedAtUnix: now,
+                        state: sessionState,
+                        trigger: trigger
+                    )
+                    return .success(url)
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+
+            checkpointSaveInFlight = false
+            switch outcome {
+            case .success(let url):
+                setCheckpointStatus("Saved \(url.lastPathComponent)", isError: false)
+                SessionLogger.shared.log("[CHECKPOINT] Saved session: \(url.lastPathComponent)")
+            case .failure(let error):
+                setCheckpointStatus("Save failed: \(error.localizedDescription)", isError: true)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Load a standalone `.dcmmodel` into the current champion
+    /// network. Triggered from the Load Model file importer. The
+    /// network must exist (loading into a built network preserves
+    /// the existing graph compilation; we don't rebuild).
+    private func handleLoadModelPickResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            setCheckpointStatus("Load cancelled: \(error.localizedDescription)", isError: true)
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            loadModelFrom(url: url)
+        }
+    }
+
+    private func loadModelFrom(url: URL) {
+        guard let champion = network else {
+            setCheckpointStatus("Build the network first before loading weights", isError: true)
+            return
+        }
+
+        checkpointSaveInFlight = true
+        setCheckpointStatus("Loading \(url.lastPathComponent)…", isError: false)
+
+        Task {
+            // Keep the security scope open across the entire
+            // detached read+load so files picked from outside the
+            // sandbox (Downloads, AirDrop, external volumes) stay
+            // accessible until the work finishes. Start/stop must
+            // happen inside the detached closure to bracket the
+            // actual I/O.
+            let outcome: Result<ModelCheckpointFile, Error> = await Task.detached(priority: .userInitiated) {
+                let scopeAccessed = url.startAccessingSecurityScopedResource()
+                defer {
+                    if scopeAccessed {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                do {
+                    let file = try CheckpointManager.loadModelFile(at: url)
+                    try champion.network.loadWeights(file.weights)
+                    return .success(file)
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            checkpointSaveInFlight = false
+            switch outcome {
+            case .success(let file):
+                champion.identifier = ModelID(value: file.modelID)
+                networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
+                setCheckpointStatus("Loaded \(file.modelID)", isError: false)
+                SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
+                inferenceResult = nil
+            case .failure(let error):
+                setCheckpointStatus("Load failed: \(error.localizedDescription)", isError: true)
+                SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Load a `.dcmsession` directory. Parses everything, loads
+    /// champion weights immediately into the live champion
+    /// network, and stores the session state + trainer weights
+    /// in `pendingLoadedSession` so the next Play-and-Train start
+    /// resumes from them.
+    private func handleLoadSessionPickResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            setCheckpointStatus("Load cancelled: \(error.localizedDescription)", isError: true)
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            loadSessionFrom(url: url)
+        }
+    }
+
+    private func loadSessionFrom(url: URL) {
+        guard let champion = network else {
+            setCheckpointStatus("Build the network first before loading a session", isError: true)
+            return
+        }
+
+        checkpointSaveInFlight = true
+        setCheckpointStatus("Loading session \(url.lastPathComponent)…", isError: false)
+
+        Task {
+            let outcome: Result<LoadedSession, Error> = await Task.detached(priority: .userInitiated) {
+                let scopeAccessed = url.startAccessingSecurityScopedResource()
+                defer {
+                    if scopeAccessed {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                do {
+                    let loaded = try CheckpointManager.loadSession(at: url)
+                    // Apply champion weights immediately; trainer
+                    // weights are held for the next startRealTraining.
+                    try champion.network.loadWeights(loaded.championFile.weights)
+                    return .success(loaded)
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            checkpointSaveInFlight = false
+            switch outcome {
+            case .success(let loaded):
+                champion.identifier = ModelID(value: loaded.championFile.modelID)
+                pendingLoadedSession = loaded
+                networkStatus = """
+                    Loaded session \(loaded.state.sessionID)
+                    Champion: \(loaded.championFile.modelID)
+                    Trainer: \(loaded.trainerFile.modelID)
+                    Steps: \(loaded.state.trainingSteps) / Games: \(loaded.state.selfPlayGames)
+                    Click Play and Train to resume.
+                    """
+                setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", isError: false)
+                SessionLogger.shared.log("[CHECKPOINT] Loaded session: \(url.lastPathComponent)")
+                inferenceResult = nil
+            case .failure(let error):
+                setCheckpointStatus("Load failed: \(error.localizedDescription)", isError: true)
+                SessionLogger.shared.log("[CHECKPOINT] Load session failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Open Finder pointed at the checkpoint root so the user can
+    /// browse saved sessions and models even though Application
+    /// Support is hidden by default. Creates the folder if it
+    /// doesn't exist yet so the button always works.
+    private func handleRevealSaves() {
+        do {
+            try CheckpointPaths.ensureDirectories()
+        } catch {
+            setCheckpointStatus("Could not create save folder: \(error.localizedDescription)", isError: true)
+            return
+        }
+        CheckpointManager.revealInFinder(CheckpointPaths.rootURL)
     }
 
     private func buildNetwork() {
@@ -2749,10 +3504,19 @@ struct ContentView: View {
             cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
             return
         }
+        // Capture trainer weights here and hold them through the
+        // rest of the arena. At arena end we use them to autosave
+        // the session without needing another training pause
+        // (and therefore without any gate interaction from the
+        // autosave task, which is critical to avoid deadlocking
+        // a save that runs past a session cancel — unstructured
+        // save tasks don't inherit realTrainingTask cancellation).
+        var trainerSnapshotWeights: [[Float]] = []
         do {
-            try await Task.detached(priority: .userInitiated) {
+            trainerSnapshotWeights = try await Task.detached(priority: .userInitiated) {
                 let weights = try trainer.network.exportWeights()
                 try candidateInference.network.loadWeights(weights)
+                return weights
             }.value
         } catch {
             trainingBox?.recordError("Arena candidate sync failed: \(error.localizedDescription)")
@@ -2864,6 +3628,11 @@ struct ContentView: View {
         case .none:
             shouldPromote = playedGames >= totalGames && score >= Self.tournamentPromoteThreshold
         }
+        // Holds the new champion weights if promotion succeeds,
+        // so we can hand them to a detached autosave task at the
+        // end without needing to re-read them from the live
+        // network (which would race against self-play again).
+        var promotedChampionWeights: [[Float]] = []
         if shouldPromote {
             // Pause every self-play worker briefly, copy candidate
             // inference into the champion AND every secondary
@@ -2883,13 +3652,14 @@ struct ContentView: View {
             }
             if !Task.isCancelled {
                 do {
-                    try await Task.detached(priority: .userInitiated) {
+                    promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
                         [candidateInference, champion, secondarySelfPlayNetworks] in
                         let weights = try candidateInference.network.exportWeights()
                         try champion.network.loadWeights(weights)
                         for net in secondarySelfPlayNetworks {
                             try net.network.loadWeights(weights)
                         }
+                        return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
                     // exact weights, so it inherits that snapshot ID.
@@ -2929,6 +3699,73 @@ struct ContentView: View {
             championSide: arenaChampion
         )
         cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+
+        // Post-promotion autosave. Fires a detached Task that
+        // writes a full session snapshot using the weights we
+        // already captured above under the arena-start training
+        // pause and the promotion self-play pause. The detached
+        // task touches no live networks and no pause gates, so
+        // it is safe to run past a session cancel — unstructured
+        // save tasks don't inherit `realTrainingTask`
+        // cancellation, and any post-return gate interaction
+        // here would potentially deadlock against workers that
+        // have already exited their loops.
+        if promoted && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty {
+            let championID = champion.identifier?.description ?? "unknown"
+            let trainerID = trainer.identifier?.description ?? "unknown"
+            let sessionState = buildCurrentSessionState(
+                championID: championID,
+                trainerID: trainerID
+            )
+            let championMetadata = ModelCheckpointMetadata(
+                creator: "promote",
+                trainingStep: trainingStats?.steps ?? 0,
+                parentModelID: "",
+                notes: "Post-arena autosave after promotion"
+            )
+            let trainerMetadata = ModelCheckpointMetadata(
+                creator: "promote",
+                trainingStep: trainingStats?.steps ?? 0,
+                parentModelID: championID,
+                notes: "Trainer lineage at arena-start pause"
+            )
+            let createdAtUnix = Int64(Date().timeIntervalSince1970)
+            // Copy captured arrays for clean Sendable semantics
+            // (they're already Sendable but this makes the
+            // transfer to the detached task explicit).
+            let championWeightsSnapshot = promotedChampionWeights
+            let trainerWeightsSnapshot = trainerSnapshotWeights
+
+            // Fire-and-forget detached task. The closure captures
+            // only Sendable value types (weight arrays, metadata
+            // structs, the session state snapshot, and a few
+            // strings) — explicitly NOT `self` — so we can safely
+            // run past a session end without touching any View
+            // @State. Outcome is audited through SessionLogger,
+            // which is NSLock-guarded and thread-safe. The user
+            // sees success via "Reveal Saves" finding the
+            // timestamped folder; failures show up in the
+            // session log.
+            Task.detached(priority: .utility) {
+                do {
+                    let url = try CheckpointManager.saveSession(
+                        championWeights: championWeightsSnapshot,
+                        championID: championID,
+                        championMetadata: championMetadata,
+                        championCreatedAtUnix: createdAtUnix,
+                        trainerWeights: trainerWeightsSnapshot,
+                        trainerID: trainerID,
+                        trainerMetadata: trainerMetadata,
+                        trainerCreatedAtUnix: createdAtUnix,
+                        state: sessionState,
+                        trigger: "promote"
+                    )
+                    SessionLogger.shared.log("[CHECKPOINT] Autosaved session: \(url.lastPathComponent)")
+                } catch {
+                    SessionLogger.shared.log("[CHECKPOINT] Autosave session failed: \(error.localizedDescription)")
+                }
+            }
+        }
     }
 
     /// Emit a three-line summary of a just-finished arena tournament to
@@ -3189,7 +4026,7 @@ struct ContentView: View {
     private func ensureTrainer() -> ChessTrainer? {
         if let trainer { return trainer }
         do {
-            let t = try ChessTrainer()
+            let t = try ChessTrainer(learningRate: Self.trainerLearningRate)
             trainer = t
             return t
         } catch {
@@ -3364,6 +4201,14 @@ struct ContentView: View {
         // step to decide how long to pause.
         let stepDelayBox = TrainingStepDelayBox(initial: trainingStepDelayMs)
         trainingStepDelayBox = stepDelayBox
+        let ratioController = ReplayRatioController(
+            batchSize: Self.trainingBatchSize,
+            targetRatio: replayRatioTarget,
+            autoAdjust: replayRatioAutoAdjust,
+            initialDelayMs: trainingStepDelayMs,
+            maxDelayMs: Self.stepDelayMaxMs
+        )
+        replayRatioController = ratioController
         let trainingGate = WorkerPauseGate()
         let arenaFlag = ArenaActiveFlag()
         arenaActiveFlag = arenaFlag
@@ -3374,9 +4219,32 @@ struct ContentView: View {
         isArenaRunning = false
         realTraining = true
 
+        // Expose the two gates the checkpoint save path needs and
+        // anchor the session ID + wall clock. `currentSessionID`
+        // is either a fresh mint or the loaded session's ID when
+        // resuming. `currentSessionStart` is back-dated on
+        // resume by the loaded session's `elapsedTrainingSec`, so
+        // successive save-resume-save cycles accumulate elapsed
+        // time monotonically. This anchor is only read by the
+        // save path (`buildCurrentSessionState`) — the parallel
+        // worker stats box keeps its own fresh `sessionStart`
+        // anchor for rate-display purposes, so games/hr doesn't
+        // get polluted by the back-dated hours.
+        activeSelfPlayGate = selfPlayGate
+        activeTrainingGate = trainingGate
+        if let resumed = pendingLoadedSession {
+            currentSessionID = resumed.state.sessionID
+            currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
+            replayRatioTarget = resumed.state.replayRatioTarget
+            replayRatioAutoAdjust = resumed.state.replayRatioAutoAdjust
+        } else {
+            currentSessionID = ModelIDMinter.mint().value
+            currentSessionStart = Date()
+        }
+
         realTrainingTask = Task(priority: .userInitiated) {
             [trainer, network, buffer, box, tBox, pStatsBox,
-             selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, overrideBox, countBox, stepDelayBox] in
+             selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, overrideBox, countBox] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
@@ -3473,27 +4341,37 @@ struct ContentView: View {
                 return
             }
 
-            // Reset the trainer's graph AND initialize its weights from
-            // the champion. Pre-ID this was `resetNetwork()` alone, which
-            // re-randomized the trainer independently of the champion —
-            // meaning step 0 of every Play-and-Train session pitted two
-            // different random inits against each other in the arena.
-            // Copying champion weights makes arena-at-step-0 a fair
-            // tie by construction and establishes the trainer's
-            // starting point as a true fork of the champion.
+            // Reset the trainer's graph AND initialize its weights.
+            // Two paths:
             //
-            // Secondary self-play networks are synced here too so
-            // every worker starts the session on exactly the same
-            // champion weights; without this sync the secondaries
-            // would still hold whatever was last loaded into them
-            // (random weights on first build, or the previous
-            // session's final champion on a subsequent run).
+            // (1) Normal start: copy champion weights into the trainer
+            //     and into every secondary self-play network. This
+            //     makes arena-at-step-0 a fair tie by construction and
+            //     establishes the trainer's starting point as a true
+            //     fork of the champion.
+            //
+            // (2) Resume from a loaded `.dcmsession`: copy champion
+            //     weights into the secondaries (the champion has
+            //     already been loaded from disk into `network` at
+            //     file-load time), but load the trainer from the
+            //     session's `trainer.dcmmodel` payload so its
+            //     mid-training divergence from the champion is
+            //     preserved. Without this branch, resume would
+            //     throw away the trainer's in-flight SGD progress
+            //     every time.
+            let resumedTrainerWeights: [[Float]]? = await MainActor.run {
+                pendingLoadedSession?.trainerFile.weights
+            }
             do {
                 try await Task.detached(priority: .userInitiated) {
-                    [secondaries] in
+                    [secondaries, resumedTrainerWeights] in
                     try trainer.resetNetwork()
                     let championWeights = try network.network.exportWeights()
-                    try trainer.network.loadWeights(championWeights)
+                    if let trainerWeights = resumedTrainerWeights {
+                        try trainer.network.loadWeights(trainerWeights)
+                    } else {
+                        try trainer.network.loadWeights(championWeights)
+                    }
                     for net in secondaries {
                         try net.network.loadWeights(championWeights)
                     }
@@ -3507,13 +4385,18 @@ struct ContentView: View {
                 return
             }
 
-            // Mint a fresh ID for the trainer now that its weights are
-            // loaded from the champion. The trainer's ID represents the
-            // "current training lineage" — stable from here until the
-            // next Play-and-Train restart; individual arena snapshots
-            // get their own minted IDs inside `runArenaParallel`.
+            // Trainer ID: on a fresh start, mint a new one. On a
+            // resume, inherit the trainer ID from the loaded session
+            // so the audit trail stays continuous.
             await MainActor.run {
-                trainer.identifier = ModelIDMinter.mint()
+                if let resumed = pendingLoadedSession {
+                    trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
+                } else {
+                    trainer.identifier = ModelIDMinter.mint()
+                }
+                // Consume the pending load — from here on, the
+                // running session owns the restored state.
+                pendingLoadedSession = nil
             }
 
             // Grab the candidate inference network and arena champion
@@ -3695,7 +4578,7 @@ struct ContentView: View {
                 // so the arena coordinator can briefly snapshot
                 // trainer weights.
                 group.addTask(priority: .userInitiated) {
-                    [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, stepDelayBox] in
+                    [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController] in
                     while !Task.isCancelled {
                         // Pause gate check (between steps).
                         if trainingGate.isRequestedToPause {
@@ -3727,21 +4610,16 @@ struct ContentView: View {
                         // to — run the SGD step inline and skip the
                         // per-step detached-task + continuation
                         // allocation pair.
-                        let result: Result<TrainStepTiming, Error>
+                        let timing: TrainStepTiming
                         do {
-                            result = .success(try trainer.trainStep(batch: batch))
+                            timing = try trainer.trainStep(batch: batch)
                         } catch {
-                            result = .failure(error)
-                        }
-
-                        switch result {
-                        case .success(let timing):
-                            box.recordStep(timing)
-                            pStatsBox.recordTrainingStep()
-                        case .failure(let error):
                             box.recordError(error.localizedDescription)
                             return
                         }
+
+                        box.recordStep(timing)
+                        pStatsBox.recordTrainingStep()
 
                         // Candidate-test probe firing check. Method
                         // guards internally on all preconditions
@@ -3757,16 +4635,17 @@ struct ContentView: View {
                             triggerBox.trigger()
                         }
 
-                        // User-adjustable post-step pause. Read live
-                        // from the delay box so a Stepper click takes
-                        // effect on the very next iteration. Skip the
-                        // sleep entirely at 0 ms so the default case
-                        // adds no scheduler hop. The try? mirrors the
-                        // other sleeps in this loop — Task.sleep throws
-                        // CancellationError, and the `while
-                        // !Task.isCancelled` at the top already handles
-                        // shutdown on the next iteration.
-                        let stepDelayMs = stepDelayBox.milliseconds
+                        // Post-step pause. The replay-ratio controller
+                        // records the step, computes the 1-minute rolling
+                        // production/consumption ratio, and when auto-
+                        // adjust is enabled returns a computed delay that
+                        // brings the ratio toward the target. When auto-
+                        // adjust is off, the controller returns the manual
+                        // delay. Skip the sleep entirely at 0 ms.
+                        let stepDelayMs = ratioController.recordStepAndGetDelay(
+                            currentBufferTotal: buffer.totalPositionsAdded,
+                            stepTimeMs: timing.totalMs
+                        )
                         if stepDelayMs > 0 {
                             try? await Task.sleep(for: .milliseconds(stepDelayMs))
                         }
@@ -3898,6 +4777,12 @@ struct ContentView: View {
                 parallelStats = nil
                 workerCountBox = nil
                 trainingStepDelayBox = nil
+                activeSelfPlayGate = nil
+                activeTrainingGate = nil
+                currentSessionID = nil
+                currentSessionStart = nil
+                replayRatioController = nil
+                replayRatioSnapshot = nil
             }
         }
     }
@@ -4065,7 +4950,8 @@ struct ContentView: View {
         if isSelfPlay {
             let bufCount = replayBuffer?.count ?? 0
             let bufCap = replayBuffer?.capacity ?? Self.replayBufferCapacity
-            let bufStr = String(format: "%6d / %d", bufCount, bufCap)
+            let bufRamMB = Double(bufCap * ReplayBuffer.bytesPerPosition) / (1024.0 * 1024.0)
+            let bufStr = String(format: "%6d / %d  (%.0f MB)", bufCount, bufCap, bufRamMB)
             lines.append("  Buffer:     \(bufStr)")
             let policyStr: String
             if let loss = realRollingPolicyLoss {
@@ -4109,6 +4995,21 @@ struct ContentView: View {
                 probeLine = String(format: "%4d  (last %5.1f s ago)", candidateProbeCount, ageSec)
             }
             lines.append("  Probes:      \(probeLine)")
+            // 1-minute rolling rates from the replay-ratio controller
+            if let snap = replayRatioSnapshot {
+                let prodStr = snap.productionRate > 0
+                    ? String(format: "%.0f", snap.productionRate)
+                    : dash
+                let consStr = snap.consumptionRate > 0
+                    ? String(format: "%.0f", snap.consumptionRate)
+                    : dash
+                let ratioStr = snap.currentRatio > 0
+                    ? String(format: "%.2f", snap.currentRatio)
+                    : dash
+                lines.append("  1m gen rate: \(prodStr) pos/s")
+                lines.append("  1m trn rate: \(consStr) pos/s")
+                lines.append("  1m ratio:    \(ratioStr)  (target \(String(format: "%.1f", snap.targetRatio)))")
+            }
         }
         lines.append("")
 

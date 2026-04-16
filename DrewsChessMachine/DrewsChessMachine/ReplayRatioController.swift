@@ -1,0 +1,205 @@
+import Foundation
+
+/// Tracks the 1-minute rolling ratio of training consumption to
+/// self-play production and optionally auto-adjusts the training
+/// step delay so the two sides stay in balance.
+///
+/// **Production rate** — positions added to the replay buffer per
+/// second. The training worker passes the buffer's cumulative
+/// `totalPositionsAdded` on each step; the controller diffs
+/// successive readings to compute the rolling rate. No changes
+/// to self-play workers are needed.
+///
+/// **Consumption rate** — positions consumed by training per second.
+/// Each `recordStep` call increments by `batchSize`.
+///
+/// **Auto-adjustment** — when enabled, computes the training-step
+/// delay (in ms) that would bring the ratio to `targetRatio`:
+///
+///     targetConsumptionRate = targetRatio × productionRate
+///     desiredCycleSec = batchSize / targetConsumptionRate
+///     delayMs = max(0, desiredCycleSec - stepTimeSec) × 1000
+///
+/// The result is clamped to `[0, maxDelayMs]` and returned to the
+/// training worker, which uses it as its `Task.sleep` duration
+/// for the next step. When auto-adjust is off, the most-recently-
+/// set manual delay is returned unchanged.
+///
+/// Thread-safe via `NSLock` — the training worker writes on each
+/// step and the UI heartbeat reads for display.
+final class ReplayRatioController: @unchecked Sendable {
+    private let lock = NSLock()
+
+    // MARK: - Configuration
+
+    private var _targetRatio: Double
+    private var _autoAdjust: Bool
+    private var _manualDelayMs: Int
+    let batchSize: Int
+    let maxDelayMs: Int
+
+    // MARK: - Internal state
+
+    private var _totalConsumed: Int = 0
+    private var _computedDelayMs: Int
+
+    private struct Sample {
+        let time: Date
+        let produced: Int
+        let consumed: Int
+    }
+    private var samples: [Sample] = []
+    private let windowSeconds: Double = 60.0
+
+    // MARK: - Init
+
+    /// - Parameters:
+    ///   - batchSize: Positions consumed per training step.
+    ///   - targetRatio: Desired consumed/produced ratio (default 1.0).
+    ///   - autoAdjust: Whether the controller manages the delay.
+    ///   - initialDelayMs: Starting delay before any rate data arrives.
+    ///   - maxDelayMs: Hard ceiling on computed delay.
+    init(
+        batchSize: Int,
+        targetRatio: Double = 1.0,
+        autoAdjust: Bool = true,
+        initialDelayMs: Int = 50,
+        maxDelayMs: Int = 500
+    ) {
+        self.batchSize = batchSize
+        self._targetRatio = targetRatio
+        self._autoAdjust = autoAdjust
+        self._manualDelayMs = initialDelayMs
+        self._computedDelayMs = initialDelayMs
+        self.maxDelayMs = maxDelayMs
+    }
+
+    // MARK: - Training worker interface
+
+    /// Called by the training worker after each `trainStep`.
+    /// Appends a snapshot, prunes old ones, optionally recomputes
+    /// the delay, and returns the delay to use for the next step.
+    ///
+    /// - Parameters:
+    ///   - currentBufferTotal: `buffer.totalPositionsAdded` — the
+    ///     monotonically-increasing count of all positions ever
+    ///     appended to the replay buffer.
+    ///   - stepTimeMs: Wall-clock time of the just-completed
+    ///     training step, from `TrainStepTiming.totalMs`.
+    /// - Returns: The delay in ms the training worker should
+    ///   `Task.sleep` before the next step.
+    func recordStepAndGetDelay(
+        currentBufferTotal: Int,
+        stepTimeMs: Double
+    ) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+
+        _totalConsumed += batchSize
+
+        let now = Date()
+        samples.append(Sample(
+            time: now,
+            produced: currentBufferTotal,
+            consumed: _totalConsumed
+        ))
+
+        // Prune samples older than the window.
+        let cutoff = now.addingTimeInterval(-windowSeconds)
+        while let first = samples.first, first.time < cutoff {
+            samples.removeFirst()
+        }
+
+        // Need at least 2 samples spanning >1 s.
+        guard samples.count >= 2,
+              let oldest = samples.first,
+              let newest = samples.last else {
+            return _autoAdjust ? _computedDelayMs : _manualDelayMs
+        }
+
+        let dt = newest.time.timeIntervalSince(oldest.time)
+        guard dt > 1.0 else {
+            return _autoAdjust ? _computedDelayMs : _manualDelayMs
+        }
+
+        let productionRate = Double(newest.produced - oldest.produced) / dt
+
+        if _autoAdjust && productionRate > 0 {
+            let targetConsumptionRate = _targetRatio * productionRate
+            let desiredCycleSec = Double(batchSize) / targetConsumptionRate
+            let stepTimeSec = stepTimeMs / 1000.0
+            let rawDelayMs = (desiredCycleSec - stepTimeSec) * 1000.0
+            _computedDelayMs = max(0, min(maxDelayMs, Int(rawDelayMs)))
+        }
+
+        return _autoAdjust ? _computedDelayMs : _manualDelayMs
+    }
+
+    // MARK: - UI snapshot
+
+    /// Immutable read for the heartbeat / display layer.
+    struct RatioSnapshot: Sendable {
+        let productionRate: Double
+        let consumptionRate: Double
+        let currentRatio: Double
+        let targetRatio: Double
+        let autoAdjust: Bool
+        let computedDelayMs: Int
+    }
+
+    func snapshot() -> RatioSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let now = Date()
+        let cutoff = now.addingTimeInterval(-windowSeconds)
+
+        var productionRate: Double = 0
+        var consumptionRate: Double = 0
+
+        if samples.count >= 2 {
+            var oldestInWindow: Sample?
+            for s in samples where s.time >= cutoff {
+                oldestInWindow = s
+                break
+            }
+            if let oldest = oldestInWindow, let newest = samples.last {
+                let dt = newest.time.timeIntervalSince(oldest.time)
+                if dt > 1.0 {
+                    productionRate = Double(newest.produced - oldest.produced) / dt
+                    consumptionRate = Double(newest.consumed - oldest.consumed) / dt
+                }
+            }
+        }
+
+        let ratio = productionRate > 0
+            ? consumptionRate / productionRate
+            : 0
+
+        return RatioSnapshot(
+            productionRate: productionRate,
+            consumptionRate: consumptionRate,
+            currentRatio: ratio,
+            targetRatio: _targetRatio,
+            autoAdjust: _autoAdjust,
+            computedDelayMs: _computedDelayMs
+        )
+    }
+
+    // MARK: - UI setters
+
+    var targetRatio: Double {
+        get { lock.lock(); defer { lock.unlock() }; return _targetRatio }
+        set { lock.lock(); _targetRatio = newValue; lock.unlock() }
+    }
+
+    var autoAdjust: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _autoAdjust }
+        set { lock.lock(); _autoAdjust = newValue; lock.unlock() }
+    }
+
+    var manualDelayMs: Int {
+        get { lock.lock(); defer { lock.unlock() }; return _manualDelayMs }
+        set { lock.lock(); _manualDelayMs = max(0, min(maxDelayMs, newValue)); lock.unlock() }
+    }
+}

@@ -585,6 +585,14 @@ total = (z - v)²  +  (-z · log p(a*))  +  c · ‖θ‖²
 
 The `c · ‖θ‖²` term is standard L2 weight decay — a small penalty on the sum of squared network parameters to keep weights from blowing up. Not chess-specific, just healthy regularization. Typical `c` values are around `1e-4`.
 
+#### Learning rate scaling with batch size
+
+If you change the batch size, scale the learning rate proportionally: halving the batch size halves the learning rate, so the effective per-position weight update stays the same magnitude. The Lc0 project maintains a reference table for single-GPU training configurations:
+
+[Lc0 Training Hyperparameters — LR / batch size scaling table](https://docs.google.com/spreadsheets/d/13MTxsCvLBkc7luOKU3iFFP_JcPjcfg4esU_63Ka5tmY/edit?pli=1&gid=649477708#gid=649477708)
+
+Our current configuration (batch 256, lr 1e-4) sits at the low-batch end of this table's range.
+
 The shared trunk learns representations useful for both tasks simultaneously. Gradients from both the policy and value losses flow back through the same convolutional body, forcing it to encode features that are simultaneously good at "which move?" and "who's winning?" Policy and value heads constrain each other toward a consistent understanding of the position.
 
 #### Future: MCTS changes the policy target
