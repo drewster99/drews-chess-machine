@@ -383,9 +383,11 @@ final class ChessTrainer: @unchecked Sendable {
     /// Pre-allocated scalar ND array for the learning-rate feed.
     /// Written with the current `learningRate` on each step so
     /// the value can change between steps without rebuilding the
-    /// graph.
-    private let lrNDArray: MPSNDArray
-    private let lrTensorData: MPSGraphTensorData
+    /// graph. Recreated in `resetNetwork()` alongside the feed
+    /// cache so the new graph's placeholder maps to a fresh
+    /// tensor-data wrapper.
+    private var lrNDArray: MPSNDArray
+    private var lrTensorData: MPSGraphTensorData
 
     /// Pre-allocated ND-array-backed tensor data for the three training
     /// placeholders at a given batch size, plus the pre-built
@@ -476,6 +478,14 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
         self.assignOps = built.assignOps
+        // Rebuild the LR scalar feed against the new network's device
+        // so the new graph's placeholder maps to a fresh wrapper.
+        let lrDesc = MPSNDArrayDescriptor(
+            dataType: ChessNetwork.dataType,
+            shape: [1]
+        )
+        self.lrNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.lrTensorData = MPSGraphTensorData(lrNDArray)
         // The cached ND arrays were allocated against the old network's
         // device and are keyed by batch size against the old graph's
         // placeholders. Drop the cache so the first trainStep after

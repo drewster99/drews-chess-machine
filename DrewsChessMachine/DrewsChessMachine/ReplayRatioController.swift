@@ -129,19 +129,29 @@ final class ReplayRatioController: @unchecked Sendable {
         let productionRate = Double(newest.produced - oldest.produced) / dt
 
         if _autoAdjust && productionRate > 0 {
-            // Derive the average step cycle time (GPU work + current
-            // delay) from the 1-minute consumption window rather than
-            // from the just-completed single step. This smooths out
-            // per-step variance and avoids jitter from one unusually
-            // fast or slow step.
+            // Feedback controller: measure the current cycle time
+            // (wall time per training step including delay), compute
+            // the desired cycle time from the target ratio, and
+            // adjust the delay by the difference.
+            //
+            //   currentCycle = dt / stepsInWindow     (measured)
+            //   desiredCycle = batchSize / (target × productionRate)
+            //   newDelay = currentDelay + (desiredCycle - currentCycle)
+            //
+            // This avoids the circular dependency of trying to
+            // separate GPU time from delay time — we simply nudge the
+            // delay in the direction that reduces the error between
+            // actual and desired cycle time.
             let stepsInWindow = Double(newest.consumed - oldest.consumed) / Double(batchSize)
-            let avgCycleSec = stepsInWindow > 0 ? dt / stepsInWindow : 0
-            let avgStepTimeSec = max(0, avgCycleSec - Double(_computedDelayMs) / 1000.0)
-
+            guard stepsInWindow > 0 else {
+                return _computedDelayMs
+            }
+            let currentCycleSec = dt / stepsInWindow
             let targetConsumptionRate = _targetRatio * productionRate
             let desiredCycleSec = Double(batchSize) / targetConsumptionRate
-            let rawDelayMs = (desiredCycleSec - avgStepTimeSec) * 1000.0
-            _computedDelayMs = max(0, min(maxDelayMs, Int(rawDelayMs)))
+            let currentDelaySec = Double(_computedDelayMs) / 1000.0
+            let newDelaySec = currentDelaySec + (desiredCycleSec - currentCycleSec)
+            _computedDelayMs = max(0, min(maxDelayMs, Int(newDelaySec * 1000.0)))
         }
 
         return _autoAdjust ? _computedDelayMs : _manualDelayMs

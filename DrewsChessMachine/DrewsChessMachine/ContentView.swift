@@ -4269,6 +4269,7 @@ struct ContentView: View {
             currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
             replayRatioTarget = resumed.state.replayRatioTarget ?? 1.0
             replayRatioAutoAdjust = resumed.state.replayRatioAutoAdjust ?? true
+            trainerLearningRate = Double(resumed.state.learningRate)
         } else {
             currentSessionID = ModelIDMinter.mint().value
             currentSessionStart = Date()
