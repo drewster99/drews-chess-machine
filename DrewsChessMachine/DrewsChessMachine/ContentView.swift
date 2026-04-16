@@ -1737,8 +1737,19 @@ struct ContentView: View {
             set: { newValue in
                 replayRatioAutoAdjust = newValue
                 replayRatioController?.autoAdjust = newValue
-                if !newValue {
-                    replayRatioController?.manualDelayMs = trainingStepDelayMs
+                if newValue {
+                    // Toggling auto ON: seed the computed delay from
+                    // the current manual delay so the display doesn't
+                    // jump. The auto-adjuster will gradually move it
+                    // from here once the warmup window fills.
+                    replayRatioController?.computedDelayMs = trainingStepDelayMs
+                } else {
+                    // Toggling auto OFF: inherit the last auto-computed
+                    // delay as the new manual value so the training
+                    // pace doesn't jump when the user takes over.
+                    let lastAuto = replayRatioController?.computedDelayMs ?? trainingStepDelayMs
+                    trainingStepDelayMs = lastAuto
+                    replayRatioController?.manualDelayMs = lastAuto
                 }
             }
         )

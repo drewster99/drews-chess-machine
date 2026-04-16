@@ -228,4 +228,13 @@ final class ReplayRatioController: @unchecked Sendable {
         get { lock.lock(); defer { lock.unlock() }; return _manualDelayMs }
         set { lock.lock(); _manualDelayMs = max(0, min(maxDelayMs, newValue)); lock.unlock() }
     }
+
+    /// Set the auto-computed delay to a specific value. Used when
+    /// toggling auto-adjust ON so the delay starts from the
+    /// current manual value instead of whatever stale computed
+    /// value was left over from initialization or a prior session.
+    var computedDelayMs: Int {
+        get { lock.lock(); defer { lock.unlock() }; return _computedDelayMs }
+        set { lock.lock(); _computedDelayMs = max(0, min(maxDelayMs, newValue)); lock.unlock() }
+    }
 }
