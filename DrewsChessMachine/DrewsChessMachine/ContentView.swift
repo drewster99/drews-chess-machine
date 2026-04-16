@@ -1255,7 +1255,7 @@ struct ContentView: View {
     /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
     /// count has actually advanced.
     @State private var trainingBox: TrainingLiveStatsBox?
-    nonisolated static let trainerLearningRate: Float = 0.01
+    nonisolated static let trainerLearningRate: Float = 0.1
     nonisolated static let trainingBatchSize = 1024
 
     // Real (self-play) training — generates games, labels positions from the
