@@ -110,13 +110,15 @@ final class ReplayRatioController: @unchecked Sendable {
             samples.removeFirst()
         }
 
-        // Need at least 2 samples spanning a full window before the
-        // auto-adjuster kicks in. During the first ~60 s of a session,
+        // Need enough samples spanning a meaningful window before the
+        // auto-adjuster kicks in. During the first ~30 s of a session,
         // self-play is filling the buffer while training hasn't started
         // yet (or just started), so the ratio is meaninglessly skewed.
-        // Returning the current delay unchanged during warmup keeps the
-        // training worker at its initial pace until there's a real
-        // 1-minute baseline to adjust against.
+        // We use half the window as the threshold rather than the full
+        // window because pruning removes samples older than windowSeconds,
+        // so the oldest-to-newest span asymptotically approaches but
+        // never reaches the full window.
+        let warmupThreshold = windowSeconds * 0.5
         guard samples.count >= 2,
               let oldest = samples.first,
               let newest = samples.last else {
@@ -124,7 +126,7 @@ final class ReplayRatioController: @unchecked Sendable {
         }
 
         let dt = newest.time.timeIntervalSince(oldest.time)
-        guard dt >= windowSeconds else {
+        guard dt >= warmupThreshold else {
             return _autoAdjust ? _computedDelayMs : _manualDelayMs
         }
 
