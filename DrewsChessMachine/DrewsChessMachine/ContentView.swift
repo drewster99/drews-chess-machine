@@ -1739,26 +1739,12 @@ struct ContentView: View {
         )
     }
 
-    /// Text binding for the learning rate text field. On commit,
-    /// parses the string to a Float and writes it directly into the
-    /// trainer (which feeds it to the graph on the next step via the
-    /// LR placeholder). Invalid input is silently ignored.
-    private var learningRateTextBinding: Binding<String> {
-        Binding(
-            get: {
-                if let lr = trainer?.learningRate {
-                    return String(format: "%.1e", lr)
-                }
-                return String(format: "%.1e", Self.trainerLearningRate)
-            },
-            set: { newValue in
-                guard let parsed = Float(newValue), parsed > 0, parsed.isFinite else {
-                    return
-                }
-                trainer?.learningRate = parsed
-            }
-        )
-    }
+    /// Scratch string for the learning rate text field. Seeded from
+    /// the trainer's current LR when Play-and-Train starts; the user
+    /// edits freely without the binding reformatting mid-keystroke.
+    /// The value is parsed and applied only on Enter (via `.onSubmit`
+    /// on the TextField). Invalid input reverts to the current LR.
+    @State private var learningRateEditText: String = ""
 
     /// Binding for the side-to-move segmented picker. Writes rebuild
     /// `editableState` with the new current-player (nothing else changes)
@@ -2298,13 +2284,20 @@ struct ContentView: View {
                                         }
                                         HStack(spacing: 6) {
                                             Text("  Learn Rate:")
-                                            TextField(
-                                                "LR",
-                                                text: learningRateTextBinding
-                                            )
-                                            .monospacedDigit()
-                                            .frame(width: 80)
-                                            .textFieldStyle(.roundedBorder)
+                                            TextField("LR", text: $learningRateEditText)
+                                                .monospacedDigit()
+                                                .frame(width: 80)
+                                                .textFieldStyle(.roundedBorder)
+                                                .onSubmit {
+                                                    if let parsed = Float(learningRateEditText),
+                                                       parsed > 0, parsed.isFinite {
+                                                        trainer?.learningRate = parsed
+                                                    }
+                                                    learningRateEditText = String(
+                                                        format: "%.1e",
+                                                        trainer?.learningRate ?? Self.trainerLearningRate
+                                                    )
+                                                }
                                         }
                                     }
                                     Text(column.body)
@@ -4192,6 +4185,7 @@ struct ContentView: View {
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
         candidateProbeCount = 0
+        learningRateEditText = String(format: "%.1e", trainer.learningRate)
         tournamentHistory = []
         tournamentProgress = nil
         let tBox = TournamentLiveBox()
