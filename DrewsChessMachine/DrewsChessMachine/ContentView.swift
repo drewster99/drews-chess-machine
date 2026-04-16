@@ -1739,6 +1739,27 @@ struct ContentView: View {
         )
     }
 
+    /// Text binding for the learning rate text field. On commit,
+    /// parses the string to a Float and writes it directly into the
+    /// trainer (which feeds it to the graph on the next step via the
+    /// LR placeholder). Invalid input is silently ignored.
+    private var learningRateTextBinding: Binding<String> {
+        Binding(
+            get: {
+                if let lr = trainer?.learningRate {
+                    return String(format: "%.1e", lr)
+                }
+                return String(format: "%.1e", Self.trainerLearningRate)
+            },
+            set: { newValue in
+                guard let parsed = Float(newValue), parsed > 0, parsed.isFinite else {
+                    return
+                }
+                trainer?.learningRate = parsed
+            }
+        )
+    }
+
     /// Binding for the side-to-move segmented picker. Writes rebuild
     /// `editableState` with the new current-player (nothing else changes)
     /// and kick off an auto re-eval so the arrows update for the new
@@ -2274,6 +2295,16 @@ struct ContentView: View {
                                             .labelsHidden()
                                             Toggle("Auto", isOn: replayRatioAutoAdjustBinding)
                                                 .toggleStyle(.checkbox)
+                                        }
+                                        HStack(spacing: 6) {
+                                            Text("  Learn Rate:")
+                                            TextField(
+                                                "LR",
+                                                text: learningRateTextBinding
+                                            )
+                                            .monospacedDigit()
+                                            .frame(width: 80)
+                                            .textFieldStyle(.roundedBorder)
                                         }
                                     }
                                     Text(column.body)

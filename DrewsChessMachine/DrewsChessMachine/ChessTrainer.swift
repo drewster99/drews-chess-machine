@@ -358,7 +358,7 @@ final class ChessTrainer: @unchecked Sendable {
 
     // MARK: Configuration
 
-    let learningRate: Float
+    var learningRate: Float
 
     /// Optional stable identity for the trainer's internal network.
     /// Assigned by the UI layer at Play-and-Train start (after loading
@@ -373,11 +373,19 @@ final class ChessTrainer: @unchecked Sendable {
     private(set) var network: ChessNetwork
     private var movePlayedPlaceholder: MPSGraphTensor   // [batch] int32
     private var zPlaceholder: MPSGraphTensor            // [batch, 1] float
+    private var lrPlaceholder: MPSGraphTensor           // [] scalar float
     private var totalLoss: MPSGraphTensor               // scalar
     private var policyLossTensor: MPSGraphTensor        // scalar
     private var valueLossTensor: MPSGraphTensor         // scalar
     private var policyEntropyTensor: MPSGraphTensor     // scalar (diagnostic)
     private var assignOps: [MPSGraphOperation]
+
+    /// Pre-allocated scalar ND array for the learning-rate feed.
+    /// Written with the current `learningRate` on each step so
+    /// the value can change between steps without rebuilding the
+    /// graph.
+    private let lrNDArray: MPSNDArray
+    private let lrTensorData: MPSGraphTensorData
 
     /// Pre-allocated ND-array-backed tensor data for the three training
     /// placeholders at a given batch size, plus the pre-built
@@ -420,14 +428,24 @@ final class ChessTrainer: @unchecked Sendable {
         self.learningRate = learningRate
         let net = try ChessNetwork(bnMode: .training)
         self.network = net
-        let built = try Self.buildTrainingOps(network: net, learningRate: learningRate)
+        let built = try Self.buildTrainingOps(network: net)
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
+        self.lrPlaceholder = built.lr
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
         self.assignOps = built.assignOps
+
+        // Scalar ND array for the learning rate feed, reused every step.
+        let lrDesc = MPSNDArrayDescriptor(
+            dataType: ChessNetwork.dataType,
+            shape: [1]
+        )
+        let lrND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.lrNDArray = lrND
+        self.lrTensorData = MPSGraphTensorData(lrND)
 
         let lossPtr = UnsafeMutablePointer<Float>.allocate(
             capacity: Self.lossReadbackSlotCount
@@ -449,9 +467,10 @@ final class ChessTrainer: @unchecked Sendable {
     func resetNetwork() throws {
         let net = try ChessNetwork(bnMode: .training)
         self.network = net
-        let built = try Self.buildTrainingOps(network: net, learningRate: learningRate)
+        let built = try Self.buildTrainingOps(network: net)
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
+        self.lrPlaceholder = built.lr
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
@@ -472,11 +491,11 @@ final class ChessTrainer: @unchecked Sendable {
     /// it from the loss, which is a network-construction bug we want to
     /// surface immediately rather than silently train without it.
     private static func buildTrainingOps(
-        network: ChessNetwork,
-        learningRate: Float
+        network: ChessNetwork
     ) throws -> (
         movePlayed: MPSGraphTensor,
         z: MPSGraphTensor,
+        lr: MPSGraphTensor,
         totalLoss: MPSGraphTensor,
         policyLoss: MPSGraphTensor,
         valueLoss: MPSGraphTensor,
@@ -628,8 +647,17 @@ final class ChessTrainer: @unchecked Sendable {
         )
 
         // --- SGD updates: v_new = v - lr * grad(v); assign back to v ---
+        //
+        // The learning rate is a placeholder (not a constant) so it
+        // can be changed between steps without rebuilding the graph.
+        // Each training step feeds the current `self.learningRate`
+        // via the pre-allocated `lrNDArray`.
 
-        let lrTensor = graph.constant(Double(learningRate), dataType: dtype)
+        let lrTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "learning_rate"
+        )
         var ops: [MPSGraphOperation] = []
         ops.reserveCapacity(network.trainableVariables.count)
         for (i, variable) in network.trainableVariables.enumerated() {
@@ -659,7 +687,7 @@ final class ChessTrainer: @unchecked Sendable {
         // loadWeights().
         ops.append(contentsOf: network.bnRunningStatsAssignOps)
 
-        return (movePlayed, z, totalLossTensor, policyLoss, valueLoss, policyEntropy, ops)
+        return (movePlayed, z, lrTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, ops)
     }
 
     // MARK: - Training Step
@@ -811,6 +839,10 @@ final class ChessTrainer: @unchecked Sendable {
             strideBytes: nil
         )
 
+        // Write the current learning rate into the scalar feed.
+        var lr = learningRate
+        lrNDArray.writeBytes(&lr, strideBytes: nil)
+
         return cached.feedsDict
     }
 
@@ -861,7 +893,8 @@ final class ChessTrainer: @unchecked Sendable {
         let feedsDict: [MPSGraphTensor: MPSGraphTensorData] = [
             network.inputPlaceholder: boardTD,
             movePlayedPlaceholder: moveTD,
-            zPlaceholder: zTD
+            zPlaceholder: zTD,
+            lrPlaceholder: lrTensorData
         ]
 
         let feeds = BatchFeeds(
