@@ -1255,7 +1255,7 @@ struct ContentView: View {
     /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
     /// count has actually advanced.
     @State private var trainingBox: TrainingLiveStatsBox?
-    nonisolated static let trainerLearningRate: Float = 0.1
+    nonisolated static let trainerLearningRateDefault: Float = 0.1
     nonisolated static let trainingBatchSize = 1024
 
     // Real (self-play) training — generates games, labels positions from the
@@ -1337,7 +1337,7 @@ struct ContentView: View {
     /// steps/s ceiling so it doesn't starve the N self-play workers
     /// of GPU time on a fresh session start; the user can drop it
     /// to 0 ms once the self-play throughput has stabilized.
-    @State private var trainingStepDelayMs: Int = 50
+    @AppStorage("trainingStepDelayMs") private var trainingStepDelayMs: Int = 50
     /// Shared lock-protected mirror of `trainingStepDelayMs` that
     /// the training worker task reads at the bottom of each step
     /// to decide how long to sleep before looping. Allocated at
@@ -1539,7 +1539,8 @@ struct ContentView: View {
     /// Default 1.0 = balanced. Values >1 let training outpace
     /// self-play (higher replay ratio); <1 the opposite. Persisted
     /// in session checkpoints.
-    @State private var replayRatioTarget: Double = 1.0
+    @AppStorage("replayRatioTarget") private var replayRatioTarget: Double = 1.0
+    @AppStorage("trainerLearningRate") private var trainerLearningRate: Double = Double(trainerLearningRateDefault)
     /// Whether the ratio controller auto-adjusts the training step
     /// delay. When off, the manual Stepper controls the delay
     /// directly. Persisted in session checkpoints.
@@ -2292,10 +2293,11 @@ struct ContentView: View {
                                                     if let parsed = Float(learningRateEditText),
                                                        parsed > 0, parsed.isFinite {
                                                         trainer?.learningRate = parsed
+                                                        trainerLearningRate = Double(parsed)
                                                     }
                                                     learningRateEditText = String(
                                                         format: "%.1e",
-                                                        trainer?.learningRate ?? Self.trainerLearningRate
+                                                        trainer?.learningRate ?? Self.trainerLearningRateDefault
                                                     )
                                                 }
                                         }
@@ -2920,7 +2922,7 @@ struct ContentView: View {
                 durationSec: record.durationSec
             )
         }
-        let lr = trainer?.learningRate ?? Self.trainerLearningRate
+        let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
         return SessionCheckpointState(
             formatVersion: SessionCheckpointState.currentFormatVersion,
             sessionID: currentSessionID ?? "unknown-session",
@@ -4055,7 +4057,7 @@ struct ContentView: View {
     private func ensureTrainer() -> ChessTrainer? {
         if let trainer { return trainer }
         do {
-            let t = try ChessTrainer(learningRate: Self.trainerLearningRate)
+            let t = try ChessTrainer(learningRate: Float(trainerLearningRate))
             trainer = t
             return t
         } catch {
