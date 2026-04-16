@@ -97,6 +97,27 @@ Long-term goals, deferred work, and notes on decisions.
   while writing `.tmp`) → prior save on disk is still intact, no
   half-written file left behind. (9) Every existing test still passes.
 
+  **Session restore coverage.** What is saved in `.dcmsession` and
+  what happens on resume:
+
+  | Field | Save | Restore |
+  |---|---|---|
+  | Champion + trainer weights | `.dcmmodel` files | loaded into networks |
+  | Champion + trainer model IDs | `session.json` | restored to identifiers |
+  | Session ID | `session.json` | inherited for continuity |
+  | Elapsed training time | `session.json` | back-dated `sessionStart` anchor |
+  | Training step count | `session.json` | seeded into both stats boxes |
+  | Self-play games / moves | `session.json` | seeded into `ParallelWorkerStatsBox` |
+  | Game results (W/B checkmates, stalemate, 50-move, 3-fold, insuff. material) | `session.json` | seeded into `ParallelWorkerStatsBox` |
+  | Learning rate | `session.json` | restored to `@AppStorage` + trainer |
+  | Replay ratio target + auto-adjust toggle | `session.json` | restored to `@State` + controller |
+  | Step delay + last auto-computed delay | `session.json` | restored to `@AppStorage` |
+  | Self-play worker count | `session.json` | restored to `@State` |
+  | Arena history (W/L/D, score, promoted flag per arena) | `session.json` | rebuilt into `tournamentHistory` |
+  | Replay buffer contents | not saved (4.6 GB) | refills in ~5 min |
+  | Progress rate chart samples | not saved | rebuilds from new data |
+  | Rolling loss windows | not saved | rebuilds from new steps |
+
 - **Bitboard board representation.** `GameState.board` is currently a flat
   `[Piece?]` of 64 entries. The next step for performance is twelve `UInt64`
   bitboards (one per piece kind/color), with attack tables. Move generation,
