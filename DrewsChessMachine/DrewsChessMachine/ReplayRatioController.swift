@@ -163,6 +163,10 @@ final class ReplayRatioController: @unchecked Sendable {
         var productionRate: Double = 0
         var consumptionRate: Double = 0
 
+        // Show rates as soon as we have a few seconds of data so the
+        // display isn't stuck on dashes for the entire warmup period.
+        // The auto-adjust guard in recordStepAndGetDelay still waits
+        // for the full 60s window before touching the delay.
         if samples.count >= 2 {
             var oldestInWindow: Sample?
             for s in samples where s.time >= cutoff {
@@ -171,7 +175,7 @@ final class ReplayRatioController: @unchecked Sendable {
             }
             if let oldest = oldestInWindow, let newest = samples.last {
                 let dt = newest.time.timeIntervalSince(oldest.time)
-                if dt >= windowSeconds {
+                if dt > 3.0 {
                     productionRate = Double(newest.produced - oldest.produced) / dt
                     consumptionRate = Double(newest.consumed - oldest.consumed) / dt
                 }
