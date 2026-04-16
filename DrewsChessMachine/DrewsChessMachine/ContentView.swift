@@ -1318,7 +1318,7 @@ struct ContentView: View {
     /// already turns a ~60 steps/s training worker into roughly
     /// 2 steps/s, which is as slow as anyone reasonably wants to
     /// crawl the learning rate while still making progress.
-    nonisolated static let stepDelayMaxMs: Int = 500
+    nonisolated static let stepDelayMaxMs: Int = 2000
     /// Discrete ladder of valid training-step delay values in
     /// milliseconds. Fine-grained 5 ms increments at the low end
     /// where small delays matter most, then 25 ms increments all
