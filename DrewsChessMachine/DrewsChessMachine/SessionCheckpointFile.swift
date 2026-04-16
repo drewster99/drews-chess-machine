@@ -106,13 +106,21 @@ struct SessionCheckpointState: Codable, Equatable {
     let arenaTau: TauConfigCodable
     let selfPlayWorkerCount: Int
 
-    // Replay-ratio controller settings. Optional so sessions saved
-    // before the ratio controller existed still decode; callers use
-    // `?? 1.0` / `?? true` at the read site. Swift's synthesized
-    // Codable only calls `decodeIfPresent` for Optional types — a
-    // non-optional `var` with a default still requires the key.
+    // Replay-ratio controller settings. All Optional so older
+    // session.json files that lack these keys still decode.
     var replayRatioTarget: Double?
     var replayRatioAutoAdjust: Bool?
+    var stepDelayMs: Int?
+    var lastAutoComputedDelayMs: Int?
+
+    // Game-result breakdown (added v1.1 — Optional for compat)
+    var whiteCheckmates: Int?
+    var blackCheckmates: Int?
+    var stalemates: Int?
+    var fiftyMoveDraws: Int?
+    var threefoldRepetitionDraws: Int?
+    var insufficientMaterialDraws: Int?
+    var totalGameWallMs: Double?
 
     // Network identity — duplicated from the `.dcmmodel` headers so
     // a future "browse saved sessions" UI can read just

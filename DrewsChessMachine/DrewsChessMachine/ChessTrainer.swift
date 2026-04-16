@@ -281,6 +281,14 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self.rollingWindow = rollingWindow
     }
 
+    /// Seed the stats with values from a resumed session so the
+    /// step counter and other totals don't restart from zero.
+    func seed(_ stats: TrainingRunStats) {
+        lock.lock()
+        defer { lock.unlock() }
+        _stats = stats
+    }
+
     /// Record one completed training step. Called from the background
     /// training task; takes the lock briefly and returns. No main-actor
     /// hop and no SwiftUI invalidation — the view picks the change up on

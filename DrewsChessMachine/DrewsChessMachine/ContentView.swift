@@ -933,6 +933,34 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         self._sessionStart = sessionStart
     }
 
+    /// Seeded init for session resume. All counters pick up where
+    /// the saved session left off so the UI shows continuity.
+    init(
+        sessionStart: Date,
+        totalGames: Int,
+        totalMoves: Int,
+        totalGameWallMs: Double,
+        whiteCheckmates: Int,
+        blackCheckmates: Int,
+        stalemates: Int,
+        fiftyMoveDraws: Int,
+        threefoldRepetitionDraws: Int,
+        insufficientMaterialDraws: Int,
+        trainingSteps: Int
+    ) {
+        self._sessionStart = sessionStart
+        self._totalGames = totalGames
+        self._totalMoves = totalMoves
+        self._totalGameWallMs = totalGameWallMs
+        self._whiteCheckmates = whiteCheckmates
+        self._blackCheckmates = blackCheckmates
+        self._stalemates = stalemates
+        self._fiftyMoveDraws = fiftyMoveDraws
+        self._threefoldRepetitionDraws = threefoldRepetitionDraws
+        self._insufficientMaterialDraws = insufficientMaterialDraws
+        self._trainingSteps = trainingSteps
+    }
+
     /// Advance `sessionStart` to `Date()`. Called once from inside
     /// the Play-and-Train task, immediately before the worker group
     /// is spawned, so that rate denominators only cover the window
@@ -1889,7 +1917,7 @@ struct ContentView: View {
                 }
 
                 if !realTraining && !continuousPlay && !continuousTraining && !sweepRunning {
-                    Button("Play and Train") { startRealTraining() }
+                    Button(pendingLoadedSession != nil ? "Continue Training" : "Play and Train") { startRealTraining() }
                         .disabled(isBusy || !networkReady)
                 }
 
@@ -2721,6 +2749,7 @@ struct ContentView: View {
         Binding(
             get: { progressRateScrollX },
             set: { newValue in
+                // TODO: Note - we are STILL seeing runtime errors stating "onChange(of: ChartScrollPositionConfiguration) action tried to update multiple times per frame." -- so this issue is not resolved, despite the comment below.
                 // Swift Charts echoes the binding back with its own
                 // (sometimes identical) value on the same frame we
                 // advanced auto-follow. Without this guard the chart's
@@ -2989,6 +3018,15 @@ struct ContentView: View {
             selfPlayWorkerCount: selfPlayWorkerCount,
             replayRatioTarget: replayRatioTarget,
             replayRatioAutoAdjust: replayRatioAutoAdjust,
+            stepDelayMs: trainingStepDelayMs,
+            lastAutoComputedDelayMs: lastAutoComputedDelayMs,
+            whiteCheckmates: snap?.whiteCheckmates,
+            blackCheckmates: snap?.blackCheckmates,
+            stalemates: snap?.stalemates,
+            fiftyMoveDraws: snap?.fiftyMoveDraws,
+            threefoldRepetitionDraws: snap?.threefoldRepetitionDraws,
+            insufficientMaterialDraws: snap?.insufficientMaterialDraws,
+            totalGameWallMs: snap?.totalGameWallMs,
             championID: championID,
             trainerID: trainerID,
             arenaHistory: history
@@ -4255,20 +4293,75 @@ struct ContentView: View {
         let buffer = ReplayBuffer(capacity: Self.replayBufferCapacity)
         replayBuffer = buffer
         let box = TrainingLiveStatsBox(rollingWindow: Self.rollingLossWindow)
+        if let rs = pendingLoadedSession?.state {
+            var seeded = TrainingRunStats()
+            seeded.steps = rs.trainingSteps
+            box.seed(seeded)
+        }
         trainingBox = box
         realRollingPolicyLoss = nil
         realRollingValueLoss = nil
-        trainingStats = TrainingRunStats()
+        // Seed counters from the loaded session if resuming, or
+        // start fresh. This covers the stats box (game/move/result
+        // counters), training step count, tournament history, and
+        // worker count.
+        let resumeState = pendingLoadedSession?.state
+        var initialTrainingStats = TrainingRunStats()
+        if let rs = resumeState {
+            initialTrainingStats.steps = rs.trainingSteps
+        }
+        trainingStats = initialTrainingStats
         playAndTrainBoardMode = .gameRun
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
         candidateProbeCount = 0
         learningRateEditText = String(format: "%.1e", trainer.learningRate)
-        tournamentHistory = []
+        if let rs = resumeState {
+            tournamentHistory = rs.arenaHistory.map { entry in
+                TournamentRecord(
+                    finishedAtStep: entry.finishedAtStep,
+                    candidateWins: entry.candidateWins,
+                    championWins: entry.championWins,
+                    draws: entry.draws,
+                    score: entry.score,
+                    promoted: entry.promoted,
+                    promotedID: entry.promotedID.map { ModelID(value: $0) },
+                    durationSec: entry.durationSec
+                )
+            }
+        } else {
+            tournamentHistory = []
+        }
         tournamentProgress = nil
         let tBox = TournamentLiveBox()
         tournamentBox = tBox
-        let pStatsBox = ParallelWorkerStatsBox(sessionStart: Date())
+        let pStatsBox: ParallelWorkerStatsBox
+        if let rs = resumeState {
+            pStatsBox = ParallelWorkerStatsBox(
+                sessionStart: Date(),
+                totalGames: rs.selfPlayGames,
+                totalMoves: rs.selfPlayMoves,
+                totalGameWallMs: rs.totalGameWallMs ?? 0,
+                whiteCheckmates: rs.whiteCheckmates ?? 0,
+                blackCheckmates: rs.blackCheckmates ?? 0,
+                stalemates: rs.stalemates ?? 0,
+                fiftyMoveDraws: rs.fiftyMoveDraws ?? 0,
+                threefoldRepetitionDraws: rs.threefoldRepetitionDraws ?? 0,
+                insufficientMaterialDraws: rs.insufficientMaterialDraws ?? 0,
+                trainingSteps: rs.trainingSteps
+            )
+            if let workerCount = resumeState?.selfPlayWorkerCount {
+                selfPlayWorkerCount = max(1, min(Self.absoluteMaxSelfPlayWorkers, workerCount))
+            }
+            if let delay = rs.stepDelayMs {
+                trainingStepDelayMs = delay
+            }
+            if let autoDelay = rs.lastAutoComputedDelayMs {
+                lastAutoComputedDelayMs = autoDelay
+            }
+        } else {
+            pStatsBox = ParallelWorkerStatsBox(sessionStart: Date())
+        }
         parallelWorkerStatsBox = pStatsBox
         parallelStats = pStatsBox.snapshot()
         // Reset progress-rate sampler state so the new session's
