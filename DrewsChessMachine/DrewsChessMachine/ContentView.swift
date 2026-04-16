@@ -1541,6 +1541,10 @@ struct ContentView: View {
     /// in session checkpoints.
     @AppStorage("replayRatioTarget") private var replayRatioTarget: Double = 1.0
     @AppStorage("trainerLearningRate") private var trainerLearningRate: Double = Double(trainerLearningRateDefault)
+    /// Last auto-computed step delay, persisted so the next session
+    /// starts from where the auto-adjuster left off instead of
+    /// falling back to the manual default.
+    @AppStorage("lastAutoComputedDelayMs") private var lastAutoComputedDelayMs: Int = 50
     /// Whether the ratio controller auto-adjusts the training step
     /// delay. When off, the manual Stepper controls the delay
     /// directly. Persisted in session checkpoints.
@@ -2447,9 +2451,15 @@ struct ContentView: View {
             // over the last 3 minutes of work. No-op outside of
             // realTraining.
             refreshProgressRateIfNeeded()
-            // Replay-ratio snapshot for the UI.
+            // Replay-ratio snapshot for the UI. Persist the auto-
+            // computed delay so the next session starts from where
+            // the adjuster left off.
             if let rc = replayRatioController {
-                replayRatioSnapshot = rc.snapshot()
+                let snap = rc.snapshot()
+                replayRatioSnapshot = snap
+                if snap.autoAdjust {
+                    lastAutoComputedDelayMs = snap.computedDelayMs
+                }
             }
         }
     }
@@ -4237,7 +4247,9 @@ struct ContentView: View {
             batchSize: Self.trainingBatchSize,
             targetRatio: replayRatioTarget,
             autoAdjust: replayRatioAutoAdjust,
-            initialDelayMs: trainingStepDelayMs,
+            initialDelayMs: replayRatioAutoAdjust
+                ? lastAutoComputedDelayMs
+                : trainingStepDelayMs,
             maxDelayMs: Self.stepDelayMaxMs
         )
         replayRatioController = ratioController
