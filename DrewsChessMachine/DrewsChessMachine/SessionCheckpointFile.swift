@@ -105,9 +105,10 @@ struct SessionCheckpointState: Codable, Equatable {
     let arenaTau: TauConfigCodable
     let selfPlayWorkerCount: Int
 
-    // Replay-ratio controller settings
-    let replayRatioTarget: Double
-    let replayRatioAutoAdjust: Bool
+    // Replay-ratio controller settings (added after initial format;
+    // default values ensure older session.json files still decode)
+    var replayRatioTarget: Double = 1.0
+    var replayRatioAutoAdjust: Bool = true
 
     // Network identity — duplicated from the `.dcmmodel` headers so
     // a future "browse saved sessions" UI can read just
