@@ -943,6 +943,25 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         _sessionStart = Date()
     }
 
+    /// Reset game-play counters so post-promotion stats reflect
+    /// only the newly-promoted champion's self-play performance.
+    /// Training step count and sessionStart are NOT reset so
+    /// training-rate display stays continuous.
+    func resetGameStats() {
+        lock.lock()
+        defer { lock.unlock() }
+        _totalGames = 0
+        _totalMoves = 0
+        _totalGameWallMs = 0
+        _whiteCheckmates = 0
+        _blackCheckmates = 0
+        _stalemates = 0
+        _fiftyMoveDraws = 0
+        _threefoldRepetitionDraws = 0
+        _insufficientMaterialDraws = 0
+        _recentGames.removeAll()
+    }
+
     /// Record one completed self-play game. Called from every worker
     /// at game-end with the game's total moves, wall-clock duration,
     /// and final result. Bumps lifetime totals, the per-outcome
@@ -3751,6 +3770,21 @@ struct ContentView: View {
             championSide: arenaChampion
         )
         cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+
+        // On promotion: reset game-play stats so the display
+        // reflects only the new champion's self-play performance,
+        // and emit a STATS log line so the post-promotion state
+        // is visible in the session log (the fixed STATS ticker
+        // may not fire for up to an hour at this point in the
+        // schedule).
+        if promoted {
+            parallelWorkerStatsBox?.resetGameStats()
+            let trainerIDStr = trainer.identifier?.description ?? "?"
+            let championIDStr = champion.identifier?.description ?? "?"
+            SessionLogger.shared.log(
+                "[STATS] post-promote  steps=\(trainingStats?.steps ?? 0) champion=\(championIDStr) trainer=\(trainerIDStr)"
+            )
+        }
 
         // Post-promotion autosave. Fires a detached Task that
         // writes a full session snapshot using the weights we

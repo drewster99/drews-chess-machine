@@ -567,7 +567,30 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [-1, 1],
             name: "policy_ce_per_pos"
         )
-        let weightedCE = graph.multiplication(z, negLogProb, name: "z_weighted_ce")
+        // Clip per-position CE to prevent the unbounded-loss
+        // catastrophe documented in chess-engine-design.md.
+        // Without this, a single position where the played move
+        // has p(a*) ≈ 0 produces -log(0) → huge, and with the
+        // ×1000 policy weight the gradient explodes to NaN. This
+        // is especially dangerous right after arena promotion:
+        // the new champion generates data from a broad policy
+        // while the trainer has concentrated, so many moves in
+        // the new data have near-zero probability under the
+        // trainer's policy. Clipping at log(4096) ≈ 8.32 caps
+        // the per-position CE at the entropy of a uniform
+        // distribution — no single position can contribute more
+        // gradient than "this move is maximally surprising."
+        let ceClipMax = graph.constant(
+            Double(log(Float(ChessNetwork.policySize))),
+            dataType: dtype
+        )
+        let clippedNegLogProb = graph.clamp(
+            negLogProb,
+            min: graph.constant(0.0, dataType: dtype),
+            max: ceClipMax,
+            name: "policy_ce_clipped"
+        )
+        let weightedCE = graph.multiplication(z, clippedNegLogProb, name: "z_weighted_ce")
         let policyLoss = graph.mean(of: weightedCE, axes: [0, 1], name: "policy_loss")
 
         // --- Value loss: L = mean( (z - v)^2 ) ---
