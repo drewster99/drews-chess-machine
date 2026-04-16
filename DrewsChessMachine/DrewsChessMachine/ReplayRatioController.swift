@@ -110,7 +110,13 @@ final class ReplayRatioController: @unchecked Sendable {
             samples.removeFirst()
         }
 
-        // Need at least 2 samples spanning >1 s.
+        // Need at least 2 samples spanning a full window before the
+        // auto-adjuster kicks in. During the first ~60 s of a session,
+        // self-play is filling the buffer while training hasn't started
+        // yet (or just started), so the ratio is meaninglessly skewed.
+        // Returning the current delay unchanged during warmup keeps the
+        // training worker at its initial pace until there's a real
+        // 1-minute baseline to adjust against.
         guard samples.count >= 2,
               let oldest = samples.first,
               let newest = samples.last else {
@@ -118,7 +124,7 @@ final class ReplayRatioController: @unchecked Sendable {
         }
 
         let dt = newest.time.timeIntervalSince(oldest.time)
-        guard dt > 1.0 else {
+        guard dt >= windowSeconds else {
             return _autoAdjust ? _computedDelayMs : _manualDelayMs
         }
 
@@ -165,7 +171,7 @@ final class ReplayRatioController: @unchecked Sendable {
             }
             if let oldest = oldestInWindow, let newest = samples.last {
                 let dt = newest.time.timeIntervalSince(oldest.time)
-                if dt > 1.0 {
+                if dt >= windowSeconds {
                     productionRate = Double(newest.produced - oldest.produced) / dt
                     consumptionRate = Double(newest.consumed - oldest.consumed) / dt
                 }
