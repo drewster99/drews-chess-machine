@@ -7,23 +7,21 @@ import Foundation
 /// **Production rate** — positions added to the replay buffer per
 /// second. The training worker passes the buffer's cumulative
 /// `totalPositionsAdded` on each step; the controller diffs
-/// successive readings to compute the rolling rate. No changes
-/// to self-play workers are needed.
+/// successive readings to compute the rolling rate.
 ///
 /// **Consumption rate** — positions consumed by training per second.
 /// Each `recordStep` call increments by `batchSize`.
 ///
-/// **Auto-adjustment** — when enabled, computes the training-step
-/// delay (in ms) that would bring the ratio to `targetRatio`:
+/// **Auto-adjustment** — when enabled, directly computes the delay
+/// from an exponential moving average of GPU step time and the
+/// 1-minute production rate:
 ///
-///     targetConsumptionRate = targetRatio × productionRate
-///     desiredCycleSec = batchSize / targetConsumptionRate
-///     delayMs = max(0, desiredCycleSec - stepTimeSec) × 1000
+///     desiredCycleSec = batchSize / (targetRatio × productionRate)
+///     delayMs = max(0, desiredCycleSec - emaGpuTimeSec) × 1000
 ///
-/// The result is clamped to `[0, maxDelayMs]` and returned to the
-/// training worker, which uses it as its `Task.sleep` duration
-/// for the next step. When auto-adjust is off, the most-recently-
-/// set manual delay is returned unchanged.
+/// The EMA of GPU step time gives a stable estimate that adapts
+/// over ~20 steps without the oscillation that accumulating deltas
+/// against a stale 60-second window caused.
 ///
 /// Thread-safe via `NSLock` — the training worker writes on each
 /// step and the UI heartbeat reads for display.
@@ -43,6 +41,15 @@ final class ReplayRatioController: @unchecked Sendable {
     private var _totalConsumed: Int = 0
     private var _computedDelayMs: Int
 
+    /// Exponential moving average of the GPU training step time
+    /// (milliseconds). Updated on every step with alpha=0.05,
+    /// giving an effective smoothing window of ~20 steps. Used as
+    /// the "how long does the GPU need" estimate in the delay
+    /// calculation.
+    private var _emaStepTimeMs: Double = 0
+    private var _emaInitialized: Bool = false
+    private let emaAlpha: Double = 0.05
+
     private struct Sample {
         let time: Date
         let produced: Int
@@ -53,12 +60,6 @@ final class ReplayRatioController: @unchecked Sendable {
 
     // MARK: - Init
 
-    /// - Parameters:
-    ///   - batchSize: Positions consumed per training step.
-    ///   - targetRatio: Desired consumed/produced ratio (default 1.0).
-    ///   - autoAdjust: Whether the controller manages the delay.
-    ///   - initialDelayMs: Starting delay before any rate data arrives.
-    ///   - maxDelayMs: Hard ceiling on computed delay.
     init(
         batchSize: Int,
         targetRatio: Double = 1.0,
@@ -77,19 +78,30 @@ final class ReplayRatioController: @unchecked Sendable {
     // MARK: - Training worker interface
 
     /// Called by the training worker after each `trainStep`.
-    /// Appends a snapshot, prunes old ones, optionally recomputes
-    /// the delay, and returns the delay to use for the next step.
+    /// Updates the GPU-time EMA, appends a rate sample, and
+    /// optionally recomputes the delay.
     ///
-    /// - Parameter currentBufferTotal: `buffer.totalPositionsAdded`
-    ///   — the monotonically-increasing count of all positions ever
-    ///   appended to the replay buffer.
+    /// - Parameters:
+    ///   - currentBufferTotal: `buffer.totalPositionsAdded`.
+    ///   - stepTimeMs: Wall-clock duration of the just-completed
+    ///     training step (`TrainStepTiming.totalMs`). Fed into an
+    ///     EMA to produce a smooth GPU-time estimate.
     /// - Returns: The delay in ms the training worker should
     ///   `Task.sleep` before the next step.
     func recordStepAndGetDelay(
-        currentBufferTotal: Int
+        currentBufferTotal: Int,
+        stepTimeMs: Double
     ) -> Int {
         lock.lock()
         defer { lock.unlock() }
+
+        // Update the GPU step-time EMA.
+        if _emaInitialized {
+            _emaStepTimeMs = emaAlpha * stepTimeMs + (1 - emaAlpha) * _emaStepTimeMs
+        } else {
+            _emaStepTimeMs = stepTimeMs
+            _emaInitialized = true
+        }
 
         _totalConsumed += batchSize
 
@@ -106,14 +118,7 @@ final class ReplayRatioController: @unchecked Sendable {
             samples.removeFirst()
         }
 
-        // Need enough samples spanning a meaningful window before the
-        // auto-adjuster kicks in. During the first ~30 s of a session,
-        // self-play is filling the buffer while training hasn't started
-        // yet (or just started), so the ratio is meaninglessly skewed.
-        // We use half the window as the threshold rather than the full
-        // window because pruning removes samples older than windowSeconds,
-        // so the oldest-to-newest span asymptotically approaches but
-        // never reaches the full window.
+        // Wait for enough data before auto-adjusting.
         let warmupThreshold = windowSeconds * 0.5
         guard samples.count >= 2,
               let oldest = samples.first,
@@ -129,29 +134,24 @@ final class ReplayRatioController: @unchecked Sendable {
         let productionRate = Double(newest.produced - oldest.produced) / dt
 
         if _autoAdjust && productionRate > 0 {
-            // Feedback controller: measure the current cycle time
-            // (wall time per training step including delay), compute
-            // the desired cycle time from the target ratio, and
-            // adjust the delay by the difference.
+            // Direct computation: how long should the total cycle
+            // (GPU work + delay) be to hit the target ratio?
             //
-            //   currentCycle = dt / stepsInWindow     (measured)
-            //   desiredCycle = batchSize / (target × productionRate)
-            //   newDelay = currentDelay + (desiredCycle - currentCycle)
+            //   desiredCycleSec = batchSize / (targetRatio × productionRate)
+            //   delay = desiredCycle - gpuTime
             //
-            // This avoids the circular dependency of trying to
-            // separate GPU time from delay time — we simply nudge the
-            // delay in the direction that reduces the error between
-            // actual and desired cycle time.
-            let stepsInWindow = Double(newest.consumed - oldest.consumed) / Double(batchSize)
-            guard stepsInWindow > 0 else {
-                return _computedDelayMs
-            }
-            let currentCycleSec = dt / stepsInWindow
-            let targetConsumptionRate = _targetRatio * productionRate
-            let desiredCycleSec = Double(batchSize) / targetConsumptionRate
-            let currentDelaySec = Double(_computedDelayMs) / 1000.0
-            let newDelaySec = currentDelaySec + (desiredCycleSec - currentCycleSec)
-            _computedDelayMs = max(0, min(maxDelayMs, Int(newDelaySec * 1000.0)))
+            // The GPU time comes from the EMA, which is measured
+            // independently of the delay and smoothed over ~20 steps.
+            // This avoids the oscillation that delta-accumulation
+            // against a stale 60-second window caused: the EMA
+            // responds in seconds, the production rate is smooth
+            // over 60s, and the delay is computed fresh each step
+            // without any feedback loop through the measurement
+            // window.
+            let desiredCycleSec = Double(batchSize) / (_targetRatio * productionRate)
+            let gpuTimeSec = _emaStepTimeMs / 1000.0
+            let rawDelayMs = (desiredCycleSec - gpuTimeSec) * 1000.0
+            _computedDelayMs = max(0, min(maxDelayMs, Int(rawDelayMs)))
         }
 
         return _autoAdjust ? _computedDelayMs : _manualDelayMs
@@ -159,7 +159,6 @@ final class ReplayRatioController: @unchecked Sendable {
 
     // MARK: - UI snapshot
 
-    /// Immutable read for the heartbeat / display layer.
     struct RatioSnapshot: Sendable {
         let productionRate: Double
         let consumptionRate: Double
@@ -179,10 +178,6 @@ final class ReplayRatioController: @unchecked Sendable {
         var productionRate: Double = 0
         var consumptionRate: Double = 0
 
-        // Show rates as soon as we have a few seconds of data so the
-        // display isn't stuck on dashes for the entire warmup period.
-        // The auto-adjust guard in recordStepAndGetDelay still waits
-        // for the full 60s window before touching the delay.
         if samples.count >= 2 {
             var oldestInWindow: Sample?
             for s in samples where s.time >= cutoff {
@@ -229,10 +224,6 @@ final class ReplayRatioController: @unchecked Sendable {
         set { lock.lock(); _manualDelayMs = max(0, min(maxDelayMs, newValue)); lock.unlock() }
     }
 
-    /// Set the auto-computed delay to a specific value. Used when
-    /// toggling auto-adjust ON so the delay starts from the
-    /// current manual value instead of whatever stale computed
-    /// value was left over from initialization or a prior session.
     var computedDelayMs: Int {
         get { lock.lock(); defer { lock.unlock() }; return _computedDelayMs }
         set { lock.lock(); _computedDelayMs = max(0, min(maxDelayMs, newValue)); lock.unlock() }
