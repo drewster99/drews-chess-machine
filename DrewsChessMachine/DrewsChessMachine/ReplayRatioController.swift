@@ -4,27 +4,17 @@ import Foundation
 /// self-play production and optionally auto-adjusts the training
 /// step delay so the two sides stay in balance.
 ///
-/// **Production rate** — positions added to the replay buffer per
-/// second. The training worker passes the buffer's cumulative
-/// `totalPositionsAdded` on each step; the controller diffs
-/// successive readings to compute the rolling rate.
+/// The auto-adjuster works by:
+/// 1. Measuring the actual per-step overhead (GPU + buffer locks +
+///    scheduling — everything except the sleep delay) from the
+///    observed consumption rate minus the known delay.
+/// 2. Computing the desired cycle time from the target ratio and
+///    the observed production rate.
+/// 3. Setting delay = desiredCycle − overhead, with damping so
+///    large changes converge smoothly over ~15 seconds instead of
+///    oscillating against the 60-second measurement window.
 ///
-/// **Consumption rate** — positions consumed by training per second.
-/// Each `recordStep` call increments by `batchSize`.
-///
-/// **Auto-adjustment** — when enabled, directly computes the delay
-/// from an exponential moving average of GPU step time and the
-/// 1-minute production rate:
-///
-///     desiredCycleSec = batchSize / (targetRatio × productionRate)
-///     delayMs = max(0, desiredCycleSec - emaGpuTimeSec) × 1000
-///
-/// The EMA of GPU step time gives a stable estimate that adapts
-/// over ~20 steps without the oscillation that accumulating deltas
-/// against a stale 60-second window caused.
-///
-/// Thread-safe via `NSLock` — the training worker writes on each
-/// step and the UI heartbeat reads for display.
+/// Thread-safe via `NSLock`.
 final class ReplayRatioController: @unchecked Sendable {
     private let lock = NSLock()
 
@@ -41,14 +31,20 @@ final class ReplayRatioController: @unchecked Sendable {
     private var _totalConsumed: Int = 0
     private var _computedDelayMs: Int
 
-    /// Exponential moving average of the GPU training step time
-    /// (milliseconds). Updated on every step with alpha=0.05,
-    /// giving an effective smoothing window of ~20 steps. Used as
-    /// the "how long does the GPU need" estimate in the delay
-    /// calculation.
+    /// EMA of GPU step time (from TrainStepTiming.totalMs). Used
+    /// only as a FLOOR on the overhead estimate — prevents the
+    /// overhead from collapsing to zero when the delay exceeds
+    /// the stale cycle measurement during a transition.
     private var _emaStepTimeMs: Double = 0
     private var _emaInitialized: Bool = false
     private let emaAlpha: Double = 0.05
+
+    /// Per-step damping factor. Each step moves 10% of the way
+    /// from current delay to the computed target. At ~3 steps/sec
+    /// this converges in ~15 seconds. Low enough to avoid
+    /// oscillation from stale window data, high enough to track
+    /// production rate changes within a minute.
+    private let damping: Double = 0.1
 
     private struct Sample {
         let time: Date
@@ -78,14 +74,12 @@ final class ReplayRatioController: @unchecked Sendable {
     // MARK: - Training worker interface
 
     /// Called by the training worker after each `trainStep`.
-    /// Updates the GPU-time EMA, appends a rate sample, and
-    /// optionally recomputes the delay.
     ///
     /// - Parameters:
     ///   - currentBufferTotal: `buffer.totalPositionsAdded`.
     ///   - stepTimeMs: Wall-clock duration of the just-completed
-    ///     training step (`TrainStepTiming.totalMs`). Fed into an
-    ///     EMA to produce a smooth GPU-time estimate.
+    ///     training step (GPU + data prep + readback, NOT including
+    ///     the sleep delay).
     /// - Returns: The delay in ms the training worker should
     ///   `Task.sleep` before the next step.
     func recordStepAndGetDelay(
@@ -95,7 +89,7 @@ final class ReplayRatioController: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        // Update the GPU step-time EMA.
+        // Update the GPU step-time EMA (used as overhead floor).
         if _emaInitialized {
             _emaStepTimeMs = emaAlpha * stepTimeMs + (1 - emaAlpha) * _emaStepTimeMs
         } else {
@@ -112,13 +106,11 @@ final class ReplayRatioController: @unchecked Sendable {
             consumed: _totalConsumed
         ))
 
-        // Prune samples older than the window.
         let cutoff = now.addingTimeInterval(-windowSeconds)
         while let first = samples.first, first.time < cutoff {
             samples.removeFirst()
         }
 
-        // Wait for enough data before auto-adjusting.
         let warmupThreshold = windowSeconds * 0.5
         guard samples.count >= 2,
               let oldest = samples.first,
@@ -132,26 +124,28 @@ final class ReplayRatioController: @unchecked Sendable {
         }
 
         let productionRate = Double(newest.produced - oldest.produced) / dt
+        let consumptionRate = Double(newest.consumed - oldest.consumed) / dt
 
-        if _autoAdjust && productionRate > 0 {
-            // Direct computation: how long should the total cycle
-            // (GPU work + delay) be to hit the target ratio?
-            //
-            //   desiredCycleSec = batchSize / (targetRatio × productionRate)
-            //   delay = desiredCycle - gpuTime
-            //
-            // The GPU time comes from the EMA, which is measured
-            // independently of the delay and smoothed over ~20 steps.
-            // This avoids the oscillation that delta-accumulation
-            // against a stale 60-second window caused: the EMA
-            // responds in seconds, the production rate is smooth
-            // over 60s, and the delay is computed fresh each step
-            // without any feedback loop through the measurement
-            // window.
+        if _autoAdjust && productionRate > 0 && consumptionRate > 0 {
+            // 1. Estimate per-step overhead from the measured
+            //    consumption rate minus the known delay we set.
+            //    Floor at the EMA of GPU step time so the estimate
+            //    never collapses to zero during a transition where
+            //    the delay exceeds the stale cycle measurement.
+            let actualCycleSec = Double(batchSize) / consumptionRate
+            let currentDelaySec = Double(_computedDelayMs) / 1000.0
+            let emaFloorSec = _emaStepTimeMs / 1000.0
+            let overheadSec = max(emaFloorSec, actualCycleSec - currentDelaySec)
+
+            // 2. Desired cycle time from the target ratio.
             let desiredCycleSec = Double(batchSize) / (_targetRatio * productionRate)
-            let gpuTimeSec = _emaStepTimeMs / 1000.0
-            let rawDelayMs = (desiredCycleSec - gpuTimeSec) * 1000.0
-            _computedDelayMs = max(0, min(maxDelayMs, Int(rawDelayMs)))
+
+            // 3. Target delay = desired cycle minus overhead.
+            let targetDelayMs = max(0, (desiredCycleSec - overheadSec) * 1000.0)
+
+            // 4. Damped move toward the target.
+            let newDelayMs = Double(_computedDelayMs) + damping * (targetDelayMs - Double(_computedDelayMs))
+            _computedDelayMs = max(0, min(maxDelayMs, Int(newDelayMs)))
         }
 
         return _autoAdjust ? _computedDelayMs : _manualDelayMs
