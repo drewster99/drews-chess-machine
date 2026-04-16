@@ -660,16 +660,33 @@ final class ChessTrainer: @unchecked Sendable {
         // Policy loss is REINFORCE on the played move over a 4096-way
         // softmax, so per-logit gradient magnitude is ~1/(N·batch) — about
         // three orders of magnitude weaker than the value head's (z−v)²
-        // gradient. Scale the policy term up so both heads actually learn
-        // during the pre-MCTS bootstrap phase. Revisit when visit-count
-        // targets replace the one-hot.
-        let policyLossWeight = graph.constant(1000.0, dataType: dtype)
-        let weightedPolicyLoss = graph.multiplication(
-            policyLossWeight,
+        // gradient. Scale the policy term up relative to the value term
+        // so both heads get meaningful gradient during the pre-MCTS
+        // bootstrap phase of training.
+        //
+        // Normalize by (w+1) so the TOTAL gradient magnitude stays the
+        // same as the original unweighted `policyLoss + valueLoss`.
+        // Without normalization the ×1000 weight also multiplied the
+        // effective learning rate for the shared trunk by ~1000×,
+        // making lr=1e-4 behave like lr=0.1 and causing divergence
+        // after a few thousand steps.
+        let policyWeight = graph.constant(1000.0, dataType: dtype)
+        let normalizer = graph.constant(1.0 / 1001.0, dataType: dtype)
+        let weightedPolicy = graph.multiplication(
+            policyWeight,
             policyLoss,
             name: "weighted_policy_loss"
         )
-        let totalLossTensor = graph.addition(valueLoss, weightedPolicyLoss, name: "total_loss")
+        let unnormalizedTotal = graph.addition(
+            valueLoss,
+            weightedPolicy,
+            name: "unnormalized_total_loss"
+        )
+        let totalLossTensor = graph.multiplication(
+            normalizer,
+            unnormalizedTotal,
+            name: "total_loss"
+        )
 
         // --- Gradients w.r.t. trainable variables ---
 
