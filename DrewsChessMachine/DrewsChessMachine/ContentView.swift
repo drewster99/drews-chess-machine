@@ -1706,13 +1706,17 @@ struct ContentView: View {
             set: { newValue in
                 let ladder = Self.stepDelayLadder
                 let current = trainingStepDelayMs
-                // `trainingStepDelayMs` is seeded with a ladder rung
-                // (0) and every write below snaps to another ladder
-                // rung, so `firstIndex(of:)` is invariant-guaranteed
-                // non-nil. A violation here would be a programmer
-                // error, so crash loudly rather than silently drifting.
-                guard let currentIdx = ladder.firstIndex(of: current) else {
-                    preconditionFailure("trainingStepDelayMs (\(current)) is not a rung in stepDelayLadder")
+                // Find the current value in the ladder. If it's not
+                // an exact rung (e.g. inherited from the auto-adjuster
+                // which computes arbitrary ms values), snap to the
+                // nearest rung before stepping up or down.
+                let currentIdx: Int
+                if let exact = ladder.firstIndex(of: current) {
+                    currentIdx = exact
+                } else {
+                    currentIdx = ladder.enumerated().min(by: {
+                        abs($0.element - current) < abs($1.element - current)
+                    })?.offset ?? 0
                 }
                 let nextIdx: Int
                 if newValue > current {
@@ -1764,11 +1768,14 @@ struct ContentView: View {
                     replayRatioController?.computedDelayMs = trainingStepDelayMs
                 } else {
                     // Toggling auto OFF: inherit the last auto-computed
-                    // delay as the new manual value so the training
-                    // pace doesn't jump when the user takes over.
+                    // delay as the new manual value, snapped to the
+                    // nearest ladder rung so the Stepper binding
+                    // doesn't crash on an off-ladder value.
                     let lastAuto = replayRatioController?.computedDelayMs ?? trainingStepDelayMs
-                    trainingStepDelayMs = lastAuto
-                    replayRatioController?.manualDelayMs = lastAuto
+                    let ladder = Self.stepDelayLadder
+                    let snapped = ladder.min(by: { abs($0 - lastAuto) < abs($1 - lastAuto) }) ?? lastAuto
+                    trainingStepDelayMs = snapped
+                    replayRatioController?.manualDelayMs = snapped
                 }
             }
         )
