@@ -3540,6 +3540,20 @@ struct ContentView: View {
         SessionLogger.shared.log(
             "[ARENA] start  step=\(steps) trainer=\(trainerIDStart) champion=\(championIDStart)"
         )
+        // Snapshot losses/entropy at arena start so the log shows
+        // the trainer's state entering the arena — especially
+        // useful for diagnosing whether divergence was already
+        // underway before the arena ran.
+        if let snap = trainingBox?.snapshot() {
+            let pStr = snap.rollingPolicyLoss.map { String(format: "%+.4f", $0) } ?? "--"
+            let vStr = snap.rollingValueLoss.map { String(format: "%+.4f", $0) } ?? "--"
+            let eStr = snap.rollingPolicyEntropy.map { String(format: "%.4f", $0) } ?? "--"
+            let bufCount = replayBuffer?.count ?? 0
+            let bufCap = replayBuffer?.capacity ?? Self.replayBufferCapacity
+            SessionLogger.shared.log(
+                "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
+            )
+        }
 
         // Mark arena active and seed live progress. Arena-active
         // suppresses the candidate test probe for the duration so
@@ -4783,7 +4797,8 @@ struct ContentView: View {
                 group.addTask(priority: .utility) {
                     [trainer, network, box, pStatsBox, buffer] in
                     let sessionStart = Date()
-                    let fixedTargets: [TimeInterval] = [30, 60, 120, 300, 900, 1800, 3600]
+                    // Ramp up quickly then cap at every 15 minutes.
+                    let fixedTargets: [TimeInterval] = [30, 60, 120, 300, 900]
 
                     func logOne(elapsedTarget: TimeInterval) async {
                         let trainingSnap = box.snapshot()
@@ -4841,13 +4856,12 @@ struct ContentView: View {
                         await logOne(elapsedTarget: target)
                     }
 
-                    // Hourly after the fixed schedule (2h, 3h, 4h, ...).
-                    var hourNumber = 2
+                    // Every 15 minutes after the fixed schedule, forever.
+                    var elapsed = fixedTargets.last ?? 900
                     while !Task.isCancelled {
-                        let target = TimeInterval(hourNumber) * 3600
-                        guard await sleepUntil(elapsed: target) else { return }
-                        await logOne(elapsedTarget: target)
-                        hourNumber += 1
+                        elapsed += 900
+                        guard await sleepUntil(elapsed: elapsed) else { return }
+                        await logOne(elapsedTarget: elapsed)
                     }
                 }
 
