@@ -4240,8 +4240,8 @@ struct ContentView: View {
         if let resumed = pendingLoadedSession {
             currentSessionID = resumed.state.sessionID
             currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
-            replayRatioTarget = resumed.state.replayRatioTarget
-            replayRatioAutoAdjust = resumed.state.replayRatioAutoAdjust
+            replayRatioTarget = resumed.state.replayRatioTarget ?? 1.0
+            replayRatioAutoAdjust = resumed.state.replayRatioAutoAdjust ?? true
         } else {
             currentSessionID = ModelIDMinter.mint().value
             currentSessionStart = Date()

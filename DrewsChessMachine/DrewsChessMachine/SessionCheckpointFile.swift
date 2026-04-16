@@ -6,7 +6,7 @@ enum SessionCheckpointError: LocalizedError {
     case missingChampionFile
     case missingTrainerFile
     case missingSessionJSON
-    case invalidJSON(Error)
+    case invalidJSON(Error, detail: String = "")
     case unsupportedVersion(Int)
     case targetDirectoryExists(URL)
 
@@ -18,8 +18,9 @@ enum SessionCheckpointError: LocalizedError {
             return "Session directory is missing trainer.dcmmodel"
         case .missingSessionJSON:
             return "Session directory is missing session.json"
-        case .invalidJSON(let err):
-            return "session.json could not be decoded: \(err.localizedDescription)"
+        case .invalidJSON(let err, let detail):
+            let base = "session.json could not be decoded: \(err)"
+            return detail.isEmpty ? base : "\(base)\nFirst 2000 bytes of file:\n\(detail)"
         case .unsupportedVersion(let v):
             return "Unsupported session.json format version \(v)"
         case .targetDirectoryExists(let url):
@@ -105,10 +106,13 @@ struct SessionCheckpointState: Codable, Equatable {
     let arenaTau: TauConfigCodable
     let selfPlayWorkerCount: Int
 
-    // Replay-ratio controller settings (added after initial format;
-    // default values ensure older session.json files still decode)
-    var replayRatioTarget: Double = 1.0
-    var replayRatioAutoAdjust: Bool = true
+    // Replay-ratio controller settings. Optional so sessions saved
+    // before the ratio controller existed still decode; callers use
+    // `?? 1.0` / `?? true` at the read site. Swift's synthesized
+    // Codable only calls `decodeIfPresent` for Optional types — a
+    // non-optional `var` with a default still requires the key.
+    var replayRatioTarget: Double?
+    var replayRatioAutoAdjust: Bool?
 
     // Network identity — duplicated from the `.dcmmodel` headers so
     // a future "browse saved sessions" UI can read just
@@ -131,7 +135,10 @@ struct SessionCheckpointState: Codable, Equatable {
         } catch let err as SessionCheckpointError {
             throw err
         } catch {
-            throw SessionCheckpointError.invalidJSON(error)
+            throw SessionCheckpointError.invalidJSON(
+                error,
+                detail: String(data: data.prefix(2000), encoding: .utf8) ?? "(non-utf8)"
+            )
         }
     }
 
