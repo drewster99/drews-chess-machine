@@ -175,10 +175,18 @@ enum SessionCheckpointLayout {
     static func readAll(
         from directoryURL: URL
     ) throws -> (stateData: Data, championData: Data, trainerData: Data) {
+        // Normalize the incoming URL to a plain file-path URL.
+        // The file importer on macOS can return file-reference URLs
+        // or bookmark URLs whose `appendingPathComponent` doesn't
+        // resolve to the expected child path. Reconstructing via
+        // `URL(fileURLWithPath:isDirectory:)` strips any of that
+        // metadata and gives a clean POSIX-path-based URL whose
+        // children resolve correctly.
+        let normalizedDir = URL(fileURLWithPath: directoryURL.path, isDirectory: true)
         let fm = FileManager.default
-        let championURL = championURL(in: directoryURL)
-        let trainerURL = trainerURL(in: directoryURL)
-        let stateURL = stateURL(in: directoryURL)
+        let championURL = championURL(in: normalizedDir)
+        let trainerURL = trainerURL(in: normalizedDir)
+        let stateURL = stateURL(in: normalizedDir)
 
         guard fm.fileExists(atPath: championURL.path) else {
             throw SessionCheckpointError.missingChampionFile
