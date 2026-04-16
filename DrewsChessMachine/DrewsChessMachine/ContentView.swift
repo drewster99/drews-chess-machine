@@ -2003,6 +2003,11 @@ struct ContentView: View {
                     handleLoadSessionPickResult(result)
                 }
             )
+            .fileDialogDefaultDirectory(
+                showingLoadModelImporter
+                    ? CheckpointPaths.modelsDir
+                    : CheckpointPaths.sessionsDir
+            )
 
             // Board + text side by side
             HStack(alignment: .top, spacing: 24) {
