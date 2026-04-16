@@ -4679,8 +4679,7 @@ struct ContentView: View {
                         // adjust is off, the controller returns the manual
                         // delay. Skip the sleep entirely at 0 ms.
                         let stepDelayMs = ratioController.recordStepAndGetDelay(
-                            currentBufferTotal: buffer.totalPositionsAdded,
-                            stepTimeMs: timing.totalMs
+                            currentBufferTotal: buffer.totalPositionsAdded
                         )
                         if stepDelayMs > 0 {
                             try? await Task.sleep(for: .milliseconds(stepDelayMs))

@@ -80,17 +80,13 @@ final class ReplayRatioController: @unchecked Sendable {
     /// Appends a snapshot, prunes old ones, optionally recomputes
     /// the delay, and returns the delay to use for the next step.
     ///
-    /// - Parameters:
-    ///   - currentBufferTotal: `buffer.totalPositionsAdded` — the
-    ///     monotonically-increasing count of all positions ever
-    ///     appended to the replay buffer.
-    ///   - stepTimeMs: Wall-clock time of the just-completed
-    ///     training step, from `TrainStepTiming.totalMs`.
+    /// - Parameter currentBufferTotal: `buffer.totalPositionsAdded`
+    ///   — the monotonically-increasing count of all positions ever
+    ///   appended to the replay buffer.
     /// - Returns: The delay in ms the training worker should
     ///   `Task.sleep` before the next step.
     func recordStepAndGetDelay(
-        currentBufferTotal: Int,
-        stepTimeMs: Double
+        currentBufferTotal: Int
     ) -> Int {
         lock.lock()
         defer { lock.unlock() }
@@ -133,10 +129,18 @@ final class ReplayRatioController: @unchecked Sendable {
         let productionRate = Double(newest.produced - oldest.produced) / dt
 
         if _autoAdjust && productionRate > 0 {
+            // Derive the average step cycle time (GPU work + current
+            // delay) from the 1-minute consumption window rather than
+            // from the just-completed single step. This smooths out
+            // per-step variance and avoids jitter from one unusually
+            // fast or slow step.
+            let stepsInWindow = Double(newest.consumed - oldest.consumed) / Double(batchSize)
+            let avgCycleSec = stepsInWindow > 0 ? dt / stepsInWindow : 0
+            let avgStepTimeSec = max(0, avgCycleSec - Double(_computedDelayMs) / 1000.0)
+
             let targetConsumptionRate = _targetRatio * productionRate
             let desiredCycleSec = Double(batchSize) / targetConsumptionRate
-            let stepTimeSec = stepTimeMs / 1000.0
-            let rawDelayMs = (desiredCycleSec - stepTimeSec) * 1000.0
+            let rawDelayMs = (desiredCycleSec - avgStepTimeSec) * 1000.0
             _computedDelayMs = max(0, min(maxDelayMs, Int(rawDelayMs)))
         }
 
