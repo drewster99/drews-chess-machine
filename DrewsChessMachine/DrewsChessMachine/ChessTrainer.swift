@@ -689,33 +689,25 @@ final class ChessTrainer: @unchecked Sendable {
         // --- Total loss ---
         //
         // Policy loss is REINFORCE on the played move over a 4096-way
-        // softmax, so per-logit gradient magnitude is ~1/(N·batch) — about
-        // three orders of magnitude weaker than the value head's (z−v)²
-        // gradient. Scale the policy term up relative to the value term
+        // softmax, so its gradient is naturally much weaker than the
+        // value head's (z−v)² gradient. Scale the policy term up by K
         // so both heads get meaningful gradient during the pre-MCTS
         // bootstrap phase of training.
         //
-        // Normalize by (w+1) so the TOTAL gradient magnitude stays the
-        // same as the original unweighted `policyLoss + valueLoss`.
-        // Without normalization the ×1000 weight also multiplied the
-        // effective learning rate for the shared trunk by ~1000×,
-        // making lr=1e-4 behave like lr=0.1 and causing divergence
-        // after a few thousand steps.
-        let policyWeight = graph.constant(1000.0, dataType: dtype)
-        let normalizer = graph.constant(1.0 / 1001.0, dataType: dtype)
+        // K is applied as a true coefficient on policyLoss only — no
+        // global normalizer, because dividing the sum divides every
+        // term and cancels the relative boost. If the larger effective
+        // learning rate on the shared trunk causes instability, lower
+        // the LR rather than adding a normalizer.
+        let policyWeight = graph.constant(50.0, dataType: dtype)
         let weightedPolicy = graph.multiplication(
             policyWeight,
             policyLoss,
             name: "weighted_policy_loss"
         )
-        let unnormalizedTotal = graph.addition(
+        let totalLossTensor = graph.addition(
             valueLoss,
             weightedPolicy,
-            name: "unnormalized_total_loss"
-        )
-        let totalLossTensor = graph.multiplication(
-            normalizer,
-            unnormalizedTotal,
             name: "total_loss"
         )
 
