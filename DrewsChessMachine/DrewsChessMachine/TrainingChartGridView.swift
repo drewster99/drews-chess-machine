@@ -57,7 +57,7 @@ struct TrainingChartGridView: View {
         LazyVGrid(columns: Self.columns, spacing: 1) {
             // Row 1: Loss Total | Entropy | Progress Rate | CPU % | App Memory
             miniChart(
-                title: "Loss Total",
+                title: "Loss total",
                 yPath: \.rollingTotalLoss,
                 unit: "",
                 color: .red
@@ -71,21 +71,21 @@ struct TrainingChartGridView: View {
                 color: .blue
             )
             miniChart(
-                title: "App Memory",
+                title: "App memory",
                 yPath: \.appMemoryGB,
                 unit: "GB",
                 color: .brown
             )
             // Row 2: Loss Policy | Non-Neg Count | Replay Ratio | GPU % | GPU RAM
             miniChart(
-                title: "Loss Policy",
+                title: "Loss policy",
                 yPath: \.rollingPolicyLoss,
                 unit: "",
                 color: .orange
             )
             nonNegChart
             miniChart(
-                title: "Replay Ratio",
+                title: "Replay ratio",
                 yPath: \.replayRatio,
                 unit: "train/move",
                 color: .green
@@ -104,7 +104,7 @@ struct TrainingChartGridView: View {
             )
             // Row 3: Loss Value
             miniChart(
-                title: "Loss Value",
+                title: "Loss value",
                 yPath: \.rollingValueLoss,
                 unit: "",
                 color: .cyan
@@ -121,7 +121,7 @@ struct TrainingChartGridView: View {
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text("Progress Rate")
+                    Text("Progress rate")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -192,7 +192,7 @@ struct TrainingChartGridView: View {
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text("Policy Entropy")
+                    Text("Policy entropy")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -239,7 +239,7 @@ struct TrainingChartGridView: View {
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text("Non-Negligible Policy Count")
+                    Text("Non-negligible policy count")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
