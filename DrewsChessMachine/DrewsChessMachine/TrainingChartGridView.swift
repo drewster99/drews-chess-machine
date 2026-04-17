@@ -13,15 +13,19 @@ struct TrainingChartSample: Identifiable, Sendable {
     let rollingPolicyNonNegCount: Double?
     let replayRatio: Double?
 
+    // System metrics
+    let cpuPercent: Double?
+    let gpuPercent: Double?
+    let appMemoryMB: Double?
+
     var rollingTotalLoss: Double? {
         guard let p = rollingPolicyLoss, let v = rollingValueLoss else { return nil }
         return p + v
     }
 }
 
-/// Grid of compact training-metric charts. 4 columns × 2 rows,
-/// all sharing a synchronized horizontal scroll position so
-/// panning any chart pans all of them.
+/// Grid of compact training-metric charts. All charts share a
+/// synchronized horizontal scroll position.
 struct TrainingChartGridView: View {
     let progressRateSamples: [ProgressRateSample]
     let trainingChartSamples: [TrainingChartSample]
@@ -29,174 +33,215 @@ struct TrainingChartGridView: View {
     @Binding var scrollX: Double
 
     private static let columns = Array(
-        repeating: GridItem(.flexible(), spacing: 6),
-        count: 4
+        repeating: GridItem(.flexible(), spacing: 1),
+        count: 5
     )
 
     var body: some View {
-        LazyVGrid(columns: Self.columns, spacing: 6) {
+        LazyVGrid(columns: Self.columns, spacing: 1) {
             // Row 1
             progressRateChart
             miniChart(
                 title: "Policy Entropy",
-                samples: trainingChartSamples,
                 yPath: \.rollingPolicyEntropy,
-                yLabel: "nats",
+                unit: "nats",
                 color: .purple
             )
             miniChart(
                 title: "Loss Total",
-                samples: trainingChartSamples,
                 yPath: \.rollingTotalLoss,
-                yLabel: "loss",
+                unit: "loss",
                 color: .red
             )
             miniChart(
                 title: "Loss Policy",
-                samples: trainingChartSamples,
                 yPath: \.rollingPolicyLoss,
-                yLabel: "loss",
+                unit: "",
                 color: .orange
+            )
+            miniChart(
+                title: "Loss Value",
+                yPath: \.rollingValueLoss,
+                unit: "",
+                color: .cyan
             )
             // Row 2
             miniChart(
-                title: "Loss Value",
-                samples: trainingChartSamples,
-                yPath: \.rollingValueLoss,
-                yLabel: "loss",
-                color: .cyan
-            )
-            miniChart(
                 title: "Replay Ratio",
-                samples: trainingChartSamples,
                 yPath: \.replayRatio,
-                yLabel: "ratio",
+                unit: "",
                 color: .green
             )
             miniChart(
-                title: "Non-Negligible Count",
-                samples: trainingChartSamples,
+                title: "Non-Neg Count",
                 yPath: \.rollingPolicyNonNegCount,
-                yLabel: "count",
+                unit: "",
                 color: .mint
             )
+            miniChart(
+                title: "CPU",
+                yPath: \.cpuPercent,
+                unit: "%",
+                color: .blue
+            )
+            miniChart(
+                title: "GPU",
+                yPath: \.gpuPercent,
+                unit: "%",
+                color: .indigo
+            )
+            miniChart(
+                title: "App Memory",
+                yPath: \.appMemoryMB,
+                unit: "MB",
+                color: .brown
+            )
         }
+        .background(Color(nsColor: .separatorColor))
     }
 
     // MARK: - Progress rate chart (3 series)
 
     private var progressRateChart: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("Progress Rate")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Chart(progressRateSamples) { sample in
-                LineMark(
-                    x: .value("Time", sample.elapsedSec),
-                    y: .value("Moves/hr", sample.combinedMovesPerHour)
-                )
-                .foregroundStyle(by: .value("Series", "Combined"))
-
-                LineMark(
-                    x: .value("Time", sample.elapsedSec),
-                    y: .value("Moves/hr", sample.selfPlayMovesPerHour)
-                )
-                .foregroundStyle(by: .value("Series", "Self-play"))
-
-                LineMark(
-                    x: .value("Time", sample.elapsedSec),
-                    y: .value("Moves/hr", sample.trainingMovesPerHour)
-                )
-                .foregroundStyle(by: .value("Series", "Training"))
-            }
-            .chartForegroundStyleScale([
-                "Self-play": Color.blue,
-                "Training": Color.orange,
-                "Combined": Color.green
-            ])
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
-                    AxisGridLine()
+        let lastCombined = progressRateSamples.last?.combinedMovesPerHour
+        let headerValue = lastCombined.map { Self.compactLabel($0) } ?? "--"
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("Progress Rate")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(headerValue) mv/hr")
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
                 }
-            }
-            .chartYAxis {
-                AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
-                    AxisGridLine()
-                    AxisValueLabel {
-                        if let v = value.as(Double.self) {
-                            Text(v.formatted(.number.notation(.compactName)))
-                                .font(.system(size: 8))
-                                .monospacedDigit()
+                Chart(progressRateSamples) { sample in
+                    LineMark(
+                        x: .value("Time", sample.elapsedSec),
+                        y: .value("Moves/hr", sample.combinedMovesPerHour)
+                    )
+                    .foregroundStyle(by: .value("Series", "Combined"))
+                    LineMark(
+                        x: .value("Time", sample.elapsedSec),
+                        y: .value("Moves/hr", sample.selfPlayMovesPerHour)
+                    )
+                    .foregroundStyle(by: .value("Series", "Self-play"))
+                    LineMark(
+                        x: .value("Time", sample.elapsedSec),
+                        y: .value("Moves/hr", sample.trainingMovesPerHour)
+                    )
+                    .foregroundStyle(by: .value("Series", "Training"))
+                }
+                .chartForegroundStyleScale([
+                    "Self-play": Color.blue,
+                    "Training": Color.orange,
+                    "Combined": Color.green
+                ])
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(Self.compactLabel(v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
                         }
                     }
                 }
+                .chartLegend(.hidden)
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
             }
-            .chartLegend(.hidden)
-            .chartScrollableAxes(.horizontal)
-            .chartXVisibleDomain(length: visibleDomainSec)
-            .chartScrollPosition(x: $scrollX)
+            .frame(height: 75)
         }
-        .frame(height: 85)
     }
 
     // MARK: - Generic single-series mini chart
 
     private func miniChart(
         title: String,
-        samples: [TrainingChartSample],
         yPath: KeyPath<TrainingChartSample, Double?>,
-        yLabel: String,
+        unit: String,
         color: Color
     ) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Chart(samples) { sample in
-                if let y = sample[keyPath: yPath] {
-                    LineMark(
-                        x: .value("Time", sample.elapsedSec),
-                        y: .value(yLabel, y)
-                    )
-                    .foregroundStyle(color)
+        let lastValue = trainingChartSamples.last?[keyPath: yPath]
+        let headerValue = lastValue.map { Self.compactLabel($0) } ?? "--"
+        let unitSuffix = unit.isEmpty ? "" : " \(unit)"
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(title)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(headerValue)\(unitSuffix)")
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
                 }
-            }
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
-                    AxisGridLine()
+                Chart(trainingChartSamples) { sample in
+                    if let y = sample[keyPath: yPath] {
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value(title, y)
+                        )
+                        .foregroundStyle(color)
+                    }
                 }
-            }
-            .chartYAxis {
-                AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
-                    AxisGridLine()
-                    AxisValueLabel {
-                        if let v = value.as(Double.self) {
-                            Text(Self.compactLabel(v))
-                                .font(.system(size: 8))
-                                .monospacedDigit()
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(Self.compactLabel(v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
                         }
                     }
                 }
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
             }
-            .chartScrollableAxes(.horizontal)
-            .chartXVisibleDomain(length: visibleDomainSec)
-            .chartScrollPosition(x: $scrollX)
+            .frame(height: 75)
         }
-        .frame(height: 85)
     }
 
-    private static func compactLabel(_ value: Double) -> String {
+    // MARK: - Card wrapper
+
+    private func chartCard<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .padding(6)
+            .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    // MARK: - Compact label formatter
+
+    static func compactLabel(_ value: Double) -> String {
         let abs = Swift.abs(value)
         if abs >= 1_000_000 {
             return String(format: "%.1fM", value / 1_000_000)
         } else if abs >= 1_000 {
             return String(format: "%.1fK", value / 1_000)
-        } else if abs >= 10 {
+        } else if abs >= 100 {
             return String(format: "%.0f", value)
-        } else if abs >= 1 {
+        } else if abs >= 10 {
             return String(format: "%.1f", value)
-        } else if abs >= 0.01 {
+        } else if abs >= 1 {
             return String(format: "%.2f", value)
+        } else if abs >= 0.01 {
+            return String(format: "%.3f", value)
+        } else if abs == 0 {
+            return "0"
         } else {
             return String(format: "%.1e", value)
         }

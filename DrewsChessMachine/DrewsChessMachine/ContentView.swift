@@ -2623,6 +2623,7 @@ struct ContentView: View {
         let trainingSnap = trainingBox?.snapshot()
         let ratioSnap = replayRatioSnapshot
 
+        let memMB = memoryStatsSnap.map { Double($0.appFootprintBytes) / (1024 * 1024) }
         let sample = TrainingChartSample(
             id: trainingChartNextId,
             elapsedSec: elapsed,
@@ -2630,7 +2631,10 @@ struct ContentView: View {
             rollingValueLoss: trainingSnap?.rollingValueLoss,
             rollingPolicyEntropy: trainingSnap?.rollingPolicyEntropy,
             rollingPolicyNonNegCount: trainingSnap?.rollingPolicyNonNegCount,
-            replayRatio: ratioSnap?.currentRatio
+            replayRatio: ratioSnap?.currentRatio,
+            cpuPercent: cpuPercent,
+            gpuPercent: gpuPercent,
+            appMemoryMB: memMB
         )
         trainingChartSamples.append(sample)
         trainingChartNextId += 1
