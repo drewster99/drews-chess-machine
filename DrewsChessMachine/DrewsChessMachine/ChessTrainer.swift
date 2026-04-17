@@ -1323,25 +1323,43 @@ final class ChessTrainer: @unchecked Sendable {
     /// the caller polls out-of-band, so a dropped sample just skips
     /// one update tick.
     static func sampleCurrentProcessUsage() -> ProcessUsageSample? {
-        var rusage = rusage_info_v4()
-        let rusageRC = withUnsafeMutablePointer(to: &rusage) { ptr -> Int32 in
-            ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { rebased in
-                proc_pid_rusage(getpid(), RUSAGE_INFO_V4, rebased)
+        // CPU time: use task_info(TASK_THREAD_TIMES_INFO) which
+        // reliably sums user + system time across ALL threads.
+        // proc_pid_rusage(ri_user_time) was under-reporting on
+        // macOS 26, giving ~14% instead of Activity Monitor's ~560%.
+        var timesInfo = task_thread_times_info_data_t()
+        var timesCount = mach_msg_type_number_t(
+            MemoryLayout<task_thread_times_info_data_t>.size / MemoryLayout<natural_t>.size
+        )
+        let timesRC = withUnsafeMutablePointer(to: &timesInfo) { ptr -> kern_return_t in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(timesCount)) { intPtr in
+                task_info(
+                    mach_task_self_,
+                    task_flavor_t(TASK_THREAD_TIMES_INFO),
+                    intPtr,
+                    &timesCount
+                )
             }
         }
-        guard rusageRC == 0 else { return nil }
+        guard timesRC == KERN_SUCCESS else { return nil }
 
+        let userNs = UInt64(timesInfo.user_time.seconds) &* 1_000_000_000
+            &+ UInt64(timesInfo.user_time.microseconds) &* 1000
+        let sysNs = UInt64(timesInfo.system_time.seconds) &* 1_000_000_000
+            &+ UInt64(timesInfo.system_time.microseconds) &* 1000
+
+        // GPU time: task_info(TASK_POWER_INFO_V2) → gpu_energy.
         var power = task_power_info_v2_data_t()
-        var count = mach_msg_type_number_t(
+        var powerCount = mach_msg_type_number_t(
             MemoryLayout<task_power_info_v2_data_t>.size / MemoryLayout<natural_t>.size
         )
         let powerRC = withUnsafeMutablePointer(to: &power) { infoPtr -> kern_return_t in
-            infoPtr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+            infoPtr.withMemoryRebound(to: integer_t.self, capacity: Int(powerCount)) { intPtr in
                 task_info(
                     mach_task_self_,
                     task_flavor_t(TASK_POWER_INFO_V2),
                     intPtr,
-                    &count
+                    &powerCount
                 )
             }
         }
@@ -1349,7 +1367,7 @@ final class ChessTrainer: @unchecked Sendable {
 
         return ProcessUsageSample(
             timestamp: Date(),
-            cpuNs: rusage.ri_user_time &+ rusage.ri_system_time,
+            cpuNs: userNs &+ sysNs,
             gpuNs: power.gpu_energy.task_gpu_utilisation
         )
     }
