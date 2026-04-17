@@ -49,6 +49,7 @@ struct TrainStepTiming: Sendable {
     /// either extreme — that's the signature of policy collapse or a
     /// stuck-at-uniform learning failure.
     let policyEntropy: Float
+    let policyNonNegligibleCount: Float
 }
 
 // MARK: - Training Batch
@@ -264,6 +265,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let rollingPolicyLoss: Double?
         let rollingValueLoss: Double?
         let rollingPolicyEntropy: Double?
+        let rollingPolicyNonNegCount: Double?
         let error: String?
     }
 
@@ -273,6 +275,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _policyLossWindow: [Double] = []
     private var _valueLossWindow: [Double] = []
     private var _policyEntropyWindow: [Double] = []
+    private var _policyNonNegWindow: [Double] = []
     private var _error: String?
     private let rollingWindow: Int
 
@@ -310,6 +313,10 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         if _policyEntropyWindow.count > rollingWindow {
             _policyEntropyWindow.removeFirst(_policyEntropyWindow.count - rollingWindow)
         }
+        _policyNonNegWindow.append(Double(timing.policyNonNegligibleCount))
+        if _policyNonNegWindow.count > rollingWindow {
+            _policyNonNegWindow.removeFirst(_policyNonNegWindow.count - rollingWindow)
+        }
     }
 
     /// Record a terminal training error. Also called from the worker.
@@ -328,12 +335,14 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let rollingPolicy = Self.mean(_policyLossWindow)
         let rollingValue = Self.mean(_valueLossWindow)
         let rollingEntropy = Self.mean(_policyEntropyWindow)
+        let rollingNonNeg = Self.mean(_policyNonNegWindow)
         return Snapshot(
             stats: _stats,
             lastTiming: _lastTiming,
             rollingPolicyLoss: rollingPolicy,
             rollingValueLoss: rollingValue,
             rollingPolicyEntropy: rollingEntropy,
+            rollingPolicyNonNegCount: rollingNonNeg,
             error: _error
         )
     }
@@ -386,6 +395,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var policyLossTensor: MPSGraphTensor        // scalar
     private var valueLossTensor: MPSGraphTensor         // scalar
     private var policyEntropyTensor: MPSGraphTensor     // scalar (diagnostic)
+    private var policyNonNegCountTensor: MPSGraphTensor // scalar (diagnostic)
     private var assignOps: [MPSGraphOperation]
 
     /// Pre-allocated scalar ND array for the learning-rate feed.
@@ -430,7 +440,8 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotPolicy: Int = 1
     private static let lossReadbackSlotValue: Int = 2
     private static let lossReadbackSlotEntropy: Int = 3
-    private static let lossReadbackSlotCount: Int = 4
+    private static let lossReadbackSlotNonNeg: Int = 4
+    private static let lossReadbackSlotCount: Int = 5
 
     // MARK: Init
 
@@ -446,6 +457,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
+        self.policyNonNegCountTensor = built.policyNonNegCount
         self.assignOps = built.assignOps
 
         // Scalar ND array for the learning rate feed, reused every step.
@@ -485,6 +497,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
+        self.policyNonNegCountTensor = built.policyNonNegCount
         self.assignOps = built.assignOps
         // Rebuild the LR scalar feed against the new network's device
         // so the new graph's placeholder maps to a fresh wrapper.
@@ -518,6 +531,7 @@ final class ChessTrainer: @unchecked Sendable {
         policyLoss: MPSGraphTensor,
         valueLoss: MPSGraphTensor,
         policyEntropy: MPSGraphTensor,
+        policyNonNegCount: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
         let graph = network.graph
@@ -640,6 +654,38 @@ final class ChessTrainer: @unchecked Sendable {
             name: "policy_entropy"
         )
 
+        // --- Policy non-negligible count (diagnostic) ---
+        //
+        // Count of softmax entries above 1/4096 (the uniform
+        // probability), averaged across the batch. Starts near
+        // ~2048 with random init and drops as the policy
+        // concentrates on promising moves. Like entropy, this is
+        // diagnostic-only and not in totalLoss.
+        let nonNegThreshold = graph.constant(
+            1.0 / Double(ChessNetwork.policySize),
+            dataType: dtype
+        )
+        let aboveThreshold = graph.greaterThan(
+            softmax,
+            nonNegThreshold,
+            name: "policy_above_thresh"
+        )
+        let aboveFloat = graph.cast(
+            aboveThreshold,
+            to: dtype,
+            name: "policy_above_float"
+        )
+        let countPerPos = graph.reductionSum(
+            with: aboveFloat,
+            axis: 1,
+            name: "policy_nonneg_per_pos"
+        )
+        let policyNonNegCount = graph.mean(
+            of: countPerPos,
+            axes: [0, 1],
+            name: "policy_nonneg_count"
+        )
+
         // --- Total loss ---
         //
         // Policy loss is REINFORCE on the played move over a 4096-way
@@ -722,7 +768,7 @@ final class ChessTrainer: @unchecked Sendable {
         // loadWeights().
         ops.append(contentsOf: network.bnRunningStatsAssignOps)
 
-        return (movePlayed, z, lrTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, ops)
+        return (movePlayed, z, lrTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, policyNonNegCount, ops)
     }
 
     // MARK: - Training Step
@@ -957,7 +1003,7 @@ final class ChessTrainer: @unchecked Sendable {
         let results = network.graph.run(
             with: network.commandQueue,
             feeds: feeds,
-            targetTensors: [totalLoss, policyLossTensor, valueLossTensor, policyEntropyTensor],
+            targetTensors: [totalLoss, policyLossTensor, valueLossTensor, policyEntropyTensor, policyNonNegCountTensor],
             targetOperations: assignOps
         )
         let gpuMs = (CFAbsoluteTimeGetCurrent() - gpuStart) * 1000
@@ -967,14 +1013,11 @@ final class ChessTrainer: @unchecked Sendable {
             let totalData = results[totalLoss],
             let policyData = results[policyLossTensor],
             let valueData = results[valueLossTensor],
-            let entropyData = results[policyEntropyTensor]
+            let entropyData = results[policyEntropyTensor],
+            let nonNegData = results[policyNonNegCountTensor]
         else {
             throw ChessTrainerError.lossOutputMissing
         }
-        // Write each scalar loss directly into its pre-allocated slot
-        // in `lossReadbackScratchPtr` — avoids three `[Float](1)`
-        // allocations per training step. The three slots are disjoint
-        // regions of the same buffer so MPSGraph won't read past them.
         ChessNetwork.readFloats(
             from: totalData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotTotal),
@@ -995,10 +1038,16 @@ final class ChessTrainer: @unchecked Sendable {
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotEntropy),
             count: 1
         )
+        ChessNetwork.readFloats(
+            from: nonNegData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNeg),
+            count: 1
+        )
         let totalBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotTotal]
         let policyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicy]
         let valueBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValue]
         let entropyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotEntropy]
+        let nonNegBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotNonNeg]
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
@@ -1011,7 +1060,8 @@ final class ChessTrainer: @unchecked Sendable {
             loss: totalBufValue,
             policyLoss: policyBufValue,
             valueLoss: valueBufValue,
-            policyEntropy: entropyBufValue
+            policyEntropy: entropyBufValue,
+            policyNonNegligibleCount: nonNegBufValue
         )
     }
 

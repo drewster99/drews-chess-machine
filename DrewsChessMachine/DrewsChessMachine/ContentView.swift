@@ -1444,6 +1444,9 @@ struct ContentView: View {
     /// during a Play and Train session; cleared to `[]` at each
     /// new session start in `startRealTraining()`.
     @State private var progressRateSamples: [ProgressRateSample] = []
+    @State private var trainingChartSamples: [TrainingChartSample] = []
+    @State private var trainingChartNextId: Int = 0
+    @State private var showingInfoPopover: Bool = false
     /// Wall-clock timestamp of the last progress-rate sample.
     /// Defaults to `.distantPast` so the first heartbeat tick of
     /// a new session always fires.
@@ -1874,18 +1877,54 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Drew's Chess Machine")
-                .font(.title2)
-                .fontWeight(.semibold)
-
-            Text(
-                "Forward pass through a ~2.9M parameter convolutional network using MPSGraph " +
-                "on the GPU. Weights are randomly initialized (He initialization) — no training " +
-                "has occurred."
-            )
-                .font(.callout)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            // Title bar
+            HStack(spacing: 8) {
+                Text("Drew's Chess Machine")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+                let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+                Text("v\(version) build \(build)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Button(action: { showingInfoPopover.toggle() }) {
+                    Image(systemName: "info.circle")
+                        .font(.title3)
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showingInfoPopover) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("About Drew's Chess Machine")
+                            .font(.headline)
+                        Text("Forward pass through a ~2.9M parameter convolutional network using MPSGraph on the GPU. Weights are randomly initialized (He initialization) — no training has occurred.")
+                            .font(.callout)
+                        Divider()
+                        Text("Architecture: 18×8×8 input → stem(128) → 8 res blocks → policy(4096) + value(1)")
+                            .font(.system(.callout, design: .monospaced))
+                        Text("Parameters: ~2,917,383 (~2.9M)")
+                            .font(.system(.callout, design: .monospaced))
+                        if let net = network {
+                            Text("Network ID: \(net.identifier?.description ?? "–")")
+                                .font(.system(.callout, design: .monospaced))
+                            Text("Build time: \(String(format: "%.1f ms", net.buildTimeMs))")
+                                .font(.system(.callout, design: .monospaced))
+                        }
+                    }
+                    .padding(16)
+                    .frame(width: 500)
+                }
+                Spacer()
+                if let net = network {
+                    Text("ID: \(net.identifier?.description ?? "–")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(networkStatus.isEmpty ? "" : networkStatus.components(separatedBy: "\n").first ?? "")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
 
             // Buttons
             HStack(spacing: 8) {
@@ -2417,14 +2456,21 @@ struct ContentView: View {
                     }
                 }
             }
+
+            // Chart grid — always visible during Play and Train,
+            // showing training metrics over time.
+            if realTraining {
+                Divider()
+                TrainingChartGridView(
+                    progressRateSamples: progressRateSamples,
+                    trainingChartSamples: trainingChartSamples,
+                    visibleDomainSec: Self.progressRateVisibleDomainSec,
+                    scrollX: progressRateScrollBinding
+                )
+            }
         }
-        .padding(24)
-        // Window minWidth raised from 900 to 1060 to give the two-column
-        // text panel (game column 330pt wide enough for the longest
-        // Status: line + training column 260pt) enough room alongside the
-        // 320-420pt board without horizontal clipping in real-training
-        // mode where both columns are visible at once.
-        .frame(minWidth: 1060, minHeight: 600)
+        .padding(16)
+        .frame(minWidth: 1400, minHeight: 780)
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) { navigateOverlay(-1); return .handled }
@@ -2516,6 +2562,7 @@ struct ContentView: View {
             // over the last 3 minutes of work. No-op outside of
             // realTraining.
             refreshProgressRateIfNeeded()
+            refreshTrainingChartIfNeeded()
             // Replay-ratio snapshot for the UI. Persist the auto-
             // computed delay so the next session starts from where
             // the adjuster left off.
@@ -2570,6 +2617,35 @@ struct ContentView: View {
     /// No-op outside of `realTraining`. Sampler state is cleared
     /// by `startRealTraining()` so each session's chart starts
     /// fresh from t=0.
+    /// Sample training metrics at the same 1Hz cadence as the
+    /// progress rate sampler. Appends a `TrainingChartSample`
+    /// with rolling loss, entropy, ratio, and non-neg count.
+    private func refreshTrainingChartIfNeeded() {
+        guard realTraining else { return }
+        let now = Date()
+        if now.timeIntervalSince(progressRateLastFetch) < Self.progressRateRefreshSec {
+            return
+        }
+        guard let session = parallelWorkerStatsBox else { return }
+        let sessionStart = currentSessionStart ?? Date()
+        let elapsed = max(0, now.timeIntervalSince(sessionStart))
+        let trainingSnap = trainingBox?.snapshot()
+        let ratioSnap = replayRatioSnapshot
+
+        let sample = TrainingChartSample(
+            id: trainingChartNextId,
+            elapsedSec: elapsed,
+            rollingPolicyLoss: trainingSnap?.rollingPolicyLoss,
+            rollingValueLoss: trainingSnap?.rollingValueLoss,
+            rollingPolicyEntropy: trainingSnap?.rollingPolicyEntropy,
+            rollingPolicyNonNegCount: trainingSnap?.rollingPolicyNonNegCount,
+            replayRatio: ratioSnap?.currentRatio
+        )
+        trainingChartSamples.append(sample)
+        trainingChartNextId += 1
+        _ = session // suppress unused warning — we just checked it exists
+    }
+
     private func refreshProgressRateIfNeeded() {
         guard realTraining else { return }
         let now = Date()
@@ -4370,6 +4446,8 @@ struct ContentView: View {
         // session's trailing values to the new session's zero
         // reading.
         progressRateSamples = []
+        trainingChartSamples = []
+        trainingChartNextId = 0
         progressRateLastFetch = .distantPast
         progressRateNextId = 0
         progressRateScrollX = 0
@@ -5137,13 +5215,8 @@ struct ContentView: View {
         // Learning rate — read off the trainer so we can't drift out of
         // sync with what the graph is actually applying. Shown in every
         // training mode since it's the same knob across all of them.
-        let lrStr: String
-        if let trainer {
-            lrStr = String(format: "%.1e", trainer.learningRate)
-        } else {
-            lrStr = dash
-        }
-        lines.append("  Learn rate: \(lrStr)")
+        // Learning rate is displayed in the interactive text field
+        // in the training controls section — not duplicated here.
 
         // Self-Play adds two extra header lines (replay buffer fill, rolling
         // loss). Both are present from the first render of a self-play run,
@@ -5191,14 +5264,7 @@ struct ContentView: View {
             // the count is visible while Play and Train is running; the
             // count only advances when Candidate test is active and a
             // gap check actually fires a probe.
-            let probeLine: String
-            if candidateProbeCount == 0 {
-                probeLine = dash
-            } else {
-                let ageSec = Date().timeIntervalSince(lastCandidateProbeTime)
-                probeLine = String(format: "%4d  (last %5.1f s ago)", candidateProbeCount, ageSec)
-            }
-            lines.append("  Probes:      \(probeLine)")
+            // Probes removed from display (internal timing only).
             // 1-minute rolling rates from the replay-ratio controller
             if let snap = replayRatioSnapshot {
                 let prodStr = snap.productionRate > 0
@@ -5207,12 +5273,8 @@ struct ContentView: View {
                 let consStr = snap.consumptionRate > 0
                     ? String(format: "%.0f", snap.consumptionRate)
                     : dash
-                let ratioStr = snap.currentRatio > 0
-                    ? String(format: "%.2f", snap.currentRatio)
-                    : dash
                 lines.append("  1m gen rate: \(prodStr) pos/s")
                 lines.append("  1m trn rate: \(consStr) pos/s")
-                lines.append("  1m ratio:    \(ratioStr)  (target \(String(format: "%.1f", snap.targetRatio)))")
             }
         }
         lines.append("")
