@@ -1446,6 +1446,8 @@ struct ContentView: View {
     @State private var progressRateSamples: [ProgressRateSample] = []
     @State private var trainingChartSamples: [TrainingChartSample] = []
     @State private var trainingChartNextId: Int = 0
+    /// Previous totalGpuMs reading for computing per-second GPU busy %.
+    @State private var prevChartTotalGpuMs: Double = 0
     @State private var showingInfoPopover: Bool = false
     /// Wall-clock timestamp of the last progress-rate sample.
     /// Defaults to `.distantPast` so the first heartbeat tick of
@@ -2623,6 +2625,13 @@ struct ContentView: View {
 
         let appMemMB = memoryStatsSnap.map { Double($0.appFootprintBytes) / (1024 * 1024) }
         let gpuMemMB = memoryStatsSnap.map { Double($0.gpuAllocatedBytes) / (1024 * 1024) }
+        // GPU busy %: fraction of the last 1-second sample interval
+        // that the GPU was actively running training steps. Computed
+        // from the delta of cumulative GPU ms in TrainingRunStats.
+        let currentGpuMs = trainingSnap?.stats.totalGpuMs ?? 0
+        let gpuDeltaMs = max(0, currentGpuMs - prevChartTotalGpuMs)
+        let gpuBusy = gpuDeltaMs / 10.0 // delta ms / 1000ms * 100%
+        prevChartTotalGpuMs = currentGpuMs
         let sample = TrainingChartSample(
             id: trainingChartNextId,
             elapsedSec: elapsed,
@@ -2632,6 +2641,7 @@ struct ContentView: View {
             rollingPolicyNonNegCount: trainingSnap?.rollingPolicyNonNegCount,
             replayRatio: ratioSnap?.currentRatio,
             cpuPercent: cpuPercent,
+            gpuBusyPercent: trainingSnap != nil ? gpuBusy : nil,
             gpuMemoryMB: gpuMemMB,
             appMemoryMB: appMemMB
         )
@@ -4443,6 +4453,7 @@ struct ContentView: View {
         progressRateSamples = []
         trainingChartSamples = []
         trainingChartNextId = 0
+        prevChartTotalGpuMs = 0
         progressRateLastFetch = .distantPast
         progressRateNextId = 0
         progressRateScrollX = 0

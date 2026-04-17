@@ -15,6 +15,7 @@ struct TrainingChartSample: Identifiable, Sendable {
 
     // System metrics
     let cpuPercent: Double?
+    let gpuBusyPercent: Double?
     let gpuMemoryMB: Double?
     let appMemoryMB: Double?
 
@@ -41,28 +42,23 @@ struct TrainingChartGridView: View {
         LazyVGrid(columns: Self.columns, spacing: 1) {
             // Row 1
             progressRateChart
-            miniChart(
-                title: "Policy Entropy",
-                yPath: \.rollingPolicyEntropy,
-                unit: "0=focused 8.3=uniform",
-                color: .purple
-            )
+            entropyChart
             miniChart(
                 title: "Loss Total",
                 yPath: \.rollingTotalLoss,
-                unit: "policy+value",
+                unit: "",
                 color: .red
             )
             miniChart(
                 title: "Loss Policy",
                 yPath: \.rollingPolicyLoss,
-                unit: "CE weighted",
+                unit: "",
                 color: .orange
             )
             miniChart(
                 title: "Loss Value",
                 yPath: \.rollingValueLoss,
-                unit: "MSE",
+                unit: "",
                 color: .cyan
             )
             // Row 2
@@ -86,9 +82,9 @@ struct TrainingChartGridView: View {
                 color: .blue
             )
             miniChart(
-                title: "GPU RAM",
-                yPath: \.gpuMemoryMB,
-                unit: "MB",
+                title: "GPU",
+                yPath: \.gpuBusyPercent,
+                unit: "%",
                 color: .indigo
             )
             miniChart(
@@ -96,6 +92,12 @@ struct TrainingChartGridView: View {
                 yPath: \.appMemoryMB,
                 unit: "MB",
                 color: .brown
+            )
+            miniChart(
+                title: "GPU RAM",
+                yPath: \.gpuMemoryMB,
+                unit: "MB",
+                color: .teal
             )
         }
         .background(Color(nsColor: .separatorColor))
@@ -154,6 +156,63 @@ struct TrainingChartGridView: View {
                     }
                 }
                 .chartLegend(.hidden)
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
+            }
+            .frame(height: 75)
+        }
+    }
+
+    // MARK: - Entropy chart (custom header with percentage)
+
+    private static let maxEntropy = log(Double(ChessNetwork.policySize))
+
+    private var entropyChart: some View {
+        let lastValue = trainingChartSamples.last?.rollingPolicyEntropy
+        let valueStr: String
+        let pctStr: String
+        if let v = lastValue {
+            valueStr = String(format: "%.3f", v)
+            pctStr = String(format: "(%.1f%%)", v / Self.maxEntropy * 100)
+        } else {
+            valueStr = "--"
+            pctStr = ""
+        }
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("Policy Entropy")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(valueStr) \(pctStr)")
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                Chart(trainingChartSamples) { sample in
+                    if let y = sample.rollingPolicyEntropy {
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Entropy", y)
+                        )
+                        .foregroundStyle(.purple)
+                    }
+                }
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(Self.compactLabel(v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
