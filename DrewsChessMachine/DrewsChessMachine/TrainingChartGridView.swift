@@ -23,6 +23,14 @@ struct TrainingChartSample: Identifiable, Sendable {
         guard let p = rollingPolicyLoss, let v = rollingValueLoss else { return nil }
         return p + v
     }
+
+    var appMemoryGB: Double? {
+        appMemoryMB.map { $0 / 1024.0 }
+    }
+
+    var gpuMemoryGB: Double? {
+        gpuMemoryMB.map { $0 / 1024.0 }
+    }
 }
 
 /// Grid of compact training-metric charts. All charts share a
@@ -39,47 +47,48 @@ struct TrainingChartGridView: View {
     )
 
     var body: some View {
+        // 5 columns × 2 rows. Layout by column (left to right):
+        //   Col 1: Loss Total, Replay Ratio
+        //   Col 2: Policy Entropy, Non-Negligible Policy Count
+        //   Col 3: Progress Rate, (empty — progress rate is tall)
+        //   Col 4: CPU %, GPU %
+        //   Col 5: App Memory, GPU RAM
+        // But LazyVGrid fills row-major, so we order accordingly.
         LazyVGrid(columns: Self.columns, spacing: 1) {
-            // Row 1
-            progressRateChart
-            entropyChart
+            // Row 1: Loss Total | Entropy | Progress Rate | CPU % | App Memory
             miniChart(
                 title: "Loss Total",
                 yPath: \.rollingTotalLoss,
                 unit: "",
                 color: .red
             )
+            entropyChart
+            progressRateChart
+            miniChart(
+                title: "CPU",
+                yPath: \.cpuPercent,
+                unit: "%",
+                color: .blue
+            )
+            miniChart(
+                title: "App Memory",
+                yPath: \.appMemoryGB,
+                unit: "GB",
+                color: .brown
+            )
+            // Row 2: Loss Policy | Non-Neg Count | Replay Ratio | GPU % | GPU RAM
             miniChart(
                 title: "Loss Policy",
                 yPath: \.rollingPolicyLoss,
                 unit: "",
                 color: .orange
             )
-            miniChart(
-                title: "Loss Value",
-                yPath: \.rollingValueLoss,
-                unit: "",
-                color: .cyan
-            )
-            // Row 2
+            nonNegChart
             miniChart(
                 title: "Replay Ratio",
                 yPath: \.replayRatio,
                 unit: "train/move",
                 color: .green
-            )
-            miniChart(
-                title: "Non-Neg Count",
-                yPath: \.rollingPolicyNonNegCount,
-                unit: "/ 4096",
-                color: .mint,
-                wholeNumber: true
-            )
-            miniChart(
-                title: "CPU",
-                yPath: \.cpuPercent,
-                unit: "%",
-                color: .blue
             )
             miniChart(
                 title: "GPU",
@@ -88,16 +97,17 @@ struct TrainingChartGridView: View {
                 color: .indigo
             )
             miniChart(
-                title: "App Memory",
-                yPath: \.appMemoryMB,
-                unit: "MB",
-                color: .brown
-            )
-            miniChart(
                 title: "GPU RAM",
-                yPath: \.gpuMemoryMB,
-                unit: "MB",
+                yPath: \.gpuMemoryGB,
+                unit: "GB",
                 color: .teal
+            )
+            // Row 3: Loss Value
+            miniChart(
+                title: "Loss Value",
+                yPath: \.rollingValueLoss,
+                unit: "",
+                color: .cyan
             )
         }
         .background(Color(nsColor: .separatorColor))
@@ -200,6 +210,54 @@ struct TrainingChartGridView: View {
                         .foregroundStyle(.purple)
                     }
                 }
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(Self.compactLabel(v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
+            }
+            .frame(height: 75)
+        }
+    }
+
+    // MARK: - Non-negligible count chart (fixed Y-axis 0-4096)
+
+    private var nonNegChart: some View {
+        let lastValue = trainingChartSamples.last?.rollingPolicyNonNegCount
+        let headerValue = lastValue.map { String(Int($0)) } ?? "--"
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("Non-Negligible Policy Count")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(headerValue) / 4096")
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                Chart(trainingChartSamples) { sample in
+                    if let y = sample.rollingPolicyNonNegCount {
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Count", y)
+                        )
+                        .foregroundStyle(.mint)
+                    }
+                }
+                .chartYScale(domain: 0...4096)
                 .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
                 .chartYAxis {
                     AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
