@@ -2621,7 +2621,8 @@ struct ContentView: View {
         let trainingSnap = trainingBox?.snapshot()
         let ratioSnap = replayRatioSnapshot
 
-        let memMB = memoryStatsSnap.map { Double($0.appFootprintBytes) / (1024 * 1024) }
+        let appMemMB = memoryStatsSnap.map { Double($0.appFootprintBytes) / (1024 * 1024) }
+        let gpuMemMB = memoryStatsSnap.map { Double($0.gpuAllocatedBytes) / (1024 * 1024) }
         let sample = TrainingChartSample(
             id: trainingChartNextId,
             elapsedSec: elapsed,
@@ -2631,8 +2632,8 @@ struct ContentView: View {
             rollingPolicyNonNegCount: trainingSnap?.rollingPolicyNonNegCount,
             replayRatio: ratioSnap?.currentRatio,
             cpuPercent: cpuPercent,
-            gpuPercent: gpuPercent,
-            appMemoryMB: memMB
+            gpuMemoryMB: gpuMemMB,
+            appMemoryMB: appMemMB
         )
         trainingChartSamples.append(sample)
         trainingChartNextId += 1
@@ -5704,8 +5705,9 @@ struct ContentView: View {
             lines.append("")
             lines.append("Policy Stats")
             lines.append(String(format: "  Sum: %.8f", inference.policy.reduce(0, +)))
-            let nonZeroCount = inference.policy.filter { $0 > 1e-10 }.count
-            lines.append(String(format: "  Non-negligible: %d / 4096", nonZeroCount))
+            let uniformProb = 1.0 / Float(ChessNetwork.policySize)
+            let nonNegCount = inference.policy.filter { $0 > uniformProb }.count
+            lines.append(String(format: "  NonNegligible: %d / %d", nonNegCount, ChessNetwork.policySize))
             if let maxProb = inference.policy.max(), let minProb = inference.policy.min() {
                 lines.append(String(format: "  Min: %.8f", minProb))
                 lines.append(String(format: "  Max: %.8f", maxProb))

@@ -15,7 +15,7 @@ struct TrainingChartSample: Identifiable, Sendable {
 
     // System metrics
     let cpuPercent: Double?
-    let gpuPercent: Double?
+    let gpuMemoryMB: Double?
     let appMemoryMB: Double?
 
     var rollingTotalLoss: Double? {
@@ -44,39 +44,40 @@ struct TrainingChartGridView: View {
             miniChart(
                 title: "Policy Entropy",
                 yPath: \.rollingPolicyEntropy,
-                unit: "nats",
+                unit: "0=focused 8.3=uniform",
                 color: .purple
             )
             miniChart(
                 title: "Loss Total",
                 yPath: \.rollingTotalLoss,
-                unit: "loss",
+                unit: "policy+value",
                 color: .red
             )
             miniChart(
                 title: "Loss Policy",
                 yPath: \.rollingPolicyLoss,
-                unit: "",
+                unit: "CE weighted",
                 color: .orange
             )
             miniChart(
                 title: "Loss Value",
                 yPath: \.rollingValueLoss,
-                unit: "",
+                unit: "MSE",
                 color: .cyan
             )
             // Row 2
             miniChart(
                 title: "Replay Ratio",
                 yPath: \.replayRatio,
-                unit: "",
+                unit: "train/move",
                 color: .green
             )
             miniChart(
                 title: "Non-Neg Count",
                 yPath: \.rollingPolicyNonNegCount,
-                unit: "",
-                color: .mint
+                unit: "/ 4096",
+                color: .mint,
+                wholeNumber: true
             )
             miniChart(
                 title: "CPU",
@@ -85,9 +86,9 @@ struct TrainingChartGridView: View {
                 color: .blue
             )
             miniChart(
-                title: "GPU",
-                yPath: \.gpuPercent,
-                unit: "%",
+                title: "GPU RAM",
+                yPath: \.gpuMemoryMB,
+                unit: "MB",
                 color: .indigo
             )
             miniChart(
@@ -112,7 +113,7 @@ struct TrainingChartGridView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(headerValue) mv/hr")
+                    Text("\(headerValue) moves/hour")
                         .font(.caption2)
                         .monospacedDigit()
                         .foregroundStyle(.primary)
@@ -167,10 +168,16 @@ struct TrainingChartGridView: View {
         title: String,
         yPath: KeyPath<TrainingChartSample, Double?>,
         unit: String,
-        color: Color
+        color: Color,
+        wholeNumber: Bool = false
     ) -> some View {
         let lastValue = trainingChartSamples.last?[keyPath: yPath]
-        let headerValue = lastValue.map { Self.compactLabel($0) } ?? "--"
+        let headerValue: String
+        if let v = lastValue {
+            headerValue = wholeNumber ? String(Int(v)) : Self.compactLabel(v)
+        } else {
+            headerValue = "--"
+        }
         let unitSuffix = unit.isEmpty ? "" : " \(unit)"
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
