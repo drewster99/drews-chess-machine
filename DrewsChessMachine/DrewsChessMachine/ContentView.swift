@@ -1883,9 +1883,7 @@ struct ContentView: View {
                 Text("Drew's Chess Machine")
                     .font(.title2)
                     .fontWeight(.semibold)
-                let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-                let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
-                Text("v\(version) build \(build)")
+                Text("build \(BuildInfo.buildNumber) (\(BuildInfo.buildDate))")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                 Button(action: { showingInfoPopover.toggle() }) {
