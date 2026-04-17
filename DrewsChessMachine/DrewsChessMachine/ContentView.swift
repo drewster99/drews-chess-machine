@@ -2557,7 +2557,6 @@ struct ContentView: View {
             // over the last 3 minutes of work. No-op outside of
             // realTraining.
             refreshProgressRateIfNeeded()
-            refreshTrainingChartIfNeeded()
             // Replay-ratio snapshot for the UI. Persist the auto-
             // computed delay so the next session starts from where
             // the adjuster left off.
@@ -2615,14 +2614,11 @@ struct ContentView: View {
     /// Sample training metrics at the same 1Hz cadence as the
     /// progress rate sampler. Appends a `TrainingChartSample`
     /// with rolling loss, entropy, ratio, and non-neg count.
+    /// Append a training chart sample. Called from inside
+    /// `refreshProgressRateIfNeeded` at the same 1Hz cadence.
     private func refreshTrainingChartIfNeeded() {
-        guard realTraining else { return }
         let now = Date()
-        if now.timeIntervalSince(progressRateLastFetch) < Self.progressRateRefreshSec {
-            return
-        }
-        guard let session = parallelWorkerStatsBox else { return }
-        let sessionStart = currentSessionStart ?? Date()
+        let sessionStart = currentSessionStart ?? now
         let elapsed = max(0, now.timeIntervalSince(sessionStart))
         let trainingSnap = trainingBox?.snapshot()
         let ratioSnap = replayRatioSnapshot
@@ -2638,7 +2634,6 @@ struct ContentView: View {
         )
         trainingChartSamples.append(sample)
         trainingChartNextId += 1
-        _ = session // suppress unused warning — we just checked it exists
     }
 
     private func refreshProgressRateIfNeeded() {
@@ -2712,6 +2707,8 @@ struct ContentView: View {
         if progressRateFollowLatest {
             progressRateScrollX = max(0, sample.elapsedSec - Self.progressRateVisibleDomainSec)
         }
+        // Append a training chart sample at the same 1Hz cadence.
+        refreshTrainingChartIfNeeded()
     }
 
     /// Format a number of elapsed seconds for the Progress rate
