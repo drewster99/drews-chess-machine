@@ -2251,11 +2251,6 @@ struct ContentView: View {
                 // real-training mode both are shown side-by-side.
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
-                        if !networkStatus.isEmpty {
-                            Text(networkStatus)
-                                .foregroundStyle(.secondary)
-                        }
-
                         // Fixed-width columns so the panel never reflows
                         // between modes OR between game results. The game
                         // column has to be wide enough for the longest
