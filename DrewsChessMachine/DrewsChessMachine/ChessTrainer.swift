@@ -59,6 +59,19 @@ struct TrainStepTiming: Sendable {
     /// clip event; steady values above it signal persistent overshoot
     /// that warrants a lower LR.
     let gradGlobalNorm: Float
+    /// Mean of the value-head output across the batch. Value head is
+    /// tanh-squashed so the output lives in [-1, +1]; a healthy batch
+    /// of self-play positions should sit near 0 (most positions are
+    /// drawn at early training). Drifting away from 0 signals the
+    /// value head is learning a bias — if it sticks at ±1 the head
+    /// has saturated and gradients through tanh are vanishing.
+    let valueMean: Float
+    /// Mean of |value-head output| across the batch. Together with
+    /// `valueMean` this is the cheapest saturation probe available:
+    /// if `valueAbsMean` ≈ 1.0 the head is saturated everywhere
+    /// regardless of position, even if `valueMean` happens to sit
+    /// near 0. Range [0, 1].
+    let valueAbsMean: Float
 }
 
 // MARK: - Training Batch
@@ -284,6 +297,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let rollingPolicyEntropy: Double?
         let rollingPolicyNonNegCount: Double?
         let rollingGradGlobalNorm: Double?
+        let rollingValueMean: Double?
+        let rollingValueAbsMean: Double?
         let error: String?
     }
 
@@ -295,6 +310,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _policyEntropyWindow: [Double] = []
     private var _policyNonNegWindow: [Double] = []
     private var _gradNormWindow: [Double] = []
+    private var _valueMeanWindow: [Double] = []
+    private var _valueAbsMeanWindow: [Double] = []
     private var _error: String?
     private let rollingWindow: Int
 
@@ -340,6 +357,14 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         if _gradNormWindow.count > rollingWindow {
             _gradNormWindow.removeFirst(_gradNormWindow.count - rollingWindow)
         }
+        _valueMeanWindow.append(Double(timing.valueMean))
+        if _valueMeanWindow.count > rollingWindow {
+            _valueMeanWindow.removeFirst(_valueMeanWindow.count - rollingWindow)
+        }
+        _valueAbsMeanWindow.append(Double(timing.valueAbsMean))
+        if _valueAbsMeanWindow.count > rollingWindow {
+            _valueAbsMeanWindow.removeFirst(_valueAbsMeanWindow.count - rollingWindow)
+        }
     }
 
     /// Record a terminal training error. Also called from the worker.
@@ -360,6 +385,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let rollingEntropy = Self.mean(_policyEntropyWindow)
         let rollingNonNeg = Self.mean(_policyNonNegWindow)
         let rollingGradNorm = Self.mean(_gradNormWindow)
+        let rollingVMean = Self.mean(_valueMeanWindow)
+        let rollingVAbs = Self.mean(_valueAbsMeanWindow)
         return Snapshot(
             stats: _stats,
             lastTiming: _lastTiming,
@@ -368,6 +395,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             rollingPolicyEntropy: rollingEntropy,
             rollingPolicyNonNegCount: rollingNonNeg,
             rollingGradGlobalNorm: rollingGradNorm,
+            rollingValueMean: rollingVMean,
+            rollingValueAbsMean: rollingVAbs,
             error: _error
         )
     }
@@ -440,6 +469,8 @@ final class ChessTrainer: @unchecked Sendable {
     private var policyEntropyTensor: MPSGraphTensor     // scalar (diagnostic)
     private var policyNonNegCountTensor: MPSGraphTensor // scalar (diagnostic)
     private var gradGlobalNormTensor: MPSGraphTensor    // scalar (diagnostic)
+    private var valueMeanTensor: MPSGraphTensor         // scalar (diagnostic)
+    private var valueAbsMeanTensor: MPSGraphTensor      // scalar (diagnostic)
     private var assignOps: [MPSGraphOperation]
 
     /// Pre-allocated scalar ND array for the learning-rate feed.
@@ -488,7 +519,9 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotEntropy: Int = 3
     private static let lossReadbackSlotNonNeg: Int = 4
     private static let lossReadbackSlotGradNorm: Int = 5
-    private static let lossReadbackSlotCount: Int = 6
+    private static let lossReadbackSlotValueMean: Int = 6
+    private static let lossReadbackSlotValueAbsMean: Int = 7
+    private static let lossReadbackSlotCount: Int = 8
 
     // MARK: Init
 
@@ -507,6 +540,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyEntropyTensor = built.policyEntropy
         self.policyNonNegCountTensor = built.policyNonNegCount
         self.gradGlobalNormTensor = built.gradGlobalNorm
+        self.valueMeanTensor = built.valueMean
+        self.valueAbsMeanTensor = built.valueAbsMean
         self.assignOps = built.assignOps
 
         // Scalar ND array for the learning rate feed, reused every step.
@@ -549,6 +584,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyEntropyTensor = built.policyEntropy
         self.policyNonNegCountTensor = built.policyNonNegCount
         self.gradGlobalNormTensor = built.gradGlobalNorm
+        self.valueMeanTensor = built.valueMean
+        self.valueAbsMeanTensor = built.valueAbsMean
         self.assignOps = built.assignOps
         // Rebuild the LR scalar feed against the new network's device
         // so the new graph's placeholder maps to a fresh wrapper.
@@ -585,6 +622,8 @@ final class ChessTrainer: @unchecked Sendable {
         policyEntropy: MPSGraphTensor,
         policyNonNegCount: MPSGraphTensor,
         gradGlobalNorm: MPSGraphTensor,
+        valueMean: MPSGraphTensor,
+        valueAbsMean: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
         let graph = network.graph
@@ -674,6 +713,28 @@ final class ChessTrainer: @unchecked Sendable {
         let diff = graph.subtraction(z, network.valueOutput, name: "value_diff")
         let sq = graph.square(with: diff, name: "value_sq")
         let valueLoss = graph.mean(of: sq, axes: [0, 1], name: "value_loss")
+
+        // --- Value-head output mean + abs-mean (diagnostic) ---
+        //
+        // Tanh saturation probe. `valueMean` near 0 is healthy (most
+        // early-training positions are drawn, so batch mean should
+        // sit near z's mean, which is ~0). `valueAbsMean` close to 1
+        // means the tanh is saturated — every position reads as near
+        // ±1 regardless of content, which kills the (1−v²) factor in
+        // the MSE gradient and stalls value-head learning. Both are
+        // fetched via `targetTensors`, never feed into totalLoss, so
+        // autodiff never walks into them.
+        let valueMean = graph.mean(
+            of: network.valueOutput,
+            axes: [0, 1],
+            name: "value_mean"
+        )
+        let valueAbs = graph.absolute(with: network.valueOutput, name: "value_abs")
+        let valueAbsMean = graph.mean(
+            of: valueAbs,
+            axes: [0, 1],
+            name: "value_abs_mean"
+        )
 
         // --- Policy entropy (diagnostic; not in totalLoss) ---
         //
@@ -928,7 +989,7 @@ final class ChessTrainer: @unchecked Sendable {
         // loadWeights().
         ops.append(contentsOf: network.bnRunningStatsAssignOps)
 
-        return (movePlayed, z, vBaseline, lrTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, policyNonNegCount, gradGlobalNorm, ops)
+        return (movePlayed, z, vBaseline, lrTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, policyNonNegCount, gradGlobalNorm, valueMean, valueAbsMean, ops)
     }
 
     // MARK: - Training Step
@@ -1184,7 +1245,7 @@ final class ChessTrainer: @unchecked Sendable {
         let results = network.graph.run(
             with: network.commandQueue,
             feeds: feeds,
-            targetTensors: [totalLoss, policyLossTensor, valueLossTensor, policyEntropyTensor, policyNonNegCountTensor, gradGlobalNormTensor],
+            targetTensors: [totalLoss, policyLossTensor, valueLossTensor, policyEntropyTensor, policyNonNegCountTensor, gradGlobalNormTensor, valueMeanTensor, valueAbsMeanTensor],
             targetOperations: assignOps
         )
         let gpuMs = (CFAbsoluteTimeGetCurrent() - gpuStart) * 1000
@@ -1196,7 +1257,9 @@ final class ChessTrainer: @unchecked Sendable {
             let valueData = results[valueLossTensor],
             let entropyData = results[policyEntropyTensor],
             let nonNegData = results[policyNonNegCountTensor],
-            let gradNormData = results[gradGlobalNormTensor]
+            let gradNormData = results[gradGlobalNormTensor],
+            let valueMeanData = results[valueMeanTensor],
+            let valueAbsMeanData = results[valueAbsMeanTensor]
         else {
             throw ChessTrainerError.lossOutputMissing
         }
@@ -1230,12 +1293,24 @@ final class ChessTrainer: @unchecked Sendable {
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotGradNorm),
             count: 1
         )
+        ChessNetwork.readFloats(
+            from: valueMeanData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueMean),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: valueAbsMeanData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueAbsMean),
+            count: 1
+        )
         let totalBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotTotal]
         let policyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicy]
         let valueBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValue]
         let entropyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotEntropy]
         let nonNegBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotNonNeg]
         let gradNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotGradNorm]
+        let valueMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueMean]
+        let valueAbsMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueAbsMean]
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
@@ -1250,7 +1325,9 @@ final class ChessTrainer: @unchecked Sendable {
             valueLoss: valueBufValue,
             policyEntropy: entropyBufValue,
             policyNonNegligibleCount: nonNegBufValue,
-            gradGlobalNorm: gradNormBufValue
+            gradGlobalNorm: gradNormBufValue,
+            valueMean: valueMeanBufValue,
+            valueAbsMean: valueAbsMeanBufValue
         )
     }
 

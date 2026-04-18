@@ -402,6 +402,21 @@ enum PlayAndTrainBoardMode: Sendable, Hashable {
     case progressRate
 }
 
+/// Which network the Candidate test probe evaluates. `.candidate` is
+/// the default — the trainer's current in-flight weights get synced
+/// into the candidate inference network and probed. `.champion`
+/// bypasses the sync and probes the actual champion network directly,
+/// so the user can compare the two at the same position. The champion
+/// is frozen between promotions, so its output should be stable over
+/// the session; diffing its value-head output against the candidate's
+/// at a fixed position is the cheapest way to tell whether training
+/// is actually moving the value head (or whether it's saturated at
+/// the same spot the random init put it).
+enum ProbeNetworkTarget: Sendable, Hashable {
+    case candidate
+    case champion
+}
+
 /// One point on the Progress rate chart. Sampled once per second
 /// from the heartbeat during a Play and Train session; cleared at
 /// each new session. The `*MovesPerHour` fields are *rolling-window*
@@ -1141,15 +1156,10 @@ struct ContentView: View {
     /// tournament. Built lazily on the first Play and Train session
     /// and cached for the life of the app.
     @State private var arenaChampionNetwork: ChessMPSNetwork?
-    /// Additional inference networks for concurrent self-play workers
-    /// 1..N-1 (worker 0 still uses `network`, the champion). One
-    /// entry per extra worker beyond the first; built lazily the
-    /// first time a Play and Train session needs more than one
-    /// worker and cached for the life of the app. Kept in weight
-    /// lock-step with `network` via the session-start fork and the
-    /// arena promotion branch — each secondary receives a
-    /// `loadWeights` copy of whatever goes into the champion.
-    @State private var secondarySelfPlayNetworks: [ChessMPSNetwork] = []
+    // Legacy `secondarySelfPlayNetworks` removed — all self-play
+    // workers now share the champion network (`network`) through a
+    // `BatchedMoveEvaluationSource` barrier batcher, so N per-worker
+    // inference networks are no longer needed.
     /// Live-progress snapshot from the parallel workers, mirrored
     /// from `parallelWorkerStatsBox` by the heartbeat. Nil outside of
     /// Play and Train sessions.
@@ -1223,6 +1233,14 @@ struct ContentView: View {
     /// loop so the user can watch the network's evaluation of a fixed
     /// test position evolve as the weights update.
     @State private var playAndTrainBoardMode: PlayAndTrainBoardMode = .gameRun
+    /// Which network the Candidate test probe runs against. Defaults to
+    /// `.candidate` (the historical behavior — probe the trainer's
+    /// latest weights by syncing them into the candidate inference
+    /// network). `.champion` probes the champion network directly,
+    /// giving a frozen reference point the candidate can be diffed
+    /// against at any position — useful for confirming whether the
+    /// value head is actually moving or is stuck at init saturation.
+    @State private var probeNetworkTarget: ProbeNetworkTarget = .candidate
     /// Set when the user edits the candidate test board (drag, side-to-move
     /// toggle, Board picker flip) while Play and Train is running. The
     /// Play and Train driver task checks this at natural gap points (end
@@ -1378,26 +1396,25 @@ struct ContentView: View {
     /// bound. The user can raise or lower the live count at any
     /// time via the Stepper, and changes take effect at each
     /// worker's next game-end check. Edit to change the default.
-    nonisolated static let initialSelfPlayWorkerCount: Int = 5
-    /// Hard ceiling on how many self-play workers can run
-    /// concurrently in a single session. We pre-build this many
-    /// inference networks (one champion plus
-    /// `absoluteMaxSelfPlayWorkers - 1` secondaries) and spawn
-    /// this many worker tasks at session start, idling any above
-    /// the current active count. The only reason this is capped
-    /// at all is the steady-state memory footprint — each extra
-    /// inference network costs ~12 MB of unified memory plus
-    /// some MPSGraph scratch. Raise for headroom, lower to save
-    /// memory. Must be ≥ `initialSelfPlayWorkerCount`.
-    nonisolated static let absoluteMaxSelfPlayWorkers: Int = 16
+    nonisolated static let initialSelfPlayWorkerCount: Int = 12
+    /// Hard ceiling on how many self-play slots can run
+    /// concurrently in a single session. Since all slots share one
+    /// `ChessMPSNetwork` (the champion) through the barrier
+    /// batcher, raising this no longer costs per-slot network
+    /// memory — the limit is now the batcher's per-batch-size feed
+    /// cache footprint (one `[N, 18, 8, 8]` float32 MPSNDArray per
+    /// distinct N, so ~4.6 KB per slot) plus the per-batch
+    /// `graph.run` latency. Must be ≥ `initialSelfPlayWorkerCount`.
+    nonisolated static let absoluteMaxSelfPlayWorkers: Int = 64
     /// Current active self-play worker count for the running
     /// session. The Stepper writes through `workerCountBinding`
-    /// which updates this @State and `workerCountBox` atomically;
+    /// which updates this value and `workerCountBox` atomically;
     /// workers poll the box at the top of each iteration to
     /// decide whether to play another game or sit in their idle
-    /// wait state. Defaults to `initialSelfPlayWorkerCount`;
-    /// bounded at runtime by `absoluteMaxSelfPlayWorkers`.
-    @State private var selfPlayWorkerCount: Int = Self.initialSelfPlayWorkerCount
+    /// wait state. Persisted to UserDefaults via `@AppStorage` so
+    /// the user's last chosen concurrency level survives app
+    /// restart. Bounded at runtime by `absoluteMaxSelfPlayWorkers`.
+    @AppStorage("selfPlayWorkerCount") private var selfPlayWorkerCount: Int = Self.initialSelfPlayWorkerCount
     /// Upper bound on the adjustable training-step delay. 500 ms
     /// already turns a ~60 steps/s training worker into roughly
     /// 2 steps/s, which is as slow as anyone reasonably wants to
@@ -1738,6 +1755,23 @@ struct ContentView: View {
             set: { newValue in
                 playAndTrainBoardMode = newValue
                 if newValue == .candidateTest {
+                    candidateProbeDirty = true
+                }
+            }
+        )
+    }
+
+    /// Binding for the Candidate-vs-Champion probe picker. Flipping the
+    /// target marks the probe dirty so the next driver gap-point fires
+    /// a fresh evaluation on the newly-selected network — without this,
+    /// the user would see the stale result from the previous target
+    /// until the 15 s interval elapsed.
+    private var probeNetworkTargetBinding: Binding<ProbeNetworkTarget> {
+        Binding(
+            get: { probeNetworkTarget },
+            set: { newValue in
+                if newValue != probeNetworkTarget {
+                    probeNetworkTarget = newValue
                     candidateProbeDirty = true
                 }
             }
@@ -2193,6 +2227,16 @@ struct ContentView: View {
                         .pickerStyle(.segmented)
                         .labelsHidden()
                         .frame(maxWidth: 160)
+                    }
+
+                    if isCandidateTestActive {
+                        Picker("Probe", selection: probeNetworkTargetBinding) {
+                            Text("Candidate").tag(ProbeNetworkTarget.candidate)
+                            Text("Champion").tag(ProbeNetworkTarget.champion)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(maxWidth: 220)
                     }
 
                     if isProgressRateActive {
@@ -3808,6 +3852,7 @@ struct ContentView: View {
             let candidateRunner,
             let trainer,
             let candidateInference = candidateInferenceNetwork,
+            let championRunner = runner,
             arenaActiveFlag?.isActive != true
         else { return }
         let now = Date()
@@ -3817,28 +3862,49 @@ struct ContentView: View {
         guard dirty || intervalElapsed else { return }
 
         let state = editableState
+        let target = probeNetworkTarget
         let result: EvaluationResult
         do {
-            // Snapshot the trainer's current state into the candidate
-            // inference network, then immediately run the probe. Doing
-            // the copy here — rather than after every training block —
-            // means the ~11.6 MB trainer → candidate transfer happens
-            // only when the probe is actually about to fire (every 15 s
-            // or on drag/side-to-move/mode-flip), not at the ~per-second
-            // cadence of training blocks. Copy cost is still trivial but
-            // the pattern is cleaner: "no one looks at the candidate
-            // except the probe, so no one needs to update it except the
-            // probe."
-            //
-            // Both the sync and the forward pass run on a detached task
-            // so we don't stall MainActor while they execute. The driver
-            // task is awaiting this whole method, so no other user of
-            // the trainer or candidate network can run concurrently.
-            result = try await Task.detached(priority: .userInitiated) {
-                let weights = try trainer.network.exportWeights()
-                try candidateInference.network.loadWeights(weights)
-                return Self.performInference(with: candidateRunner, state: state)
-            }.value
+            switch target {
+            case .candidate:
+                // Snapshot the trainer's current state into the candidate
+                // inference network, then immediately run the probe. Doing
+                // the copy here — rather than after every training block —
+                // means the ~11.6 MB trainer → candidate transfer happens
+                // only when the probe is actually about to fire (every 15 s
+                // or on drag/side-to-move/mode-flip), not at the ~per-second
+                // cadence of training blocks. Copy cost is still trivial but
+                // the pattern is cleaner: "no one looks at the candidate
+                // except the probe, so no one needs to update it except the
+                // probe."
+                //
+                // Both the sync and the forward pass run on a detached task
+                // so we don't stall MainActor while they execute. The driver
+                // task is awaiting this whole method, so no other user of
+                // the trainer or candidate network can run concurrently.
+                result = try await Task.detached(priority: .userInitiated) {
+                    let weights = try trainer.network.exportWeights()
+                    try candidateInference.network.loadWeights(weights)
+                    return Self.performInference(with: candidateRunner, state: state)
+                }.value
+                // Probe is a transient read-only snapshot, not a checkpoint —
+                // candidateInference inherits the trainer's current ID rather
+                // than minting a fresh one. (Arena snapshots, by contrast,
+                // do mint — see runArenaParallel.)
+                candidateInference.identifier = trainer.identifier
+            case .champion:
+                // Probe the champion directly — no sync. The champion is
+                // frozen between promotions, so reading from it through
+                // its own runner is the same path Run Forward Pass uses
+                // and is safe to call concurrently with self-play workers
+                // (they all read through a batcher; direct runner reads
+                // just add another fair-share consumer). Skipped while an
+                // arena is running because the promotion step briefly
+                // writes into the champion under a self-play pause.
+                result = await Task.detached(priority: .userInitiated) {
+                    Self.performInference(with: championRunner, state: state)
+                }.value
+            }
         } catch {
             // Leave probe state unchanged so the previous result stays
             // on screen; the next gap-point call will retry. The error
@@ -3846,11 +3912,6 @@ struct ContentView: View {
             // plumbing if something structural broke.
             return
         }
-        // Probe is a transient read-only snapshot, not a checkpoint —
-        // candidateInference inherits the trainer's current ID rather
-        // than minting a fresh one. (Arena snapshots, by contrast,
-        // do mint — see runArenaParallel.)
-        candidateInference.identifier = trainer.identifier
         inferenceResult = result
         candidateProbeDirty = false
         lastCandidateProbeTime = Date()
@@ -3881,8 +3942,6 @@ struct ContentView: View {
         champion: ChessMPSNetwork,
         candidateInference: ChessMPSNetwork,
         arenaChampion: ChessMPSNetwork,
-        secondarySelfPlayNetworks: [ChessMPSNetwork],
-        secondarySelfPlayGates: [WorkerPauseGate],
         tBox: TournamentLiveBox,
         selfPlayGate: WorkerPauseGate,
         trainingGate: WorkerPauseGate,
@@ -3911,10 +3970,12 @@ struct ContentView: View {
             let vStr = snap.rollingValueLoss.map { String(format: "%+.4f", $0) } ?? "--"
             let eStr = snap.rollingPolicyEntropy.map { String(format: "%.4f", $0) } ?? "--"
             let gStr = snap.rollingGradGlobalNorm.map { String(format: "%.3f", $0) } ?? "--"
+            let vmStr = snap.rollingValueMean.map { String(format: "%+.4f", $0) } ?? "--"
+            let vaStr = snap.rollingValueAbsMean.map { String(format: "%.4f", $0) } ?? "--"
             let bufCount = replayBuffer?.count ?? 0
             let bufCap = replayBuffer?.capacity ?? Self.replayBufferCapacity
             SessionLogger.shared.log(
-                "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) gNorm=\(gStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
+                "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) gNorm=\(gStr) vMean=\(vmStr) vAbs=\(vaStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
             )
         }
 
@@ -4032,8 +4093,20 @@ struct ContentView: View {
                 let driver = TournamentDriver()
                 driver.delegate = nil
                 return await driver.run(
-                    playerA: { MPSChessPlayer(name: "Candidate", network: candidateInference, schedule: .arena) },
-                    playerB: { MPSChessPlayer(name: "Champion", network: arenaChampion, schedule: .arena) },
+                    playerA: {
+                        MPSChessPlayer(
+                            name: "Candidate",
+                            source: DirectMoveEvaluationSource(network: candidateInference),
+                            schedule: .arena
+                        )
+                    },
+                    playerB: {
+                        MPSChessPlayer(
+                            name: "Champion",
+                            source: DirectMoveEvaluationSource(network: arenaChampion),
+                            schedule: .arena
+                        )
+                    },
                     games: totalGames,
                     diversityTracker: arenaDiversity,
                     // The driver checks this between games. Either a
@@ -4091,46 +4164,32 @@ struct ContentView: View {
         // network (which would race against self-play again).
         var promotedChampionWeights: [[Float]] = []
         if shouldPromote {
-            // Pause every self-play worker briefly, copy candidate
-            // inference into the champion AND every secondary
-            // self-play network, release. Each worker's next game
-            // uses the new weights. All workers must be paused
-            // before the loadWeights calls because loadWeights
-            // mutates MPSGraph variable state in place, and any
-            // concurrent `evaluate` on the same network would race
-            // the assign ops. Pause worker 0 first, then the
-            // secondaries; resume in reverse so the primary is
-            // always the last one released (mirrors the
-            // "worker 0 leads" pattern used elsewhere for UI
-            // ownership).
+            // Pause self-play briefly, copy candidate inference into
+            // the champion, release. The batched driver stops all
+            // slots on pause, so by the time `pauseAndWait` returns
+            // there are no in-flight `graph.run` calls on the
+            // champion — `loadWeights` can mutate its MPSGraph
+            // variables without racing any `evaluate`. With the
+            // barrier batcher all self-play slots share `champion`
+            // directly, so a single `loadWeights` reaches every slot
+            // on resume (no per-secondary loop anymore).
             await selfPlayGate.pauseAndWait()
-            for gate in secondarySelfPlayGates {
-                await gate.pauseAndWait()
-            }
             if !Task.isCancelled {
                 do {
                     promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
-                        [candidateInference, champion, secondarySelfPlayNetworks] in
+                        [candidateInference, champion] in
                         let weights = try candidateInference.network.exportWeights()
                         try champion.network.loadWeights(weights)
-                        for net in secondarySelfPlayNetworks {
-                            try net.network.loadWeights(weights)
-                        }
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
                     // exact weights, so it inherits that snapshot ID.
-                    // Secondaries are pure mirrors of the champion and
-                    // don't carry their own identity.
                     champion.identifier = candidateInference.identifier
                     promoted = true
                     promotedID = candidateInference.identifier
                 } catch {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
                 }
-            }
-            for gate in secondarySelfPlayGates.reversed() {
-                gate.resume()
             }
             selfPlayGate.resume()
         }
@@ -4476,8 +4535,9 @@ struct ContentView: View {
             guard let network else { return }
             let machine = ChessMachine()
             machine.delegate = gameWatcher
-            let white = MPSChessPlayer(name: "White", network: network)
-            let black = MPSChessPlayer(name: "Black", network: network)
+            let source = DirectMoveEvaluationSource(network: network)
+            let white = MPSChessPlayer(name: "White", source: source)
+            let black = MPSChessPlayer(name: "Black", source: source)
             do {
                 let task = try machine.beginNewGame(white: white, black: black)
                 _ = await task.value
@@ -4503,8 +4563,9 @@ struct ContentView: View {
 
                 let machine = ChessMachine()
                 machine.delegate = gameWatcher
-                let white = MPSChessPlayer(name: "White", network: network)
-                let black = MPSChessPlayer(name: "Black", network: network)
+                let source = DirectMoveEvaluationSource(network: network)
+                let white = MPSChessPlayer(name: "White", source: source)
+                let black = MPSChessPlayer(name: "Black", source: source)
                 do {
                     let task = try machine.beginNewGame(white: white, black: black)
                     _ = await task.value
@@ -4690,6 +4751,7 @@ struct ContentView: View {
         }
         trainingStats = initialTrainingStats
         playAndTrainBoardMode = .gameRun
+        probeNetworkTarget = .candidate
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
         candidateProbeCount = 0
@@ -4759,20 +4821,12 @@ struct ContentView: View {
         progressRateNextId = 0
         progressRateScrollX = 0
         progressRateFollowLatest = true
+        // Single self-play gate. All self-play workers now share one
+        // `BatchedMoveEvaluationSource` on the champion network, driven
+        // by `BatchedSelfPlayDriver`, so there is exactly one consumer
+        // for the arena coordinator to pause. The previous per-secondary
+        // gate array is gone along with the secondary networks.
         let selfPlayGate = WorkerPauseGate()
-        // One pause gate per secondary self-play worker (workers
-        // 1..absoluteMaxSelfPlayWorkers-1). Worker 0 uses `selfPlayGate`.
-        // We size to the hard maximum (not the current N) because
-        // every potentially-active worker is spawned at session
-        // start and idles in its own gate's wait state until the
-        // user grows N enough to include it. Each secondary worker
-        // polls its own gate, so the arena coordinator can still
-        // pause exactly the workers whose networks a given sync
-        // point touches. Promotion pauses all of them; the
-        // champion → arena-champion snapshot only pauses worker 0
-        // because secondary workers don't touch `network`.
-        let secondarySelfPlayGates: [WorkerPauseGate] = (0..<max(0, Self.absoluteMaxSelfPlayWorkers - 1))
-            .map { _ in WorkerPauseGate() }
         // Shared current-N holder. Workers poll this to decide
         // whether to play another game or sit in their idle wait.
         // The Stepper writes through it (and to `@State
@@ -4833,7 +4887,8 @@ struct ContentView: View {
 
         realTrainingTask = Task(priority: .userInitiated) {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
-             selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, overrideBox, countBox] in
+             selfPlayGate, trainingGate, arenaFlag, triggerBox, overrideBox, countBox,
+             gameWatcher, ratioController] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
@@ -4876,78 +4931,23 @@ struct ContentView: View {
                 }
             }
 
-            // Build secondary self-play networks up to the hard
-            // maximum. Worker 0 uses `network`, so we need
-            // `absoluteMaxSelfPlayWorkers - 1` extras. The array is
-            // @State so it persists across sessions — if a prior
-            // session already built enough, we reuse them. We
-            // pre-build to the *max*, not the current N, because
-            // every worker is spawned at session start and idles
-            // until the user grows N enough to include it. That
-            // means the first session pays the full one-time
-            // build cost, and subsequent sessions are instant.
-            let neededSecondaryCount = max(0, Self.absoluteMaxSelfPlayWorkers - 1)
-            let existingSecondaryCount = await MainActor.run { secondarySelfPlayNetworks.count }
-            if existingSecondaryCount < neededSecondaryCount {
-                let toBuild = neededSecondaryCount - existingSecondaryCount
-                do {
-                    let built = try await Task.detached(priority: .userInitiated) {
-                        var out: [ChessMPSNetwork] = []
-                        out.reserveCapacity(toBuild)
-                        for _ in 0..<toBuild {
-                            out.append(try ChessMPSNetwork(.randomWeights))
-                        }
-                        return out
-                    }.value
-                    await MainActor.run {
-                        secondarySelfPlayNetworks.append(contentsOf: built)
-                    }
-                } catch {
-                    box.recordError("Secondary self-play network init failed: \(error.localizedDescription)")
-                    await MainActor.run {
-                        realTraining = false
-                        realTrainingTask = nil
-                    }
-                    return
-                }
-            }
-
-            // Grab the secondary self-play networks for this
-            // session — `absoluteMaxSelfPlayWorkers - 1` of them, one per
-            // potential worker beyond worker 0. Workers above the
-            // currently active count idle until the user grows N
-            // via the Stepper. The pause-gate array captured
-            // above already carries a matching count.
-            let secondaries: [ChessMPSNetwork] = await MainActor.run {
-                Array(secondarySelfPlayNetworks.prefix(max(0, Self.absoluteMaxSelfPlayWorkers - 1)))
-            }
-            guard secondaries.count == max(0, Self.absoluteMaxSelfPlayWorkers - 1) else {
-                box.recordError("Secondary self-play networks missing after setup")
-                await MainActor.run {
-                    realTraining = false
-                    realTrainingTask = nil
-                }
-                return
-            }
-
             // Reset the trainer's graph AND initialize its weights.
             // Two paths:
             //
-            // (1) Normal start: copy champion weights into the trainer
-            //     and into every secondary self-play network. This
-            //     makes arena-at-step-0 a fair tie by construction and
-            //     establishes the trainer's starting point as a true
-            //     fork of the champion.
+            // (1) Normal start: fork the trainer off the champion so
+            //     arena-at-step-0 is a fair tie by construction and
+            //     the trainer's starting point is a true fork of the
+            //     champion.
             //
-            // (2) Resume from a loaded `.dcmsession`: copy champion
-            //     weights into the secondaries (the champion has
-            //     already been loaded from disk into `network` at
-            //     file-load time), but load the trainer from the
-            //     session's `trainer.dcmmodel` payload so its
+            // (2) Resume from a loaded `.dcmsession`: load the trainer
+            //     from the session's `trainer.dcmmodel` payload so its
             //     mid-training divergence from the champion is
-            //     preserved. Without this branch, resume would
-            //     throw away the trainer's in-flight SGD progress
-            //     every time.
+            //     preserved. Without this branch, resume would throw
+            //     away the trainer's in-flight SGD progress every
+            //     time. The champion has already been loaded from
+            //     disk into `network` at file-load time, so the
+            //     batcher (which wraps `network`) picks up the
+            //     restored weights automatically.
             let resumedTrainerWeights: [[Float]]? = await MainActor.run {
                 pendingLoadedSession?.trainerFile.weights
             }
@@ -4956,16 +4956,13 @@ struct ContentView: View {
             }
             do {
                 try await Task.detached(priority: .userInitiated) {
-                    [secondaries, resumedTrainerWeights] in
+                    [resumedTrainerWeights] in
                     try trainer.resetNetwork()
-                    let championWeights = try network.network.exportWeights()
                     if let trainerWeights = resumedTrainerWeights {
                         try trainer.network.loadWeights(trainerWeights)
                     } else {
+                        let championWeights = try network.network.exportWeights()
                         try trainer.network.loadWeights(championWeights)
-                    }
-                    for net in secondaries {
-                        try net.network.loadWeights(championWeights)
                     }
                 }.value
             } catch {
@@ -5050,142 +5047,45 @@ struct ContentView: View {
             // delay into every average for the life of the session.
             pStatsBox.markWorkersStarted()
 
+            // Build the shared self-play batcher and driver. All slots
+            // play against one `ChessMPSNetwork` (the champion, via
+            // `network`) through a `BatchedMoveEvaluationSource` actor
+            // that coalesces N per-ply forward passes into one batched
+            // `graph.run`. The driver owns the slot lifecycle: it
+            // spawns up to `countBox.count` child tasks, responds to
+            // Stepper-driven count changes, and pauses the whole
+            // self-play subsystem through the shared `selfPlayGate`
+            // when arena requests it (replacing the previous
+            // per-worker gate array).
+            let selfPlayBatcher = BatchedMoveEvaluationSource(network: network)
+            let selfPlayDriver = BatchedSelfPlayDriver(
+                batcher: selfPlayBatcher,
+                buffer: buffer,
+                statsBox: pStatsBox,
+                diversityTracker: spDiversityTracker,
+                countBox: countBox,
+                pauseGate: selfPlayGate,
+                gameWatcher: gameWatcher
+            )
+
             await withTaskGroup(of: Void.self) { group in
-                // Self-play workers: each plays one game at a time
-                // on its own dedicated inference network, streams
-                // positions into the shared replay buffer, and
-                // polls (a) its own `WorkerPauseGate` for arena
-                // coordination and (b) the shared `WorkerCountBox`
-                // for live N adjustment. Workers above the current
-                // active count idle in their pause-wait state;
-                // workers within the count play games normally.
+                // Self-play driver: manages N concurrent
+                // `ChessMachine` game loops against the shared
+                // batcher. Slot count tracks `countBox.count` live;
+                // pause requests on `selfPlayGate` flow through the
+                // driver and stop every slot at its next game
+                // boundary. Each slot streams positions into the
+                // shared replay buffer via its white/black
+                // `MPSChessPlayer` pair, records stats through
+                // `pStatsBox`, and feeds `spDiversityTracker`.
                 //
-                // Worker 0 uses `network` (the champion, which also
-                // serves as the arena-champion snapshot source);
-                // workers 1..absoluteMaxSelfPlayWorkers-1 use dedicated
-                // secondary inference networks mirrored from the
-                // champion at session start and at every promotion.
-                //
-                // Each worker allocates its two `MPSChessPlayer`
-                // instances once before the loop and reuses them
-                // across every game — `ChessMachine.beginNewGame`
-                // calls `onNewGame` internally, which resets
-                // per-game scratch state while keeping backing
-                // storage alive (see `MPSChessPlayer.onNewGame`).
-                //
-                // Worker 0 is always the one wired to `GameWatcher`
-                // for the live-game animated board. The board view
-                // is hidden when `selfPlayWorkerCount > 1`, but we
-                // keep feeding GameWatcher so dropping back to N=1
-                // restores a valid live state immediately on the
-                // next game (no warmup needed). All workers — not
-                // just worker 0 — contribute identically to the
-                // aggregate stats box via `recordCompletedGame`.
-                for workerIndex in 0..<Self.absoluteMaxSelfPlayWorkers {
-                    let workerNetwork: ChessMPSNetwork = workerIndex == 0
-                        ? network
-                        : secondaries[workerIndex - 1]
-                    let workerGate: WorkerPauseGate = workerIndex == 0
-                        ? selfPlayGate
-                        : secondarySelfPlayGates[workerIndex - 1]
-                    let isWorker0 = workerIndex == 0
-
-                    group.addTask(priority: .userInitiated) {
-                        [workerNetwork, workerGate, buffer, pStatsBox, gameWatcher,
-                         isWorker0, countBox] in
-
-                        // Reusable players, allocated once per
-                        // worker. `ChessMachine.beginNewGame` calls
-                        // `onNewGame` on each before the next game
-                        // starts, resetting per-game scratch state
-                        // without reallocating.
-                        let white = MPSChessPlayer(
-                            name: "White",
-                            network: workerNetwork,
-                            replayBuffer: buffer,
-                            schedule: .selfPlay
-                        )
-                        let black = MPSChessPlayer(
-                            name: "Black",
-                            network: workerNetwork,
-                            replayBuffer: buffer,
-                            schedule: .selfPlay
-                        )
-
-                        while !Task.isCancelled {
-                            // Combined wait check. The worker is
-                            // ready to play iff (a) no arena
-                            // coordinator has requested a pause
-                            // AND (b) its index is below the
-                            // current active count. Either
-                            // condition false → enter the wait
-                            // state (`markWaiting` so arena
-                            // `pauseAndWait` succeeds even on
-                            // permanently-inactive workers) and
-                            // poll until both clear.
-                            var shouldPlay = !workerGate.isRequestedToPause
-                                && countBox.count > workerIndex
-                            if !shouldPlay {
-                                workerGate.markWaiting()
-                                while !Task.isCancelled && !shouldPlay {
-                                    try? await Task.sleep(for: .milliseconds(50))
-                                    shouldPlay = !workerGate.isRequestedToPause
-                                        && countBox.count > workerIndex
-                                }
-                                workerGate.markRunning()
-                            }
-                            if Task.isCancelled { break }
-
-                            // Live-display decision: only wire
-                            // `GameWatcher` when the current
-                            // concurrency is exactly 1 and this is
-                            // worker 0. Evaluated here (not at
-                            // spawn) so toggling N between 1 and
-                            // >1 at runtime immediately stops or
-                            // restarts the animated board on the
-                            // next game, rather than carrying a
-                            // spawn-time captured flag forever.
-                            let liveDisplay = isWorker0 && countBox.count == 1
-
-                            if liveDisplay {
-                                gameWatcher.resetCurrentGame()
-                                gameWatcher.markPlaying(true)
-                            }
-
-                            let machine = ChessMachine()
-                            if liveDisplay {
-                                machine.delegate = gameWatcher
-                            }
-
-                            let gameStart = CFAbsoluteTimeGetCurrent()
-                            let result: GameResult
-                            do {
-                                let task = try machine.beginNewGame(white: white, black: black)
-                                result = await task.value
-                            } catch {
-                                if liveDisplay {
-                                    gameWatcher.markPlaying(false)
-                                }
-                                break
-                            }
-                            let gameDurationMs = (CFAbsoluteTimeGetCurrent() - gameStart) * 1000
-
-                            // Every worker contributes to the
-                            // aggregate session stats identically —
-                            // no delegate indirection, no worker
-                            // specialness. Move count = total plies
-                            // across both players' recorded-moves
-                            // counters, read before the next
-                            // `beginNewGame` resets them.
-                            let positions = white.recordedPliesCount + black.recordedPliesCount
-                            pStatsBox.recordCompletedGame(
-                                moves: positions,
-                                durationMs: gameDurationMs,
-                                result: result
-                            )
-                            spDiversityTracker.recordGame(moves: machine.moveHistory)
-                        }
-                    }
+                // Slot 0 drives the live-display `GameWatcher` when
+                // there is exactly one active slot; all slots
+                // contribute identically to `pStatsBox` /
+                // `spDiversityTracker`.
+                group.addTask(priority: .userInitiated) {
+                    [selfPlayDriver] in
+                    await selfPlayDriver.run()
                 }
 
                 // Training worker: tight-loop SGD on the trainer,
@@ -5276,8 +5176,8 @@ struct ContentView: View {
                 // execution. Both the 30-minute auto-fire and the
                 // Run Arena button enter here via `triggerBox.trigger()`.
                 group.addTask(priority: .userInitiated) {
-                    [trainer, network, tBox, selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, overrideBox,
-                     candidateInference, arenaChampion, secondaries] in
+                    [trainer, network, tBox, selfPlayGate, trainingGate, arenaFlag, triggerBox, overrideBox,
+                     candidateInference, arenaChampion] in
                     while !Task.isCancelled {
                         if triggerBox.consume() {
                             await self.runArenaParallel(
@@ -5285,8 +5185,6 @@ struct ContentView: View {
                                 champion: network,
                                 candidateInference: candidateInference,
                                 arenaChampion: arenaChampion,
-                                secondarySelfPlayNetworks: secondaries,
-                                secondarySelfPlayGates: secondarySelfPlayGates,
                                 tBox: tBox,
                                 selfPlayGate: selfPlayGate,
                                 trainingGate: trainingGate,
@@ -5352,6 +5250,18 @@ struct ContentView: View {
                         } else {
                             gradNormStr = "--"
                         }
+                        let vMeanStr: String
+                        if let vm = trainingSnap.rollingValueMean {
+                            vMeanStr = String(format: "%+.4f", vm)
+                        } else {
+                            vMeanStr = "--"
+                        }
+                        let vAbsStr: String
+                        if let va = trainingSnap.rollingValueAbsMean {
+                            vAbsStr = String(format: "%.4f", va)
+                        } else {
+                            vAbsStr = "--"
+                        }
                         let h = Int(elapsedTarget) / 3600
                         let m = (Int(elapsedTarget) % 3600) / 60
                         let s = Int(elapsedTarget) % 60
@@ -5388,7 +5298,7 @@ struct ContentView: View {
                             ? Double(parallelSnap.recentMoves) / Double(parallelSnap.recentGames)
                             : 0
                         let gameLenStr = String(format: "avgLen=%.1f rollingAvgLen=%.1f", lifetimeAvgLen, rollingAvgLen)
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // Policy-entropy alarm: fires whenever the
@@ -5841,8 +5751,8 @@ struct ContentView: View {
         }
 
         // Section header — labelled with the champion model ID
-        // (the network worker 0 plays on; secondaries are
-        // weight-mirror copies of it). The lifetime "Time" field
+        // (the network all self-play slots share through the
+        // barrier batcher). The lifetime "Time" field
         // used to live here too but moved to the top busy row
         // alongside memory stats — see `busyLabel` for that. The
         // Concurrency row used to live as the first body line but

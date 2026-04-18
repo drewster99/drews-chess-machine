@@ -172,6 +172,34 @@ final class ChessNetwork {
     /// it. Filled once at init, never modified afterwards.
     private let dummyInferenceInputTensorData: MPSGraphTensorData
 
+    // MARK: Batched Inference Scratch
+
+    /// Per-batch-size input feed cache for `evaluate(batchBoards:count:)`.
+    /// Keyed by batch count. Each entry holds one `[count, 18, 8, 8]`
+    /// MPSNDArray (bytes overwritten in place on every call) plus a
+    /// pre-built feeds dict. Entries are added lazily the first time a
+    /// given batch size is requested and retained for the life of the
+    /// network.
+    private struct BatchInputEntry {
+        let ndArray: MPSNDArray
+        let tensorData: MPSGraphTensorData
+        let feeds: [MPSGraphTensor: MPSGraphTensorData]
+    }
+    private var batchInputCache: [Int: BatchInputEntry] = [:]
+
+    /// Readback scratch for batched policy logits. Grows on demand to
+    /// the largest batch size ever requested. **Not re-entrant** — the
+    /// `UnsafeBufferPointer` returned from `evaluate(batchBoards:count:)`
+    /// aliases this storage and is valid only until the next batched
+    /// evaluate call on this same network.
+    private var batchPolicyScratchPtr: UnsafeMutablePointer<Float>?
+    private var batchPolicyScratchCapacity: Int = 0
+
+    /// Readback scratch for batched value scalars. Same re-entrancy
+    /// contract as `batchPolicyScratchPtr`.
+    private var batchValueScratchPtr: UnsafeMutablePointer<Float>?
+    private var batchValueScratchCapacity: Int = 0
+
     // MARK: Metal
 
     let metalDevice: MTLDevice
@@ -364,6 +392,14 @@ final class ChessNetwork {
         inferencePolicyScratchPtr.deallocate()
         inferenceValueScratchPtr.deinitialize(count: 1)
         inferenceValueScratchPtr.deallocate()
+        if let ptr = batchPolicyScratchPtr {
+            ptr.deinitialize(count: batchPolicyScratchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = batchValueScratchPtr {
+            ptr.deinitialize(count: batchValueScratchCapacity)
+            ptr.deallocate()
+        }
     }
 
     // MARK: - Inference
@@ -427,6 +463,114 @@ final class ChessNetwork {
         try board.withUnsafeBufferPointer { buf in
             try evaluate(board: buf)
         }
+    }
+
+    /// Evaluate a batch of `count` board positions in one graph execution.
+    ///
+    /// **Not re-entrant.** Both returned buffers alias this network's
+    /// batched readback scratch and are valid only until the next
+    /// `evaluate(batchBoards:count:)` call. Callers that need the bytes
+    /// to survive past the next batch must copy.
+    ///
+    /// The first call at a given `count` lazily allocates a per-batch-
+    /// size input `MPSNDArray` + feeds dict that is reused on all later
+    /// calls at that size. Policy and value readback scratches grow to
+    /// the largest batch size ever requested. This is the self-play
+    /// hot path — steady-state batches allocate nothing.
+    ///
+    /// - Parameters:
+    ///   - batchBoards: `count * 18 * 8 * 8 = count * 1152` floats in
+    ///                  NCHW order, one position after another.
+    ///   - count: number of positions in the batch; must be >= 1.
+    /// - Returns: `policy` — `count * 4096` raw logits laid out
+    ///            position-major (slot `i` starts at
+    ///            `i * 4096`); `values` — `count` scalars in [-1, +1].
+    func evaluate(
+        batchBoards: UnsafeBufferPointer<Float>,
+        count: Int
+    ) throws -> (policy: UnsafeBufferPointer<Float>, values: UnsafeBufferPointer<Float>) {
+        guard count >= 1 else {
+            throw ChessNetworkError.boardSizeMismatch(expected: Self.inputPlanes * Self.boardSize * Self.boardSize, got: 0)
+        }
+        let expected = count * Self.inputPlanes * Self.boardSize * Self.boardSize
+        guard batchBoards.count == expected else {
+            throw ChessNetworkError.boardSizeMismatch(expected: expected, got: batchBoards.count)
+        }
+
+        let entry = batchInputEntry(for: count)
+        let policyPtr = ensureBatchPolicyScratch(count: count)
+        let valuePtr = ensureBatchValueScratch(count: count)
+
+        Self.writeInferenceInput(batchBoards, into: entry.ndArray)
+
+        let results = graph.run(
+            with: commandQueue,
+            feeds: entry.feeds,
+            targetTensors: inferenceTargets,
+            targetOperations: nil
+        )
+
+        guard let policyData = results[policyOutput] else {
+            throw ChessNetworkError.outputMissing("policy")
+        }
+        guard let valueData = results[valueOutput] else {
+            throw ChessNetworkError.outputMissing("value")
+        }
+
+        Self.readFloats(from: policyData, into: policyPtr, count: count * Self.policySize)
+        Self.readFloats(from: valueData, into: valuePtr, count: count)
+
+        return (
+            policy: UnsafeBufferPointer(start: policyPtr, count: count * Self.policySize),
+            values: UnsafeBufferPointer(start: valuePtr, count: count)
+        )
+    }
+
+    private func batchInputEntry(for count: Int) -> BatchInputEntry {
+        if let cached = batchInputCache[count] {
+            return cached
+        }
+        let desc = MPSNDArrayDescriptor(
+            dataType: Self.dataType,
+            shape: [NSNumber(value: count), 18, 8, 8]
+        )
+        let nda = MPSNDArray(device: metalDevice, descriptor: desc)
+        let tensorData = MPSGraphTensorData(nda)
+        let feeds: [MPSGraphTensor: MPSGraphTensorData] = [inputPlaceholder: tensorData]
+        let entry = BatchInputEntry(ndArray: nda, tensorData: tensorData, feeds: feeds)
+        batchInputCache[count] = entry
+        return entry
+    }
+
+    private func ensureBatchPolicyScratch(count: Int) -> UnsafeMutablePointer<Float> {
+        let needed = count * Self.policySize
+        if let ptr = batchPolicyScratchPtr, batchPolicyScratchCapacity >= needed {
+            return ptr
+        }
+        if let old = batchPolicyScratchPtr {
+            old.deinitialize(count: batchPolicyScratchCapacity)
+            old.deallocate()
+        }
+        let ptr = UnsafeMutablePointer<Float>.allocate(capacity: needed)
+        ptr.initialize(repeating: 0, count: needed)
+        batchPolicyScratchPtr = ptr
+        batchPolicyScratchCapacity = needed
+        return ptr
+    }
+
+    private func ensureBatchValueScratch(count: Int) -> UnsafeMutablePointer<Float> {
+        if let ptr = batchValueScratchPtr, batchValueScratchCapacity >= count {
+            return ptr
+        }
+        if let old = batchValueScratchPtr {
+            old.deinitialize(count: batchValueScratchCapacity)
+            old.deallocate()
+        }
+        let ptr = UnsafeMutablePointer<Float>.allocate(capacity: count)
+        ptr.initialize(repeating: 0, count: count)
+        batchValueScratchPtr = ptr
+        batchValueScratchCapacity = count
+        return ptr
     }
 
     // MARK: - Weight Transfer

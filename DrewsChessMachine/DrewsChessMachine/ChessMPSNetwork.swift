@@ -89,4 +89,24 @@ final class ChessMPSNetwork: @unchecked Sendable {
     ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
         try network.evaluate(board: board)
     }
+
+    /// Run a batched forward pass.
+    ///
+    /// **Not re-entrant.** Both returned buffers alias the underlying
+    /// `ChessNetwork`'s shared batched readback scratch and are valid
+    /// only until the next batched `evaluate` call on this wrapper. See
+    /// `ChessNetwork.evaluate(batchBoards:count:)` for the full contract.
+    ///
+    /// - Parameters:
+    ///   - batchBoards: `count * 1152` floats, NCHW order, positions laid
+    ///                  out back-to-back.
+    ///   - count: batch size; must be >= 1.
+    /// - Returns: `policy` — `count * 4096` logits; `values` — `count`
+    ///            scalars in [-1, +1].
+    func evaluate(
+        batchBoards: UnsafeBufferPointer<Float>,
+        count: Int
+    ) throws -> (policy: UnsafeBufferPointer<Float>, values: UnsafeBufferPointer<Float>) {
+        try network.evaluate(batchBoards: batchBoards, count: count)
+    }
 }

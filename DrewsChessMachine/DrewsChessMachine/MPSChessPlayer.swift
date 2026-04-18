@@ -103,7 +103,13 @@ final class MPSChessPlayer: ChessPlayer {
 
     let identifier: String
     let name: String
-    private let network: ChessMPSNetwork
+    /// Source of (policy, value) predictions. Goes through
+    /// `DirectMoveEvaluationSource` (sync single-board inference) for
+    /// arena / Play Game / Play Continuous, or through
+    /// `BatchedMoveEvaluationSource` (barrier batcher) for self-play,
+    /// so N slot tasks coalesce their per-ply forward passes into one
+    /// batched `graph.run`.
+    private let source: MoveEvaluationSource
     /// Optional replay buffer. When non-nil, this player pushes each finished
     /// game's labeled positions into the buffer from `onGameEnded`. The
     /// default-nil path is what Play Game and Play Continuous use — they
@@ -158,9 +164,15 @@ final class MPSChessPlayer: ChessPlayer {
     /// without allocating a temporary `[Float]` for the gathered logits.
     private var sampleScratch: [Float]
 
-    /// Create a player backed by a neural network.
-    /// For self-play, two players can share the same network — they take turns,
-    /// and BoardEncoder.encode handles the perspective flip automatically.
+    /// Create a player backed by a `MoveEvaluationSource`.
+    ///
+    /// For self-play, all slot players share one
+    /// `BatchedMoveEvaluationSource` so N slot tasks' per-ply forward
+    /// passes are coalesced into one batched `graph.run`. For arena,
+    /// Play Game, and Play Continuous, pass a
+    /// `DirectMoveEvaluationSource` wrapping a `ChessMPSNetwork` — see
+    /// the `network:` convenience initializer below.
+    ///
     /// Pass a `replayBuffer` to have this player contribute its labeled
     /// positions to a shared training pool at game end; leave it nil for
     /// normal (non-training) play. Pass a `schedule` other than `.uniform`
@@ -168,7 +180,7 @@ final class MPSChessPlayer: ChessPlayer {
     /// and `sampling-parameters.md` for the rationale.
     init(
         name: String,
-        network: ChessMPSNetwork,
+        source: MoveEvaluationSource,
         replayBuffer: ReplayBuffer? = nil,
         schedule: SamplingSchedule = .uniform
     ) {
@@ -178,7 +190,7 @@ final class MPSChessPlayer: ChessPlayer {
         )
         self.identifier = UUID().uuidString
         self.name = name
-        self.network = network
+        self.source = source
         self.replayBuffer = replayBuffer
         self.schedule = schedule
         self.sampleScratch = [Float](repeating: 0, count: Self.sampleScratchCapacity)
@@ -240,16 +252,28 @@ final class MPSChessPlayer: ChessPlayer {
         let rowMutable = UnsafeMutableBufferPointer<Float>(start: rowBase, count: boardFloats)
         BoardEncoder.encode(gameState, into: rowMutable)
 
-        // Feed the same bytes to the network. `policy` is a non-owning
-        // view over the network's readback scratch — we consume it in
-        // `sampleMove` before returning, and never touch it again.
-        // `value` is the scalar v(position) from the value head; we
-        // stash it as the advantage baseline so the training policy
-        // loss can compute `(z − vBaseline) * −log p(a*)` without
-        // paying for a second forward pass.
+        // Feed the encoded bytes through the evaluation source. We
+        // materialize `[Float]` from the per-ply scratch row because
+        // the evaluation source is potentially actor-isolated and
+        // raw `UnsafeBufferPointer` isn't `Sendable`. That copy is
+        // 1152 floats per move; the batcher used to make an
+        // equivalent copy internally, so this just moves the copy
+        // one actor hop earlier — net allocations are unchanged.
+        //
+        // The returned `policy` is a fresh, caller-owned `[Float]`
+        // of 4096 raw logits — batchers can reuse their readback
+        // scratch on the next batch without invalidating this
+        // array. `value` is the scalar `v(position)` from the value
+        // head; we stash it as the advantage baseline so the
+        // training policy loss can compute
+        // `(z − vBaseline) * −log p(a*)` without paying for a
+        // second forward pass.
         let rowConst = UnsafeBufferPointer<Float>(rowMutable)
-        let (policy, value) = try network.evaluate(board: rowConst)
-        let move = sampleMove(from: policy, legalMoves: legalMoves, flip: flip)
+        let encoded = Array(rowConst)
+        let (policy, value) = try await source.evaluate(encodedBoard: encoded)
+        let move = policy.withUnsafeBufferPointer { policyBuf in
+            sampleMove(from: policyBuf, legalMoves: legalMoves, flip: flip)
+        }
 
         gamePolicyIndices.append(Int32(Self.networkPolicyIndex(for: move, flip: flip)))
         gameValueScalars.append(value)

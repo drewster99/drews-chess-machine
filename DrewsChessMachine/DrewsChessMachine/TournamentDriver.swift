@@ -32,7 +32,7 @@ struct TournamentStats: Sendable {
 /// let network = try ChessMPSNetwork(.randomWeights)
 /// let driver = TournamentDriver()
 /// let stats = await driver.run(
-///     playerA: { MPSChessPlayer(name: "Net", network: network) },
+///     playerA: { MPSChessPlayer(name: "Net", source: DirectMoveEvaluationSource(network: network)) },
 ///     playerB: { RandomPlayer() },
 ///     games: 100
 /// )
