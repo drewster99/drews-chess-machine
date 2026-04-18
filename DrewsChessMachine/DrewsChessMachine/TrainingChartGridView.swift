@@ -258,16 +258,21 @@ struct TrainingChartGridView: View {
     // MARK: - Progress rate chart (3 series)
 
     private var progressRateChart: some View {
-        // When hovering, swap the header to show all three series
-        // values at the hovered time; otherwise show the latest
-        // combined rate.
+        // Three-way header logic mirroring the single-series charts.
+        // "Hovering-no-data" applies when the cursor is over a chart
+        // but the nearest progress sample is outside tolerance —
+        // e.g. the user scrubbed to a time before the session
+        // actually started sampling.
         let headerText: String
-        if let t = hoveredSec,
-           let nearest = Self.nearestProgressSample(at: t, samples: progressRateSamples) {
-            let combined = Self.compactLabel(nearest.combinedMovesPerHour)
-            let selfPlay = Self.compactLabel(nearest.selfPlayMovesPerHour)
-            let training = Self.compactLabel(nearest.trainingMovesPerHour)
-            headerText = "t=\(Self.formatElapsedAxis(nearest.elapsedSec)) comb=\(combined) sp=\(selfPlay) tr=\(training)"
+        if let t = hoveredSec {
+            if let nearest = Self.nearestProgressSample(at: t, samples: progressRateSamples) {
+                let combined = Self.compactLabel(nearest.combinedMovesPerHour)
+                let selfPlay = Self.compactLabel(nearest.selfPlayMovesPerHour)
+                let training = Self.compactLabel(nearest.trainingMovesPerHour)
+                headerText = "t=\(Self.formatElapsedAxis(nearest.elapsedSec)) comb=\(combined) sp=\(selfPlay) tr=\(training)"
+            } else {
+                headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
+            }
         } else if let last = progressRateSamples.last {
             headerText = "\(Self.compactLabel(last.combinedMovesPerHour)) moves/hour"
         } else {
@@ -346,16 +351,20 @@ struct TrainingChartGridView: View {
     private static let maxEntropy = log(Double(ChessNetwork.policySize))
 
     private var entropyChart: some View {
-        let hoveredValue = hoveredSampleValue(path: \.rollingPolicyEntropy)
-        let hoveredTime = hoveredSampleTime()
+        let readout = hoverReadout(path: \.rollingPolicyEntropy)
         let headerText: String
-        if let t = hoveredTime, let v = hoveredValue {
+        switch readout {
+        case .notHovering:
+            if let lastValue = trainingChartSamples.last?.rollingPolicyEntropy {
+                headerText = String(format: "%.3f (%.1f%%)", lastValue, lastValue / Self.maxEntropy * 100)
+            } else {
+                headerText = "--"
+            }
+        case .hoveringNoData(let t):
+            headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
+        case .hoveringWithData(let t, let v):
             let pct = v / Self.maxEntropy * 100
             headerText = "t=\(Self.formatElapsedAxis(t)) \(String(format: "%.3f (%.1f%%)", v, pct))"
-        } else if let lastValue = trainingChartSamples.last?.rollingPolicyEntropy {
-            headerText = String(format: "%.3f (%.1f%%)", lastValue, lastValue / Self.maxEntropy * 100)
-        } else {
-            headerText = "--"
         }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
@@ -384,7 +393,7 @@ struct TrainingChartGridView: View {
                             .foregroundStyle(Color.gray.opacity(0.5))
                             .lineStyle(StrokeStyle(lineWidth: 1))
                     }
-                    if let t = hoveredTime, let v = hoveredValue {
+                    if case .hoveringWithData(let t, let v) = readout {
                         PointMark(x: .value("Time", t), y: .value("Entropy", v))
                             .foregroundStyle(.purple)
                             .symbolSize(40)
@@ -417,15 +426,19 @@ struct TrainingChartGridView: View {
     // MARK: - Non-negligible count chart (fixed Y-axis 0-4096)
 
     private var nonNegChart: some View {
-        let hoveredValue = hoveredSampleValue(path: \.rollingPolicyNonNegCount)
-        let hoveredTime = hoveredSampleTime()
+        let readout = hoverReadout(path: \.rollingPolicyNonNegCount)
         let headerText: String
-        if let t = hoveredTime, let v = hoveredValue {
+        switch readout {
+        case .notHovering:
+            if let lastValue = trainingChartSamples.last?.rollingPolicyNonNegCount {
+                headerText = "\(Int(lastValue)) / 4096"
+            } else {
+                headerText = "-- / 4096"
+            }
+        case .hoveringNoData(let t):
+            headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
+        case .hoveringWithData(let t, let v):
             headerText = "t=\(Self.formatElapsedAxis(t)) \(Int(v)) / 4096"
-        } else if let lastValue = trainingChartSamples.last?.rollingPolicyNonNegCount {
-            headerText = "\(Int(lastValue)) / 4096"
-        } else {
-            headerText = "-- / 4096"
         }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
@@ -454,7 +467,7 @@ struct TrainingChartGridView: View {
                             .foregroundStyle(Color.gray.opacity(0.5))
                             .lineStyle(StrokeStyle(lineWidth: 1))
                     }
-                    if let t = hoveredTime, let v = hoveredValue {
+                    if case .hoveringWithData(let t, let v) = readout {
                         PointMark(x: .value("Time", t), y: .value("Count", v))
                             .foregroundStyle(.mint)
                             .symbolSize(40)
@@ -494,21 +507,28 @@ struct TrainingChartGridView: View {
         color: Color,
         wholeNumber: Bool = false
     ) -> some View {
-        let hoveredValue = hoveredSampleValue(path: yPath)
-        let hoveredTime = hoveredSampleTime()
+        let readout = hoverReadout(path: yPath)
         let unitSuffix = unit.isEmpty ? "" : " \(unit)"
         let headerText: String
-        // When hovering, swap the header to show the hovered time +
-        // the sample's value at that time. Otherwise show the
-        // latest value (pre-hover behavior).
-        if let t = hoveredTime, let v = hoveredValue {
+        // Three-way header logic: not hovering (show latest if any),
+        // hovering-with-data (show nearest sample's time + value),
+        // hovering-but-no-data (show the raw hover time + "no data"
+        // instead of silently falling back to the last sample,
+        // which misled the reader into thinking the last-known
+        // value extended past its actual range).
+        switch readout {
+        case .notHovering:
+            if let v = trainingChartSamples.last?[keyPath: yPath] {
+                let valueStr = wholeNumber ? String(Int(v)) : Self.compactLabel(v)
+                headerText = "\(valueStr)\(unitSuffix)"
+            } else {
+                headerText = "--"
+            }
+        case .hoveringNoData(let t):
+            headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
+        case .hoveringWithData(let t, let v):
             let valueStr = wholeNumber ? String(Int(v)) : Self.compactLabel(v)
             headerText = "t=\(Self.formatElapsedAxis(t)) \(valueStr)\(unitSuffix)"
-        } else if let v = trainingChartSamples.last?[keyPath: yPath] {
-            let valueStr = wholeNumber ? String(Int(v)) : Self.compactLabel(v)
-            headerText = "\(valueStr)\(unitSuffix)"
-        } else {
-            headerText = "--"
         }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
@@ -534,15 +554,19 @@ struct TrainingChartGridView: View {
                     }
                     // Crosshair at hovered time across every mini
                     // chart — shared hoveredSec means all charts
-                    // show the rule in lockstep.
+                    // show the rule in lockstep. Always drawn when
+                    // hovering, even if this chart has no data at
+                    // that time (so the reader sees WHERE they are
+                    // even on silent series).
                     if let t = hoveredSec {
                         RuleMark(x: .value("Time", t))
                             .foregroundStyle(Color.gray.opacity(0.5))
                             .lineStyle(StrokeStyle(lineWidth: 1))
                     }
-                    // Point marker at the nearest sample for this
-                    // chart's series.
-                    if let t = hoveredTime, let v = hoveredValue {
+                    // Point marker only when we have a real sample
+                    // value — explicitly NOT drawn in the
+                    // hoveringNoData case to avoid misleading dots.
+                    if case .hoveringWithData(let t, let v) = readout {
                         PointMark(x: .value("Time", t), y: .value(title, v))
                             .foregroundStyle(color)
                             .symbolSize(40)
@@ -616,35 +640,58 @@ struct TrainingChartGridView: View {
 
     // MARK: - Hover lookup helpers
 
-    /// Return the training-sample-nearest-to-hovered-time's value
-    /// at `path`. Linear scan — `trainingChartSamples` is small (a
-    /// few thousand samples at most during a long session) and the
-    /// call rate is bounded by the mouse's physical move cadence,
-    /// so a binary search isn't worth the complexity yet.
-    private func hoveredSampleValue(
+    /// Maximum distance in seconds between the hovered cursor time
+    /// and the nearest sample's time for the sample to count as
+    /// "data at this hover time". Training samples land at 1 Hz, so
+    /// 1.5 s accommodates normal sampling jitter while rejecting
+    /// hovers that fall well outside any sample's reach (e.g. past
+    /// the last sample or before the first one). Without this gate,
+    /// a pure nearest-sample lookup would silently show stale
+    /// first/last-sample values for arbitrary off-range hover
+    /// positions and mislead the reader.
+    static let hoverMatchToleranceSec: Double = 1.5
+
+    /// Three-way result of a per-chart hover query.
+    private enum HoverReadout {
+        /// The cursor isn't over any time-series chart right now.
+        case notHovering
+        /// The cursor IS over a chart, but either (a) the nearest
+        /// sample is outside `hoverMatchToleranceSec` of the
+        /// hovered time, or (b) this specific series has no value
+        /// at the nearest sample. Carries the raw hovered time so
+        /// the header can still display "t=M:SS — no data".
+        case hoveringNoData(hoveredTime: Double)
+        /// The cursor is over a chart and this series has a value
+        /// at a sample within the match tolerance. Carries the
+        /// actual sample's time (not the raw hover time, so point
+        /// markers land exactly on the line) plus the value.
+        case hoveringWithData(sampleTime: Double, value: Double)
+    }
+
+    /// Per-series hover lookup. Returns a `HoverReadout` covering
+    /// the three possible UI states so the chart header can render
+    /// unambiguous text and the PointMark can be drawn only when a
+    /// real value exists.
+    private func hoverReadout(
         path: KeyPath<TrainingChartSample, Double?>
-    ) -> Double? {
-        guard let t = hoveredSec,
-              let sample = Self.nearestTrainingSample(at: t, samples: trainingChartSamples) else {
-            return nil
+    ) -> HoverReadout {
+        guard let hoverT = hoveredSec else { return .notHovering }
+        guard let sample = Self.nearestTrainingSample(
+            at: hoverT,
+            samples: trainingChartSamples
+        ) else {
+            return .hoveringNoData(hoveredTime: hoverT)
         }
-        return sample[keyPath: path]
+        guard let v = sample[keyPath: path] else {
+            return .hoveringNoData(hoveredTime: hoverT)
+        }
+        return .hoveringWithData(sampleTime: sample.elapsedSec, value: v)
     }
 
-    /// Return the elapsed-second of the training-sample-nearest-to-
-    /// hovered-time. Separated from `hoveredSampleValue` so per-
-    /// chart headers can show "t=..." even when a specific series
-    /// has no value at that sample.
-    private func hoveredSampleTime() -> Double? {
-        guard let t = hoveredSec,
-              let sample = Self.nearestTrainingSample(at: t, samples: trainingChartSamples) else {
-            return nil
-        }
-        return sample.elapsedSec
-    }
-
-    /// Linear-scan nearest-sample lookup. Returns `nil` on empty
-    /// input (so headers gracefully degrade to "latest" mode).
+    /// Linear-scan nearest-sample lookup. Returns `nil` when the
+    /// array is empty OR when the nearest sample is farther than
+    /// `hoverMatchToleranceSec` from `t` — the caller interprets
+    /// `nil` as "no data at this hover time".
     private static func nearestTrainingSample(
         at t: Double,
         samples: [TrainingChartSample]
@@ -659,11 +706,14 @@ struct TrainingChartGridView: View {
                 bestDist = d
             }
         }
+        guard bestDist <= hoverMatchToleranceSec else { return nil }
         return best
     }
 
     /// Same as `nearestTrainingSample(...)` but for the three-series
-    /// progress-rate chart.
+    /// progress-rate chart. Same tolerance gate applies so hovers
+    /// past the last sample don't masquerade as stale last-sample
+    /// values.
     private static func nearestProgressSample(
         at t: Double,
         samples: [ProgressRateSample]
@@ -678,6 +728,7 @@ struct TrainingChartGridView: View {
                 bestDist = d
             }
         }
+        guard bestDist <= hoverMatchToleranceSec else { return nil }
         return best
     }
 

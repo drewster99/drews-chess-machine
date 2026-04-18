@@ -2838,17 +2838,34 @@ struct ContentView: View {
         // Hover readout: when the user moves the cursor over the
         // chart, display the elapsed-time + all three series values
         // at that time in an overlaid label. Nearest-sample lookup
-        // by linear scan (samples are small: 1 Hz * minutes-to-hours).
-        let hoverReadout: (time: Double, combined: Double, selfPlay: Double, training: Double)? = {
-            guard let t = bigProgressChartHoveredSec,
-                  !progressRateSamples.isEmpty else { return nil }
+        // is gated by TrainingChartGridView.hoverMatchToleranceSec
+        // so a hover past the last sample (or before the first one)
+        // is reported as "no data" rather than silently snapping to
+        // the nearest boundary sample and misleading the reader.
+        enum BigProgressReadout {
+            case hoveringNoData(hoveredTime: Double)
+            case hoveringWithData(time: Double, combined: Double, selfPlay: Double, training: Double)
+        }
+        let hoverReadout: BigProgressReadout? = {
+            guard let t = bigProgressChartHoveredSec else { return nil }
+            guard !progressRateSamples.isEmpty else {
+                return .hoveringNoData(hoveredTime: t)
+            }
             var best = progressRateSamples[0]
             var bestDist = Swift.abs(best.elapsedSec - t)
             for s in progressRateSamples.dropFirst() {
                 let d = Swift.abs(s.elapsedSec - t)
                 if d < bestDist { best = s; bestDist = d }
             }
-            return (best.elapsedSec, best.combinedMovesPerHour, best.selfPlayMovesPerHour, best.trainingMovesPerHour)
+            if bestDist > TrainingChartGridView.hoverMatchToleranceSec {
+                return .hoveringNoData(hoveredTime: t)
+            }
+            return .hoveringWithData(
+                time: best.elapsedSec,
+                combined: best.combinedMovesPerHour,
+                selfPlay: best.selfPlayMovesPerHour,
+                training: best.trainingMovesPerHour
+            )
         }()
 
         return Chart {
@@ -2945,22 +2962,36 @@ struct ContentView: View {
                             }
                         }
                     if let r = hoverReadout {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("t=\(Self.formatElapsedAxis(r.time))")
-                                .font(.caption2)
-                                .monospacedDigit()
-                            Text("Combined: \(Int(r.combined))/hr")
-                                .font(.caption2)
-                                .monospacedDigit()
-                                .foregroundStyle(Color.green)
-                            Text("Self-play: \(Int(r.selfPlay))/hr")
-                                .font(.caption2)
-                                .monospacedDigit()
-                                .foregroundStyle(Color.blue)
-                            Text("Training:  \(Int(r.training))/hr")
-                                .font(.caption2)
-                                .monospacedDigit()
-                                .foregroundStyle(Color.orange)
+                        Group {
+                            switch r {
+                            case .hoveringWithData(let time, let combined, let selfPlay, let training):
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("t=\(Self.formatElapsedAxis(time))")
+                                        .font(.caption2)
+                                        .monospacedDigit()
+                                    Text("Combined: \(Int(combined))/hr")
+                                        .font(.caption2)
+                                        .monospacedDigit()
+                                        .foregroundStyle(Color.green)
+                                    Text("Self-play: \(Int(selfPlay))/hr")
+                                        .font(.caption2)
+                                        .monospacedDigit()
+                                        .foregroundStyle(Color.blue)
+                                    Text("Training:  \(Int(training))/hr")
+                                        .font(.caption2)
+                                        .monospacedDigit()
+                                        .foregroundStyle(Color.orange)
+                                }
+                            case .hoveringNoData(let t):
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("t=\(Self.formatElapsedAxis(t))")
+                                        .font(.caption2)
+                                        .monospacedDigit()
+                                    Text("no data")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
                         .padding(6)
                         .background(
