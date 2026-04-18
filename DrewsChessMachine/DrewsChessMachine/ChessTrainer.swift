@@ -1519,31 +1519,53 @@ final class ChessTrainer: @unchecked Sendable {
     /// across all GPU engines). Returns `nil` if either call fails —
     /// the caller polls out-of-band, so a dropped sample just skips
     /// one update tick.
+    /// Cached Mach timebase for converting `mach_absolute_time`
+    /// ticks to nanoseconds. Constant for the lifetime of the
+    /// process, so one init + atomic read from then on.
+    private static let machTimebase: mach_timebase_info_data_t = {
+        var t = mach_timebase_info_data_t()
+        mach_timebase_info(&t)
+        return t
+    }()
+
     static func sampleCurrentProcessUsage() -> ProcessUsageSample? {
-        // CPU time: use task_info(TASK_THREAD_TIMES_INFO) which
-        // reliably sums user + system time across ALL threads.
-        // proc_pid_rusage(ri_user_time) was under-reporting on
-        // macOS 26, giving ~14% instead of Activity Monitor's ~560%.
-        var timesInfo = task_thread_times_info_data_t()
-        var timesCount = mach_msg_type_number_t(
-            MemoryLayout<task_thread_times_info_data_t>.size / MemoryLayout<natural_t>.size
+        // CPU time: use TASK_ABSOLUTETIME_INFO, which exposes
+        // `total_user` + `total_system` summed across BOTH live
+        // and terminated threads. The previous TASK_THREAD_TIMES_INFO
+        // flavor only reported LIVE-thread time, so every time a
+        // self-play worker, save task, or arena game-runner thread
+        // exited its accumulated time disappeared from the counter.
+        // If the drop between two polls exceeded the live threads'
+        // newly-accumulated time, `sample.cpuNs < prev.cpuNs` and
+        // the caller clamped `cpuDelta` to 0 → CPU% blipped to 0 %
+        // until live threads accumulated enough time to cover the
+        // loss. ABSOLUTETIME_INFO is monotonic and fixes that.
+        //
+        // Values are in `mach_absolute_time` ticks; convert to
+        // nanoseconds via the cached timebase (numer / denom).
+        var abstime = task_absolutetime_info_data_t()
+        var abstimeCount = mach_msg_type_number_t(
+            MemoryLayout<task_absolutetime_info_data_t>.size / MemoryLayout<natural_t>.size
         )
-        let timesRC = withUnsafeMutablePointer(to: &timesInfo) { ptr -> kern_return_t in
-            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(timesCount)) { intPtr in
+        let abstimeRC = withUnsafeMutablePointer(to: &abstime) { ptr -> kern_return_t in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(abstimeCount)) { intPtr in
                 task_info(
                     mach_task_self_,
-                    task_flavor_t(TASK_THREAD_TIMES_INFO),
+                    task_flavor_t(TASK_ABSOLUTETIME_INFO),
                     intPtr,
-                    &timesCount
+                    &abstimeCount
                 )
             }
         }
-        guard timesRC == KERN_SUCCESS else { return nil }
+        guard abstimeRC == KERN_SUCCESS else { return nil }
 
-        let userNs = UInt64(timesInfo.user_time.seconds) &* 1_000_000_000
-            &+ UInt64(timesInfo.user_time.microseconds) &* 1000
-        let sysNs = UInt64(timesInfo.system_time.seconds) &* 1_000_000_000
-            &+ UInt64(timesInfo.system_time.microseconds) &* 1000
+        let tb = machTimebase
+        let totalTicks = abstime.total_user &+ abstime.total_system
+        // ticks * numer / denom → nanoseconds. Intermediate product
+        // fits in UInt64 comfortably: numer/denom on Apple Silicon
+        // is 125/3, so total_ticks * 125 overflows at ~1.47e17 ns =
+        // ~4.6 years of continuous runtime — not a real concern.
+        let cpuNs = totalTicks &* UInt64(tb.numer) / UInt64(tb.denom)
 
         // GPU time: task_info(TASK_POWER_INFO_V2) → gpu_energy.
         var power = task_power_info_v2_data_t()
@@ -1564,7 +1586,7 @@ final class ChessTrainer: @unchecked Sendable {
 
         return ProcessUsageSample(
             timestamp: Date(),
-            cpuNs: userNs &+ sysNs,
+            cpuNs: cpuNs,
             gpuNs: power.gpu_energy.task_gpu_utilisation
         )
     }
