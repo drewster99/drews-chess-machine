@@ -60,6 +60,15 @@ struct TauConfigCodable: Codable, Equatable {
 /// arena history for context on resume. Only the audit fields
 /// (counts, score, promoted flag, duration) are persisted; live UI
 /// state like `isCurrent` is not.
+///
+/// `gamesPlayed` and `promotionKind` are Optional for backward
+/// compatibility with session files written before those fields
+/// existed. A missing `gamesPlayed` is reconstructed at load time
+/// as `candidateWins + championWins + draws` (same identity the
+/// tournament driver uses). A missing `promotionKind` is treated
+/// as `.automatic` on load when `promoted == true`, which matches
+/// the only way promotions could happen before the manual Promote
+/// button existed.
 struct ArenaHistoryEntryCodable: Codable, Equatable {
     let finishedAtStep: Int
     let candidateWins: Int
@@ -69,6 +78,8 @@ struct ArenaHistoryEntryCodable: Codable, Equatable {
     let promoted: Bool
     let promotedID: String?
     let durationSec: Double
+    var gamesPlayed: Int?
+    var promotionKind: String?
 }
 
 // MARK: - Session State

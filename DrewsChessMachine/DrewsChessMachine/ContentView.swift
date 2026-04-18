@@ -317,11 +317,11 @@ extension GameWatcher.Snapshot {
         let sAvgMove = totalMoves > 0 ? String(format: "%.2f ms", avgMoveTimeMs) : dash
         let sAvgGame = totalGames > 0 ? String(format: "%.1f ms", avgGameTimeMs) : dash
         let sMovesHr = liveMoves > 0
-            ? Int(movesPerHour(now: now).rounded()).formatted(.number.grouping(.automatic))
-            : dash
+        ? Int(movesPerHour(now: now).rounded()).formatted(.number.grouping(.automatic))
+        : dash
         let sGamesHr = totalGames > 0
-            ? Int(gamesPerHour().rounded()).formatted(.number.grouping(.automatic))
-            : dash
+        ? Int(gamesPerHour().rounded()).formatted(.number.grouping(.automatic))
+        : dash
 
         // Last Game — only shown when not in active continuous play. During
         // continuous play it has no value (it's already part of session totals
@@ -342,8 +342,8 @@ extension GameWatcher.Snapshot {
                   Avg move:  \(lgAvg)
                   White avg: \(lgWAvg)
                   Black avg: \(lgBAvg)
-
-
+                
+                
                 """
         } else {
             lastGameSection = ""
@@ -351,7 +351,7 @@ extension GameWatcher.Snapshot {
 
         return """
             Status: \(status)
-
+            
             \(lastGameSection)Session
               Games:     \(sGames)
               Moves:     \(sMoves)
@@ -360,7 +360,7 @@ extension GameWatcher.Snapshot {
               Avg game:  \(sAvgGame)
               Moves/hr:  \(sMovesHr)
               Games/hr:  \(sGamesHr)
-
+            
             Results
               Checkmate:      \(whiteCheckmates + blackCheckmates)\(pct(whiteCheckmates + blackCheckmates))
                 White wins:     \(whiteCheckmates)\(pct(whiteCheckmates))
@@ -494,15 +494,36 @@ struct TournamentProgress: Sendable {
 /// `tournamentHistory` array after each arena finishes. Displayed in
 /// the training stats text panel so the user can see promotion
 /// decisions across the session.
+/// How a tournament ended in terms of the promotion decision.
+/// `nil` on a `TournamentRecord` means the champion was kept (no
+/// promotion); otherwise this distinguishes an automatic promotion
+/// (score met the configured threshold and a full tournament was
+/// played) from a manual one (user clicked the Promote button,
+/// which forces promotion regardless of score or completion).
+enum PromotionKind: String, Sendable, Codable {
+    case automatic
+    case manual
+}
+
 struct TournamentRecord: Sendable, Identifiable {
     let id = UUID()
     /// `trainingStats.steps` at the moment the tournament finished.
     let finishedAtStep: Int
+    /// Number of arena games that actually completed before the
+    /// tournament ended. May be less than `Self.tournamentGames` if
+    /// the user clicked Abort or Promote mid-tournament, or if the
+    /// session was stopped while the arena was in flight.
+    let gamesPlayed: Int
     let candidateWins: Int
     let championWins: Int
     let draws: Int
     let score: Double
     let promoted: Bool
+    /// Whether the promotion (when `promoted == true`) was triggered
+    /// by the configured score threshold (`.automatic`) or by the
+    /// user's Promote button (`.manual`). `nil` when `promoted` is
+    /// false.
+    let promotionKind: PromotionKind?
     /// ID of the candidate network when a promotion happened — the
     /// model the champion was replaced with. `nil` when `promoted`
     /// is false, so the arena history / logs can surface "which
@@ -1427,7 +1448,7 @@ struct ContentView: View {
     /// walk this ladder one rung at a time via
     /// `trainingStepDelayBinding`.
     nonisolated static let stepDelayLadder: [Int] =
-        [0, 5, 10, 15, 20] + Array(stride(from: 25, through: Self.stepDelayMaxMs, by: 25))
+    [0, 5, 10, 15, 20] + Array(stride(from: 25, through: Self.stepDelayMaxMs, by: 25))
     /// Current training-step delay in milliseconds, written by
     /// the Stepper via `trainingStepDelayBinding` and mirrored into
     /// `trainingStepDelayBox` so the training worker task reads
@@ -1677,27 +1698,27 @@ struct ContentView: View {
     private var networkReady: Bool { network != nil }
     private var isBusy: Bool {
         isBuilding
-            || isEvaluating
-            || gameSnapshot.isPlaying
-            || continuousPlay
-            || isTrainingOnce
-            || continuousTraining
-            || sweepRunning
-            || realTraining
+        || isEvaluating
+        || gameSnapshot.isPlaying
+        || continuousPlay
+        || isTrainingOnce
+        || continuousTraining
+        || sweepRunning
+        || realTraining
     }
     private var isGameMode: Bool {
         gameSnapshot.isPlaying
-            || gameSnapshot.totalGames > 0
-            || realTraining
+        || gameSnapshot.totalGames > 0
+        || realTraining
     }
     private var isTrainingMode: Bool {
         isTrainingOnce
-            || continuousTraining
-            || realTraining
-            || trainingStats != nil
-            || lastTrainStep != nil
-            || sweepRunning
-            || !sweepResults.isEmpty
+        || continuousTraining
+        || realTraining
+        || trainingStats != nil
+        || lastTrainStep != nil
+        || sweepRunning
+        || !sweepResults.isEmpty
     }
 
     private var displayedPieces: [Piece?] {
@@ -2196,8 +2217,8 @@ struct ContentView: View {
             )
             .fileDialogDefaultDirectory(
                 showingLoadModelImporter
-                    ? CheckpointPaths.modelsDir
-                    : CheckpointPaths.sessionsDir
+                ? CheckpointPaths.modelsDir
+                : CheckpointPaths.sessionsDir
             )
 
             // Board + text side by side
@@ -2242,88 +2263,88 @@ struct ContentView: View {
                     if isProgressRateActive {
                         progressRateChartView
                     } else {
-                    HStack(spacing: 8) {
-                        let leftDisabled = inferenceResult == nil || selectedOverlay == 0 || !showForwardPassUI
-                        Button(
-                            action: { navigateOverlay(-1) },
-                            label: {
-                                Image(systemName: "chevron.left").font(.title3).frame(width: 24)
-                            }
-                        )
-                        .buttonStyle(.plain)
-                        .disabled(leftDisabled)
-                        .opacity(leftDisabled ? 0.2 : 0.6)
-
-                        ChessBoardView(pieces: displayedPieces, overlay: currentOverlay)
-                            .overlay {
-                                // Transparent hit layer that converts drag
-                                // coordinates to squares and routes edits
-                                // through `applyFreePlacementDrag`. Sized to
-                                // match the board's square frame via the
-                                // overlay modifier, so local coordinates map
-                                // 1:1 onto board squares. Disabled outside
-                                // forward-pass mode so game/training views
-                                // aren't hijacked.
-                                GeometryReader { geo in
-                                    let boardSize = min(geo.size.width, geo.size.height)
-                                    Color.clear
-                                        .contentShape(Rectangle())
-                                        .gesture(
-                                            DragGesture(minimumDistance: 0)
-                                                .onEnded { value in
-                                                    let fromSq = Self.squareIndex(
-                                                        at: value.startLocation,
-                                                        boardSize: boardSize
-                                                    )
-                                                    let toSq = Self.squareIndex(
-                                                        at: value.location,
-                                                        boardSize: boardSize
-                                                    )
-                                                    applyFreePlacementDrag(from: fromSq, to: toSq)
-                                                }
-                                        )
-                                        .allowsHitTesting(forwardPassEditable)
+                        HStack(spacing: 8) {
+                            let leftDisabled = inferenceResult == nil || selectedOverlay == 0 || !showForwardPassUI
+                            Button(
+                                action: { navigateOverlay(-1) },
+                                label: {
+                                    Image(systemName: "chevron.left").font(.title3).frame(width: 24)
                                 }
-                            }
-                            .overlay {
-                                // Multi-worker placeholder — the live
-                                // animated game board only works with
-                                // one driving worker (N=1), because a
-                                // single `GameWatcher` can't track
-                                // multiple concurrent games without
-                                // flicker. When N>1 we still show the
-                                // board slot (so the Candidate test
-                                // picker remains usable and the layout
-                                // doesn't shift) but overlay a centered
-                                // label indicating how many workers
-                                // are running. Hidden in candidate-test
-                                // mode so the probe board stays clean.
-                                if realTraining
-                                    && !isCandidateTestActive
-                                    && selfPlayWorkerCount > 1 {
-                                    Text("N = \(selfPlayWorkerCount) concurrent games\nLive board hidden")
-                                        .font(.system(.body, design: .monospaced))
-                                        .multilineTextAlignment(.center)
-                                        .foregroundStyle(.white)
-                                        .padding(14)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 10)
-                                                .fill(Color.black.opacity(0.7))
-                                        )
-                                }
-                            }
+                            )
+                            .buttonStyle(.plain)
+                            .disabled(leftDisabled)
+                            .opacity(leftDisabled ? 0.2 : 0.6)
 
-                        let rightDisabled = inferenceResult == nil || selectedOverlay == 18 || !showForwardPassUI
-                        Button(
-                            action: { navigateOverlay(1) },
-                            label: {
-                                Image(systemName: "chevron.right").font(.title3).frame(width: 24)
-                            }
-                        )
-                        .buttonStyle(.plain)
-                        .disabled(rightDisabled)
-                        .opacity(rightDisabled ? 0.2 : 0.6)
-                    }
+                            ChessBoardView(pieces: displayedPieces, overlay: currentOverlay)
+                                .overlay {
+                                    // Transparent hit layer that converts drag
+                                    // coordinates to squares and routes edits
+                                    // through `applyFreePlacementDrag`. Sized to
+                                    // match the board's square frame via the
+                                    // overlay modifier, so local coordinates map
+                                    // 1:1 onto board squares. Disabled outside
+                                    // forward-pass mode so game/training views
+                                    // aren't hijacked.
+                                    GeometryReader { geo in
+                                        let boardSize = min(geo.size.width, geo.size.height)
+                                        Color.clear
+                                            .contentShape(Rectangle())
+                                            .gesture(
+                                                DragGesture(minimumDistance: 0)
+                                                    .onEnded { value in
+                                                        let fromSq = Self.squareIndex(
+                                                            at: value.startLocation,
+                                                            boardSize: boardSize
+                                                        )
+                                                        let toSq = Self.squareIndex(
+                                                            at: value.location,
+                                                            boardSize: boardSize
+                                                        )
+                                                        applyFreePlacementDrag(from: fromSq, to: toSq)
+                                                    }
+                                            )
+                                            .allowsHitTesting(forwardPassEditable)
+                                    }
+                                }
+                                .overlay {
+                                    // Multi-worker placeholder — the live
+                                    // animated game board only works with
+                                    // one driving worker (N=1), because a
+                                    // single `GameWatcher` can't track
+                                    // multiple concurrent games without
+                                    // flicker. When N>1 we still show the
+                                    // board slot (so the Candidate test
+                                    // picker remains usable and the layout
+                                    // doesn't shift) but overlay a centered
+                                    // label indicating how many workers
+                                    // are running. Hidden in candidate-test
+                                    // mode so the probe board stays clean.
+                                    if realTraining
+                                        && !isCandidateTestActive
+                                        && selfPlayWorkerCount > 1 {
+                                        Text("N = \(selfPlayWorkerCount) concurrent games\nLive board hidden")
+                                            .font(.system(.body, design: .monospaced))
+                                            .multilineTextAlignment(.center)
+                                            .foregroundStyle(.white)
+                                            .padding(14)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 10)
+                                                    .fill(Color.black.opacity(0.7))
+                                            )
+                                    }
+                                }
+
+                            let rightDisabled = inferenceResult == nil || selectedOverlay == 18 || !showForwardPassUI
+                            Button(
+                                action: { navigateOverlay(1) },
+                                label: {
+                                    Image(systemName: "chevron.right").font(.title3).frame(width: 24)
+                                }
+                            )
+                            .buttonStyle(.plain)
+                            .disabled(rightDisabled)
+                            .opacity(rightDisabled ? 0.2 : 0.6)
+                        }
                     }
                 }
                 .frame(minWidth: 320, maxWidth: 420)
@@ -2449,7 +2470,7 @@ struct ContentView: View {
                                                     .frame(minWidth: 40, alignment: .trailing)
                                                     .foregroundStyle(
                                                         abs(snap.currentRatio - snap.targetRatio) < 0.3
-                                                            ? Color.primary : Color.red
+                                                        ? Color.primary : Color.red
                                                     )
                                             } else {
                                                 Text("--")
@@ -2593,127 +2614,127 @@ struct ContentView: View {
             // `Task { @MainActor in }` wrap coalesces the work into a
             // single render pass.
             Task { @MainActor in
-            // Pull the latest game state into @State at most every 100ms.
-            // Cheap (single locked struct copy) and bounds UI work even
-            // when the game loop is doing hundreds of moves per second.
-            gameSnapshot = gameWatcher.snapshot()
-            // Same heartbeat pulls the sweep's worker-thread progress and
-            // any newly-completed rows into @State so the table grows live.
-            if sweepRunning, let box = sweepCancelBox {
-                sweepProgress = box.latestProgress
-                // Sample process resident memory and feed it into the
-                // sweep's per-row peak. The trainer also samples at row
-                // boundaries — we just contribute extra samples while a
-                // row is in flight so we don't miss mid-step spikes.
-                box.recordPeakSample(ChessTrainer.currentPhysFootprintBytes())
-                let rows = box.completedRows
-                if rows.count != sweepResults.count {
-                    sweepResults = rows
+                // Pull the latest game state into @State at most every 100ms.
+                // Cheap (single locked struct copy) and bounds UI work even
+                // when the game loop is doing hundreds of moves per second.
+                gameSnapshot = gameWatcher.snapshot()
+                // Same heartbeat pulls the sweep's worker-thread progress and
+                // any newly-completed rows into @State so the table grows live.
+                if sweepRunning, let box = sweepCancelBox {
+                    sweepProgress = box.latestProgress
+                    // Sample process resident memory and feed it into the
+                    // sweep's per-row peak. The trainer also samples at row
+                    // boundaries — we just contribute extra samples while a
+                    // row is in flight so we don't miss mid-step spikes.
+                    box.recordPeakSample(ChessTrainer.currentPhysFootprintBytes())
+                    let rows = box.completedRows
+                    if rows.count != sweepResults.count {
+                        sweepResults = rows
+                    }
                 }
-            }
-            // Same heartbeat pulls live training stats out of the
-            // lock-protected box the background training task is writing
-            // into. Guarded on step count so a mid-run session that
-            // hasn't advanced since the last tick doesn't trigger a
-            // useless redraw — and an idle box (after Stop or before
-            // first step) stays silent.
-            if let box = trainingBox {
-                let snap = box.snapshot()
-                if snap.stats.steps != (trainingStats?.steps ?? -1) {
-                    trainingStats = snap.stats
-                    lastTrainStep = snap.lastTiming
-                    realRollingPolicyLoss = snap.rollingPolicyLoss
-                    realRollingValueLoss = snap.rollingValueLoss
+                // Same heartbeat pulls live training stats out of the
+                // lock-protected box the background training task is writing
+                // into. Guarded on step count so a mid-run session that
+                // hasn't advanced since the last tick doesn't trigger a
+                // useless redraw — and an idle box (after Stop or before
+                // first step) stays silent.
+                if let box = trainingBox {
+                    let snap = box.snapshot()
+                    if snap.stats.steps != (trainingStats?.steps ?? -1) {
+                        trainingStats = snap.stats
+                        lastTrainStep = snap.lastTiming
+                        realRollingPolicyLoss = snap.rollingPolicyLoss
+                        realRollingValueLoss = snap.rollingValueLoss
+                    }
+                    if let err = snap.error, trainingError == nil {
+                        trainingError = err
+                    }
                 }
-                if let err = snap.error, trainingError == nil {
-                    trainingError = err
+                // Arena progress mirror — cheap lock read, only updates the
+                // @State when the game index has advanced (or transitioned
+                // between non-running and running), so no redundant view
+                // invalidations between tournament games.
+                if let tBox = tournamentBox {
+                    let snap = tBox.snapshot()
+                    if snap?.currentGame != tournamentProgress?.currentGame
+                        || (snap == nil) != (tournamentProgress == nil) {
+                        tournamentProgress = snap
+                    }
                 }
-            }
-            // Arena progress mirror — cheap lock read, only updates the
-            // @State when the game index has advanced (or transitioned
-            // between non-running and running), so no redundant view
-            // invalidations between tournament games.
-            if let tBox = tournamentBox {
-                let snap = tBox.snapshot()
-                if snap?.currentGame != tournamentProgress?.currentGame
-                    || (snap == nil) != (tournamentProgress == nil) {
-                    tournamentProgress = snap
-                }
-            }
-            // Parallel worker counters mirror — only updates @State
-            // when totals have actually advanced so the body isn't
-            // re-evaluated when nothing's changed. The sessionStart
-            // timestamp is embedded in the snapshot so the Session
-            // panel and busy label can compute wall-clock rates on
-            // every render. Dirty check compares the fields that
-            // advance on self-play and training events; if either
-            // has changed (or the rolling-window count has shifted
-            // because an entry aged out), push a new snapshot.
-            if let pBox = parallelWorkerStatsBox {
-                let snap = pBox.snapshot()
-                let prev = parallelStats
-                // `sessionStart` is included in the dirty check so
-                // the one-time shift performed by
-                // `markWorkersStarted()` (right before the worker
-                // group spawns) lands in @State immediately, even
-                // if no game or training step has recorded yet.
-                let changed = snap.selfPlayGames != (prev?.selfPlayGames ?? -1)
+                // Parallel worker counters mirror — only updates @State
+                // when totals have actually advanced so the body isn't
+                // re-evaluated when nothing's changed. The sessionStart
+                // timestamp is embedded in the snapshot so the Session
+                // panel and busy label can compute wall-clock rates on
+                // every render. Dirty check compares the fields that
+                // advance on self-play and training events; if either
+                // has changed (or the rolling-window count has shifted
+                // because an entry aged out), push a new snapshot.
+                if let pBox = parallelWorkerStatsBox {
+                    let snap = pBox.snapshot()
+                    let prev = parallelStats
+                    // `sessionStart` is included in the dirty check so
+                    // the one-time shift performed by
+                    // `markWorkersStarted()` (right before the worker
+                    // group spawns) lands in @State immediately, even
+                    // if no game or training step has recorded yet.
+                    let changed = snap.selfPlayGames != (prev?.selfPlayGames ?? -1)
                     || snap.trainingSteps != (prev?.trainingSteps ?? -1)
                     || snap.recentGames != (prev?.recentGames ?? -1)
                     || snap.sessionStart != prev?.sessionStart
-                if changed {
-                    parallelStats = snap
+                    if changed {
+                        parallelStats = snap
+                    }
                 }
-            }
-            // Memory stats refresh. Throttled internally to
-            // `memoryStatsRefreshSec` so this is a cheap timestamp
-            // compare on most heartbeats.
-            refreshMemoryStatsIfNeeded()
-            // Process %CPU / %GPU refresh — separate (5 s) cadence
-            // from memory stats (10 s) so the utilisation line
-            // updates twice as often without dragging the heavier
-            // Metal property reads along with it.
-            refreshUsagePercentsIfNeeded()
-            // Progress-rate chart sampler. 1 Hz during Play and
-            // Train; each sample carries the moves/hr averaged
-            // over the last 3 minutes of work. No-op outside of
-            // realTraining.
-            refreshProgressRateIfNeeded()
-            // Replay-ratio snapshot for the UI. Persist the auto-
-            // computed delay so the next session starts from where
-            // the adjuster left off.
-            if let rc = replayRatioController {
-                let snap = rc.snapshot()
-                replayRatioSnapshot = snap
-                if snap.autoAdjust {
-                    lastAutoComputedDelayMs = snap.computedDelayMs
+                // Memory stats refresh. Throttled internally to
+                // `memoryStatsRefreshSec` so this is a cheap timestamp
+                // compare on most heartbeats.
+                refreshMemoryStatsIfNeeded()
+                // Process %CPU / %GPU refresh — separate (5 s) cadence
+                // from memory stats (10 s) so the utilisation line
+                // updates twice as often without dragging the heavier
+                // Metal property reads along with it.
+                refreshUsagePercentsIfNeeded()
+                // Progress-rate chart sampler. 1 Hz during Play and
+                // Train; each sample carries the moves/hr averaged
+                // over the last 3 minutes of work. No-op outside of
+                // realTraining.
+                refreshProgressRateIfNeeded()
+                // Replay-ratio snapshot for the UI. Persist the auto-
+                // computed delay so the next session starts from where
+                // the adjuster left off.
+                if let rc = replayRatioController {
+                    let snap = rc.snapshot()
+                    replayRatioSnapshot = snap
+                    if snap.autoAdjust {
+                        lastAutoComputedDelayMs = snap.computedDelayMs
+                    }
                 }
-            }
-            // Diversity-histogram mirror. Read once per heartbeat off
-            // the tracker's thread-safe snapshot. Only push into
-            // @State when the bucket totals actually change (or the
-            // bar array is currently empty) so SwiftUI doesn't
-            // invalidate the chart every tick for a stable reading.
-            if let tracker = selfPlayDiversityTracker {
-                let divSnap = tracker.snapshot()
-                let labels = GameDiversityTracker.histogramLabels
-                var newBars: [DiversityHistogramBar] = []
-                newBars.reserveCapacity(divSnap.divergenceHistogram.count)
-                for (idx, count) in divSnap.divergenceHistogram.enumerated()
-                where idx < labels.count {
-                    newBars.append(DiversityHistogramBar(
-                        id: idx,
-                        label: labels[idx],
-                        count: count
-                    ))
-                }
-                let changed = newBars.count != currentDiversityHistogramBars.count
+                // Diversity-histogram mirror. Read once per heartbeat off
+                // the tracker's thread-safe snapshot. Only push into
+                // @State when the bucket totals actually change (or the
+                // bar array is currently empty) so SwiftUI doesn't
+                // invalidate the chart every tick for a stable reading.
+                if let tracker = selfPlayDiversityTracker {
+                    let divSnap = tracker.snapshot()
+                    let labels = GameDiversityTracker.histogramLabels
+                    var newBars: [DiversityHistogramBar] = []
+                    newBars.reserveCapacity(divSnap.divergenceHistogram.count)
+                    for (idx, count) in divSnap.divergenceHistogram.enumerated()
+                    where idx < labels.count {
+                        newBars.append(DiversityHistogramBar(
+                            id: idx,
+                            label: labels[idx],
+                            count: count
+                        ))
+                    }
+                    let changed = newBars.count != currentDiversityHistogramBars.count
                     || zip(newBars, currentDiversityHistogramBars)
                         .contains { $0.0.count != $0.1.count }
-                if changed {
-                    currentDiversityHistogramBars = newBars
+                    if changed {
+                        currentDiversityHistogramBars = newBars
+                    }
                 }
-            }
             }  // Task @MainActor
         }
     }
@@ -3130,11 +3151,11 @@ struct ContentView: View {
             if wallDeltaS > 0 && wallDeltaS <= maxUsefulGapS {
                 let wallDeltaNs = wallDeltaS * 1_000_000_000
                 let cpuDeltaNs = sample.cpuNs >= prev.cpuNs
-                    ? Double(sample.cpuNs - prev.cpuNs)
-                    : 0
+                ? Double(sample.cpuNs - prev.cpuNs)
+                : 0
                 let gpuDeltaNs = sample.gpuNs >= prev.gpuNs
-                    ? Double(sample.gpuNs - prev.gpuNs)
-                    : 0
+                ? Double(sample.gpuNs - prev.gpuNs)
+                : 0
                 cpuPercent = cpuDeltaNs / wallDeltaNs * 100
                 gpuPercent = gpuDeltaNs / wallDeltaNs * 100
             }
@@ -3163,7 +3184,7 @@ struct ContentView: View {
                 tp.currentGame, tp.totalGames,
                 tp.candidateWins, tp.championWins, tp.draws
             ))
-            .foregroundStyle(Color.blue)
+                .foregroundStyle(Color.blue)
 
             let score = Text(String(format: "%.2f%%", scorePercent))
                 .foregroundStyle(scoreColor)
@@ -3220,8 +3241,8 @@ struct ContentView: View {
                 let gpuMaxGB = Self.bytesToGB(mem.gpuMaxTargetBytes)
                 let gpuTotalGB = Self.bytesToGB(mem.gpuTotalBytes)
                 let gpuPct = mem.gpuMaxTargetBytes > 0
-                    ? Int((Double(mem.gpuAllocatedBytes) / Double(mem.gpuMaxTargetBytes) * 100).rounded())
-                    : 0
+                ? Int((Double(mem.gpuAllocatedBytes) / Double(mem.gpuMaxTargetBytes) * 100).rounded())
+                : 0
                 memLine = String(
                     format: "%@  ·  GPU RAM: %.2f / %.2f GB (%d%%)  ·  Total: %.1f GB",
                     timeStr, gpuGB, gpuMaxGB, gpuPct, gpuTotalGB
@@ -3334,7 +3355,9 @@ struct ContentView: View {
                 score: record.score,
                 promoted: record.promoted,
                 promotedID: record.promotedID?.description,
-                durationSec: record.durationSec
+                durationSec: record.durationSec,
+                gamesPlayed: record.gamesPlayed,
+                promotionKind: record.promotionKind?.rawValue
             )
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
@@ -3870,7 +3893,7 @@ struct ContentView: View {
         let now = Date()
         let dirty = candidateProbeDirty
         let intervalElapsed = now.timeIntervalSince(lastCandidateProbeTime)
-            >= Self.candidateProbeIntervalSec
+        >= Self.candidateProbeIntervalSec
         guard dirty || intervalElapsed else { return }
 
         let state = editableState
@@ -4162,13 +4185,21 @@ struct ContentView: View {
         var promoted = false
         var promotedID: ModelID?
         let shouldPromote: Bool
+        // `promotionKind` tracks WHY the promotion is happening, so
+        // the history / logs can distinguish a user-forced promotion
+        // (Promote button) from a score-threshold one. Only read if
+        // `promoted` ends up true.
+        let promotionKind: PromotionKind?
         switch overrideDecision {
         case .abort:
             shouldPromote = false
+            promotionKind = nil
         case .promote:
             shouldPromote = true
+            promotionKind = .manual
         case .none:
             shouldPromote = playedGames >= totalGames && score >= Self.tournamentPromoteThreshold
+            promotionKind = shouldPromote ? .automatic : nil
         }
         // Holds the new champion weights if promotion succeeds,
         // so we can hand them to a detached autosave task at the
@@ -4210,11 +4241,13 @@ struct ContentView: View {
         let durationSec = Date().timeIntervalSince(startTime)
         let record = TournamentRecord(
             finishedAtStep: steps,
+            gamesPlayed: playedGames,
             candidateWins: stats.playerAWins,
             championWins: stats.playerBWins,
             draws: stats.draws,
             score: score,
             promoted: promoted,
+            promotionKind: promoted ? promotionKind : nil,
             promotedID: promotedID,
             durationSec: durationSec
         )
@@ -4234,7 +4267,7 @@ struct ContentView: View {
             // promotion work ran. Fall back to the durationSec math
             // only if the live mark is somehow nil.
             let startElapsed = activeArenaStartElapsed
-                ?? max(0, endElapsed - durationSec)
+            ?? max(0, endElapsed - durationSec)
             arenaChartEvents.append(ArenaChartEvent(
                 id: arenaChartEvents.count,
                 startElapsedSec: startElapsed,
@@ -4376,10 +4409,19 @@ struct ContentView: View {
         // shows up in the trailing `ids` line, pulled forward so a
         // `grep PROMOTED` on the session log is self-contained.
         let statusStr: String
+        let kindSuffix: String
+        switch record.promotionKind {
+        case .automatic:
+            kindSuffix = " (auto)"
+        case .manual:
+            kindSuffix = " (manual)"
+        case .none:
+            kindSuffix = ""
+        }
         if record.promoted, let pid = record.promotedID {
-            statusStr = "PROMOTED=\(pid.description)"
+            statusStr = "PROMOTED\(kindSuffix)=\(pid.description)"
         } else if record.promoted {
-            statusStr = "PROMOTED"
+            statusStr = "PROMOTED\(kindSuffix)"
         } else {
             statusStr = "kept"
         }
@@ -4409,7 +4451,8 @@ struct ContentView: View {
                             diversity.uniquePercent, diversity.avgDivergencePly)
 
         let wld = "\(record.candidateWins)-\(record.championWins)-\(record.draws)"
-        let header = "[ARENA] #\(index) @ step \(record.finishedAtStep)  W/L/D=\(wld)  score=\(scoreStr)  \(statusStr)  dur=\(durationStr)"
+        let gamesStr = "\(record.gamesPlayed)/\(Self.tournamentGames)"
+        let header = "[ARENA] #\(index) @ step \(record.finishedAtStep)  games=\(gamesStr)  W/L/D=\(wld)  score=\(scoreStr)  \(statusStr)  dur=\(durationStr)"
         let params = "        batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(threshStr) games=\(Self.tournamentGames) sp.tau=\(spTauStr) ar.tau=\(arTauStr) workers=\(selfPlayWorkerCount) build=\(BuildInfo.buildNumber)"
         let ids = "        candidate=\(candidateIDStr)  champion=\(championIDStr)  trainer=\(trainerIDStr)"
         let div = "        diversity: \(divStr)"
@@ -4770,13 +4813,34 @@ struct ContentView: View {
         learningRateEditText = String(format: "%.1e", trainer.learningRate)
         if let rs = resumeState {
             tournamentHistory = rs.arenaHistory.map { entry in
-                TournamentRecord(
+                // Legacy session files don't store `gamesPlayed` —
+                // reconstruct it from the W/L/D totals (same identity
+                // the driver uses when building the live record).
+                // Legacy files also don't store `promotionKind` — the
+                // manual Promote button didn't exist then, so treat
+                // any recorded promotion as automatic.
+                let gp = entry.gamesPlayed
+                ?? (entry.candidateWins + entry.championWins + entry.draws)
+                let kind: PromotionKind?
+                if entry.promoted {
+                    if let raw = entry.promotionKind,
+                       let parsed = PromotionKind(rawValue: raw) {
+                        kind = parsed
+                    } else {
+                        kind = .automatic
+                    }
+                } else {
+                    kind = nil
+                }
+                return TournamentRecord(
                     finishedAtStep: entry.finishedAtStep,
+                    gamesPlayed: gp,
                     candidateWins: entry.candidateWins,
                     championWins: entry.championWins,
                     draws: entry.draws,
                     score: entry.score,
                     promoted: entry.promoted,
+                    promotionKind: kind,
                     promotedID: entry.promotedID.map { ModelID(value: $0) },
                     durationSec: entry.durationSec
                 )
@@ -4858,8 +4922,8 @@ struct ContentView: View {
             targetRatio: replayRatioTarget,
             autoAdjust: replayRatioAutoAdjust,
             initialDelayMs: replayRatioAutoAdjust
-                ? lastAutoComputedDelayMs
-                : trainingStepDelayMs,
+            ? lastAutoComputedDelayMs
+            : trainingStepDelayMs,
             maxDelayMs: Self.stepDelayMaxMs
         )
         replayRatioController = ratioController
@@ -5284,8 +5348,8 @@ struct ContentView: View {
                         let arTau = String(format: "%.2f/%.2f/%.3f", arSched.startTau, arSched.floorTau, arSched.decayPerPly)
                         let divSnap = spDiversityTracker.snapshot()
                         let divStr = divSnap.gamesInWindow > 0
-                            ? String(format: "unique=%d/%d(%.0f%%) diverge=%.1f", divSnap.uniqueGames, divSnap.gamesInWindow, divSnap.uniquePercent, divSnap.avgDivergencePly)
-                            : "n/a"
+                        ? String(format: "unique=%d/%d(%.0f%%) diverge=%.1f", divSnap.uniqueGames, divSnap.gamesInWindow, divSnap.uniquePercent, divSnap.avgDivergencePly)
+                        : "n/a"
                         let lrStr = String(format: "%.1e", lr)
                         let ratioStr = String(format: "target=%.2f cur=%.2f prod=%.1f cons=%.1f auto=%@ delay=%dms",
                                               ratioSnap.targetRatio, ratioSnap.currentRatio,
@@ -5304,11 +5368,11 @@ struct ContentView: View {
                         // game. Rolling avg tracks recent behavior;
                         // lifetime avg catches longer-term drift.
                         let lifetimeAvgLen: Double = parallelSnap.selfPlayGames > 0
-                            ? Double(parallelSnap.selfPlayPositions) / Double(parallelSnap.selfPlayGames)
-                            : 0
+                        ? Double(parallelSnap.selfPlayPositions) / Double(parallelSnap.selfPlayGames)
+                        : 0
                         let rollingAvgLen: Double = parallelSnap.recentGames > 0
-                            ? Double(parallelSnap.recentMoves) / Double(parallelSnap.recentGames)
-                            : 0
+                        ? Double(parallelSnap.recentMoves) / Double(parallelSnap.recentGames)
+                        : 0
                         let gameLenStr = String(format: "avgLen=%.1f rollingAvgLen=%.1f", lifetimeAvgLen, rollingAvgLen)
                         let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
@@ -5513,8 +5577,8 @@ struct ContentView: View {
             let newlineIdx = sweepText.firstIndex(of: "\n") ?? sweepText.endIndex
             let header = String(sweepText[..<newlineIdx])
             let body = newlineIdx == sweepText.endIndex
-                ? ""
-                : String(sweepText[sweepText.index(after: newlineIdx)...])
+            ? ""
+            : String(sweepText[sweepText.index(after: newlineIdx)...])
             return (header: header, body: body)
         }
 
@@ -5593,11 +5657,11 @@ struct ContentView: View {
             // 1-minute rolling rates from the replay-ratio controller
             if let snap = replayRatioSnapshot {
                 let prodStr = snap.productionRate > 0
-                    ? String(format: "%.0f", snap.productionRate)
-                    : dash
+                ? String(format: "%.0f", snap.productionRate)
+                : dash
                 let consStr = snap.consumptionRate > 0
-                    ? String(format: "%.0f", snap.consumptionRate)
-                    : dash
+                ? String(format: "%.0f", snap.consumptionRate)
+                : dash
                 lines.append("  1m gen rate: \(prodStr) pos/s")
                 lines.append("  1m trn rate: \(consStr) pos/s")
             }
@@ -5625,8 +5689,8 @@ struct ContentView: View {
             // Useful as "cumulative GPU training cost"; intentionally
             // not the rate denominator below.
             let trainTimeStr = stats.steps > 0
-                ? String(format: "%.2f s", stats.trainingSeconds)
-                : dash
+            ? String(format: "%.2f s", stats.trainingSeconds)
+            : dash
             let avgTotal = stats.steps > 0 ? String(format: "%7.2f ms", stats.avgStepMs) : dash
 
             // Rate denominator: prefer session wall clock from the
@@ -5646,11 +5710,11 @@ struct ContentView: View {
             }
 
             let stepsPerSec: Double = stats.steps > 0
-                ? Double(stats.steps) / rateDenomSec
-                : 0
+            ? Double(stats.steps) / rateDenomSec
+            : 0
             let movesPerSec: Double = stats.steps > 0
-                ? Double(stats.steps * Self.trainingBatchSize) / rateDenomSec
-                : 0
+            ? Double(stats.steps * Self.trainingBatchSize) / rateDenomSec
+            : 0
 
             let rateStr = stats.steps > 0 ? String(format: "%.2f", stepsPerSec) : dash
             let movesSecStr: String
@@ -5691,21 +5755,33 @@ struct ContentView: View {
                 let stepStr = record.finishedAtStep.formatted(.number.grouping(.automatic))
                 let scoreStr = String(format: "%.3f", record.score)
                 // Promoted rows append the ID of the new champion
-                // so the stats panel shows the same "which model
-                // just took over" information as the session log's
-                // [ARENA] lines.
+                // and the kind of promotion (auto vs manual) so a
+                // quick scan of the stats panel tells the same
+                // story as the session log's [ARENA] lines.
                 let marker: String
+                let kindSuffix: String
+                switch record.promotionKind {
+                case .automatic:
+                    kindSuffix = " (auto)"
+                case .manual:
+                    kindSuffix = " (manual)"
+                case .none:
+                    kindSuffix = ""
+                }
                 if record.promoted, let pid = record.promotedID {
-                    marker = "PROMOTED=\(pid.description)"
+                    marker = "PROMOTED\(kindSuffix)=\(pid.description)"
                 } else if record.promoted {
-                    marker = "PROMOTED"
+                    marker = "PROMOTED\(kindSuffix)"
                 } else {
                     marker = "kept"
                 }
                 let durStr = Self.formatElapsed(record.durationSec)
+                // Games played vs configured total — e.g. "12/200"
+                // when the user aborted at game 12.
+                let gamesStr = "\(record.gamesPlayed)/\(Self.tournamentGames)"
                 lines.append(String(
-                    format: "  #%@ @ %@ steps  %d-%d-%d  score %@  %@  (%@)",
-                    number, stepStr,
+                    format: "  #%@ @ %@ steps  games %@  %d-%d-%d  score %@  %@  (%@)",
+                    number, stepStr, gamesStr,
                     record.candidateWins, record.championWins, record.draws,
                     scoreStr, marker, durStr
                 ))
@@ -5826,30 +5902,30 @@ struct ContentView: View {
         let recentGamesPerHour = recentDenom > 0 ? Double(recentGames) / recentDenom * 3600 : 0
 
         let sAvgMove = ratesValid && moves > 0
-            ? String(format: "%.2f ms", lifetimeAvgMoveMs)
-            : dash
+        ? String(format: "%.2f ms", lifetimeAvgMoveMs)
+        : dash
         let sAvgGame = ratesValid && games > 0
-            ? String(format: "%.1f ms", lifetimeAvgGameMs)
-            : dash
+        ? String(format: "%.1f ms", lifetimeAvgGameMs)
+        : dash
         let sMovesHr = ratesValid
-            ? Int(lifetimeMovesPerHour.rounded()).formatted(.number.grouping(.automatic))
-            : dash
+        ? Int(lifetimeMovesPerHour.rounded()).formatted(.number.grouping(.automatic))
+        : dash
         let sGamesHr = ratesValid
-            ? Int(lifetimeGamesPerHour.rounded()).formatted(.number.grouping(.automatic))
-            : dash
+        ? Int(lifetimeGamesPerHour.rounded()).formatted(.number.grouping(.automatic))
+        : dash
 
         let sAvgMoveR = ratesValid && recentGames > 0
-            ? String(format: "%.2f ms", recentAvgMoveMs)
-            : dash
+        ? String(format: "%.2f ms", recentAvgMoveMs)
+        : dash
         let sAvgGameR = ratesValid && recentGames > 0
-            ? String(format: "%.1f ms", recentAvgGameMs)
-            : dash
+        ? String(format: "%.1f ms", recentAvgGameMs)
+        : dash
         let sMovesHrR = ratesValid && recentGames > 0
-            ? Int(recentMovesPerHour.rounded()).formatted(.number.grouping(.automatic))
-            : dash
+        ? Int(recentMovesPerHour.rounded()).formatted(.number.grouping(.automatic))
+        : dash
         let sGamesHrR = ratesValid && recentGames > 0
-            ? Int(recentGamesPerHour.rounded()).formatted(.number.grouping(.automatic))
-            : dash
+        ? Int(recentGamesPerHour.rounded()).formatted(.number.grouping(.automatic))
+        : dash
 
         // Column-aligned output. First rate column is right-padded
         // to 12 chars so the 10-min column starts at a consistent
