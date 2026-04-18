@@ -8,6 +8,47 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-17 23:00 CDT — Policy-entropy alarm + avg-game-length in [STATS]
+
+**File:** `ContentView.swift`
+
+- **Policy-entropy alarm.** New constant
+  `policyEntropyAlarmThreshold: Double = 7.0` (nats). The periodic
+  `[STATS]` ticker, immediately after emitting its line, checks
+  `trainingSnap.rollingPolicyEntropy` and emits
+  `[ALARM] policy entropy X.XXXX < 7.00 — policy may be collapsing
+  (steps=N)` whenever the rolling mean is below threshold. Random
+  init sits at `log(4096) ≈ 8.318`; the `7.0` floor corresponds to
+  roughly `exp(7.0) ≈ 1100` effective equiprobable moves, which
+  leaves plenty of room for healthy sharpening while catching true
+  collapse. Fires on every ticker wake-up below threshold (so the
+  `[ALARM]` cadence matches the ramp-up + 15-min stats interval
+  rather than spamming on every training step).
+- **Average game length in `[STATS]`.**
+  `avgLen=<lifetime> rollingAvgLen=<10-min window>` added to every
+  periodic `[STATS]` line. Data already existed in
+  `ParallelWorkerStatsBox` — `selfPlayPositions / selfPlayGames` for
+  lifetime and `recentMoves / recentGames` for the rolling window —
+  we just weren't surfacing the derived ratio.
+
+Neither change affects any training behavior; both are pure
+observability. Already-audited items that the user asked about but
+were already shipped:
+
+- Gradual temperature decay: `8ca529b` (21:24 CDT). Linear-decay
+  `SamplingSchedule` replacing the two-phase schedule.
+- L2 regularization: `458c321` (22:02 CDT),
+  `ChessTrainer.weightDecayC = 1e-4` (decoupled, applied to every
+  trainable variable).
+- Duplicate / near-duplicate game detection: `8ca529b` (21:24 CDT).
+  `GameDiversityTracker` tracks full move-sequence FNV-1a hashes +
+  per-game divergence ply (longest shared prefix with any stored
+  game) over a rolling 200-game window. Surfaced in `[STATS]` as
+  `diversity=unique=X/Y(pct%) diverge=Z.Z` and in each `[ARENA]`
+  result's trailing `div` line.
+
+---
+
 ## 2026-04-17 22:46 CDT — Advantage baseline: store v at play time, feed as placeholder
 
 **Files:** `ReplayBuffer.swift`, `ChessTrainer.swift`, `MPSChessPlayer.swift`

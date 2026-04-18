@@ -1309,6 +1309,16 @@ struct ContentView: View {
     nonisolated static let trainerLearningRateDefault: Float = 1e-3
     nonisolated static let trainingBatchSize = 4096
 
+    /// Policy-entropy floor below which the periodic stats ticker
+    /// emits an `[ALARM]` log line. Random initialization sits at
+    /// `log(4096) ≈ 8.318`; a sustained drop below this threshold
+    /// signals the policy is collapsing onto a narrow set of moves
+    /// (over-concentration, potentially toward degenerate play).
+    /// 7.0 nats corresponds to roughly 1100 effective equiprobable
+    /// moves (`exp(7.0)`), leaving plenty of room for healthy
+    /// sharpening while flagging pathological collapse.
+    nonisolated static let policyEntropyAlarmThreshold: Double = 7.0
+
     // Real (self-play) training — generates games, labels positions from the
     // final outcome, pushes them through the shared trainer. Shares the
     // lazily-built `trainer` with the random-data training path above so the
@@ -5135,8 +5145,36 @@ struct ContentView: View {
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", Self.tournamentPromoteThreshold)) arenaGames=\(Self.tournamentGames) workers=\(workerN)"
                         let regStr = String(format: "clip=%.1f decay=%.0e", ChessTrainer.gradClipMaxNorm, ChessTrainer.weightDecayC)
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        // Average game length: lifetime and 10-min
+                        // rolling window. `selfPlayPositions` counts
+                        // every ply played, so dividing by the number
+                        // of completed games gives the mean plies-per-
+                        // game. Rolling avg tracks recent behavior;
+                        // lifetime avg catches longer-term drift.
+                        let lifetimeAvgLen: Double = parallelSnap.selfPlayGames > 0
+                            ? Double(parallelSnap.selfPlayPositions) / Double(parallelSnap.selfPlayGames)
+                            : 0
+                        let rollingAvgLen: Double = parallelSnap.recentGames > 0
+                            ? Double(parallelSnap.recentMoves) / Double(parallelSnap.recentGames)
+                            : 0
+                        let gameLenStr = String(format: "avgLen=%.1f rollingAvgLen=%.1f", lifetimeAvgLen, rollingAvgLen)
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
+
+                        // Policy-entropy alarm: fires whenever the
+                        // rolling entropy (computed over the training
+                        // stats window, same as logged above) is below
+                        // the threshold. Co-located with the [STATS]
+                        // emit so the cadence matches — the log
+                        // adjacent lines always tell a consistent
+                        // story. Skipped if entropy isn't yet
+                        // available (training hasn't started).
+                        if let entropy = trainingSnap.rollingPolicyEntropy,
+                           entropy < Self.policyEntropyAlarmThreshold {
+                            SessionLogger.shared.log(
+                                "[ALARM] policy entropy \(String(format: "%.4f", entropy)) < \(String(format: "%.2f", Self.policyEntropyAlarmThreshold)) — policy may be collapsing (steps=\(trainingSnap.stats.steps))"
+                            )
+                        }
                     }
 
                     func sleepUntil(elapsed: TimeInterval) async -> Bool {
