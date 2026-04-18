@@ -192,13 +192,23 @@ will be the advantage-baseline implementation itself.
 `DrewsChessMachine/DrewsChessMachine/ContentView.swift`
 
 Implements items #1, #2, #4, and #5 from the 17:23 CDT plan. Item #3
-(advantage baseline) is **deferred** — MPSGraph as of macOS 15 exposes
-no `stopGradient` / `detach` op in its public headers, so implementing
-`(z − v.detached()) * −log p(a*)` cleanly would require either a
-second autodiff pass to compute and subtract the unwanted gradient
-contribution, or a two-run training step that feeds v back as a
-placeholder (≈2× forward cost). Noted inline at the policy-loss build
-site; will revisit once we pick an approach.
+(advantage baseline) is **deferred at this commit** — MPSGraph as of
+macOS 15 exposes no `stopGradient` / `detach` op in its public
+headers, so implementing `(z − v.detached()) * −log p(a*)` cleanly
+would require either a second autodiff pass to compute and subtract
+the unwanted gradient contribution, or a two-run training step that
+feeds v back as a placeholder (≈2× forward cost). Noted inline at
+the policy-loss build site; will revisit once we pick an approach.
+
+> **Status update — resolved 2026-04-17 22:46 CDT (`d745cfe`).** The
+> deferral was lifted within the same evening. The 22:35 CDT
+> `[EXP-DETACH]` experiment (`181f600`) confirmed `variableFromTensor`
+> + `read` does *not* block autodiff, so the chosen approach is to
+> capture `v(position)` during self-play inference (zero extra
+> forward passes), persist it in the replay buffer, and feed it as
+> an external `vBaseline` placeholder at train time — every
+> placeholder is a leaf, which gives detach semantics for free. See
+> the 22:46 CDT entry above for the full implementation.
 
 **Implemented:**
 - **Gradient clipping** (`ChessTrainer.gradClipMaxNorm = 5.0`). After
