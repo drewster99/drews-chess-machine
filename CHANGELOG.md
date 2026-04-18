@@ -8,6 +8,42 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-17 22:35 CDT — Gradient-stop experiment: `variableFromTensor` does NOT detach
+
+Added a one-shot launch-time experiment in `ExperimentStopGradient.swift`
+to answer the question "does `MPSGraph.variableFromTensor(_:name:)` +
+`read(_:name:)` act as a gradient stop?" Test graph:
+`w = variable(3.0)`, `x = 2*w`, `L_direct = x*x`,
+`xVar = variableFromTensor(x)`, `xRead = read(xVar)`,
+`L_via_var = xRead*xRead`.
+
+Expected if detach works: `grad_via_var[w] = 0`.
+Observed: `grad_via_var[w] = 24.0` — identical to `grad_direct[w]`.
+Forward values agree (36.0 on both paths), so the computation ran
+correctly; MPSGraph autodiff simply walks transparently through the
+variable resource. Full log lines:
+
+```
+[EXP-DETACH] L_direct   = 36.0 (expected 36.0)
+[EXP-DETACH] L_via_var  = 36.0 (expected 36.0 — forward should match)
+[EXP-DETACH] grad_direct[w]  = 24.0 (expected 24.0)
+[EXP-DETACH] grad_via_var[w] = 24.0 (0 ⇒ DETACH works; 24 ⇒ does NOT detach)
+```
+
+**Decision:** Advantage baseline (plan item #3) will be implemented
+via the **store-v-at-play-time** replay-buffer schema change rather
+than a two-run training step or a `variableFromTensor` detach. The
+self-play inference already computes `v(position)` to pick moves; we
+capture it into a new per-position field in `ReplayBuffer`, feed it as
+`vBaseline` alongside `z` at train time, and use
+`(z − vBaseline) * −log p(a*)` as the policy loss. Zero runtime cost,
+mild baseline staleness, `DCMRPBUF` file format bumps v1 → v2.
+
+Experiment file removed after the verdict was recorded. Next entry
+will be the advantage-baseline implementation itself.
+
+---
+
 ## 2026-04-17 22:02 CDT — Gradient clipping, weight decay, batch 4096 + lr 1e-3
 
 **File:** `DrewsChessMachine/DrewsChessMachine/ChessTrainer.swift`,
