@@ -2483,7 +2483,7 @@ struct ContentView: View {
                     trainingChartSamples: trainingChartSamples,
                     diversityHistogram: currentDiversityHistogramBars,
                     visibleDomainSec: Self.progressRateVisibleDomainSec,
-                    scrollX: progressRateScrollBinding
+                    scrollX: $progressRateScrollX
                 )
             }
         }
@@ -2493,6 +2493,28 @@ struct ContentView: View {
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) { navigateOverlay(-1); return .handled }
         .onKeyPress(.rightArrow) { navigateOverlay(1); return .handled }
+        .onChange(of: progressRateScrollX) { _, newValue in
+            // Flip off follow-latest when the user scrolls backward.
+            // Auto-follow writes `progressRateScrollX` to
+            // `latestScrollX`, leaving follow on. A user-initiated
+            // backward scroll lands far from latestScrollX and turns
+            // follow off so the 1 Hz sampler stops dragging the chart
+            // back to the right edge.
+            //
+            // Lives here (on a persistent view parent) instead of a
+            // custom `Binding(get:set:)` because that binding was
+            // getting recreated on every body render, handing Swift
+            // Charts a fresh scroll-config each time and tripping
+            // `onChange(of: ChartScrollPositionConfiguration) action
+            // tried to update multiple times per frame` warnings as
+            // the histogram state churned.
+            let latest = progressRateSamples.last?.elapsedSec ?? 0
+            let latestScrollX = max(0, latest - Self.progressRateVisibleDomainSec)
+            let shouldFollow = abs(newValue - latestScrollX) < 1.0
+            if progressRateFollowLatest != shouldFollow {
+                progressRateFollowLatest = shouldFollow
+            }
+        }
         .onReceive(snapshotTimer) { _ in
             // Pull the latest game state into @State at most every 100ms.
             // Cheap (single locked struct copy) and bounds UI work even
@@ -2862,38 +2884,8 @@ struct ContentView: View {
         .chartLegend(position: .bottom, alignment: .center, spacing: 10)
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: Self.progressRateVisibleDomainSec)
-        .chartScrollPosition(x: progressRateScrollBinding)
+        .chartScrollPosition(x: $progressRateScrollX)
         .frame(height: 320)
-    }
-
-    /// Two-way binding between `progressRateScrollX` and the
-    /// chart's `chartScrollPosition(x:)`. The setter is where
-    /// user scrolls land: if the new position is more than 1 s
-    /// away from the "latest" scroll position, auto-follow
-    /// pauses; if they scroll back to (within 1 s of) the right
-    /// edge, it resumes. 1 s matches the sampler cadence, so
-    /// one tick of slack lines up with one natural scroll-by-
-    /// one-sample gesture.
-    private var progressRateScrollBinding: Binding<Double> {
-        Binding(
-            get: { progressRateScrollX },
-            set: { newValue in
-                // TODO: Note - we are STILL seeing runtime errors stating "onChange(of: ChartScrollPositionConfiguration) action tried to update multiple times per frame." -- so this issue is not resolved, despite the comment below.
-                // Swift Charts echoes the binding back with its own
-                // (sometimes identical) value on the same frame we
-                // advanced auto-follow. Without this guard the chart's
-                // internal onChange(of: ChartScrollPositionConfiguration)
-                // sees two writes per frame and logs a warning. Only
-                // propagate the write if the position actually moved.
-                if progressRateScrollX == newValue {
-                    return
-                }
-                progressRateScrollX = newValue
-                let latest = progressRateSamples.last?.elapsedSec ?? 0
-                let latestScrollX = max(0, latest - Self.progressRateVisibleDomainSec)
-                progressRateFollowLatest = abs(newValue - latestScrollX) < 1.0
-            }
-        )
     }
 
     /// Sample process CPU + GPU time at most every
