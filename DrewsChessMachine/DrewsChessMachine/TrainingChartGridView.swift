@@ -104,6 +104,11 @@ struct TrainingChartGridView: View {
     /// pulled through as a parameter so the grid stays decoupled
     /// from ContentView's compile unit.
     let promoteThreshold: Double
+    /// Unified-memory total in GB (`ProcessInfo.physicalMemory`),
+    /// plumbed through so the App memory and GPU memory tiles can
+    /// render "used / total (pct%)" headers.
+    let appMemoryTotalGB: Double?
+    let gpuMemoryTotalGB: Double?
     let visibleDomainSec: Double
     @Binding var scrollX: Double
 
@@ -135,7 +140,7 @@ struct TrainingChartGridView: View {
         LazyVGrid(columns: Self.columns, spacing: 1) {
             // Row 1: Loss Total | Entropy | Progress Rate | CPU % | App Memory
             miniChart(
-                title: "Loss total",
+                title: "Loss (pLoss + vLoss)",
                 yPath: \.rollingTotalLoss,
                 unit: "",
                 color: .red
@@ -148,15 +153,15 @@ struct TrainingChartGridView: View {
                 unit: "%",
                 color: .blue
             )
-            miniChart(
-                title: "App memory",
+            memoryChart(
+                title: "App memory (RAM)",
                 yPath: \.appMemoryGB,
-                unit: "GB",
+                totalGB: appMemoryTotalGB,
                 color: .brown
             )
             // Row 2: Loss Policy | Non-Neg Count | Replay Ratio | GPU % | GPU RAM
             miniChart(
-                title: "Loss policy",
+                title: "pLoss (policy loss)",
                 yPath: \.rollingPolicyLoss,
                 unit: "",
                 color: .orange
@@ -174,21 +179,21 @@ struct TrainingChartGridView: View {
                 unit: "%",
                 color: .indigo
             )
-            miniChart(
-                title: "GPU RAM",
+            memoryChart(
+                title: "GPU memory (RAM)",
                 yPath: \.gpuMemoryGB,
-                unit: "GB",
+                totalGB: gpuMemoryTotalGB,
                 color: .teal
             )
             // Row 3: Loss Value | Diversity histogram | Power / Thermal | Arena activity
             miniChart(
-                title: "Loss value",
+                title: "vLoss (value loss)",
                 yPath: \.rollingValueLoss,
                 unit: "",
                 color: .cyan
             )
             miniChart(
-                title: "Grad norm",
+                title: "gNorm (gradient L2 norm)",
                 yPath: \.rollingGradNorm,
                 unit: "",
                 color: .pink
@@ -535,7 +540,7 @@ struct TrainingChartGridView: View {
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text("Diversity histogram")
+                    Text("Longest move prefix")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -646,7 +651,7 @@ struct TrainingChartGridView: View {
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text("Progress rate")
+                    Text("Progress rate (self play + train)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -807,14 +812,16 @@ struct TrainingChartGridView: View {
         switch readout {
         case .notHovering:
             if let lastValue = trainingChartSamples.last?.rollingPolicyNonNegCount {
-                headerText = "\(Int(lastValue)) / 4096"
+                let pct = lastValue / Double(ChessNetwork.policySize) * 100
+                headerText = String(format: "%d / 4096 (%.1f%%)", Int(lastValue), pct)
             } else {
                 headerText = "-- / 4096"
             }
         case .hoveringNoData(let t):
             headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
         case .hoveringWithData(let t, let v):
-            headerText = "t=\(Self.formatElapsedAxis(t)) \(Int(v)) / 4096"
+            let pct = v / Double(ChessNetwork.policySize) * 100
+            headerText = "t=\(Self.formatElapsedAxis(t)) \(String(format: "%d / 4096 (%.1f%%)", Int(v), pct))"
         }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
@@ -873,6 +880,96 @@ struct TrainingChartGridView: View {
             }
             .frame(height: 75)
         }
+    }
+
+    // MARK: - Memory chart (used + total + percent)
+
+    /// Specialized mini chart for memory tiles — same plot shape as
+    /// `miniChart` but the header reads `X.X GB / Y.Y GB (Z.Z%)` so
+    /// the reader sees both the current footprint and the fraction of
+    /// the unified-memory pool it represents. Falls back to the bare
+    /// value string when the total is unavailable.
+    private func memoryChart(
+        title: String,
+        yPath: KeyPath<TrainingChartSample, Double?>,
+        totalGB: Double?,
+        color: Color
+    ) -> some View {
+        let readout = hoverReadout(path: yPath)
+        let headerText: String
+        switch readout {
+        case .notHovering:
+            if let v = trainingChartSamples.last?[keyPath: yPath] {
+                headerText = Self.formatMemoryHeader(usedGB: v, totalGB: totalGB)
+            } else {
+                headerText = "--"
+            }
+        case .hoveringNoData(let t):
+            headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
+        case .hoveringWithData(let t, let v):
+            headerText = "t=\(Self.formatElapsedAxis(t)) \(Self.formatMemoryHeader(usedGB: v, totalGB: totalGB))"
+        }
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(title)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(headerText)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                Chart {
+                    ForEach(trainingChartSamples) { sample in
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value(title, sample[keyPath: yPath] ?? .nan)
+                        )
+                        .foregroundStyle(color)
+                    }
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
+                    if case .hoveringWithData(let t, let v) = readout {
+                        PointMark(x: .value("Time", t), y: .value(title, v))
+                            .foregroundStyle(color)
+                            .symbolSize(40)
+                    }
+                }
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(Self.compactLabel(v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
+            }
+            .frame(height: 75)
+        }
+    }
+
+    private static func formatMemoryHeader(usedGB: Double, totalGB: Double?) -> String {
+        guard let totalGB, totalGB > 0 else {
+            return String(format: "%.1f GB", usedGB)
+        }
+        let pct = usedGB / totalGB * 100
+        return String(format: "%.1f GB / %.0f GB (%.0f%%)", usedGB, totalGB, pct)
     }
 
     // MARK: - Generic single-series mini chart

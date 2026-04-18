@@ -1157,6 +1157,12 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
 // MARK: - Content View
 
 struct ContentView: View {
+    /// Menu-bar command hub. Assigned by `DrewsChessMachineApp`; the
+    /// view wires its action functions into the hub's closure slots
+    /// and keeps the hub's mirrored state flags synced so the
+    /// `.commands` DSL can enable/disable menu items correctly.
+    let commandHub: AppCommandHub
+
     // Network
     @State private var network: ChessMPSNetwork?
     @State private var runner: ChessRunner?
@@ -2078,175 +2084,19 @@ struct ContentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
-            // Buttons
+            // Status row — the action controls previously lived here
+            // but have all moved to the File / Train / Debug menus at
+            // the top of the screen. This row now just shows the busy
+            // progress indicator and any ephemeral checkpoint status
+            // message. Kept as a view so the `.fileImporter` modifiers
+            // below (driven by `showingLoadSessionImporter` /
+            // `showingLoadModelImporter`, which the menu Load items
+            // toggle) have a stable parent to attach to.
             HStack(spacing: 8) {
-                Button("Build Network") { buildNetwork() }
-                    .disabled(isBusy || networkReady)
-
-                Button("Run Forward Pass") { runForwardPass() }
-                    .disabled(isBusy || !networkReady)
-                    .keyboardShortcut(.return)
-
-                Divider().frame(height: 20)
-
-                Button("Play Game") { playSingleGame() }
-                    .disabled(isBusy || !networkReady)
-
-                if !continuousPlay && !continuousTraining && !realTraining {
-                    Button("Play Continuous") { startContinuousPlay() }
-                        .disabled(isBusy || !networkReady)
-                }
-
-                Divider().frame(height: 20)
-
-                Button("Train Once") { trainOnce() }
-                    .disabled(isBusy || !networkReady)
-
-                if !continuousTraining && !continuousPlay && !sweepRunning && !realTraining {
-                    Button("Train Continuous") { startContinuousTraining() }
-                        .disabled(isBusy || !networkReady)
-                }
-
-                if !realTraining && !continuousPlay && !continuousTraining && !sweepRunning {
-                    Button(pendingLoadedSession != nil ? "Continue Training" : "Play and Train") { startRealTraining() }
-                        .disabled(isBusy || !networkReady)
-                }
-
-                if !sweepRunning && !continuousPlay && !continuousTraining && !realTraining {
-                    Button("Sweep Batch Sizes") { startSweep() }
-                        .disabled(isBusy || !networkReady)
-                }
-
-                // Single unified Stop button — handles whichever continuous
-                // loop is currently running (play, training, self-play
-                // training, or sweep). Bound to escape so the same shortcut
-                // works in every mode.
-                if continuousPlay || continuousTraining || sweepRunning || realTraining {
-                    Button("Stop") { stopAnyContinuous() }
-                        .keyboardShortcut(.escape, modifiers: [])
-                }
-
-                // Run Arena — visible only during Play and Train. Fires
-                // an arena immediately (outside the 30-minute auto
-                // cadence) and is disabled while one is already
-                // running so the user can't queue overlapping
-                // tournaments. Writes to the trigger box; the arena
-                // coordinator task picks it up on its next poll.
-                //
-                // Disabled check is based on `isArenaRunning` (a @State
-                // mirror maintained by runArenaParallel) so SwiftUI
-                // actually re-evaluates it when state changes. There's
-                // a small window (~500 ms, the arena coordinator poll
-                // interval) between the user clicking and the button
-                // disabling; repeated clicks during that window just
-                // re-set the trigger flag, which is idempotent.
-                if realTraining {
-                    Button("Run Arena") {
-                        SessionLogger.shared.log("[BUTTON] Run Arena")
-                        guard !isArenaRunning else { return }
-                        arenaTriggerBox?.trigger()
-                    }
-                    .disabled(isArenaRunning)
-                }
-
-                // Abort / Promote — visible only while an arena is in
-                // flight, so the user can terminate it early without
-                // waiting for the full 200-game tournament. Abort ends
-                // with no promotion regardless of score; Promote ends
-                // early and forcibly promotes the candidate. Both go
-                // through `ArenaOverrideBox` which the driver's
-                // `isCancelled` closure polls between games, so the
-                // actual end-of-arena happens one in-flight game later
-                // (the same ~400 ms granularity Stop has).
-                if realTraining && isArenaRunning {
-                    Button("Abort Arena") {
-                        SessionLogger.shared.log("[BUTTON] Abort Arena")
-                        arenaOverrideBox?.abort()
-                    }
-                    Button("Promote") {
-                        SessionLogger.shared.log("[BUTTON] Promote")
-                        arenaOverrideBox?.promote()
-                    }
-                }
-
                 if isBusy {
                     ProgressView().controlSize(.small)
                     busyLabelView
                 }
-            }
-
-            // Checkpoint row: save/load buttons for models and
-            // sessions plus a Reveal button that opens the
-            // Library folder in Finder. See ROADMAP "Model and
-            // session save/load" for format and trigger details.
-            HStack(spacing: 8) {
-                // Save Session is only meaningful while a
-                // Play-and-Train session is running, and never
-                // during an arena (mid-arena saves would have to
-                // snapshot a live candidate whose weights are
-                // being modified by the trainer).
-                if realTraining {
-                    Button("Save Session") {
-                        SessionLogger.shared.log("[BUTTON] Save Session")
-                        handleSaveSessionManual()
-                    }
-                    .disabled(isArenaRunning || checkpointSaveInFlight)
-                }
-
-                // Save Champion as a standalone .dcmmodel works
-                // whenever the network exists. It's race-safe
-                // during Play-and-Train because we pause
-                // worker 0 via `activeSelfPlayGate`. We
-                // additionally disable during an arena because
-                // `runArenaParallel` is already using the same
-                // gate as its own coordinator, and
-                // `WorkerPauseGate` is not reentrant for
-                // multiple concurrent pauseAndWait callers. In
-                // other active modes (Play Game, Play
-                // Continuous, Run Forward Pass) there is no
-                // coordinating gate and a concurrent `evaluate`
-                // would race against the export, so we disable
-                // the button there too.
-                if networkReady {
-                    Button("Save Champion") {
-                        SessionLogger.shared.log("[BUTTON] Save Champion")
-                        handleSaveChampionAsModel()
-                    }
-                    .disabled(
-                        checkpointSaveInFlight
-                        || isArenaRunning
-                        || (isBusy && !realTraining)
-                    )
-                }
-
-                Divider().frame(height: 20)
-
-                // Load is only offered when nothing else is
-                // running — we don't support hot-swapping weights
-                // into an in-flight training session.
-                if !realTraining && !continuousPlay && !continuousTraining && !sweepRunning && !gameSnapshot.isPlaying {
-                    Button("Load Session…") {
-                        SessionLogger.shared.log("[BUTTON] Load Session")
-                        showingLoadSessionImporter = true
-                    }
-                    .disabled(isBuilding || checkpointSaveInFlight)
-
-                    Button("Load Model…") {
-                        SessionLogger.shared.log("[BUTTON] Load Model")
-                        showingLoadModelImporter = true
-                    }
-                    .disabled(isBuilding || checkpointSaveInFlight || !networkReady)
-                }
-
-                Divider().frame(height: 20)
-
-                // Always available so the user can open Finder to
-                // the canonical save location even when nothing is
-                // saved yet.
-                Button("Reveal Saves") {
-                    handleRevealSaves()
-                }
-
                 if let msg = checkpointStatusMessage {
                     Text(msg)
                         .font(.callout)
@@ -2254,6 +2104,7 @@ struct ContentView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
+                Spacer(minLength: 0)
             }
             .fileImporter(
                 isPresented: $showingLoadModelImporter,
@@ -2647,6 +2498,8 @@ struct ContentView: View {
                     arenaEvents: arenaChartEvents,
                     activeArenaStartElapsed: activeArenaStartElapsed,
                     promoteThreshold: Self.tournamentPromoteThreshold,
+                    appMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
+                    gpuMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
                     visibleDomainSec: Self.progressRateVisibleDomainSec,
                     scrollX: $progressRateScrollX
                 )
@@ -2658,6 +2511,22 @@ struct ContentView: View {
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) { navigateOverlay(-1); return .handled }
         .onKeyPress(.rightArrow) { navigateOverlay(1); return .handled }
+        .onAppear {
+            wireMenuCommandHub()
+            syncMenuCommandHubState()
+        }
+        .onChange(of: isBuilding) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: continuousPlay) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: continuousTraining) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: sweepRunning) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: realTraining) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: isArenaRunning) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: checkpointSaveInFlight) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: isTrainingOnce) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: isEvaluating) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: gameSnapshot.isPlaying) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: network != nil) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: pendingLoadedSession != nil) { _, _ in syncMenuCommandHubState() }
         .onChange(of: progressRateScrollX) { _, newValue in
             // Flip off follow-latest when the user scrolls backward.
             // Auto-follow writes `progressRateScrollX` to
@@ -4002,6 +3871,75 @@ struct ContentView: View {
             return
         }
         CheckpointManager.revealInFinder(CheckpointPaths.rootURL)
+    }
+
+    // MARK: - Menu command hub wiring
+
+    /// Assign each menu-bar command to its corresponding action
+    /// function. Called once from `.onAppear` so the closures stick
+    /// for the lifetime of the view and point at the live view's
+    /// `@State`-backed functions (capturing `self` here is safe
+    /// because the `@State` storage is keyed by view identity, not
+    /// by the struct value).
+    private func wireMenuCommandHub() {
+        commandHub.buildNetwork = { buildNetwork() }
+        commandHub.runForwardPass = { runForwardPass() }
+        commandHub.playSingleGame = { playSingleGame() }
+        commandHub.startContinuousPlay = { startContinuousPlay() }
+        commandHub.trainOnce = { trainOnce() }
+        commandHub.startContinuousTraining = { startContinuousTraining() }
+        commandHub.startRealTraining = { startRealTraining() }
+        commandHub.startSweep = { startSweep() }
+        commandHub.stopAnyContinuous = { stopAnyContinuous() }
+        commandHub.runArena = {
+            SessionLogger.shared.log("[BUTTON] Run Arena")
+            guard !isArenaRunning else { return }
+            arenaTriggerBox?.trigger()
+        }
+        commandHub.abortArena = {
+            SessionLogger.shared.log("[BUTTON] Abort Arena")
+            arenaOverrideBox?.abort()
+        }
+        commandHub.promoteCandidate = {
+            SessionLogger.shared.log("[BUTTON] Promote")
+            arenaOverrideBox?.promote()
+        }
+        commandHub.saveSession = {
+            SessionLogger.shared.log("[BUTTON] Save Session")
+            handleSaveSessionManual()
+        }
+        commandHub.saveChampion = {
+            SessionLogger.shared.log("[BUTTON] Save Champion")
+            handleSaveChampionAsModel()
+        }
+        commandHub.loadSession = {
+            SessionLogger.shared.log("[BUTTON] Load Session")
+            showingLoadSessionImporter = true
+        }
+        commandHub.loadModel = {
+            SessionLogger.shared.log("[BUTTON] Load Model")
+            showingLoadModelImporter = true
+        }
+        commandHub.revealSaves = { handleRevealSaves() }
+    }
+
+    /// Push the subset of view state that governs menu enable/disable
+    /// into the hub. Called from `.onAppear` and on every relevant
+    /// state change so the menu items reflect live conditions
+    /// (Build Network greys out after the first build, Save Session
+    /// enables once Play-and-Train starts, etc.).
+    private func syncMenuCommandHubState() {
+        commandHub.networkReady = networkReady
+        commandHub.isBusy = isBusy
+        commandHub.isBuilding = isBuilding
+        commandHub.gameIsPlaying = gameSnapshot.isPlaying
+        commandHub.continuousPlay = continuousPlay
+        commandHub.continuousTraining = continuousTraining
+        commandHub.sweepRunning = sweepRunning
+        commandHub.realTraining = realTraining
+        commandHub.isArenaRunning = isArenaRunning
+        commandHub.checkpointSaveInFlight = checkpointSaveInFlight
+        commandHub.pendingLoadedSessionExists = pendingLoadedSession != nil
     }
 
     private func buildNetwork() {
@@ -6382,5 +6320,5 @@ struct ContentView: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(commandHub: AppCommandHub())
 }
