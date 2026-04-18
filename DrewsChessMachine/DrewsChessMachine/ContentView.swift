@@ -1513,7 +1513,7 @@ struct ContentView: View {
     /// of this size. 10 minutes matches the existing "last 10m"
     /// rolling column in the Self Play stats panel, so the eye
     /// can correlate chart movement with the numeric column.
-    nonisolated static let progressRateVisibleDomainSec: Double = 600
+    nonisolated static let progressRateVisibleDomainSec: Double = 1800
     /// Wall-clock seconds the Play and Train Session panel waits
     /// after session start before showing rate-based stats fields
     /// (Moves/hr, Games/hr in both lifetime and 10-min columns).
@@ -2706,6 +2706,13 @@ struct ContentView: View {
         let gpuDeltaMs = max(0, currentGpuMs - prevChartTotalGpuMs)
         let gpuBusy = gpuDeltaMs / 10.0 // delta ms / 1000ms * 100%
         prevChartTotalGpuMs = currentGpuMs
+        // Power + thermal state read straight from ProcessInfo at
+        // sample time. Both are cheap property reads, and both can
+        // change between samples without any polling overhead on our
+        // part (the OS tracks them). Captured here so the chart
+        // tile can render a continuous step trace rather than
+        // sampling on hover.
+        let pi = ProcessInfo.processInfo
         let sample = TrainingChartSample(
             id: trainingChartNextId,
             elapsedSec: elapsed,
@@ -2717,7 +2724,9 @@ struct ContentView: View {
             cpuPercent: cpuPercent,
             gpuBusyPercent: trainingSnap != nil ? gpuBusy : nil,
             gpuMemoryMB: gpuMemMB,
-            appMemoryMB: appMemMB
+            appMemoryMB: appMemMB,
+            lowPowerMode: pi.isLowPowerModeEnabled,
+            thermalState: pi.thermalState
         )
         trainingChartSamples.append(sample)
         trainingChartNextId += 1
@@ -3130,7 +3139,9 @@ struct ContentView: View {
             }
             let memLine: String
             if let mem = memoryStatsSnap {
-                let appGB = Self.bytesToGB(mem.appFootprintBytes)
+                // App memory lives in the chart grid now (App memory
+                // tile), so it's been dropped from the header line
+                // here to reduce duplication.
                 let gpuGB = Self.bytesToGB(mem.gpuAllocatedBytes)
                 let gpuMaxGB = Self.bytesToGB(mem.gpuMaxTargetBytes)
                 let gpuTotalGB = Self.bytesToGB(mem.gpuTotalBytes)
@@ -3138,8 +3149,8 @@ struct ContentView: View {
                     ? Int((Double(mem.gpuAllocatedBytes) / Double(mem.gpuMaxTargetBytes) * 100).rounded())
                     : 0
                 memLine = String(
-                    format: "%@  ·  App: %.2f GB  ·  GPU RAM: %.2f / %.2f GB (%d%%)  ·  Total: %.1f GB",
-                    timeStr, appGB, gpuGB, gpuMaxGB, gpuPct, gpuTotalGB
+                    format: "%@  ·  GPU RAM: %.2f / %.2f GB (%d%%)  ·  Total: %.1f GB",
+                    timeStr, gpuGB, gpuMaxGB, gpuPct, gpuTotalGB
                 )
             } else {
                 memLine = timeStr

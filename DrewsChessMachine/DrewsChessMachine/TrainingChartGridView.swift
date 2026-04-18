@@ -19,6 +19,18 @@ struct TrainingChartSample: Identifiable, Sendable {
     let gpuMemoryMB: Double?
     let appMemoryMB: Double?
 
+    /// Whether macOS Low Power Mode was on at sample time. Charted
+    /// as 0 (off) / 1 (on) — a step trace that sits along the
+    /// bottom and pops up to 1 only while the user (or the system
+    /// automatically on battery) has enabled the mode.
+    let lowPowerMode: Bool?
+    /// `ProcessInfo.ThermalState` at sample time. Charted as the
+    /// raw-value offset by +2 (so nominal=2, fair=3, serious=4,
+    /// critical=5), keeping the line strictly above the low-power
+    /// step trace at 0/1 so they never overlap. Hover resolves the
+    /// offset back to the named thermal state.
+    let thermalState: ProcessInfo.ThermalState?
+
     var rollingTotalLoss: Double? {
         guard let p = rollingPolicyLoss, let v = rollingValueLoss else { return nil }
         return p + v
@@ -129,7 +141,7 @@ struct TrainingChartGridView: View {
                 unit: "GB",
                 color: .teal
             )
-            // Row 3: Loss Value | Diversity histogram
+            // Row 3: Loss Value | Diversity histogram | Power / Thermal
             miniChart(
                 title: "Loss value",
                 yPath: \.rollingValueLoss,
@@ -137,8 +149,161 @@ struct TrainingChartGridView: View {
                 color: .cyan
             )
             diversityHistogramChart
+            powerThermalChart
         }
         .background(Color(nsColor: .separatorColor))
+    }
+
+    // MARK: - Power / thermal chart
+
+    /// Human-readable name for a `ProcessInfo.ThermalState`. Used
+    /// by both the chart's header text and the hover readout so
+    /// the reader sees "serious" rather than `.serious` or `2`.
+    private static func thermalStateName(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
+    }
+
+    /// Convert a thermal state to its chart Y position:
+    /// `rawValue + 2` → 2…5. Keeps the trace strictly above the
+    /// 0/1 low-power step so the two series never overlap.
+    private static func thermalY(_ state: ProcessInfo.ThermalState) -> Double {
+        Double(state.rawValue) + 2
+    }
+
+    private var powerThermalChart: some View {
+        let readout = hoverReadoutPowerThermal()
+        let headerText: String
+        // Three-way header logic matching the other hover-aware
+        // tiles. Shows latest state when not hovering, the hovered
+        // sample's power + thermal when hovering with data, and an
+        // explicit "no data" when the hover is outside the sampled
+        // range.
+        switch readout {
+        case .notHovering:
+            if let latest = trainingChartSamples.last {
+                let powerStr = (latest.lowPowerMode ?? false) ? "on" : "off"
+                let thermStr: String
+                if let ts = latest.thermalState {
+                    thermStr = Self.thermalStateName(ts)
+                } else {
+                    thermStr = "--"
+                }
+                headerText = "lowpwr=\(powerStr)  thermal=\(thermStr)"
+            } else {
+                headerText = "--"
+            }
+        case .hoveringNoData(let t):
+            headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
+        case .hoveringWithData(let t, let lowPower, let thermal):
+            let powerStr = lowPower ? "on" : "off"
+            let thermStr = Self.thermalStateName(thermal)
+            headerText = "t=\(Self.formatElapsedAxis(t))  lowpwr=\(powerStr)  thermal=\(thermStr)"
+        }
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("Power / thermal")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(headerText)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                Chart {
+                    // Low power as a 0/1 step trace.
+                    ForEach(trainingChartSamples) { sample in
+                        if let lp = sample.lowPowerMode {
+                            LineMark(
+                                x: .value("Time", sample.elapsedSec),
+                                y: .value("Power", lp ? 1.0 : 0.0)
+                            )
+                            .foregroundStyle(by: .value("Series", "Low power"))
+                            .interpolationMethod(.stepEnd)
+                        }
+                    }
+                    // Thermal state trace, offset by +2 so it sits
+                    // in the 2-5 range strictly above the 0/1
+                    // low-power band. Step interpolation because
+                    // thermal state is a discrete level, not a
+                    // continuous measurement.
+                    ForEach(trainingChartSamples) { sample in
+                        if let ts = sample.thermalState {
+                            LineMark(
+                                x: .value("Time", sample.elapsedSec),
+                                y: .value("Thermal", Self.thermalY(ts))
+                            )
+                            .foregroundStyle(by: .value("Series", "Thermal"))
+                            .interpolationMethod(.stepEnd)
+                        }
+                    }
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
+                }
+                .chartForegroundStyleScale([
+                    "Low power": Color.gray,
+                    "Thermal": Color.orange
+                ])
+                .chartLegend(.hidden)
+                // Force the Y domain to 0-5.5 so the two traces
+                // sit in their intended bands regardless of what
+                // values have been observed. Without this the
+                // axis would auto-scale to the current max and
+                // the trace band positions would shift.
+                .chartYScale(domain: 0...5.5)
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    // Hide Y axis labels — the numeric scale is
+                    // meaningless on its own (raw thermal values +
+                    // 2 mixed with 0/1 low-power flags). Hover and
+                    // header text carry the actual semantics.
+                    AxisMarks(position: .leading, values: [0, 1, 2, 3, 4, 5]) { value in
+                        AxisGridLine()
+                    }
+                }
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
+            }
+            .frame(height: 75)
+        }
+    }
+
+    /// Three-way hover result for the power/thermal chart. Parallels
+    /// the generic `HoverReadout` but carries the two fields we
+    /// need for this chart's header simultaneously.
+    private enum PowerThermalReadout {
+        case notHovering
+        case hoveringNoData(hoveredTime: Double)
+        case hoveringWithData(time: Double, lowPower: Bool, thermal: ProcessInfo.ThermalState)
+    }
+
+    private func hoverReadoutPowerThermal() -> PowerThermalReadout {
+        guard let hoverT = hoveredSec else { return .notHovering }
+        guard let sample = Self.nearestTrainingSample(
+            at: hoverT,
+            samples: trainingChartSamples
+        ) else {
+            return .hoveringNoData(hoveredTime: hoverT)
+        }
+        guard let lp = sample.lowPowerMode,
+              let ts = sample.thermalState else {
+            return .hoveringNoData(hoveredTime: hoverT)
+        }
+        return .hoveringWithData(time: sample.elapsedSec, lowPower: lp, thermal: ts)
     }
 
     // MARK: - Diversity histogram chart
