@@ -2,68 +2,72 @@ import Foundation
 
 // MARK: - Sampling Schedule
 
-/// Two-phase temperature schedule applied by `MPSChessPlayer.sampleMove`.
+/// Linear-decay temperature schedule applied by `MPSChessPlayer.sampleMove`.
 ///
-/// During the **opening phase** — the first `openingPliesPerPlayer` moves
-/// made by a given player in the current game — sampling uses `openingTau`.
-/// From the next move onward, sampling uses `mainTau`. Temperature scales
-/// the legal-move logits as `logit / tau` before the softmax, so:
+/// Temperature starts at `startTau` on ply 0 and decreases by
+/// `decayPerPly` each ply (per-player), bottoming out at `floorTau`.
+/// The formula is: `tau(ply) = max(floorTau, startTau - decayPerPly * ply)`.
+///
+/// Temperature scales the legal-move logits as `logit / tau` before
+/// the softmax, so:
 ///
 /// - `tau = 1.0` leaves logits unchanged (raw softmax).
 /// - `tau < 1.0` concentrates the distribution on the largest logit,
 ///   approaching argmax as `tau → 0`.
 /// - `tau > 1.0` flattens the distribution toward uniform.
 ///
-/// Both `openingTau` and `mainTau` must be strictly positive; `tau = 0`
-/// would divide by zero and is not a valid argmax shortcut. See
+/// All tau values must be strictly positive; `tau = 0` would divide
+/// by zero and is not a valid argmax shortcut. See
 /// `sampling-parameters.md` for the design rationale behind each preset.
 struct SamplingSchedule: Sendable {
-    /// Number of moves this player sees at `openingTau` before switching
-    /// to `mainTau`. Counted per-player, so a value of 4 means "the first
-    /// four moves this player makes in the game" (which is ~8 half-moves
-    /// across both players in a typical self-play game).
-    let openingPliesPerPlayer: Int
-    /// Softmax temperature during the opening phase. Must be > 0.
-    let openingTau: Float
-    /// Softmax temperature after the opening phase ends. Must be > 0.
-    let mainTau: Float
+    /// Temperature on the player's first move (ply 0). Must be > 0.
+    let startTau: Float
+    /// Temperature reduction per ply (per-player). Must be >= 0.
+    let decayPerPly: Float
+    /// Minimum temperature — the decay floor. Must be > 0.
+    let floorTau: Float
 
-    /// Self-play data-generation schedule: tau=1.0 for the first 25 moves
-    /// per player (broad opening + early-middlegame diversity for
-    /// replay-buffer coverage), then tau=0.25 for the rest of the game
-    /// (near-greedy preferences, fewer drawn technical-endgames, more
-    /// non-zero `z` in training).
+    /// Self-play data-generation schedule: starts at tau=1.0, decays
+    /// by 0.03 per ply, flooring at 0.4 (reached at ply 20). The
+    /// smooth ramp keeps early-game diversity for replay-buffer
+    /// coverage while gradually tightening toward decisive play.
     static let selfPlay = SamplingSchedule(
-        openingPliesPerPlayer: 25,
-        openingTau: 1.0,
-        mainTau: 0.25
+        startTau: 1.0,
+        decayPerPly: 0.03,
+        floorTau: 0.4
     )
 
-    /// Arena-evaluation schedule: tau=1.0 for the first 15 moves per
-    /// player so color-alternating tournaments can't collapse into
-    /// identical deterministic lines, then tau=0.1 (near-argmax) so
-    /// the score reflects the networks' actual preferences instead of
-    /// being washed out by sampling noise.
+    /// Arena-evaluation schedule: starts at tau=1.0, decays by 0.04
+    /// per ply, flooring at 0.2 (reached at ply 20). Faster decay
+    /// and lower floor than self-play so most of the game reflects
+    /// the networks' actual preferences rather than sampling noise.
     static let arena = SamplingSchedule(
-        openingPliesPerPlayer: 15,
-        openingTau: 1.0,
-        mainTau: 0.1
+        startTau: 1.0,
+        decayPerPly: 0.04,
+        floorTau: 0.2
     )
 
     /// Flat tau=1.0 sampling for every move. Used by Play Game and
     /// other code paths outside the self-play → train → arena loop;
     /// exactly reproduces the pre-schedule behavior of `sampleMove`.
     static let uniform = SamplingSchedule(
-        openingPliesPerPlayer: 0,
-        openingTau: 1.0,
-        mainTau: 1.0
+        startTau: 1.0,
+        decayPerPly: 0.0,
+        floorTau: 1.0
     )
+
+    /// The ply (per-player) at which tau reaches the floor. Returns
+    /// `Int.max` when `decayPerPly` is zero (no decay).
+    var pliesUntilFloor: Int {
+        guard decayPerPly > 0 else { return Int.max }
+        return Int(ceilf((startTau - floorTau) / decayPerPly))
+    }
 
     /// Temperature to apply on the `ply`-th move (0-indexed) this
     /// player makes in the current game.
     @inline(__always)
     func tau(forPly ply: Int) -> Float {
-        ply < openingPliesPerPlayer ? openingTau : mainTau
+        max(floorTau, startTau - decayPerPly * Float(ply))
     }
 }
 
@@ -162,8 +166,8 @@ final class MPSChessPlayer: ChessPlayer {
         schedule: SamplingSchedule = .uniform
     ) {
         precondition(
-            schedule.openingTau > 0 && schedule.mainTau > 0,
-            "SamplingSchedule temperatures must be strictly positive"
+            schedule.startTau > 0 && schedule.floorTau > 0 && schedule.decayPerPly >= 0,
+            "SamplingSchedule: startTau and floorTau must be > 0, decayPerPly must be >= 0"
         )
         self.identifier = UUID().uuidString
         self.name = name

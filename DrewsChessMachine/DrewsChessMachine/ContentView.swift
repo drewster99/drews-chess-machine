@@ -1160,6 +1160,10 @@ struct ContentView: View {
     /// polls `snapshot()` and mirrors into `parallelStats` so the
     /// busy label shows live positions/sec rates.
     @State private var parallelWorkerStatsBox: ParallelWorkerStatsBox?
+    /// Rolling-window game diversity tracker for self-play. Fed by
+    /// every self-play worker at game end; snapshot polled by the UI
+    /// heartbeat for display and by the stats logger for [STATS] lines.
+    @State private var selfPlayDiversityTracker: GameDiversityTracker?
     /// Shared cancellation-aware flag set while an arena tournament
     /// is in flight. The Candidate test probe checks this and skips
     /// firing so probe and arena never contend on the candidate
@@ -3781,15 +3785,17 @@ struct ContentView: View {
         // games. The worst-case delay from Stop to actually breaking
         // out is one in-flight arena game (~400 ms).
         let cancelBox = CancelBox()
+        let arenaDiversity = GameDiversityTracker(windowSize: totalGames)
         let stats = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
-                [arenaChampion, candidateInference, tBox, cancelBox, overrideBox] in
+                [arenaChampion, candidateInference, tBox, cancelBox, overrideBox, arenaDiversity] in
                 let driver = TournamentDriver()
                 driver.delegate = nil
                 return await driver.run(
                     playerA: { MPSChessPlayer(name: "Candidate", network: candidateInference, schedule: .arena) },
                     playerB: { MPSChessPlayer(name: "Champion", network: arenaChampion, schedule: .arena) },
                     games: totalGames,
+                    diversityTracker: arenaDiversity,
                     // The driver checks this between games. Either a
                     // task-cancel (session Stop) or a user Abort /
                     // Promote click breaks the game loop early; the
@@ -3907,7 +3913,8 @@ struct ContentView: View {
             index: tournamentHistory.count,
             trainer: trainer,
             candidate: candidateInference,
-            championSide: arenaChampion
+            championSide: arenaChampion,
+            diversity: arenaDiversity.snapshot()
         )
         cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
 
@@ -4010,7 +4017,8 @@ struct ContentView: View {
         index: Int,
         trainer: ChessTrainer,
         candidate: ChessMPSNetwork,
-        championSide: ChessMPSNetwork
+        championSide: ChessMPSNetwork,
+        diversity: GameDiversityTracker.Snapshot
     ) {
         let durMin = Int(record.durationSec) / 60
         let durSec = Int(record.durationSec) % 60
@@ -4034,36 +4042,43 @@ struct ContentView: View {
         let scoreStr = String(format: "%.3f", record.score)
         let threshStr = String(format: "%.2f", Self.tournamentPromoteThreshold)
         let spTauStr = String(
-            format: "%.2f/%.2f@%d",
-            Double(sp.openingTau),
-            Double(sp.mainTau),
-            sp.openingPliesPerPlayer
+            format: "%.2f/%.2f/%.3f",
+            Double(sp.startTau),
+            Double(sp.floorTau),
+            Double(sp.decayPerPly)
         )
         let arTauStr = String(
-            format: "%.2f/%.2f@%d",
-            Double(ar.openingTau),
-            Double(ar.mainTau),
-            ar.openingPliesPerPlayer
+            format: "%.2f/%.2f/%.3f",
+            Double(ar.startTau),
+            Double(ar.floorTau),
+            Double(ar.decayPerPly)
         )
         let candidateIDStr = candidate.identifier?.description ?? "?"
         let championIDStr = championSide.identifier?.description ?? "?"
         let trainerIDStr = trainer.identifier?.description ?? "?"
 
+        let divStr = String(format: "unique=%d/%d(%.0f%%) avgDiverge=%.1f",
+                            diversity.uniqueGames, diversity.gamesInWindow,
+                            diversity.uniquePercent, diversity.avgDivergencePly)
+
         let wld = "\(record.candidateWins)-\(record.championWins)-\(record.draws)"
         let header = "[ARENA] #\(index) @ step \(record.finishedAtStep)  W/L/D=\(wld)  score=\(scoreStr)  \(statusStr)  dur=\(durationStr)"
         let params = "        batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(threshStr) games=\(Self.tournamentGames) sp.tau=\(spTauStr) ar.tau=\(arTauStr)"
         let ids = "        candidate=\(candidateIDStr)  champion=\(championIDStr)  trainer=\(trainerIDStr)"
+        let div = "        diversity: \(divStr)"
 
         print(header)
         print(params)
         print(ids)
+        print(div)
 
-        // Mirror the same three lines into the session log so the
+        // Mirror the same four lines into the session log so the
         // on-disk file carries the full arena history even when the
         // Xcode console isn't being captured.
         SessionLogger.shared.log(header)
         SessionLogger.shared.log(params)
         SessionLogger.shared.log(ids)
+        SessionLogger.shared.log(div)
     }
 
     /// Release arena-active state on an early return from
@@ -4445,6 +4460,8 @@ struct ContentView: View {
         }
         parallelWorkerStatsBox = pStatsBox
         parallelStats = pStatsBox.snapshot()
+        let spDiversityTracker = GameDiversityTracker(windowSize: 200)
+        selfPlayDiversityTracker = spDiversityTracker
         // Reset progress-rate sampler state so the new session's
         // chart starts fresh at t=0. Leaving old samples in place
         // would show up as a visible "step" from the previous
@@ -4531,7 +4548,7 @@ struct ContentView: View {
         }
 
         realTrainingTask = Task(priority: .userInitiated) {
-            [trainer, network, buffer, box, tBox, pStatsBox,
+            [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
              selfPlayGate, secondarySelfPlayGates, trainingGate, arenaFlag, triggerBox, overrideBox, countBox] in
 
             // --- Setup: build any missing networks, reset the trainer ---
@@ -4854,6 +4871,7 @@ struct ContentView: View {
                                 durationMs: gameDurationMs,
                                 result: result
                             )
+                            spDiversityTracker.recordGame(moves: machine.moveHistory)
                         }
                     }
                 }
@@ -4979,7 +4997,7 @@ struct ContentView: View {
                 // MainActor hop since they live on classes whose var
                 // mutation is otherwise main-actor-driven.
                 group.addTask(priority: .utility) {
-                    [trainer, network, box, pStatsBox, buffer] in
+                    [trainer, network, box, pStatsBox, buffer, spDiversityTracker] in
                     let sessionStart = Date()
                     // Ramp up quickly then cap at every 15 minutes.
                     let fixedTargets: [TimeInterval] = [30, 60, 120, 300, 900]
@@ -5017,7 +5035,15 @@ struct ContentView: View {
                         let m = (Int(elapsedTarget) % 3600) / 60
                         let s = Int(elapsedTarget) % 60
                         let elapsedStr = String(format: "%d:%02d:%02d", h, m, s)
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) trainer=\(trainerID) champion=\(championID)"
+                        let spSched = SamplingSchedule.selfPlay
+                        let arSched = SamplingSchedule.arena
+                        let spTau = String(format: "%.2f/%.2f/%.3f", spSched.startTau, spSched.floorTau, spSched.decayPerPly)
+                        let arTau = String(format: "%.2f/%.2f/%.3f", arSched.startTau, arSched.floorTau, arSched.decayPerPly)
+                        let divSnap = spDiversityTracker.snapshot()
+                        let divStr = divSnap.gamesInWindow > 0
+                            ? String(format: "unique=%d/%d(%.0f%%) diverge=%.1f", divSnap.uniqueGames, divSnap.gamesInWindow, divSnap.uniquePercent, divSnap.avgDivergencePly)
+                            : "n/a"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
                     }
 
@@ -5218,6 +5244,14 @@ struct ContentView: View {
         let trainerIDStr = trainer?.identifier?.description ?? dash
         let header = "Training [\(trainerIDStr)]"
         lines.append("  Batch size:  \(Self.trainingBatchSize)")
+        // Sampling schedule parameters — shown so the user can verify
+        // what temperature regime is in effect without checking code.
+        let spSched = SamplingSchedule.selfPlay
+        let arSched = SamplingSchedule.arena
+        let spTauDisplay = String(format: "%.2f→%.2f  decay %.3f/ply", spSched.startTau, spSched.floorTau, spSched.decayPerPly)
+        let arTauDisplay = String(format: "%.2f→%.2f  decay %.3f/ply", arSched.startTau, arSched.floorTau, arSched.decayPerPly)
+        lines.append("  SP tau:      \(spTauDisplay)")
+        lines.append("  Arena tau:   \(arTauDisplay)")
         // Learning rate — read off the trainer so we can't drift out of
         // sync with what the graph is actually applying. Shown in every
         // training mode since it's the same knob across all of them.
@@ -5281,6 +5315,12 @@ struct ContentView: View {
                     : dash
                 lines.append("  1m gen rate: \(prodStr) pos/s")
                 lines.append("  1m trn rate: \(consStr) pos/s")
+            }
+            if let divSnap = selfPlayDiversityTracker?.snapshot(),
+               divSnap.gamesInWindow > 0 {
+                let pctStr = String(format: "%.0f%%", divSnap.uniquePercent)
+                let divStr = String(format: "%.1f", divSnap.avgDivergencePly)
+                lines.append("  Diversity:   \(divSnap.uniqueGames)/\(divSnap.gamesInWindow) unique (\(pctStr))  avg diverge ply \(divStr)")
             }
         }
         lines.append("")

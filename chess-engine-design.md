@@ -500,7 +500,7 @@ loop forever:
 
 ### Move Selection During Self-Play
 
-Each move, the network evaluates the current position and outputs a probability distribution over all moves. Select the move to play by sampling from the legal move probabilities (after masking illegal moves and renormalizing). Sampling rather than always picking the highest-probability move introduces variety into games — necessary so the network encounters diverse positions during training. Early in training when the network knows nothing, this is effectively random play.
+Each move, the network evaluates the current position and outputs 4,096 raw logits (one per from-square x to-square). The move is selected by: (1) gathering logits for legal moves only, (2) dividing by a temperature `tau`, (3) applying softmax, (4) drawing one sample from the resulting categorical distribution. Temperature follows a linear decay schedule: `tau(ply) = max(floorTau, startTau - decayPerPly * ply)`, starting at 1.0 (full exploration) and decaying toward a floor that differs between self-play (0.4) and arena evaluation (0.2). See `sampling-parameters.md` for the full rationale and preset values.
 
 ### Training Data Generation
 
@@ -598,6 +598,50 @@ The shared trunk learns representations useful for both tasks simultaneously. Gr
 #### Future: MCTS changes the policy target
 
 Once MCTS is added (later phase — not part of the bootstrap), the policy target changes. Instead of a one-hot on the played move weighted by the game outcome, the target `π` becomes the MCTS visit-count distribution at that position: `π(a) ∝ N(s,a)^(1/τ)`. The loss reverts to the full `−Σ π(a) log p(a)` form (no more `z` scaling), because MCTS is a stronger player than the raw network and training `p` to imitate `π` is itself a policy improvement step — the outcome weighting is no longer needed as the learning signal.
+
+#### Stability Enhancements and Learning-Rate Upgrades (post-bootstrap analysis, 2026-04-17)
+
+The REINFORCE bootstrap described above is functionally correct but known to be fragile. After observing multiple real-world training pathologies, the following structural changes were designed. They are enumerated here so the reasoning is recorded; individual implementations land via separate commits.
+
+##### Observed failure modes (pre-upgrade)
+
+- **Policy collapse (2026-04-15, ~step 2151):** with `lr=1e-4, batch=256`, policy entropy dropped from ~8.29 to 0.66 in a single checkpoint window while `pLoss` hit `−3.65 × 10⁶`. Logits had run away to ±60+ magnitudes. Recovered to uniform (`pEnt = 8.3177`) within the next 4,600 steps but with no durable learning — best arena score right after was 0.527, subsequent arenas trended down.
+- **Policy stasis (2026-04-16 and earlier):** entropy stayed pinned at `log(4096)` for 10k+ training steps across multi-hour runs. Root cause was the `(1000·pL + vL)/1001` normalizer in `buildTrainingOps` which unintentionally cancelled the ×1000 policy-boost and instead shrank the value-loss contribution by ~1000× (fixed in commit `1ec8a13` on 2026-04-17).
+
+##### Upgrade plan
+
+**1. Gradient clipping (global L2 norm, `max_norm = 5.0`).** Before each SGD step, compute the total L2 norm of the gradient across all trainable variables. If it exceeds 5.0, scale every variable's gradient by `max_norm / ||g||` uniformly. Preserves gradient direction; caps per-step parameter change. Directly prevents catastrophic single-step blowup of the 2026-04-15 kind. On healthy batches clipping does nothing. Starting threshold of 5.0 is conservative (triggers only on real outliers in a ~3M-param network); tighten to 2–3 after observing healthy gradient norms.
+
+**2. Weight decay (L2 on all trainable parameters, `c = 1e-4`).** Add `(c/2) · Σ_i w_i²` to `totalLossTensor` — autodiff contributes a `c · w_i` gradient term per parameter. Applied uniformly to conv weights, FC weights, BN scale/shift (first implementation; refinement to exclude BN/bias is optional later). Prevents slow systematic weight growth that primes the network for runaway logits. Also provides standard generalization benefits. `c = 1e-4` is the AlphaZero / ResNet standard value.
+
+**3. Advantage baseline (`advantage = z − v(s).detached()`).** Replace raw `z ∈ {−1, 0, +1}` in the policy loss with the advantage against the value head's prediction, stop-gradient so the policy loss does not backprop into the value head. Loss becomes `mean(advantage · (−log p(a*)))`. This is the standard variance-reduction trick from actor-critic methods (A2C/PPO/TRPO); it reduces policy-gradient variance by roughly 5–20× depending on game phase. Since `v ∈ [−1, +1]` via tanh (ChessNetwork value head ends in `graph.tanh`), advantage is structurally bounded in `[−2, +2]`; no clamp needed. Moves in obvious wins/losses get near-zero gradient; surprise outcomes get strongly scaled gradient. The most important change for actual policy learning speed.
+
+**4. Batch size 1024 → 4096.** Per the batch-size sweep conducted 2026-04-17, GPU throughput is essentially flat from batch=128 onward (~4,000 positions/sec regardless of size), and self-play is the wall-clock bottleneck. Going to 4096 gives 2× gradient-variance reduction (`sqrt(4)`) for no throughput cost. Peak memory rises from ~8.7 GB to ~17.4 GB, well within the 37 GB recommended working set. Supports a higher lr and amplifies the advantage baseline's smoothing benefit.
+
+**5. Learning rate 5e-4 → 1e-3.** With 4× batch growth, linear lr scaling (per Lc0's published LR/batch table) would give 2e-3; square-root scaling gives 1e-3. Conservative choice is 1e-3 given multiple simultaneous changes — can be raised if early steps look clean.
+
+**6. K = 50 unchanged.** The policy-loss coefficient (fix `1ec8a13`) is working as intended; no warmup is needed because gradient clipping provides the same protection. Revisit only after MCTS visit-count targets replace one-hot REINFORCE, at which point K should drop back to ≈1.
+
+##### Why these choices and not alternatives
+
+- **Weight decay rather than logit L2:** Both discourage large logits, but weight decay is persistent (applied every step, not only when logits are already big), has standard DL backing (Bayesian prior on weights), improves generalization independent of numerical stability, and doesn't double-dip with softmax temperature (`τ`). Logit L2 would be a narrower fix for the same symptom. Use one; choose the one with more side benefits.
+- **Gradient clipping rather than logit clipping:** Clipping at the gradient level caps the fundamental quantity (per-step parameter change) and preserves direction. Any downstream symptom — logit runaway, entropy collapse — is prevented at its source. Value-clipping individual gradients would distort step direction.
+- **Advantage rather than winning-side-only filtering:** Filtering discards data; advantage uses all of it, correctly weighted. Standard in modern policy gradient.
+- **K warmup skipped:** Warmup addresses the same "initial gradient too large" problem that clipping already solves. Using both is redundant.
+- **Buffer pre-fill unchanged (20%):** Pre-fill only affects time to first training step, not steady-state behavior. Changing it doesn't improve gradient quality.
+
+##### Reference: AlphaZero and Leela Chess Zero hyperparameters
+
+AlphaZero used batch 4096, lr scheduled 0.2 → 0.02 → 0.002 → 0.0002 (momentum SGD), weight decay `1e-4`, MCTS visit-count targets (no REINFORCE). Policy coefficient is ≈1 in that setup — dense MCTS targets don't need a boost. Lc0 (Leela Chess Zero) maintains a [public LR/batch scaling table](https://docs.google.com/spreadsheets/d/13MTxsCvLBkc7luOKU3iFFP_JcPjcfg4esU_63Ka5tmY/edit?pli=1&gid=649477708#gid=649477708) following linear scaling of lr with batch size. Our numbers sit in the low-batch / low-lr end of that table — expected for a plain-SGD (no momentum) pre-MCTS bootstrap.
+
+##### Implementation order
+
+1. Gradient clipping (pure safety; should not change healthy-run metrics).
+2. Weight decay (structural; slow effect, no immediate visible change expected).
+3. Advantage baseline (policy-loss formulation change; biggest learning-speed effect).
+4. Batch 4096 + lr 1e-3 together (hyperparameter pair; run several hours and compare arena scores to pre-change baseline).
+
+Each step gets its own commit and CHANGELOG entry with observed effect.
 
 ### Evaluation and Promotion
 

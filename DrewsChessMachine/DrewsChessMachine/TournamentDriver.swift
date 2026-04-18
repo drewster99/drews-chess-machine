@@ -66,6 +66,7 @@ final class TournamentDriver {
         playerA: @Sendable () -> any ChessPlayer,
         playerB: @Sendable () -> any ChessPlayer,
         games: Int,
+        diversityTracker: GameDiversityTracker? = nil,
         isCancelled: (@Sendable () -> Bool)? = nil,
         onGameCompleted: (@Sendable (Int, Int, Int, Int) -> Void)? = nil
     ) async -> TournamentStats {
@@ -103,6 +104,8 @@ final class TournamentDriver {
                 continue
             }
             let result = await task.value
+
+            diversityTracker?.recordGame(moves: machine.moveHistory)
 
             // Tally result
             switch result {

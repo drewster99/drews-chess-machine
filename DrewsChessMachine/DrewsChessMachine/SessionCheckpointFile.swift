@@ -37,21 +37,21 @@ enum SessionCheckpointError: LocalizedError {
 /// builds this wrapper on save and turns it back into the live
 /// struct on load.
 struct TauConfigCodable: Codable, Equatable {
-    let openingPliesPerPlayer: Int
-    let openingTau: Float
-    let mainTau: Float
+    let startTau: Float
+    let decayPerPly: Float
+    let floorTau: Float
 
     init(_ schedule: SamplingSchedule) {
-        self.openingPliesPerPlayer = schedule.openingPliesPerPlayer
-        self.openingTau = schedule.openingTau
-        self.mainTau = schedule.mainTau
+        self.startTau = schedule.startTau
+        self.decayPerPly = schedule.decayPerPly
+        self.floorTau = schedule.floorTau
     }
 
     var asSamplingSchedule: SamplingSchedule {
         SamplingSchedule(
-            openingPliesPerPlayer: openingPliesPerPlayer,
-            openingTau: openingTau,
-            mainTau: mainTau
+            startTau: startTau,
+            decayPerPly: decayPerPly,
+            floorTau: floorTau
         )
     }
 }
