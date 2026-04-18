@@ -3,13 +3,10 @@ import Foundation
 // MARK: - Errors
 
 enum BatchedMoveEvaluationSourceError: LocalizedError {
-    case expectedSlotCountNotPositive(Int)
     case batchResultShapeMismatch(expected: Int, got: Int)
 
     var errorDescription: String? {
         switch self {
-        case .expectedSlotCountNotPositive(let n):
-            return "BatchedMoveEvaluationSource: expectedSlotCount must be >= 1 (got \(n))"
         case .batchResultShapeMismatch(let expected, let got):
             return "BatchedMoveEvaluationSource: batched evaluate returned \(got) values, expected \(expected)"
         }
@@ -125,8 +122,6 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             fireBatch()
         }
     }
-
-    var currentExpectedSlotCount: Int { expectedSlotCount }
 
     // MARK: - Inference
 
@@ -275,17 +270,4 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     }
     #endif
 
-    // MARK: - Weight Transfer
-
-    /// Overwrite the underlying network's weights. Funnels through the
-    /// actor so it serializes with in-flight `fireBatch` calls.
-    func loadWeights(_ weights: [[Float]]) throws {
-        try network.network.loadWeights(weights)
-    }
-
-    /// Snapshot the underlying network's weights. Same serialization
-    /// rationale as `loadWeights(_:)`.
-    func exportWeights() throws -> [[Float]] {
-        try network.network.exportWeights()
-    }
 }
