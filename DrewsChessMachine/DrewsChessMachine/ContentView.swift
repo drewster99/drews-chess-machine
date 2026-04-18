@@ -1,3 +1,4 @@
+import AppKit
 import Charts
 import SwiftUI
 
@@ -16,6 +17,19 @@ struct SweepProgress: Sendable {
     let batchSize: Int
     let stepsSoFar: Int
     let elapsedSec: Double
+}
+
+struct TrainingAlarm: Identifiable, Equatable, Sendable {
+    enum Severity: String, Sendable {
+        case warning
+        case critical
+    }
+
+    let id: UUID
+    let severity: Severity
+    let title: String
+    let detail: String
+    let raisedAt: Date
 }
 
 /// Lock-protected holder for the sweep's shared state across the worker
@@ -1368,7 +1382,8 @@ struct ContentView: View {
     /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
     /// count has actually advanced.
     @State private var trainingBox: TrainingLiveStatsBox?
-    nonisolated static let trainerLearningRateDefault: Float = 1e-3
+    nonisolated static let trainerLearningRateDefault: Float = 1e-4
+    nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-1
     nonisolated static let trainingBatchSize = 4096
 
     /// Policy-entropy floor below which the periodic stats ticker
@@ -1380,6 +1395,12 @@ struct ContentView: View {
     /// moves (`exp(7.0)`), leaving plenty of room for healthy
     /// sharpening while flagging pathological collapse.
     nonisolated static let policyEntropyAlarmThreshold: Double = 7.0
+    nonisolated static let divergenceAlarmGradNormWarningThreshold: Double = 50.0
+    nonisolated static let divergenceAlarmGradNormCriticalThreshold: Double = 500.0
+    nonisolated static let divergenceAlarmEntropyCriticalThreshold: Double = 3.0
+    nonisolated static let divergenceAlarmConsecutiveWarningSamples: Int = 3
+    nonisolated static let divergenceAlarmConsecutiveCriticalSamples: Int = 2
+    nonisolated static let divergenceAlarmRecoverySamples: Int = 10
 
     // Real (self-play) training — generates games, labels positions from the
     // final outcome, pushes them through the shared trainer. Shares the
@@ -1672,6 +1693,8 @@ struct ContentView: View {
     /// in session checkpoints.
     @AppStorage("replayRatioTarget") private var replayRatioTarget: Double = 1.0
     @AppStorage("trainerLearningRate") private var trainerLearningRate: Double = Double(trainerLearningRateDefault)
+    @AppStorage("entropyRegularizationCoeff")
+    private var entropyRegularizationCoeff: Double = Double(entropyRegularizationCoeffDefault)
     /// Last auto-computed step delay, persisted so the next session
     /// starts from where the auto-adjuster left off instead of
     /// falling back to the manual default.
@@ -1694,6 +1717,12 @@ struct ContentView: View {
     /// `.dcmsession` next to every manual save. Defaulting to true
     /// means promoted models are never lost by default.
     nonisolated static let autosaveSessionsOnPromote: Bool = true
+    @State private var activeTrainingAlarm: TrainingAlarm?
+    @State private var trainingAlarmSilenced = false
+    @State private var divergenceWarningStreak = 0
+    @State private var divergenceCriticalStreak = 0
+    @State private var divergenceRecoveryStreak = 0
+    @State private var alarmSoundTask: Task<Void, Never>?
 
     private var networkReady: Bool { network != nil }
     private var isBusy: Bool {
@@ -1916,6 +1945,7 @@ struct ContentView: View {
     /// The value is parsed and applied only on Enter (via `.onSubmit`
     /// on the TextField). Invalid input reverts to the current LR.
     @State private var learningRateEditText: String = ""
+    @State private var entropyRegularizationEditText: String = ""
 
     /// Binding for the side-to-move segmented picker. Writes rebuild
     /// `editableState` with the new current-player (nothing else changes)
@@ -2020,6 +2050,32 @@ struct ContentView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+            }
+
+            if let alarm = activeTrainingAlarm {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(alarm.title)
+                            .font(.headline)
+                        Text(alarm.detail)
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                    }
+                    Spacer()
+                    if trainingAlarmSilenced {
+                        Text("Silenced")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("Silence") {
+                            silenceTrainingAlarm()
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.yellow.opacity(0.8))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
 
             // Buttons
@@ -2510,6 +2566,28 @@ struct ContentView: View {
                                                     )
                                                 }
                                         }
+                                        HStack(spacing: 6) {
+                                            Text("  Entropy Reg:")
+                                            TextField("Entropy Reg", text: $entropyRegularizationEditText)
+                                            .monospacedDigit()
+                                            .frame(width: 80)
+                                            .textFieldStyle(.roundedBorder)
+                                            .onSubmit {
+                                                if let parsed = Double(entropyRegularizationEditText),
+                                                   parsed >= 0, parsed.isFinite {
+                                                    entropyRegularizationCoeff = parsed
+                                                    trainer?.entropyRegularizationCoeff = Float(parsed)
+                                                }
+                                                entropyRegularizationEditText = String(
+                                                    format: "%.2e",
+                                                    entropyRegularizationCoeff
+                                                )
+                                            }
+                                            Text("clip \(String(format: "%.1f", ChessTrainer.gradClipMaxNorm))")
+                                                .foregroundStyle(.secondary)
+                                            Text("decay \(String(format: "%.0e", ChessTrainer.weightDecayC))")
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
                                     Text(column.body)
                                 }
@@ -2815,6 +2893,7 @@ struct ContentView: View {
             rollingValueLoss: trainingSnap?.rollingValueLoss,
             rollingPolicyEntropy: trainingSnap?.rollingPolicyEntropy,
             rollingPolicyNonNegCount: trainingSnap?.rollingPolicyNonNegCount,
+            rollingGradNorm: trainingSnap?.rollingGradGlobalNorm,
             replayRatio: ratioSnap?.currentRatio,
             cpuPercent: cpuPercent,
             gpuBusyPercent: trainingSnap != nil ? gpuBusy : nil,
@@ -2825,6 +2904,115 @@ struct ContentView: View {
         )
         trainingChartSamples.append(sample)
         trainingChartNextId += 1
+        evaluateTrainingAlarm(from: sample)
+    }
+
+    private func evaluateTrainingAlarm(from sample: TrainingChartSample) {
+        let entropy = sample.rollingPolicyEntropy
+        let gradNorm = sample.rollingGradNorm
+        let warningOutOfLine =
+            (entropy.map { $0 < Self.policyEntropyAlarmThreshold } ?? false)
+            && (gradNorm.map { $0 > Self.divergenceAlarmGradNormWarningThreshold } ?? false)
+        let criticalOutOfLine =
+            (entropy.map { $0 < Self.divergenceAlarmEntropyCriticalThreshold } ?? false)
+            || (gradNorm.map { $0 > Self.divergenceAlarmGradNormCriticalThreshold } ?? false)
+
+        if criticalOutOfLine {
+            divergenceCriticalStreak += 1
+            divergenceWarningStreak = 0
+            divergenceRecoveryStreak = 0
+        } else if warningOutOfLine {
+            divergenceWarningStreak += 1
+            divergenceCriticalStreak = 0
+            divergenceRecoveryStreak = 0
+        } else {
+            divergenceCriticalStreak = 0
+            divergenceWarningStreak = 0
+            divergenceRecoveryStreak += 1
+        }
+
+        if divergenceCriticalStreak >= Self.divergenceAlarmConsecutiveCriticalSamples {
+            raiseTrainingAlarm(
+                severity: .critical,
+                title: "Critical Training Divergence",
+                detail: alarmDetail(entropy: entropy, gradNorm: gradNorm)
+            )
+        } else if divergenceWarningStreak >= Self.divergenceAlarmConsecutiveWarningSamples {
+            raiseTrainingAlarm(
+                severity: .warning,
+                title: "Training Divergence Warning",
+                detail: alarmDetail(entropy: entropy, gradNorm: gradNorm)
+            )
+        } else if divergenceRecoveryStreak >= Self.divergenceAlarmRecoverySamples {
+            clearTrainingAlarm()
+        }
+    }
+
+    private func alarmDetail(entropy: Double?, gradNorm: Double?) -> String {
+        let entropyStr = entropy.map { String(format: "%.4f", $0) } ?? "--"
+        let gradStr = gradNorm.map { String(format: "%.3f", $0) } ?? "--"
+        return "policy entropy=\(entropyStr), gNorm=\(gradStr)"
+    }
+
+    private func raiseTrainingAlarm(
+        severity: TrainingAlarm.Severity,
+        title: String,
+        detail: String
+    ) {
+        let next = TrainingAlarm(
+            id: UUID(),
+            severity: severity,
+            title: title,
+            detail: detail,
+            raisedAt: Date()
+        )
+        let changed = activeTrainingAlarm?.title != next.title
+            || activeTrainingAlarm?.severity != next.severity
+        activeTrainingAlarm = next
+        if changed {
+            SessionLogger.shared.log("[ALARM] \(title): \(detail)")
+        }
+        startAlarmSoundLoopIfNeeded()
+    }
+
+    private func clearTrainingAlarm() {
+        activeTrainingAlarm = nil
+        trainingAlarmSilenced = false
+        alarmSoundTask?.cancel()
+        alarmSoundTask = nil
+    }
+
+    private func silenceTrainingAlarm() {
+        trainingAlarmSilenced = true
+        alarmSoundTask?.cancel()
+        alarmSoundTask = nil
+    }
+
+    private func startAlarmSoundLoopIfNeeded() {
+        guard activeTrainingAlarm != nil, !trainingAlarmSilenced, alarmSoundTask == nil else { return }
+        alarmSoundTask = Task {
+            while !Task.isCancelled {
+                await playAlarmBuzzBurst()
+                do {
+                    try await Task.sleep(for: .seconds(300))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func playAlarmBuzzBurst() async {
+        for _ in 0..<3 {
+            if Task.isCancelled || activeTrainingAlarm == nil || trainingAlarmSilenced { return }
+            NSSound.beep()
+            do {
+                try await Task.sleep(for: .seconds(1.2))
+            } catch {
+                return
+            }
+        }
     }
 
     private func refreshProgressRateIfNeeded() {
@@ -3361,6 +3549,7 @@ struct ContentView: View {
             )
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
+        let entropyCoeff = trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault
         let bufferSnap = replayBuffer?.stateSnapshot()
         return SessionCheckpointState(
             formatVersion: SessionCheckpointState.currentFormatVersion,
@@ -3374,11 +3563,14 @@ struct ContentView: View {
             trainingPositionsSeen: (trainingSnap?.steps ?? 0) * Self.trainingBatchSize,
             batchSize: Self.trainingBatchSize,
             learningRate: lr,
+            entropyRegularizationCoeff: entropyCoeff,
             promoteThreshold: Self.tournamentPromoteThreshold,
             arenaGames: Self.tournamentGames,
             selfPlayTau: TauConfigCodable(SamplingSchedule.selfPlay),
             arenaTau: TauConfigCodable(SamplingSchedule.arena),
             selfPlayWorkerCount: selfPlayWorkerCount,
+            gradClipMaxNorm: ChessTrainer.gradClipMaxNorm,
+            weightDecayCoeff: ChessTrainer.weightDecayC,
             replayRatioTarget: replayRatioTarget,
             replayRatioAutoAdjust: replayRatioAutoAdjust,
             stepDelayMs: trainingStepDelayMs,
@@ -4077,11 +4269,12 @@ struct ContentView: View {
         }
         trainingGate.resume()
 
-        // Mint a fresh ID for the arena candidate — this snapshot
-        // represents the specific checkpoint being evaluated in this
-        // tournament. The trainer keeps its own ID (the current training
-        // lineage) and continues SGD in the background.
-        candidateInference.identifier = ModelIDMinter.mint()
+        // Arena candidate inherits the trainer's current generation
+        // ID. If it gets promoted, the promoted champion should keep
+        // that exact identifier and the live trainer will roll forward
+        // to the next generation after being rewound to the promoted
+        // weights.
+        candidateInference.identifier = trainer.identifier
 
         // --- Champion → arena champion snapshot ---
         //
@@ -4207,33 +4400,42 @@ struct ContentView: View {
         // network (which would race against self-play again).
         var promotedChampionWeights: [[Float]] = []
         if shouldPromote {
-            // Pause self-play briefly, copy candidate inference into
-            // the champion, release. The batched driver stops all
-            // slots on pause, so by the time `pauseAndWait` returns
-            // there are no in-flight `graph.run` calls on the
-            // champion — `loadWeights` can mutate its MPSGraph
-            // variables without racing any `evaluate`. With the
-            // barrier batcher all self-play slots share `champion`
-            // directly, so a single `loadWeights` reaches every slot
-            // on resume (no per-secondary loop anymore).
+            // Pause both self-play and training, then copy the
+            // promoted candidate into both the champion and the live
+            // trainer. This keeps self-play and SGD aligned on the
+            // exact promoted weights rather than letting training
+            // continue from a later, unvalidated post-arena state.
             await selfPlayGate.pauseAndWait()
+            await trainingGate.pauseAndWait()
             if !Task.isCancelled {
                 do {
                     promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
-                        [candidateInference, champion] in
+                        [candidateInference, champion, trainer] in
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
+                        try await trainer.network.loadWeights(weights)
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
-                    // exact weights, so it inherits that snapshot ID.
+                    // exact weights, so it inherits that snapshot ID,
+                    // while the rewound live trainer rolls forward to
+                    // the next mutable generation in the same lineage.
                     champion.identifier = candidateInference.identifier
+                    trainer.identifier = ModelIDMinter.mintTrainerGeneration(
+                        from: champion.identifier ?? candidateInference.identifier ?? ModelIDMinter.mint()
+                    )
                     promoted = true
                     promotedID = candidateInference.identifier
+                    trainingBox?.resetRollingWindows()
+                    divergenceWarningStreak = 0
+                    divergenceCriticalStreak = 0
+                    divergenceRecoveryStreak = 0
+                    clearTrainingAlarm()
                 } catch {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
                 }
             }
+            trainingGate.resume()
             selfPlayGate.resume()
         }
 
@@ -4663,9 +4865,16 @@ struct ContentView: View {
     /// network can keep its frozen-stats BN for fast play while the trainer
     /// measures realistic training-step costs through batch-stats BN.
     private func ensureTrainer() -> ChessTrainer? {
-        if let trainer { return trainer }
+        if let trainer {
+            trainer.learningRate = Float(trainerLearningRate)
+            trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
+            return trainer
+        }
         do {
-            let t = try ChessTrainer(learningRate: Float(trainerLearningRate))
+            let t = try ChessTrainer(
+                learningRate: Float(trainerLearningRate),
+                entropyRegularizationCoeff: Float(entropyRegularizationCoeff)
+            )
             trainer = t
             return t
         } catch {
@@ -4783,6 +4992,10 @@ struct ContentView: View {
         gameWatcher.resetAll()
         gameSnapshot = gameWatcher.snapshot()
         clearTrainingDisplay()
+        clearTrainingAlarm()
+        divergenceWarningStreak = 0
+        divergenceCriticalStreak = 0
+        divergenceRecoveryStreak = 0
 
         let buffer = ReplayBuffer(capacity: Self.replayBufferCapacity)
         replayBuffer = buffer
@@ -4800,6 +5013,19 @@ struct ContentView: View {
         // counters), training step count, tournament history, and
         // worker count.
         let resumeState = pendingLoadedSession?.state
+        if let rs = resumeState {
+            trainer.learningRate = rs.learningRate
+            trainerLearningRate = Double(rs.learningRate)
+            if let entropyCoeff = rs.entropyRegularizationCoeff {
+                trainer.entropyRegularizationCoeff = entropyCoeff
+                entropyRegularizationCoeff = Double(entropyCoeff)
+            } else {
+                trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
+            }
+        } else {
+            trainer.learningRate = Float(trainerLearningRate)
+            trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
+        }
         var initialTrainingStats = TrainingRunStats()
         if let rs = resumeState {
             initialTrainingStats.steps = rs.trainingSteps
@@ -4811,6 +5037,7 @@ struct ContentView: View {
         lastCandidateProbeTime = .distantPast
         candidateProbeCount = 0
         learningRateEditText = String(format: "%.1e", trainer.learningRate)
+        entropyRegularizationEditText = String(format: "%.2e", trainer.entropyRegularizationCoeff)
         if let rs = resumeState {
             tournamentHistory = rs.arenaHistory.map { entry in
                 // Legacy session files don't store `gamesPlayed` —
@@ -4956,6 +5183,9 @@ struct ContentView: View {
             replayRatioTarget = resumed.state.replayRatioTarget ?? 1.0
             replayRatioAutoAdjust = resumed.state.replayRatioAutoAdjust ?? true
             trainerLearningRate = Double(resumed.state.learningRate)
+            if let entropyCoeff = resumed.state.entropyRegularizationCoeff {
+                entropyRegularizationCoeff = Double(entropyCoeff)
+            }
         } else {
             currentSessionID = ModelIDMinter.mint().value
             currentSessionStart = Date()
@@ -5082,7 +5312,7 @@ struct ContentView: View {
                 if let resumed = pendingLoadedSession {
                     trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
                 } else {
-                    trainer.identifier = ModelIDMinter.mint()
+                    trainer.identifier = ModelIDMinter.mintTrainerGeneration(from: network.identifier ?? ModelIDMinter.mint())
                 }
                 // Consume the pending load — from here on, the
                 // running session owns the restored state.
@@ -5280,8 +5510,9 @@ struct ContentView: View {
                 }
 
                 // Periodic session-log ticker. Fires at 30s, 1m, 2m,
-                // 5m, 15m, 30m, 60m from Play-and-Train start and
-                // then once per hour for the rest of the session.
+                // 5m, 10m, 15m, 20m from Play-and-Train start and
+                // then once every 10 minutes for the rest of the
+                // session.
                 // Each wake-up snapshots the thread-safe stats boxes
                 // and writes one `[STATS]` line to the on-disk
                 // session log. Identifiers are pulled through a brief
@@ -5290,8 +5521,8 @@ struct ContentView: View {
                 group.addTask(priority: .utility) {
                     [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox] in
                     let sessionStart = Date()
-                    // Ramp up quickly then cap at every 15 minutes.
-                    let fixedTargets: [TimeInterval] = [30, 60, 120, 300, 900]
+                    // Ramp up quickly then cap at every 10 minutes.
+                    let fixedTargets: [TimeInterval] = [30, 60, 120, 300, 600, 900, 1200]
 
                     func logOne(elapsedTarget: TimeInterval) async {
                         let trainingSnap = box.snapshot()
@@ -5300,11 +5531,12 @@ struct ContentView: View {
                         let bufCap = buffer.capacity
                         let ratioSnap = ratioController.snapshot()
                         let workerN = countBox.count
-                        let (trainerID, championID, lr) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
-                                trainer.learningRate
+                                trainer.learningRate,
+                                trainer.entropyRegularizationCoeff
                             )
                         }
                         let policyStr: String
@@ -5365,7 +5597,12 @@ struct ContentView: View {
                                                 parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", Self.tournamentPromoteThreshold)) arenaGames=\(Self.tournamentGames) workers=\(workerN)"
-                        let regStr = String(format: "clip=%.1f decay=%.0e", ChessTrainer.gradClipMaxNorm, ChessTrainer.weightDecayC)
+                        let regStr = String(
+                            format: "clip=%.1f decay=%.0e ent=%.1e",
+                            ChessTrainer.gradClipMaxNorm,
+                            ChessTrainer.weightDecayC,
+                            entropyCoeff
+                        )
                         // Average game length: lifetime and 10-min
                         // rolling window. `selfPlayPositions` counts
                         // every ply played, so dividing by the number
@@ -5417,10 +5654,10 @@ struct ContentView: View {
                         await logOne(elapsedTarget: target)
                     }
 
-                    // Every 15 minutes after the fixed schedule, forever.
+                    // Every 10 minutes after the fixed schedule, forever.
                     var elapsed = fixedTargets.last ?? 900
                     while !Task.isCancelled {
-                        elapsed += 900
+                        elapsed += 600
                         guard await sleepUntil(elapsed: elapsed) else { return }
                         await logOne(elapsedTarget: elapsed)
                     }
@@ -5432,6 +5669,7 @@ struct ContentView: View {
             }
 
             await MainActor.run {
+                clearTrainingAlarm()
                 realTraining = false
                 realTrainingTask = nil
                 isArenaRunning = false
@@ -5458,6 +5696,7 @@ struct ContentView: View {
     private func stopRealTraining() {
         realTrainingTask?.cancel()
         realTrainingTask = nil
+        clearTrainingAlarm()
     }
 
     // MARK: - Sweep Actions
@@ -5650,6 +5889,12 @@ struct ContentView: View {
             lines.append("  Loss total:  \(totalStr)")
             lines.append("    Loss policy:   \(policyStr)")
             lines.append("    Loss value:    \(valueStr)")
+            if let gNorm = trainingBox?.snapshot().rollingGradGlobalNorm {
+                lines.append(String(format: "  Grad norm:   %.3f", gNorm))
+            }
+            lines.append(String(format: "  Ent reg:     %.2e", trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault))
+            lines.append(String(format: "  Grad clip:   %.1f", ChessTrainer.gradClipMaxNorm))
+            lines.append(String(format: "  Weight dec:  %.0e", ChessTrainer.weightDecayC))
             // Candidate-test probe counter + time-since-last, so the user
             // can distinguish "probes firing but imperceptible" from "probes
             // stuck". Shown in both Game run and Candidate test modes so
@@ -5681,6 +5926,7 @@ struct ContentView: View {
             lines.append("Last Step")
             lines.append(String(format: "  Total:       %.2f ms", last.totalMs))
             lines.append(String(format: "  Entropy:     %.6f", last.policyEntropy))
+            lines.append(String(format: "  Grad norm:   %.3f", last.gradGlobalNorm))
             lines.append("")
         }
 

@@ -111,11 +111,14 @@ struct SessionCheckpointState: Codable, Equatable {
     // Hyperparameters (as they were in effect at save time)
     let batchSize: Int
     let learningRate: Float
+    var entropyRegularizationCoeff: Float?
     let promoteThreshold: Double
     let arenaGames: Int
     let selfPlayTau: TauConfigCodable
     let arenaTau: TauConfigCodable
     let selfPlayWorkerCount: Int
+    var gradClipMaxNorm: Float?
+    var weightDecayCoeff: Float?
 
     // Replay-ratio controller settings. All Optional so older
     // session.json files that lack these keys still decode.

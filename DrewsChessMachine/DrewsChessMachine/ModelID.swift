@@ -2,7 +2,9 @@ import Foundation
 
 // MARK: - Model ID
 
-/// Stable per-model identifier in the format `yyyymmdd-N-XXXX`.
+/// Stable per-model identifier in the format `yyyymmdd-N-XXXX` for a
+/// lineage root, with optional trainer-generation suffix
+/// `-<generation>` (for example `20260418-1-AbCd-2`).
 ///
 /// The three components are:
 /// - **`yyyymmdd`** — the UTC date the ID was minted on.
@@ -21,6 +23,24 @@ struct ModelID: Sendable, Equatable, Hashable, CustomStringConvertible {
     let value: String
 
     var description: String { value }
+
+    /// Root lineage ID with any trainer-generation suffix removed.
+    var lineageRoot: String {
+        guard let generation else { return value }
+        let suffix = "-\(generation)"
+        guard value.hasSuffix(suffix) else { return value }
+        return String(value.dropLast(suffix.count))
+    }
+
+    /// Optional trainer-generation number. Nil for a lineage root /
+    /// champion that has never been forked into a mutable trainer.
+    var generation: Int? {
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count >= 4, let parsed = Int(parts.last ?? "") else {
+            return nil
+        }
+        return parsed > 0 ? parsed : nil
+    }
 }
 
 // MARK: - Model ID Minter
@@ -69,6 +89,17 @@ enum ModelIDMinter {
         let counter = Self.nextCounter(forKey: counterKey)
         let suffix = Self.randomSuffix()
         return ModelID(value: "\(dateString)-\(counter)-\(suffix)")
+    }
+
+    /// Mint the next mutable trainer generation for a lineage.
+    ///
+    /// Examples:
+    /// - `20260418-1-AbCd` -> `20260418-1-AbCd-1`
+    /// - `20260418-1-AbCd-1` -> `20260418-1-AbCd-2`
+    @MainActor
+    static func mintTrainerGeneration(from base: ModelID) -> ModelID {
+        let nextGeneration = (base.generation ?? 0) + 1
+        return ModelID(value: "\(base.lineageRoot)-\(nextGeneration)")
     }
 
     @MainActor

@@ -338,6 +338,24 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         if _error == nil { _error = message }
     }
 
+    /// Clear the rolling diagnostic windows while keeping cumulative
+    /// training stats and the most recent error intact. Used after a
+    /// promotion so post-promotion alarms and charts reflect the new
+    /// aligned trainer/champion regime instead of inheriting the
+    /// pre-promotion averages.
+    func resetRollingWindows() {
+        lock.lock()
+        defer { lock.unlock() }
+        _lastTiming = nil
+        _policyLossWindow.removeAll(keepingCapacity: true)
+        _valueLossWindow.removeAll(keepingCapacity: true)
+        _policyEntropyWindow.removeAll(keepingCapacity: true)
+        _policyNonNegWindow.removeAll(keepingCapacity: true)
+        _gradNormWindow.removeAll(keepingCapacity: true)
+        _valueMeanWindow.removeAll(keepingCapacity: true)
+        _valueAbsMeanWindow.removeAll(keepingCapacity: true)
+    }
+
     /// Snapshot all fields atomically for the UI poller.
     func snapshot() -> Snapshot {
         lock.lock()
@@ -409,6 +427,7 @@ final class ChessTrainer: @unchecked Sendable {
     static let gradClipMaxNorm: Float = 5.0
 
     var learningRate: Float
+    var entropyRegularizationCoeff: Float
     private let executionQueue = DispatchQueue(label: "drewschess.chesstrainer.serial")
 
     /// Optional stable identity for the trainer's internal network.
@@ -426,6 +445,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var zPlaceholder: MPSGraphTensor            // [batch, 1] float
     private var vBaselinePlaceholder: MPSGraphTensor    // [batch, 1] float
     private var lrPlaceholder: MPSGraphTensor           // [] scalar float
+    private var entropyCoeffPlaceholder: MPSGraphTensor // [] scalar float
     private var totalLoss: MPSGraphTensor               // scalar
     private var policyLossTensor: MPSGraphTensor        // scalar
     private var valueLossTensor: MPSGraphTensor         // scalar
@@ -444,6 +464,8 @@ final class ChessTrainer: @unchecked Sendable {
     /// tensor-data wrapper.
     private var lrNDArray: MPSNDArray
     private var lrTensorData: MPSGraphTensorData
+    private var entropyCoeffNDArray: MPSNDArray
+    private var entropyCoeffTensorData: MPSGraphTensorData
 
     /// Pre-allocated ND-array-backed tensor data for the three training
     /// placeholders at a given batch size, plus the pre-built
@@ -498,8 +520,12 @@ final class ChessTrainer: @unchecked Sendable {
 
     // MARK: Init
 
-    init(learningRate: Float = 1e-4) throws {
+    init(
+        learningRate: Float = 1e-4,
+        entropyRegularizationCoeff: Float = 0.0
+    ) throws {
         self.learningRate = learningRate
+        self.entropyRegularizationCoeff = entropyRegularizationCoeff
         let net = try ChessNetwork(bnMode: .training)
         self.network = net
         let built = try Self.buildTrainingOps(network: net)
@@ -507,6 +533,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.zPlaceholder = built.z
         self.vBaselinePlaceholder = built.vBaseline
         self.lrPlaceholder = built.lr
+        self.entropyCoeffPlaceholder = built.entropyCoeff
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
@@ -525,6 +552,9 @@ final class ChessTrainer: @unchecked Sendable {
         let lrND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.lrNDArray = lrND
         self.lrTensorData = MPSGraphTensorData(lrND)
+        let entropyND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.entropyCoeffNDArray = entropyND
+        self.entropyCoeffTensorData = MPSGraphTensorData(entropyND)
 
         let lossPtr = UnsafeMutablePointer<Float>.allocate(
             capacity: Self.lossReadbackSlotCount
@@ -573,6 +603,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.zPlaceholder = built.z
         self.vBaselinePlaceholder = built.vBaseline
         self.lrPlaceholder = built.lr
+        self.entropyCoeffPlaceholder = built.entropyCoeff
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
@@ -590,6 +621,8 @@ final class ChessTrainer: @unchecked Sendable {
         )
         self.lrNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.lrTensorData = MPSGraphTensorData(lrNDArray)
+        self.entropyCoeffNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.entropyCoeffTensorData = MPSGraphTensorData(entropyCoeffNDArray)
         // The cached ND arrays were allocated against the old network's
         // device and are keyed by batch size against the old graph's
         // placeholders. Drop the cache so the first trainStep after
@@ -611,6 +644,7 @@ final class ChessTrainer: @unchecked Sendable {
         z: MPSGraphTensor,
         vBaseline: MPSGraphTensor,
         lr: MPSGraphTensor,
+        entropyCoeff: MPSGraphTensor,
         totalLoss: MPSGraphTensor,
         policyLoss: MPSGraphTensor,
         valueLoss: MPSGraphTensor,
@@ -731,46 +765,37 @@ final class ChessTrainer: @unchecked Sendable {
             name: "value_abs_mean"
         )
 
-        // --- Policy entropy (diagnostic; not in totalLoss) ---
+        // --- Policy entropy ---
         //
         // H(p) = −Σ p · log p, per position, then mean across batch.
         // Range is [0, log(4096)] ≈ [0, 8.32] nats; random init sits near
         // the ceiling, a collapsed policy heads toward 0.
         //
-        // This path is read via run-time fetch but is NOT an input to
-        // totalLoss, so the autodiff walk from totalLoss never enters it.
-        // That lets us build a numerically stable log-softmax here using
-        // max-subtraction (reductionMaximum has no gradient implementation
-        // in MPSGraph, but we don't need one for a diagnostic tensor).
-        let logitsMax = graph.reductionMaximum(
+        // This tensor serves two roles: a diagnostic read via run-time
+        // fetch AND a predecessor of totalLoss via the entropy
+        // regularization term below. Because it flows into totalLoss,
+        // every op on this path must have an MPSGraph autograd rule —
+        // that rules out the max-subtracted logsumexp construction
+        // (reductionMaximum has no gradient implementation). Built
+        // here from graph.softMax (has gradient) plus log(p+ε) so
+        // autodiff can walk the whole path cleanly. softMax is
+        // numerically stable internally, and the ε clamp keeps
+        // log/log-gradient finite on moves where p underflows to 0.
+        let softmax = graph.softMax(
             with: network.policyOutput,
             axis: 1,
-            name: "policy_logits_max"
+            name: "policy_softmax"
         )
-        let shiftedLogits = graph.subtraction(
-            network.policyOutput,
-            logitsMax,
-            name: "policy_logits_shifted"
+        let logEpsConst = graph.constant(1e-10, dataType: dtype)
+        let softmaxClamped = graph.addition(
+            softmax,
+            logEpsConst,
+            name: "policy_softmax_clamped"
         )
-        let expShifted = graph.exponent(
-            with: shiftedLogits,
-            name: "policy_exp_shifted"
-        )
-        let sumExpShifted = graph.reductionSum(
-            with: expShifted,
-            axis: 1,
-            name: "policy_sum_exp_shifted"
-        )
-        let logSumExpShifted = graph.logarithm(
-            with: sumExpShifted,
-            name: "policy_log_sum_exp_shifted"
-        )
-        let logSoftmax = graph.subtraction(
-            shiftedLogits,
-            logSumExpShifted,
+        let logSoftmax = graph.logarithm(
+            with: softmaxClamped,
             name: "policy_log_softmax"
         )
-        let softmax = graph.exponent(with: logSoftmax, name: "policy_softmax")
         let pLogP = graph.multiplication(softmax, logSoftmax, name: "p_log_p")
         let negEntropyPerPos = graph.reductionSum(
             with: pLogP,
@@ -838,9 +863,29 @@ final class ChessTrainer: @unchecked Sendable {
             policyLoss,
             name: "weighted_policy_loss"
         )
-        let totalLossTensor = graph.addition(
+        let lrTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "learning_rate"
+        )
+        let entropyCoeffTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "entropy_regularization_coeff"
+        )
+        let entropyPenalty = graph.multiplication(
+            entropyCoeffTensor,
+            policyEntropy,
+            name: "entropy_regularization_term"
+        )
+        let lossWithoutEntropy = graph.addition(
             valueLoss,
             weightedPolicy,
+            name: "loss_without_entropy_regularization"
+        )
+        let totalLossTensor = graph.subtraction(
+            lossWithoutEntropy,
+            entropyPenalty,
             name: "total_loss"
         )
 
@@ -937,11 +982,6 @@ final class ChessTrainer: @unchecked Sendable {
         // Each training step feeds the current `self.learningRate`
         // via the pre-allocated `lrNDArray`.
 
-        let lrTensor = graph.placeholder(
-            shape: [1],
-            dataType: dtype,
-            name: "learning_rate"
-        )
         let weightDecayConstant = graph.constant(
             Double(Self.weightDecayC),
             dataType: dtype
@@ -984,7 +1024,7 @@ final class ChessTrainer: @unchecked Sendable {
         // loadWeights().
         ops.append(contentsOf: network.bnRunningStatsAssignOps)
 
-        return (movePlayed, z, vBaseline, lrTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, policyNonNegCount, gradGlobalNorm, valueMean, valueAbsMean, ops)
+        return (movePlayed, z, vBaseline, lrTensor, entropyCoeffTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, policyNonNegCount, gradGlobalNorm, valueMean, valueAbsMean, ops)
     }
 
     // MARK: - Training Step
@@ -1232,6 +1272,8 @@ final class ChessTrainer: @unchecked Sendable {
         // Write the current learning rate into the scalar feed.
         var lr = learningRate
         lrNDArray.writeBytes(&lr, strideBytes: nil)
+        var entropyCoeff = entropyRegularizationCoeff
+        entropyCoeffNDArray.writeBytes(&entropyCoeff, strideBytes: nil)
 
         return cached.feedsDict
     }
@@ -1293,7 +1335,8 @@ final class ChessTrainer: @unchecked Sendable {
             movePlayedPlaceholder: moveTD,
             zPlaceholder: zTD,
             vBaselinePlaceholder: vBaselineTD,
-            lrPlaceholder: lrTensorData
+            lrPlaceholder: lrTensorData,
+            entropyCoeffPlaceholder: entropyCoeffTensorData
         ]
 
         let feeds = BatchFeeds(

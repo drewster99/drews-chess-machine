@@ -11,6 +11,7 @@ struct TrainingChartSample: Identifiable, Sendable {
     let rollingValueLoss: Double?
     let rollingPolicyEntropy: Double?
     let rollingPolicyNonNegCount: Double?
+    let rollingGradNorm: Double?
     let replayRatio: Double?
 
     // System metrics
@@ -185,6 +186,12 @@ struct TrainingChartGridView: View {
                 yPath: \.rollingValueLoss,
                 unit: "",
                 color: .cyan
+            )
+            miniChart(
+                title: "Grad norm",
+                yPath: \.rollingGradNorm,
+                unit: "",
+                color: .pink
             )
             diversityHistogramChart
             powerThermalChart
