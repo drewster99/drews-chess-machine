@@ -1306,8 +1306,8 @@ struct ContentView: View {
     /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
     /// count has actually advanced.
     @State private var trainingBox: TrainingLiveStatsBox?
-    nonisolated static let trainerLearningRateDefault: Float = 0.1
-    nonisolated static let trainingBatchSize = 1024
+    nonisolated static let trainerLearningRateDefault: Float = 1e-3
+    nonisolated static let trainingBatchSize = 4096
 
     // Real (self-play) training — generates games, labels positions from the
     // final outcome, pushes them through the shared trainer. Shares the
@@ -3712,10 +3712,11 @@ struct ContentView: View {
             let pStr = snap.rollingPolicyLoss.map { String(format: "%+.4f", $0) } ?? "--"
             let vStr = snap.rollingValueLoss.map { String(format: "%+.4f", $0) } ?? "--"
             let eStr = snap.rollingPolicyEntropy.map { String(format: "%.4f", $0) } ?? "--"
+            let gStr = snap.rollingGradGlobalNorm.map { String(format: "%.3f", $0) } ?? "--"
             let bufCount = replayBuffer?.count ?? 0
             let bufCap = replayBuffer?.capacity ?? Self.replayBufferCapacity
             SessionLogger.shared.log(
-                "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
+                "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) gNorm=\(gStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
             )
         }
 
@@ -5105,6 +5106,12 @@ struct ContentView: View {
                         } else {
                             entropyStr = "--"
                         }
+                        let gradNormStr: String
+                        if let g = trainingSnap.rollingGradGlobalNorm {
+                            gradNormStr = String(format: "%.3f", g)
+                        } else {
+                            gradNormStr = "--"
+                        }
                         let h = Int(elapsedTarget) / 3600
                         let m = (Int(elapsedTarget) % 3600) / 60
                         let s = Int(elapsedTarget) % 60
@@ -5127,7 +5134,8 @@ struct ContentView: View {
                                                 parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", Self.tournamentPromoteThreshold)) arenaGames=\(Self.tournamentGames) workers=\(workerN)"
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let regStr = String(format: "clip=%.1f decay=%.0e", ChessTrainer.gradClipMaxNorm, ChessTrainer.weightDecayC)
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
                     }
 

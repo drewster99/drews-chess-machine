@@ -8,6 +8,56 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-17 22:02 CDT — Gradient clipping, weight decay, batch 4096 + lr 1e-3
+
+**File:** `DrewsChessMachine/DrewsChessMachine/ChessTrainer.swift`,
+`DrewsChessMachine/DrewsChessMachine/ContentView.swift`
+
+Implements items #1, #2, #4, and #5 from the 17:23 CDT plan. Item #3
+(advantage baseline) is **deferred** — MPSGraph as of macOS 15 exposes
+no `stopGradient` / `detach` op in its public headers, so implementing
+`(z − v.detached()) * −log p(a*)` cleanly would require either a
+second autodiff pass to compute and subtract the unwanted gradient
+contribution, or a two-run training step that feeds v back as a
+placeholder (≈2× forward cost). Noted inline at the policy-loss build
+site; will revisit once we pick an approach.
+
+**Implemented:**
+- **Gradient clipping** (`ChessTrainer.gradClipMaxNorm = 5.0`). After
+  autodiff, the global L2 norm of the flattened gradient vector across
+  every trainable variable is computed inside the graph. Every
+  per-variable gradient is then multiplied by
+  `clipScale = maxNorm / max(globalNorm, maxNorm)`. Norms at or below
+  5.0 are no-ops; spikes are capped to L2 = 5.0 exactly. The pre-clip
+  global norm is added to `TrainStepTiming` and the
+  `TrainingLiveStatsBox` rolling window as `gradGlobalNorm`, surfaced
+  in `[STATS]` lines as `gNorm=…` so we can see whether clip events
+  are occurring.
+- **Weight decay** (`ChessTrainer.weightDecayC = 1e-4`). Decoupled
+  (AdamW-style) L2 applied to every trainable variable including
+  biases and BN params. The SGD update is
+  `v_new = v − lr · (clipped_grad + c · v)`.
+- **Batch size 1024 → 4096 + learning rate default 0.1 → 1e-3.**
+  The replay-buffer sampler's pre-training guard already requires at
+  least 200 k positions (20 % of 1 M capacity), which is ≫ 4096, so
+  the ratio of fill-before-train stays the same. `@AppStorage`
+  persists any user-overridden LR across launches — only the default
+  moves.
+
+**Log surface additions:**
+- `[STATS]` periodic lines gain `gNorm=<rolling mean>` and
+  `reg=(clip=5.0 decay=1e-4)`.
+- `[STATS] arena-start` lines gain `gNorm=<rolling mean>`.
+
+**Observed effect:** TBD — next Play-and-Train session will log the
+rolling gNorm values plus the loss trajectory. If gNorm never
+approaches 5.0, clipping is dormant (safe). If it occasionally hits
+the ceiling during early training, the circuit breaker is doing its
+job. Steady >5.0 would mean lr is too high for the current loss
+landscape.
+
+---
+
 ## 2026-04-17 17:23 CDT — Planned stability + learning-speed upgrade (DESIGN, not yet implemented)
 
 Reasoning captured in `chess-engine-design.md` → "Stability Enhancements and Learning-Rate Upgrades". Summary grid:

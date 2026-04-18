@@ -50,6 +50,15 @@ struct TrainStepTiming: Sendable {
     /// stuck-at-uniform learning failure.
     let policyEntropy: Float
     let policyNonNegligibleCount: Float
+    /// Global L2 norm of the flattened gradient vector across every
+    /// trainable variable, computed on the GPU before clipping. When
+    /// the value exceeds `ChessTrainer.gradClipMaxNorm`, the update
+    /// step scales all gradients by `maxNorm / norm` so the effective
+    /// step size is capped. Diagnostic only — the clip is already
+    /// applied inside the graph. A value above `gradClipMaxNorm` is a
+    /// clip event; steady values above it signal persistent overshoot
+    /// that warrants a lower LR.
+    let gradGlobalNorm: Float
 }
 
 // MARK: - Training Batch
@@ -266,6 +275,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let rollingValueLoss: Double?
         let rollingPolicyEntropy: Double?
         let rollingPolicyNonNegCount: Double?
+        let rollingGradGlobalNorm: Double?
         let error: String?
     }
 
@@ -276,6 +286,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _valueLossWindow: [Double] = []
     private var _policyEntropyWindow: [Double] = []
     private var _policyNonNegWindow: [Double] = []
+    private var _gradNormWindow: [Double] = []
     private var _error: String?
     private let rollingWindow: Int
 
@@ -317,6 +328,10 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         if _policyNonNegWindow.count > rollingWindow {
             _policyNonNegWindow.removeFirst(_policyNonNegWindow.count - rollingWindow)
         }
+        _gradNormWindow.append(Double(timing.gradGlobalNorm))
+        if _gradNormWindow.count > rollingWindow {
+            _gradNormWindow.removeFirst(_gradNormWindow.count - rollingWindow)
+        }
     }
 
     /// Record a terminal training error. Also called from the worker.
@@ -336,6 +351,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let rollingValue = Self.mean(_valueLossWindow)
         let rollingEntropy = Self.mean(_policyEntropyWindow)
         let rollingNonNeg = Self.mean(_policyNonNegWindow)
+        let rollingGradNorm = Self.mean(_gradNormWindow)
         return Snapshot(
             stats: _stats,
             lastTiming: _lastTiming,
@@ -343,6 +359,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             rollingValueLoss: rollingValue,
             rollingPolicyEntropy: rollingEntropy,
             rollingPolicyNonNegCount: rollingNonNeg,
+            rollingGradGlobalNorm: rollingGradNorm,
             error: _error
         )
     }
@@ -375,6 +392,23 @@ final class ChessTrainer: @unchecked Sendable {
 
     // MARK: Configuration
 
+    /// L2 weight-decay coefficient applied to every trainable variable
+    /// on every step (decoupled, AdamW-style). The update rule becomes
+    /// `v_new = v - lr * (clipped_grad + weightDecayC * v)`, which is
+    /// equivalent to `(1 - lr*c) * v - lr * clipped_grad`. Applied
+    /// uniformly — biases and BN scale/shift included — matching the
+    /// design doc's "L2 on all params" decision.
+    static let weightDecayC: Float = 1e-4
+
+    /// Global L2-norm gradient clipping threshold. If the L2 norm of
+    /// the concatenated gradient vector over every trainable variable
+    /// exceeds this value, every gradient is scaled by
+    /// `maxNorm / globalNorm` so the effective step is capped. 5.0 is
+    /// a conservative value that sits well above steady-state norms
+    /// under healthy training but cuts off the single-step blowups
+    /// (see 2026-04-15 incident).
+    static let gradClipMaxNorm: Float = 5.0
+
     var learningRate: Float
 
     /// Optional stable identity for the trainer's internal network.
@@ -396,6 +430,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var valueLossTensor: MPSGraphTensor         // scalar
     private var policyEntropyTensor: MPSGraphTensor     // scalar (diagnostic)
     private var policyNonNegCountTensor: MPSGraphTensor // scalar (diagnostic)
+    private var gradGlobalNormTensor: MPSGraphTensor    // scalar (diagnostic)
     private var assignOps: [MPSGraphOperation]
 
     /// Pre-allocated scalar ND array for the learning-rate feed.
@@ -441,7 +476,8 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotValue: Int = 2
     private static let lossReadbackSlotEntropy: Int = 3
     private static let lossReadbackSlotNonNeg: Int = 4
-    private static let lossReadbackSlotCount: Int = 5
+    private static let lossReadbackSlotGradNorm: Int = 5
+    private static let lossReadbackSlotCount: Int = 6
 
     // MARK: Init
 
@@ -458,6 +494,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
         self.policyNonNegCountTensor = built.policyNonNegCount
+        self.gradGlobalNormTensor = built.gradGlobalNorm
         self.assignOps = built.assignOps
 
         // Scalar ND array for the learning rate feed, reused every step.
@@ -498,6 +535,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
         self.policyNonNegCountTensor = built.policyNonNegCount
+        self.gradGlobalNormTensor = built.gradGlobalNorm
         self.assignOps = built.assignOps
         // Rebuild the LR scalar feed against the new network's device
         // so the new graph's placeholder maps to a fresh wrapper.
@@ -532,6 +570,7 @@ final class ChessTrainer: @unchecked Sendable {
         valueLoss: MPSGraphTensor,
         policyEntropy: MPSGraphTensor,
         policyNonNegCount: MPSGraphTensor,
+        gradGlobalNorm: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
         let graph = network.graph
@@ -589,6 +628,19 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [-1, 1],
             name: "policy_ce_per_pos"
         )
+        // --- Advantage baseline (DEFERRED — MPSGraph has no stopGradient) ---
+        //
+        // The plan in CHANGELOG.md calls for `(z − v.detached()) * −log p(a*)`
+        // here. That requires blocking gradient flow from the policy loss
+        // back into the value head via v. MPSGraph as of macOS 15 exposes
+        // no `stopGradient` / `detach` op in any of its public headers
+        // (verified: no match in `MPSGraphAutomaticDifferentiation.h` or
+        // `MPSGraphTensorShapeOps.h`), and the gradient-accumulator
+        // correction would require computing `d(mean(v * negLogProb))/dw`
+        // separately — which is a second autodiff pass over the whole
+        // graph. Until we either write that manual correction or accept
+        // the 2× forward cost of a placeholder-fed baseline, we keep the
+        // original outcome-weighted CE formulation: `z * −log p(a*)`.
         let weightedCE = graph.multiplication(z, negLogProb, name: "z_weighted_ce")
         let policyLoss = graph.mean(of: weightedCE, axes: [0, 1], name: "policy_loss")
 
@@ -719,7 +771,85 @@ final class ChessTrainer: @unchecked Sendable {
             name: "gradients"
         )
 
-        // --- SGD updates: v_new = v - lr * grad(v); assign back to v ---
+        // --- Global L2 norm across all gradients ---
+        //
+        // Compute once, reused in (a) the clip-scale denominator and
+        // (b) the readback path so the UI can see the pre-clip norm
+        // on every step.
+        //
+        // Per-variable: flatten → square → reduce-sum to a scalar.
+        // Then sum all per-variable scalars and take sqrt to get the
+        // global L2 norm.
+        var gradSumOfSquares: MPSGraphTensor?
+        var firstGradVariableName: String?
+        for (i, variable) in network.trainableVariables.enumerated() {
+            guard let grad = grads[variable] else {
+                throw ChessTrainerError.gradientMissing(
+                    variable.operation.name.isEmpty ? "trainable[\(i)]" : variable.operation.name
+                )
+            }
+            if firstGradVariableName == nil {
+                firstGradVariableName = variable.operation.name
+            }
+            let flat = graph.reshape(grad, shape: [-1], name: nil)
+            let sq = graph.square(with: flat, name: nil)
+            let scalar = graph.reductionSum(with: sq, axis: 0, name: nil)
+            if let accum = gradSumOfSquares {
+                gradSumOfSquares = graph.addition(accum, scalar, name: nil)
+            } else {
+                gradSumOfSquares = scalar
+            }
+        }
+        // Non-empty `trainableVariables` is a precondition — every
+        // network built by `ChessNetwork` exposes its weights. If it
+        // is somehow empty, training is meaningless; surface the
+        // first-variable mismatch rather than hand back a graph with
+        // no update ops.
+        guard let gradSumOfSquaresTensor = gradSumOfSquares else {
+            throw ChessTrainerError.gradientMissing(
+                firstGradVariableName ?? "(no trainable variables)"
+            )
+        }
+        // `shape: [-1]` on a rank-0 scalar would fail — but every
+        // gradient tensor has at least one element, so `sq` is at
+        // least shape `[1]` after flatten-then-square, and
+        // reductionSum over axis 0 gives shape `[1]`. The global
+        // accumulator has the same shape.
+        let gradGlobalNorm = graph.squareRoot(
+            with: gradSumOfSquaresTensor,
+            name: "grad_global_norm"
+        )
+
+        // --- Gradient clip scale: maxNorm / max(norm, maxNorm) ---
+        //
+        // Equivalent to `min(1, maxNorm / norm)`. When `norm ≤ maxNorm`
+        // the scale is 1 (no-op); above the threshold the scale
+        // shrinks so the resulting update has L2 norm exactly
+        // `maxNorm`. No epsilon needed because `max(norm, maxNorm)`
+        // is always ≥ maxNorm > 0.
+        let maxNormScalar = graph.constant(
+            Double(Self.gradClipMaxNorm),
+            dataType: dtype
+        )
+        let clipDenom = graph.maximum(
+            gradGlobalNorm,
+            maxNormScalar,
+            name: "grad_clip_denom"
+        )
+        let clipScale = graph.division(
+            maxNormScalar,
+            clipDenom,
+            name: "grad_clip_scale"
+        )
+
+        // --- SGD updates with weight decay + clipped gradients ---
+        //
+        // v_new = v - lr * (clipped_grad + weightDecayC * v)
+        //       = (1 - lr*weightDecayC) * v - lr * clipped_grad
+        //
+        // Decoupled weight decay (AdamW-style) applied uniformly to
+        // every trainable variable including biases and BN params.
+        // Matches the design-doc decision to "L2 on all params".
         //
         // The learning rate is a placeholder (not a constant) so it
         // can be changed between steps without rebuilding the graph.
@@ -731,20 +861,33 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: dtype,
             name: "learning_rate"
         )
+        let weightDecayConstant = graph.constant(
+            Double(Self.weightDecayC),
+            dataType: dtype
+        )
+
         var ops: [MPSGraphOperation] = []
         ops.reserveCapacity(network.trainableVariables.count)
         for (i, variable) in network.trainableVariables.enumerated() {
             guard let grad = grads[variable] else {
-                // If autodiff didn't produce a gradient for a trainable
-                // variable, the network is mis-wired (the loss can't reach
-                // this variable through the graph). Surface it instead of
-                // silently training without it — a "shouldn't happen" that
-                // happens silently is the worst kind of bug.
+                // Already checked in the norm-accumulation loop above,
+                // but re-guard here so a future refactor that splits
+                // the two loops can't silently drop a variable.
                 throw ChessTrainerError.gradientMissing(
                     variable.operation.name.isEmpty ? "trainable[\(i)]" : variable.operation.name
                 )
             }
-            let scaled = graph.multiplication(lrTensor, grad, name: nil)
+            // Apply the global L2 clip scale to this gradient.
+            let clippedGrad = graph.multiplication(grad, clipScale, name: nil)
+            // Decoupled weight decay term: c*v.
+            let decayTerm = graph.multiplication(
+                variable,
+                weightDecayConstant,
+                name: nil
+            )
+            // Combined update direction before scaling by lr.
+            let combinedUpdate = graph.addition(clippedGrad, decayTerm, name: nil)
+            let scaled = graph.multiplication(lrTensor, combinedUpdate, name: nil)
             let updated = graph.subtraction(variable, scaled, name: nil)
             let assignOp = graph.assign(variable, tensor: updated, name: nil)
             ops.append(assignOp)
@@ -760,7 +903,7 @@ final class ChessTrainer: @unchecked Sendable {
         // loadWeights().
         ops.append(contentsOf: network.bnRunningStatsAssignOps)
 
-        return (movePlayed, z, lrTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, policyNonNegCount, ops)
+        return (movePlayed, z, lrTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, policyNonNegCount, gradGlobalNorm, ops)
     }
 
     // MARK: - Training Step
@@ -995,7 +1138,7 @@ final class ChessTrainer: @unchecked Sendable {
         let results = network.graph.run(
             with: network.commandQueue,
             feeds: feeds,
-            targetTensors: [totalLoss, policyLossTensor, valueLossTensor, policyEntropyTensor, policyNonNegCountTensor],
+            targetTensors: [totalLoss, policyLossTensor, valueLossTensor, policyEntropyTensor, policyNonNegCountTensor, gradGlobalNormTensor],
             targetOperations: assignOps
         )
         let gpuMs = (CFAbsoluteTimeGetCurrent() - gpuStart) * 1000
@@ -1006,7 +1149,8 @@ final class ChessTrainer: @unchecked Sendable {
             let policyData = results[policyLossTensor],
             let valueData = results[valueLossTensor],
             let entropyData = results[policyEntropyTensor],
-            let nonNegData = results[policyNonNegCountTensor]
+            let nonNegData = results[policyNonNegCountTensor],
+            let gradNormData = results[gradGlobalNormTensor]
         else {
             throw ChessTrainerError.lossOutputMissing
         }
@@ -1035,11 +1179,17 @@ final class ChessTrainer: @unchecked Sendable {
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNeg),
             count: 1
         )
+        ChessNetwork.readFloats(
+            from: gradNormData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotGradNorm),
+            count: 1
+        )
         let totalBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotTotal]
         let policyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicy]
         let valueBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValue]
         let entropyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotEntropy]
         let nonNegBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotNonNeg]
+        let gradNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotGradNorm]
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
@@ -1053,7 +1203,8 @@ final class ChessTrainer: @unchecked Sendable {
             policyLoss: policyBufValue,
             valueLoss: valueBufValue,
             policyEntropy: entropyBufValue,
-            policyNonNegligibleCount: nonNegBufValue
+            policyNonNegligibleCount: nonNegBufValue,
+            gradGlobalNorm: gradNormBufValue
         )
     }
 
