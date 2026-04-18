@@ -451,7 +451,16 @@ final class ReplayBuffer: @unchecked Sendable {
 
         let fm = FileManager.default
         if fm.fileExists(atPath: url.path) {
-            try? fm.removeItem(at: url)
+            do {
+                try fm.removeItem(at: url)
+            } catch {
+                // Surface the original removal failure directly —
+                // hiding it behind `try?` would let the subsequent
+                // createFile / FileHandle init throw a secondary
+                // "file busy" or "permission denied" error that
+                // obscures the root cause.
+                throw PersistenceError.writeFailed(error)
+            }
         }
         fm.createFile(atPath: url.path, contents: nil)
         let handle: FileHandle
@@ -460,6 +469,13 @@ final class ReplayBuffer: @unchecked Sendable {
         } catch {
             throw PersistenceError.writeFailed(error)
         }
+        // `try?` on FileHandle.close() in a `defer` is idiomatic:
+        // by the time this fires we've either completed the write
+        // successfully (in which case a close-time error doesn't
+        // invalidate the file we already flushed) or we've already
+        // thrown a more meaningful error that we want to propagate
+        // to the caller — overwriting it with the close error would
+        // mask the real failure.
         defer { try? handle.close() }
 
         do {
@@ -590,6 +606,11 @@ final class ReplayBuffer: @unchecked Sendable {
         } catch {
             throw PersistenceError.readFailed(error)
         }
+        // `try?` on FileHandle.close() in a `defer` is idiomatic:
+        // we've either finished the read successfully (close errors
+        // don't invalidate already-consumed data) or thrown with a
+        // more meaningful error that we want to propagate — masking
+        // it with a close error would obscure the real failure.
         defer { try? handle.close() }
 
         let headerData: Data
