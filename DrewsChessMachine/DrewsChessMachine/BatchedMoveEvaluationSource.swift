@@ -63,6 +63,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
 
     /// Parked submissions awaiting the next batch fire.
     private var pending: [Pending] = []
+    private var batchFireScheduled = false
 
     private struct Pending {
         /// Copy of the caller's encoded board — the caller's
@@ -119,7 +120,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         precondition(n >= 0, "expectedSlotCount must be >= 0")
         expectedSlotCount = n
         if !pending.isEmpty && (n == 0 || pending.count >= n) {
-            fireBatch()
+            scheduleBatchFireIfNeeded()
         }
     }
 
@@ -139,14 +140,23 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             //   its own micro-batch so in-flight slots can finish
             //   their current games and exit.
             if expectedSlotCount == 0 || pending.count >= expectedSlotCount {
-                fireBatch()
+                scheduleBatchFireIfNeeded()
             }
         }
     }
 
-    private func fireBatch() {
+    private func scheduleBatchFireIfNeeded() {
+        guard !batchFireScheduled else { return }
+        batchFireScheduled = true
+        Task {
+            await self.fireBatch()
+        }
+    }
+
+    private func fireBatch() async {
         let batch = pending
         pending.removeAll(keepingCapacity: true)
+        batchFireScheduled = false
         // fireBatch is only invoked from paths that have already
         // checked `pending.count >= expectedSlotCount > 0`, so an
         // empty batch here would indicate a bookkeeping bug rather
@@ -172,36 +182,25 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         }
 
         do {
-            let (policy, values) = try packBuffer.withUnsafeBufferPointer { packBuf -> ([Float], [Float]) in
-                // Slice the packed buffer down to just the filled
-                // range — `packBuffer.count` may exceed
-                // `totalFloats` after a high-water-mark grow.
-                let packed = UnsafeBufferPointer(
-                    start: packBuf.baseAddress,
-                    count: totalFloats
+            // Slice the packed buffer down to just the filled range —
+            // `packBuffer.count` may exceed `totalFloats` after a
+            // high-water-mark grow. `ChessNetwork.evaluate` is async,
+            // so pass an owned array rather than trying to hold an
+            // unsafe buffer pointer across a suspension point.
+            let packed = Array(packBuffer.prefix(totalFloats))
+            let (policy, values) = try await network.evaluate(
+                batchBoards: packed,
+                count: count
+            )
+            guard policy.count == count * Self.policySize else {
+                throw BatchedMoveEvaluationSourceError.batchResultShapeMismatch(
+                    expected: count * Self.policySize, got: policy.count
                 )
-                let (policyBuf, valuesBuf) = try network.evaluate(
-                    batchBoards: packed,
-                    count: count
+            }
+            guard values.count == count else {
+                throw BatchedMoveEvaluationSourceError.batchResultShapeMismatch(
+                    expected: count, got: values.count
                 )
-                guard policyBuf.count == count * Self.policySize else {
-                    throw BatchedMoveEvaluationSourceError.batchResultShapeMismatch(
-                        expected: count * Self.policySize, got: policyBuf.count
-                    )
-                }
-                guard valuesBuf.count == count else {
-                    throw BatchedMoveEvaluationSourceError.batchResultShapeMismatch(
-                        expected: count, got: valuesBuf.count
-                    )
-                }
-                // Copy both buffers out into owned arrays before
-                // returning from the `withUnsafeBufferPointer`
-                // closure — the readback pointers alias the
-                // network's internal scratch and stay valid across
-                // this copy, but we want caller-owned bytes so
-                // each continuation can hand back an independent
-                // slice.
-                return (Array(policyBuf), Array(valuesBuf))
             }
 
             #if DEBUG
@@ -219,6 +218,10 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             for item in batch {
                 item.continuation.resume(throwing: error)
             }
+        }
+
+        if !pending.isEmpty && (expectedSlotCount == 0 || pending.count >= expectedSlotCount) {
+            scheduleBatchFireIfNeeded()
         }
     }
 

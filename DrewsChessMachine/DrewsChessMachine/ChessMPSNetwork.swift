@@ -77,8 +77,8 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// - Returns: 4,096 raw policy logits and the scalar value head.
     func evaluate(
         board: UnsafeBufferPointer<Float>
-    ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
-        try network.evaluate(board: board)
+    ) async throws -> (policy: [Float], value: Float) {
+        try await network.evaluate(board: board)
     }
 
     /// `[Float]`-input overload for non-hot-path callers (the Forward
@@ -86,8 +86,8 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// point — no copy on `.float32`.
     func evaluate(
         board: [Float]
-    ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
-        try network.evaluate(board: board)
+    ) async throws -> (policy: [Float], value: Float) {
+        try await network.evaluate(board: board)
     }
 
     /// Run a batched forward pass.
@@ -106,7 +106,22 @@ final class ChessMPSNetwork: @unchecked Sendable {
     func evaluate(
         batchBoards: UnsafeBufferPointer<Float>,
         count: Int
-    ) throws -> (policy: UnsafeBufferPointer<Float>, values: UnsafeBufferPointer<Float>) {
-        try network.evaluate(batchBoards: batchBoards, count: count)
+    ) async throws -> (policy: [Float], values: [Float]) {
+        try await network.evaluate(batchBoards: batchBoards, count: count)
+    }
+
+    func evaluate(
+        batchBoards: [Float],
+        count: Int
+    ) async throws -> (policy: [Float], values: [Float]) {
+        try await network.evaluate(batchBoards: batchBoards, count: count)
+    }
+
+    func exportWeights() async throws -> [[Float]] {
+        try await network.exportWeights()
+    }
+
+    func loadWeights(_ weights: [[Float]]) async throws {
+        try await network.loadWeights(weights)
     }
 }

@@ -74,44 +74,6 @@ struct TrainStepTiming: Sendable {
     let valueAbsMean: Float
 }
 
-// MARK: - Training Batch
-
-/// A batch of labeled real-data training examples as non-owning views
-/// over `ReplayBuffer`'s reusable sample storage. The pointers are
-/// valid only until the next `ReplayBuffer.sample` call on the buffer
-/// that produced them; the trainer must consume the batch synchronously
-/// and not retain any of the pointers past `trainStep(batch:)`.
-///
-/// Marked `@unchecked Sendable` because the raw pointers make the
-/// default Sendable inference fail, but the actual use is safe: the
-/// training worker is a single task that samples, trains, and drops
-/// the batch within one loop iteration. The batch is never shared
-/// across tasks and never held past the next `sample()` call that
-/// would invalidate its pointers.
-struct TrainingBatch: @unchecked Sendable {
-    /// Flat `[batchSize, 18, 8, 8]` float32 board planes, current-player
-    /// relative (same encoding that `BoardEncoder` and the inference path
-    /// already use). Aliases the replay buffer's reusable output array.
-    let boards: UnsafePointer<Float>
-    /// Policy-target indices in the network's coordinate system (0–4095),
-    /// one per batch row. These are the already-flipped indices emitted by
-    /// `MPSChessPlayer.networkPolicyIndex(for:flip:)` so they line up with
-    /// the flipped board planes above.
-    let moves: UnsafePointer<Int32>
-    /// Game outcome from each position's current player's perspective:
-    /// +1 win, 0 draw, −1 loss. One per batch row.
-    let zs: UnsafePointer<Float>
-    /// Inference-time value estimate `v(position)` captured at the
-    /// moment this position was played, per batch row. Fed as the
-    /// advantage baseline so the policy loss becomes
-    /// `mean((z − vBaseline) · −log p(a*))`. Feeding it through a
-    /// placeholder is what detaches it from the autodiff graph —
-    /// MPSGraph has no stopGradient op, so the placeholder feed is
-    /// the mechanism. Same ring source as `zs`.
-    let vBaselines: UnsafePointer<Float>
-    let batchSize: Int
-}
-
 // MARK: - Sweep Result
 
 /// Either a measured row or a row we refused to run because it would
@@ -447,6 +409,7 @@ final class ChessTrainer: @unchecked Sendable {
     static let gradClipMaxNorm: Float = 5.0
 
     var learningRate: Float
+    private let executionQueue = DispatchQueue(label: "drewschess.chesstrainer.serial")
 
     /// Optional stable identity for the trainer's internal network.
     /// Assigned by the UI layer at Play-and-Train start (after loading
@@ -523,6 +486,16 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotValueAbsMean: Int = 7
     private static let lossReadbackSlotCount: Int = 8
 
+    /// Reusable host-side staging buffers for replay-buffer samples.
+    /// The trainer owns these buffers so real-data training can hop
+    /// onto `executionQueue`, sample directly into stable storage, and
+    /// feed MPSGraph without any additional ownership-transfer copy.
+    private var replayBatchCapacity: Int = 0
+    private var replayBatchBoards: UnsafeMutablePointer<Float>?
+    private var replayBatchMoves: UnsafeMutablePointer<Int32>?
+    private var replayBatchZs: UnsafeMutablePointer<Float>?
+    private var replayBatchVBaselines: UnsafeMutablePointer<Float>?
+
     // MARK: Init
 
     init(learningRate: Float = 1e-4) throws {
@@ -563,6 +536,22 @@ final class ChessTrainer: @unchecked Sendable {
     deinit {
         lossReadbackScratchPtr.deinitialize(count: Self.lossReadbackSlotCount)
         lossReadbackScratchPtr.deallocate()
+        if let ptr = replayBatchBoards {
+            ptr.deinitialize(count: replayBatchCapacity * ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchMoves {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchZs {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchVBaselines {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
     }
 
     /// Tear down the current training-mode network and build a fresh one.
@@ -570,7 +559,13 @@ final class ChessTrainer: @unchecked Sendable {
     /// rather than whatever the previous run left behind. Throws if the
     /// underlying ChessNetwork init fails (Metal/device problems) or if
     /// gradient lookup fails for any trainable variable.
-    func resetNetwork() throws {
+    func resetNetwork() async throws {
+        try await enqueue {
+            try self.internalResetNetwork()
+        }
+    }
+
+    private func internalResetNetwork() throws {
         let net = try ChessNetwork(bnMode: .training)
         self.network = net
         let built = try Self.buildTrainingOps(network: net)
@@ -1001,7 +996,13 @@ final class ChessTrainer: @unchecked Sendable {
     /// + random labels + monotonically decreasing loss). The trainer's
     /// internal network is **not** the inference network, so these updates
     /// don't affect Play Game or Forward Pass.
-    func trainStep(batchSize: Int) throws -> TrainStepTiming {
+    func trainStep(batchSize: Int) async throws -> TrainStepTiming {
+        try await enqueue {
+            try self.internalTrainStep(batchSize: batchSize)
+        }
+    }
+
+    private func internalTrainStep(batchSize: Int) throws -> TrainStepTiming {
         let totalStart = CFAbsoluteTimeGetCurrent()
 
         // --- Data prep: synthesize random boards, moves, outcomes ---
@@ -1071,26 +1072,50 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
-    /// Run a single training step on a pre-built batch of real self-play
-    /// data. Same SGD update rule, same loss output — only the data source
-    /// differs from the random-data `trainStep(batchSize:)` path. Callers
-    /// are expected to draw batches from a `ReplayBuffer` and feed them
-    /// here; see `ContentView.startRealTraining` for the driver loop.
-    ///
-    /// The `batch` is a non-owning view over the replay buffer's reusable
-    /// output storage — this function consumes the pointers synchronously
-    /// inside `buildFeeds` (via `writeBytes` into the cached training ND
-    /// arrays) and does not retain them past the call.
-    func trainStep(batch: TrainingBatch) throws -> TrainStepTiming {
+    /// Run a single training step on a batch sampled directly from the
+    /// replay buffer into trainer-owned staging storage. Returns `nil`
+    /// when the buffer has not yet accumulated `batchSize` positions.
+    func trainStep(
+        replayBuffer: ReplayBuffer,
+        batchSize: Int
+    ) async throws -> TrainStepTiming? {
+        return try await enqueue {
+            try self.internalTrainStep(replayBuffer: replayBuffer, batchSize: batchSize)
+        }
+    }
+
+    private func internalTrainStep(
+        replayBuffer: ReplayBuffer,
+        batchSize: Int
+    ) throws -> TrainStepTiming? {
         let totalStart = CFAbsoluteTimeGetCurrent()
         let prepStart = CFAbsoluteTimeGetCurrent()
 
+        ensureReplayBatchCapacity(batchSize)
+        guard
+            let boards = replayBatchBoards,
+            let moves = replayBatchMoves,
+            let zs = replayBatchZs,
+            let vBaselines = replayBatchVBaselines
+        else {
+            preconditionFailure("ChessTrainer.ensureReplayBatchCapacity should populate replay staging buffers")
+        }
+
+        let didSample = replayBuffer.sample(
+            count: batchSize,
+            intoBoards: boards,
+            moves: moves,
+            zs: zs,
+            vBaselines: vBaselines
+        )
+        guard didSample else { return nil }
+
         let feeds = buildFeeds(
-            batchSize: batch.batchSize,
-            boards: batch.boards,
-            moves: batch.moves,
-            zs: batch.zs,
-            vBaselines: batch.vBaselines
+            batchSize: batchSize,
+            boards: UnsafePointer(boards),
+            moves: UnsafePointer(moves),
+            zs: UnsafePointer(zs),
+            vBaselines: UnsafePointer(vBaselines)
         )
         let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
 
@@ -1099,6 +1124,59 @@ final class ChessTrainer: @unchecked Sendable {
             prepMs: prepMs,
             totalStart: totalStart
         )
+    }
+
+    private func ensureReplayBatchCapacity(_ needed: Int) {
+        guard needed > replayBatchCapacity else { return }
+
+        if let ptr = replayBatchBoards {
+            ptr.deinitialize(count: replayBatchCapacity * ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchMoves {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchZs {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchVBaselines {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+
+        let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+        let boardSlots = needed * floatsPerBoard
+        let newBoards = UnsafeMutablePointer<Float>.allocate(capacity: boardSlots)
+        newBoards.initialize(repeating: 0, count: boardSlots)
+        replayBatchBoards = newBoards
+
+        let newMoves = UnsafeMutablePointer<Int32>.allocate(capacity: needed)
+        newMoves.initialize(repeating: 0, count: needed)
+        replayBatchMoves = newMoves
+
+        let newZs = UnsafeMutablePointer<Float>.allocate(capacity: needed)
+        newZs.initialize(repeating: 0, count: needed)
+        replayBatchZs = newZs
+
+        let newVBaselines = UnsafeMutablePointer<Float>.allocate(capacity: needed)
+        newVBaselines.initialize(repeating: 0, count: needed)
+        replayBatchVBaselines = newVBaselines
+
+        replayBatchCapacity = needed
+    }
+
+    private func enqueue<T: Sendable>(_ work: @Sendable @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            executionQueue.async {
+                do {
+                    continuation.resume(returning: try work())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     /// Pack one training step's raw float/int32 buffers into the feed
@@ -1369,7 +1447,7 @@ final class ChessTrainer: @unchecked Sendable {
         recordPeakSampleNow: @Sendable () -> Void = {},
         consumeRowPeak: @Sendable () -> UInt64 = { 0 },
         onRowCompleted: @Sendable (SweepRow) -> Void = { _ in }
-    ) throws -> [SweepRow] {
+    ) async throws -> [SweepRow] {
         var results: [SweepRow] = []
         results.reserveCapacity(sizes.count)
 
@@ -1446,7 +1524,7 @@ final class ChessTrainer: @unchecked Sendable {
             // Warmup: first call at this batch size pays whatever per-shape
             // compile cost MPSGraph charges. Time it but don't count it
             // toward the throughput number.
-            let warmup = try trainStep(batchSize: batchSize)
+            let warmup = try await trainStep(batchSize: batchSize)
             if cancelled() { break }
             recordPeakSampleNow()
 
@@ -1461,7 +1539,7 @@ final class ChessTrainer: @unchecked Sendable {
                 if elapsed >= targetSecondsPerSize { break }
                 progress(batchSize, timedSteps, elapsed)
 
-                let timing = try trainStep(batchSize: batchSize)
+                let timing = try await trainStep(batchSize: batchSize)
                 timedSteps += 1
                 totalStepMs += timing.totalMs
                 totalGpuMs += timing.gpuRunMs

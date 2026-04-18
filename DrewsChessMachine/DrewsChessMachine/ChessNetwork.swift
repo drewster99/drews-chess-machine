@@ -64,7 +64,11 @@ enum BNMode {
 /// - Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 1) -> tanh
 ///
 /// Total parameters: ~2,917,383 (~2.9M)
-final class ChessNetwork {
+///
+/// Marked `@unchecked Sendable` because MPSGraph/Metal state is not
+/// Sendable, but all public entry points serialize access through the
+/// instance's private execution queue.
+final class ChessNetwork: @unchecked Sendable {
 
     // MARK: Configuration
 
@@ -205,6 +209,7 @@ final class ChessNetwork {
     let metalDevice: MTLDevice
     let commandQueue: MTLCommandQueue
     let graphDevice: MPSGraphDevice
+    private let executionQueue = DispatchQueue(label: "drewschess.chessnetwork.serial")
 
     // MARK: Initialization
 
@@ -423,6 +428,25 @@ final class ChessNetwork {
     /// - Returns: `UnsafeBufferPointer` over 4,096 policy logits plus the scalar value in [-1, +1].
     func evaluate(
         board: UnsafeBufferPointer<Float>
+    ) async throws -> (policy: [Float], value: Float) {
+        try await evaluate(board: Array(board))
+    }
+
+    /// `[Float]`-input overload for callers outside the hot path (tests,
+    /// the Forward Pass demo). Runs the blocking graph work on the
+    /// network's private serial queue so the awaiting task suspends
+    /// instead of occupying Swift's cooperative executor.
+    func evaluate(
+        board: [Float]
+    ) async throws -> (policy: [Float], value: Float) {
+        try await enqueue {
+            let (policyBuf, value) = try self.internalEvaluate(board: board)
+            return (policy: Array(policyBuf), value: value)
+        }
+    }
+
+    private func internalEvaluate(
+        board: UnsafeBufferPointer<Float>
     ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
         let expected = 1 * Self.inputPlanes * Self.boardSize * Self.boardSize
         guard board.count == expected else {
@@ -466,14 +490,11 @@ final class ChessNetwork {
         }
     }
 
-    /// `[Float]`-input overload for callers outside the hot path (tests,
-    /// the Forward Pass demo). Delegates to the pointer-based primary
-    /// entry point via `withUnsafeBufferPointer` — no copy.
-    func evaluate(
+    private func internalEvaluate(
         board: [Float]
     ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
         try board.withUnsafeBufferPointer { buf in
-            try evaluate(board: buf)
+            try internalEvaluate(board: buf)
         }
     }
 
@@ -498,6 +519,24 @@ final class ChessNetwork {
     ///            position-major (slot `i` starts at
     ///            `i * 4096`); `values` — `count` scalars in [-1, +1].
     func evaluate(
+        batchBoards: UnsafeBufferPointer<Float>,
+        count: Int
+    ) async throws -> (policy: [Float], values: [Float]) {
+        let batchCopy = Array(batchBoards)
+        return try await evaluate(batchBoards: batchCopy, count: count)
+    }
+
+    func evaluate(
+        batchBoards: [Float],
+        count: Int
+    ) async throws -> (policy: [Float], values: [Float]) {
+        return try await enqueue {
+            let (policyBuf, valuesBuf) = try self.internalEvaluate(batchBoards: batchBoards, count: count)
+            return (policy: Array(policyBuf), values: Array(valuesBuf))
+        }
+    }
+
+    private func internalEvaluate(
         batchBoards: UnsafeBufferPointer<Float>,
         count: Int
     ) throws -> (policy: UnsafeBufferPointer<Float>, values: UnsafeBufferPointer<Float>) {
@@ -542,6 +581,15 @@ final class ChessNetwork {
                 policy: UnsafeBufferPointer(start: policyPtr, count: count * Self.policySize),
                 values: UnsafeBufferPointer(start: valuePtr, count: count)
             )
+        }
+    }
+
+    private func internalEvaluate(
+        batchBoards: [Float],
+        count: Int
+    ) throws -> (policy: UnsafeBufferPointer<Float>, values: UnsafeBufferPointer<Float>) {
+        try batchBoards.withUnsafeBufferPointer { buf in
+            try internalEvaluate(batchBoards: buf, count: count)
         }
     }
 
@@ -605,7 +653,13 @@ final class ChessNetwork {
     /// EMA running stats make their way into the inference network
     /// during Play and Train. No gradient, no forward pass, just a read
     /// of the current variable state.
-    func exportWeights() throws -> [[Float]] {
+    func exportWeights() async throws -> [[Float]] {
+        try await enqueue {
+            try self.internalExportWeights()
+        }
+    }
+
+    private func internalExportWeights() throws -> [[Float]] {
         let allVars = trainableVariables + bnRunningStatsVariables
 
         // MPSGraph requires feeds for every placeholder in the graph,
@@ -654,7 +708,13 @@ final class ChessNetwork {
     /// time) and runs the corresponding assign ops as target
     /// operations. After return, the network's variables hold the new
     /// values; subsequent `evaluate(board:)` calls see the loaded state.
-    func loadWeights(_ weights: [[Float]]) throws {
+    func loadWeights(_ weights: [[Float]]) async throws {
+        try await enqueue {
+            try self.internalLoadWeights(weights)
+        }
+    }
+
+    private func internalLoadWeights(_ weights: [[Float]]) throws {
         let allVars = trainableVariables + bnRunningStatsVariables
         guard weights.count == allVars.count else {
             throw ChessNetworkError.weightLoadMismatch(
@@ -693,6 +753,18 @@ final class ChessNetwork {
                 targetTensors: [allVars[0]],
                 targetOperations: weightLoadAssignOps
             )
+        }
+    }
+
+    private func enqueue<T: Sendable>(_ work: @Sendable @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            executionQueue.async {
+                do {
+                    continuation.resume(returning: try work())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
         }
     }
 

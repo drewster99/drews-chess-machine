@@ -3444,7 +3444,7 @@ struct ContentView: View {
             var exportError: Error?
             do {
                 championWeights = try await Task.detached(priority: .userInitiated) {
-                    try champion.network.exportWeights()
+                    try await champion.exportWeights()
                 }.value
             } catch {
                 exportError = error
@@ -3468,7 +3468,7 @@ struct ContentView: View {
 
             let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
                 do {
-                    let url = try CheckpointManager.saveModel(
+                    let url = try await CheckpointManager.saveModel(
                         weights: championWeights,
                         modelID: championID,
                         createdAtUnix: createdAtUnix,
@@ -3570,7 +3570,7 @@ struct ContentView: View {
             var championError: Error?
             do {
                 championWeights = try await Task.detached(priority: .userInitiated) {
-                    try champion.network.exportWeights()
+                    try await champion.exportWeights()
                 }.value
             } catch {
                 championError = error
@@ -3596,7 +3596,7 @@ struct ContentView: View {
             var trainerError: Error?
             do {
                 trainerWeights = try await Task.detached(priority: .userInitiated) {
-                    try trainer.network.exportWeights()
+                    try await trainer.network.exportWeights()
                 }.value
             } catch {
                 trainerError = error
@@ -3628,7 +3628,7 @@ struct ContentView: View {
             let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
                 [bufferForSave] in
                 do {
-                    let url = try CheckpointManager.saveSession(
+                    let url = try await CheckpointManager.saveSession(
                         championWeights: championWeights,
                         championID: championID,
                         championMetadata: championMetadata,
@@ -3704,7 +3704,7 @@ struct ContentView: View {
                 }
                 do {
                     let file = try CheckpointManager.loadModelFile(at: url)
-                    try champion.network.loadWeights(file.weights)
+                    try await champion.loadWeights(file.weights)
                     return .success(file)
                 } catch {
                     return .failure(error)
@@ -3761,7 +3761,7 @@ struct ContentView: View {
                     let loaded = try CheckpointManager.loadSession(at: url)
                     // Apply champion weights immediately; trainer
                     // weights are held for the next startRealTraining.
-                    try champion.network.loadWeights(loaded.championFile.weights)
+                    try await champion.loadWeights(loaded.championFile.weights)
                     return .success(loaded)
                 } catch {
                     return .failure(error)
@@ -3918,9 +3918,9 @@ struct ContentView: View {
                 // task is awaiting this whole method, so no other user of
                 // the trainer or candidate network can run concurrently.
                 result = try await Task.detached(priority: .userInitiated) {
-                    let weights = try trainer.network.exportWeights()
-                    try candidateInference.network.loadWeights(weights)
-                    return Self.performInference(with: candidateRunner, state: state)
+                    let weights = try await trainer.network.exportWeights()
+                    try await candidateInference.loadWeights(weights)
+                    return await Self.performInference(with: candidateRunner, state: state)
                 }.value
                 // Probe is a transient read-only snapshot, not a checkpoint —
                 // candidateInference inherits the trainer's current ID rather
@@ -3937,7 +3937,7 @@ struct ContentView: View {
                 // arena is running because the promotion step briefly
                 // writes into the champion under a self-play pause.
                 result = await Task.detached(priority: .userInitiated) {
-                    Self.performInference(with: championRunner, state: state)
+                    await Self.performInference(with: championRunner, state: state)
                 }.value
             }
         } catch {
@@ -4065,8 +4065,8 @@ struct ContentView: View {
         var trainerSnapshotWeights: [[Float]] = []
         do {
             trainerSnapshotWeights = try await Task.detached(priority: .userInitiated) {
-                let weights = try trainer.network.exportWeights()
-                try candidateInference.network.loadWeights(weights)
+                let weights = try await trainer.network.exportWeights()
+                try await candidateInference.loadWeights(weights)
                 return weights
             }.value
         } catch {
@@ -4098,8 +4098,8 @@ struct ContentView: View {
         }
         do {
             try await Task.detached(priority: .userInitiated) {
-                let weights = try champion.network.exportWeights()
-                try arenaChampion.network.loadWeights(weights)
+                let weights = try await champion.exportWeights()
+                try await arenaChampion.loadWeights(weights)
             }.value
         } catch {
             trainingBox?.recordError("Arena champion sync failed: \(error.localizedDescription)")
@@ -4221,8 +4221,8 @@ struct ContentView: View {
                 do {
                     promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
                         [candidateInference, champion] in
-                        let weights = try candidateInference.network.exportWeights()
-                        try champion.network.loadWeights(weights)
+                        let weights = try await candidateInference.exportWeights()
+                        try await champion.loadWeights(weights)
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
@@ -4354,7 +4354,7 @@ struct ContentView: View {
             Task.detached(priority: .utility) {
                 [bufferForAutosave] in
                 do {
-                    let url = try CheckpointManager.saveSession(
+                    let url = try await CheckpointManager.saveSession(
                         championWeights: championWeightsSnapshot,
                         championID: championID,
                         championMetadata: championMetadata,
@@ -4512,7 +4512,7 @@ struct ContentView: View {
                 // via `fireCandidateProbeIfNeeded`, which uses
                 // `candidateRunner` → the dedicated candidate inference
                 // network.
-                Self.performInference(with: runner, state: state)
+                await Self.performInference(with: runner, state: state)
             }.value
             inferenceResult = evalResult
             isEvaluating = false
@@ -4687,9 +4687,7 @@ struct ContentView: View {
         isTrainingOnce = true
 
         Task { [trainer] in
-            let result = await Task.detached(priority: .userInitiated) {
-                Self.runOneTrainStep(trainer: trainer)
-            }.value
+            let result = await Self.runOneTrainStep(trainer: trainer)
             await MainActor.run {
                 switch result {
                 case .success(let timing):
@@ -4725,9 +4723,7 @@ struct ContentView: View {
         trainingTask = Task { [trainer, box] in
             var shouldStop = false
             while !Task.isCancelled && !shouldStop {
-                let result = await Task.detached(priority: .userInitiated) {
-                    Self.runOneTrainStep(trainer: trainer)
-                }.value
+                let result = await Self.runOneTrainStep(trainer: trainer)
                 switch result {
                 case .success(let timing):
                     box.recordStep(timing)
@@ -4745,8 +4741,12 @@ struct ContentView: View {
         trainingTask = nil
     }
 
-    nonisolated private static func runOneTrainStep(trainer: ChessTrainer) -> Result<TrainStepTiming, Error> {
-        Result { try trainer.trainStep(batchSize: trainingBatchSize) }
+    nonisolated private static func runOneTrainStep(trainer: ChessTrainer) async -> Result<TrainStepTiming, Error> {
+        do {
+            return .success(try await trainer.trainStep(batchSize: trainingBatchSize))
+        } catch {
+            return .failure(error)
+        }
     }
 
     // MARK: - Real Training (Self-Play) Actions
@@ -5031,14 +5031,14 @@ struct ContentView: View {
                 pendingLoadedSession?.replayBufferURL
             }
             do {
+                try await trainer.resetNetwork()
                 try await Task.detached(priority: .userInitiated) {
                     [resumedTrainerWeights] in
-                    try trainer.resetNetwork()
                     if let trainerWeights = resumedTrainerWeights {
-                        try trainer.network.loadWeights(trainerWeights)
+                        try await trainer.network.loadWeights(trainerWeights)
                     } else {
-                        let championWeights = try network.network.exportWeights()
-                        try trainer.network.loadWeights(championWeights)
+                        let championWeights = try await network.exportWeights()
+                        try await trainer.network.loadWeights(championWeights)
                     }
                 }.value
             } catch {
@@ -5194,19 +5194,24 @@ struct ContentView: View {
                             continue
                         }
 
-                        guard let batch = buffer.sample(count: Self.trainingBatchSize) else {
-                            try? await Task.sleep(for: .milliseconds(100))
-                            continue
-                        }
-
                         // The enclosing worker already runs at
                         // `.userInitiated` so there's nothing to escape
                         // to — run the SGD step inline and skip the
                         // per-step detached-task + continuation
-                        // allocation pair.
+                        // allocation pair. Sampling happens inside the
+                        // trainer on its serial queue so replay-buffer
+                        // rows are copied directly into trainer-owned
+                        // staging buffers.
                         let timing: TrainStepTiming
                         do {
-                            timing = try trainer.trainStep(batch: batch)
+                            guard let sampledTiming = try await trainer.trainStep(
+                                replayBuffer: buffer,
+                                batchSize: Self.trainingBatchSize
+                            ) else {
+                                try? await Task.sleep(for: .milliseconds(100))
+                                continue
+                            }
+                            timing = sampledTiming
                         } catch {
                             box.recordError(error.localizedDescription)
                             return
@@ -5479,9 +5484,7 @@ struct ContentView: View {
             // and small batches don't inherit overfit weights from prior
             // continuous-training runs.
             do {
-                try await Task.detached(priority: .userInitiated) {
-                    try trainer.resetNetwork()
-                }.value
+                try await trainer.resetNetwork()
             } catch {
                 await MainActor.run {
                     trainingError = "Reset failed: \(error.localizedDescription)"
@@ -5491,14 +5494,12 @@ struct ContentView: View {
                 return
             }
 
-            let result = await Task.detached(priority: .userInitiated) {
-                Self.runSweep(
-                    trainer: trainer,
-                    sizes: sizes,
-                    secondsPerSize: secondsPerSize,
-                    cancelBox: cancelBox
-                )
-            }.value
+            let result = await Self.runSweep(
+                trainer: trainer,
+                sizes: sizes,
+                secondsPerSize: secondsPerSize,
+                cancelBox: cancelBox
+            )
 
             await MainActor.run {
                 // Pull any final completed rows out of the box (the
@@ -5528,9 +5529,9 @@ struct ContentView: View {
         sizes: [Int],
         secondsPerSize: Double,
         cancelBox: CancelBox
-    ) -> Result<[SweepRow], Error> {
-        Result {
-            try trainer.runSweep(
+    ) async -> Result<[SweepRow], Error> {
+        do {
+            return .success(try await trainer.runSweep(
                 sizes: sizes,
                 targetSecondsPerSize: secondsPerSize,
                 cancelled: { cancelBox.isCancelled },
@@ -5558,7 +5559,9 @@ struct ContentView: View {
                     // one row at a time as the sweep progresses.
                     cancelBox.appendRow(row)
                 }
-            )
+            ))
+        } catch {
+            return .failure(error)
         }
     }
 
@@ -6081,14 +6084,14 @@ struct ContentView: View {
     nonisolated private static func performInference(
         with runner: ChessRunner,
         state: GameState
-    ) -> EvaluationResult {
+    ) async -> EvaluationResult {
         var lines: [String] = []
         var topMoves: [MoveVisualization] = []
         let board = BoardEncoder.encode(state)
         let flip = state.currentPlayer == .black
 
         do {
-            let inference = try runner.evaluate(board: board, pieces: state.board, flip: flip)
+            let inference = try await runner.evaluate(board: board, pieces: state.board, flip: flip)
             topMoves = inference.topMoves
 
             lines.append(String(format: "Forward pass: %.2f ms", inference.inferenceTimeMs))

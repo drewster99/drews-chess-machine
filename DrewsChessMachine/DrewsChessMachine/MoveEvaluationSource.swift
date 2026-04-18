@@ -58,10 +58,6 @@ final class DirectMoveEvaluationSource: MoveEvaluationSource, @unchecked Sendabl
     func evaluate(
         encodedBoard: [Float]
     ) async throws -> (policy: [Float], value: Float) {
-        let (policyBuf, value) = try encodedBoard.withUnsafeBufferPointer { buf in
-            try network.evaluate(board: buf)
-        }
-        let policy = Array(policyBuf)
-        return (policy: policy, value: value)
+        try await network.evaluate(board: encodedBoard)
     }
 }

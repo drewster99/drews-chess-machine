@@ -176,7 +176,7 @@ enum CheckpointManager {
         metadata: ModelCheckpointMetadata,
         trigger: String,
         at date: Date = Date()
-    ) throws -> URL {
+    ) async throws -> URL {
         try CheckpointPaths.ensureDirectories()
 
         let file = ModelCheckpointFile(
@@ -213,7 +213,7 @@ enum CheckpointManager {
         // Verify BEFORE the rename so a failed check leaves nothing
         // with the final name.
         do {
-            try verifyModelFile(at: tmpURL, expectedWeights: weights)
+            try await verifyModelFile(at: tmpURL, expectedWeights: weights)
         } catch {
             try? FileManager.default.removeItem(at: tmpURL)
             throw error
@@ -250,7 +250,7 @@ enum CheckpointManager {
         replayBuffer: ReplayBuffer? = nil,
         trigger: String,
         at date: Date = Date()
-    ) throws -> URL {
+    ) async throws -> URL {
         try CheckpointPaths.ensureDirectories()
 
         let dirName = CheckpointPaths.makeSessionDirectoryName(
@@ -326,8 +326,8 @@ enum CheckpointManager {
         }
 
         do {
-            try verifyModelFile(at: championTmpURL, expectedWeights: championWeights)
-            try verifyModelFile(at: trainerTmpURL, expectedWeights: trainerWeights)
+            try await verifyModelFile(at: championTmpURL, expectedWeights: championWeights)
+            try await verifyModelFile(at: trainerTmpURL, expectedWeights: trainerWeights)
             // Round-trip session.json: decode the bytes we just wrote
             // and confirm they reproduce the struct. Catches JSON
             // encoder/decoder asymmetries (e.g. Float precision).
@@ -415,7 +415,7 @@ enum CheckpointManager {
     static func verifyModelFile(
         at url: URL,
         expectedWeights: [[Float]]
-    ) throws {
+    ) async throws {
         // 1. Re-read and byte-compare.
         let data: Data
         do {
@@ -468,10 +468,10 @@ enum CheckpointManager {
         let preValue: Float
         let prePolicy: [Float]
         do {
-            try scratch.network.loadWeights(expectedWeights)
-            let result = try scratch.evaluate(board: testBoard)
+            try await scratch.loadWeights(expectedWeights)
+            let result = try await scratch.evaluate(board: testBoard)
             preValue = result.value
-            prePolicy = Array(result.policy)
+            prePolicy = result.policy
         } catch {
             throw CheckpointManagerError.verificationForwardPassFailed(error)
         }
@@ -479,10 +479,10 @@ enum CheckpointManager {
         let postValue: Float
         let postPolicy: [Float]
         do {
-            try scratch.network.loadWeights(readBack.weights)
-            let result = try scratch.evaluate(board: testBoard)
+            try await scratch.loadWeights(readBack.weights)
+            let result = try await scratch.evaluate(board: testBoard)
             postValue = result.value
-            postPolicy = Array(result.policy)
+            postPolicy = result.policy
         } catch {
             throw CheckpointManagerError.verificationForwardPassFailed(error)
         }
