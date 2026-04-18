@@ -155,6 +155,84 @@ landscape.
 
 ---
 
+## 2026-04-17 21:47 CDT — Per-build counter, replay buffer persistence, richer log output (`165f1cf`)
+
+**Files:** `DrewsChessMachine.xcodeproj/project.pbxproj`,
+`generate-build-info.sh`, `BuildInfo.swift`,
+`DrewsChessMachineApp.swift`, `ReplayBuffer.swift`,
+`SessionCheckpointFile.swift`, `CheckpointManager.swift`,
+`ContentView.swift`, `build_counter.txt` (new).
+
+**Build counter:**
+- New `PBXShellScriptBuildPhase` "Generate BuildInfo.swift" inserted
+  before Sources in the target's build phases, `alwaysOutOfDate = 1`
+  so it runs on every build (including incremental). Calls
+  `generate-build-info.sh` via `${PROJECT_DIR}`.
+- `generate-build-info.sh` increments `build_counter.txt` (seeded
+  from `git rev-list --count HEAD + 1` on first run), emits
+  `BuildInfo.swift` with `buildNumber`, `buildDate`, `buildTimestamp`,
+  `gitHash`, `gitBranch`, `gitDirty`, and a `summary` string
+  (e.g. `build 76 (d745cfe*) 2026-04-17` — `*` indicates dirty tree).
+- `ENABLE_USER_SCRIPT_SANDBOXING = NO` on both Debug and Release so
+  the script can read `.git/` from `${PROJECT_DIR}/..`.
+- Title bar uses `BuildInfo.summary`.
+
+**Replay buffer persistence:**
+- New `write(to:)` / `restore(from:)` methods on `ReplayBuffer` with
+  binary format `DCMRPBUF` v1. Header: 8-byte magic, `UInt32` version,
+  pad, then `Int64` fields for `floatsPerBoard`, `capacity`,
+  `storedCount`, `writeIndex`, `totalPositionsAdded`. Payload is
+  oldest-first (size scales with `storedCount`, not `capacity`) and
+  handles capacity changes across save/restore by keeping the newest
+  `min(stored, capacity)` entries. Chunked I/O at 32 MB bounds peak
+  memory on 1 M-position rings. *(v2 schema added later at 22:46 CDT;
+  see that entry.)*
+- New `stateSnapshot()` returns storedCount/capacity/writeIndex/
+  totalPositionsAdded under the lock for consistent saving.
+- New `bytesPerPosition` constant so the UI can compute buffer RAM.
+
+**Session checkpoint additions:**
+- `SessionCheckpointLayout.replayBufferFilename = "replay_buffer.bin"`
+  in the `.dcmsession` directory.
+- `SessionCheckpointState` gains optional fields for build metadata
+  (`buildNumber`, `buildGitHash`, `buildGitBranch`, `buildDate`,
+  `buildTimestamp`, `buildGitDirty`) plus replay-buffer summary
+  (`hasReplayBuffer`, `replayBufferStoredCount`,
+  `replayBufferCapacity`, `replayBufferTotalPositionsAdded`). All
+  Optional for back-compat with pre-v1 session.json files.
+- `LoadedSession` gains `replayBufferURL: URL?`, populated when the
+  state flags `hasReplayBuffer == true` AND the file exists.
+- `CheckpointManager.saveSession(...)` accepts an optional
+  `ReplayBuffer`; writes it into the staging dir before atomic
+  rename if the state says to. `loadSession(...)` populates
+  `replayBufferURL` when appropriate.
+- `ContentView.buildCurrentSessionState` populates build metadata +
+  replay-buffer metadata. Manual save and post-promote autosave both
+  pass the live `replayBuffer` through.
+- `startRealTraining` resume path restores the buffer on a detached
+  task *before* any worker starts, then logs
+  `[CHECKPOINT] Restored replay buffer: stored=N/cap totalAdded=M
+  writeIndex=K`.
+
+**Log surface additions:**
+- `[APP] launched build=… git=…[*] branch=… date=… timestamp=…`
+- `[APP] session log: <path>` now also emitted to the log itself.
+- Periodic `[STATS]` gains
+  `ratio=(target/cur/prod/cons/auto/delay)`,
+  `outcomes=(wMate/bMate/stale/50mv/3fold/insuf)`,
+  `batch=`, `lr=`, `promote>=`, `arenaGames=`, `workers=`,
+  `build=`, `trainer=`, `champion=`.
+- `[ARENA]` params line gains `workers` and `build`.
+- `[CHECKPOINT] Saved session` / `Autosaved session` include
+  `build=… git=… replay=N/cap`.
+- `[CHECKPOINT] Loaded session` includes saved-session `savedBuild=`
+  and `replay=N/cap` (or `replay=none`).
+
+Verified working on second build: `build_counter.txt` increments,
+title bar updates, new log columns present.
+
+---
+
 ## 2026-04-17 17:23 CDT — Planned stability + learning-speed upgrade (DESIGN, not yet implemented)
 
 Reasoning captured in `chess-engine-design.md` → "Stability Enhancements and Learning-Rate Upgrades". Summary grid:
