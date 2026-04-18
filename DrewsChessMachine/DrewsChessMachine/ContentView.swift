@@ -1178,6 +1178,15 @@ struct ContentView: View {
     /// to every time `runArenaParallel` finishes; reset on session
     /// start/stop. Drives the "Arena activity" chart tile.
     @State private var arenaChartEvents: [ArenaChartEvent] = []
+    /// Elapsed-second mark when the *current* arena started, `nil`
+    /// when no arena is in progress. Set at the top of
+    /// `runArenaParallel`, cleared when the final completed
+    /// `ArenaChartEvent` is appended. The chart tile uses this to
+    /// render a "live" band from this start up to the latest chart
+    /// sample's elapsed time — so an active arena is visible on the
+    /// chart the moment it starts, rather than only appearing at
+    /// end-of-arena when the completed band lands.
+    @State private var activeArenaStartElapsed: Double?
     /// Shared cancellation-aware flag set while an arena tournament
     /// is in flight. The Candidate test probe checks this and skips
     /// firing so probe and arena never contend on the candidate
@@ -2493,6 +2502,7 @@ struct ContentView: View {
                     trainingChartSamples: trainingChartSamples,
                     diversityHistogram: currentDiversityHistogramBars,
                     arenaEvents: arenaChartEvents,
+                    activeArenaStartElapsed: activeArenaStartElapsed,
                     promoteThreshold: Self.tournamentPromoteThreshold,
                     visibleDomainSec: Self.progressRateVisibleDomainSec,
                     scrollX: $progressRateScrollX
@@ -3915,6 +3925,13 @@ struct ContentView: View {
         // disable the Run Arena button and adjust the busy label.
         arenaFlag.set()
         isArenaRunning = true
+        // Record the arena's start elapsed-second position so the
+        // chart grid's arena activity tile can render a live band
+        // as the arena progresses, rather than only showing the
+        // arena post-hoc when the completed ArenaChartEvent lands.
+        if let sessionStart = currentSessionStart {
+            activeArenaStartElapsed = max(0, Date().timeIntervalSince(sessionStart))
+        }
 
         let totalGames = Self.tournamentGames
         let startTime = Date()
@@ -4140,7 +4157,13 @@ struct ContentView: View {
         // dereference a nil anchor.
         if let sessionStart = currentSessionStart {
             let endElapsed = max(0, Date().timeIntervalSince(sessionStart))
-            let startElapsed = max(0, endElapsed - durationSec)
+            // Prefer the live start mark captured at arena begin —
+            // it avoids a ~5-second drift from backward-inferring
+            // startElapsed out of (end - durationSec) after the
+            // promotion work ran. Fall back to the durationSec math
+            // only if the live mark is somehow nil.
+            let startElapsed = activeArenaStartElapsed
+                ?? max(0, endElapsed - durationSec)
             arenaChartEvents.append(ArenaChartEvent(
                 id: arenaChartEvents.count,
                 startElapsedSec: startElapsed,
@@ -4149,6 +4172,9 @@ struct ContentView: View {
                 promoted: promoted
             ))
         }
+        // Arena no longer active — clear the live band trigger so
+        // the chart drops back to just the completed events.
+        activeArenaStartElapsed = nil
         logArenaResult(
             record: record,
             index: tournamentHistory.count,
@@ -4342,6 +4368,12 @@ struct ContentView: View {
         isArenaRunning = false
         tBox.clear()
         tournamentProgress = nil
+        // Early-exit cleanup — make sure the live arena band on
+        // the chart grid isn't left in an "arena active" state
+        // after cancellation / error paths that skipped the
+        // normal append-then-clear sequence. A no-op on the happy
+        // path (the append site already cleared this).
+        activeArenaStartElapsed = nil
     }
 
     /// Kick off (or coalesce) a forward pass on the current `editableState`.
@@ -5419,6 +5451,7 @@ struct ContentView: View {
                 parallelStats = nil
                 currentDiversityHistogramBars = []
                 arenaChartEvents = []
+                activeArenaStartElapsed = nil
                 workerCountBox = nil
                 trainingStepDelayBox = nil
                 activeSelfPlayGate = nil

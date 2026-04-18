@@ -91,6 +91,13 @@ struct TrainingChartGridView: View {
     /// flag so the arena activity chart can show duration bands
     /// colored by outcome.
     let arenaEvents: [ArenaChartEvent]
+    /// Elapsed-second mark when the currently-in-progress arena
+    /// began, or `nil` if no arena is running. When non-nil, the
+    /// arena activity chart renders a live band in a distinctive
+    /// blue tint from this start up to the latest chart sample so
+    /// an arena is visible ON the chart the whole time it runs,
+    /// not just after it ends.
+    let activeArenaStartElapsed: Double?
     /// Promotion threshold used by the arena chart's horizontal
     /// reference line. Matches `ContentView.tournamentPromoteThreshold`;
     /// pulled through as a parameter so the grid stays decoupled
@@ -202,11 +209,25 @@ struct TrainingChartGridView: View {
             }
             return nil
         }()
+        // Latest sample's elapsed time gives us the "now" X coordinate
+        // to draw the live band out to. Falls back to the active
+        // start itself if no samples have landed yet (so the band
+        // still appears as a thin slice rather than being omitted).
+        let liveNow: Double? = {
+            guard let start = activeArenaStartElapsed else { return nil }
+            return max(start, trainingChartSamples.last?.elapsedSec ?? start)
+        }()
         let headerText: String
-        // Header logic: prefer the hovered arena's stats if the
-        // cursor is over one; otherwise surface the latest
-        // arena's outcome; otherwise show a running count.
-        if let hoverArenaID,
+        // Header logic: live arena wins if one is running (so the
+        // reader knows arena play is active). Otherwise the hovered
+        // arena's stats if the cursor is over one; then the latest
+        // completed arena's summary; finally a running count.
+        if let start = activeArenaStartElapsed, let now = liveNow {
+            let elapsed = max(0, now - start)
+            let durMin = Int(elapsed) / 60
+            let durSec = Int(elapsed) % 60
+            headerText = String(format: "ARENA RUNNING  %d:%02d", durMin, durSec)
+        } else if let hoverArenaID,
            let e = events.first(where: { $0.id == hoverArenaID }) {
             let verdict = e.promoted ? "PROMOTED" : "kept"
             let durMin = Int(e.endElapsedSec - e.startElapsedSec) / 60
@@ -267,6 +288,22 @@ struct TrainingChartGridView: View {
                                 ? Color.green.opacity(hoverArenaID == e.id ? 1.0 : 0.7)
                                 : Color.gray.opacity(hoverArenaID == e.id ? 1.0 : 0.5)
                         )
+                    }
+                    // Live band for the in-progress arena: a
+                    // full-height blue rectangle from the arena's
+                    // start up to "now" (the latest chart sample).
+                    // Drawn BEFORE the threshold / crosshair so those
+                    // remain visible on top. Distinct color from the
+                    // gray/green completed-arena bars so the "arena
+                    // is actively running" state is unambiguous.
+                    if let start = activeArenaStartElapsed, let now = liveNow {
+                        RectangleMark(
+                            xStart: .value("Start", start),
+                            xEnd: .value("Now", now),
+                            yStart: .value("Floor", 0.0),
+                            yEnd: .value("Top", 1.0)
+                        )
+                        .foregroundStyle(Color.blue.opacity(0.35))
                     }
                     // Promotion threshold line.
                     RuleMark(y: .value("Threshold", promoteThreshold))
