@@ -53,6 +53,27 @@ struct DiversityHistogramBar: Identifiable, Sendable {
     let count: Int
 }
 
+/// One completed arena tournament, positioned on the chart grid's
+/// shared elapsed-time X axis. The `startElapsedSec` / `endElapsedSec`
+/// pair lets us render arenas as duration bands rather than point
+/// events, so the reader can see WHEN training was paused for
+/// arena play and for HOW LONG.
+struct ArenaChartEvent: Identifiable, Sendable {
+    let id: Int
+    /// Session-elapsed seconds when the arena began.
+    let startElapsedSec: Double
+    /// Session-elapsed seconds when the arena ended (may extend
+    /// past the visible chart window for very recent arenas).
+    let endElapsedSec: Double
+    /// Candidate score in `[0, 1]` — fraction of games the
+    /// candidate won (draws count 0.5).
+    let score: Double
+    /// Whether the candidate was promoted to champion. Drives the
+    /// bar color (green) vs kept-champion (gray) and the promotion
+    /// marker.
+    let promoted: Bool
+}
+
 /// Grid of compact training-metric charts. All charts share a
 /// synchronized horizontal scroll position and a single hover
 /// crosshair — mousing over any time-series chart highlights the
@@ -65,6 +86,16 @@ struct TrainingChartGridView: View {
     /// the self-play diversity tracker. `nil` or empty while Play-
     /// and-Train isn't running or before the first game finishes.
     let diversityHistogram: [DiversityHistogramBar]
+    /// Completed arena tournaments for this session, in order. Each
+    /// carries its elapsed start/end time plus score + promotion
+    /// flag so the arena activity chart can show duration bands
+    /// colored by outcome.
+    let arenaEvents: [ArenaChartEvent]
+    /// Promotion threshold used by the arena chart's horizontal
+    /// reference line. Matches `ContentView.tournamentPromoteThreshold`;
+    /// pulled through as a parameter so the grid stays decoupled
+    /// from ContentView's compile unit.
+    let promoteThreshold: Double
     let visibleDomainSec: Double
     @Binding var scrollX: Double
 
@@ -141,7 +172,7 @@ struct TrainingChartGridView: View {
                 unit: "GB",
                 color: .teal
             )
-            // Row 3: Loss Value | Diversity histogram | Power / Thermal
+            // Row 3: Loss Value | Diversity histogram | Power / Thermal | Arena activity
             miniChart(
                 title: "Loss value",
                 yPath: \.rollingValueLoss,
@@ -150,8 +181,110 @@ struct TrainingChartGridView: View {
             )
             diversityHistogramChart
             powerThermalChart
+            arenaActivityChart
         }
         .background(Color(nsColor: .separatorColor))
+    }
+
+    // MARK: - Arena activity chart
+
+    /// Local hover state for arena duration bands. Populated by a
+    /// `chartOverlay` that converts the cursor X to an elapsed
+    /// time, then finds the arena whose interval contains that
+    /// time (rather than nearest-sample logic, which would snap to
+    /// the closest boundary instead of the containing band).
+    private var arenaActivityChart: some View {
+        let events = arenaEvents
+        let hoverArenaID: Int? = {
+            guard let t = hoveredSec else { return nil }
+            for e in events where t >= e.startElapsedSec && t <= e.endElapsedSec {
+                return e.id
+            }
+            return nil
+        }()
+        let headerText: String
+        // Header logic: prefer the hovered arena's stats if the
+        // cursor is over one; otherwise surface the latest
+        // arena's outcome; otherwise show a running count.
+        if let hoverArenaID,
+           let e = events.first(where: { $0.id == hoverArenaID }) {
+            let verdict = e.promoted ? "PROMOTED" : "kept"
+            let durMin = Int(e.endElapsedSec - e.startElapsedSec) / 60
+            let durSec = Int(e.endElapsedSec - e.startElapsedSec) % 60
+            headerText = String(
+                format: "#%d  %@  %.2f  %d:%02d",
+                e.id + 1, verdict, e.score, durMin, durSec
+            )
+        } else if let last = events.last {
+            let verdict = last.promoted ? "PROMOTED" : "kept"
+            headerText = String(format: "%d ran · last %@ %.2f", events.count, verdict, last.score)
+        } else {
+            headerText = "no arenas yet"
+        }
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("Arena activity")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(headerText)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                Chart {
+                    // Each arena = a rectangle spanning its
+                    // duration on X, 0-to-score on Y, colored by
+                    // promotion outcome. The rectangle's top edge
+                    // doubles as the "score landed here" marker.
+                    ForEach(events) { e in
+                        RectangleMark(
+                            xStart: .value("Start", e.startElapsedSec),
+                            xEnd: .value("End", e.endElapsedSec),
+                            yStart: .value("Floor", 0.0),
+                            yEnd: .value("Score", e.score)
+                        )
+                        .foregroundStyle(
+                            e.promoted
+                                ? Color.green.opacity(hoverArenaID == e.id ? 1.0 : 0.7)
+                                : Color.gray.opacity(hoverArenaID == e.id ? 1.0 : 0.5)
+                        )
+                    }
+                    // Promotion threshold line.
+                    RuleMark(y: .value("Threshold", promoteThreshold))
+                        .foregroundStyle(Color.orange.opacity(0.6))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    // Shared hover crosshair.
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
+                }
+                .chartYScale(domain: 0...1.05)
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: [0, 0.25, 0.5, 0.75, 1.0]) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(String(format: "%.2f", v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
+            }
+            .frame(height: 75)
+        }
     }
 
     // MARK: - Power / thermal chart

@@ -1172,6 +1172,12 @@ struct ContentView: View {
     /// the tracker at render time) keeps SwiftUI's dependency graph
     /// correct so the bar chart actually redraws as counts shift.
     @State private var currentDiversityHistogramBars: [DiversityHistogramBar] = []
+
+    /// Completed arenas this session, tagged with their start/end
+    /// elapsed-second positions on the chart grid's X axis. Appended
+    /// to every time `runArenaParallel` finishes; reset on session
+    /// start/stop. Drives the "Arena activity" chart tile.
+    @State private var arenaChartEvents: [ArenaChartEvent] = []
     /// Shared cancellation-aware flag set while an arena tournament
     /// is in flight. The Candidate test probe checks this and skips
     /// firing so probe and arena never contend on the candidate
@@ -2486,6 +2492,8 @@ struct ContentView: View {
                     progressRateSamples: progressRateSamples,
                     trainingChartSamples: trainingChartSamples,
                     diversityHistogram: currentDiversityHistogramBars,
+                    arenaEvents: arenaChartEvents,
+                    promoteThreshold: Self.tournamentPromoteThreshold,
                     visibleDomainSec: Self.progressRateVisibleDomainSec,
                     scrollX: $progressRateScrollX
                 )
@@ -4123,6 +4131,24 @@ struct ContentView: View {
             durationSec: durationSec
         )
         tournamentHistory.append(record)
+        // Mirror into the chart-tile event stream. Compute the
+        // elapsed-second start/end against the session-start anchor
+        // so the band lands on the same X axis as the time-series
+        // charts. Guarded by sessionStart existing — a stale arena
+        // tick with no session shouldn't happen (arenas only run
+        // during Play-and-Train) but we'd rather silently skip than
+        // dereference a nil anchor.
+        if let sessionStart = currentSessionStart {
+            let endElapsed = max(0, Date().timeIntervalSince(sessionStart))
+            let startElapsed = max(0, endElapsed - durationSec)
+            arenaChartEvents.append(ArenaChartEvent(
+                id: arenaChartEvents.count,
+                startElapsedSec: startElapsed,
+                endElapsedSec: endElapsed,
+                score: score,
+                promoted: promoted
+            ))
+        }
         logArenaResult(
             record: record,
             index: tournamentHistory.count,
@@ -4687,6 +4713,7 @@ struct ContentView: View {
         let spDiversityTracker = GameDiversityTracker(windowSize: 200)
         selfPlayDiversityTracker = spDiversityTracker
         currentDiversityHistogramBars = []
+        arenaChartEvents = []
         // Reset progress-rate sampler state so the new session's
         // chart starts fresh at t=0. Leaving old samples in place
         // would show up as a visible "step" from the previous
@@ -5391,6 +5418,7 @@ struct ContentView: View {
                 parallelWorkerStatsBox = nil
                 parallelStats = nil
                 currentDiversityHistogramBars = []
+                arenaChartEvents = []
                 workerCountBox = nil
                 trainingStepDelayBox = nil
                 activeSelfPlayGate = nil
