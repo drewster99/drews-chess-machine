@@ -234,10 +234,27 @@ struct TrainingChartGridView: View {
                         .foregroundStyle(.primary)
                 }
                 Chart {
-                    // Each arena = a rectangle spanning its
-                    // duration on X, 0-to-score on Y, colored by
-                    // promotion outcome. The rectangle's top edge
-                    // doubles as the "score landed here" marker.
+                    // Two marks per arena:
+                    // 1. Faint full-height band showing the
+                    //    DURATION (always visible, even if the
+                    //    candidate scored 0 — a RectangleMark with
+                    //    yEnd=0 would otherwise collapse to
+                    //    invisible height and hide the arena
+                    //    entirely from the chart).
+                    // 2. Score bar from y=0 to y=score colored by
+                    //    promotion outcome (green promoted / gray
+                    //    kept). Score bar on top of the band so
+                    //    the "outcome" mark is the loud part, and
+                    //    the band just marks "arena ran here".
+                    ForEach(events) { e in
+                        RectangleMark(
+                            xStart: .value("Start", e.startElapsedSec),
+                            xEnd: .value("End", e.endElapsedSec),
+                            yStart: .value("Floor", 0.0),
+                            yEnd: .value("Top", 1.0)
+                        )
+                        .foregroundStyle(Color.secondary.opacity(hoverArenaID == e.id ? 0.25 : 0.12))
+                    }
                     ForEach(events) { e in
                         RectangleMark(
                             xStart: .value("Start", e.startElapsedSec),

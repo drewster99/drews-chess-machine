@@ -1521,10 +1521,21 @@ final class ChessTrainer: @unchecked Sendable {
     /// one update tick.
     /// Cached Mach timebase for converting `mach_absolute_time`
     /// ticks to nanoseconds. Constant for the lifetime of the
-    /// process, so one init + atomic read from then on.
+    /// process, so one init + atomic read from then on. The
+    /// `mach_timebase_info` API is documented to always succeed
+    /// on Apple hardware and return non-zero numer/denom (typical
+    /// values: Intel 1/1, Apple Silicon 125/3), but we still
+    /// precondition both fields non-zero — a zero denom would
+    /// produce a misleading integer-division-by-zero trap deeper
+    /// in `sampleCurrentProcessUsage` rather than a clear failure.
     private static let machTimebase: mach_timebase_info_data_t = {
         var t = mach_timebase_info_data_t()
-        mach_timebase_info(&t)
+        let rc = mach_timebase_info(&t)
+        precondition(
+            rc == KERN_SUCCESS && t.numer > 0 && t.denom > 0,
+            "mach_timebase_info failed or returned zero numer/denom; "
+                + "rc=\(rc), numer=\(t.numer), denom=\(t.denom)"
+        )
         return t
     }()
 
