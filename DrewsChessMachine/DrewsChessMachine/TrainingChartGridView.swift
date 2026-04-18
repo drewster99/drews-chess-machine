@@ -405,31 +405,37 @@ struct TrainingChartGridView: View {
                         .foregroundStyle(.primary)
                 }
                 Chart {
-                    // Low power as a 0/1 step trace.
+                    // Low power as a 0/1 step trace. Always emit a
+                    // LineMark so the view shape is stable across
+                    // samples — nil `lowPowerMode` maps to `.nan`,
+                    // which Swift Charts renders as a gap.
                     ForEach(trainingChartSamples) { sample in
-                        if let lp = sample.lowPowerMode {
-                            LineMark(
-                                x: .value("Time", sample.elapsedSec),
-                                y: .value("Power", lp ? 1.0 : 0.0)
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value(
+                                "Power",
+                                sample.lowPowerMode.map { $0 ? 1.0 : 0.0 } ?? .nan
                             )
-                            .foregroundStyle(by: .value("Series", "Low power"))
-                            .interpolationMethod(.stepEnd)
-                        }
+                        )
+                        .foregroundStyle(by: .value("Series", "Low power"))
+                        .interpolationMethod(.stepEnd)
                     }
                     // Thermal state trace, offset by +2 so it sits
                     // in the 2-5 range strictly above the 0/1
                     // low-power band. Step interpolation because
                     // thermal state is a discrete level, not a
-                    // continuous measurement.
+                    // continuous measurement. Same NaN-for-gap
+                    // pattern for structural stability.
                     ForEach(trainingChartSamples) { sample in
-                        if let ts = sample.thermalState {
-                            LineMark(
-                                x: .value("Time", sample.elapsedSec),
-                                y: .value("Thermal", Self.thermalY(ts))
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value(
+                                "Thermal",
+                                sample.thermalState.map { Self.thermalY($0) } ?? .nan
                             )
-                            .foregroundStyle(by: .value("Series", "Thermal"))
-                            .interpolationMethod(.stepEnd)
-                        }
+                        )
+                        .foregroundStyle(by: .value("Series", "Thermal"))
+                        .interpolationMethod(.stepEnd)
                     }
                     if let t = hoveredSec {
                         RuleMark(x: .value("Time", t))
@@ -741,14 +747,15 @@ struct TrainingChartGridView: View {
                         .foregroundStyle(.primary)
                 }
                 Chart {
+                    // Stable view shape: `nil` becomes `.nan`, which
+                    // Swift Charts renders as a gap — see the
+                    // matching comment in `miniChart`.
                     ForEach(trainingChartSamples) { sample in
-                        if let y = sample.rollingPolicyEntropy {
-                            LineMark(
-                                x: .value("Time", sample.elapsedSec),
-                                y: .value("Entropy", y)
-                            )
-                            .foregroundStyle(.purple)
-                        }
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Entropy", sample.rollingPolicyEntropy ?? .nan)
+                        )
+                        .foregroundStyle(.purple)
                     }
                     if let t = hoveredSec {
                         RuleMark(x: .value("Time", t))
@@ -815,14 +822,15 @@ struct TrainingChartGridView: View {
                         .foregroundStyle(.primary)
                 }
                 Chart {
+                    // Stable view shape: `nil` becomes `.nan`, which
+                    // Swift Charts renders as a gap — see the
+                    // matching comment in `miniChart`.
                     ForEach(trainingChartSamples) { sample in
-                        if let y = sample.rollingPolicyNonNegCount {
-                            LineMark(
-                                x: .value("Time", sample.elapsedSec),
-                                y: .value("Count", y)
-                            )
-                            .foregroundStyle(.mint)
-                        }
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Count", sample.rollingPolicyNonNegCount ?? .nan)
+                        )
+                        .foregroundStyle(.mint)
                     }
                     if let t = hoveredSec {
                         RuleMark(x: .value("Time", t))
@@ -905,14 +913,22 @@ struct TrainingChartGridView: View {
                         .foregroundStyle(.primary)
                 }
                 Chart {
+                    // Always emit one LineMark per sample so the
+                    // view-tree shape is identical on every update —
+                    // missing samples become `NaN` y-values, which
+                    // Swift Charts renders as a gap in the line
+                    // without disturbing the axis or the attribute
+                    // graph. Putting the `if let` inside the ForEach
+                    // body made every sample's view identity flip
+                    // between two different shapes, which is what
+                    // the profiler flagged as the dominant hang cost
+                    // in `GeometryReader.Child.updateValue`.
                     ForEach(trainingChartSamples) { sample in
-                        if let y = sample[keyPath: yPath] {
-                            LineMark(
-                                x: .value("Time", sample.elapsedSec),
-                                y: .value(title, y)
-                            )
-                            .foregroundStyle(color)
-                        }
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value(title, sample[keyPath: yPath] ?? .nan)
+                        )
+                        .foregroundStyle(color)
                     }
                     // Crosshair at hovered time across every mini
                     // chart — shared hoveredSec means all charts

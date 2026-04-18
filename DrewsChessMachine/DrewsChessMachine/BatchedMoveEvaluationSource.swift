@@ -105,14 +105,23 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
 
     // MARK: - Slot-Count Coordination
 
-    /// Update the barrier threshold. If raising, takes effect on the
-    /// next submission that would have fired the old threshold. If
-    /// lowering to or below the current pending count, fires the batch
-    /// immediately with whatever is queued.
+    /// Update the barrier threshold.
+    ///
+    /// - Raising: takes effect on the next submission that would have
+    ///   fired the old threshold.
+    /// - Lowering to `n > 0` below the current pending count: fires
+    ///   immediately to flush the queue.
+    /// - Setting to 0 (drain mode): fires immediately with whatever is
+    ///   queued, so parked callers wake up; subsequent submissions in
+    ///   drain mode fire as single-element (or whatever-is-pending)
+    ///   batches — see `evaluate(encodedBoard:)`. Drain mode is used by
+    ///   `BatchedSelfPlayDriver.stopAll` during arena pauses and
+    ///   session shutdown to guarantee in-flight slots can always make
+    ///   progress even while they're being asked to exit.
     func setExpectedSlotCount(_ n: Int) {
         precondition(n >= 0, "expectedSlotCount must be >= 0")
         expectedSlotCount = n
-        if n > 0 && pending.count >= n {
+        if !pending.isEmpty && (n == 0 || pending.count >= n) {
             fireBatch()
         }
     }
@@ -126,7 +135,15 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     ) async throws -> (policy: [Float], value: Float) {
         return try await withCheckedThrowingContinuation { continuation in
             pending.append(Pending(boardCopy: encodedBoard, continuation: continuation))
-            if expectedSlotCount > 0 && pending.count >= expectedSlotCount {
+            // Fire when:
+            // - Normal barrier mode (`expectedSlotCount > 0`) and the
+            //   barrier threshold is met.
+            // - Drain mode (`expectedSlotCount == 0`) — the driver has
+            //   asked every slot to wind down, so we can't wait for a
+            //   larger group to assemble. Process each submission as
+            //   its own micro-batch so in-flight slots can finish
+            //   their current games and exit.
+            if expectedSlotCount == 0 || pending.count >= expectedSlotCount {
                 fireBatch()
             }
         }

@@ -1396,7 +1396,7 @@ struct ContentView: View {
     /// bound. The user can raise or lower the live count at any
     /// time via the Stepper, and changes take effect at each
     /// worker's next game-end check. Edit to change the default.
-    nonisolated static let initialSelfPlayWorkerCount: Int = 12
+    nonisolated static let initialSelfPlayWorkerCount: Int = 24
     /// Hard ceiling on how many self-play slots can run
     /// concurrently in a single session. Since all slots share one
     /// `ChessMPSNetwork` (the champion) through the barrier
@@ -2574,14 +2574,25 @@ struct ContentView: View {
             // `onChange(of: ChartScrollPositionConfiguration) action
             // tried to update multiple times per frame` warnings as
             // the histogram state churned.
-            let latest = progressRateSamples.last?.elapsedSec ?? 0
-            let latestScrollX = max(0, latest - Self.progressRateVisibleDomainSec)
-            let shouldFollow = abs(newValue - latestScrollX) < 1.0
-            if progressRateFollowLatest != shouldFollow {
-                progressRateFollowLatest = shouldFollow
+            Task { @MainActor in
+                let latest = progressRateSamples.last?.elapsedSec ?? 0
+                let latestScrollX = max(0, latest - Self.progressRateVisibleDomainSec)
+                let shouldFollow = abs(newValue - latestScrollX) < 1.0
+                if progressRateFollowLatest != shouldFollow {
+                    progressRateFollowLatest = shouldFollow
+                }
             }
         }
         .onReceive(snapshotTimer) { _ in
+            // Defer every @State mutation driven by the 100 ms
+            // heartbeat to the next main-actor runloop tick. The
+            // timer publisher fires on the main thread and SwiftUI
+            // flags "update multiple times per frame" warnings (and
+            // measurable hangs) when onReceive synchronously pushes
+            // several dozen state-change notifications inline. A
+            // `Task { @MainActor in }` wrap coalesces the work into a
+            // single render pass.
+            Task { @MainActor in
             // Pull the latest game state into @State at most every 100ms.
             // Cheap (single locked struct copy) and bounds UI work even
             // when the game loop is doing hundreds of moves per second.
@@ -2703,6 +2714,7 @@ struct ContentView: View {
                     currentDiversityHistogramBars = newBars
                 }
             }
+            }  // Task @MainActor
         }
     }
 

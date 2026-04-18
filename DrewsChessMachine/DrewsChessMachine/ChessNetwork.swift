@@ -429,29 +429,41 @@ final class ChessNetwork {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: board.count)
         }
 
-        Self.writeInferenceInput(board, into: inferenceInputNDArray)
+        // Wrap graph.run + readback in an autoreleasepool so the
+        // `[MPSGraphTensor: MPSGraphTensorData]` result dictionary,
+        // the MPSNDArray handles reached through `.mpsndarray()`, and
+        // any other autoreleased Obj-C objects allocated inside MPS
+        // are released on the way out instead of piling up until the
+        // enclosing Swift Task finishes. Without this, long-running
+        // inference loops accumulate unbounded VM-range allocations
+        // (observed as ~420 GB virtual against ~5 GB resident during
+        // multi-hour Play-and-Train sessions) and the main thread
+        // spends progressively more time in the deferred drain.
+        return try autoreleasepool {
+            Self.writeInferenceInput(board, into: inferenceInputNDArray)
 
-        let results = graph.run(
-            with: commandQueue,
-            feeds: inferenceFeeds,
-            targetTensors: inferenceTargets,
-            targetOperations: nil
-        )
+            let results = graph.run(
+                with: commandQueue,
+                feeds: inferenceFeeds,
+                targetTensors: inferenceTargets,
+                targetOperations: nil
+            )
 
-        guard let policyData = results[policyOutput] else {
-            throw ChessNetworkError.outputMissing("policy")
+            guard let policyData = results[policyOutput] else {
+                throw ChessNetworkError.outputMissing("policy")
+            }
+            guard let valueData = results[valueOutput] else {
+                throw ChessNetworkError.outputMissing("value")
+            }
+
+            Self.readFloats(from: policyData, into: inferencePolicyScratchPtr, count: Self.policySize)
+            Self.readFloats(from: valueData, into: inferenceValueScratchPtr, count: 1)
+
+            return (
+                policy: UnsafeBufferPointer(start: inferencePolicyScratchPtr, count: Self.policySize),
+                value: inferenceValueScratchPtr.pointee
+            )
         }
-        guard let valueData = results[valueOutput] else {
-            throw ChessNetworkError.outputMissing("value")
-        }
-
-        Self.readFloats(from: policyData, into: inferencePolicyScratchPtr, count: Self.policySize)
-        Self.readFloats(from: valueData, into: inferenceValueScratchPtr, count: 1)
-
-        return (
-            policy: UnsafeBufferPointer(start: inferencePolicyScratchPtr, count: Self.policySize),
-            value: inferenceValueScratchPtr.pointee
-        )
     }
 
     /// `[Float]`-input overload for callers outside the hot path (tests,
@@ -501,29 +513,36 @@ final class ChessNetwork {
         let policyPtr = ensureBatchPolicyScratch(count: count)
         let valuePtr = ensureBatchValueScratch(count: count)
 
-        Self.writeInferenceInput(batchBoards, into: entry.ndArray)
+        // Same autoreleasepool discipline as `evaluate(board:)` — the
+        // self-play batched path is the highest-frequency graph.run
+        // site in the app (roughly once per barrier cycle at ~20-40
+        // Hz across concurrent slots), so a missed pool drain here
+        // dominates the long-session VM bloat.
+        return try autoreleasepool {
+            Self.writeInferenceInput(batchBoards, into: entry.ndArray)
 
-        let results = graph.run(
-            with: commandQueue,
-            feeds: entry.feeds,
-            targetTensors: inferenceTargets,
-            targetOperations: nil
-        )
+            let results = graph.run(
+                with: commandQueue,
+                feeds: entry.feeds,
+                targetTensors: inferenceTargets,
+                targetOperations: nil
+            )
 
-        guard let policyData = results[policyOutput] else {
-            throw ChessNetworkError.outputMissing("policy")
+            guard let policyData = results[policyOutput] else {
+                throw ChessNetworkError.outputMissing("policy")
+            }
+            guard let valueData = results[valueOutput] else {
+                throw ChessNetworkError.outputMissing("value")
+            }
+
+            Self.readFloats(from: policyData, into: policyPtr, count: count * Self.policySize)
+            Self.readFloats(from: valueData, into: valuePtr, count: count)
+
+            return (
+                policy: UnsafeBufferPointer(start: policyPtr, count: count * Self.policySize),
+                values: UnsafeBufferPointer(start: valuePtr, count: count)
+            )
         }
-        guard let valueData = results[valueOutput] else {
-            throw ChessNetworkError.outputMissing("value")
-        }
-
-        Self.readFloats(from: policyData, into: policyPtr, count: count * Self.policySize)
-        Self.readFloats(from: valueData, into: valuePtr, count: count)
-
-        return (
-            policy: UnsafeBufferPointer(start: policyPtr, count: count * Self.policySize),
-            values: UnsafeBufferPointer(start: valuePtr, count: count)
-        )
     }
 
     private func batchInputEntry(for count: Int) -> BatchInputEntry {
@@ -596,23 +615,32 @@ final class ChessNetwork {
         // to omit because no run-time target reaches them). targetTensors
         // are the variables themselves — reading them doesn't require
         // any compute ancestor, so no forward pass actually runs.
-        let results = graph.run(
-            with: commandQueue,
-            feeds: [inputPlaceholder: dummyInferenceInputTensorData],
-            targetTensors: allVars,
-            targetOperations: nil
-        )
+        //
+        // Autoreleasepool-wrapped for the same reason as
+        // `evaluate(board:)` — the results dictionary and its
+        // MPSGraphTensorData values are autoreleased and should drain
+        // before we return to the caller, which may itself be invoked
+        // from a long-lived background Task (arena start / promotion
+        // flows, checkpoint autosave) without a natural pool boundary.
+        return try autoreleasepool {
+            let results = graph.run(
+                with: commandQueue,
+                feeds: [inputPlaceholder: dummyInferenceInputTensorData],
+                targetTensors: allVars,
+                targetOperations: nil
+            )
 
-        var out: [[Float]] = []
-        out.reserveCapacity(allVars.count)
-        for v in allVars {
-            guard let data = results[v] else {
-                throw ChessNetworkError.outputMissing(v.operation.name)
+            var out: [[Float]] = []
+            out.reserveCapacity(allVars.count)
+            for v in allVars {
+                guard let data = results[v] else {
+                    throw ChessNetworkError.outputMissing(v.operation.name)
+                }
+                let count = try Self.elementCount(of: v)
+                out.append(Self.readFloats(from: data, count: count))
             }
-            let count = try Self.elementCount(of: v)
-            out.append(Self.readFloats(from: data, count: count))
+            return out
         }
-        return out
     }
 
     /// Overwrite all persistent network state from a snapshot produced
@@ -656,12 +684,16 @@ final class ChessNetwork {
         // graph.run requires at least one target tensor. Use the first
         // persistent variable as a dummy read — its value after the
         // assigns run is whatever we just wrote in, which we ignore.
-        _ = graph.run(
-            with: commandQueue,
-            feeds: feeds,
-            targetTensors: [allVars[0]],
-            targetOperations: weightLoadAssignOps
-        )
+        // Autoreleasepool-wrapped for the same reason as the other
+        // graph.run sites in this file.
+        autoreleasepool {
+            _ = graph.run(
+                with: commandQueue,
+                feeds: feeds,
+                targetTensors: [allVars[0]],
+                targetOperations: weightLoadAssignOps
+            )
+        }
     }
 
     /// Total scalar count in a tensor's statically-known shape.

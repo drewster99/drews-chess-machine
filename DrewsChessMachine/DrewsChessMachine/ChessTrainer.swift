@@ -1241,6 +1241,15 @@ final class ChessTrainer: @unchecked Sendable {
         prepMs: Double,
         totalStart: CFAbsoluteTime
     ) throws -> TrainStepTiming {
+        // Wrap the graph.run + readback in an autoreleasepool so the
+        // results dictionary and its MPSGraphTensorData values — which
+        // are returned autoreleased by MPSGraph — drain each step
+        // instead of piling up until the enclosing long-lived training
+        // Task returns. Without this, multi-hour sessions accumulate
+        // massive VM-range allocations (seen as ~420 GB virtual vs
+        // ~5 GB resident) and the main thread spends progressively
+        // more time in deferred Obj-C releases.
+        return try autoreleasepool {
         let gpuStart = CFAbsoluteTimeGetCurrent()
         let results = network.graph.run(
             with: network.commandQueue,
@@ -1329,6 +1338,7 @@ final class ChessTrainer: @unchecked Sendable {
             valueMean: valueMeanBufValue,
             valueAbsMean: valueAbsMeanBufValue
         )
+        }  // autoreleasepool
     }
 
     // MARK: - Batch Size Sweep

@@ -144,9 +144,18 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     private func stopAll(slots: inout [Task<Void, Never>]) async {
         let snapshot = slots
         slots.removeAll()
+        // Drop the barrier threshold to 0 (drain mode) BEFORE waiting
+        // on the cancelled slot tasks. Otherwise the first cancelled
+        // slot to finish its current game and exit would stop
+        // contributing submissions at the old threshold, and the
+        // remaining slots would stall at the barrier — their games
+        // frozen mid-ply because the batcher can never reach the old
+        // count again. Drain mode lets each in-flight submission fire
+        // as its own micro-batch, so every slot's current game runs
+        // to completion and the slot can exit cleanly.
+        await batcher.setExpectedSlotCount(0)
         for s in snapshot { s.cancel() }
         for s in snapshot { _ = await s.value }
-        await batcher.setExpectedSlotCount(0)
     }
 
     // MARK: - Slot Body
