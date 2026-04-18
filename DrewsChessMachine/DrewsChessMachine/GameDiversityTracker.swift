@@ -16,6 +16,23 @@ import Foundation
 /// window size.
 final class GameDiversityTracker: @unchecked Sendable {
 
+    /// Divergence-ply bucket upper bounds (inclusive). A game's
+    /// divergence ply falls into the lowest bucket whose upper bound
+    /// it does not exceed. The last bucket catches everything above
+    /// the highest bound.
+    ///
+    /// Chosen to make the "policy collapse" tail (bucket 5) visually
+    /// pop even at low counts: the first four buckets cover the range
+    /// where diverse self-play sits in steady state (0–20 plies) and
+    /// the last two highlight the pathological deep-share regime.
+    static let histogramBounds: [Int] = [2, 5, 10, 20, 40]
+    /// Human-readable labels for each histogram bucket, aligned with
+    /// `histogramBounds` plus a trailing "41+" overflow bucket. Used
+    /// by the UI to render axis labels on the diversity chart.
+    static let histogramLabels: [String] = ["0-2", "3-5", "6-10", "11-20", "21-40", "41+"]
+    /// Number of buckets in the divergence histogram.
+    static var histogramBucketCount: Int { histogramBounds.count + 1 }
+
     /// Immutable snapshot of the tracker's current state, safe to
     /// read from any thread (typically the UI heartbeat).
     struct Snapshot: Sendable {
@@ -28,6 +45,11 @@ final class GameDiversityTracker: @unchecked Sendable {
         /// Mean divergence ply across all games in the window.
         /// Zero when fewer than 2 games have been recorded.
         let avgDivergencePly: Double
+        /// Count of games in each divergence-ply bucket. Aligned
+        /// with `GameDiversityTracker.histogramLabels`. Sums to
+        /// `gamesInWindow`. Empty only when the window holds zero
+        /// games; otherwise always `histogramBucketCount` entries.
+        let divergenceHistogram: [Int]
     }
 
     private let windowSize: Int
@@ -89,15 +111,31 @@ final class GameDiversityTracker: @unchecked Sendable {
         defer { lock.unlock() }
 
         guard stored > 0 else {
-            return Snapshot(gamesInWindow: 0, uniqueGames: 0,
-                            uniquePercent: 100, avgDivergencePly: 0)
+            return Snapshot(
+                gamesInWindow: 0,
+                uniqueGames: 0,
+                uniquePercent: 100,
+                avgDivergencePly: 0,
+                divergenceHistogram: Array(repeating: 0, count: Self.histogramBucketCount)
+            )
         }
 
         var hashSet = Set<UInt64>(minimumCapacity: stored)
         var divergenceSum = 0
+        var histogram = Array(repeating: 0, count: Self.histogramBucketCount)
+        let bounds = Self.histogramBounds
         for i in 0..<stored {
             hashSet.insert(hashes[i])
-            divergenceSum += divergencePlies[i]
+            let ply = divergencePlies[i]
+            divergenceSum += ply
+            // Linear scan over bounds — 5 compares, fastest for this
+            // tiny count. Matches `bucketIndex(for:)` semantics.
+            var bucket = bounds.count  // overflow bucket by default
+            for (idx, upper) in bounds.enumerated() where ply <= upper {
+                bucket = idx
+                break
+            }
+            histogram[bucket] += 1
         }
 
         let unique = hashSet.count
@@ -105,7 +143,8 @@ final class GameDiversityTracker: @unchecked Sendable {
             gamesInWindow: stored,
             uniqueGames: unique,
             uniquePercent: Double(unique) / Double(stored) * 100,
-            avgDivergencePly: Double(divergenceSum) / Double(stored)
+            avgDivergencePly: Double(divergenceSum) / Double(stored),
+            divergenceHistogram: histogram
         )
     }
 

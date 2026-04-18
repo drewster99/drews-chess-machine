@@ -1164,6 +1164,14 @@ struct ContentView: View {
     /// every self-play worker at game end; snapshot polled by the UI
     /// heartbeat for display and by the stats logger for [STATS] lines.
     @State private var selfPlayDiversityTracker: GameDiversityTracker?
+
+    /// Latest divergence-ply histogram bars mirrored from
+    /// `selfPlayDiversityTracker` by the UI heartbeat, at the same
+    /// throttled cadence as `parallelStats`. The chart-grid view reads
+    /// these directly — pushing through @State (rather than reading
+    /// the tracker at render time) keeps SwiftUI's dependency graph
+    /// correct so the bar chart actually redraws as counts shift.
+    @State private var currentDiversityHistogramBars: [DiversityHistogramBar] = []
     /// Shared cancellation-aware flag set while an arena tournament
     /// is in flight. The Candidate test probe checks this and skips
     /// firing so probe and arena never contend on the candidate
@@ -2473,6 +2481,7 @@ struct ContentView: View {
                 TrainingChartGridView(
                     progressRateSamples: progressRateSamples,
                     trainingChartSamples: trainingChartSamples,
+                    diversityHistogram: currentDiversityHistogramBars,
                     visibleDomainSec: Self.progressRateVisibleDomainSec,
                     scrollX: progressRateScrollBinding
                 )
@@ -2579,6 +2588,31 @@ struct ContentView: View {
                 replayRatioSnapshot = snap
                 if snap.autoAdjust {
                     lastAutoComputedDelayMs = snap.computedDelayMs
+                }
+            }
+            // Diversity-histogram mirror. Read once per heartbeat off
+            // the tracker's thread-safe snapshot. Only push into
+            // @State when the bucket totals actually change (or the
+            // bar array is currently empty) so SwiftUI doesn't
+            // invalidate the chart every tick for a stable reading.
+            if let tracker = selfPlayDiversityTracker {
+                let divSnap = tracker.snapshot()
+                let labels = GameDiversityTracker.histogramLabels
+                var newBars: [DiversityHistogramBar] = []
+                newBars.reserveCapacity(divSnap.divergenceHistogram.count)
+                for (idx, count) in divSnap.divergenceHistogram.enumerated()
+                where idx < labels.count {
+                    newBars.append(DiversityHistogramBar(
+                        id: idx,
+                        label: labels[idx],
+                        count: count
+                    ))
+                }
+                let changed = newBars.count != currentDiversityHistogramBars.count
+                    || zip(newBars, currentDiversityHistogramBars)
+                        .contains { $0.0.count != $0.1.count }
+                if changed {
+                    currentDiversityHistogramBars = newBars
                 }
             }
         }
@@ -4516,6 +4550,7 @@ struct ContentView: View {
         parallelStats = pStatsBox.snapshot()
         let spDiversityTracker = GameDiversityTracker(windowSize: 200)
         selfPlayDiversityTracker = spDiversityTracker
+        currentDiversityHistogramBars = []
         // Reset progress-rate sampler state so the new session's
         // chart starts fresh at t=0. Leaving old samples in place
         // would show up as a visible "step" from the previous
@@ -5219,6 +5254,7 @@ struct ContentView: View {
                 arenaOverrideBox = nil
                 parallelWorkerStatsBox = nil
                 parallelStats = nil
+                currentDiversityHistogramBars = []
                 workerCountBox = nil
                 trainingStepDelayBox = nil
                 activeSelfPlayGate = nil

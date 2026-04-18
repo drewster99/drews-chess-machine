@@ -33,11 +33,23 @@ struct TrainingChartSample: Identifiable, Sendable {
     }
 }
 
+/// Bar slice in the diversity histogram. Identifiable so SwiftUI's
+/// `Chart` can key BarMarks correctly as counts update.
+struct DiversityHistogramBar: Identifiable, Sendable {
+    let id: Int          // bucket index (stable across updates)
+    let label: String    // bucket label like "0-2", "41+"
+    let count: Int
+}
+
 /// Grid of compact training-metric charts. All charts share a
 /// synchronized horizontal scroll position.
 struct TrainingChartGridView: View {
     let progressRateSamples: [ProgressRateSample]
     let trainingChartSamples: [TrainingChartSample]
+    /// Current divergence-ply histogram bars (one per bucket) from
+    /// the self-play diversity tracker. `nil` or empty while Play-
+    /// and-Train isn't running or before the first game finishes.
+    let diversityHistogram: [DiversityHistogramBar]
     let visibleDomainSec: Double
     @Binding var scrollX: Double
 
@@ -102,15 +114,89 @@ struct TrainingChartGridView: View {
                 unit: "GB",
                 color: .teal
             )
-            // Row 3: Loss Value
+            // Row 3: Loss Value | Diversity histogram
             miniChart(
                 title: "Loss value",
                 yPath: \.rollingValueLoss,
                 unit: "",
                 color: .cyan
             )
+            diversityHistogramChart
         }
         .background(Color(nsColor: .separatorColor))
+    }
+
+    // MARK: - Diversity histogram chart
+
+    /// Color ramp for the histogram buckets, matched to severity:
+    /// green bands are the healthy-diversity region, yellow/orange
+    /// is "watch", red is "games sharing deep-middlegame play —
+    /// policy is collapsing". Aligned index-wise with
+    /// `GameDiversityTracker.histogramLabels`.
+    private static let diversityBucketColors: [Color] = [
+        .green, .mint, .yellow, .orange, .red, Color(red: 0.6, green: 0, blue: 0)
+    ]
+
+    private var diversityHistogramChart: some View {
+        let bars = diversityHistogram
+        let total = bars.reduce(0) { $0 + $1.count }
+        let maxCount = bars.map(\.count).max() ?? 0
+        let headerValue = total > 0
+            ? "\(total) games"
+            : "--"
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("Diversity histogram")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(headerValue)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                Chart(bars) { bar in
+                    BarMark(
+                        x: .value("Bucket", bar.label),
+                        y: .value("Count", bar.count)
+                    )
+                    .foregroundStyle(
+                        Self.diversityBucketColors.indices.contains(bar.id)
+                            ? Self.diversityBucketColors[bar.id]
+                            : Color.gray
+                    )
+                }
+                // `maxCount * 1.1` so the tallest bar doesn't touch
+                // the ceiling. Fall back to 1...1 domain on empty so
+                // the axis renders an empty frame instead of NaN'ing.
+                .chartYScale(domain: 0...(maxCount > 0 ? Int(Double(maxCount) * 1.1) + 1 : 1))
+                .chartXAxis {
+                    AxisMarks(preset: .aligned, values: .automatic) { value in
+                        AxisValueLabel {
+                            if let label = value.as(String.self) {
+                                Text(label)
+                                    .font(.system(size: 6))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(Self.compactLabel(v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(height: 75)
+        }
     }
 
     // MARK: - Progress rate chart (3 series)

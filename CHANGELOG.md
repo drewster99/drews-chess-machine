@@ -8,6 +8,46 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-17 23:21 CDT — Diversity histogram chart
+
+**Files:** `GameDiversityTracker.swift`, `TrainingChartGridView.swift`,
+`ContentView.swift`.
+
+Adds a 6-bucket histogram of divergence plies across the 200-game
+rolling window to surface "are we producing near-identical games?"
+as a direct visual in the chart grid. The existing
+`avgDivergencePly` metric buries the signal in a mean (stuck near 2.0
+in steady state even when some games share long opening lines because
+it averages 200 frozen per-game values); the histogram exposes the
+tail directly.
+
+**Buckets** (`GameDiversityTracker.histogramBounds`):
+`[0-2]`, `[3-5]`, `[6-10]`, `[11-20]`, `[21-40]`, `[41+]`. First four
+are the healthy-diversity range; last two are the collapse warning
+zone. Bucket colors ramp green → mint → yellow → orange → red →
+dark-red for visual severity.
+
+**How it surfaces:**
+- `GameDiversityTracker.Snapshot.divergenceHistogram: [Int]` (6
+  entries, sums to `gamesInWindow`). Computed inside the single
+  existing O(stored) pass in `snapshot()` — one extra bucket-assign
+  per game, no extra lock acquisitions.
+- `TrainingChartGridView` gains a `diversityHistogram:
+  [DiversityHistogramBar]` input and a new `diversityHistogramChart`
+  tile placed next to "Loss value" in row 3 of the grid.
+- `ContentView.currentDiversityHistogramBars: @State` mirrored from
+  the tracker on the UI heartbeat. Diff-checked before pushing into
+  state so stable readings don't invalidate the chart every tick.
+
+**Interpretation at steady-state diverse self-play:**
+Most games sit in `[0-2]` (they branch within the opening); a handful
+in `[3-5]`. If `[11-20]` or beyond start filling in, the policy is
+locking onto deeper shared lines. If `[41+]` has non-zero count, deep
+middlegame/endgame play is being replayed — the user's "thousands of
+near-identical games" scenario.
+
+---
+
 ## 2026-04-17 23:00 CDT — Policy-entropy alarm + avg-game-length in [STATS]
 
 **File:** `ContentView.swift`
