@@ -291,17 +291,27 @@ struct TrainingChartGridView: View {
                         .foregroundStyle(.primary)
                 }
                 Chart {
+                    // One ForEach per series — SwiftUI Charts only
+                    // connects LineMarks that share a single
+                    // enclosing ForEach. Packing all three series
+                    // into one ForEach produced spurious flat lines
+                    // at y=0 because Charts couldn't disambiguate
+                    // series within the shared iteration.
                     ForEach(progressRateSamples) { sample in
                         LineMark(
                             x: .value("Time", sample.elapsedSec),
                             y: .value("Moves/hr", sample.combinedMovesPerHour)
                         )
                         .foregroundStyle(by: .value("Series", "Combined"))
+                    }
+                    ForEach(progressRateSamples) { sample in
                         LineMark(
                             x: .value("Time", sample.elapsedSec),
                             y: .value("Moves/hr", sample.selfPlayMovesPerHour)
                         )
                         .foregroundStyle(by: .value("Series", "Self-play"))
+                    }
+                    ForEach(progressRateSamples) { sample in
                         LineMark(
                             x: .value("Time", sample.elapsedSec),
                             y: .value("Moves/hr", sample.trainingMovesPerHour)

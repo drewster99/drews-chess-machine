@@ -2868,6 +2868,14 @@ struct ContentView: View {
             )
         }()
 
+        // One ForEach per series — SwiftUI Charts only connects
+        // LineMarks that share a single enclosing ForEach AND a
+        // single Y value. Packing all three series into ONE
+        // ForEach made Charts emit spurious thin lines near y=0
+        // because it couldn't disambiguate which LineMarks
+        // belonged to which logical series within the shared
+        // iteration. Splitting per series restores the canonical
+        // multi-line rendering.
         return Chart {
             ForEach(progressRateSamples) { sample in
                 LineMark(
@@ -2875,13 +2883,15 @@ struct ContentView: View {
                     y: .value("Moves/hr", sample.combinedMovesPerHour)
                 )
                 .foregroundStyle(by: .value("Series", "Combined"))
-
+            }
+            ForEach(progressRateSamples) { sample in
                 LineMark(
                     x: .value("Elapsed", sample.elapsedSec),
                     y: .value("Moves/hr", sample.selfPlayMovesPerHour)
                 )
                 .foregroundStyle(by: .value("Series", "Self-play"))
-
+            }
+            ForEach(progressRateSamples) { sample in
                 LineMark(
                     x: .value("Elapsed", sample.elapsedSec),
                     y: .value("Moves/hr", sample.trainingMovesPerHour)
