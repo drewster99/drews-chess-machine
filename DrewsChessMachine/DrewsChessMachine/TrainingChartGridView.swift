@@ -42,7 +42,10 @@ struct DiversityHistogramBar: Identifiable, Sendable {
 }
 
 /// Grid of compact training-metric charts. All charts share a
-/// synchronized horizontal scroll position.
+/// synchronized horizontal scroll position and a single hover
+/// crosshair — mousing over any time-series chart highlights the
+/// same elapsed second across all of them so you can read every
+/// metric at that moment.
 struct TrainingChartGridView: View {
     let progressRateSamples: [ProgressRateSample]
     let trainingChartSamples: [TrainingChartSample]
@@ -52,6 +55,18 @@ struct TrainingChartGridView: View {
     let diversityHistogram: [DiversityHistogramBar]
     let visibleDomainSec: Double
     @Binding var scrollX: Double
+
+    /// Shared hover selection across every time-series chart. Set
+    /// by `.onContinuousHover` on each chart's overlay; `nil` means
+    /// the mouse isn't over any time-series chart right now. When
+    /// non-nil, every time-series chart draws a crosshair at this
+    /// elapsed-second and swaps its header value to the sample
+    /// nearest this time instead of the latest.
+    @State private var hoveredSec: Double?
+
+    /// Local hover state for the diversity histogram (categorical
+    /// X-axis, so separate from the time-series `hoveredSec`).
+    @State private var hoveredHistogramBarID: Int?
 
     private static let columns = Array(
         repeating: GridItem(.flexible(), spacing: 1),
@@ -141,9 +156,17 @@ struct TrainingChartGridView: View {
         let bars = diversityHistogram
         let total = bars.reduce(0) { $0 + $1.count }
         let maxCount = bars.map(\.count).max() ?? 0
-        let headerValue = total > 0
-            ? "\(total) games"
-            : "--"
+        let headerText: String
+        // Header shows the hovered bucket's label and count when
+        // hovering, falls back to "N games" total otherwise.
+        if let hoveredID = hoveredHistogramBarID,
+           let bar = bars.first(where: { $0.id == hoveredID }) {
+            headerText = "\(bar.label) plies: \(bar.count)"
+        } else if total > 0 {
+            headerText = "\(total) games"
+        } else {
+            headerText = "--"
+        }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
@@ -151,7 +174,7 @@ struct TrainingChartGridView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text(headerValue)
+                    Text(headerText)
                         .font(.caption2)
                         .monospacedDigit()
                         .foregroundStyle(.primary)
@@ -166,6 +189,7 @@ struct TrainingChartGridView: View {
                             ? Self.diversityBucketColors[bar.id]
                             : Color.gray
                     )
+                    .opacity(hoveredHistogramBarID == nil || hoveredHistogramBarID == bar.id ? 1.0 : 0.4)
                 }
                 // `maxCount * 1.1` so the tallest bar doesn't touch
                 // the ceiling. Fall back to 1...1 domain on empty so
@@ -194,6 +218,38 @@ struct TrainingChartGridView: View {
                         }
                     }
                 }
+                .chartOverlay { proxy in
+                    // Categorical hover: convert the mouse X into a
+                    // bucket label via `proxy.value(atX:)`, then find
+                    // the bar with that label and cache its ID so the
+                    // header swaps to its count. Using the ID rather
+                    // than the label index lets the bar ordering
+                    // shift without stale-pointer hazards.
+                    GeometryReader { geo in
+                        Rectangle()
+                            .fill(Color.clear)
+                            .contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                switch phase {
+                                case .active(let point):
+                                    let origin = (proxy.plotFrame.map { geo[$0].origin } ?? .zero)
+                                    let xInPlot = point.x - origin.x
+                                    if let label: String = proxy.value(atX: xInPlot),
+                                       let match = bars.first(where: { $0.label == label }) {
+                                        if hoveredHistogramBarID != match.id {
+                                            hoveredHistogramBarID = match.id
+                                        }
+                                    } else if hoveredHistogramBarID != nil {
+                                        hoveredHistogramBarID = nil
+                                    }
+                                case .ended:
+                                    if hoveredHistogramBarID != nil {
+                                        hoveredHistogramBarID = nil
+                                    }
+                                }
+                            }
+                    }
+                }
             }
             .frame(height: 75)
         }
@@ -202,8 +258,21 @@ struct TrainingChartGridView: View {
     // MARK: - Progress rate chart (3 series)
 
     private var progressRateChart: some View {
-        let lastCombined = progressRateSamples.last?.combinedMovesPerHour
-        let headerValue = lastCombined.map { Self.compactLabel($0) } ?? "--"
+        // When hovering, swap the header to show all three series
+        // values at the hovered time; otherwise show the latest
+        // combined rate.
+        let headerText: String
+        if let t = hoveredSec,
+           let nearest = Self.nearestProgressSample(at: t, samples: progressRateSamples) {
+            let combined = Self.compactLabel(nearest.combinedMovesPerHour)
+            let selfPlay = Self.compactLabel(nearest.selfPlayMovesPerHour)
+            let training = Self.compactLabel(nearest.trainingMovesPerHour)
+            headerText = "t=\(Self.formatElapsedAxis(nearest.elapsedSec)) comb=\(combined) sp=\(selfPlay) tr=\(training)"
+        } else if let last = progressRateSamples.last {
+            headerText = "\(Self.compactLabel(last.combinedMovesPerHour)) moves/hour"
+        } else {
+            headerText = "-- moves/hour"
+        }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
@@ -211,27 +280,36 @@ struct TrainingChartGridView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(headerValue) moves/hour")
+                    Text(headerText)
                         .font(.caption2)
                         .monospacedDigit()
                         .foregroundStyle(.primary)
                 }
-                Chart(progressRateSamples) { sample in
-                    LineMark(
-                        x: .value("Time", sample.elapsedSec),
-                        y: .value("Moves/hr", sample.combinedMovesPerHour)
-                    )
-                    .foregroundStyle(by: .value("Series", "Combined"))
-                    LineMark(
-                        x: .value("Time", sample.elapsedSec),
-                        y: .value("Moves/hr", sample.selfPlayMovesPerHour)
-                    )
-                    .foregroundStyle(by: .value("Series", "Self-play"))
-                    LineMark(
-                        x: .value("Time", sample.elapsedSec),
-                        y: .value("Moves/hr", sample.trainingMovesPerHour)
-                    )
-                    .foregroundStyle(by: .value("Series", "Training"))
+                Chart {
+                    ForEach(progressRateSamples) { sample in
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Moves/hr", sample.combinedMovesPerHour)
+                        )
+                        .foregroundStyle(by: .value("Series", "Combined"))
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Moves/hr", sample.selfPlayMovesPerHour)
+                        )
+                        .foregroundStyle(by: .value("Series", "Self-play"))
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Moves/hr", sample.trainingMovesPerHour)
+                        )
+                        .foregroundStyle(by: .value("Series", "Training"))
+                    }
+                    // Crosshair: vertical line at the hovered time,
+                    // only rendered when a hover is active.
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
                 }
                 .chartForegroundStyleScale([
                     "Self-play": Color.blue,
@@ -255,6 +333,9 @@ struct TrainingChartGridView: View {
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
             }
             .frame(height: 75)
         }
@@ -265,15 +346,16 @@ struct TrainingChartGridView: View {
     private static let maxEntropy = log(Double(ChessNetwork.policySize))
 
     private var entropyChart: some View {
-        let lastValue = trainingChartSamples.last?.rollingPolicyEntropy
-        let valueStr: String
-        let pctStr: String
-        if let v = lastValue {
-            valueStr = String(format: "%.3f", v)
-            pctStr = String(format: "(%.1f%%)", v / Self.maxEntropy * 100)
+        let hoveredValue = hoveredSampleValue(path: \.rollingPolicyEntropy)
+        let hoveredTime = hoveredSampleTime()
+        let headerText: String
+        if let t = hoveredTime, let v = hoveredValue {
+            let pct = v / Self.maxEntropy * 100
+            headerText = "t=\(Self.formatElapsedAxis(t)) \(String(format: "%.3f (%.1f%%)", v, pct))"
+        } else if let lastValue = trainingChartSamples.last?.rollingPolicyEntropy {
+            headerText = String(format: "%.3f (%.1f%%)", lastValue, lastValue / Self.maxEntropy * 100)
         } else {
-            valueStr = "--"
-            pctStr = ""
+            headerText = "--"
         }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
@@ -282,18 +364,30 @@ struct TrainingChartGridView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(valueStr) \(pctStr)")
+                    Text(headerText)
                         .font(.caption2)
                         .monospacedDigit()
                         .foregroundStyle(.primary)
                 }
-                Chart(trainingChartSamples) { sample in
-                    if let y = sample.rollingPolicyEntropy {
-                        LineMark(
-                            x: .value("Time", sample.elapsedSec),
-                            y: .value("Entropy", y)
-                        )
-                        .foregroundStyle(.purple)
+                Chart {
+                    ForEach(trainingChartSamples) { sample in
+                        if let y = sample.rollingPolicyEntropy {
+                            LineMark(
+                                x: .value("Time", sample.elapsedSec),
+                                y: .value("Entropy", y)
+                            )
+                            .foregroundStyle(.purple)
+                        }
+                    }
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
+                    if let t = hoveredTime, let v = hoveredValue {
+                        PointMark(x: .value("Time", t), y: .value("Entropy", v))
+                            .foregroundStyle(.purple)
+                            .symbolSize(40)
                     }
                 }
                 .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
@@ -312,6 +406,9 @@ struct TrainingChartGridView: View {
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
             }
             .frame(height: 75)
         }
@@ -320,8 +417,16 @@ struct TrainingChartGridView: View {
     // MARK: - Non-negligible count chart (fixed Y-axis 0-4096)
 
     private var nonNegChart: some View {
-        let lastValue = trainingChartSamples.last?.rollingPolicyNonNegCount
-        let headerValue = lastValue.map { String(Int($0)) } ?? "--"
+        let hoveredValue = hoveredSampleValue(path: \.rollingPolicyNonNegCount)
+        let hoveredTime = hoveredSampleTime()
+        let headerText: String
+        if let t = hoveredTime, let v = hoveredValue {
+            headerText = "t=\(Self.formatElapsedAxis(t)) \(Int(v)) / 4096"
+        } else if let lastValue = trainingChartSamples.last?.rollingPolicyNonNegCount {
+            headerText = "\(Int(lastValue)) / 4096"
+        } else {
+            headerText = "-- / 4096"
+        }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
@@ -329,18 +434,30 @@ struct TrainingChartGridView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(headerValue) / 4096")
+                    Text(headerText)
                         .font(.caption2)
                         .monospacedDigit()
                         .foregroundStyle(.primary)
                 }
-                Chart(trainingChartSamples) { sample in
-                    if let y = sample.rollingPolicyNonNegCount {
-                        LineMark(
-                            x: .value("Time", sample.elapsedSec),
-                            y: .value("Count", y)
-                        )
-                        .foregroundStyle(.mint)
+                Chart {
+                    ForEach(trainingChartSamples) { sample in
+                        if let y = sample.rollingPolicyNonNegCount {
+                            LineMark(
+                                x: .value("Time", sample.elapsedSec),
+                                y: .value("Count", y)
+                            )
+                            .foregroundStyle(.mint)
+                        }
+                    }
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
+                    if let t = hoveredTime, let v = hoveredValue {
+                        PointMark(x: .value("Time", t), y: .value("Count", v))
+                            .foregroundStyle(.mint)
+                            .symbolSize(40)
                     }
                 }
                 .chartYScale(domain: 0...4096)
@@ -360,6 +477,9 @@ struct TrainingChartGridView: View {
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
             }
             .frame(height: 75)
         }
@@ -374,14 +494,22 @@ struct TrainingChartGridView: View {
         color: Color,
         wholeNumber: Bool = false
     ) -> some View {
-        let lastValue = trainingChartSamples.last?[keyPath: yPath]
-        let headerValue: String
-        if let v = lastValue {
-            headerValue = wholeNumber ? String(Int(v)) : Self.compactLabel(v)
-        } else {
-            headerValue = "--"
-        }
+        let hoveredValue = hoveredSampleValue(path: yPath)
+        let hoveredTime = hoveredSampleTime()
         let unitSuffix = unit.isEmpty ? "" : " \(unit)"
+        let headerText: String
+        // When hovering, swap the header to show the hovered time +
+        // the sample's value at that time. Otherwise show the
+        // latest value (pre-hover behavior).
+        if let t = hoveredTime, let v = hoveredValue {
+            let valueStr = wholeNumber ? String(Int(v)) : Self.compactLabel(v)
+            headerText = "t=\(Self.formatElapsedAxis(t)) \(valueStr)\(unitSuffix)"
+        } else if let v = trainingChartSamples.last?[keyPath: yPath] {
+            let valueStr = wholeNumber ? String(Int(v)) : Self.compactLabel(v)
+            headerText = "\(valueStr)\(unitSuffix)"
+        } else {
+            headerText = "--"
+        }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
@@ -389,18 +517,35 @@ struct TrainingChartGridView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(headerValue)\(unitSuffix)")
+                    Text(headerText)
                         .font(.caption2)
                         .monospacedDigit()
                         .foregroundStyle(.primary)
                 }
-                Chart(trainingChartSamples) { sample in
-                    if let y = sample[keyPath: yPath] {
-                        LineMark(
-                            x: .value("Time", sample.elapsedSec),
-                            y: .value(title, y)
-                        )
-                        .foregroundStyle(color)
+                Chart {
+                    ForEach(trainingChartSamples) { sample in
+                        if let y = sample[keyPath: yPath] {
+                            LineMark(
+                                x: .value("Time", sample.elapsedSec),
+                                y: .value(title, y)
+                            )
+                            .foregroundStyle(color)
+                        }
+                    }
+                    // Crosshair at hovered time across every mini
+                    // chart — shared hoveredSec means all charts
+                    // show the rule in lockstep.
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
+                    // Point marker at the nearest sample for this
+                    // chart's series.
+                    if let t = hoveredTime, let v = hoveredValue {
+                        PointMark(x: .value("Time", t), y: .value(title, v))
+                            .foregroundStyle(color)
+                            .symbolSize(40)
                     }
                 }
                 .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
@@ -419,9 +564,121 @@ struct TrainingChartGridView: View {
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
             }
             .frame(height: 75)
         }
+    }
+
+    // MARK: - Hover overlay helper
+
+    /// Transparent overlay that captures mouse position on a
+    /// time-series chart and pipes the converted elapsed-second
+    /// into the shared `hoveredSec` @State. `.contentShape` on the
+    /// rectangle is what makes the whole plot area hit-test even
+    /// though the fill is clear. The `ChartProxy` maps the pixel
+    /// X position (relative to the plot area, not the card) back
+    /// into the chart's X-data space.
+    private func hoverOverlay(proxy: ChartProxy) -> some View {
+        GeometryReader { geo in
+            Rectangle()
+                .fill(Color.clear)
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let point):
+                        let origin = (proxy.plotFrame.map { geo[$0].origin } ?? .zero)
+                        let xInPlot = point.x - origin.x
+                        if let sec: Double = proxy.value(atX: xInPlot) {
+                            // Clamp to the samples' time range to
+                            // avoid edge-case "hovering beyond the
+                            // last sample shows the last sample's
+                            // values" surprises — we specifically
+                            // want no point marker past the end.
+                            if sec < 0 {
+                                if hoveredSec != nil { hoveredSec = nil }
+                                return
+                            }
+                            if hoveredSec != sec {
+                                hoveredSec = sec
+                            }
+                        }
+                    case .ended:
+                        if hoveredSec != nil {
+                            hoveredSec = nil
+                        }
+                    }
+                }
+        }
+    }
+
+    // MARK: - Hover lookup helpers
+
+    /// Return the training-sample-nearest-to-hovered-time's value
+    /// at `path`. Linear scan — `trainingChartSamples` is small (a
+    /// few thousand samples at most during a long session) and the
+    /// call rate is bounded by the mouse's physical move cadence,
+    /// so a binary search isn't worth the complexity yet.
+    private func hoveredSampleValue(
+        path: KeyPath<TrainingChartSample, Double?>
+    ) -> Double? {
+        guard let t = hoveredSec,
+              let sample = Self.nearestTrainingSample(at: t, samples: trainingChartSamples) else {
+            return nil
+        }
+        return sample[keyPath: path]
+    }
+
+    /// Return the elapsed-second of the training-sample-nearest-to-
+    /// hovered-time. Separated from `hoveredSampleValue` so per-
+    /// chart headers can show "t=..." even when a specific series
+    /// has no value at that sample.
+    private func hoveredSampleTime() -> Double? {
+        guard let t = hoveredSec,
+              let sample = Self.nearestTrainingSample(at: t, samples: trainingChartSamples) else {
+            return nil
+        }
+        return sample.elapsedSec
+    }
+
+    /// Linear-scan nearest-sample lookup. Returns `nil` on empty
+    /// input (so headers gracefully degrade to "latest" mode).
+    private static func nearestTrainingSample(
+        at t: Double,
+        samples: [TrainingChartSample]
+    ) -> TrainingChartSample? {
+        guard !samples.isEmpty else { return nil }
+        var best: TrainingChartSample = samples[0]
+        var bestDist = Swift.abs(best.elapsedSec - t)
+        for s in samples.dropFirst() {
+            let d = Swift.abs(s.elapsedSec - t)
+            if d < bestDist {
+                best = s
+                bestDist = d
+            }
+        }
+        return best
+    }
+
+    /// Same as `nearestTrainingSample(...)` but for the three-series
+    /// progress-rate chart.
+    private static func nearestProgressSample(
+        at t: Double,
+        samples: [ProgressRateSample]
+    ) -> ProgressRateSample? {
+        guard !samples.isEmpty else { return nil }
+        var best: ProgressRateSample = samples[0]
+        var bestDist = Swift.abs(best.elapsedSec - t)
+        for s in samples.dropFirst() {
+            let d = Swift.abs(s.elapsedSec - t)
+            if d < bestDist {
+                best = s
+                bestDist = d
+            }
+        }
+        return best
     }
 
     // MARK: - Card wrapper
@@ -454,6 +711,24 @@ struct TrainingChartGridView: View {
             return "0"
         } else {
             return String(format: "%.1e", value)
+        }
+    }
+
+    /// Compact mm:ss / h:mm:ss formatter for the hover header's
+    /// time stamp. Mirrors `ContentView.formatElapsedAxis` semantics
+    /// but lives here so the grid doesn't reach back into
+    /// `ContentView` (the compilation unit's public API surface).
+    static func formatElapsedAxis(_ seconds: Double) -> String {
+        let secs = max(0, Int(seconds.rounded()))
+        let h = secs / 3600
+        let m = (secs % 3600) / 60
+        let s = secs % 60
+        if secs < 60 {
+            return String(format: "0:%02d", s)
+        } else if secs < 3600 {
+            return String(format: "%d:%02d", m, s)
+        } else {
+            return String(format: "%d:%02d:%02d", h, m, s)
         }
     }
 }

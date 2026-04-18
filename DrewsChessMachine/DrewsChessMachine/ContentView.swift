@@ -1488,6 +1488,10 @@ struct ContentView: View {
     /// (trackpad two-finger scroll, scroll wheel, arrow keys)
     /// without any custom DragGesture of our own.
     @State private var progressRateScrollX: Double = 0
+    /// Currently-hovered elapsed-second on the large progress-rate
+    /// chart, `nil` when the mouse isn't over the chart. Drives the
+    /// crosshair + overlay readout.
+    @State private var bigProgressChartHoveredSec: Double?
     /// Whether the chart should auto-advance `progressRateScrollX`
     /// to keep the newest sample in view. Starts `true`; flips
     /// to `false` when the user scrolls backward past a small
@@ -2831,24 +2835,47 @@ struct ContentView: View {
     /// where we detect a manual scroll and pause auto-follow so
     /// reading history doesn't fight the 1 Hz sampler tick.
     private var progressRateChartView: some View {
-        Chart(progressRateSamples) { sample in
-            LineMark(
-                x: .value("Elapsed", sample.elapsedSec),
-                y: .value("Moves/hr", sample.combinedMovesPerHour)
-            )
-            .foregroundStyle(by: .value("Series", "Combined"))
+        // Hover readout: when the user moves the cursor over the
+        // chart, display the elapsed-time + all three series values
+        // at that time in an overlaid label. Nearest-sample lookup
+        // by linear scan (samples are small: 1 Hz * minutes-to-hours).
+        let hoverReadout: (time: Double, combined: Double, selfPlay: Double, training: Double)? = {
+            guard let t = bigProgressChartHoveredSec,
+                  !progressRateSamples.isEmpty else { return nil }
+            var best = progressRateSamples[0]
+            var bestDist = Swift.abs(best.elapsedSec - t)
+            for s in progressRateSamples.dropFirst() {
+                let d = Swift.abs(s.elapsedSec - t)
+                if d < bestDist { best = s; bestDist = d }
+            }
+            return (best.elapsedSec, best.combinedMovesPerHour, best.selfPlayMovesPerHour, best.trainingMovesPerHour)
+        }()
 
-            LineMark(
-                x: .value("Elapsed", sample.elapsedSec),
-                y: .value("Moves/hr", sample.selfPlayMovesPerHour)
-            )
-            .foregroundStyle(by: .value("Series", "Self-play"))
+        return Chart {
+            ForEach(progressRateSamples) { sample in
+                LineMark(
+                    x: .value("Elapsed", sample.elapsedSec),
+                    y: .value("Moves/hr", sample.combinedMovesPerHour)
+                )
+                .foregroundStyle(by: .value("Series", "Combined"))
 
-            LineMark(
-                x: .value("Elapsed", sample.elapsedSec),
-                y: .value("Moves/hr", sample.trainingMovesPerHour)
-            )
-            .foregroundStyle(by: .value("Series", "Training"))
+                LineMark(
+                    x: .value("Elapsed", sample.elapsedSec),
+                    y: .value("Moves/hr", sample.selfPlayMovesPerHour)
+                )
+                .foregroundStyle(by: .value("Series", "Self-play"))
+
+                LineMark(
+                    x: .value("Elapsed", sample.elapsedSec),
+                    y: .value("Moves/hr", sample.trainingMovesPerHour)
+                )
+                .foregroundStyle(by: .value("Series", "Training"))
+            }
+            if let t = bigProgressChartHoveredSec {
+                RuleMark(x: .value("Elapsed", t))
+                    .foregroundStyle(Color.gray.opacity(0.5))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+            }
         }
         .chartForegroundStyleScale([
             "Self-play": Color.blue,
@@ -2885,6 +2912,71 @@ struct ContentView: View {
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: Self.progressRateVisibleDomainSec)
         .chartScrollPosition(x: $progressRateScrollX)
+        .chartOverlay { proxy in
+            // Transparent hover-capture rectangle over the plot
+            // area — same pattern as `TrainingChartGridView`'s
+            // `hoverOverlay` helper but inline here because this
+            // chart lives in ContentView's body.
+            GeometryReader { geo in
+                ZStack(alignment: .topLeading) {
+                    Rectangle()
+                        .fill(Color.clear)
+                        .contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let point):
+                                let origin = (proxy.plotFrame.map { geo[$0].origin } ?? .zero)
+                                let xInPlot = point.x - origin.x
+                                if let sec: Double = proxy.value(atX: xInPlot) {
+                                    if sec < 0 {
+                                        if bigProgressChartHoveredSec != nil {
+                                            bigProgressChartHoveredSec = nil
+                                        }
+                                        return
+                                    }
+                                    if bigProgressChartHoveredSec != sec {
+                                        bigProgressChartHoveredSec = sec
+                                    }
+                                }
+                            case .ended:
+                                if bigProgressChartHoveredSec != nil {
+                                    bigProgressChartHoveredSec = nil
+                                }
+                            }
+                        }
+                    if let r = hoverReadout {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("t=\(Self.formatElapsedAxis(r.time))")
+                                .font(.caption2)
+                                .monospacedDigit()
+                            Text("Combined: \(Int(r.combined))/hr")
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(Color.green)
+                            Text("Self-play: \(Int(r.selfPlay))/hr")
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(Color.blue)
+                            Text("Training:  \(Int(r.training))/hr")
+                                .font(.caption2)
+                                .monospacedDigit()
+                                .foregroundStyle(Color.orange)
+                        }
+                        .padding(6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.92))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
+                        )
+                        .padding(8)
+                        .allowsHitTesting(false)
+                    }
+                }
+            }
+        }
         .frame(height: 320)
     }
 
