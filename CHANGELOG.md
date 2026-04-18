@@ -8,6 +8,67 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-17 22:46 CDT — Advantage baseline: store v at play time, feed as placeholder
+
+**Files:** `ReplayBuffer.swift`, `ChessTrainer.swift`, `MPSChessPlayer.swift`
+
+Completes plan item #3 from the 17:23 CDT design entry. MPSGraph has
+no `stopGradient` / `detach` op (confirmed by the 22:35 CDT
+`[EXP-DETACH]` experiment — `variableFromTensor` + `read` does *not*
+block autodiff), so we get detach semantics by feeding the baseline
+through a placeholder. Since every feed is a leaf in the gradient
+graph, the policy loss can't walk backward from `(z − vBaseline)`
+into the value head.
+
+**How it works:**
+- `MPSChessPlayer` captures the scalar `v` returned by the same
+  `network.evaluate(board:)` call that already runs to pick each move
+  (zero extra forward passes). Stored per-ply in `gameValueScalars`
+  and bulk-flushed into the replay buffer at game end alongside the
+  boards, policy indices, and outcome.
+- `ReplayBuffer` gains a fourth ring-storage array
+  `vBaselineStorage: [capacity]` of `Float`. `append(...)` takes a
+  `vBaselines:` pointer; `sample(count:)` returns them via the new
+  `TrainingBatch.vBaselines` field.
+- `ChessTrainer.buildTrainingOps` adds a new `vBaseline` placeholder
+  of shape `[-1, 1]` and builds `advantage = z − vBaseline`; the
+  policy loss is now `mean(advantage · negLogProb)`. Everything else
+  (value loss, K=50 scaling, weight decay, gradient clipping) stays
+  intact.
+- `BatchFeeds` cache grows to include the vBaseline ND array + tensor
+  data wrapper. `buildFeeds(...)` writes the new column on every
+  step. `trainStep(batchSize:)` random-data path feeds all-zero
+  vBaselines, which degrades the advantage formulation back to
+  `z · negLogProb` — keeps the sweep's numerical results comparable
+  to prior runs.
+
+**Replay-buffer file format:** `DCMRPBUF` header bumped from v1 → v2
+with the addition of a fourth column after outcomes. Reader accepts
+both versions: v1 files (saved before this commit) are restored with
+`vBaseline = 0` for every slot, which degrades gracefully to
+`z · negLogProb` until those positions age out of the ring and are
+replaced by fresh v2 self-play data. New writes always produce v2.
+
+**Trade-offs (documented earlier in-conversation):**
+- Baseline staleness — the stored `v` is from the self-play inference
+  network (= champion, or a secondary mirrored from champion) at the
+  time the position was played, not the trainer's current `v`. Any
+  state-dependent baseline gives unbiased gradients, so this produces
+  a weaker variance reduction than an "ideal" current-step baseline
+  but can't make the update worse.
+- Effective gradient magnitude drops because `|z − v|` < `|z|` once
+  the value head starts tracking outcomes. May need to revisit K=50
+  or LR if `gNorm` collapses post-baseline. Watch `gNorm` in `[STATS]`.
+- Warm-up dead zone: at the start of training, `v ≈ 0`, so
+  `(z − v) ≈ z` — the baseline does nothing until the value head has
+  learned something. Expected.
+
+**Observed effect:** TBD — next Play-and-Train session will populate
+v2 replay buffer and the advantage formulation will take effect once
+the value head starts producing meaningful predictions.
+
+---
+
 ## 2026-04-17 22:35 CDT — Gradient-stop experiment: `variableFromTensor` does NOT detach
 
 Added a one-shot launch-time experiment in `ExperimentStopGradient.swift`

@@ -137,6 +137,13 @@ final class MPSChessPlayer: ChessPlayer {
     /// capacity.
     private var gamePolicyIndices: [Int32]
 
+    /// Inference-time value estimate `v(position)` for each recorded
+    /// ply, captured from the same forward pass that already runs to
+    /// pick the move. Bulk-flushed into `ReplayBuffer` at game end as
+    /// the advantage-baseline column. Same `ply` indexing as
+    /// `gamePolicyIndices`.
+    private var gameValueScalars: [Float]
+
     /// Number of plies this player has recorded in the current game.
     /// Indexes both `gameBoardScratchPtr` (by `ply * boardFloats`) and
     /// `gamePolicyIndices` (by `ply`).
@@ -186,6 +193,10 @@ final class MPSChessPlayer: ChessPlayer {
         var indices: [Int32] = []
         indices.reserveCapacity(initialCapacity)
         self.gamePolicyIndices = indices
+
+        var values: [Float] = []
+        values.reserveCapacity(initialCapacity)
+        self.gameValueScalars = values
     }
 
     deinit {
@@ -199,6 +210,7 @@ final class MPSChessPlayer: ChessPlayer {
         // per-ply write loop overwrites slot contents before reading
         // them, so there's no need to zero the scratch between games.
         gamePolicyIndices.removeAll(keepingCapacity: true)
+        gameValueScalars.removeAll(keepingCapacity: true)
         gamePliesRecorded = 0
     }
 
@@ -231,11 +243,16 @@ final class MPSChessPlayer: ChessPlayer {
         // Feed the same bytes to the network. `policy` is a non-owning
         // view over the network's readback scratch — we consume it in
         // `sampleMove` before returning, and never touch it again.
+        // `value` is the scalar v(position) from the value head; we
+        // stash it as the advantage baseline so the training policy
+        // loss can compute `(z − vBaseline) * −log p(a*)` without
+        // paying for a second forward pass.
         let rowConst = UnsafeBufferPointer<Float>(rowMutable)
-        let (policy, _) = try network.evaluate(board: rowConst)
+        let (policy, value) = try network.evaluate(board: rowConst)
         let move = sampleMove(from: policy, legalMoves: legalMoves, flip: flip)
 
         gamePolicyIndices.append(Int32(Self.networkPolicyIndex(for: move, flip: flip)))
+        gameValueScalars.append(value)
         gamePliesRecorded += 1
 
         return move
@@ -260,13 +277,19 @@ final class MPSChessPlayer: ChessPlayer {
         // lock acquisition, one `memcpy`-style copy per field — no
         // per-position round-trips.
         gamePolicyIndices.withUnsafeBufferPointer { movesBuf in
-            guard let movesBase = movesBuf.baseAddress else { return }
-            replayBuffer.append(
-                boards: UnsafePointer(gameBoardScratchPtr),
-                policyIndices: movesBase,
-                outcome: myOutcome,
-                count: gamePliesRecorded
-            )
+            gameValueScalars.withUnsafeBufferPointer { valuesBuf in
+                guard
+                    let movesBase = movesBuf.baseAddress,
+                    let valuesBase = valuesBuf.baseAddress
+                else { return }
+                replayBuffer.append(
+                    boards: UnsafePointer(gameBoardScratchPtr),
+                    policyIndices: movesBase,
+                    vBaselines: valuesBase,
+                    outcome: myOutcome,
+                    count: gamePliesRecorded
+                )
+            }
         }
     }
 

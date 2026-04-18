@@ -88,6 +88,14 @@ struct TrainingBatch: @unchecked Sendable {
     /// Game outcome from each position's current player's perspective:
     /// +1 win, 0 draw, −1 loss. One per batch row.
     let zs: UnsafePointer<Float>
+    /// Inference-time value estimate `v(position)` captured at the
+    /// moment this position was played, per batch row. Fed as the
+    /// advantage baseline so the policy loss becomes
+    /// `mean((z − vBaseline) · −log p(a*))`. Feeding it through a
+    /// placeholder is what detaches it from the autodiff graph —
+    /// MPSGraph has no stopGradient op, so the placeholder feed is
+    /// the mechanism. Same ring source as `zs`.
+    let vBaselines: UnsafePointer<Float>
     let batchSize: Int
 }
 
@@ -424,6 +432,7 @@ final class ChessTrainer: @unchecked Sendable {
     private(set) var network: ChessNetwork
     private var movePlayedPlaceholder: MPSGraphTensor   // [batch] int32
     private var zPlaceholder: MPSGraphTensor            // [batch, 1] float
+    private var vBaselinePlaceholder: MPSGraphTensor    // [batch, 1] float
     private var lrPlaceholder: MPSGraphTensor           // [] scalar float
     private var totalLoss: MPSGraphTensor               // scalar
     private var policyLossTensor: MPSGraphTensor        // scalar
@@ -459,6 +468,8 @@ final class ChessTrainer: @unchecked Sendable {
         let moveTD: MPSGraphTensorData
         let zND: MPSNDArray
         let zTD: MPSGraphTensorData
+        let vBaselineND: MPSNDArray
+        let vBaselineTD: MPSGraphTensorData
         let feedsDict: [MPSGraphTensor: MPSGraphTensorData]
     }
     private var feedCache: [Int: BatchFeeds] = [:]
@@ -488,6 +499,7 @@ final class ChessTrainer: @unchecked Sendable {
         let built = try Self.buildTrainingOps(network: net)
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
+        self.vBaselinePlaceholder = built.vBaseline
         self.lrPlaceholder = built.lr
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
@@ -529,6 +541,7 @@ final class ChessTrainer: @unchecked Sendable {
         let built = try Self.buildTrainingOps(network: net)
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
+        self.vBaselinePlaceholder = built.vBaseline
         self.lrPlaceholder = built.lr
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
@@ -564,6 +577,7 @@ final class ChessTrainer: @unchecked Sendable {
     ) throws -> (
         movePlayed: MPSGraphTensor,
         z: MPSGraphTensor,
+        vBaseline: MPSGraphTensor,
         lr: MPSGraphTensor,
         totalLoss: MPSGraphTensor,
         policyLoss: MPSGraphTensor,
@@ -587,6 +601,16 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [-1, 1],
             dataType: dtype,
             name: "z_outcome"
+        )
+        // vBaseline: the value-head's own prediction of this position
+        // captured at play time, fed as a placeholder so autodiff can't
+        // walk back into the value head from the policy loss. MPSGraph
+        // has no stopGradient op, so feeding the baseline in externally
+        // is how we get detach semantics.
+        let vBaseline = graph.placeholder(
+            shape: [-1, 1],
+            dataType: dtype,
+            name: "v_baseline"
         )
 
         // --- Policy loss: L = mean( z * -log_softmax(logits)[a*] ) ---
@@ -628,20 +652,21 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [-1, 1],
             name: "policy_ce_per_pos"
         )
-        // --- Advantage baseline (DEFERRED — MPSGraph has no stopGradient) ---
+        // --- Advantage baseline: (z − vBaseline) · −log p(a*) ---
         //
-        // The plan in CHANGELOG.md calls for `(z − v.detached()) * −log p(a*)`
-        // here. That requires blocking gradient flow from the policy loss
-        // back into the value head via v. MPSGraph as of macOS 15 exposes
-        // no `stopGradient` / `detach` op in any of its public headers
-        // (verified: no match in `MPSGraphAutomaticDifferentiation.h` or
-        // `MPSGraphTensorShapeOps.h`), and the gradient-accumulator
-        // correction would require computing `d(mean(v * negLogProb))/dw`
-        // separately — which is a second autodiff pass over the whole
-        // graph. Until we either write that manual correction or accept
-        // the 2× forward cost of a placeholder-fed baseline, we keep the
-        // original outcome-weighted CE formulation: `z * −log p(a*)`.
-        let weightedCE = graph.multiplication(z, negLogProb, name: "z_weighted_ce")
+        // `vBaseline` is a placeholder — the inference-time v(position)
+        // captured during self-play and stored alongside each position
+        // in the ReplayBuffer. Feeding it back through a placeholder
+        // is the MPSGraph-compatible way to "detach" (MPSGraph has no
+        // stopGradient op, verified empirically in the 22:35 CDT
+        // gradient-stop experiment: `variableFromTensor` + `read` does
+        // not block backward flow). The advantage formulation reduces
+        // policy-gradient variance by 5–20× per standard
+        // REINFORCE-with-baseline literature, with zero bias — the
+        // baseline only has to be a function of state, not the
+        // current network's prediction.
+        let advantage = graph.subtraction(z, vBaseline, name: "advantage")
+        let weightedCE = graph.multiplication(advantage, negLogProb, name: "adv_weighted_ce")
         let policyLoss = graph.mean(of: weightedCE, axes: [0, 1], name: "policy_loss")
 
         // --- Value loss: L = mean( (z - v)^2 ) ---
@@ -903,7 +928,7 @@ final class ChessTrainer: @unchecked Sendable {
         // loadWeights().
         ops.append(contentsOf: network.bnRunningStatsAssignOps)
 
-        return (movePlayed, z, lrTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, policyNonNegCount, gradGlobalNorm, ops)
+        return (movePlayed, z, vBaseline, lrTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, policyNonNegCount, gradGlobalNorm, ops)
     }
 
     // MARK: - Training Step
@@ -940,42 +965,46 @@ final class ChessTrainer: @unchecked Sendable {
             zValues[i] = Float(Int.random(in: 0..<3) - 1)
         }
 
-        // Unbox the three Swift arrays into raw pointers and feed
+        // vBaselines: all zeros for the random-data sweep. An all-zero
+        // baseline degrades the advantage formulation to `z * negLogProb`,
+        // which is exactly what the random-data smoke test measured
+        // historically — so losses stay comparable to prior sweep runs.
+        let vBaselineValues = [Float](repeating: 0, count: batchSize)
+
+        // Unbox the four Swift arrays into raw pointers and feed
         // them through the shared pointer-based `buildFeeds` /
-        // `runPreparedStep` pipeline. The nested `withUnsafeBufferPointer`
-        // calls keep all three buffers pinned for the GPU run, so the
-        // random-data path allocates (for the arrays above) but still
-        // uses the same allocation-free feeds dict reuse as the real-
-        // data path.
+        // `runPreparedStep` pipeline.
         return try boardFloats.withUnsafeBufferPointer { boardsBuf in
             try moveIndices.withUnsafeBufferPointer { movesBuf in
                 try zValues.withUnsafeBufferPointer { zsBuf in
-                    // The three arrays were allocated just above with
-                    // positive batch size, so their `baseAddress`es
-                    // are guaranteed non-nil. `preconditionFailure`
-                    // documents the invariant; the guard only fires
-                    // if a future refactor breaks it.
-                    guard
-                        let boardsBase = boardsBuf.baseAddress,
-                        let movesBase = movesBuf.baseAddress,
-                        let zsBase = zsBuf.baseAddress
-                    else {
-                        preconditionFailure(
-                            "ChessTrainer.trainStep(batchSize:): non-empty inputs should have baseAddress"
+                    try vBaselineValues.withUnsafeBufferPointer { vBaseBuf in
+                        // The four arrays were allocated just above
+                        // with positive batch size, so their
+                        // `baseAddress`es are guaranteed non-nil.
+                        guard
+                            let boardsBase = boardsBuf.baseAddress,
+                            let movesBase = movesBuf.baseAddress,
+                            let zsBase = zsBuf.baseAddress,
+                            let vBaseBase = vBaseBuf.baseAddress
+                        else {
+                            preconditionFailure(
+                                "ChessTrainer.trainStep(batchSize:): non-empty inputs should have baseAddress"
+                            )
+                        }
+                        let feeds = buildFeeds(
+                            batchSize: batchSize,
+                            boards: boardsBase,
+                            moves: movesBase,
+                            zs: zsBase,
+                            vBaselines: vBaseBase
+                        )
+                        let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
+                        return try runPreparedStep(
+                            feeds: feeds,
+                            prepMs: prepMs,
+                            totalStart: totalStart
                         )
                     }
-                    let feeds = buildFeeds(
-                        batchSize: batchSize,
-                        boards: boardsBase,
-                        moves: movesBase,
-                        zs: zsBase
-                    )
-                    let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
-                    return try runPreparedStep(
-                        feeds: feeds,
-                        prepMs: prepMs,
-                        totalStart: totalStart
-                    )
                 }
             }
         }
@@ -999,7 +1028,8 @@ final class ChessTrainer: @unchecked Sendable {
             batchSize: batch.batchSize,
             boards: batch.boards,
             moves: batch.moves,
-            zs: batch.zs
+            zs: batch.zs,
+            vBaselines: batch.vBaselines
         )
         let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
 
@@ -1029,7 +1059,8 @@ final class ChessTrainer: @unchecked Sendable {
         batchSize: Int,
         boards: UnsafePointer<Float>,
         moves: UnsafePointer<Int32>,
-        zs: UnsafePointer<Float>
+        zs: UnsafePointer<Float>,
+        vBaselines: UnsafePointer<Float>
     ) -> [MPSGraphTensor: MPSGraphTensorData] {
         let cached = feedsForBatch(batchSize)
 
@@ -1052,6 +1083,10 @@ final class ChessTrainer: @unchecked Sendable {
         )
         cached.zND.writeBytes(
             UnsafeMutableRawPointer(mutating: zs),
+            strideBytes: nil
+        )
+        cached.vBaselineND.writeBytes(
+            UnsafeMutableRawPointer(mutating: vBaselines),
             strideBytes: nil
         )
 
@@ -1100,6 +1135,14 @@ final class ChessTrainer: @unchecked Sendable {
         let zND = MPSNDArray(device: mtlDevice, descriptor: zDesc)
         let zTD = MPSGraphTensorData(zND)
 
+        // vBaseline ND array — same shape as z, one scalar per row.
+        let vBaselineDesc = MPSNDArrayDescriptor(
+            dataType: dtype,
+            shape: [NSNumber(value: batchSize), 1]
+        )
+        let vBaselineND = MPSNDArray(device: mtlDevice, descriptor: vBaselineDesc)
+        let vBaselineTD = MPSGraphTensorData(vBaselineND)
+
         // Pre-build the feeds dictionary so `buildFeeds` can return it
         // unchanged on every subsequent call at this batch size. The
         // keys (graph placeholders) and values (tensor data wrappers)
@@ -1110,6 +1153,7 @@ final class ChessTrainer: @unchecked Sendable {
             network.inputPlaceholder: boardTD,
             movePlayedPlaceholder: moveTD,
             zPlaceholder: zTD,
+            vBaselinePlaceholder: vBaselineTD,
             lrPlaceholder: lrTensorData
         ]
 
@@ -1120,6 +1164,8 @@ final class ChessTrainer: @unchecked Sendable {
             moveTD: moveTD,
             zND: zND,
             zTD: zTD,
+            vBaselineND: vBaselineND,
+            vBaselineTD: vBaselineTD,
             feedsDict: feedsDict
         )
         feedCache[batchSize] = feeds

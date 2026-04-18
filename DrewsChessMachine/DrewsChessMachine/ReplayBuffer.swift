@@ -56,6 +56,16 @@ final class ReplayBuffer: @unchecked Sendable {
     /// as `boardStorage`.
     private let outcomeStorage: UnsafeMutablePointer<Float>
 
+    /// Flat `[capacity]` baseline-value scalars captured at the time
+    /// the position was played — the inference network's `v(position)`
+    /// output from the forward pass that was already run to pick the
+    /// move. Used as the advantage baseline during training:
+    /// `policy loss = mean((z − vBaseline) · −log p(a*))`. Detaches
+    /// automatically because it enters the training graph through a
+    /// placeholder rather than the value-head's live tensor. Same ring
+    /// index as `boardStorage`.
+    private let vBaselineStorage: UnsafeMutablePointer<Float>
+
     /// Number of positions currently held, capped at `capacity`.
     private var storedCount: Int = 0
     /// Next write slot in the ring.
@@ -69,6 +79,7 @@ final class ReplayBuffer: @unchecked Sendable {
     private var reusableBatchBoards: UnsafeMutablePointer<Float>?
     private var reusableBatchMoves: UnsafeMutablePointer<Int32>?
     private var reusableBatchZs: UnsafeMutablePointer<Float>?
+    private var reusableBatchVBaselines: UnsafeMutablePointer<Float>?
 
     // MARK: - Lifetime
 
@@ -88,6 +99,10 @@ final class ReplayBuffer: @unchecked Sendable {
         let outcomes = UnsafeMutablePointer<Float>.allocate(capacity: capacity)
         outcomes.initialize(repeating: 0, count: capacity)
         self.outcomeStorage = outcomes
+
+        let vBaselines = UnsafeMutablePointer<Float>.allocate(capacity: capacity)
+        vBaselines.initialize(repeating: 0, count: capacity)
+        self.vBaselineStorage = vBaselines
     }
 
     deinit {
@@ -101,6 +116,9 @@ final class ReplayBuffer: @unchecked Sendable {
         outcomeStorage.deinitialize(count: capacity)
         outcomeStorage.deallocate()
 
+        vBaselineStorage.deinitialize(count: capacity)
+        vBaselineStorage.deallocate()
+
         if let ptr = reusableBatchBoards {
             ptr.deinitialize(count: reusableBatchCapacity * Self.floatsPerBoard)
             ptr.deallocate()
@@ -110,6 +128,10 @@ final class ReplayBuffer: @unchecked Sendable {
             ptr.deallocate()
         }
         if let ptr = reusableBatchZs {
+            ptr.deinitialize(count: reusableBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = reusableBatchVBaselines {
             ptr.deinitialize(count: reusableBatchCapacity)
             ptr.deallocate()
         }
@@ -138,9 +160,11 @@ final class ReplayBuffer: @unchecked Sendable {
     }
 
     /// Per-position storage cost in bytes: board floats + move int32 +
-    /// outcome float. Used by the UI to estimate buffer RAM usage.
+    /// outcome float + vBaseline float. Used by the UI to estimate
+    /// buffer RAM usage.
     static let bytesPerPosition: Int = floatsPerBoard * MemoryLayout<Float>.size
         + MemoryLayout<Int32>.size
+        + MemoryLayout<Float>.size
         + MemoryLayout<Float>.size
 
     /// Atomic snapshot of the four persistence-relevant counters.
@@ -182,6 +206,7 @@ final class ReplayBuffer: @unchecked Sendable {
     func append(
         boards: UnsafePointer<Float>,
         policyIndices: UnsafePointer<Int32>,
+        vBaselines: UnsafePointer<Float>,
         outcome: Float,
         count positionCount: Int
     ) {
@@ -217,6 +242,14 @@ final class ReplayBuffer: @unchecked Sendable {
             // Outcomes: broadcast — no source buffer, just fill.
             (outcomeStorage + writeIndex).update(
                 repeating: outcome,
+                count: chunk
+            )
+            // vBaselines: one float per position — the inference-time
+            // v(position) captured during move selection. Detaches
+            // automatically at train time because it re-enters the
+            // graph via a placeholder feed.
+            (vBaselineStorage + writeIndex).update(
+                from: vBaselines + srcOffset,
                 count: chunk
             )
 
@@ -258,9 +291,10 @@ final class ReplayBuffer: @unchecked Sendable {
         guard
             let dstBoards = reusableBatchBoards,
             let dstMoves = reusableBatchMoves,
-            let dstZs = reusableBatchZs
+            let dstZs = reusableBatchZs,
+            let dstVBase = reusableBatchVBaselines
         else {
-            // `ensureReusableBatchCapacity` always populates the three
+            // `ensureReusableBatchCapacity` always populates the four
             // pointers for any positive size, so this branch is
             // unreachable unless allocation failed — surface the
             // failure rather than hand back nil silently.
@@ -277,17 +311,19 @@ final class ReplayBuffer: @unchecked Sendable {
             )
             dstMoves[i] = moveStorage[srcIndex]
             dstZs[i] = outcomeStorage[srcIndex]
+            dstVBase[i] = vBaselineStorage[srcIndex]
         }
 
         return TrainingBatch(
             boards: UnsafePointer(dstBoards),
             moves: UnsafePointer(dstMoves),
             zs: UnsafePointer(dstZs),
+            vBaselines: UnsafePointer(dstVBase),
             batchSize: sampleCount
         )
     }
 
-    /// Grow the three reusable output buffers to at least the given
+    /// Grow the four reusable output buffers to at least the given
     /// capacity, allocating lazily on the first call and re-allocating
     /// only if a larger batch is ever requested. The caller must hold
     /// `lock`.
@@ -306,6 +342,10 @@ final class ReplayBuffer: @unchecked Sendable {
             ptr.deinitialize(count: reusableBatchCapacity)
             ptr.deallocate()
         }
+        if let ptr = reusableBatchVBaselines {
+            ptr.deinitialize(count: reusableBatchCapacity)
+            ptr.deallocate()
+        }
 
         let boardSlots = needed * Self.floatsPerBoard
         let newBoards = UnsafeMutablePointer<Float>.allocate(capacity: boardSlots)
@@ -319,6 +359,10 @@ final class ReplayBuffer: @unchecked Sendable {
         let newZs = UnsafeMutablePointer<Float>.allocate(capacity: needed)
         newZs.initialize(repeating: 0, count: needed)
         reusableBatchZs = newZs
+
+        let newVBase = UnsafeMutablePointer<Float>.allocate(capacity: needed)
+        newVBase.initialize(repeating: 0, count: needed)
+        reusableBatchVBaselines = newVBase
 
         reusableBatchCapacity = needed
     }
@@ -356,7 +400,14 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Binary file magic — 8 ASCII bytes.
     private static let fileMagic: [UInt8] = Array("DCMRPBUF".utf8)
     /// Format version. Bump on any on-disk layout change.
-    private static let fileVersion: UInt32 = 1
+    ///
+    /// - v1: boards, moves, outcomes
+    /// - v2: boards, moves, outcomes, vBaselines (advantage baseline)
+    ///
+    /// Current writer always writes v2. Reader accepts both; v1 files
+    /// load with vBaselines zeroed out, which degrades gracefully to
+    /// the pre-advantage formulation (z − 0 = z).
+    private static let fileVersion: UInt32 = 2
     /// Header size in bytes: 8 magic + 4 version + 4 pad + 5 × Int64 fields.
     private static let headerSize: Int = 8 + 4 + 4 + 8 * 5
     /// Chunk size for raw-buffer writes/reads. Keeps peak Data
@@ -465,6 +516,20 @@ final class ReplayBuffer: @unchecked Sendable {
             elementsPerSlot: 1,
             slotSize: MemoryLayout<Float>.size
         )
+
+        // vBaselines — 4 bytes per slot. Present in v2 and later.
+        let vBaseChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<Float>.size)
+        try writeRange(
+            handle: handle,
+            start: startIndex,
+            total: stored,
+            capacity: cap,
+            chunkPositions: vBaseChunk,
+            elementBytes: MemoryLayout<Float>.size,
+            basePtr: UnsafeRawPointer(vBaselineStorage),
+            elementsPerSlot: 1,
+            slotSize: MemoryLayout<Float>.size
+        )
     }
 
     /// Serialize a contiguous logical range of the ring starting at
@@ -546,7 +611,9 @@ final class ReplayBuffer: @unchecked Sendable {
         let version: UInt32 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
         }
-        guard version == Self.fileVersion else {
+        // Accept both v1 (pre-advantage, no vBaselines region) and v2
+        // (with vBaselines). Reader fills vBaselines with zeros on v1.
+        guard version == 1 || version == 2 else {
             throw PersistenceError.unsupportedVersion(version)
         }
         let fpbFile: Int64 = headerData.withUnsafeBytes {
@@ -633,6 +700,26 @@ final class ReplayBuffer: @unchecked Sendable {
             slotBytes: MemoryLayout<Float>.size,
             count: target
         )
+
+        // vBaselines — only present in v2+. On v1 files, leave the
+        // whole region zero (pre-filled during the reset above via
+        // storedCount=0 → next append will overwrite, but defensive
+        // zero-init for sampling against a partially-restored buffer).
+        if version >= 2 {
+            if skip > 0 {
+                try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
+            }
+            try readContiguous(
+                handle: handle,
+                into: UnsafeMutableRawPointer(vBaselineStorage),
+                slotBytes: MemoryLayout<Float>.size,
+                count: target
+            )
+        } else {
+            // v1 file: zero out the vBaselines region for the slots
+            // we just restored so sampling returns a clean 0 baseline.
+            (vBaselineStorage).update(repeating: 0, count: target)
+        }
 
         storedCount = target
         writeIndex = (target == capacity) ? 0 : target
