@@ -1889,7 +1889,7 @@ struct ContentView: View {
                 Text("Drew's Chess Machine")
                     .font(.title2)
                     .fontWeight(.semibold)
-                Text("build \(BuildInfo.buildNumber) (\(BuildInfo.buildDate))")
+                Text(BuildInfo.summary)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                 Button(action: { showingInfoPopover.toggle() }) {
@@ -3084,6 +3084,7 @@ struct ContentView: View {
             )
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
+        let bufferSnap = replayBuffer?.stateSnapshot()
         return SessionCheckpointState(
             formatVersion: SessionCheckpointState.currentFormatVersion,
             sessionID: currentSessionID ?? "unknown-session",
@@ -3112,6 +3113,16 @@ struct ContentView: View {
             threefoldRepetitionDraws: snap?.threefoldRepetitionDraws,
             insufficientMaterialDraws: snap?.insufficientMaterialDraws,
             totalGameWallMs: snap?.totalGameWallMs,
+            buildNumber: BuildInfo.buildNumber,
+            buildGitHash: BuildInfo.gitHash,
+            buildGitBranch: BuildInfo.gitBranch,
+            buildDate: BuildInfo.buildDate,
+            buildTimestamp: BuildInfo.buildTimestamp,
+            buildGitDirty: BuildInfo.gitDirty,
+            hasReplayBuffer: bufferSnap != nil,
+            replayBufferStoredCount: bufferSnap?.storedCount,
+            replayBufferCapacity: bufferSnap?.capacity,
+            replayBufferTotalPositionsAdded: bufferSnap?.totalPositionsAdded,
             championID: championID,
             trainerID: trainerID,
             arenaHistory: history
@@ -3253,12 +3264,18 @@ struct ContentView: View {
         setCheckpointStatus("Saving session (\(trigger))…", isError: false)
 
         // Build the state snapshot on the main actor before
-        // jumping to detached work.
+        // jumping to detached work. Capture the replay buffer handle
+        // here too so the detached write path can serialize it
+        // alongside the two network files — `ReplayBuffer` is
+        // `@unchecked Sendable` and serializes access via its own
+        // lock, so the buffer can be written from a background task
+        // while self-play workers (which only append) are paused.
         let sessionState = buildCurrentSessionState(
             championID: championID,
             trainerID: trainerID
         )
         let trainingStep = trainingStats?.steps ?? 0
+        let bufferForSave = replayBuffer
 
         Task {
             // Pause self-play briefly so the champion export is
@@ -3332,6 +3349,7 @@ struct ContentView: View {
             )
             let now = Int64(Date().timeIntervalSince1970)
             let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
+                [bufferForSave] in
                 do {
                     let url = try CheckpointManager.saveSession(
                         championWeights: championWeights,
@@ -3343,6 +3361,7 @@ struct ContentView: View {
                         trainerMetadata: trainerMetadata,
                         trainerCreatedAtUnix: now,
                         state: sessionState,
+                        replayBuffer: bufferForSave,
                         trigger: trigger
                     )
                     return .success(url)
@@ -3355,7 +3374,13 @@ struct ContentView: View {
             switch outcome {
             case .success(let url):
                 setCheckpointStatus("Saved \(url.lastPathComponent)", isError: false)
-                SessionLogger.shared.log("[CHECKPOINT] Saved session: \(url.lastPathComponent)")
+                let bufStr: String
+                if let snap = bufferForSave?.stateSnapshot() {
+                    bufStr = " replay=\(snap.storedCount)/\(snap.capacity)"
+                } else {
+                    bufStr = ""
+                }
+                SessionLogger.shared.log("[CHECKPOINT] Saved session: \(url.lastPathComponent) build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(bufStr)")
             case .failure(let error):
                 setCheckpointStatus("Save failed: \(error.localizedDescription)", isError: true)
                 SessionLogger.shared.log("[CHECKPOINT] Save session failed: \(error.localizedDescription)")
@@ -3478,7 +3503,16 @@ struct ContentView: View {
                     Click Play and Train to resume.
                     """
                 setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", isError: false)
-                SessionLogger.shared.log("[CHECKPOINT] Loaded session: \(url.lastPathComponent)")
+                let savedBuild = loaded.state.buildNumber.map(String.init) ?? "?"
+                let savedGit = loaded.state.buildGitHash ?? "?"
+                let bufStr: String
+                if let stored = loaded.state.replayBufferStoredCount,
+                   let cap = loaded.state.replayBufferCapacity {
+                    bufStr = " replay=\(stored)/\(cap)"
+                } else {
+                    bufStr = " replay=none"
+                }
+                SessionLogger.shared.log("[CHECKPOINT] Loaded session: \(url.lastPathComponent) savedBuild=\(savedBuild) savedGit=\(savedGit)\(bufStr)")
                 inferenceResult = nil
             case .failure(let error):
                 setCheckpointStatus("Load failed: \(error.localizedDescription)", isError: true)
@@ -3968,6 +4002,7 @@ struct ContentView: View {
             // transfer to the detached task explicit).
             let championWeightsSnapshot = promotedChampionWeights
             let trainerWeightsSnapshot = trainerSnapshotWeights
+            let bufferForAutosave = replayBuffer
 
             // Fire-and-forget detached task. The closure captures
             // only Sendable value types (weight arrays, metadata
@@ -3980,6 +4015,7 @@ struct ContentView: View {
             // timestamped folder; failures show up in the
             // session log.
             Task.detached(priority: .utility) {
+                [bufferForAutosave] in
                 do {
                     let url = try CheckpointManager.saveSession(
                         championWeights: championWeightsSnapshot,
@@ -3991,9 +4027,16 @@ struct ContentView: View {
                         trainerMetadata: trainerMetadata,
                         trainerCreatedAtUnix: createdAtUnix,
                         state: sessionState,
+                        replayBuffer: bufferForAutosave,
                         trigger: "promote"
                     )
-                    SessionLogger.shared.log("[CHECKPOINT] Autosaved session: \(url.lastPathComponent)")
+                    let bufStr: String
+                    if let snap = bufferForAutosave?.stateSnapshot() {
+                        bufStr = " replay=\(snap.storedCount)/\(snap.capacity)"
+                    } else {
+                        bufStr = ""
+                    }
+                    SessionLogger.shared.log("[CHECKPOINT] Autosaved session: \(url.lastPathComponent) build=\(BuildInfo.buildNumber)\(bufStr)")
                 } catch {
                     SessionLogger.shared.log("[CHECKPOINT] Autosave session failed: \(error.localizedDescription)")
                 }
@@ -4063,7 +4106,7 @@ struct ContentView: View {
 
         let wld = "\(record.candidateWins)-\(record.championWins)-\(record.draws)"
         let header = "[ARENA] #\(index) @ step \(record.finishedAtStep)  W/L/D=\(wld)  score=\(scoreStr)  \(statusStr)  dur=\(durationStr)"
-        let params = "        batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(threshStr) games=\(Self.tournamentGames) sp.tau=\(spTauStr) ar.tau=\(arTauStr)"
+        let params = "        batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(threshStr) games=\(Self.tournamentGames) sp.tau=\(spTauStr) ar.tau=\(arTauStr) workers=\(selfPlayWorkerCount) build=\(BuildInfo.buildNumber)"
         let ids = "        candidate=\(candidateIDStr)  champion=\(championIDStr)  trainer=\(trainerIDStr)"
         let div = "        diversity: \(divStr)"
 
@@ -4667,6 +4710,9 @@ struct ContentView: View {
             let resumedTrainerWeights: [[Float]]? = await MainActor.run {
                 pendingLoadedSession?.trainerFile.weights
             }
+            let resumedBufferURL: URL? = await MainActor.run {
+                pendingLoadedSession?.replayBufferURL
+            }
             do {
                 try await Task.detached(priority: .userInitiated) {
                     [secondaries, resumedTrainerWeights] in
@@ -4688,6 +4734,31 @@ struct ContentView: View {
                     realTrainingTask = nil
                 }
                 return
+            }
+
+            // Restore replay buffer before any self-play worker or
+            // the training worker starts — training samples from the
+            // buffer, and any worker appends after restore resets
+            // would either be clobbered or (worse) race with the
+            // restore's counter reset. The restore runs on a
+            // detached I/O task so ~GB-scale reads don't block the
+            // cooperative hop cadence.
+            if let bufferURL = resumedBufferURL {
+                do {
+                    try await Task.detached(priority: .userInitiated) {
+                        [buffer, bufferURL] in
+                        try buffer.restore(from: bufferURL)
+                    }.value
+                    let snap = buffer.stateSnapshot()
+                    SessionLogger.shared.log(
+                        "[CHECKPOINT] Restored replay buffer: stored=\(snap.storedCount)/\(snap.capacity) totalAdded=\(snap.totalPositionsAdded) writeIndex=\(snap.writeIndex)"
+                    )
+                } catch {
+                    box.recordError("Replay buffer restore failed: \(error.localizedDescription)")
+                    SessionLogger.shared.log(
+                        "[CHECKPOINT] Replay buffer restore failed: \(error.localizedDescription) — continuing with empty buffer"
+                    )
+                }
             }
 
             // Trainer ID: on a fresh start, mint a new one. On a
@@ -4997,7 +5068,7 @@ struct ContentView: View {
                 // MainActor hop since they live on classes whose var
                 // mutation is otherwise main-actor-driven.
                 group.addTask(priority: .utility) {
-                    [trainer, network, box, pStatsBox, buffer, spDiversityTracker] in
+                    [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox] in
                     let sessionStart = Date()
                     // Ramp up quickly then cap at every 15 minutes.
                     let fixedTargets: [TimeInterval] = [30, 60, 120, 300, 900]
@@ -5007,10 +5078,13 @@ struct ContentView: View {
                         let parallelSnap = pStatsBox.snapshot()
                         let bufCount = buffer.count
                         let bufCap = buffer.capacity
-                        let (trainerID, championID) = await MainActor.run {
+                        let ratioSnap = ratioController.snapshot()
+                        let workerN = countBox.count
+                        let (trainerID, championID, lr) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
-                                network.identifier?.description ?? "?"
+                                network.identifier?.description ?? "?",
+                                trainer.learningRate
                             )
                         }
                         let policyStr: String
@@ -5043,7 +5117,17 @@ struct ContentView: View {
                         let divStr = divSnap.gamesInWindow > 0
                             ? String(format: "unique=%d/%d(%.0f%%) diverge=%.1f", divSnap.uniqueGames, divSnap.gamesInWindow, divSnap.uniquePercent, divSnap.avgDivergencePly)
                             : "n/a"
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) trainer=\(trainerID) champion=\(championID)"
+                        let lrStr = String(format: "%.1e", lr)
+                        let ratioStr = String(format: "target=%.2f cur=%.2f prod=%.1f cons=%.1f auto=%@ delay=%dms",
+                                              ratioSnap.targetRatio, ratioSnap.currentRatio,
+                                              ratioSnap.productionRate, ratioSnap.consumptionRate,
+                                              ratioSnap.autoAdjust ? "on" : "off", ratioSnap.computedDelayMs)
+                        let outcomeStr = String(format: "wMate=%d bMate=%d stale=%d 50mv=%d 3fold=%d insuf=%d",
+                                                parallelSnap.whiteCheckmates, parallelSnap.blackCheckmates,
+                                                parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
+                                                parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
+                        let cfgStr = "batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", Self.tournamentPromoteThreshold)) arenaGames=\(Self.tournamentGames) workers=\(workerN)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
                     }
 

@@ -143,6 +143,10 @@ struct LoadedSession {
     let state: SessionCheckpointState
     let championFile: ModelCheckpointFile
     let trainerFile: ModelCheckpointFile
+    /// URL of the replay-buffer binary, if one exists in the session
+    /// directory and the state flags it as present. `nil` for older
+    /// sessions or sessions saved without a replay buffer.
+    let replayBufferURL: URL?
 }
 
 // MARK: - Save / Load / Verify
@@ -243,6 +247,7 @@ enum CheckpointManager {
         trainerMetadata: ModelCheckpointMetadata,
         trainerCreatedAtUnix: Int64,
         state: SessionCheckpointState,
+        replayBuffer: ReplayBuffer? = nil,
         trigger: String,
         at date: Date = Date()
     ) throws -> URL {
@@ -305,6 +310,21 @@ enum CheckpointManager {
             throw CheckpointManagerError.writeFailed(tmpDirURL, error)
         }
 
+        // Optional replay-buffer dump. Written only when the caller
+        // passes a buffer AND the state flags `hasReplayBuffer == true`.
+        // Errors propagate — the tmp dir is cleaned up and the save
+        // fails, rather than silently producing a session whose
+        // session.json promises a replay buffer that isn't there.
+        if let replayBuffer, state.hasReplayBuffer == true {
+            let bufferTmpURL = SessionCheckpointLayout.replayBufferURL(in: tmpDirURL)
+            do {
+                try replayBuffer.write(to: bufferTmpURL)
+            } catch {
+                cleanupTmp()
+                throw CheckpointManagerError.writeFailed(bufferTmpURL, error)
+            }
+        }
+
         do {
             try verifyModelFile(at: championTmpURL, expectedWeights: championWeights)
             try verifyModelFile(at: trainerTmpURL, expectedWeights: trainerWeights)
@@ -358,11 +378,15 @@ enum CheckpointManager {
         let state = try SessionCheckpointState.decode(stateData)
         let championFile = try ModelCheckpointFile.decode(championData)
         let trainerFile = try ModelCheckpointFile.decode(trainerData)
+        let bufferURL = SessionCheckpointLayout.replayBufferURL(in: directoryURL)
+        let bufferPresent = (state.hasReplayBuffer == true)
+            && FileManager.default.fileExists(atPath: bufferURL.path)
         return LoadedSession(
             directoryURL: directoryURL,
             state: state,
             championFile: championFile,
-            trainerFile: trainerFile
+            trainerFile: trainerFile,
+            replayBufferURL: bufferPresent ? bufferURL : nil
         )
     }
 

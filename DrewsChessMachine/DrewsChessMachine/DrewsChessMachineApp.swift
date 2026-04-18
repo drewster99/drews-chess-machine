@@ -8,8 +8,12 @@ struct DrewsChessMachineApp: App {
         // stats — lands in a single `dcm_log_yyyymmdd-HHMMSS.txt`
         // file under the app's Library/Logs directory.
         SessionLogger.shared.start()
-        SessionLogger.shared.log("[APP] launched")
+        let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
+        SessionLogger.shared.log(
+            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp)"
+        )
         if let path = SessionLogger.shared.activeLogPath {
+            SessionLogger.shared.log("[APP] session log: \(path)")
             print("[APP] session log: \(path)")
         } else {
             print("[APP] session log: (failed to open)")

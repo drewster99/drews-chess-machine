@@ -52,6 +52,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = DF5D5893A4044C28AF0E9B67 /* Build configuration list for PBXNativeTarget "DrewsChessMachine" */;
 			buildPhases = (
+				BC1F0E71A2D5FA00B1D50001 /* Generate BuildInfo.swift */,
 				3E9AFDDD84264513BAAD93CF /* Sources */,
 				7C0F5DBFEA4343D3A03DAA4B /* Frameworks */,
 				E35C0E25C0964AFFA6E0B4D4 /* Resources */,
@@ -114,6 +115,28 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		BC1F0E71A2D5FA00B1D50001 /* Generate BuildInfo.swift */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Generate BuildInfo.swift";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"${PROJECT_DIR}/generate-build-info.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		3E9AFDDD84264513BAAD93CF /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -163,7 +186,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -221,7 +244,7 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;

@@ -122,6 +122,23 @@ struct SessionCheckpointState: Codable, Equatable {
     var insufficientMaterialDraws: Int?
     var totalGameWallMs: Double?
 
+    // Build metadata captured at save time. Optional for back-compat
+    // with older session.json files that lack these fields.
+    var buildNumber: Int?
+    var buildGitHash: String?
+    var buildGitBranch: String?
+    var buildDate: String?
+    var buildTimestamp: String?
+    var buildGitDirty: Bool?
+
+    // Replay-buffer presence (added alongside `replay_buffer.bin`).
+    // `true` if the session directory contains a matching
+    // replay-buffer file; nil/false for older sessions without it.
+    var hasReplayBuffer: Bool?
+    var replayBufferStoredCount: Int?
+    var replayBufferCapacity: Int?
+    var replayBufferTotalPositionsAdded: Int?
+
     // Network identity — duplicated from the `.dcmmodel` headers so
     // a future "browse saved sessions" UI can read just
     // `session.json` and still show model IDs.
@@ -171,6 +188,7 @@ enum SessionCheckpointLayout {
     static let championFilename = "champion.dcmmodel"
     static let trainerFilename = "trainer.dcmmodel"
     static let stateFilename = "session.json"
+    static let replayBufferFilename = "replay_buffer.bin"
 
     static func championURL(in directoryURL: URL) -> URL {
         directoryURL.appendingPathComponent(championFilename)
@@ -182,6 +200,10 @@ enum SessionCheckpointLayout {
 
     static func stateURL(in directoryURL: URL) -> URL {
         directoryURL.appendingPathComponent(stateFilename)
+    }
+
+    static func replayBufferURL(in directoryURL: URL) -> URL {
+        directoryURL.appendingPathComponent(replayBufferFilename)
     }
 
     /// Read the three raw payloads out of a session directory.

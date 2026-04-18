@@ -143,6 +143,30 @@ final class ReplayBuffer: @unchecked Sendable {
         + MemoryLayout<Int32>.size
         + MemoryLayout<Float>.size
 
+    /// Atomic snapshot of the four persistence-relevant counters.
+    /// Read under the lock so the values are mutually consistent
+    /// (unlike reading `count` and `totalPositionsAdded` separately).
+    struct StateSnapshot: Sendable {
+        let storedCount: Int
+        let capacity: Int
+        let writeIndex: Int
+        let totalPositionsAdded: Int
+    }
+
+    /// Thread-safe snapshot of the buffer's persistence-relevant
+    /// counters. Used by the session-checkpoint path to populate
+    /// `hasReplayBuffer*` fields in `SessionCheckpointState`.
+    func stateSnapshot() -> StateSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return StateSnapshot(
+            storedCount: storedCount,
+            capacity: capacity,
+            writeIndex: writeIndex,
+            totalPositionsAdded: _totalPositionsAdded
+        )
+    }
+
     // MARK: - Append
 
     /// Append one finished game's positions in bulk. The caller passes
@@ -297,5 +321,370 @@ final class ReplayBuffer: @unchecked Sendable {
         reusableBatchZs = newZs
 
         reusableBatchCapacity = needed
+    }
+
+    // MARK: - Persistence
+
+    /// Errors thrown by `write(to:)` / `restore(from:)`.
+    enum PersistenceError: LocalizedError {
+        case badMagic
+        case truncatedHeader
+        case unsupportedVersion(UInt32)
+        case incompatibleBoardSize(expected: Int, got: Int)
+        case invalidCounts(capacity: Int, stored: Int, writeIndex: Int)
+        case truncatedBody(expected: Int, got: Int)
+        case writeFailed(Error)
+        case readFailed(Error)
+
+        var errorDescription: String? {
+            switch self {
+            case .badMagic: return "Replay buffer file header magic mismatch"
+            case .truncatedHeader: return "Replay buffer file header truncated"
+            case .unsupportedVersion(let v): return "Unsupported replay buffer format version \(v)"
+            case .incompatibleBoardSize(let exp, let got):
+                return "Replay buffer board size mismatch (expected \(exp) floats, file has \(got))"
+            case .invalidCounts(let cap, let stored, let wi):
+                return "Invalid replay buffer counts (capacity=\(cap) stored=\(stored) writeIndex=\(wi))"
+            case .truncatedBody(let exp, let got):
+                return "Replay buffer body truncated (expected \(exp) bytes, got \(got))"
+            case .writeFailed(let err): return "Replay buffer write failed: \(err)"
+            case .readFailed(let err): return "Replay buffer read failed: \(err)"
+            }
+        }
+    }
+
+    /// Binary file magic — 8 ASCII bytes.
+    private static let fileMagic: [UInt8] = Array("DCMRPBUF".utf8)
+    /// Format version. Bump on any on-disk layout change.
+    private static let fileVersion: UInt32 = 1
+    /// Header size in bytes: 8 magic + 4 version + 4 pad + 5 × Int64 fields.
+    private static let headerSize: Int = 8 + 4 + 4 + 8 * 5
+    /// Chunk size for raw-buffer writes/reads. Keeps peak Data
+    /// allocations bounded even when the ring holds ~1 M positions.
+    private static let persistenceChunkBytes: Int = 32 * 1024 * 1024
+
+    /// Write the buffer's current contents to `url` in oldest-first
+    /// order. On-disk size is proportional to `storedCount` (not
+    /// `capacity`), so partially-filled rings serialize to a smaller
+    /// file. Thread-safe — acquires the lock for the duration of the
+    /// write, which pauses appends but not samples in progress
+    /// (sample already holds its own critical section).
+    func write(to url: URL) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let stored = storedCount
+        let cap = capacity
+        let floatsPerBoard = Self.floatsPerBoard
+        let wIndex = writeIndex
+        let totalAdded = _totalPositionsAdded
+
+        // Header
+        var header = Data()
+        header.reserveCapacity(Self.headerSize)
+        header.append(contentsOf: Self.fileMagic)
+        var version = Self.fileVersion
+        withUnsafeBytes(of: &version) { header.append(contentsOf: $0) }
+        var pad: UInt32 = 0
+        withUnsafeBytes(of: &pad) { header.append(contentsOf: $0) }
+        var fpb64 = Int64(floatsPerBoard)
+        withUnsafeBytes(of: &fpb64) { header.append(contentsOf: $0) }
+        var cap64 = Int64(cap)
+        withUnsafeBytes(of: &cap64) { header.append(contentsOf: $0) }
+        var stc64 = Int64(stored)
+        withUnsafeBytes(of: &stc64) { header.append(contentsOf: $0) }
+        var wi64 = Int64(wIndex)
+        withUnsafeBytes(of: &wi64) { header.append(contentsOf: $0) }
+        var ttl64 = Int64(totalAdded)
+        withUnsafeBytes(of: &ttl64) { header.append(contentsOf: $0) }
+
+        let fm = FileManager.default
+        if fm.fileExists(atPath: url.path) {
+            try? fm.removeItem(at: url)
+        }
+        fm.createFile(atPath: url.path, contents: nil)
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forWritingTo: url)
+        } catch {
+            throw PersistenceError.writeFailed(error)
+        }
+        defer { try? handle.close() }
+
+        do {
+            try handle.write(contentsOf: header)
+        } catch {
+            throw PersistenceError.writeFailed(error)
+        }
+
+        guard stored > 0 else { return }
+
+        // Start position of the oldest stored entry in the ring.
+        let startIndex = (stored == cap) ? wIndex : 0
+
+        // Boards — stride in positions, copy in chunks of up to
+        // persistenceChunkBytes to bound peak memory on 1 M-position rings.
+        let boardStride = floatsPerBoard * MemoryLayout<Float>.size
+        let boardChunkPositions = max(1, Self.persistenceChunkBytes / boardStride)
+        try writeRange(
+            handle: handle,
+            start: startIndex,
+            total: stored,
+            capacity: cap,
+            chunkPositions: boardChunkPositions,
+            elementBytes: boardStride,
+            basePtr: UnsafeRawPointer(boardStorage),
+            elementsPerSlot: floatsPerBoard,
+            slotSize: boardStride
+        )
+
+        // Moves — 4 bytes per slot.
+        let moveChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<Int32>.size)
+        try writeRange(
+            handle: handle,
+            start: startIndex,
+            total: stored,
+            capacity: cap,
+            chunkPositions: moveChunk,
+            elementBytes: MemoryLayout<Int32>.size,
+            basePtr: UnsafeRawPointer(moveStorage),
+            elementsPerSlot: 1,
+            slotSize: MemoryLayout<Int32>.size
+        )
+
+        // Outcomes — 4 bytes per slot.
+        let outChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<Float>.size)
+        try writeRange(
+            handle: handle,
+            start: startIndex,
+            total: stored,
+            capacity: cap,
+            chunkPositions: outChunk,
+            elementBytes: MemoryLayout<Float>.size,
+            basePtr: UnsafeRawPointer(outcomeStorage),
+            elementsPerSlot: 1,
+            slotSize: MemoryLayout<Float>.size
+        )
+    }
+
+    /// Serialize a contiguous logical range of the ring starting at
+    /// `start` with length `total`, handling wraparound. The array
+    /// is identified by `basePtr` (raw pointer to its element 0) and
+    /// `slotSize` bytes per ring slot. Caller must hold `lock`.
+    private func writeRange(
+        handle: FileHandle,
+        start: Int,
+        total: Int,
+        capacity: Int,
+        chunkPositions: Int,
+        elementBytes: Int,
+        basePtr: UnsafeRawPointer,
+        elementsPerSlot: Int,
+        slotSize: Int
+    ) throws {
+        var remaining = total
+        var idx = start
+        while remaining > 0 {
+            let tailSlots = capacity - idx
+            let run = min(remaining, tailSlots)
+            var runRemaining = run
+            var runIdx = idx
+            while runRemaining > 0 {
+                let take = min(runRemaining, chunkPositions)
+                let byteCount = take * slotSize
+                let srcPtr = basePtr.advanced(by: runIdx * slotSize)
+                do {
+                    try handle.write(
+                        contentsOf: Data(bytes: srcPtr, count: byteCount)
+                    )
+                } catch {
+                    throw PersistenceError.writeFailed(error)
+                }
+                runIdx += take
+                runRemaining -= take
+            }
+            let newIdx = idx + run
+            idx = (newIdx == capacity) ? 0 : newIdx
+            remaining -= run
+        }
+    }
+
+    /// Populate this buffer from `url`, replacing any existing
+    /// contents. If the file's capacity exceeds this buffer's
+    /// capacity, the oldest entries in the file are discarded so
+    /// only the newest `capacity` positions are retained. If the
+    /// file's capacity is smaller, all file entries are restored
+    /// and `writeIndex` continues from the loaded count. The
+    /// `totalPositionsAdded` counter is restored verbatim so the
+    /// replay-ratio controller's production-rate window stays
+    /// continuous across save/resume.
+    func restore(from url: URL) throws {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw PersistenceError.readFailed(error)
+        }
+        defer { try? handle.close() }
+
+        let headerData: Data
+        do {
+            guard let hd = try handle.read(upToCount: Self.headerSize),
+                  hd.count == Self.headerSize else {
+                throw PersistenceError.truncatedHeader
+            }
+            headerData = hd
+        } catch let err as PersistenceError {
+            throw err
+        } catch {
+            throw PersistenceError.readFailed(error)
+        }
+
+        let magicMatches = headerData.prefix(8).elementsEqual(Self.fileMagic)
+        guard magicMatches else { throw PersistenceError.badMagic }
+
+        let version: UInt32 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
+        }
+        guard version == Self.fileVersion else {
+            throw PersistenceError.unsupportedVersion(version)
+        }
+        let fpbFile: Int64 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 16, as: Int64.self)
+        }
+        let capFile: Int64 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 24, as: Int64.self)
+        }
+        let stcFile: Int64 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 32, as: Int64.self)
+        }
+        let wiFile: Int64 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 40, as: Int64.self)
+        }
+        let ttlFile: Int64 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 48, as: Int64.self)
+        }
+
+        guard Int(fpbFile) == Self.floatsPerBoard else {
+            throw PersistenceError.incompatibleBoardSize(
+                expected: Self.floatsPerBoard,
+                got: Int(fpbFile)
+            )
+        }
+        guard capFile >= 0, stcFile >= 0, stcFile <= capFile,
+              wiFile >= 0, wiFile < max(1, capFile) else {
+            throw PersistenceError.invalidCounts(
+                capacity: Int(capFile),
+                stored: Int(stcFile),
+                writeIndex: Int(wiFile)
+            )
+        }
+
+        let fileStored = Int(stcFile)
+        let target = min(fileStored, capacity)
+        let skip = fileStored - target  // oldest-first file entries to discard
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        // Reset live state before filling.
+        storedCount = 0
+        writeIndex = 0
+        _totalPositionsAdded = 0
+
+        if fileStored == 0 {
+            _totalPositionsAdded = Int(ttlFile)
+            return
+        }
+
+        let floatsPerBoard = Self.floatsPerBoard
+        let boardSlotBytes = floatsPerBoard * MemoryLayout<Float>.size
+
+        // Skip the `skip` oldest board records if capacity shrank.
+        if skip > 0 {
+            try seekForward(handle: handle, bytes: skip * boardSlotBytes)
+        }
+        try readContiguous(
+            handle: handle,
+            into: UnsafeMutableRawPointer(boardStorage),
+            slotBytes: boardSlotBytes,
+            count: target
+        )
+
+        // Skip remaining board bytes if we truncated (there's no more
+        // board data past the last target slot in the file). Then
+        // seek past the skipped-move prefix.
+        if skip > 0 {
+            try seekForward(handle: handle, bytes: skip * MemoryLayout<Int32>.size)
+        }
+        try readContiguous(
+            handle: handle,
+            into: UnsafeMutableRawPointer(moveStorage),
+            slotBytes: MemoryLayout<Int32>.size,
+            count: target
+        )
+
+        if skip > 0 {
+            try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
+        }
+        try readContiguous(
+            handle: handle,
+            into: UnsafeMutableRawPointer(outcomeStorage),
+            slotBytes: MemoryLayout<Float>.size,
+            count: target
+        )
+
+        storedCount = target
+        writeIndex = (target == capacity) ? 0 : target
+        _totalPositionsAdded = Int(ttlFile)
+    }
+
+    private func seekForward(handle: FileHandle, bytes: Int) throws {
+        guard bytes > 0 else { return }
+        do {
+            let current = try handle.offset()
+            try handle.seek(toOffset: current + UInt64(bytes))
+        } catch {
+            throw PersistenceError.readFailed(error)
+        }
+    }
+
+    private func readContiguous(
+        handle: FileHandle,
+        into basePtr: UnsafeMutableRawPointer,
+        slotBytes: Int,
+        count: Int
+    ) throws {
+        guard count > 0 else { return }
+        let chunkSlots = max(1, Self.persistenceChunkBytes / slotBytes)
+        var remaining = count
+        var offset = 0
+        while remaining > 0 {
+            let take = min(remaining, chunkSlots)
+            let byteCount = take * slotBytes
+            let data: Data
+            do {
+                guard let chunk = try handle.read(upToCount: byteCount),
+                      chunk.count == byteCount else {
+                    throw PersistenceError.truncatedBody(
+                        expected: byteCount,
+                        got: 0
+                    )
+                }
+                data = chunk
+            } catch let err as PersistenceError {
+                throw err
+            } catch {
+                throw PersistenceError.readFailed(error)
+            }
+            let dst = basePtr.advanced(by: offset * slotBytes)
+            data.withUnsafeBytes { src in
+                if let srcBase = src.baseAddress {
+                    dst.copyMemory(from: srcBase, byteCount: byteCount)
+                }
+            }
+            offset += take
+            remaining -= take
+        }
     }
 }
