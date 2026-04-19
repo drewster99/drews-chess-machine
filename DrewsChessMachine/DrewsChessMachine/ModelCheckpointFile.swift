@@ -11,6 +11,7 @@ enum ModelCheckpointError: LocalizedError {
     case tensorCountMismatch(expected: Int, got: Int)
     case tensorIndexMismatch(expected: Int, got: UInt32)
     case elementCountMismatch(tensorIndex: Int, expected: Int, got: Int)
+    case implausibleTensorSize(tensorIndex: Int, elementCount: Int, maxAllowed: Int)
     case truncated
     case trailingBytesAfterPayload(remaining: Int)
     case hashMismatch
@@ -34,6 +35,8 @@ enum ModelCheckpointError: LocalizedError {
             return "Tensor index mismatch at position \(expected) (file says \(got))"
         case .elementCountMismatch(let i, let expected, let got):
             return "Tensor \(i) element count mismatch: expected \(expected), got \(got)"
+        case .implausibleTensorSize(let i, let elementCount, let maxAllowed):
+            return "Tensor \(i) reports \(elementCount) elements, exceeds sanity cap \(maxAllowed) — file is malformed or corrupted"
         case .truncated:
             return "File is truncated — ran out of bytes before the declared payload"
         case .trailingBytesAfterPayload(let remaining):
@@ -107,7 +110,10 @@ struct ModelCheckpointFile {
     static var currentArchHash: UInt32 {
         var h: UInt32 = 0x811C9DC5 // FNV-1a offset basis
         func mix(_ value: Int) {
-            var v = UInt32(truncatingIfNeeded: value).littleEndian
+            guard let u32 = UInt32(exactly: value) else {
+                preconditionFailure("Architecture constant exceeds UInt32: \(value). Widen currentArchHash before using values this large.")
+            }
+            var v = u32.littleEndian
             withUnsafeBytes(of: &v) { raw in
                 for byte in raw {
                     h ^= UInt32(byte)
@@ -132,6 +138,16 @@ struct ModelCheckpointFile {
     /// are handed to it, so a wrong count is caught there with a
     /// precise error message.
     static let minimumEncodedSize: Int = 8 + 4 + 4 + 4 + 8 + 4 + 4 + 32
+
+    /// Sanity cap on the per-tensor element count read from disk.
+    /// The current largest tensor is the policy-head FC weight
+    /// matrix at `channels × policySize` ≈ 524K elements; 600K
+    /// leaves headroom without allowing a corrupted or hand-edited
+    /// file to request a multi-gigabyte allocation. Paired with the
+    /// SHA-256 trailer (which already catches corruption pre-decode)
+    /// this is defense-in-depth: if the hash ever happens to match
+    /// a malformed element count, we still reject before allocating.
+    static let maxTensorElementCount: Int = 600_000
 
     let modelID: String
     let createdAtUnix: Int64
@@ -280,7 +296,21 @@ struct ModelCheckpointFile {
                 )
             }
             let elementCount = Int(try reader.readUInt32LE())
-            let byteCount = elementCount * MemoryLayout<Float>.size
+            guard elementCount >= 0, elementCount <= Self.maxTensorElementCount else {
+                throw ModelCheckpointError.implausibleTensorSize(
+                    tensorIndex: expectedIndex,
+                    elementCount: elementCount,
+                    maxAllowed: Self.maxTensorElementCount
+                )
+            }
+            let (byteCount, overflowed) = elementCount.multipliedReportingOverflow(by: MemoryLayout<Float>.size)
+            guard !overflowed else {
+                throw ModelCheckpointError.implausibleTensorSize(
+                    tensorIndex: expectedIndex,
+                    elementCount: elementCount,
+                    maxAllowed: Self.maxTensorElementCount
+                )
+            }
             let raw = try reader.readBytes(byteCount)
             var floats = [Float](repeating: 0, count: elementCount)
             raw.withUnsafeBufferPointer { src in

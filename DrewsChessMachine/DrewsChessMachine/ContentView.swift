@@ -2533,6 +2533,17 @@ struct ContentView: View {
             wireMenuCommandHub()
             syncMenuCommandHubState()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
+            // Teardown on actual window close only — NOT on minimize (which
+            // would fire .onDisappear on macOS WindowGroup). Users who
+            // deliberately minimize a training session still expect it to
+            // keep running. Cancellation here stops every long-lived Task
+            // so closed-window training doesn't silently burn GPU forever
+            // (most importantly `alarmSoundTask`, which owns a 5-minute
+            // sleep loop that would otherwise keep beeping unattended).
+            stopAnyContinuous()
+            clearTrainingAlarm()
+        }
         .onChange(of: isBuilding) { _, _ in syncMenuCommandHubState() }
         .onChange(of: continuousPlay) { _, _ in syncMenuCommandHubState() }
         .onChange(of: continuousTraining) { _, _ in syncMenuCommandHubState() }

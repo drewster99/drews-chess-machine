@@ -8,6 +8,7 @@ import MetalPerformanceShadersGraph
 enum ChessTrainerError: LocalizedError {
     case lossOutputMissing
     case gradientMissing(String)
+    case nonFiniteLoss(total: Float, policy: Float, value: Float, gradNorm: Float)
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +16,8 @@ enum ChessTrainerError: LocalizedError {
             return "Training step ran but loss tensor was not in the result map"
         case .gradientMissing(let name):
             return "Gradient missing for variable: \(name)"
+        case .nonFiniteLoss(let total, let policy, let value, let gradNorm):
+            return "Non-finite loss detected: total=\(total) policy=\(policy) value=\(value) gradNorm=\(gradNorm). Weights from this step are likely poisoned; training halted."
         }
     }
 }
@@ -416,12 +419,15 @@ final class ChessTrainer: @unchecked Sendable {
 
     // MARK: Configuration
 
-    /// L2 weight-decay coefficient applied to every trainable variable
-    /// on every step (decoupled, AdamW-style). The update rule becomes
-    /// `v_new = v - lr * (clipped_grad + weightDecayC * v)`, which is
-    /// equivalent to `(1 - lr*c) * v - lr * clipped_grad`. Applied
-    /// uniformly — biases and BN scale/shift included — matching the
-    /// design doc's "L2 on all params" decision.
+    /// L2 weight-decay coefficient applied per training step (decoupled,
+    /// AdamW-style). The update rule for decay-eligible variables is
+    /// `v_new = v - lr * (clipped_grad + weightDecayC * v)`, equivalent
+    /// to `(1 - lr*c) * v - lr * clipped_grad`. Decay is applied only
+    /// to conv and FC weight matrices; BN gamma/beta and FC biases
+    /// are excluded, matching the standard PyTorch / AdamW recipe.
+    /// (Decaying BN gamma toward zero zeros out a channel and reduces
+    /// effective capacity — the prior "L2 on all params" decision was
+    /// reverted after the deep ML review.)
     static let weightDecayC: Float = 1e-4
 
     /// Global L2-norm gradient clipping threshold. If the L2 norm of
@@ -1016,6 +1022,10 @@ final class ChessTrainer: @unchecked Sendable {
 
         var ops: [MPSGraphOperation] = []
         ops.reserveCapacity(network.trainableVariables.count)
+        precondition(
+            network.trainableShouldDecay.count == network.trainableVariables.count,
+            "ChessNetwork.trainableShouldDecay must align 1:1 with trainableVariables"
+        )
         for (i, variable) in network.trainableVariables.enumerated() {
             guard let grad = grads[variable] else {
                 // Already checked in the norm-accumulation loop above,
@@ -1027,14 +1037,19 @@ final class ChessTrainer: @unchecked Sendable {
             }
             // Apply the global L2 clip scale to this gradient.
             let clippedGrad = graph.multiplication(grad, clipScale, name: nil)
-            // Decoupled weight decay term: c*v.
-            let decayTerm = graph.multiplication(
-                variable,
-                weightDecayConstant,
-                name: nil
-            )
-            // Combined update direction before scaling by lr.
-            let combinedUpdate = graph.addition(clippedGrad, decayTerm, name: nil)
+            // Decoupled weight decay term: c*v. Skipped for BN gamma/beta
+            // and FC biases per the standard no-decay recipe.
+            let combinedUpdate: MPSGraphTensor
+            if network.trainableShouldDecay[i] {
+                let decayTerm = graph.multiplication(
+                    variable,
+                    weightDecayConstant,
+                    name: nil
+                )
+                combinedUpdate = graph.addition(clippedGrad, decayTerm, name: nil)
+            } else {
+                combinedUpdate = clippedGrad
+            }
             let scaled = graph.multiplication(lrTensor, combinedUpdate, name: nil)
             let updated = graph.subtraction(variable, scaled, name: nil)
             let assignOp = graph.assign(variable, tensor: updated, name: nil)
@@ -1484,6 +1499,30 @@ final class ChessTrainer: @unchecked Sendable {
         let valueAbsMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueAbsMean]
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
+        // Health check: any NaN/Inf in the headline loss or grad scalars means
+        // this step's weight update has already corrupted the network (the
+        // optimizer assignOps ran inside the same graph.run). We can't undo
+        // that, but we can stop compounding the damage by halting right here.
+        // The six checked values are the ones printed in [STATS] and used to
+        // drive alarms; checking valueMean + entropy too catches broader
+        // corruption signatures that leave the top-level losses oddly finite.
+        if !totalBufValue.isFinite
+            || !policyBufValue.isFinite
+            || !valueBufValue.isFinite
+            || !gradNormBufValue.isFinite
+            || !valueMeanBufValue.isFinite
+            || !entropyBufValue.isFinite {
+            SessionLogger.shared.log(
+                "[ALARM] loss non-finite: total=\(totalBufValue) policy=\(policyBufValue) value=\(valueBufValue) grad=\(gradNormBufValue) vMean=\(valueMeanBufValue) pEnt=\(entropyBufValue)"
+            )
+            throw ChessTrainerError.nonFiniteLoss(
+                total: totalBufValue,
+                policy: policyBufValue,
+                value: valueBufValue,
+                gradNorm: gradNormBufValue
+            )
+        }
+
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
 
         return TrainStepTiming(
@@ -1664,6 +1703,15 @@ final class ChessTrainer: @unchecked Sendable {
             // whole sweep to finish.
             onRowCompleted(row)
         }
+
+        // The sweep ran training-mode forward passes against random
+        // (non-chess) inputs, so the BN running-stat EMA variables now
+        // reflect the per-channel statistics of noise. Leaving them in
+        // that state would silently miscalibrate any subsequent
+        // `loadWeights` into an inference network. Reset back to fresh
+        // random weights + factory BN stats (zero mean, unit var) so the
+        // trainer is in a clean state for whatever runs next.
+        try await self.resetNetwork()
 
         return results
     }
