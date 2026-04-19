@@ -166,21 +166,26 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     }
 
     func markPlaying(_ playing: Bool) {
+        let now = CFAbsoluteTimeGetCurrent()
         queue.async { [weak self] in
-            self?.setPlayingOnQueue(playing)
+            self?.setPlayingOnQueue(playing, now: now)
         }
     }
 
     /// Toggle isPlaying and update the active-play stopwatch. Caller
-    /// must already be executing on `queue`. Idempotent: calling with
-    /// the same value twice is a no-op for the stopwatch.
-    private func setPlayingOnQueue(_ playing: Bool) {
+    /// must already be executing on `queue` and must pass a `now`
+    /// value captured at the original call site — the async hop onto
+    /// `queue` may land microseconds later, and the stopwatch needs
+    /// to reflect the moment the caller decided to start/stop play,
+    /// not when the queue got to the closure. Idempotent: calling
+    /// with the same value twice is a no-op for the stopwatch.
+    private func setPlayingOnQueue(_ playing: Bool, now: CFAbsoluteTime) {
         if playing {
             if s.currentPlayStartTime == nil {
-                s.currentPlayStartTime = CFAbsoluteTimeGetCurrent()
+                s.currentPlayStartTime = now
             }
         } else if let start = s.currentPlayStartTime {
-            s.activePlaySeconds += max(0, CFAbsoluteTimeGetCurrent() - start)
+            s.activePlaySeconds += max(0, now - start)
             s.currentPlayStartTime = nil
         }
         s.isPlaying = playing
@@ -202,12 +207,13 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         finalState: GameState,
         stats: GameStats
     ) {
+        let now = CFAbsoluteTimeGetCurrent()
         queue.async { [weak self] in
             guard let self else { return }
             self.s.result = result
             self.s.state = finalState
             self.s.lastGameStats = stats
-            self.setPlayingOnQueue(false)
+            self.setPlayingOnQueue(false, now: now)
 
             self.s.totalGames += 1
             self.s.totalMoves += stats.totalMoves
@@ -239,8 +245,9 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     }
 
     func chessMachine(_ machine: ChessMachine, playerErrored player: any ChessPlayer, error: any Error) {
+        let now = CFAbsoluteTimeGetCurrent()
         queue.async { [weak self] in
-            self?.setPlayingOnQueue(false)
+            self?.setPlayingOnQueue(false, now: now)
         }
     }
 }
@@ -779,9 +786,10 @@ final class ArenaTriggerBox: @unchecked Sendable {
     /// that stale trigger would fire a back-to-back arena the instant
     /// the coordinator loops back.
     func recordArenaCompleted() {
+        let now = Date()
         queue.async { [weak self] in
             guard let self else { return }
-            self._lastArenaTime = Date()
+            self._lastArenaTime = now
             self._pending = false
         }
     }
@@ -982,10 +990,15 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// Advance `sessionStart` to `Date()`. Called once from inside
     /// the Play-and-Train task, immediately before the worker group
     /// is spawned, so that rate denominators only cover the window
-    /// in which workers are actually running.
+    /// in which workers are actually running. Captures `Date()` at
+    /// the call site (not inside the closure) so the timestamp
+    /// reflects the moment the caller invoked this method — the
+    /// async dispatch may land microseconds later once any queued
+    /// stats writes drain.
     func markWorkersStarted() {
+        let now = Date()
         queue.async { [weak self] in
-            self?._sessionStart = Date()
+            self?._sessionStart = now
         }
     }
 
@@ -1013,8 +1026,12 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// at game-end with the game's total moves, wall-clock duration,
     /// and final result. Bumps lifetime totals, the per-outcome
     /// counters, and the rolling 10-minute window. Thread-safe via
-    /// the box's serial queue.
+    /// the box's serial queue. `Date()` is captured at the call site
+    /// — the game-end timestamp feeds the rolling-window rate stats,
+    /// so it must reflect when the game actually finished rather
+    /// than when the queue got around to processing the write.
     func recordCompletedGame(moves: Int, durationMs: Double, result: GameResult) {
+        let now = Date()
         queue.async { [weak self] in
             guard let self else { return }
             self._totalGames += 1
@@ -1038,7 +1055,6 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 self._threefoldRepetitionDraws += 1
             }
 
-            let now = Date()
             self._recentGames.append(GameRecord(timestamp: now, moves: moves, durationMs: durationMs))
             self.pruneRecentOnQueue(now: now)
         }
