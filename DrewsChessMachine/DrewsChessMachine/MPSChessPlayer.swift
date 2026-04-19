@@ -37,12 +37,15 @@ struct SamplingSchedule: Sendable {
         floorTau: 0.4
     )
 
-    /// Arena-evaluation schedule: starts at tau=1.0, decays by 0.04
-    /// per ply, flooring at 0.2 (reached at ply 20). Faster decay
-    /// and lower floor than self-play so most of the game reflects
-    /// the networks' actual preferences rather than sampling noise.
+    /// Arena-evaluation schedule: starts at tau=0.7, decays by 0.04
+    /// per ply, flooring at 0.2 (reached at ply 13). Lower starting
+    /// temperature than self-play keeps opening play closer to each
+    /// network's actual preferences — opening diversity still comes
+    /// from color-alternating pairings and the residual 0.7 tau —
+    /// while the faster decay and lower floor ensure the middlegame
+    /// onward reflects decisive play rather than sampling noise.
     static let arena = SamplingSchedule(
-        startTau: 1.0,
+        startTau: 0.7,
         decayPerPly: 0.04,
         floorTau: 0.2
     )

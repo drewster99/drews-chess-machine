@@ -546,9 +546,9 @@ final class ChessTrainer: @unchecked Sendable {
     // MARK: Init
 
     init(
-        learningRate: Float = 1e-4,
+        learningRate: Float = 5e-5,
         entropyRegularizationCoeff: Float = 0.0,
-        drawPenalty: Float = 0.0
+        drawPenalty: Float = 0.1
     ) throws {
         self.learningRate = learningRate
         self.entropyRegularizationCoeff = entropyRegularizationCoeff

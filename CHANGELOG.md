@@ -8,6 +8,49 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-18 23:30 CDT — Bootstrap hyperparameter retune: arena tau, draw penalty, LR
+
+**Files:** `MPSChessPlayer.swift`, `ChessTrainer.swift`, `ContentView.swift`,
+`sampling-parameters.md`.
+
+Three defaults changed together as a retuning pass for the current
+REINFORCE bootstrap phase:
+
+- **Arena startTau: 1.0 → 0.7** (`SamplingSchedule.arena`). With
+  `decayPerPly=0.04` and `floorTau=0.2` held constant, the floor is
+  now reached at ply 13 instead of ply 20. Arena opening play now
+  sits closer to each network's actual preferences; enough opening
+  diversity still comes from color-alternating pairings plus the
+  residual 0.7 tau to keep the 200-game tournament from collapsing
+  into a handful of deterministic lines. Self-play schedule
+  (`startTau=1.0`, decay 0.03, floor 0.4) is unchanged — its higher
+  tau remains the right setting for replay-buffer coverage.
+  `sampling-parameters.md` updated (table row + rationale bullet).
+
+- **Draw penalty default: 0.0 → 0.1** (`drawPenaltyDefault` in
+  `ContentView.swift`, matching init default in `ChessTrainer`).
+  The 2026-04-18 22:46 commit introduced the knob with a no-op
+  default; this commit turns it on by default so fresh sessions
+  and new installs start with the REINFORCE draw-stasis break-out
+  already active. Existing sessions that persisted a value via
+  `@AppStorage("drawPenalty")` keep their previous setting.
+
+- **Trainer learning rate default: 1e-4 → 5e-5**
+  (`trainerLearningRateDefault` + `ChessTrainer.init` default).
+  Halving the LR as a conservative default alongside the draw
+  penalty — the penalty introduces a new gradient signal on
+  ~80 %+ of positions (since draws dominate the replay buffer),
+  and a gentler step size reduces the risk of the policy
+  overshooting into a degenerate low-entropy attractor before
+  the value head catches up and cancels most of the signal.
+
+No graph rebuilds required — all three values are live-tunable
+through the existing UI fields; the defaults just seed new
+sessions and reset the baseline for anyone without a persisted
+override.
+
+---
+
 ## 2026-04-18 22:46 CDT — Configurable draw penalty for REINFORCE bootstrap
 
 **Files:** `ChessTrainer.swift`, `ContentView.swift`,

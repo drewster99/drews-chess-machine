@@ -1374,9 +1374,9 @@ struct ContentView: View {
     /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
     /// count has actually advanced.
     @State private var trainingBox: TrainingLiveStatsBox?
-    nonisolated static let trainerLearningRateDefault: Float = 1e-4
+    nonisolated static let trainerLearningRateDefault: Float = 5e-5
     nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-1
-    nonisolated static let drawPenaltyDefault: Float = 0.0
+    nonisolated static let drawPenaltyDefault: Float = 0.1
     nonisolated static let trainingBatchSize = 4096
 
     /// Policy-entropy floor below which the periodic stats ticker

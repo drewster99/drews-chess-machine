@@ -36,7 +36,7 @@ The linear ramp replaces an earlier two-phase model (abrupt jump from opening te
 | Preset | `startTau` | `decayPerPly` | `floorTau` | Floor reached at ply | Used by |
 |---|---|---|---|---|---|
 | `.selfPlay` | 1.0 | 0.03 | 0.4 | 20 | Play-and-Train self-play workers |
-| `.arena` | 1.0 | 0.04 | 0.2 | 20 | Arena tournament (candidate vs champion) |
+| `.arena` | 0.7 | 0.04 | 0.2 | 13 | Arena tournament (candidate vs champion) |
 | `.uniform` | 1.0 | 0.0 | 1.0 | never | Play Game / Forward Pass (legacy) |
 
 ### Self-play schedule rationale
@@ -52,9 +52,9 @@ The floor of 0.4 is higher than the prior two-phase main temperature of 0.25. Th
 
 The arena exists to measure which network is stronger. Noise in the sampling reduces the signal-to-noise ratio of the evaluation, requiring more games for statistical significance.
 
-- **Early diversity is still needed**: Without some stochastic opening play, color-alternating tournaments would collapse into a handful of deterministic lines. `startTau=1.0` ensures enough opening variation that every game in a 200-game tournament plays out differently.
+- **Moderate opening diversity**: Without some stochastic opening play, color-alternating tournaments would collapse into a handful of deterministic lines. `startTau=0.7` provides enough opening variation to keep the 200-game tournament from repeating itself while staying closer to each network's actual preferences than the self-play `startTau=1.0`.
 - **Faster decay** (`decayPerPly=0.04` vs 0.03): The arena tightens faster because evaluation accuracy matters more than exploration.
-- **Lower floor** (`floorTau=0.2`): By ply 20 both networks are playing near their actual preferences, which is what we want for scoring.
+- **Lower floor** (`floorTau=0.2`): By ply 13 both networks are playing near their actual preferences, which is what we want for scoring.
 
 ## The one line of math
 
