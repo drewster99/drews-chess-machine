@@ -1,5 +1,56 @@
 import Foundation
 
+// MARK: - Dirichlet Exploration Noise
+
+/// Mixes a sample from the symmetric Dirichlet distribution into the
+/// per-move sampling probabilities to keep self-play opening coverage
+/// from collapsing onto the network's current trunk. Without it, the
+/// only exploration mechanism is the temperature schedule, which
+/// scales the network's existing opinion rather than overriding it —
+/// a move the policy gives 0.001 to is sampled ~0.1 % of the time
+/// regardless of tau, so off-trunk lines drift out of the replay
+/// buffer entirely.
+///
+/// The mix is `p'(a) = (1 - ε) · p(a) + ε · η(a)` where `η ~ Dir(α)`
+/// over the legal moves. With `α < 1` the noise mass concentrates on
+/// a small random subset of moves rather than smearing uniformly,
+/// giving each game a slightly different "preferred" off-trunk line
+/// instead of dumping ε of the probability into chaos.
+///
+/// AlphaZero applies Dirichlet noise at the MCTS root prior, where
+/// ~800 simulations average out the per-game randomness; in this
+/// engine the noise affects the sampled move directly, so `epsilon`
+/// values comparable to AlphaZero's 0.25 are at the aggressive end of
+/// the useful range. `plyLimit` bounds the noise to the opening so
+/// middle/endgame play reflects the network's actual judgment.
+struct DirichletNoiseConfig: Sendable {
+    /// Concentration parameter α. Must be > 0. AlphaZero uses 0.3 for
+    /// chess. Smaller values produce spikier noise (mass on fewer
+    /// random moves); larger values smear toward uniform.
+    let alpha: Float
+
+    /// Mixing weight ε in `p' = (1-ε) · p + ε · η`. Must be in
+    /// [0, 1]. AlphaZero baseline is 0.25; for a no-search engine,
+    /// 0.10–0.25 is a reasonable starting range.
+    let epsilon: Float
+
+    /// Maximum per-player ply (0-indexed) at which noise is mixed in.
+    /// At ply >= `plyLimit` the network's policy is sampled
+    /// unmodified. Limits noise to the opening, which is where
+    /// replay-buffer coverage matters most and where the network's
+    /// own argmax tends to repeat.
+    let plyLimit: Int
+
+    /// AlphaZero baseline for chess (α=0.3, ε=0.25), gated to the
+    /// first 30 plies per player. Apply to self-play only — arena
+    /// games should sample without exploration noise.
+    static let alphaZero = DirichletNoiseConfig(
+        alpha: 0.3,
+        epsilon: 0.25,
+        plyLimit: 30
+    )
+}
+
 // MARK: - Sampling Schedule
 
 /// Linear-decay temperature schedule applied by `MPSChessPlayer.sampleMove`.
@@ -26,15 +77,38 @@ struct SamplingSchedule: Sendable {
     let decayPerPly: Float
     /// Minimum temperature — the decay floor. Must be > 0.
     let floorTau: Float
+    /// Optional Dirichlet exploration noise mixed into the sampled
+    /// move distribution after temperature softmax. `nil` means no
+    /// noise (the prior behavior). See `DirichletNoiseConfig`.
+    let dirichletNoise: DirichletNoiseConfig?
+
+    /// Custom init so the new `dirichletNoise` field can default to
+    /// `nil` without forcing every call site (e.g.
+    /// `SessionCheckpointFile`'s positional reconstructor) to know
+    /// about it.
+    init(
+        startTau: Float,
+        decayPerPly: Float,
+        floorTau: Float,
+        dirichletNoise: DirichletNoiseConfig? = nil
+    ) {
+        self.startTau = startTau
+        self.decayPerPly = decayPerPly
+        self.floorTau = floorTau
+        self.dirichletNoise = dirichletNoise
+    }
 
     /// Self-play data-generation schedule: starts at tau=1.0, decays
     /// by 0.03 per ply, flooring at 0.4 (reached at ply 20). The
     /// smooth ramp keeps early-game diversity for replay-buffer
     /// coverage while gradually tightening toward decisive play.
+    /// AlphaZero-default Dirichlet noise is mixed into the opening
+    /// 30 plies per player so off-trunk lines keep getting played.
     static let selfPlay = SamplingSchedule(
         startTau: 1.0,
         decayPerPly: 0.03,
-        floorTau: 0.4
+        floorTau: 0.4,
+        dirichletNoise: .alphaZero
     )
 
     /// Arena-evaluation schedule: starts at tau=0.7, decays by 0.04
@@ -43,7 +117,8 @@ struct SamplingSchedule: Sendable {
     /// network's actual preferences — opening diversity still comes
     /// from color-alternating pairings and the residual 0.7 tau —
     /// while the faster decay and lower floor ensure the middlegame
-    /// onward reflects decisive play rather than sampling noise.
+    /// onward reflects decisive play rather than sampling noise. No
+    /// Dirichlet noise — arena games measure actual strength.
     static let arena = SamplingSchedule(
         startTau: 0.7,
         decayPerPly: 0.04,
@@ -169,6 +244,14 @@ final class MPSChessPlayer: ChessPlayer {
     /// without allocating a temporary `[Float]` for the gathered logits.
     private var sampleScratch: [Float]
 
+    /// Reusable scratch for the per-move Dirichlet noise sample. Same
+    /// capacity as `sampleScratch`, used only when
+    /// `schedule.dirichletNoise != nil` and the current ply is below
+    /// the configured ply limit. Held even when noise is disabled —
+    /// the storage is trivial (1 KB at 256 floats) and avoids a
+    /// branch on every player init.
+    private var dirichletScratch: [Float]
+
     /// Create a player backed by a `MoveEvaluationSource`.
     ///
     /// For self-play, all slot players share one
@@ -193,12 +276,19 @@ final class MPSChessPlayer: ChessPlayer {
             schedule.startTau > 0 && schedule.floorTau > 0 && schedule.decayPerPly >= 0,
             "SamplingSchedule: startTau and floorTau must be > 0, decayPerPly must be >= 0"
         )
+        if let noise = schedule.dirichletNoise {
+            precondition(
+                noise.alpha > 0 && noise.epsilon >= 0 && noise.epsilon <= 1 && noise.plyLimit >= 0,
+                "DirichletNoiseConfig: alpha must be > 0, epsilon in [0, 1], plyLimit >= 0"
+            )
+        }
         self.identifier = UUID().uuidString
         self.name = name
         self.source = source
         self.replayBuffer = replayBuffer
         self.schedule = schedule
         self.sampleScratch = [Float](repeating: 0, count: Self.sampleScratchCapacity)
+        self.dirichletScratch = [Float](repeating: 0, count: Self.sampleScratchCapacity)
 
         let initialCapacity = Self.startingPlyCapacity
         let initialFloats = initialCapacity * Self.boardFloats
@@ -394,16 +484,31 @@ final class MPSChessPlayer: ChessPlayer {
         // as `logit * (1 / tau)` during the gather below — identical to
         // `logit / tau` but cheaper, and the reciprocal is computed once.
         // Multiplying by 1 is exact in IEEE 754, so `.uniform` (tau=1.0)
-        // reproduces the prior sampling behavior bit-for-bit.
+        // with no Dirichlet noise reproduces the prior sampling behavior
+        // bit-for-bit.
         let invTau = 1 / schedule.tau(forPly: gamePliesRecorded)
 
+        // Decide once whether Dirichlet noise applies on this ply so
+        // the inner loops avoid re-checking. Single-legal-move
+        // positions skip the mix because there's nothing to redistribute.
+        let activeNoise: DirichletNoiseConfig?
+        if let cfg = schedule.dirichletNoise,
+           gamePliesRecorded < cfg.plyLimit,
+           n > 1 {
+            activeNoise = cfg
+        } else {
+            activeNoise = nil
+        }
+
         return sampleScratch.withUnsafeMutableBufferPointer { scratch in
-            // Gather logits for legal moves only.
+            // Gather temperature-scaled logits for legal moves only.
             for i in 0..<n {
                 scratch[i] = logits[Self.networkPolicyIndex(for: legalMoves[i], flip: flip)] * invTau
             }
 
-            // Numerically stable softmax: subtract max, exp, normalize.
+            // Numerically stable softmax: subtract max, exp, normalize
+            // into proper probabilities (sum to 1) so any subsequent
+            // Dirichlet mix preserves normalization.
             var maxLogit = scratch[0]
             for i in 1..<n where scratch[i] > maxLogit {
                 maxLogit = scratch[i]
@@ -414,22 +519,135 @@ final class MPSChessPlayer: ChessPlayer {
                 scratch[i] = e
                 sum += e
             }
-            // exp() is strictly positive, so sum is strictly positive whenever
-            // legalMoves is non-empty.
+            // exp() is strictly positive, so sum is strictly positive
+            // whenever legalMoves is non-empty.
             let invSum = 1 / sum
+            for i in 0..<n {
+                scratch[i] *= invSum
+            }
 
+            if let noise = activeNoise {
+                Self.mixDirichletNoise(
+                    into: scratch,
+                    legalCount: n,
+                    config: noise,
+                    etaScratch: &dirichletScratch
+                )
+            }
+
+            // Inverse-CDF sampling from probabilities in scratch[0..<n].
             let r = Float.random(in: 0..<1)
             var cumulative: Float = 0
             for i in 0..<n {
-                cumulative += scratch[i] * invSum
+                cumulative += scratch[i]
                 if r < cumulative {
                     return legalMoves[i]
                 }
             }
 
-            // Floating-point rounding can leave the cumulative just shy of 1.0;
-            // the last legal move catches that.
+            // Floating-point rounding can leave the cumulative just shy
+            // of 1.0; the last legal move catches that.
             return legalMoves[n - 1]
         }
+    }
+
+    // MARK: - Dirichlet Noise
+
+    /// Sample `η ~ Dir(α)` over `legalCount` entries (symmetric
+    /// Dirichlet, all components share `config.alpha`) and mix into
+    /// `probs` in place: `probs[i] = (1-ε) · probs[i] + ε · η[i]`.
+    ///
+    /// `probs` must already be a normalized probability vector — the
+    /// mixture preserves normalization only when both inputs sum to 1.
+    /// `etaScratch` is the caller's `dirichletScratch` storage; passed
+    /// as `inout` so this static helper can use it without the player's
+    /// instance pointer leaking into the closure.
+    private static func mixDirichletNoise(
+        into probs: UnsafeMutableBufferPointer<Float>,
+        legalCount n: Int,
+        config: DirichletNoiseConfig,
+        etaScratch: inout [Float]
+    ) {
+        precondition(n <= etaScratch.count,
+            "Dirichlet scratch (\(etaScratch.count)) too small for \(n) moves")
+        etaScratch.withUnsafeMutableBufferPointer { eta in
+            // Symmetric Dir(α) is `n` iid Gamma(α, 1) samples normalized
+            // by their sum. With α < 1 the gamma samples are heavily
+            // right-skewed and most of the noise mass concentrates on a
+            // small random subset of moves — exactly the "spiky" noise
+            // shape AlphaZero relies on.
+            var gammaSum: Float = 0
+            for i in 0..<n {
+                let g = sampleGamma(alpha: config.alpha)
+                eta[i] = g
+                gammaSum += g
+            }
+            // Each gamma draw is strictly positive, so the sum is too;
+            // no zero-sum guard needed. Normalize and mix.
+            let invSum = 1 / gammaSum
+            let oneMinusEps = 1 - config.epsilon
+            let eps = config.epsilon
+            for i in 0..<n {
+                probs[i] = oneMinusEps * probs[i] + eps * (eta[i] * invSum)
+            }
+        }
+    }
+
+    /// Marsaglia–Tsang Gamma(α, 1) sampler. Supports any `α > 0`. For
+    /// `α >= 1` runs the direct algorithm; for `α < 1` uses the boost
+    /// trick: draw `G ~ Gamma(α+1, 1)` and return `G * U^(1/α)` where
+    /// `U ~ Uniform(0, 1)`.
+    @inline(__always)
+    private static func sampleGamma(alpha: Float) -> Float {
+        if alpha < 1 {
+            let g = sampleGammaAtLeastOne(alpha: alpha + 1)
+            // U must be strictly positive so U^(1/α) is finite.
+            let u = max(Float.random(in: 0..<1), .leastNormalMagnitude)
+            return g * powf(u, 1 / alpha)
+        }
+        return sampleGammaAtLeastOne(alpha: alpha)
+    }
+
+    /// Direct Marsaglia–Tsang (2000) algorithm for `α >= 1`. Average
+    /// rejection rate is well below 5 % across α in [1, 10], so the
+    /// inner `while true` typically exits on its first iteration.
+    private static func sampleGammaAtLeastOne(alpha: Float) -> Float {
+        let d: Float = alpha - 1.0 / 3.0
+        let c: Float = 1 / sqrtf(9 * d)
+        while true {
+            // Inner reject loop guarantees `v > 0` so `v^3` and
+            // `log(v)` are finite below.
+            var x: Float = 0
+            var v: Float = 0
+            repeat {
+                x = sampleStandardNormal()
+                v = 1 + c * x
+            } while v <= 0
+            v = v * v * v
+            let u = Float.random(in: 0..<1)
+            // Squeeze test (cheap acceptance): handles ~98 % of draws
+            // without touching log.
+            let xx = x * x
+            if u < 1 - 0.0331 * xx * xx {
+                return d * v
+            }
+            // Full acceptance test. `u` here is uniform in (0, 1); on
+            // the rare `u == 0` draw `log(0) = -inf` would force a
+            // reject, which is the correct behavior — bias-free.
+            if logf(u) < 0.5 * xx + d * (1 - v + logf(v)) {
+                return d * v
+            }
+        }
+    }
+
+    /// Standard normal sample via Box–Muller. Discards one of the two
+    /// iid draws per call; we run this ~30 times per ply per player so
+    /// the wasted draw is negligible. `u1` is clamped away from zero so
+    /// `log(u1)` is finite.
+    @inline(__always)
+    private static func sampleStandardNormal() -> Float {
+        let u1 = max(Float.random(in: 0..<1), .leastNormalMagnitude)
+        let u2 = Float.random(in: 0..<1)
+        return sqrtf(-2 * logf(u1)) * cosf(2 * .pi * u2)
     }
 }
