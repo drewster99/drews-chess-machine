@@ -85,9 +85,11 @@ struct SamplingSchedule: Sendable {
 /// game end the whole buffer is pushed into the shared `ReplayBuffer` in
 /// one bulk copy.
 ///
-/// Each `ChessMachine` game creates fresh `MPSChessPlayer` instances, so
-/// the scratches live for one game. Access is single-threaded within the
-/// game task; no locking is needed on the player's internal state.
+/// A player instance is reused across many games within a self-play slot
+/// (or lives one game in arena / Play Game). `onNewGame` resets the
+/// per-game fill counts so the scratches behave as if fresh each game,
+/// without reallocating. Access is single-threaded within the game task;
+/// no locking is needed on the player's internal state.
 final class MPSChessPlayer: ChessPlayer {
     /// Number of floats in one encoded board position. Kept in sync
     /// with `BoardEncoder.tensorLength`.
