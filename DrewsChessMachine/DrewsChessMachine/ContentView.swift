@@ -41,40 +41,34 @@ struct TrainingAlarm: Identifiable, Equatable, Sendable {
 /// inside a worker spawned from inside another Task is unreliable.
 /// A locked Bool that the worker polls between steps is simpler and works.
 final class CancelBox: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.cancelbox.serial")
     private var _cancelled = false
     private var _progress: SweepProgress?
     private var _completedRows: [SweepRow] = []
     private var _rowPeakBytes: UInt64 = 0
 
     var isCancelled: Bool {
-        lock.lock(); defer { lock.unlock() }
-        return _cancelled
+        queue.sync { _cancelled }
     }
 
     func cancel() {
-        lock.lock(); defer { lock.unlock() }
-        _cancelled = true
+        queue.async { [weak self] in self?._cancelled = true }
     }
 
     func updateProgress(_ p: SweepProgress) {
-        lock.lock(); defer { lock.unlock() }
-        _progress = p
+        queue.async { [weak self] in self?._progress = p }
     }
 
     var latestProgress: SweepProgress? {
-        lock.lock(); defer { lock.unlock() }
-        return _progress
+        queue.sync { _progress }
     }
 
     func appendRow(_ r: SweepRow) {
-        lock.lock(); defer { lock.unlock() }
-        _completedRows.append(r)
+        queue.async { [weak self] in self?._completedRows.append(r) }
     }
 
     var completedRows: [SweepRow] {
-        lock.lock(); defer { lock.unlock() }
-        return _completedRows
+        queue.sync { _completedRows }
     }
 
     /// Update the per-row peak with a new sample. The sweep's worker
@@ -83,17 +77,20 @@ final class CancelBox: @unchecked Sendable {
     /// trainer at row boundaries — whichever produces the higher value
     /// wins for that row.
     func recordPeakSample(_ bytes: UInt64) {
-        lock.lock(); defer { lock.unlock() }
-        if bytes > _rowPeakBytes { _rowPeakBytes = bytes }
+        queue.async { [weak self] in
+            guard let self else { return }
+            if bytes > self._rowPeakBytes { self._rowPeakBytes = bytes }
+        }
     }
 
     /// Read the peak observed during the just-finished row and reset the
     /// accumulator for the next one.
     func takeRowPeak() -> UInt64 {
-        lock.lock(); defer { lock.unlock() }
-        let peak = _rowPeakBytes
-        _rowPeakBytes = 0
-        return peak
+        queue.sync {
+            let peak = _rowPeakBytes
+            _rowPeakBytes = 0
+            return peak
+        }
     }
 }
 
@@ -145,40 +142,39 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         var threefoldRepetitionDraws = 0
     }
 
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.gamewatcher.serial")
     private var s = Snapshot()
 
     func snapshot() -> Snapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return s
+        queue.sync { s }
     }
 
     func resetCurrentGame() {
-        lock.lock()
-        defer { lock.unlock() }
-        s.state = .starting
-        s.result = nil
-        s.moveCount = 0
-        // Keep lastGameStats — show previous game until the next one ends
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.s.state = .starting
+            self.s.result = nil
+            self.s.moveCount = 0
+            // Keep lastGameStats — show previous game until the next one ends
+        }
     }
 
     func resetAll() {
-        lock.lock()
-        defer { lock.unlock() }
-        s = Snapshot()
+        queue.async { [weak self] in
+            self?.s = Snapshot()
+        }
     }
 
     func markPlaying(_ playing: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        setPlayingLocked(playing)
+        queue.async { [weak self] in
+            self?.setPlayingOnQueue(playing)
+        }
     }
 
-    /// Toggle isPlaying and update the active-play stopwatch. Caller must
-    /// already hold `lock`. Idempotent: calling with the same value twice
-    /// is a no-op for the stopwatch.
-    private func setPlayingLocked(_ playing: Bool) {
+    /// Toggle isPlaying and update the active-play stopwatch. Caller
+    /// must already be executing on `queue`. Idempotent: calling with
+    /// the same value twice is a no-op for the stopwatch.
+    private func setPlayingOnQueue(_ playing: Bool) {
         if playing {
             if s.currentPlayStartTime == nil {
                 s.currentPlayStartTime = CFAbsoluteTimeGetCurrent()
@@ -193,10 +189,11 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     // MARK: - Delegate (called on ChessMachine.delegateQueue, never main)
 
     func chessMachine(_ machine: ChessMachine, didApplyMove move: ChessMove, newState: GameState) {
-        lock.lock()
-        defer { lock.unlock() }
-        s.state = newState
-        s.moveCount += 1
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.s.state = newState
+            self.s.moveCount += 1
+        }
     }
 
     func chessMachine(
@@ -205,45 +202,46 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         finalState: GameState,
         stats: GameStats
     ) {
-        lock.lock()
-        defer { lock.unlock() }
-        s.result = result
-        s.state = finalState
-        s.lastGameStats = stats
-        setPlayingLocked(false)
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.s.result = result
+            self.s.state = finalState
+            self.s.lastGameStats = stats
+            self.setPlayingOnQueue(false)
 
-        s.totalGames += 1
-        s.totalMoves += stats.totalMoves
-        s.totalGameTimeMs += stats.totalGameTimeMs
-        s.totalWhiteThinkMs += stats.whiteThinkingTimeMs
-        s.totalBlackThinkMs += stats.blackThinkingTimeMs
-        // Move counting handed off to totalMoves; zero the per-game counter
-        // atomically so display helpers using `totalMoves + moveCount` don't
-        // double-count between gameEnded and the next resetCurrentGame call.
-        s.moveCount = 0
+            self.s.totalGames += 1
+            self.s.totalMoves += stats.totalMoves
+            self.s.totalGameTimeMs += stats.totalGameTimeMs
+            self.s.totalWhiteThinkMs += stats.whiteThinkingTimeMs
+            self.s.totalBlackThinkMs += stats.blackThinkingTimeMs
+            // Move counting handed off to totalMoves; zero the per-game counter
+            // atomically so display helpers using `totalMoves + moveCount` don't
+            // double-count between gameEnded and the next resetCurrentGame call.
+            self.s.moveCount = 0
 
-        switch result {
-        case .checkmate(let winner):
-            if winner == .white {
-                s.whiteCheckmates += 1
-            } else {
-                s.blackCheckmates += 1
+            switch result {
+            case .checkmate(let winner):
+                if winner == .white {
+                    self.s.whiteCheckmates += 1
+                } else {
+                    self.s.blackCheckmates += 1
+                }
+            case .stalemate:
+                self.s.stalemates += 1
+            case .drawByFiftyMoveRule:
+                self.s.fiftyMoveDraws += 1
+            case .drawByInsufficientMaterial:
+                self.s.insufficientMaterialDraws += 1
+            case .drawByThreefoldRepetition:
+                self.s.threefoldRepetitionDraws += 1
             }
-        case .stalemate:
-            s.stalemates += 1
-        case .drawByFiftyMoveRule:
-            s.fiftyMoveDraws += 1
-        case .drawByInsufficientMaterial:
-            s.insufficientMaterialDraws += 1
-        case .drawByThreefoldRepetition:
-            s.threefoldRepetitionDraws += 1
         }
     }
 
     func chessMachine(_ machine: ChessMachine, playerErrored player: any ChessPlayer, error: any Error) {
-        lock.lock()
-        defer { lock.unlock() }
-        setPlayingLocked(false)
+        queue.async { [weak self] in
+            self?.setPlayingOnQueue(false)
+        }
     }
 }
 
@@ -551,31 +549,26 @@ struct TournamentRecord: Sendable, Identifiable {
     let durationSec: Double
 }
 
-/// Lock-protected holder for live tournament progress, shared between
-/// the driver task (writer, one update per finished game) and the UI
-/// heartbeat (reader, polling at 60 Hz). Same pattern as
-/// `TrainingLiveStatsBox` and `CancelBox` — an `NSLock` guards all
-/// state, so the class is safely `@unchecked Sendable`.
+/// Serial-queue-protected holder for live tournament progress, shared
+/// between the driver task (writer, one update per finished game) and
+/// the UI heartbeat (reader, polling at 60 Hz). Same pattern as
+/// `TrainingLiveStatsBox` and `CancelBox` — a private serial
+/// `DispatchQueue` serializes all state access, so the class is
+/// safely `@unchecked Sendable`.
 final class TournamentLiveBox: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.tournamentlivebox.serial")
     private var _progress: TournamentProgress?
 
     func update(_ progress: TournamentProgress) {
-        lock.lock()
-        defer { lock.unlock() }
-        _progress = progress
+        queue.async { [weak self] in self?._progress = progress }
     }
 
     func snapshot() -> TournamentProgress? {
-        lock.lock()
-        defer { lock.unlock() }
-        return _progress
+        queue.sync { _progress }
     }
 
     func clear() {
-        lock.lock()
-        defer { lock.unlock() }
-        _progress = nil
+        queue.async { [weak self] in self?._progress = nil }
     }
 }
 
@@ -597,31 +590,29 @@ final class TournamentLiveBox: @unchecked Sendable {
 /// on every iteration so clicking Stop during a pause exits the
 /// wait loop immediately. Lock-protected state, `@unchecked Sendable`.
 final class WorkerPauseGate: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.workerpausegate.serial")
     private var _requested = false
     private var _isWaiting = false
 
     /// Polled by the worker at each iteration boundary.
     var isRequestedToPause: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return _requested
+        queue.sync { _requested }
     }
 
     /// Called by the worker when it enters its spin-wait state, so
     /// the coordinator knows it's safe to start the protected work.
+    /// Uses `queue.sync` to publish the flag before the worker starts
+    /// polling — coordinators spin on `readIsWaiting()` and must see
+    /// the acknowledgement as soon as the worker returns from this
+    /// method.
     func markWaiting() {
-        lock.lock()
-        defer { lock.unlock() }
-        _isWaiting = true
+        queue.sync { _isWaiting = true }
     }
 
     /// Called by the worker when it leaves its spin-wait state and
     /// resumes normal iteration.
     func markRunning() {
-        lock.lock()
-        defer { lock.unlock() }
-        _isWaiting = false
+        queue.sync { _isWaiting = false }
     }
 
     /// Coordinator: flip the pause request and spin-wait until the
@@ -660,27 +651,21 @@ final class WorkerPauseGate: @unchecked Sendable {
         return false
     }
 
-    /// Synchronous helpers so `pauseAndWait()` doesn't hold an
-    /// `NSLock` across an `await` — Swift 6 strict concurrency
-    /// forbids calling `NSLock.lock()` from an async context.
+    /// Synchronous helpers so `pauseAndWait()` doesn't hold a lock
+    /// across an `await` — the `queue.sync` hop is a bounded,
+    /// contention-free critical section that returns immediately.
     private func setRequested(_ value: Bool) {
-        lock.lock()
-        defer { lock.unlock() }
-        _requested = value
+        queue.sync { _requested = value }
     }
 
     private func readIsWaiting() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return _isWaiting
+        queue.sync { _isWaiting }
     }
 
     /// Coordinator: release the worker. Clears the request flag so
     /// the worker's next spin-wait iteration sees it and resumes.
     func resume() {
-        lock.lock()
-        defer { lock.unlock() }
-        _requested = false
+        queue.sync { _requested = false }
     }
 }
 
@@ -693,7 +678,7 @@ final class WorkerPauseGate: @unchecked Sendable {
 /// what lets the value cross the actor boundary without forcing
 /// every worker to hop back to the main actor on each game.
 final class WorkerCountBox: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.workercountbox.serial")
     private var _count: Int
 
     init(initial: Int) {
@@ -702,9 +687,7 @@ final class WorkerCountBox: @unchecked Sendable {
     }
 
     var count: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return _count
+        queue.sync { _count }
     }
 
     /// Set the active worker count. Clamped at the bottom to 1 so a
@@ -712,9 +695,7 @@ final class WorkerCountBox: @unchecked Sendable {
     /// (the upper bound is enforced by the Stepper and the spawn
     /// loop's `absoluteMaxSelfPlayWorkers` constant, not here).
     func set(_ value: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        _count = max(1, value)
+        queue.async { [weak self] in self?._count = max(1, value) }
     }
 }
 
@@ -727,7 +708,7 @@ final class WorkerCountBox: @unchecked Sendable {
 /// to the main actor to read a single Int per step. Clamped at the
 /// bottom to 0 — negative delays are meaningless.
 final class TrainingStepDelayBox: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.trainingstepdelaybox.serial")
     private var _ms: Int
 
     init(initial: Int) {
@@ -735,15 +716,11 @@ final class TrainingStepDelayBox: @unchecked Sendable {
     }
 
     var milliseconds: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return _ms
+        queue.sync { _ms }
     }
 
     func set(_ value: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        _ms = max(0, value)
+        queue.async { [weak self] in self?._ms = max(0, value) }
     }
 }
 
@@ -755,7 +732,7 @@ final class TrainingStepDelayBox: @unchecked Sendable {
 /// resets the "last arena" timestamp so the auto-fire math stays
 /// accurate across both the automatic and manual paths.
 final class ArenaTriggerBox: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.arenatriggerbox.serial")
     private var _pending = false
     private var _lastArenaTime: Date
 
@@ -768,30 +745,28 @@ final class ArenaTriggerBox: @unchecked Sendable {
     /// is already pending, so the training worker doesn't queue
     /// multiple auto-triggers for the same deadline.
     func shouldAutoTrigger(interval: TimeInterval) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if _pending { return false }
-        return Date().timeIntervalSince(_lastArenaTime) >= interval
+        queue.sync {
+            if _pending { return false }
+            return Date().timeIntervalSince(_lastArenaTime) >= interval
+        }
     }
 
     /// Set the pending flag. The arena coordinator's next poll will
     /// consume it and start an arena.
     func trigger() {
-        lock.lock()
-        defer { lock.unlock() }
-        _pending = true
+        queue.async { [weak self] in self?._pending = true }
     }
 
     /// Poll the trigger. Returns true and clears the pending flag if
     /// a trigger was waiting; returns false otherwise.
     func consume() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if _pending {
-            _pending = false
-            return true
+        queue.sync {
+            if _pending {
+                _pending = false
+                return true
+            }
+            return false
         }
-        return false
     }
 
     /// Record that an arena just finished. Resets the wall-clock
@@ -804,18 +779,17 @@ final class ArenaTriggerBox: @unchecked Sendable {
     /// that stale trigger would fire a back-to-back arena the instant
     /// the coordinator loops back.
     func recordArenaCompleted() {
-        lock.lock()
-        defer { lock.unlock() }
-        _lastArenaTime = Date()
-        _pending = false
+        queue.async { [weak self] in
+            guard let self else { return }
+            self._lastArenaTime = Date()
+            self._pending = false
+        }
     }
 
     /// True if a trigger is currently pending (used for UI
     /// disable-while-queued semantics).
     var isPending: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return _pending
+        queue.sync { _pending }
     }
 }
 
@@ -834,17 +808,18 @@ final class ArenaOverrideBox: @unchecked Sendable {
         case promote
     }
 
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.arenaoverridebox.serial")
     private var _decision: Decision?
 
     /// Request abort: end the current tournament early with no
     /// promotion. No-op if a decision (abort or promote) is already
     /// set for this tournament.
     func abort() {
-        lock.lock()
-        defer { lock.unlock() }
-        if _decision == nil {
-            _decision = .abort
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self._decision == nil {
+                self._decision = .abort
+            }
         }
     }
 
@@ -852,10 +827,11 @@ final class ArenaOverrideBox: @unchecked Sendable {
     /// and promote the candidate unconditionally. No-op if a decision
     /// (abort or promote) is already set for this tournament.
     func promote() {
-        lock.lock()
-        defer { lock.unlock() }
-        if _decision == nil {
-            _decision = .promote
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self._decision == nil {
+                self._decision = .promote
+            }
         }
     }
 
@@ -864,9 +840,7 @@ final class ArenaOverrideBox: @unchecked Sendable {
     /// driver's `isCancelled` closure so the game loop breaks out
     /// between games the moment the user clicks one of the buttons.
     var isActive: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return _decision != nil
+        queue.sync { _decision != nil }
     }
 
     /// Read-and-clear the decision. Returns `nil` if no override
@@ -875,11 +849,11 @@ final class ArenaOverrideBox: @unchecked Sendable {
     /// driver returns, both to branch on the decision and to reset
     /// the box for the next tournament.
     func consume() -> Decision? {
-        lock.lock()
-        defer { lock.unlock() }
-        let d = _decision
-        _decision = nil
-        return d
+        queue.sync {
+            let d = _decision
+            _decision = nil
+            return d
+        }
     }
 }
 
@@ -909,25 +883,19 @@ struct MemoryStatsSnapshot: Sendable {
 /// from the arena, since both touch the candidate inference network
 /// and the probe can't write while the arena is reading.
 final class ArenaActiveFlag: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.arenaactiveflag.serial")
     private var _active = false
 
     var isActive: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return _active
+        queue.sync { _active }
     }
 
     func set() {
-        lock.lock()
-        defer { lock.unlock() }
-        _active = true
+        queue.async { [weak self] in self?._active = true }
     }
 
     func clear() {
-        lock.lock()
-        defer { lock.unlock() }
-        _active = false
+        queue.async { [weak self] in self?._active = false }
     }
 }
 
@@ -957,7 +925,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         let durationMs: Double
     }
 
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.parallelworkerstatsbox.serial")
     private var _totalGames: Int = 0
     private var _totalMoves: Int = 0
     private var _totalGameWallMs: Double = 0
@@ -1016,9 +984,9 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// is spawned, so that rate denominators only cover the window
     /// in which workers are actually running.
     func markWorkersStarted() {
-        lock.lock()
-        defer { lock.unlock() }
-        _sessionStart = Date()
+        queue.async { [weak self] in
+            self?._sessionStart = Date()
+        }
     }
 
     /// Reset game-play counters so post-promotion stats reflect
@@ -1026,65 +994,67 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// Training step count and sessionStart are NOT reset so
     /// training-rate display stays continuous.
     func resetGameStats() {
-        lock.lock()
-        defer { lock.unlock() }
-        _totalGames = 0
-        _totalMoves = 0
-        _totalGameWallMs = 0
-        _whiteCheckmates = 0
-        _blackCheckmates = 0
-        _stalemates = 0
-        _fiftyMoveDraws = 0
-        _threefoldRepetitionDraws = 0
-        _insufficientMaterialDraws = 0
-        _recentGames.removeAll()
+        queue.async { [weak self] in
+            guard let self else { return }
+            self._totalGames = 0
+            self._totalMoves = 0
+            self._totalGameWallMs = 0
+            self._whiteCheckmates = 0
+            self._blackCheckmates = 0
+            self._stalemates = 0
+            self._fiftyMoveDraws = 0
+            self._threefoldRepetitionDraws = 0
+            self._insufficientMaterialDraws = 0
+            self._recentGames.removeAll()
+        }
     }
 
     /// Record one completed self-play game. Called from every worker
     /// at game-end with the game's total moves, wall-clock duration,
     /// and final result. Bumps lifetime totals, the per-outcome
     /// counters, and the rolling 10-minute window. Thread-safe via
-    /// the box's `NSLock`.
+    /// the box's serial queue.
     func recordCompletedGame(moves: Int, durationMs: Double, result: GameResult) {
-        lock.lock()
-        defer { lock.unlock() }
-        _totalGames += 1
-        _totalMoves += moves
-        _totalGameWallMs += durationMs
+        queue.async { [weak self] in
+            guard let self else { return }
+            self._totalGames += 1
+            self._totalMoves += moves
+            self._totalGameWallMs += durationMs
 
-        switch result {
-        case .checkmate(let winner):
-            if winner == .white {
-                _whiteCheckmates += 1
-            } else {
-                _blackCheckmates += 1
+            switch result {
+            case .checkmate(let winner):
+                if winner == .white {
+                    self._whiteCheckmates += 1
+                } else {
+                    self._blackCheckmates += 1
+                }
+            case .stalemate:
+                self._stalemates += 1
+            case .drawByFiftyMoveRule:
+                self._fiftyMoveDraws += 1
+            case .drawByInsufficientMaterial:
+                self._insufficientMaterialDraws += 1
+            case .drawByThreefoldRepetition:
+                self._threefoldRepetitionDraws += 1
             }
-        case .stalemate:
-            _stalemates += 1
-        case .drawByFiftyMoveRule:
-            _fiftyMoveDraws += 1
-        case .drawByInsufficientMaterial:
-            _insufficientMaterialDraws += 1
-        case .drawByThreefoldRepetition:
-            _threefoldRepetitionDraws += 1
-        }
 
-        let now = Date()
-        _recentGames.append(GameRecord(timestamp: now, moves: moves, durationMs: durationMs))
-        pruneRecentLocked(now: now)
+            let now = Date()
+            self._recentGames.append(GameRecord(timestamp: now, moves: moves, durationMs: durationMs))
+            self.pruneRecentOnQueue(now: now)
+        }
     }
 
     func recordTrainingStep() {
-        lock.lock()
-        defer { lock.unlock() }
-        _trainingSteps += 1
+        queue.async { [weak self] in
+            self?._trainingSteps += 1
+        }
     }
 
     /// Drop rolling-window entries older than `now - recentWindow`.
-    /// Caller must hold `lock`. Records are appended in monotonic
-    /// timestamp order so this is a prefix removal — O(k) where k is
-    /// the expired count.
-    private func pruneRecentLocked(now: Date) {
+    /// Caller must already be executing on `queue`. Records are
+    /// appended in monotonic timestamp order so this is a prefix
+    /// removal — O(k) where k is the expired count.
+    private func pruneRecentOnQueue(now: Date) {
         let cutoff = now.addingTimeInterval(-Self.recentWindow)
         while let first = _recentGames.first, first.timestamp < cutoff {
             _recentGames.removeFirst()
@@ -1116,41 +1086,41 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     }
 
     func snapshot() -> Snapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        let now = Date()
-        pruneRecentLocked(now: now)
+        queue.sync {
+            let now = Date()
+            pruneRecentOnQueue(now: now)
 
-        var recentMoves = 0
-        var recentGameWallMs: Double = 0
-        for r in _recentGames {
-            recentMoves += r.moves
-            recentGameWallMs += r.durationMs
-        }
-        let recentWindowSec: Double
-        if let oldest = _recentGames.first?.timestamp {
-            recentWindowSec = min(Self.recentWindow, now.timeIntervalSince(oldest))
-        } else {
-            recentWindowSec = 0
-        }
+            var recentMoves = 0
+            var recentGameWallMs: Double = 0
+            for r in _recentGames {
+                recentMoves += r.moves
+                recentGameWallMs += r.durationMs
+            }
+            let recentWindowSec: Double
+            if let oldest = _recentGames.first?.timestamp {
+                recentWindowSec = min(Self.recentWindow, now.timeIntervalSince(oldest))
+            } else {
+                recentWindowSec = 0
+            }
 
-        return Snapshot(
-            selfPlayGames: _totalGames,
-            selfPlayPositions: _totalMoves,
-            totalGameWallMs: _totalGameWallMs,
-            whiteCheckmates: _whiteCheckmates,
-            blackCheckmates: _blackCheckmates,
-            stalemates: _stalemates,
-            fiftyMoveDraws: _fiftyMoveDraws,
-            threefoldRepetitionDraws: _threefoldRepetitionDraws,
-            insufficientMaterialDraws: _insufficientMaterialDraws,
-            trainingSteps: _trainingSteps,
-            sessionStart: _sessionStart,
-            recentGames: _recentGames.count,
-            recentMoves: recentMoves,
-            recentGameWallMs: recentGameWallMs,
-            recentWindowSeconds: recentWindowSec
-        )
+            return Snapshot(
+                selfPlayGames: _totalGames,
+                selfPlayPositions: _totalMoves,
+                totalGameWallMs: _totalGameWallMs,
+                whiteCheckmates: _whiteCheckmates,
+                blackCheckmates: _blackCheckmates,
+                stalemates: _stalemates,
+                fiftyMoveDraws: _fiftyMoveDraws,
+                threefoldRepetitionDraws: _threefoldRepetitionDraws,
+                insufficientMaterialDraws: _insufficientMaterialDraws,
+                trainingSteps: _trainingSteps,
+                sessionStart: _sessionStart,
+                recentGames: _recentGames.count,
+                recentMoves: recentMoves,
+                recentGameWallMs: recentGameWallMs,
+                recentWindowSeconds: recentWindowSec
+            )
+        }
     }
 }
 
@@ -4487,8 +4457,8 @@ struct ContentView: View {
             // strings) — explicitly NOT `self` — so we can safely
             // run past a session end without touching any View
             // @State. Outcome is audited through SessionLogger,
-            // which is NSLock-guarded and thread-safe. The user
-            // sees success via "Reveal Saves" finding the
+            // which is serial-queue-guarded and thread-safe. The
+            // user sees success via "Reveal Saves" finding the
             // timestamped folder; failures show up in the
             // session log.
             Task.detached(priority: .utility) {

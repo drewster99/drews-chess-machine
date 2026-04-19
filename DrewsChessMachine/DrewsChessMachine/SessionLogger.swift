@@ -7,8 +7,11 @@ import Foundation
 ///
 /// Call `SessionLogger.shared.start()` once at app launch, then
 /// `SessionLogger.shared.log(...)` from any thread or actor. Writes
-/// are serialized via an internal lock and flushed to disk after
-/// each line so a crash mid-session still leaves a usable log.
+/// are serialized via a private serial dispatch queue and flushed to
+/// disk after each line so a crash mid-session still leaves a usable
+/// log. `log(...)` dispatches asynchronously — callers never block
+/// waiting for disk I/O, which keeps Swift-concurrency tasks free to
+/// keep making progress.
 ///
 /// Log files land in the user's Library/Logs directory under a
 /// `DrewsChessMachine` subfolder — in a sandboxed build that
@@ -19,7 +22,7 @@ import Foundation
 final class SessionLogger: @unchecked Sendable {
     static let shared = SessionLogger()
 
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.sessionlogger.serial")
     private var fileHandle: FileHandle?
     private var fileURL: URL?
     private var didLogStartupFailure = false
@@ -53,41 +56,40 @@ final class SessionLogger: @unchecked Sendable {
     /// silently drop — the logger never crashes or escalates a log
     /// failure into an app-level error.
     func start() {
-        lock.lock()
-        defer { lock.unlock() }
+        queue.sync {
+            if fileHandle != nil { return }
 
-        if fileHandle != nil { return }
-
-        do {
-            let libraryURL = try FileManager.default.url(
-                for: .libraryDirectory,
-                in: .userDomainMask,
-                appropriateFor: nil,
-                create: true
-            )
-            let logsDir = libraryURL
-                .appendingPathComponent("Logs", isDirectory: true)
-                .appendingPathComponent("DrewsChessMachine", isDirectory: true)
-            try FileManager.default.createDirectory(
-                at: logsDir,
-                withIntermediateDirectories: true
-            )
-
-            let stamp = Self.filenameFormatter.string(from: Date())
-            let fileName = "dcm_log_\(stamp).txt"
-            let url = logsDir.appendingPathComponent(fileName)
-
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-            let handle = try FileHandle(forWritingTo: url)
-
-            self.fileHandle = handle
-            self.fileURL = url
-        } catch {
-            if !didLogStartupFailure {
-                didLogStartupFailure = true
-                FileHandle.standardError.write(
-                    Data("SessionLogger: failed to open log file: \(error)\n".utf8)
+            do {
+                let libraryURL = try FileManager.default.url(
+                    for: .libraryDirectory,
+                    in: .userDomainMask,
+                    appropriateFor: nil,
+                    create: true
                 )
+                let logsDir = libraryURL
+                    .appendingPathComponent("Logs", isDirectory: true)
+                    .appendingPathComponent("DrewsChessMachine", isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: logsDir,
+                    withIntermediateDirectories: true
+                )
+
+                let stamp = Self.filenameFormatter.string(from: Date())
+                let fileName = "dcm_log_\(stamp).txt"
+                let url = logsDir.appendingPathComponent(fileName)
+
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+                let handle = try FileHandle(forWritingTo: url)
+
+                self.fileHandle = handle
+                self.fileURL = url
+            } catch {
+                if !didLogStartupFailure {
+                    didLogStartupFailure = true
+                    FileHandle.standardError.write(
+                        Data("SessionLogger: failed to open log file: \(error)\n".utf8)
+                    )
+                }
             }
         }
     }
@@ -96,27 +98,30 @@ final class SessionLogger: @unchecked Sendable {
     /// newline are added automatically — callers pass the bare
     /// message (typically `"[TAG] details"`). Safe to call from any
     /// thread; no-op before `start()` or after a startup failure.
+    /// Dispatches asynchronously to the serial queue so callers never
+    /// wait on disk I/O, which is the whole point of preferring a
+    /// queue over an `NSLock` here.
     func log(_ message: String) {
         let timestamp = Self.lineTimestampFormatter.string(from: Date())
         let line = "\(timestamp)  \(message)\n"
         let data = Data(line.utf8)
 
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let fileHandle else { return }
-        do {
-            try fileHandle.write(contentsOf: data)
-            try fileHandle.synchronize()
-        } catch {
-            // Swallow — a logger that can't write should never bring
-            // down the app. Print once to stderr so there's at least
-            // one breadcrumb if logging completely fails.
-            if !didLogStartupFailure {
-                didLogStartupFailure = true
-                FileHandle.standardError.write(
-                    Data("SessionLogger: write failed: \(error)\n".utf8)
-                )
+        queue.async { [weak self] in
+            guard let self else { return }
+            guard let fileHandle = self.fileHandle else { return }
+            do {
+                try fileHandle.write(contentsOf: data)
+                try fileHandle.synchronize()
+            } catch {
+                // Swallow — a logger that can't write should never bring
+                // down the app. Print once to stderr so there's at least
+                // one breadcrumb if logging completely fails.
+                if !self.didLogStartupFailure {
+                    self.didLogStartupFailure = true
+                    FileHandle.standardError.write(
+                        Data("SessionLogger: write failed: \(error)\n".utf8)
+                    )
+                }
             }
         }
     }
@@ -125,8 +130,6 @@ final class SessionLogger: @unchecked Sendable {
     /// location to the user (e.g. via a "Reveal in Finder" menu item)
     /// or for debugging from LLDB.
     var activeLogPath: String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return fileURL?.path
+        queue.sync { fileURL?.path }
     }
 }

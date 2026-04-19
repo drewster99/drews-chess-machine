@@ -12,8 +12,8 @@ import Foundation
 ///   means games branch early (high diversity); a high value means
 ///   games follow similar lines deep into the middlegame or endgame.
 ///
-/// Thread-safe via `NSLock`. All stored data is bounded by the
-/// window size.
+/// Thread-safe via a private serial `DispatchQueue`. All stored data
+/// is bounded by the window size.
 final class GameDiversityTracker: @unchecked Sendable {
 
     /// Divergence-ply bucket upper bounds (inclusive). A game's
@@ -53,7 +53,7 @@ final class GameDiversityTracker: @unchecked Sendable {
     }
 
     private let windowSize: Int
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.gamediversitytracker.serial")
 
     // Circular buffers — pre-allocated at init, indexed by writeIndex.
     private var sequences: [[Int16]]      // policy-index per move
@@ -83,80 +83,80 @@ final class GameDiversityTracker: @unchecked Sendable {
         let indices = moves.map { Int16(clamping: $0.policyIndex) }
         let hash = Self.fnv1a(indices)
 
-        lock.lock()
-        defer { lock.unlock() }
-
-        // Find the longest shared prefix with any stored game.
-        var maxPrefix = 0
-        for i in 0..<stored {
-            let other = sequences[i]
-            var shared = 0
-            let limit = min(indices.count, other.count)
-            while shared < limit && indices[shared] == other[shared] {
-                shared += 1
+        queue.async { [weak self] in
+            guard let self else { return }
+            // Find the longest shared prefix with any stored game.
+            var maxPrefix = 0
+            for i in 0..<self.stored {
+                let other = self.sequences[i]
+                var shared = 0
+                let limit = min(indices.count, other.count)
+                while shared < limit && indices[shared] == other[shared] {
+                    shared += 1
+                }
+                if shared > maxPrefix { maxPrefix = shared }
             }
-            if shared > maxPrefix { maxPrefix = shared }
-        }
 
-        sequences[writeIndex] = indices
-        hashes[writeIndex] = hash
-        divergencePlies[writeIndex] = maxPrefix
-        writeIndex = (writeIndex + 1) % windowSize
-        if stored < windowSize { stored += 1 }
+            self.sequences[self.writeIndex] = indices
+            self.hashes[self.writeIndex] = hash
+            self.divergencePlies[self.writeIndex] = maxPrefix
+            self.writeIndex = (self.writeIndex + 1) % self.windowSize
+            if self.stored < self.windowSize { self.stored += 1 }
+        }
     }
 
     /// Take an immutable snapshot of the current diversity metrics.
     func snapshot() -> Snapshot {
-        lock.lock()
-        defer { lock.unlock() }
+        queue.sync {
+            guard stored > 0 else {
+                return Snapshot(
+                    gamesInWindow: 0,
+                    uniqueGames: 0,
+                    uniquePercent: 100,
+                    avgDivergencePly: 0,
+                    divergenceHistogram: Array(repeating: 0, count: Self.histogramBucketCount)
+                )
+            }
 
-        guard stored > 0 else {
+            var hashSet = Set<UInt64>(minimumCapacity: stored)
+            var divergenceSum = 0
+            var histogram = Array(repeating: 0, count: Self.histogramBucketCount)
+            let bounds = Self.histogramBounds
+            for i in 0..<stored {
+                hashSet.insert(hashes[i])
+                let ply = divergencePlies[i]
+                divergenceSum += ply
+                // Linear scan over bounds — 5 compares, fastest for this
+                // tiny count. Matches `bucketIndex(for:)` semantics.
+                var bucket = bounds.count  // overflow bucket by default
+                for (idx, upper) in bounds.enumerated() where ply <= upper {
+                    bucket = idx
+                    break
+                }
+                histogram[bucket] += 1
+            }
+
+            let unique = hashSet.count
             return Snapshot(
-                gamesInWindow: 0,
-                uniqueGames: 0,
-                uniquePercent: 100,
-                avgDivergencePly: 0,
-                divergenceHistogram: Array(repeating: 0, count: Self.histogramBucketCount)
+                gamesInWindow: stored,
+                uniqueGames: unique,
+                uniquePercent: Double(unique) / Double(stored) * 100,
+                avgDivergencePly: Double(divergenceSum) / Double(stored),
+                divergenceHistogram: histogram
             )
         }
-
-        var hashSet = Set<UInt64>(minimumCapacity: stored)
-        var divergenceSum = 0
-        var histogram = Array(repeating: 0, count: Self.histogramBucketCount)
-        let bounds = Self.histogramBounds
-        for i in 0..<stored {
-            hashSet.insert(hashes[i])
-            let ply = divergencePlies[i]
-            divergenceSum += ply
-            // Linear scan over bounds — 5 compares, fastest for this
-            // tiny count. Matches `bucketIndex(for:)` semantics.
-            var bucket = bounds.count  // overflow bucket by default
-            for (idx, upper) in bounds.enumerated() where ply <= upper {
-                bucket = idx
-                break
-            }
-            histogram[bucket] += 1
-        }
-
-        let unique = hashSet.count
-        return Snapshot(
-            gamesInWindow: stored,
-            uniqueGames: unique,
-            uniquePercent: Double(unique) / Double(stored) * 100,
-            avgDivergencePly: Double(divergenceSum) / Double(stored),
-            divergenceHistogram: histogram
-        )
     }
 
     /// Reset the tracker, discarding all stored games. Used when a
     /// new arena tournament starts so its diversity stats are
     /// isolated from the previous tournament.
     func reset() {
-        lock.lock()
-        defer { lock.unlock() }
-        for i in 0..<stored { sequences[i] = [] }
-        stored = 0
-        writeIndex = 0
+        queue.async { [weak self] in
+            guard let self else { return }
+            for i in 0..<self.stored { self.sequences[i] = [] }
+            self.stored = 0
+            self.writeIndex = 0
+        }
     }
 
     // MARK: - FNV-1a hash

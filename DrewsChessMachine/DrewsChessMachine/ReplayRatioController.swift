@@ -14,9 +14,11 @@ import Foundation
 ///    large changes converge smoothly over ~15 seconds instead of
 ///    oscillating against the 60-second measurement window.
 ///
-/// Thread-safe via `NSLock`.
+/// Thread-safe via a private serial `DispatchQueue`. All accessors
+/// hop through `queue.sync` so the object presents the same atomic
+/// read/write semantics the old `NSLock` version did.
 final class ReplayRatioController: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.replayratiocontroller.serial")
 
     // MARK: - Configuration
 
@@ -86,69 +88,68 @@ final class ReplayRatioController: @unchecked Sendable {
         currentBufferTotal: Int,
         stepTimeMs: Double
     ) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
+        queue.sync {
+            // Update the GPU step-time EMA (used as overhead floor).
+            if _emaInitialized {
+                _emaStepTimeMs = emaAlpha * stepTimeMs + (1 - emaAlpha) * _emaStepTimeMs
+            } else {
+                _emaStepTimeMs = stepTimeMs
+                _emaInitialized = true
+            }
 
-        // Update the GPU step-time EMA (used as overhead floor).
-        if _emaInitialized {
-            _emaStepTimeMs = emaAlpha * stepTimeMs + (1 - emaAlpha) * _emaStepTimeMs
-        } else {
-            _emaStepTimeMs = stepTimeMs
-            _emaInitialized = true
-        }
+            _totalConsumed += batchSize
 
-        _totalConsumed += batchSize
+            let now = Date()
+            samples.append(Sample(
+                time: now,
+                produced: currentBufferTotal,
+                consumed: _totalConsumed
+            ))
 
-        let now = Date()
-        samples.append(Sample(
-            time: now,
-            produced: currentBufferTotal,
-            consumed: _totalConsumed
-        ))
+            let cutoff = now.addingTimeInterval(-windowSeconds)
+            while let first = samples.first, first.time < cutoff {
+                samples.removeFirst()
+            }
 
-        let cutoff = now.addingTimeInterval(-windowSeconds)
-        while let first = samples.first, first.time < cutoff {
-            samples.removeFirst()
-        }
+            let warmupThreshold = windowSeconds * 0.5
+            guard samples.count >= 2,
+                  let oldest = samples.first,
+                  let newest = samples.last else {
+                return _autoAdjust ? _computedDelayMs : _manualDelayMs
+            }
 
-        let warmupThreshold = windowSeconds * 0.5
-        guard samples.count >= 2,
-              let oldest = samples.first,
-              let newest = samples.last else {
+            let dt = newest.time.timeIntervalSince(oldest.time)
+            guard dt >= warmupThreshold else {
+                return _autoAdjust ? _computedDelayMs : _manualDelayMs
+            }
+
+            let productionRate = Double(newest.produced - oldest.produced) / dt
+            let consumptionRate = Double(newest.consumed - oldest.consumed) / dt
+
+            if _autoAdjust && productionRate > 0 && consumptionRate > 0 {
+                // 1. Estimate per-step overhead from the measured
+                //    consumption rate minus the known delay we set.
+                //    Floor at the EMA of GPU step time so the estimate
+                //    never collapses to zero during a transition where
+                //    the delay exceeds the stale cycle measurement.
+                let actualCycleSec = Double(batchSize) / consumptionRate
+                let currentDelaySec = Double(_computedDelayMs) / 1000.0
+                let emaFloorSec = _emaStepTimeMs / 1000.0
+                let overheadSec = max(emaFloorSec, actualCycleSec - currentDelaySec)
+
+                // 2. Desired cycle time from the target ratio.
+                let desiredCycleSec = Double(batchSize) / (_targetRatio * productionRate)
+
+                // 3. Target delay = desired cycle minus overhead.
+                let targetDelayMs = max(0, (desiredCycleSec - overheadSec) * 1000.0)
+
+                // 4. Damped move toward the target.
+                let newDelayMs = Double(_computedDelayMs) + damping * (targetDelayMs - Double(_computedDelayMs))
+                _computedDelayMs = max(0, min(maxDelayMs, Int(newDelayMs)))
+            }
+
             return _autoAdjust ? _computedDelayMs : _manualDelayMs
         }
-
-        let dt = newest.time.timeIntervalSince(oldest.time)
-        guard dt >= warmupThreshold else {
-            return _autoAdjust ? _computedDelayMs : _manualDelayMs
-        }
-
-        let productionRate = Double(newest.produced - oldest.produced) / dt
-        let consumptionRate = Double(newest.consumed - oldest.consumed) / dt
-
-        if _autoAdjust && productionRate > 0 && consumptionRate > 0 {
-            // 1. Estimate per-step overhead from the measured
-            //    consumption rate minus the known delay we set.
-            //    Floor at the EMA of GPU step time so the estimate
-            //    never collapses to zero during a transition where
-            //    the delay exceeds the stale cycle measurement.
-            let actualCycleSec = Double(batchSize) / consumptionRate
-            let currentDelaySec = Double(_computedDelayMs) / 1000.0
-            let emaFloorSec = _emaStepTimeMs / 1000.0
-            let overheadSec = max(emaFloorSec, actualCycleSec - currentDelaySec)
-
-            // 2. Desired cycle time from the target ratio.
-            let desiredCycleSec = Double(batchSize) / (_targetRatio * productionRate)
-
-            // 3. Target delay = desired cycle minus overhead.
-            let targetDelayMs = max(0, (desiredCycleSec - overheadSec) * 1000.0)
-
-            // 4. Damped move toward the target.
-            let newDelayMs = Double(_computedDelayMs) + damping * (targetDelayMs - Double(_computedDelayMs))
-            _computedDelayMs = max(0, min(maxDelayMs, Int(newDelayMs)))
-        }
-
-        return _autoAdjust ? _computedDelayMs : _manualDelayMs
     }
 
     // MARK: - UI snapshot
@@ -163,63 +164,62 @@ final class ReplayRatioController: @unchecked Sendable {
     }
 
     func snapshot() -> RatioSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
+        queue.sync {
+            let now = Date()
+            let cutoff = now.addingTimeInterval(-windowSeconds)
 
-        let now = Date()
-        let cutoff = now.addingTimeInterval(-windowSeconds)
+            var productionRate: Double = 0
+            var consumptionRate: Double = 0
 
-        var productionRate: Double = 0
-        var consumptionRate: Double = 0
-
-        if samples.count >= 2 {
-            var oldestInWindow: Sample?
-            for s in samples where s.time >= cutoff {
-                oldestInWindow = s
-                break
-            }
-            if let oldest = oldestInWindow, let newest = samples.last {
-                let dt = newest.time.timeIntervalSince(oldest.time)
-                if dt > 3.0 {
-                    productionRate = Double(newest.produced - oldest.produced) / dt
-                    consumptionRate = Double(newest.consumed - oldest.consumed) / dt
+            if samples.count >= 2 {
+                var oldestInWindow: Sample?
+                for s in samples where s.time >= cutoff {
+                    oldestInWindow = s
+                    break
+                }
+                if let oldest = oldestInWindow, let newest = samples.last {
+                    let dt = newest.time.timeIntervalSince(oldest.time)
+                    if dt > 3.0 {
+                        productionRate = Double(newest.produced - oldest.produced) / dt
+                        consumptionRate = Double(newest.consumed - oldest.consumed) / dt
+                    }
                 }
             }
+
+            let ratio = productionRate > 0
+                ? consumptionRate / productionRate
+                : 0
+
+            return RatioSnapshot(
+                productionRate: productionRate,
+                consumptionRate: consumptionRate,
+                currentRatio: ratio,
+                targetRatio: _targetRatio,
+                autoAdjust: _autoAdjust,
+                computedDelayMs: _computedDelayMs
+            )
         }
-
-        let ratio = productionRate > 0
-            ? consumptionRate / productionRate
-            : 0
-
-        return RatioSnapshot(
-            productionRate: productionRate,
-            consumptionRate: consumptionRate,
-            currentRatio: ratio,
-            targetRatio: _targetRatio,
-            autoAdjust: _autoAdjust,
-            computedDelayMs: _computedDelayMs
-        )
     }
 
     // MARK: - UI setters
 
     var targetRatio: Double {
-        get { lock.lock(); defer { lock.unlock() }; return _targetRatio }
-        set { lock.lock(); _targetRatio = newValue; lock.unlock() }
+        get { queue.sync { _targetRatio } }
+        set { queue.async { self._targetRatio = newValue } }
     }
 
     var autoAdjust: Bool {
-        get { lock.lock(); defer { lock.unlock() }; return _autoAdjust }
-        set { lock.lock(); _autoAdjust = newValue; lock.unlock() }
+        get { queue.sync { _autoAdjust } }
+        set { queue.async { self._autoAdjust = newValue } }
     }
 
     var manualDelayMs: Int {
-        get { lock.lock(); defer { lock.unlock() }; return _manualDelayMs }
-        set { lock.lock(); _manualDelayMs = max(0, min(maxDelayMs, newValue)); lock.unlock() }
+        get { queue.sync { _manualDelayMs } }
+        set { queue.async { self._manualDelayMs = max(0, min(self.maxDelayMs, newValue)) } }
     }
 
     var computedDelayMs: Int {
-        get { lock.lock(); defer { lock.unlock() }; return _computedDelayMs }
-        set { lock.lock(); _computedDelayMs = max(0, min(maxDelayMs, newValue)); lock.unlock() }
+        get { queue.sync { _computedDelayMs } }
+        set { queue.async { self._computedDelayMs = max(0, min(self.maxDelayMs, newValue)) } }
     }
 }

@@ -5,9 +5,9 @@ import Foundation
 /// Self-play workers push whole games via `append(boards:policyIndices:outcome:count:)`
 /// once each game ends and outcomes are known. The trainer pulls out
 /// minibatches via `sample(count:intoBoards:moves:zs:vBaselines:)`.
-/// Both sides run on background
-/// tasks; access is serialized by an `NSLock` so the buffer is safe
-/// to share across tasks.
+/// Both sides run on background tasks; access is serialized by a
+/// private serial `DispatchQueue` so the buffer is safe to share
+/// across tasks.
 ///
 /// **Storage layout.** Positions are stored in three flat contiguous
 /// arrays sized to the full capacity at init — one big allocation per
@@ -17,8 +17,8 @@ import Foundation
 /// directly from contiguous source slots into trainer-owned staging
 /// buffers.
 ///
-/// Marked `@unchecked Sendable` because the `NSLock` serializes all
-/// mutable state access.
+/// Marked `@unchecked Sendable` because the serial queue serializes
+/// all mutable state access.
 final class ReplayBuffer: @unchecked Sendable {
     /// Number of floats required to hold one encoded board position
     /// (18 planes × 8 × 8).
@@ -30,7 +30,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// in FIFO order once the buffer is full.
     let capacity: Int
 
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.replaybuffer.serial")
 
     // MARK: - Ring storage
 
@@ -106,9 +106,7 @@ final class ReplayBuffer: @unchecked Sendable {
 
     /// Current number of positions stored (up to `capacity`).
     var count: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedCount
+        queue.sync { storedCount }
     }
 
     /// Monotonically increasing count of all positions ever appended
@@ -119,9 +117,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// training worker.
     private var _totalPositionsAdded: Int = 0
     var totalPositionsAdded: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return _totalPositionsAdded
+        queue.sync { _totalPositionsAdded }
     }
 
     /// Per-position storage cost in bytes: board floats + move int32 +
@@ -146,14 +142,14 @@ final class ReplayBuffer: @unchecked Sendable {
     /// counters. Used by the session-checkpoint path to populate
     /// `hasReplayBuffer*` fields in `SessionCheckpointState`.
     func stateSnapshot() -> StateSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        return StateSnapshot(
-            storedCount: storedCount,
-            capacity: capacity,
-            writeIndex: writeIndex,
-            totalPositionsAdded: _totalPositionsAdded
-        )
+        queue.sync {
+            StateSnapshot(
+                storedCount: storedCount,
+                capacity: capacity,
+                writeIndex: writeIndex,
+                totalPositionsAdded: _totalPositionsAdded
+            )
+        }
     }
 
     // MARK: - Append
@@ -166,8 +162,8 @@ final class ReplayBuffer: @unchecked Sendable {
     /// two `memcpy` calls at the seam.
     ///
     /// The caller owns the input buffers — they are not retained past
-    /// the call. This method acquires the lock once for the whole game
-    /// rather than per-position.
+    /// the call, so this method synchronously copies the input bytes
+    /// into the ring storage on the serial queue before returning.
     func append(
         boards: UnsafePointer<Float>,
         policyIndices: UnsafePointer<Int32>,
@@ -179,53 +175,52 @@ final class ReplayBuffer: @unchecked Sendable {
         precondition(positionCount <= capacity,
             "ReplayBuffer.append: positionCount (\(positionCount)) exceeds capacity (\(capacity))")
 
-        lock.lock()
-        defer { lock.unlock() }
+        queue.sync {
+            let floatsPerBoard = Self.floatsPerBoard
 
-        let floatsPerBoard = Self.floatsPerBoard
+            // The incoming positions may straddle the ring's wraparound
+            // point. Split the write into at most two contiguous runs:
+            // the tail of the ring (from writeIndex to capacity) and then
+            // the head (wrapping back to index 0).
+            var remaining = positionCount
+            var srcOffset = 0  // in positions
+            while remaining > 0 {
+                let tailSlots = capacity - writeIndex
+                let chunk = min(remaining, tailSlots)
 
-        // The incoming positions may straddle the ring's wraparound
-        // point. Split the write into at most two contiguous runs:
-        // the tail of the ring (from writeIndex to capacity) and then
-        // the head (wrapping back to index 0).
-        var remaining = positionCount
-        var srcOffset = 0  // in positions
-        while remaining > 0 {
-            let tailSlots = capacity - writeIndex
-            let chunk = min(remaining, tailSlots)
+                // Boards: chunk * floatsPerBoard floats.
+                (boardStorage + writeIndex * floatsPerBoard).update(
+                    from: boards + srcOffset * floatsPerBoard,
+                    count: chunk * floatsPerBoard
+                )
+                // Moves: chunk int32s.
+                (moveStorage + writeIndex).update(
+                    from: policyIndices + srcOffset,
+                    count: chunk
+                )
+                // Outcomes: broadcast — no source buffer, just fill.
+                (outcomeStorage + writeIndex).update(
+                    repeating: outcome,
+                    count: chunk
+                )
+                // vBaselines: one float per position — the inference-time
+                // v(position) captured during move selection. Detaches
+                // automatically at train time because it re-enters the
+                // graph via a placeholder feed.
+                (vBaselineStorage + writeIndex).update(
+                    from: vBaselines + srcOffset,
+                    count: chunk
+                )
 
-            // Boards: chunk * floatsPerBoard floats.
-            (boardStorage + writeIndex * floatsPerBoard).update(
-                from: boards + srcOffset * floatsPerBoard,
-                count: chunk * floatsPerBoard
-            )
-            // Moves: chunk int32s.
-            (moveStorage + writeIndex).update(
-                from: policyIndices + srcOffset,
-                count: chunk
-            )
-            // Outcomes: broadcast — no source buffer, just fill.
-            (outcomeStorage + writeIndex).update(
-                repeating: outcome,
-                count: chunk
-            )
-            // vBaselines: one float per position — the inference-time
-            // v(position) captured during move selection. Detaches
-            // automatically at train time because it re-enters the
-            // graph via a placeholder feed.
-            (vBaselineStorage + writeIndex).update(
-                from: vBaselines + srcOffset,
-                count: chunk
-            )
-
-            let newWrite = writeIndex + chunk
-            writeIndex = newWrite == capacity ? 0 : newWrite
-            srcOffset += chunk
-            remaining -= chunk
-            if storedCount < capacity {
-                storedCount = min(capacity, storedCount + chunk)
+                let newWrite = writeIndex + chunk
+                writeIndex = newWrite == capacity ? 0 : newWrite
+                srcOffset += chunk
+                remaining -= chunk
+                if storedCount < capacity {
+                    storedCount = min(capacity, storedCount + chunk)
+                }
+                _totalPositionsAdded += chunk
             }
-            _totalPositionsAdded += chunk
         }
     }
 
@@ -244,25 +239,25 @@ final class ReplayBuffer: @unchecked Sendable {
         vBaselines dstVBase: UnsafeMutablePointer<Float>
     ) -> Bool {
         precondition(sampleCount > 0, "Sample count must be positive")
-        lock.lock()
-        defer { lock.unlock() }
-        let held = storedCount
-        guard held >= sampleCount else { return false }
+        return queue.sync {
+            let held = storedCount
+            guard held >= sampleCount else { return false }
 
-        let floatsPerBoard = Self.floatsPerBoard
+            let floatsPerBoard = Self.floatsPerBoard
 
-        for i in 0..<sampleCount {
-            let srcIndex = Int.random(in: 0..<held)
-            (dstBoards + i * floatsPerBoard).update(
-                from: boardStorage + srcIndex * floatsPerBoard,
-                count: floatsPerBoard
-            )
-            dstMoves[i] = moveStorage[srcIndex]
-            dstZs[i] = outcomeStorage[srcIndex]
-            dstVBase[i] = vBaselineStorage[srcIndex]
+            for i in 0..<sampleCount {
+                let srcIndex = Int.random(in: 0..<held)
+                (dstBoards + i * floatsPerBoard).update(
+                    from: boardStorage + srcIndex * floatsPerBoard,
+                    count: floatsPerBoard
+                )
+                dstMoves[i] = moveStorage[srcIndex]
+                dstZs[i] = outcomeStorage[srcIndex]
+                dstVBase[i] = vBaselineStorage[srcIndex]
+            }
+
+            return true
         }
-
-        return true
     }
 
     // MARK: - Persistence
@@ -315,13 +310,16 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Write the buffer's current contents to `url` in oldest-first
     /// order. On-disk size is proportional to `storedCount` (not
     /// `capacity`), so partially-filled rings serialize to a smaller
-    /// file. Thread-safe — acquires the lock for the duration of the
-    /// write, which pauses appends but not samples in progress
-    /// (sample already holds its own critical section).
+    /// file. Thread-safe — runs on the serial queue for the duration
+    /// of the write, which pauses appends and samples until the write
+    /// finishes.
     func write(to url: URL) throws {
-        lock.lock()
-        defer { lock.unlock() }
+        try queue.sync {
+            try _writeLocked(to: url)
+        }
+    }
 
+    private func _writeLocked(to url: URL) throws {
         let stored = storedCount
         let cap = capacity
         let floatsPerBoard = Self.floatsPerBoard
@@ -449,7 +447,8 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Serialize a contiguous logical range of the ring starting at
     /// `start` with length `total`, handling wraparound. The array
     /// is identified by `basePtr` (raw pointer to its element 0) and
-    /// `slotSize` bytes per ring slot. Caller must hold `lock`.
+    /// `slotSize` bytes per ring slot. Caller must be executing on
+    /// the serial `queue` (e.g. from inside `_writeLocked`).
     private func writeRange(
         handle: FileHandle,
         start: Int,
@@ -570,79 +569,78 @@ final class ReplayBuffer: @unchecked Sendable {
         let target = min(fileStored, capacity)
         let skip = fileStored - target  // oldest-first file entries to discard
 
-        lock.lock()
-        defer { lock.unlock() }
+        try queue.sync {
+            // Reset live state before filling.
+            storedCount = 0
+            writeIndex = 0
+            _totalPositionsAdded = 0
 
-        // Reset live state before filling.
-        storedCount = 0
-        writeIndex = 0
-        _totalPositionsAdded = 0
+            if fileStored == 0 {
+                _totalPositionsAdded = Int(ttlFile)
+                return
+            }
 
-        if fileStored == 0 {
-            _totalPositionsAdded = Int(ttlFile)
-            return
-        }
+            let floatsPerBoard = Self.floatsPerBoard
+            let boardSlotBytes = floatsPerBoard * MemoryLayout<Float>.size
 
-        let floatsPerBoard = Self.floatsPerBoard
-        let boardSlotBytes = floatsPerBoard * MemoryLayout<Float>.size
+            // Skip the `skip` oldest board records if capacity shrank.
+            if skip > 0 {
+                try seekForward(handle: handle, bytes: skip * boardSlotBytes)
+            }
+            try readContiguous(
+                handle: handle,
+                into: UnsafeMutableRawPointer(boardStorage),
+                slotBytes: boardSlotBytes,
+                count: target
+            )
 
-        // Skip the `skip` oldest board records if capacity shrank.
-        if skip > 0 {
-            try seekForward(handle: handle, bytes: skip * boardSlotBytes)
-        }
-        try readContiguous(
-            handle: handle,
-            into: UnsafeMutableRawPointer(boardStorage),
-            slotBytes: boardSlotBytes,
-            count: target
-        )
+            // Skip remaining board bytes if we truncated (there's no more
+            // board data past the last target slot in the file). Then
+            // seek past the skipped-move prefix.
+            if skip > 0 {
+                try seekForward(handle: handle, bytes: skip * MemoryLayout<Int32>.size)
+            }
+            try readContiguous(
+                handle: handle,
+                into: UnsafeMutableRawPointer(moveStorage),
+                slotBytes: MemoryLayout<Int32>.size,
+                count: target
+            )
 
-        // Skip remaining board bytes if we truncated (there's no more
-        // board data past the last target slot in the file). Then
-        // seek past the skipped-move prefix.
-        if skip > 0 {
-            try seekForward(handle: handle, bytes: skip * MemoryLayout<Int32>.size)
-        }
-        try readContiguous(
-            handle: handle,
-            into: UnsafeMutableRawPointer(moveStorage),
-            slotBytes: MemoryLayout<Int32>.size,
-            count: target
-        )
-
-        if skip > 0 {
-            try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
-        }
-        try readContiguous(
-            handle: handle,
-            into: UnsafeMutableRawPointer(outcomeStorage),
-            slotBytes: MemoryLayout<Float>.size,
-            count: target
-        )
-
-        // vBaselines — only present in v2+. On v1 files, leave the
-        // whole region zero (pre-filled during the reset above via
-        // storedCount=0 → next append will overwrite, but defensive
-        // zero-init for sampling against a partially-restored buffer).
-        if version >= 2 {
             if skip > 0 {
                 try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
             }
             try readContiguous(
                 handle: handle,
-                into: UnsafeMutableRawPointer(vBaselineStorage),
+                into: UnsafeMutableRawPointer(outcomeStorage),
                 slotBytes: MemoryLayout<Float>.size,
                 count: target
             )
-        } else {
-            // v1 file: zero out the vBaselines region for the slots
-            // we just restored so sampling returns a clean 0 baseline.
-            (vBaselineStorage).update(repeating: 0, count: target)
-        }
 
-        storedCount = target
-        writeIndex = (target == capacity) ? 0 : target
-        _totalPositionsAdded = Int(ttlFile)
+            // vBaselines — only present in v2+. On v1 files, leave the
+            // whole region zero (pre-filled during the reset above via
+            // storedCount=0 → next append will overwrite, but defensive
+            // zero-init for sampling against a partially-restored buffer).
+            if version >= 2 {
+                if skip > 0 {
+                    try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
+                }
+                try readContiguous(
+                    handle: handle,
+                    into: UnsafeMutableRawPointer(vBaselineStorage),
+                    slotBytes: MemoryLayout<Float>.size,
+                    count: target
+                )
+            } else {
+                // v1 file: zero out the vBaselines region for the slots
+                // we just restored so sampling returns a clean 0 baseline.
+                (vBaselineStorage).update(repeating: 0, count: target)
+            }
+
+            storedCount = target
+            writeIndex = (target == capacity) ? 0 : target
+            _totalPositionsAdded = Int(ttlFile)
+        }
     }
 
     private func seekForward(handle: FileHandle, bytes: Int) throws {

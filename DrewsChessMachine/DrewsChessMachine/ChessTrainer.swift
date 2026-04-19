@@ -247,7 +247,11 @@ struct TrainingRunStats: Sendable {
 /// usually just metric noise from outcome-weighted CE.
 ///
 /// Marked `@unchecked Sendable` for the same reason as `CancelBox` and
-/// `ReplayBuffer`: an `NSLock` guards all state.
+/// `ReplayBuffer`: a private serial `DispatchQueue` serializes all
+/// state mutation and snapshot reads. Writers (`recordStep`, `seed`,
+/// `recordError`, `resetRollingWindows`) dispatch asynchronously so
+/// the training worker never blocks on the UI heartbeat's snapshot
+/// read, and vice-versa.
 final class TrainingLiveStatsBox: @unchecked Sendable {
     /// Immutable snapshot the UI reads. All fields are value types so
     /// the snapshot is independent of further worker writes.
@@ -264,7 +268,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let error: String?
     }
 
-    private let lock = NSLock()
+    private let queue = DispatchQueue(label: "drewschess.traininglivestatsbox.serial")
     private var _stats = TrainingRunStats()
     private var _lastTiming: TrainStepTiming?
     private var _policyLossWindow: [Double] = []
@@ -285,47 +289,48 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// Seed the stats with values from a resumed session so the
     /// step counter and other totals don't restart from zero.
     func seed(_ stats: TrainingRunStats) {
-        lock.lock()
-        defer { lock.unlock() }
-        _stats = stats
+        queue.async { [weak self] in
+            self?._stats = stats
+        }
     }
 
     /// Record one completed training step. Called from the background
-    /// training task; takes the lock briefly and returns. No main-actor
-    /// hop and no SwiftUI invalidation — the view picks the change up on
-    /// the next heartbeat tick.
+    /// training task. Dispatches the rolling-window bookkeeping to the
+    /// serial queue asynchronously so the training worker never waits
+    /// on the UI heartbeat's `snapshot()` read.
     func recordStep(_ timing: TrainStepTiming) {
-        lock.lock()
-        defer { lock.unlock() }
-        _stats.record(timing)
-        _lastTiming = timing
-        _policyLossWindow.append(Double(timing.policyLoss))
-        if _policyLossWindow.count > rollingWindow {
-            _policyLossWindow.removeFirst(_policyLossWindow.count - rollingWindow)
-        }
-        _valueLossWindow.append(Double(timing.valueLoss))
-        if _valueLossWindow.count > rollingWindow {
-            _valueLossWindow.removeFirst(_valueLossWindow.count - rollingWindow)
-        }
-        _policyEntropyWindow.append(Double(timing.policyEntropy))
-        if _policyEntropyWindow.count > rollingWindow {
-            _policyEntropyWindow.removeFirst(_policyEntropyWindow.count - rollingWindow)
-        }
-        _policyNonNegWindow.append(Double(timing.policyNonNegligibleCount))
-        if _policyNonNegWindow.count > rollingWindow {
-            _policyNonNegWindow.removeFirst(_policyNonNegWindow.count - rollingWindow)
-        }
-        _gradNormWindow.append(Double(timing.gradGlobalNorm))
-        if _gradNormWindow.count > rollingWindow {
-            _gradNormWindow.removeFirst(_gradNormWindow.count - rollingWindow)
-        }
-        _valueMeanWindow.append(Double(timing.valueMean))
-        if _valueMeanWindow.count > rollingWindow {
-            _valueMeanWindow.removeFirst(_valueMeanWindow.count - rollingWindow)
-        }
-        _valueAbsMeanWindow.append(Double(timing.valueAbsMean))
-        if _valueAbsMeanWindow.count > rollingWindow {
-            _valueAbsMeanWindow.removeFirst(_valueAbsMeanWindow.count - rollingWindow)
+        queue.async { [weak self] in
+            guard let self else { return }
+            self._stats.record(timing)
+            self._lastTiming = timing
+            self._policyLossWindow.append(Double(timing.policyLoss))
+            if self._policyLossWindow.count > self.rollingWindow {
+                self._policyLossWindow.removeFirst(self._policyLossWindow.count - self.rollingWindow)
+            }
+            self._valueLossWindow.append(Double(timing.valueLoss))
+            if self._valueLossWindow.count > self.rollingWindow {
+                self._valueLossWindow.removeFirst(self._valueLossWindow.count - self.rollingWindow)
+            }
+            self._policyEntropyWindow.append(Double(timing.policyEntropy))
+            if self._policyEntropyWindow.count > self.rollingWindow {
+                self._policyEntropyWindow.removeFirst(self._policyEntropyWindow.count - self.rollingWindow)
+            }
+            self._policyNonNegWindow.append(Double(timing.policyNonNegligibleCount))
+            if self._policyNonNegWindow.count > self.rollingWindow {
+                self._policyNonNegWindow.removeFirst(self._policyNonNegWindow.count - self.rollingWindow)
+            }
+            self._gradNormWindow.append(Double(timing.gradGlobalNorm))
+            if self._gradNormWindow.count > self.rollingWindow {
+                self._gradNormWindow.removeFirst(self._gradNormWindow.count - self.rollingWindow)
+            }
+            self._valueMeanWindow.append(Double(timing.valueMean))
+            if self._valueMeanWindow.count > self.rollingWindow {
+                self._valueMeanWindow.removeFirst(self._valueMeanWindow.count - self.rollingWindow)
+            }
+            self._valueAbsMeanWindow.append(Double(timing.valueAbsMean))
+            if self._valueAbsMeanWindow.count > self.rollingWindow {
+                self._valueAbsMeanWindow.removeFirst(self._valueAbsMeanWindow.count - self.rollingWindow)
+            }
         }
     }
 
@@ -333,9 +338,10 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// The first error wins — subsequent calls are ignored so a
     /// follow-on error doesn't clobber the original cause.
     func recordError(_ message: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        if _error == nil { _error = message }
+        queue.async { [weak self] in
+            guard let self else { return }
+            if self._error == nil { self._error = message }
+        }
     }
 
     /// Clear the rolling diagnostic windows while keeping cumulative
@@ -344,41 +350,42 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// aligned trainer/champion regime instead of inheriting the
     /// pre-promotion averages.
     func resetRollingWindows() {
-        lock.lock()
-        defer { lock.unlock() }
-        _lastTiming = nil
-        _policyLossWindow.removeAll(keepingCapacity: true)
-        _valueLossWindow.removeAll(keepingCapacity: true)
-        _policyEntropyWindow.removeAll(keepingCapacity: true)
-        _policyNonNegWindow.removeAll(keepingCapacity: true)
-        _gradNormWindow.removeAll(keepingCapacity: true)
-        _valueMeanWindow.removeAll(keepingCapacity: true)
-        _valueAbsMeanWindow.removeAll(keepingCapacity: true)
+        queue.async { [weak self] in
+            guard let self else { return }
+            self._lastTiming = nil
+            self._policyLossWindow.removeAll(keepingCapacity: true)
+            self._valueLossWindow.removeAll(keepingCapacity: true)
+            self._policyEntropyWindow.removeAll(keepingCapacity: true)
+            self._policyNonNegWindow.removeAll(keepingCapacity: true)
+            self._gradNormWindow.removeAll(keepingCapacity: true)
+            self._valueMeanWindow.removeAll(keepingCapacity: true)
+            self._valueAbsMeanWindow.removeAll(keepingCapacity: true)
+        }
     }
 
     /// Snapshot all fields atomically for the UI poller.
     func snapshot() -> Snapshot {
-        lock.lock()
-        defer { lock.unlock() }
-        let rollingPolicy = Self.mean(_policyLossWindow)
-        let rollingValue = Self.mean(_valueLossWindow)
-        let rollingEntropy = Self.mean(_policyEntropyWindow)
-        let rollingNonNeg = Self.mean(_policyNonNegWindow)
-        let rollingGradNorm = Self.mean(_gradNormWindow)
-        let rollingVMean = Self.mean(_valueMeanWindow)
-        let rollingVAbs = Self.mean(_valueAbsMeanWindow)
-        return Snapshot(
-            stats: _stats,
-            lastTiming: _lastTiming,
-            rollingPolicyLoss: rollingPolicy,
-            rollingValueLoss: rollingValue,
-            rollingPolicyEntropy: rollingEntropy,
-            rollingPolicyNonNegCount: rollingNonNeg,
-            rollingGradGlobalNorm: rollingGradNorm,
-            rollingValueMean: rollingVMean,
-            rollingValueAbsMean: rollingVAbs,
-            error: _error
-        )
+        queue.sync {
+            let rollingPolicy = Self.mean(_policyLossWindow)
+            let rollingValue = Self.mean(_valueLossWindow)
+            let rollingEntropy = Self.mean(_policyEntropyWindow)
+            let rollingNonNeg = Self.mean(_policyNonNegWindow)
+            let rollingGradNorm = Self.mean(_gradNormWindow)
+            let rollingVMean = Self.mean(_valueMeanWindow)
+            let rollingVAbs = Self.mean(_valueAbsMeanWindow)
+            return Snapshot(
+                stats: _stats,
+                lastTiming: _lastTiming,
+                rollingPolicyLoss: rollingPolicy,
+                rollingValueLoss: rollingValue,
+                rollingPolicyEntropy: rollingEntropy,
+                rollingPolicyNonNegCount: rollingNonNeg,
+                rollingGradGlobalNorm: rollingGradNorm,
+                rollingValueMean: rollingVMean,
+                rollingValueAbsMean: rollingVAbs,
+                error: _error
+            )
+        }
     }
 
     private static func mean(_ window: [Double]) -> Double? {
