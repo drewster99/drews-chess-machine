@@ -2720,7 +2720,18 @@ struct ContentView: View {
     /// `refreshProgressRateIfNeeded` at the same 1Hz cadence.
     private func refreshTrainingChartIfNeeded() {
         let now = Date()
-        let sessionStart = currentSessionStart ?? now
+        // Use the parallel-worker stats box's `sessionStart` (fresh
+        // `Date()` at Play-and-Train start, including after a resume)
+        // rather than `currentSessionStart`, which is back-dated on
+        // resume by the loaded session's `elapsedTrainingSec` so
+        // persistence can accumulate elapsed time across save/resume
+        // cycles. Using the back-dated anchor for chart samples puts
+        // their `elapsedSec` thousands of seconds ahead of the
+        // progress-rate samples (which use the fresh anchor), which
+        // drives the shared `scrollX` binding to the progress-rate
+        // coordinate space and parks every training chart's data
+        // outside the visible window on resumed sessions.
+        let sessionStart = parallelStats?.sessionStart ?? currentSessionStart ?? now
         let elapsed = max(0, now.timeIntervalSince(sessionStart))
         let trainingSnap = trainingBox?.snapshot()
         let ratioSnap = replayRatioSnapshot
@@ -3118,50 +3129,49 @@ struct ContentView: View {
                                 }
                             }
                         }
-                    if let r = hoverReadout {
-                        Group {
-                            switch r {
-                            case .hoveringWithData(let time, let combined, let selfPlay, let training):
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("t=\(Self.formatElapsedAxis(time))")
-                                        .font(.caption2)
-                                        .monospacedDigit()
-                                    Text("Combined: \(Int(combined))/hr")
-                                        .font(.caption2)
-                                        .monospacedDigit()
-                                        .foregroundStyle(Color.green)
-                                    Text("Self-play: \(Int(selfPlay))/hr")
-                                        .font(.caption2)
-                                        .monospacedDigit()
-                                        .foregroundStyle(Color.blue)
-                                    Text("Training:  \(Int(training))/hr")
-                                        .font(.caption2)
-                                        .monospacedDigit()
-                                        .foregroundStyle(Color.orange)
-                                }
-                            case .hoveringNoData(let t):
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("t=\(Self.formatElapsedAxis(t))")
-                                        .font(.caption2)
-                                        .monospacedDigit()
-                                    Text("no data")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
+                    Group {
+                        switch hoverReadout ?? .hoveringNoData(hoveredTime: 0) {
+                        case .hoveringWithData(let time, let combined, let selfPlay, let training):
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("t=\(Self.formatElapsedAxis(time))")
+                                    .font(.caption2)
+                                    .monospacedDigit()
+                                Text("Combined: \(Int(combined))/hr")
+                                    .font(.caption2)
+                                    .monospacedDigit()
+                                    .foregroundStyle(Color.green)
+                                Text("Self-play: \(Int(selfPlay))/hr")
+                                    .font(.caption2)
+                                    .monospacedDigit()
+                                    .foregroundStyle(Color.blue)
+                                Text("Training:  \(Int(training))/hr")
+                                    .font(.caption2)
+                                    .monospacedDigit()
+                                    .foregroundStyle(Color.orange)
+                            }
+                        case .hoveringNoData(let t):
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("t=\(Self.formatElapsedAxis(t))")
+                                    .font(.caption2)
+                                    .monospacedDigit()
+                                Text("no data")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
                         }
-                        .padding(6)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color(nsColor: .windowBackgroundColor).opacity(0.92))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 4)
-                                .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
-                        )
-                        .padding(8)
-                        .allowsHitTesting(false)
                     }
+                    .padding(6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(Color(nsColor: .windowBackgroundColor).opacity(0.92))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
+                    )
+                    .padding(8)
+                    .allowsHitTesting(false)
+                    .opacity(hoverReadout == nil ? 0 : 1)
                 }
             }
         }
@@ -4141,7 +4151,12 @@ struct ContentView: View {
         // chart grid's arena activity tile can render a live band
         // as the arena progresses, rather than only showing the
         // arena post-hoc when the completed ArenaChartEvent lands.
-        if let sessionStart = currentSessionStart {
+        // Uses `parallelStats.sessionStart` (fresh at Play-and-Train
+        // start) so the arena's x-position lands on the same axis
+        // the training + progress-rate charts render against. Using
+        // the back-dated `currentSessionStart` would park the arena
+        // band ~hours off the chart on resumed sessions.
+        if let sessionStart = parallelStats?.sessionStart ?? currentSessionStart {
             activeArenaStartElapsed = max(0, Date().timeIntervalSince(sessionStart))
         }
 
@@ -4381,11 +4396,15 @@ struct ContentView: View {
         // Mirror into the chart-tile event stream. Compute the
         // elapsed-second start/end against the session-start anchor
         // so the band lands on the same X axis as the time-series
-        // charts. Guarded by sessionStart existing — a stale arena
-        // tick with no session shouldn't happen (arenas only run
-        // during Play-and-Train) but we'd rather silently skip than
-        // dereference a nil anchor.
-        if let sessionStart = currentSessionStart {
+        // charts. Uses `parallelStats.sessionStart` (fresh at
+        // Play-and-Train start) to match the training/progress-rate
+        // chart axes — the back-dated `currentSessionStart` would
+        // push the completed arena band ~hours off the chart on
+        // resumed sessions. Guarded by sessionStart existing —
+        // a stale arena tick with no session shouldn't happen
+        // (arenas only run during Play-and-Train) but we'd rather
+        // silently skip than dereference a nil anchor.
+        if let sessionStart = parallelStats?.sessionStart ?? currentSessionStart {
             let endElapsed = max(0, Date().timeIntervalSince(sessionStart))
             // Prefer the live start mark captured at arena begin —
             // it avoids a ~5-second drift from backward-inferring
