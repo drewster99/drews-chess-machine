@@ -161,6 +161,10 @@ struct DrewsChessMachineApp: App {
                     }
                 }
                 .disabled(SessionLogger.shared.activeLogPath == nil)
+                Button("Analyze Log") {
+                    LogAnalysisLauncher.openWindow()
+                }
+                .disabled(SessionLogger.shared.activeLogPath == nil)
             }
         }
     }
