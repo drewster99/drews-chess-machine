@@ -8,6 +8,51 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-18 22:13 CDT — Design doc: honest provenance of K=50 and lever analysis `(DESIGN)`
+
+**File:** `chess-engine-design.md`
+
+Revision note appended under the existing item 6 of the
+"Stability Enhancements" section. Three changes, no code touched:
+
+1. **K=50 provenance corrected.** The original item 6 framed
+   K=50 as "working as intended," which overstated the principle
+   behind the specific value. K=50 was empirically chosen during
+   stability tuning after the 2026-04-15 collapse and the
+   2026-04-16 stasis, and kept because it produced no
+   catastrophic instability — not because 50 (vs 10, 20, 100) was
+   derived from any policy-vs-value ratio argument. The doc now
+   says so.
+
+2. **Lever analysis under chronic clipping.** After extended
+   training on build 156, `gNorm` sits at ~28–29 against
+   `clip=5`, giving a ~0.17 clip scale on every step. The doc
+   now records which levers move what in this regime:
+   - K sets the policy-vs-value *ratio* (preserved post-clip)
+     but not per-step magnitude.
+   - `LR · clip_value` sets per-step magnitude when clipping is
+     active. K does not enter this product.
+   - Raising K pushes gNorm up without moving weights further.
+   - Lowering K reduces gNorm; once gNorm falls below
+     `clip_value` the effective step becomes `LR · raw_gNorm`,
+     which is smaller than `LR · clip`.
+   - LR scales effective step uniformly while staying bounded
+     by `LR · clip_value` per step. Safer than raising clip.
+
+3. **Revisit criterion rewritten.** The original
+   "revisit after MCTS visit-count targets" condition was
+   vacuous given MCTS is now an explicit non-goal (per
+   `CLAUDE.md`). New criterion: if the system can be unfrozen
+   (raise LR) without triggering the 2026-04-15 failure mode,
+   re-examine whether K still needs the full 50× amplification.
+
+No implementation in this commit — the operational step that
+follows (raising `learningRate` from `1e-4` toward `3e-4`
+through the live-fed UI field) is a runtime tuning change, not
+a source change.
+
+---
+
 ## 2026-04-18 21:32 CDT — Give the claude subprocess a usable PATH (`7b551d7`)
 
 **File:** `LogAnalysisWindow.swift`

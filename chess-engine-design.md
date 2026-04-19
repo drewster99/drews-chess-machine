@@ -622,6 +622,25 @@ The REINFORCE bootstrap described above is functionally correct but known to be 
 
 **6. K = 50 unchanged.** The policy-loss coefficient (fix `1ec8a13`) is working as intended; no warmup is needed because gradient clipping provides the same protection. Revisit only after MCTS visit-count targets replace one-hot REINFORCE, at which point K should drop back to ≈1.
 
+##### Revision (2026-04-18): K=50 behavior in the clip-active regime
+
+After extended training on build 156, `gNorm` sits chronically at ~28–29 against `clip=5`, giving an average clip scale of ~0.17 — i.e. every step is clipped, not just rare outliers. Two clarifications that weren't explicit when item 6 was written:
+
+- **K is preserved under global-L2 clipping as a *ratio*.** The clip scales every gradient contribution uniformly, so the policy-path gradient's 50× amplification over the value-path gradient survives post-clip: `effective_policy_grad / effective_value_grad = K = 50`. K is not a no-op under chronic clipping; it sets the policy-vs-value weighting.
+- **Effective per-step magnitude is `LR · clip_value`, independent of K, in the clip-active regime.** Here that's `1e-4 · 5 = 5e-4`. Raising K alone pushes gNorm higher without changing how far the weights move per step — the clip just chops off more of the amplification. Lowering K only starts reducing step size once gNorm falls below `clip_value`, at which point the effective step becomes `LR · raw_gNorm`. The two levers that actually increase effective step size in the clip-active regime are `LR` and `clip_value`.
+
+**On K=50 specifically — honest provenance (2026-04-18):** K=50 in commit `1ec8a13` was presented as a targeted fix for the `(1000·pL+vL)/1001` miscomputation, but its *value* of 50 (vs. 10, 20, 100, …) was not derived from a principled policy-vs-value ratio. It was set during a period of lever-pulling to recover from the 2026-04-15 collapse and the 2026-04-16 stasis, and stuck because it produced no catastrophic instability — which is what the design doc should say, rather than "working as intended." In practice the current `K=50 + clip=5 + LR=1e-4` config is the quietest the net has been: no collapse, no stasis of the 2026-04-16 kind, but also no meaningful learning (only 2 promotions over ~40 arena runs spanning hours). "Stable" here means "the clip gags 83% of every gradient and the weights barely move," not "the dynamics are healthy." The combination that produced stability is also the combination that's producing frozen-but-safe behavior now.
+
+**MCTS is an explicit non-goal** (see `CLAUDE.md` — single-forward-pass move selection is the permanent design), so the "revisit after MCTS visit-count targets" criterion in item 6 is vacuous. K=50 needs a different revisit criterion: "if the system can be unfrozen (raise LR / raise clip) without triggering the 2026-04-15 failure mode, re-examine whether K still needs the full 50× or whether lower K + higher LR reaches a better learning/stability tradeoff."
+
+**Operative lever for "training is slow" in the current regime:** raise LR *conservatively*, not K or clip.
+- Raising K pushes gNorm up without changing weight motion — pure logging noise.
+- Raising clip lifts the ceiling on individual-step magnitude and re-exposes the trunk to the 2026-04-15 failure mode (rare big gradients reaching the weights uncapped). Stability-unfavorable.
+- Raising LR scales the effective step uniformly; per-step magnitude stays bounded by `LR · clip_value` (the clip stays on). Stability-favorable relative to raising clip.
+- Current `LR=1e-4` is 10× below the `1e-3` design target from item 5. There is headroom.
+- Suggested path: `1e-4 → 2e-4`, watch `pEnt`, `vAbs`, `gNorm` for ~1000 steps and one arena. If metrics don't show the 2026-04-15 signature (pEnt crashing, |v| saturating toward ±1, pLoss going strongly negative), step to `3e-4`, then `5e-4`. Rollback criterion: `pEnt < 6.0` sustained for more than 50 steps, or `pLoss < −0.5` at any step.
+- Clip stays at 5. K stays at 50 until LR reaches `5e-4` or higher; at that point, reconsider K as a separate decision (lower K + current LR may be equivalent at lower logged gNorm, which aids diagnosis).
+
 ##### Why these choices and not alternatives
 
 - **Weight decay rather than logit L2:** Both discourage large logits, but weight decay is persistent (applied every step, not only when logits are already big), has standard DL backing (Bayesian prior on weights), improves generalization independent of numerical stability, and doesn't double-dip with softmax temperature (`τ`). Logit L2 would be a narrower fix for the same symptom. Use one; choose the one with more side benefits.
