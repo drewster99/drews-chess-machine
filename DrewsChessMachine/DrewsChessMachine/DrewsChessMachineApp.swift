@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -153,6 +154,13 @@ struct DrewsChessMachineApp: App {
                         || commandHub.continuousTraining
                         || commandHub.realTraining
                     )
+                Divider()
+                Button("Open Session Log") {
+                    if let path = SessionLogger.shared.activeLogPath {
+                        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                    }
+                }
+                .disabled(SessionLogger.shared.activeLogPath == nil)
             }
         }
     }
