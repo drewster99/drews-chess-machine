@@ -155,65 +155,86 @@ final class LogAnalysisViewModel: ObservableObject {
         // concurrency rules forbid.
         let result: Result<String, Error> = await withCheckedContinuation { cont in
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let catProc = Process()
+                catProc.executableURL = URL(fileURLWithPath: "/bin/cat")
+                catProc.arguments = [logPath]
+
+                let claudeProc = Process()
+                claudeProc.executableURL = URL(fileURLWithPath: claudePath)
+                claudeProc.arguments = ["-p", prompt]
+
+                let catOut = Pipe()
+                catProc.standardOutput = catOut
+                claudeProc.standardInput = catOut
+
+                let claudeOut = Pipe()
+                let claudeErr = Pipe()
+                claudeProc.standardOutput = claudeOut
+                claudeProc.standardError = claudeErr
+
                 do {
-                    let catProc = Process()
-                    catProc.executableURL = URL(fileURLWithPath: "/bin/cat")
-                    catProc.arguments = [logPath]
-
-                    let claudeProc = Process()
-                    claudeProc.executableURL = URL(fileURLWithPath: claudePath)
-                    claudeProc.arguments = ["-p", prompt]
-
-                    let catOut = Pipe()
-                    catProc.standardOutput = catOut
-                    claudeProc.standardInput = catOut
-
-                    let claudeOut = Pipe()
-                    let claudeErr = Pipe()
-                    claudeProc.standardOutput = claudeOut
-                    claudeProc.standardError = claudeErr
-
-                    // Publish the live Process to the view model so
-                    // a window-close can terminate it. Dispatch back
-                    // to main for the assignment; the subprocess
-                    // runs for seconds, so the tiny window between
-                    // `.run()` and the assign landing on main is
-                    // inconsequential for cancellation UX.
-                    DispatchQueue.main.async {
-                        self?.activeProcess = claudeProc
-                    }
-
                     try catProc.run()
-                    try claudeProc.run()
-                    catProc.waitUntilExit()
-                    claudeProc.waitUntilExit()
-
-                    DispatchQueue.main.async {
-                        self?.activeProcess = nil
-                    }
-
-                    let outData = claudeOut.fileHandleForReading.readDataToEndOfFile()
-                    let errData = claudeErr.fileHandleForReading.readDataToEndOfFile()
-
-                    if claudeProc.terminationStatus != 0 {
-                        let errStr = String(data: errData, encoding: .utf8)?
-                            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                        let detail = errStr.isEmpty ? "no stderr" : errStr
-                        let err = NSError(
-                            domain: "drewschess.loganalysis",
-                            code: Int(claudeProc.terminationStatus),
-                            userInfo: [NSLocalizedDescriptionKey:
-                                "claude exited with status \(claudeProc.terminationStatus): \(detail)"]
-                        )
-                        cont.resume(returning: .failure(err))
-                        return
-                    }
-
-                    let response = String(data: outData, encoding: .utf8) ?? ""
-                    cont.resume(returning: .success(response))
                 } catch {
+                    // cat failed to launch — nothing else to
+                    // clean up yet. Surface the error.
                     cont.resume(returning: .failure(error))
+                    return
                 }
+
+                do {
+                    try claudeProc.run()
+                } catch {
+                    // claude failed to launch. `catProc` is
+                    // already running and will fill the pipe
+                    // buffer to block on write with no reader.
+                    // Terminate it before returning so we
+                    // don't leave a zombie cat blocked on a
+                    // write forever.
+                    catProc.terminate()
+                    catProc.waitUntilExit()
+                    cont.resume(returning: .failure(error))
+                    return
+                }
+
+                // Publish the live claude process to the view
+                // model now that it's launched. Assigning
+                // earlier risked `cancel() -> terminate()`
+                // firing on an un-launched Process, which
+                // raises `NSInvalidArgumentException`. The
+                // tiny window before this hop lands on main
+                // is the "not cancellable yet" period — the
+                // cat stage and the fork/exec of claude —
+                // which is milliseconds at most.
+                DispatchQueue.main.async {
+                    self?.activeProcess = claudeProc
+                }
+
+                catProc.waitUntilExit()
+                claudeProc.waitUntilExit()
+
+                DispatchQueue.main.async {
+                    self?.activeProcess = nil
+                }
+
+                let outData = claudeOut.fileHandleForReading.readDataToEndOfFile()
+                let errData = claudeErr.fileHandleForReading.readDataToEndOfFile()
+
+                if claudeProc.terminationStatus != 0 {
+                    let errStr = String(data: errData, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                    let detail = errStr.isEmpty ? "no stderr" : errStr
+                    let err = NSError(
+                        domain: "drewschess.loganalysis",
+                        code: Int(claudeProc.terminationStatus),
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "claude exited with status \(claudeProc.terminationStatus): \(detail)"]
+                    )
+                    cont.resume(returning: .failure(err))
+                    return
+                }
+
+                let response = String(data: outData, encoding: .utf8) ?? ""
+                cont.resume(returning: .success(response))
             }
         }
 
@@ -373,18 +394,24 @@ struct MarkdownText: View {
         }
     }
 
-    /// Inline-only Markdown parse for a single block of text. `.inlineOnlyPreservingWhitespace`
-    /// keeps literal spacing in the caller's string (important for
-    /// multi-line paragraphs) while still rendering `**bold**`,
-    /// `*italic*`, `` `code` ``, and `[links](url)`.
+    /// Inline-only Markdown parse for a single block of text.
+    /// `.inlineOnlyPreservingWhitespace` keeps literal spacing in
+    /// the caller's string (important for multi-line paragraphs)
+    /// while still rendering `**bold**`, `*italic*`,
+    /// `` `code` ``, and `[links](url)`. On parser rejection
+    /// (unbalanced delimiters, unusual escape sequences) we fall
+    /// through to a plain-text `AttributedString` rather than
+    /// dropping the text — the reader should always see what
+    /// Claude produced, even if it's not styled.
     private func inline(_ text: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(
             interpretedSyntax: .inlineOnlyPreservingWhitespace
         )
-        if let attr = try? AttributedString(markdown: text, options: options) {
-            return attr
+        do {
+            return try AttributedString(markdown: text, options: options)
+        } catch {
+            return AttributedString(text)
         }
-        return AttributedString(text)
     }
 
     private static func headingSize(_ level: Int) -> CGFloat {
