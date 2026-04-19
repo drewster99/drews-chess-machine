@@ -58,7 +58,6 @@ final class GameDiversityTracker: @unchecked Sendable {
     // Circular buffers — pre-allocated at init, indexed by writeIndex.
     private var sequences: [[Int16]]      // policy-index per move
     private var hashes: [UInt64]          // FNV-1a of the full sequence
-    private var divergencePlies: [Int]    // max shared prefix at record time
     private var writeIndex: Int = 0
     private var stored: Int = 0
 
@@ -70,7 +69,6 @@ final class GameDiversityTracker: @unchecked Sendable {
         self.windowSize = windowSize
         self.sequences = Array(repeating: [], count: windowSize)
         self.hashes = Array(repeating: 0, count: windowSize)
-        self.divergencePlies = Array(repeating: 0, count: windowSize)
     }
 
     /// Record a completed game's move sequence.
@@ -85,27 +83,23 @@ final class GameDiversityTracker: @unchecked Sendable {
 
         queue.async { [weak self] in
             guard let self else { return }
-            // Find the longest shared prefix with any stored game.
-            var maxPrefix = 0
-            for i in 0..<self.stored {
-                let other = self.sequences[i]
-                var shared = 0
-                let limit = min(indices.count, other.count)
-                while shared < limit && indices[shared] == other[shared] {
-                    shared += 1
-                }
-                if shared > maxPrefix { maxPrefix = shared }
-            }
-
             self.sequences[self.writeIndex] = indices
             self.hashes[self.writeIndex] = hash
-            self.divergencePlies[self.writeIndex] = maxPrefix
             self.writeIndex = (self.writeIndex + 1) % self.windowSize
             if self.stored < self.windowSize { self.stored += 1 }
         }
     }
 
     /// Take an immutable snapshot of the current diversity metrics.
+    ///
+    /// Divergence-ply values are recomputed against the *current*
+    /// window contents on every call, not cached from the moment each
+    /// game was inserted. This matters because as old games age out of
+    /// the FIFO and new ones come in, the set of peers each game can be
+    /// compared against changes — a cached at-insert-time value would
+    /// drift out of sync with the live window. The pairwise scan is
+    /// O(n²) in window size; with n=200 and ~150-ply games it's well
+    /// under a millisecond on Apple Silicon.
     func snapshot() -> Snapshot {
         queue.sync {
             guard stored > 0 else {
@@ -118,13 +112,32 @@ final class GameDiversityTracker: @unchecked Sendable {
                 )
             }
 
+            // Symmetric pairwise prefix scan: each unordered pair (i, j)
+            // is compared once and the shared length is folded into both
+            // games' running max. A game's divergence ply is the longest
+            // prefix it shares with any other game currently stored.
+            var maxPrefix = Array(repeating: 0, count: stored)
             var hashSet = Set<UInt64>(minimumCapacity: stored)
+            for i in 0..<stored {
+                hashSet.insert(hashes[i])
+                let seqI = sequences[i]
+                for j in (i + 1)..<stored {
+                    let seqJ = sequences[j]
+                    var shared = 0
+                    let limit = min(seqI.count, seqJ.count)
+                    while shared < limit && seqI[shared] == seqJ[shared] {
+                        shared += 1
+                    }
+                    if shared > maxPrefix[i] { maxPrefix[i] = shared }
+                    if shared > maxPrefix[j] { maxPrefix[j] = shared }
+                }
+            }
+
             var divergenceSum = 0
             var histogram = Array(repeating: 0, count: Self.histogramBucketCount)
             let bounds = Self.histogramBounds
             for i in 0..<stored {
-                hashSet.insert(hashes[i])
-                let ply = divergencePlies[i]
+                let ply = maxPrefix[i]
                 divergenceSum += ply
                 // Linear scan over bounds — 5 compares, fastest for this
                 // tiny count. Matches `bucketIndex(for:)` semantics.
