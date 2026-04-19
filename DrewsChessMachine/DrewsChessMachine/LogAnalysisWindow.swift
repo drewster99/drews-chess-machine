@@ -162,6 +162,33 @@ final class LogAnalysisViewModel: ObservableObject {
                 let claudeProc = Process()
                 claudeProc.executableURL = URL(fileURLWithPath: claudePath)
                 claudeProc.arguments = ["-p", prompt]
+                // Macos app processes launched via LaunchServices get
+                // a minimal PATH (often just /usr/bin:/bin), which is
+                // not enough for Node-based CLIs that spawn `node`,
+                // `git`, etc. Start from the inherited env so any
+                // HOME / shell-specific vars stay in place, then
+                // override PATH with the locations where the claude
+                // CLI and its dependencies typically live. Not using
+                // a login shell because we already know the
+                // executable path — we just need its dependencies
+                // to be findable.
+                var env = ProcessInfo.processInfo.environment
+                let home = NSString(string: "~").expandingTildeInPath
+                let path = [
+                    "\(home)/.local/bin",
+                    "/opt/homebrew/bin",
+                    "/opt/homebrew/sbin",
+                    "/usr/local/bin",
+                    "/usr/bin",
+                    "/bin",
+                    "/usr/sbin",
+                    "/sbin",
+                    env["PATH"] ?? ""
+                ]
+                .filter { !$0.isEmpty }
+                .joined(separator: ":")
+                env["PATH"] = path
+                claudeProc.environment = env
 
                 let catOut = Pipe()
                 catProc.standardOutput = catOut
