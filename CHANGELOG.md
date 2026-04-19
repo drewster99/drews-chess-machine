@@ -8,6 +8,294 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-18 21:32 CDT — Give the claude subprocess a usable PATH (`7b551d7`)
+
+**File:** `LogAnalysisWindow.swift`
+
+macOS apps launched via LaunchServices inherit an almost-empty
+`PATH` (typically `/usr/bin:/bin`). The Node-based `claude` CLI
+spawns `node`, `git`, and other helpers via `PATH` lookup, which
+silently fails under that minimal env and makes `-p` return a
+non-zero exit before producing any output.
+
+The subprocess now starts from the inherited environment (so
+`HOME` and shell-specific vars stay intact) and prepends the
+common install dirs where `claude` and its deps live —
+`~/.local/bin`, Homebrew paths, `/usr/local/bin`, and the
+standard system dirs.
+
+---
+
+## 2026-04-18 21:24 CDT — Fix three correctness issues in the Log Analysis window (`2bf0c0d`)
+
+**File:** `LogAnalysisWindow.swift`
+
+All three surfaced during post-commit recheck of the 21:09 Analyze
+Log feature.
+
+1. **`NSInvalidArgumentException` on cancel-before-launch.** The
+   view model published `activeProcess = claudeProc` to the main
+   actor BEFORE calling `claudeProc.run()`, so a window close
+   during the ~microsecond window between publish-hop and launch
+   would call `terminate()` on an un-launched `Process` — which
+   raises. Publish now lands after both `run()` calls succeed.
+2. **Hung subprocess when claude fails to launch.** If
+   `catProc.run()` succeeded but `claudeProc.run()` threw, nothing
+   cleaned up cat — it would write into a pipe with no reader,
+   fill the 64 KB buffer, then block forever on its next write,
+   and the surrounding `Task` would never return. The
+   claude-failure catch now terminates cat and waits for it before
+   surfacing the error.
+3. **`try?` on `AttributedString(markdown:)`** (violates the
+   project-wide rule against `try?` without explicit
+   justification). Now uses `do`/`catch` with a plain-text
+   fallback so parser rejections render the raw string rather
+   than dropping it.
+
+Also dropped a now-unreachable outer `do`/`catch` in `runAnalysis`
+that the compiler warned about after the inner cleanup paths
+started handling every throw site themselves.
+
+---
+
+## 2026-04-18 21:09 CDT — Debug > Analyze Log: pipe session log through claude CLI (`005bf7b`)
+
+**Files:** `LogAnalysisWindow.swift` (new), `DrewsChessMachineApp.swift`.
+
+New menu item opens a split window: raw session log in a
+monospaced top pane, `claude -p` response as markdown-rendered
+text in the bottom pane. Launcher checks `~/.local/bin/claude`
+exists and is executable first, then reads the current
+`SessionLogger` file, then runs
+
+```
+/bin/cat <log> | ~/.local/bin/claude -p "Analyze this log. ..."
+```
+
+on a GCD background queue so the main actor and Swift's
+cooperative executor stay free during the multi-second claude
+invocation. Window close terminates the live subprocess so
+closing mid-analysis doesn't leak a long-running claude process.
+
+`LogAnalysisWindow.swift` contains a minimal block-level markdown
+renderer (headings, bullet/numbered lists, fenced code blocks,
+inline bold/italic/code/links via `AttributedString`) — rich
+enough for typical `claude -p` output without pulling in a
+third-party package.
+
+---
+
+## 2026-04-18 20:58 CDT — Debug > Open Session Log menu item (`5c85160`)
+
+**File:** `DrewsChessMachineApp.swift`
+
+Opens the active `SessionLogger` file in the default text editor
+via `NSWorkspace`. Disabled when the logger hasn't started
+(pre-launch) or `start()` failed to open a file. Faster than
+navigating to `~/Library/Logs/DrewsChessMachine` when debugging a
+running session.
+
+---
+
+## 2026-04-18 20:55 CDT — Fix chart x-axis mismatch on resumed sessions (`57467d5`)
+
+**File:** `ContentView.swift`
+
+On session resume the training chart tiles rendered blank because
+their samples landed thousands of seconds past the visible window.
+`refreshTrainingChartIfNeeded` anchored `elapsedSec` at
+`currentSessionStart` — intentionally back-dated by the loaded
+session's `elapsedTrainingSec` so persisted session state keeps
+accumulating elapsed time across save/resume cycles. But
+`refreshProgressRateIfNeeded` uses `parallelStats.sessionStart`,
+which is a fresh `Date()` at Play-and-Train start, so its samples
+start at `elapsedSec = 0`.
+
+The two chart groups share one `scrollX` binding driven by the
+progress-rate coordinate space. With the training-chart samples
+offset ~hours forward of the progress-rate samples, every training
+tile had its data parked outside the visible window.
+
+**Fix:** use `parallelStats.sessionStart` (same anchor the
+progress rate already uses) for `refreshTrainingChartIfNeeded`
+and the two arena-activity elapsed-time calculations.
+`currentSessionStart` stays back-dated — only
+`buildCurrentSessionState` reads it now, which is exactly the
+persistence path that needs the cumulative wall clock.
+
+---
+
+## 2026-04-18 19:56 CDT — Capture timestamps at call site, not inside `queue.async` closure (`3c05b10`)
+
+**File:** `ContentView.swift`
+
+Recheck of the `NSLock` → `DispatchQueue` conversion caught four
+spots where `Date()` / `CFAbsoluteTimeGetCurrent()` was evaluated
+inside the async closure instead of at the moment the caller
+invoked the method. When the serial queue has any backlog the
+timestamp skews forward, which matters most for
+`ParallelWorkerStatsBox.recordCompletedGame` — that `Date()` feeds
+the rolling-window rate stats the UI displays, so "when did this
+game end" has to be the actual game-end instant, not when the
+stats queue got around to the write.
+
+Affected methods:
+- `ParallelWorkerStatsBox.markWorkersStarted`
+- `ParallelWorkerStatsBox.recordCompletedGame`
+- `GameWatcher.markPlaying` / `ChessMachine` delegate methods
+  (threaded through `setPlayingOnQueue(_:now:)`)
+- `ArenaTriggerBox.recordArenaCompleted`
+
+---
+
+## 2026-04-18 19:51 CDT — Replace every NSLock with a private serial DispatchQueue (`d2e3d31`)
+
+**Files:** `SessionLogger.swift`, `ReplayBuffer.swift`,
+`ReplayRatioController.swift`, `GameDiversityTracker.swift`,
+`ChessTrainer.swift`, `ContentView.swift`.
+
+Converts all 15 lock-protected state holders in the app to serial
+`DispatchQueue`-backed synchronization. Writers dispatch
+asynchronously where safe (workers never wait on UI pollers and
+vice versa); readers use `queue.sync` so the FIFO ordering of the
+serial queue still gives callers a consistent atomic view.
+`ReplayBuffer.append` / `sample` / `write` / `restore` stay
+`queue.sync` because the caller owns input or output pointers
+that must be fully processed before return.
+`WorkerPauseGate.markWaiting` / `markRunning` / `resume` stay
+`queue.sync` because the coordinator's spin-wait depends on the
+ack being visible the instant the worker returns.
+
+Classes converted: `SessionLogger` (log is now fire-and-forget,
+no more disk-fsync blocking on hot training paths),
+`ReplayRatioController`, `GameDiversityTracker`, `ReplayBuffer`,
+`TrainingLiveStatsBox`, `CancelBox`, `GameWatcher`,
+`TournamentLiveBox`, `WorkerPauseGate`, `WorkerCountBox`,
+`TrainingStepDelayBox`, `ArenaTriggerBox`, `ArenaOverrideBox`,
+`ArenaActiveFlag`, `ParallelWorkerStatsBox`.
+
+Former `*_locked` helpers were renamed to `*OnQueue` to reflect
+the new precondition (must already be executing on the owning
+queue).
+
+---
+
+## 2026-04-18 18:10 CDT — Move action buttons into File / Train / Debug menu bar menus (`0958401`)
+
+**Files:** `AppCommandHub.swift` (new), `DrewsChessMachineApp.swift`,
+`ContentView.swift`, `TrainingChartGridView.swift`.
+
+Introduces `AppCommandHub` (an `@Observable @MainActor` class
+owned by `DrewsChessMachineApp`) as a bridge between the top-level
+`.commands { ... }` menu DSL and `ContentView`'s state + action
+functions. `ContentView` wires each action closure into the hub
+on `.onAppear` and keeps a small set of mirrored state flags in
+sync via `.onChange` handlers so menu items can `.disabled(...)`
+correctly.
+
+**Menu layout** (order: File Edit View Train Debug Window Help —
+SwiftUI places `CommandMenu` entries before Window, so Debug lands
+adjacent to Train rather than between Window and Help):
+
+- **File** (via `CommandGroup` after `.newItem`): Save Session,
+  Save Champion, Load Session…, Load Model…, Open Data Folder in
+  Finder (formerly "Reveal Saves" inline).
+- **Train:** Build Network, Play and Train / Continue Training,
+  Stop (⎋), Run Arena, Abort Arena, Promote Trainee.
+- **Debug:** Run Forward Pass (↩), Play Game, Play Continuous,
+  Train Once, Train Continuous, Sweep Batch Sizes.
+
+The two inline button rows in `ContentView` collapse to a single
+status row carrying the `ProgressView` + busy label + checkpoint
+status message. The row is kept as a stable parent so the
+`.fileImporter` modifiers (driven by the menu Load items) still
+have a view to attach to. Silence (alarm banner) and the
+board-overlay chevrons stay inline as requested.
+
+**Chart grid renames and formatting:**
+- Loss total → "Loss (pLoss + vLoss)"
+- Loss policy → "pLoss (policy loss)"
+- Loss value → "vLoss (value loss)"
+- Grad norm → "gNorm (gradient L2 norm)"
+- Progress rate → "Progress rate (self play + train)"
+- Diversity histogram → "Longest move prefix"
+- Non-negligible policy count header adds `(P%)` after `N / 4096`
+  to mirror the policy-entropy tile.
+- App memory → "App memory (RAM)"; GPU RAM → "GPU memory (RAM)".
+  Both memory tiles switch to a new `memoryChart` helper that
+  formats the header as `used GB / total GB (pct%)` against
+  `ProcessInfo.physicalMemory`. The unified-memory total is
+  plumbed through from `ContentView.memoryStatsSnap.gpuTotalBytes`
+  as new `appMemoryTotalGB` / `gpuMemoryTotalGB` view params.
+
+---
+
+## 2026-04-18 17:39 CDT — Entropy regularization: build differentiable entropy in trainer (`0d70a51`)
+
+**Files:** `ChessTrainer.swift`, `ContentView.swift`, `ModelID.swift`,
+`SessionCheckpointFile.swift`, `TrainingChartGridView.swift`,
+`DrewsChessMachine.xcscheme`.
+
+The entropy-regularization feature feeds `policyEntropy` into
+`totalLoss` as `-coeff * H(p)`. The diagnostic path it reused was
+built from a manual max-subtracted log-softmax, which MPSGraph
+cannot autodiff: `reductionMaximum` has no registered gradient,
+and `graph.gradients(of: totalLoss, ...)` hit
+
+```
+MPSGraphOperation.mm:217: 'Op gradient not implemented...'
+```
+
+on every Play-and-Train start.
+
+**Fix:** rebuild the entropy path inside
+`ChessTrainer.buildTrainingOps` from `graph.softMax(with:axis:)`
+(fused, has autograd) plus `log(softmax + 1e-10)`. Mathematically
+equivalent to the old diagnostic up to an ~1e-7 epsilon bias;
+numerically stable because `softMax` handles the max-subtraction
+internally; fully differentiable end-to-end.
+
+Surrounding feature wiring for the entropy coefficient (field on
+`ChessTrainer`, placeholder + ND-array feed, UI text field in
+`ContentView`, `@AppStorage` persistence, `SessionCheckpointFile`
+round-trip, `[STATS]` log line) lands in the same commit since
+the fix only makes sense alongside it.
+
+Also in this commit:
+- `ModelIDMinter.mintTrainerGeneration(from:)` for forking a
+  lineage root into generation-suffixed trainer IDs.
+- Rolling grad-norm mini-chart in `TrainingChartGridView`.
+- `TrainingLiveStatsBox.resetRollingWindows()` so post-promotion
+  charts start from the new regime.
+- Scheme: drop `enableGPUValidationMode` from the Run action.
+
+---
+
+## 2026-04-18 15:58 CDT — Move MPSGraph work off cooperative executor (`1f67d5e`)
+
+**Files:** `BatchedMoveEvaluationSource.swift`,
+`CheckpointManager.swift`, `ChessMPSNetwork.swift`,
+`ChessNetwork.swift`, `ChessRunner.swift`, `ChessTrainer.swift`,
+`ContentView.swift`, `MoveEvaluationSource.swift`,
+`ReplayBuffer.swift`.
+
+Swift's cooperative executor requires every task to make progress;
+a long synchronous `MPSGraph.run` call parked on a concurrency
+thread starves every other task sharing that thread. Every
+GPU-dispatch path is now wrapped in `withCheckedContinuation` +
+a dedicated `DispatchQueue` so the concurrency thread returns
+immediately and the MPSGraph call runs on a queue worker, with
+`continuation.resume` bouncing the async caller back onto the
+cooperative executor once the graph finishes.
+
+Touches every GPU-adjacent call site: batched and direct move
+evaluation, training step, checkpoint save/load, and replay-buffer
+persistence. `ReplayBuffer` loses a large chunk of its
+lock-centric plumbing because the restore path no longer needs to
+coordinate with a concurrent task blocking on GPU work.
+
+---
+
 ## 2026-04-17 23:21 CDT — Diversity histogram chart
 
 **Files:** `GameDiversityTracker.swift`, `TrainingChartGridView.swift`,
