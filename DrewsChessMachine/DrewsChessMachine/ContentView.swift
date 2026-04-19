@@ -1376,6 +1376,7 @@ struct ContentView: View {
     @State private var trainingBox: TrainingLiveStatsBox?
     nonisolated static let trainerLearningRateDefault: Float = 1e-4
     nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-1
+    nonisolated static let drawPenaltyDefault: Float = 0.0
     nonisolated static let trainingBatchSize = 4096
 
     /// Policy-entropy floor below which the periodic stats ticker
@@ -1687,6 +1688,16 @@ struct ContentView: View {
     @AppStorage("trainerLearningRate") private var trainerLearningRate: Double = Double(trainerLearningRateDefault)
     @AppStorage("entropyRegularizationCoeff")
     private var entropyRegularizationCoeff: Double = Double(entropyRegularizationCoeffDefault)
+    /// Bootstrap-phase draw penalty. Drawn games normally contribute
+    /// z=0 to the REINFORCE policy loss, which gives no gradient —
+    /// when 82 %+ of self-play games are threefold-repetition draws,
+    /// that's most of the replay buffer contributing nothing. With
+    /// this set to a small positive value, draws enter training as
+    /// `z = -drawPenalty`, giving a mild negative signal so the
+    /// policy has a reason to avoid shuffling sequences during the
+    /// bootstrap phase. See `ChessTrainer.drawPenalty`.
+    @AppStorage("drawPenalty")
+    private var drawPenalty: Double = Double(drawPenaltyDefault)
     /// Last auto-computed step delay, persisted so the next session
     /// starts from where the auto-adjuster left off instead of
     /// falling back to the manual default.
@@ -1938,6 +1949,7 @@ struct ContentView: View {
     /// on the TextField). Invalid input reverts to the current LR.
     @State private var learningRateEditText: String = ""
     @State private var entropyRegularizationEditText: String = ""
+    @State private var drawPenaltyEditText: String = ""
 
     /// Binding for the side-to-move segmented picker. Writes rebuild
     /// `editableState` with the new current-player (nothing else changes)
@@ -2423,6 +2435,26 @@ struct ContentView: View {
                                             Text("clip \(String(format: "%.1f", ChessTrainer.gradClipMaxNorm))")
                                                 .foregroundStyle(.secondary)
                                             Text("decay \(String(format: "%.0e", ChessTrainer.weightDecayC))")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        HStack(spacing: 6) {
+                                            Text("  Draw Penalty:")
+                                            TextField("Draw Penalty", text: $drawPenaltyEditText)
+                                            .monospacedDigit()
+                                            .frame(width: 80)
+                                            .textFieldStyle(.roundedBorder)
+                                            .onSubmit {
+                                                if let parsed = Double(drawPenaltyEditText),
+                                                   parsed >= 0, parsed.isFinite {
+                                                    drawPenalty = parsed
+                                                    trainer?.drawPenalty = Float(parsed)
+                                                }
+                                                drawPenaltyEditText = String(
+                                                    format: "%.3f",
+                                                    drawPenalty
+                                                )
+                                            }
+                                            Text("(draws → z = −penalty; 0 disables)")
                                                 .foregroundStyle(.secondary)
                                         }
                                     }
@@ -3415,6 +3447,7 @@ struct ContentView: View {
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
         let entropyCoeff = trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault
+        let drawPen = trainer?.drawPenalty ?? Float(drawPenalty)
         let bufferSnap = replayBuffer?.stateSnapshot()
         return SessionCheckpointState(
             formatVersion: SessionCheckpointState.currentFormatVersion,
@@ -3429,6 +3462,7 @@ struct ContentView: View {
             batchSize: Self.trainingBatchSize,
             learningRate: lr,
             entropyRegularizationCoeff: entropyCoeff,
+            drawPenalty: drawPen,
             promoteThreshold: Self.tournamentPromoteThreshold,
             arenaGames: Self.tournamentGames,
             selfPlayTau: TauConfigCodable(SamplingSchedule.selfPlay),
@@ -4811,12 +4845,14 @@ struct ContentView: View {
         if let trainer {
             trainer.learningRate = Float(trainerLearningRate)
             trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
+            trainer.drawPenalty = Float(drawPenalty)
             return trainer
         }
         do {
             let t = try ChessTrainer(
                 learningRate: Float(trainerLearningRate),
-                entropyRegularizationCoeff: Float(entropyRegularizationCoeff)
+                entropyRegularizationCoeff: Float(entropyRegularizationCoeff),
+                drawPenalty: Float(drawPenalty)
             )
             trainer = t
             return t
@@ -4965,9 +5001,16 @@ struct ContentView: View {
             } else {
                 trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
             }
+            if let dp = rs.drawPenalty {
+                trainer.drawPenalty = dp
+                drawPenalty = Double(dp)
+            } else {
+                trainer.drawPenalty = Float(drawPenalty)
+            }
         } else {
             trainer.learningRate = Float(trainerLearningRate)
             trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
+            trainer.drawPenalty = Float(drawPenalty)
         }
         var initialTrainingStats = TrainingRunStats()
         if let rs = resumeState {
@@ -4981,6 +5024,7 @@ struct ContentView: View {
         candidateProbeCount = 0
         learningRateEditText = String(format: "%.1e", trainer.learningRate)
         entropyRegularizationEditText = String(format: "%.2e", trainer.entropyRegularizationCoeff)
+        drawPenaltyEditText = String(format: "%.3f", Double(trainer.drawPenalty))
         if let rs = resumeState {
             tournamentHistory = rs.arenaHistory.map { entry in
                 // Legacy session files don't store `gamesPlayed` —
@@ -5474,12 +5518,13 @@ struct ContentView: View {
                         let bufCap = buffer.capacity
                         let ratioSnap = ratioController.snapshot()
                         let workerN = countBox.count
-                        let (trainerID, championID, lr, entropyCoeff) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, drawPen) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
                                 trainer.learningRate,
-                                trainer.entropyRegularizationCoeff
+                                trainer.entropyRegularizationCoeff,
+                                trainer.drawPenalty
                             )
                         }
                         let policyStr: String
@@ -5541,10 +5586,11 @@ struct ContentView: View {
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", Self.tournamentPromoteThreshold)) arenaGames=\(Self.tournamentGames) workers=\(workerN)"
                         let regStr = String(
-                            format: "clip=%.1f decay=%.0e ent=%.1e",
+                            format: "clip=%.1f decay=%.0e ent=%.1e drawPen=%.3f",
                             ChessTrainer.gradClipMaxNorm,
                             ChessTrainer.weightDecayC,
-                            entropyCoeff
+                            entropyCoeff,
+                            drawPen
                         )
                         // Average game length: lifetime and 10-min
                         // rolling window. `selfPlayPositions` counts
@@ -5838,6 +5884,7 @@ struct ContentView: View {
             lines.append(String(format: "  Ent reg:     %.2e", trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault))
             lines.append(String(format: "  Grad clip:   %.1f", ChessTrainer.gradClipMaxNorm))
             lines.append(String(format: "  Weight dec:  %.0e", ChessTrainer.weightDecayC))
+            lines.append(String(format: "  Draw pen:    %.3f", trainer?.drawPenalty ?? Self.drawPenaltyDefault))
             // Candidate-test probe counter + time-since-last, so the user
             // can distinguish "probes firing but imperceptible" from "probes
             // stuck". Shown in both Game run and Candidate test modes so

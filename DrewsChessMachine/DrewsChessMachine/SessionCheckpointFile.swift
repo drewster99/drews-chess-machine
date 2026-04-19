@@ -112,6 +112,10 @@ struct SessionCheckpointState: Codable, Equatable {
     let batchSize: Int
     let learningRate: Float
     var entropyRegularizationCoeff: Float?
+    /// Bootstrap-phase draw penalty (0 = disabled). See
+    /// `ChessTrainer.drawPenalty`. Optional for back-compat with
+    /// session files written before the field was added.
+    var drawPenalty: Float?
     let promoteThreshold: Double
     let arenaGames: Int
     let selfPlayTau: TauConfigCodable

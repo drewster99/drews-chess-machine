@@ -8,6 +8,56 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-18 22:46 CDT — Configurable draw penalty for REINFORCE bootstrap
+
+**Files:** `ChessTrainer.swift`, `ContentView.swift`,
+`SessionCheckpointFile.swift`.
+
+Adds a single tunable, `drawPenalty` (Float, default 0.0), that
+rewrites drawn-game `z` values from `0.0` to `-drawPenalty` before
+they reach the graph. Motivation: during the current bootstrap
+phase, 82 %+ of self-play games end in threefold-repetition draws,
+each contributing `z=0` to the REINFORCE policy loss — i.e. no
+gradient. With the penalty set to a small positive value (e.g.
+`0.1`), drawn positions contribute a mild negative signal so the
+policy has a reason to avoid shuffling sequences. The value is
+entered as a positive magnitude; the code negates it internally.
+
+Mechanically: CPU-side transform in `ChessTrainer.trainStep`
+between `replayBuffer.sample()` and `buildFeeds()`. Mutates the
+private `replayBatchZs` staging buffer in place; the next sample
+call fully overwrites it. The graph path is unchanged —
+`advantage = z − v.detach()` just sees rewritten z values. Since
+v(s) eventually learns to predict `-drawPenalty` for draw-prone
+positions, the signal is self-limiting: strong while v is
+uninformed, fading as v converges.
+
+Applies uniformly to all four draw types (stalemate, 50-move,
+threefold, insufficient material — all of which set `z = 0.0`
+exactly in `MPSChessPlayer.onGameEnded`). Per-draw-type
+distinction would require per-position draw-reason tracking in
+the replay buffer; deferred.
+
+**UI and plumbing:**
+- `@AppStorage("drawPenalty")` persists across launches.
+- New `Draw Penalty` `TextField` underneath `Entropy Reg` in the
+  training controls, formatted `%.3f`, rejects negatives, hint
+  "(draws → z = −penalty; 0 disables)". Live-tunable: the trainer
+  reads the property on every batch, no graph rebuild needed.
+- `ensureTrainer()` and the Play-and-Train start path propagate
+  the value to the trainer.
+- Session-checkpoint audit field `drawPenalty: Float?` added to
+  `SessionCheckpointState`, Optional for back-compat. Resumes
+  restore the value from the session file if present.
+- `[STATS]` log line gained a `drawPen=X.XXX` token alongside
+  `clip=... decay=... ent=...`, and the live stats panel shows
+  `Draw pen: X.XXX` next to the other reg hyperparameters.
+
+Default 0.0 means existing training is unaffected until the user
+sets a value.
+
+---
+
 ## 2026-04-18 22:13 CDT — Design doc: honest provenance of K=50 and lever analysis `(DESIGN)`
 
 **File:** `chess-engine-design.md`

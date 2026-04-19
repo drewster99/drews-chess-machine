@@ -435,6 +435,24 @@ final class ChessTrainer: @unchecked Sendable {
 
     var learningRate: Float
     var entropyRegularizationCoeff: Float
+
+    /// Bootstrap-phase knob that rewrites drawn-game `z` values from 0
+    /// to `-drawPenalty` before they reach the graph. Applied CPU-side
+    /// in `trainStep` after the replay-buffer sample returns and
+    /// before `buildFeeds`. Zero = no change (default). Small positive
+    /// values (e.g. 0.05–0.25) turn REINFORCE-silent drawn games into
+    /// a mild negative signal so the policy has a reason to avoid
+    /// threefold-repetition and stalemate sequences during early
+    /// self-play — when z=0 otherwise dominates the replay buffer.
+    /// The transform treats all draw types the same (stalemate, 50-
+    /// move, threefold, insufficient material); anything with z=0.0
+    /// exactly becomes `-drawPenalty`. The advantage-baseline math
+    /// in-graph is unchanged — `advantage = z − v.detach()` just sees
+    /// the rewritten z. Since v(s) eventually learns to predict
+    /// `-drawPenalty` for draw-prone positions, the signal is
+    /// self-limiting: it bootstraps while v is uninformed and
+    /// diminishes as v converges.
+    var drawPenalty: Float
     private let executionQueue = DispatchQueue(label: "drewschess.chesstrainer.serial")
 
     /// Optional stable identity for the trainer's internal network.
@@ -529,10 +547,12 @@ final class ChessTrainer: @unchecked Sendable {
 
     init(
         learningRate: Float = 1e-4,
-        entropyRegularizationCoeff: Float = 0.0
+        entropyRegularizationCoeff: Float = 0.0,
+        drawPenalty: Float = 0.0
     ) throws {
         self.learningRate = learningRate
         self.entropyRegularizationCoeff = entropyRegularizationCoeff
+        self.drawPenalty = drawPenalty
         let net = try ChessNetwork(bnMode: .training)
         self.network = net
         let built = try Self.buildTrainingOps(network: net)
@@ -1156,6 +1176,20 @@ final class ChessTrainer: @unchecked Sendable {
             vBaselines: vBaselines
         )
         guard didSample else { return nil }
+
+        // Draw-penalty rewrite: draws arrive with z=0.0 exactly (see
+        // `MPSChessPlayer.onGameEnded` — the four draw results all
+        // assign `0.0` with no float arithmetic in between). When
+        // `drawPenalty > 0`, substitute `-drawPenalty` for every
+        // drawn position in this batch. Mutating the replay staging
+        // buffer in place is safe — it's private to the trainer and
+        // is fully overwritten by the next `sample()` call.
+        if drawPenalty > 0 {
+            let penalty = -drawPenalty
+            for i in 0..<batchSize where zs[i] == 0.0 {
+                zs[i] = penalty
+            }
+        }
 
         let feeds = buildFeeds(
             batchSize: batchSize,
