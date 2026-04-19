@@ -1140,6 +1140,34 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     }
 }
 
+// MARK: - Window Accessor
+
+/// Captures the hosting `NSWindow` of a SwiftUI view into a
+/// `@State` binding. Needed because the global
+/// `NSWindow.willCloseNotification` fires for every NSWindow the
+/// app ever puts on screen — including the Log Analysis auxiliary
+/// window (`LogAnalysisWindowController`) and any NSOpenPanel /
+/// NSSavePanel the user raises via the File menu. Comparing the
+/// notification's `object` against this captured pointer lets the
+/// teardown hook ignore anything that isn't the main ContentView
+/// window.
+///
+/// The dispatch to main is required: `NSView.window` is nil during
+/// `makeNSView` because the view hasn't been inserted into a
+/// window yet. Deferring by one runloop tick lets the parent
+/// finish attaching and gives us a valid window reference.
+private struct WindowAccessor: NSViewRepresentable {
+    @Binding var window: NSWindow?
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async {
+            self.window = v.window
+        }
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
 // MARK: - Content View
 
 struct ContentView: View {
@@ -1726,6 +1754,12 @@ struct ContentView: View {
     @State private var divergenceCriticalStreak = 0
     @State private var divergenceRecoveryStreak = 0
     @State private var alarmSoundTask: Task<Void, Never>?
+
+    /// Weak-captured reference to the NSWindow hosting this view.
+    /// Set by `WindowAccessor` on first appearance; used by the
+    /// `NSWindow.willCloseNotification` filter so teardown only
+    /// fires when THIS window closes, not an auxiliary one.
+    @State private var contentWindow: NSWindow?
 
     private var networkReady: Bool { network != nil }
     private var isBusy: Bool {
@@ -2529,18 +2563,26 @@ struct ContentView: View {
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) { navigateOverlay(-1); return .handled }
         .onKeyPress(.rightArrow) { navigateOverlay(1); return .handled }
+        .background(WindowAccessor(window: $contentWindow))
         .onAppear {
             wireMenuCommandHub()
             syncMenuCommandHubState()
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in
-            // Teardown on actual window close only — NOT on minimize (which
-            // would fire .onDisappear on macOS WindowGroup). Users who
-            // deliberately minimize a training session still expect it to
-            // keep running. Cancellation here stops every long-lived Task
-            // so closed-window training doesn't silently burn GPU forever
-            // (most importantly `alarmSoundTask`, which owns a 5-minute
-            // sleep loop that would otherwise keep beeping unattended).
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
+            // Teardown on actual main-window close only — NOT on minimize
+            // (which fires .onDisappear but not willClose), and NOT on
+            // auxiliary windows (Log Analysis, NSOpenPanel/NSSavePanel,
+            // etc.) which all post the same notification. Users who
+            // deliberately minimize a training session still expect it
+            // to keep running; and raising a Save panel must not abort
+            // the run mid-save. The object check narrows us to exactly
+            // this view's hosting NSWindow, captured above by
+            // WindowAccessor.
+            guard let closing = note.object as? NSWindow,
+                  let ours = contentWindow,
+                  closing === ours else {
+                return
+            }
             stopAnyContinuous()
             clearTrainingAlarm()
         }
