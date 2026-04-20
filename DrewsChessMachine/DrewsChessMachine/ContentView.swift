@@ -1408,14 +1408,26 @@ struct ContentView: View {
     nonisolated static let trainingBatchSize = 4096
 
     /// Policy-entropy floor below which the periodic stats ticker
-    /// emits an `[ALARM]` log line. Random initialization sits at
-    /// `log(4096) ≈ 8.318`; a sustained drop below this threshold
-    /// signals the policy is collapsing onto a narrow set of moves
-    /// (over-concentration, potentially toward degenerate play).
-    /// 7.0 nats corresponds to roughly 1100 effective equiprobable
-    /// moves (`exp(7.0)`), leaving plenty of room for healthy
-    /// sharpening while flagging pathological collapse.
-    nonisolated static let policyEntropyAlarmThreshold: Double = 7.0
+    /// emits an `[ALARM]` log line.
+    ///
+    /// Theoretical maximum is `log(policySize) ≈ 8.49` nats for the
+    /// current 4864-logit head. **However, init entropy in v2
+    /// architecture sits much lower than that** — empirically ~6.5 at
+    /// step 0 — because the new policy head is a bare 1×1 conv with
+    /// no preceding BN/ReLU, so logits have std ~2-2.5 at init
+    /// (versus std ~1 in v1 where the policy head's BN normalized the
+    /// input). Compressed softmax entropy by ~σ²/2 ≈ 2-3 nats from
+    /// uniform. The entropy regularization term (`entropy_reg = 1e-3`)
+    /// pulls entropy back up over training as the network learns; we
+    /// observe gradual rise from 6.48 → 6.51 in early steps.
+    ///
+    /// Threshold of 5.0 leaves a ~1.5-nat margin below the v2 init
+    /// baseline — wide enough to avoid false alarms during normal
+    /// training, narrow enough to flag genuine collapse (entropy
+    /// dropping toward 1-2 nats means the policy has concentrated on
+    /// just a handful of moves, the classic "policy collapse"
+    /// failure mode).
+    nonisolated static let policyEntropyAlarmThreshold: Double = 5.0
     nonisolated static let divergenceAlarmGradNormWarningThreshold: Double = 50.0
     nonisolated static let divergenceAlarmGradNormCriticalThreshold: Double = 500.0
     nonisolated static let divergenceAlarmEntropyCriticalThreshold: Double = 3.0
@@ -1465,8 +1477,8 @@ struct ContentView: View {
     /// `ChessMPSNetwork` (the champion) through the barrier
     /// batcher, raising this no longer costs per-slot network
     /// memory — the limit is now the batcher's per-batch-size feed
-    /// cache footprint (one `[N, 18, 8, 8]` float32 MPSNDArray per
-    /// distinct N, so ~4.6 KB per slot) plus the per-batch
+    /// cache footprint (one `[N, inputPlanes, 8, 8]` float32 MPSNDArray
+    /// per distinct N, so ~5.1 KB per slot) plus the per-batch
     /// `graph.run` latency. Must be ≥ `initialSelfPlayWorkerCount`.
     nonisolated static let absoluteMaxSelfPlayWorkers: Int = 64
     /// Current active self-play worker count for the running
@@ -1660,6 +1672,31 @@ struct ContentView: View {
     /// clears it.
     @State private var pendingLoadedSession: LoadedSession?
 
+    // MARK: - Training Segments (cumulative wall-time tracking)
+
+    /// All Play-and-Train runs that have completed (Stop, Save, or
+    /// session restart) since this session was opened. On load, this
+    /// is hydrated from `SessionCheckpointState.trainingSegments`. On
+    /// save, the current run (if any) is closed and appended before
+    /// the snapshot is written. Cumulative status-bar metrics sum
+    /// across this array plus the in-flight current run.
+    @State private var completedTrainingSegments: [SessionCheckpointState.TrainingSegment] = []
+
+    /// Per-run start info captured when Play-and-Train begins. Held
+    /// in-memory only — closed and appended into `completedTrainingSegments`
+    /// when training stops, save fires, or the session ends.
+    private struct ActiveSegmentStart {
+        let startUnix: Int64
+        let startDate: Date
+        let startingTrainingStep: Int
+        let startingTotalPositions: Int
+        let startingSelfPlayGames: Int
+        let buildNumber: Int?
+        let buildGitHash: String?
+        let buildGitDirty: Bool?
+    }
+    @State private var activeSegmentStart: ActiveSegmentStart?
+
     /// A parsed standalone model that was loaded from disk but
     /// not yet applied. Consumed by a follow-up network build
     /// or by `startRealTraining` to initialize the champion's
@@ -1831,56 +1868,93 @@ struct ContentView: View {
         networkReady && showForwardPassUI
     }
 
-    /// Binding that drives the Play and Train Board picker. Writes that
-    /// flip the mode to `.candidateTest` mark the probe dirty so the
-    /// driver fires an immediate forward pass on the next gap — that way
-    /// the user sees arrows the moment they switch, rather than having
-    /// to wait up to 15 s for the interval probe to trigger.
-    private var playAndTrainBoardBinding: Binding<PlayAndTrainBoardMode> {
-        Binding(
-            get: { playAndTrainBoardMode },
-            set: { newValue in
-                playAndTrainBoardMode = newValue
+    // MARK: - Control side-effects
+    //
+    // The Play-and-Train Board picker, Probe picker, Concurrency
+    // Stepper, Replay-Ratio target Stepper, and Auto toggle all used
+    // to route their writes through `Binding(get:set:)` computed
+    // properties on this view. Those allocated a fresh `Binding`
+    // struct on every `body` invocation, which the SwiftUI → AppKit
+    // bridge treats as "binding changed" and pays to re-wire the
+    // underlying `NSSegmentedControl` / `NSStepper` / `NSButton`
+    // (~18 ms each for the segmented control, per Instruments) on
+    // every 100 ms heartbeat-driven body render. They're now bound
+    // directly to their stored `@State` / `@AppStorage` projected
+    // values (stable identity), with side effects hoisted into the
+    // `controlSideEffectsProbe` helper below. `.onChange` fires only
+    // on real value changes, so the "if newValue != current" guards
+    // in the old setters are inherently unnecessary here.
+    //
+    // The 5 `.onChange` modifiers live on a zero-sized hidden view
+    // attached via `.background(controlSideEffectsProbe)` rather
+    // than being chained onto `body`'s tail, because tacking them
+    // onto the already-long modifier chain tipped the Swift
+    // type-checker past its "reasonable time" threshold. Attaching
+    // them to a minimal child view keeps each chain short enough
+    // for the checker while preserving the same observation
+    // semantics.
+    //
+    // Two computed bindings remain below: `trainingStepDelayBinding`
+    // (snaps raw Stepper deltas onto a discrete ladder — the set
+    // logic depends on the *direction* of change relative to the
+    // current ladder index and can't be expressed as a pure `.onChange`
+    // side effect without reintroducing ping-pong) and
+    // `sideToMoveBinding` (only visible outside Play-and-Train, so
+    // isn't in the heartbeat render path that motivated this refactor).
+    @ViewBuilder
+    private var controlSideEffectsProbe: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: playAndTrainBoardMode) { _, newValue in
+                // Flipping to Candidate-test marks the probe dirty so
+                // the driver fires an immediate forward pass on the
+                // next gap — otherwise the user would wait up to 15s
+                // for the interval probe to trigger on the new mode.
                 if newValue == .candidateTest {
                     candidateProbeDirty = true
                 }
             }
-        )
-    }
-
-    /// Binding for the Candidate-vs-Champion probe picker. Flipping the
-    /// target marks the probe dirty so the next driver gap-point fires
-    /// a fresh evaluation on the newly-selected network — without this,
-    /// the user would see the stale result from the previous target
-    /// until the 15 s interval elapsed.
-    private var probeNetworkTargetBinding: Binding<ProbeNetworkTarget> {
-        Binding(
-            get: { probeNetworkTarget },
-            set: { newValue in
-                if newValue != probeNetworkTarget {
-                    probeNetworkTarget = newValue
-                    candidateProbeDirty = true
+            .onChange(of: probeNetworkTarget) { _, _ in
+                // Flipping the probe target marks the probe dirty so
+                // the next driver gap fires a fresh evaluation against
+                // the newly-selected network instead of showing stale
+                // results.
+                candidateProbeDirty = true
+            }
+            .onChange(of: selfPlayWorkerCount) { oldValue, newValue in
+                // Stepper's `in:` range clamps; `.onChange` only fires
+                // on real change, so log + box update happen only when
+                // N actually shifts. `workerCountBox` is nil between
+                // sessions, so out-of-session writes just update the
+                // @State and take effect on the next session start.
+                SessionLogger.shared.log("[PARAM] selfPlayWorkers: \(oldValue) -> \(newValue)")
+                workerCountBox?.set(newValue)
+            }
+            .onChange(of: replayRatioTarget) { oldValue, newValue in
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] replayRatioTarget: %.2f -> %.2f", oldValue, newValue)
+                )
+                replayRatioController?.targetRatio = newValue
+            }
+            .onChange(of: replayRatioAutoAdjust) { oldValue, newValue in
+                SessionLogger.shared.log("[PARAM] replayRatioAutoAdjust: \(oldValue) -> \(newValue)")
+                replayRatioController?.autoAdjust = newValue
+                if newValue {
+                    // Auto ON: seed the computed delay from the current
+                    // manual delay so the display doesn't jump.
+                    replayRatioController?.computedDelayMs = trainingStepDelayMs
+                } else {
+                    // Auto OFF: inherit the last auto-computed delay
+                    // as the new manual value, snapped to the nearest
+                    // ladder rung so the Stepper binding doesn't crash
+                    // on an off-ladder value.
+                    let lastAuto = replayRatioController?.computedDelayMs ?? trainingStepDelayMs
+                    let ladder = Self.stepDelayLadder
+                    let snapped = ladder.min(by: { abs($0 - lastAuto) < abs($1 - lastAuto) }) ?? lastAuto
+                    trainingStepDelayMs = snapped
+                    replayRatioController?.manualDelayMs = snapped
                 }
             }
-        )
-    }
-
-    /// Binding for the live worker count Stepper. Writes update both
-    /// `@State selfPlayWorkerCount` (so the body re-renders with the
-    /// new N immediately) and `workerCountBox` (so the self-play
-    /// workers see the change on their next game-end check). The
-    /// box is nil between sessions, so writes outside Play and
-    /// Train just update the @State and take effect on the next
-    /// session start.
-    private var workerCountBinding: Binding<Int> {
-        Binding(
-            get: { selfPlayWorkerCount },
-            set: { newValue in
-                let clamped = max(1, min(Self.absoluteMaxSelfPlayWorkers, newValue))
-                selfPlayWorkerCount = clamped
-                workerCountBox?.set(clamped)
-            }
-        )
     }
 
     /// Binding for the training-step delay Stepper. The Stepper is
@@ -1922,56 +1996,12 @@ struct ContentView: View {
                     nextIdx = currentIdx
                 }
                 let snapped = ladder[nextIdx]
+                if snapped != current {
+                    SessionLogger.shared.log("[PARAM] stepDelayMs (manual): \(current) -> \(snapped)")
+                }
                 trainingStepDelayMs = snapped
                 trainingStepDelayBox?.set(snapped)
                 replayRatioController?.manualDelayMs = snapped
-            }
-        )
-    }
-
-    /// Binding for the replay-ratio target stepper. Writes through
-    /// to both `@State replayRatioTarget` (so the label re-renders
-    /// immediately) and the live controller (so the next training
-    /// step sees the updated target).
-    private var replayRatioTargetBinding: Binding<Double> {
-        Binding(
-            get: { replayRatioTarget },
-            set: { newValue in
-                let clamped = max(0.1, min(5.0, newValue))
-                replayRatioTarget = clamped
-                replayRatioController?.targetRatio = clamped
-            }
-        )
-    }
-
-    /// Binding for the replay-ratio auto-adjust toggle. Mirrors
-    /// the toggle into both `@State` and the live controller, and
-    /// when turning auto OFF, also syncs the current manual delay
-    /// into the controller so subsequent delay reads fall back to
-    /// the Stepper's value.
-    private var replayRatioAutoAdjustBinding: Binding<Bool> {
-        Binding(
-            get: { replayRatioAutoAdjust },
-            set: { newValue in
-                replayRatioAutoAdjust = newValue
-                replayRatioController?.autoAdjust = newValue
-                if newValue {
-                    // Toggling auto ON: seed the computed delay from
-                    // the current manual delay so the display doesn't
-                    // jump. The auto-adjuster will gradually move it
-                    // from here once the warmup window fills.
-                    replayRatioController?.computedDelayMs = trainingStepDelayMs
-                } else {
-                    // Toggling auto OFF: inherit the last auto-computed
-                    // delay as the new manual value, snapped to the
-                    // nearest ladder rung so the Stepper binding
-                    // doesn't crash on an off-ladder value.
-                    let lastAuto = replayRatioController?.computedDelayMs ?? trainingStepDelayMs
-                    let ladder = Self.stepDelayLadder
-                    let snapped = ladder.min(by: { abs($0 - lastAuto) < abs($1 - lastAuto) }) ?? lastAuto
-                    trainingStepDelayMs = snapped
-                    replayRatioController?.manualDelayMs = snapped
-                }
             }
         )
     }
@@ -2049,9 +2079,12 @@ struct ContentView: View {
                 Text("Drew's Chess Machine")
                     .font(.title2)
                     .fontWeight(.semibold)
+                // Build banner — bumped from .caption/.tertiary to
+                // .callout/.secondary so the build number, git hash,
+                // and date are readable at a glance instead of squinting.
                 Text(BuildInfo.summary)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                 Button(action: { showingInfoPopover.toggle() }) {
                     Image(systemName: "info.circle")
                         .font(.title3)
@@ -2061,12 +2094,12 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("About Drew's Chess Machine")
                             .font(.headline)
-                        Text("Forward pass through a ~2.9M parameter convolutional network using MPSGraph on the GPU. Weights are randomly initialized (He initialization) — no training has occurred.")
+                        Text("Forward pass through a ~2.4M parameter convolutional network using MPSGraph on the GPU. Weights are randomly initialized (He initialization) — no training has occurred.")
                             .font(.callout)
                         Divider()
-                        Text("Architecture: 18×8×8 input → stem(128) → 8 res blocks → policy(4096) + value(1)")
+                        Text("Architecture: 20×8×8 input → stem(128) → 8 res+SE blocks → policy(4864) + value(1)")
                             .font(.system(.callout, design: .monospaced))
-                        Text("Parameters: ~2,917,383 (~2.9M)")
+                        Text("Parameters: ~2,400,000 (~2.4M)")
                             .font(.system(.callout, design: .monospaced))
                         if let net = network {
                             Text("Network ID: \(net.identifier?.description ?? "–")")
@@ -2079,13 +2112,16 @@ struct ContentView: View {
                     .frame(width: 500)
                 }
                 Spacer()
+                // Right-side ID + network status — bumped from .caption to
+                // .callout so they're readable at glance distance. Contrast
+                // (.secondary) was already fine; only the size changes.
                 if let net = network {
                     Text("ID: \(net.identifier?.description ?? "–")")
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 Text(networkStatus.isEmpty ? "" : networkStatus.components(separatedBy: "\n").first ?? "")
-                    .font(.caption)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -2093,20 +2129,40 @@ struct ContentView: View {
             if let alarm = activeTrainingAlarm {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
+                        // Title forced black against the yellow background
+                        // for legibility — default `.headline` color in
+                        // dark-mode SwiftUI is white, which washes out
+                        // against `.yellow.opacity(0.8)`.
                         Text(alarm.title)
                             .font(.headline)
+                            .foregroundStyle(Color.black)
+                        // Detail text uses a darker red + medium weight so
+                        // numeric values in the alarm (entropy, gNorm) read
+                        // clearly against the yellow background instead of
+                        // washing out as default `.red`.
                         Text(alarm.detail)
-                            .font(.callout)
-                            .foregroundStyle(.red)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(Color(red: 0.55, green: 0.0, blue: 0.0))
                     }
                     Spacer()
-                    if trainingAlarmSilenced {
-                        Text("Silenced")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Button("Silence") {
-                            silenceTrainingAlarm()
+                    HStack(spacing: 8) {
+                        if trainingAlarmSilenced {
+                            Text("Silenced")
+                                .font(.caption)
+                                .foregroundStyle(Color.black)
+                        } else {
+                            Button("Silence") {
+                                silenceTrainingAlarm()
+                            }
+                        }
+                        // Dismiss clears the banner AND resets the
+                        // streak counters, so an alarm only re-raises
+                        // if the condition deteriorates fresh from a
+                        // healthy baseline. Silence keeps visibility
+                        // (banner stays) but quiets the sound; Dismiss
+                        // is "I've seen it, start over."
+                        Button("Dismiss") {
+                            dismissTrainingAlarm()
                         }
                     }
                 }
@@ -2115,6 +2171,8 @@ struct ContentView: View {
                 .background(Color.yellow.opacity(0.8))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
+
+            cumulativeStatusBar
 
             // Status row — the action controls previously lived here
             // but have all moved to the File / Train / Debug menus at
@@ -2164,7 +2222,7 @@ struct ContentView: View {
             HStack(alignment: .top, spacing: 24) {
                 VStack(spacing: 6) {
                     if realTraining {
-                        Picker("Board", selection: playAndTrainBoardBinding) {
+                        Picker("Board", selection: $playAndTrainBoardMode) {
                             Text("Game run").tag(PlayAndTrainBoardMode.gameRun)
                             Text("Candidate test").tag(PlayAndTrainBoardMode.candidateTest)
                             Text("Progress rate").tag(PlayAndTrainBoardMode.progressRate)
@@ -2190,7 +2248,7 @@ struct ContentView: View {
                     }
 
                     if isCandidateTestActive {
-                        Picker("Probe", selection: probeNetworkTargetBinding) {
+                        Picker("Probe", selection: $probeNetworkTarget) {
                             Text("Candidate").tag(ProbeNetworkTarget.candidate)
                             Text("Champion").tag(ProbeNetworkTarget.champion)
                         }
@@ -2273,7 +2331,7 @@ struct ContentView: View {
                                     }
                                 }
 
-                            let rightDisabled = inferenceResult == nil || selectedOverlay == 18 || !showForwardPassUI
+                            let rightDisabled = inferenceResult == nil || selectedOverlay == ChessNetwork.inputPlanes || !showForwardPassUI
                             Button(
                                 action: { navigateOverlay(1) },
                                 label: {
@@ -2346,7 +2404,7 @@ struct ContentView: View {
                                                 .frame(minWidth: 24, alignment: .trailing)
                                             Stepper(
                                                 "Concurrency",
-                                                value: workerCountBinding,
+                                                value: $selfPlayWorkerCount,
                                                 in: 1...Self.absoluteMaxSelfPlayWorkers
                                             )
                                             .labelsHidden()
@@ -2423,12 +2481,12 @@ struct ContentView: View {
                                                 .frame(minWidth: 24, alignment: .trailing)
                                             Stepper(
                                                 "Target Ratio",
-                                                value: replayRatioTargetBinding,
+                                                value: $replayRatioTarget,
                                                 in: 0.1...5.0,
                                                 step: 0.1
                                             )
                                             .labelsHidden()
-                                            Toggle("Auto", isOn: replayRatioAutoAdjustBinding)
+                                            Toggle("Auto", isOn: $replayRatioAutoAdjust)
                                                 .toggleStyle(.checkbox)
                                         }
                                         HStack(spacing: 6) {
@@ -2440,6 +2498,12 @@ struct ContentView: View {
                                                 .onSubmit {
                                                     if let parsed = Float(learningRateEditText),
                                                        parsed > 0, parsed.isFinite {
+                                                        let prior = trainer?.learningRate ?? Float(Self.trainerLearningRateDefault)
+                                                        if abs(parsed - prior) > Float.ulpOfOne {
+                                                            SessionLogger.shared.log(
+                                                                String(format: "[PARAM] learningRate: %.1e -> %.1e", prior, parsed)
+                                                            )
+                                                        }
                                                         trainer?.learningRate = parsed
                                                         trainerLearningRate = Double(parsed)
                                                     }
@@ -2458,6 +2522,12 @@ struct ContentView: View {
                                             .onSubmit {
                                                 if let parsed = Double(entropyRegularizationEditText),
                                                    parsed >= 0, parsed.isFinite {
+                                                    let prior = entropyRegularizationCoeff
+                                                    if abs(parsed - prior) > Double.ulpOfOne {
+                                                        SessionLogger.shared.log(
+                                                            String(format: "[PARAM] entropyReg: %.2e -> %.2e", prior, parsed)
+                                                        )
+                                                    }
                                                     entropyRegularizationCoeff = parsed
                                                     trainer?.entropyRegularizationCoeff = Float(parsed)
                                                 }
@@ -2480,6 +2550,12 @@ struct ContentView: View {
                                             .onSubmit {
                                                 if let parsed = Double(drawPenaltyEditText),
                                                    parsed >= 0, parsed.isFinite {
+                                                    let prior = drawPenalty
+                                                    if abs(parsed - prior) > Double.ulpOfOne {
+                                                        SessionLogger.shared.log(
+                                                            String(format: "[PARAM] drawPenalty: %.3f -> %.3f", prior, parsed)
+                                                        )
+                                                    }
                                                     drawPenalty = parsed
                                                     trainer?.drawPenalty = Float(parsed)
                                                 }
@@ -2516,7 +2592,7 @@ struct ContentView: View {
             if let result = inferenceResult, showForwardPassUI {
                 Divider()
                 HStack(spacing: 2) {
-                    ForEach(0..<18, id: \.self) { channel in
+                    ForEach(0..<ChessNetwork.inputPlanes, id: \.self) { channel in
                         let start = channel * 64
                         let isSelected = selectedOverlay == channel + 1
                         VStack(spacing: 1) {
@@ -2598,6 +2674,7 @@ struct ContentView: View {
         .onChange(of: gameSnapshot.isPlaying) { _, _ in syncMenuCommandHubState() }
         .onChange(of: network != nil) { _, _ in syncMenuCommandHubState() }
         .onChange(of: pendingLoadedSession != nil) { _, _ in syncMenuCommandHubState() }
+        .background(controlSideEffectsProbe)
         .onChange(of: progressRateScrollX) { _, newValue in
             // Flip off follow-latest when the user scrolls backward.
             // Auto-follow writes `progressRateScrollX` to
@@ -2917,16 +2994,25 @@ struct ContentView: View {
             detail: detail,
             raisedAt: Date()
         )
-        let changed = activeTrainingAlarm?.title != next.title
+        let isNewAlarm = activeTrainingAlarm == nil
+        let titleOrSeverityChanged = activeTrainingAlarm?.title != next.title
             || activeTrainingAlarm?.severity != next.severity
         activeTrainingAlarm = next
-        if changed {
+        // Log on first raise OR on title/severity change so the session
+        // log captures every banner state the user could see. Periodic
+        // re-raises with identical title+severity (and just updated
+        // numeric detail) don't relog — those are already covered by
+        // the periodic [STATS] / threshold-alarm log lines.
+        if isNewAlarm || titleOrSeverityChanged {
             SessionLogger.shared.log("[ALARM] \(title): \(detail)")
         }
         startAlarmSoundLoopIfNeeded()
     }
 
     private func clearTrainingAlarm() {
+        if let prior = activeTrainingAlarm {
+            SessionLogger.shared.log("[ALARM] cleared: \(prior.title)")
+        }
         activeTrainingAlarm = nil
         trainingAlarmSilenced = false
         alarmSoundTask?.cancel()
@@ -2934,9 +3020,31 @@ struct ContentView: View {
     }
 
     private func silenceTrainingAlarm() {
+        if let active = activeTrainingAlarm {
+            SessionLogger.shared.log("[ALARM] silenced: \(active.title)")
+        }
         trainingAlarmSilenced = true
         alarmSoundTask?.cancel()
         alarmSoundTask = nil
+    }
+
+    /// Clear the banner AND reset the divergence streak counters so
+    /// the alarm only re-raises on a *fresh* deterioration from a
+    /// healthy baseline. Different from `clearTrainingAlarm()`, which
+    /// is the auto-clear path triggered by the recovery streak (and
+    /// leaves the warning/critical streaks alone). User-initiated
+    /// "I've seen it, move on" gesture.
+    private func dismissTrainingAlarm() {
+        if let active = activeTrainingAlarm {
+            SessionLogger.shared.log("[ALARM] dismissed: \(active.title)")
+        }
+        activeTrainingAlarm = nil
+        trainingAlarmSilenced = false
+        alarmSoundTask?.cancel()
+        alarmSoundTask = nil
+        divergenceWarningStreak = 0
+        divergenceCriticalStreak = 0
+        divergenceRecoveryStreak = 0
     }
 
     private func startAlarmSoundLoopIfNeeded() {
@@ -3419,7 +3527,7 @@ struct ContentView: View {
     private func navigateOverlay(_ direction: Int) {
         guard inferenceResult != nil, !isGameMode else { return }
         let next = selectedOverlay + direction
-        if next >= 0, next <= 18 { selectedOverlay = next }
+        if next >= 0, next <= ChessNetwork.inputPlanes { selectedOverlay = next }
     }
 
     // MARK: - Actions
@@ -3454,6 +3562,14 @@ struct ContentView: View {
     private func setCheckpointStatus(_ message: String, isError: Bool) {
         checkpointStatusMessage = message
         checkpointStatusIsError = isError
+        // Always echo errors to the session log so a transient on-screen
+        // error message that auto-clears in 12 seconds is still
+        // recoverable from the persistent log file. (Some callsites
+        // also log their own more-detailed [CHECKPOINT] line — minor
+        // duplication is fine; visibility is the priority.)
+        if isError {
+            SessionLogger.shared.log("[CHECKPOINT-ERR] \(message)")
+        }
         // Auto-clear after 6 seconds. Grabs the current message at
         // schedule time so a later message isn't wiped out by an
         // earlier one's timer.
@@ -3479,6 +3595,20 @@ struct ContentView: View {
         championID: String,
         trainerID: String
     ) -> SessionCheckpointState {
+        // Close the active segment at save time so the on-disk
+        // session captures up-to-date cumulative wall-time totals.
+        // If training is still in progress (the user saved without
+        // stopping), immediately re-open a fresh segment so the
+        // post-save training time continues to accumulate. Without
+        // this re-open, every minute after the save would silently
+        // disappear from cumulative wall-time totals — the
+        // "2 hours today + 1 hour tomorrow = 3 hours" arithmetic
+        // would only hold if the user never saved mid-training.
+        let wasTraining = realTraining
+        closeActiveTrainingSegment(reason: "save")
+        if wasTraining && activeSegmentStart == nil {
+            beginActiveTrainingSegment()
+        }
         let now = Date()
         let sessionStart = currentSessionStart ?? (parallelStats?.sessionStart ?? now)
         let elapsedSec = max(0, now.timeIntervalSince(sessionStart))
@@ -3502,6 +3632,9 @@ struct ContentView: View {
         let entropyCoeff = trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault
         let drawPen = trainer?.drawPenalty ?? Float(drawPenalty)
         let bufferSnap = replayBuffer?.stateSnapshot()
+        let segments: [SessionCheckpointState.TrainingSegment]? = completedTrainingSegments.isEmpty
+            ? nil
+            : completedTrainingSegments
         return SessionCheckpointState(
             formatVersion: SessionCheckpointState.currentFormatVersion,
             sessionID: currentSessionID ?? "unknown-session",
@@ -3547,7 +3680,7 @@ struct ContentView: View {
             championID: championID,
             trainerID: trainerID,
             arenaHistory: history
-        )
+        ).withTrainingSegments(segments)
     }
 
     /// Manual "Save Champion as Model" — writes a standalone
@@ -3979,6 +4112,7 @@ struct ContentView: View {
             guard !isArenaRunning else { return }
             arenaTriggerBox?.trigger()
         }
+        commandHub.runEngineDiagnostics = { runEngineDiagnostics() }
         commandHub.abortArena = {
             SessionLogger.shared.log("[BUTTON] Abort Arena")
             arenaOverrideBox?.abort()
@@ -4048,9 +4182,9 @@ struct ContentView: View {
                 networkStatus = """
                     Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
                     ID: \(idStr)
-                    Parameters: ~2,917,383 (~2.9M)
-                    Architecture: 18x8x8 -> stem(128)
-                      -> 8 res blocks -> policy(4096) + value(1)
+                    Parameters: ~2,400,000 (~2.4M)
+                    Architecture: 20x8x8 -> stem(128)
+                      -> 8 res+SE blocks -> policy(4864) + value(1)
                     """
             case .failure(let error):
                 network = nil
@@ -4826,8 +4960,7 @@ struct ContentView: View {
             let white = MPSChessPlayer(name: "White", source: source)
             let black = MPSChessPlayer(name: "Black", source: source)
             do {
-                let task = try machine.beginNewGame(white: white, black: black)
-                _ = await task.value
+                _ = try await machine.beginNewGame(white: white, black: black)
             } catch {
                 gameWatcher.markPlaying(false)
             }
@@ -4854,8 +4987,7 @@ struct ContentView: View {
                 let white = MPSChessPlayer(name: "White", source: source)
                 let black = MPSChessPlayer(name: "Black", source: source)
                 do {
-                    let task = try machine.beginNewGame(white: white, black: black)
-                    _ = await task.value
+                    _ = try await machine.beginNewGame(white: white, black: black)
                 } catch {
                     gameWatcher.markPlaying(false)
                     break
@@ -5007,6 +5139,15 @@ struct ContentView: View {
     /// actually stop, even during a tournament.
     private func startRealTraining() {
         SessionLogger.shared.log("[BUTTON] Play and Train")
+        // Begin a new training segment for cumulative wall-time
+        // tracking. Closed via `closeActiveTrainingSegment` on Stop or
+        // at save time. Don't try to open one if the previous Stop
+        // didn't actually close (defensive — `closeActiveTrainingSegment`
+        // is idempotent on nil but we want the log line to be clean).
+        if activeSegmentStart != nil {
+            closeActiveTrainingSegment(reason: "restart-without-stop")
+        }
+        beginActiveTrainingSegment()
         precondition(
             Self.absoluteMaxSelfPlayWorkers >= 1,
             "absoluteMaxSelfPlayWorkers must be >= 1; got \(Self.absoluteMaxSelfPlayWorkers)"
@@ -5079,6 +5220,11 @@ struct ContentView: View {
         entropyRegularizationEditText = String(format: "%.2e", trainer.entropyRegularizationCoeff)
         drawPenaltyEditText = String(format: "%.3f", Double(trainer.drawPenalty))
         if let rs = resumeState {
+            // Hydrate prior training segments so cumulative wall-time
+            // and run-count metrics carry across save/load. Missing
+            // (older session files) → empty array, which means this
+            // becomes the first segment in the session's history.
+            completedTrainingSegments = rs.trainingSegments ?? []
             tournamentHistory = rs.arenaHistory.map { entry in
                 // Legacy session files don't store `gamesPlayed` —
                 // reconstruct it from the W/L/D totals (same identity
@@ -5616,6 +5762,16 @@ struct ContentView: View {
                         } else {
                             vAbsStr = "--"
                         }
+                        // vBaseDelta = mean abs delta between trainer's
+                        // current v(s) and the play-time-frozen vBaseline
+                        // from the random-init champion. Higher = trainer
+                        // is genuinely diverging from the champion.
+                        let vBaseDeltaStr: String
+                        if let vbd = trainingSnap.rollingVBaselineDelta {
+                            vBaseDeltaStr = String(format: "%.4f", vbd)
+                        } else {
+                            vBaseDeltaStr = "--"
+                        }
                         let h = Int(elapsedTarget) / 3600
                         let m = (Int(elapsedTarget) % 3600) / 60
                         let s = Int(elapsedTarget) % 60
@@ -5658,7 +5814,7 @@ struct ContentView: View {
                         ? Double(parallelSnap.recentMoves) / Double(parallelSnap.recentGames)
                         : 0
                         let gameLenStr = String(format: "avgLen=%.1f rollingAvgLen=%.1f", lifetimeAvgLen, rollingAvgLen)
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // Policy-entropy alarm: fires whenever the
@@ -5739,6 +5895,346 @@ struct ContentView: View {
         realTrainingTask?.cancel()
         realTrainingTask = nil
         clearTrainingAlarm()
+        // Close the in-progress training segment so cumulative wall-time
+        // totals exclude post-Stop idle. If saving immediately after,
+        // buildCurrentSessionState will see the segment already closed
+        // and won't double-count.
+        closeActiveTrainingSegment(reason: "stop")
+    }
+
+    /// Begin a new training segment when Play-and-Train starts.
+    /// Captures starting counter snapshots and the active build/git
+    /// metadata so the resulting segment can be attributed to a
+    /// specific code version after-the-fact.
+    private func beginActiveTrainingSegment() {
+        let now = Date()
+        let bufferAdded = replayBuffer?.totalPositionsAdded ?? 0
+        let snap = parallelStats
+        activeSegmentStart = ActiveSegmentStart(
+            startUnix: Int64(now.timeIntervalSince1970),
+            startDate: now,
+            startingTrainingStep: trainingStats?.steps ?? 0,
+            startingTotalPositions: bufferAdded,
+            startingSelfPlayGames: snap?.selfPlayGames ?? 0,
+            buildNumber: BuildInfo.buildNumber,
+            buildGitHash: BuildInfo.gitHash,
+            buildGitDirty: BuildInfo.gitDirty
+        )
+        SessionLogger.shared.log(
+            "[SEGMENT] start (segment #\(completedTrainingSegments.count + 1)) "
+            + "step=\(activeSegmentStart?.startingTrainingStep ?? 0) "
+            + "build=\(BuildInfo.buildNumber)"
+        )
+    }
+
+    /// Close the in-progress segment with current end-of-segment
+    /// counters and append it to `completedTrainingSegments`. Idempotent
+    /// — if no segment is active, returns silently. Called from Stop,
+    /// from the save path, and from session-end. `reason` is only used
+    /// for the log line; the segment data itself is reason-agnostic.
+    private func closeActiveTrainingSegment(reason: String) {
+        guard let start = activeSegmentStart else { return }
+        let now = Date()
+        let endUnix = Int64(now.timeIntervalSince1970)
+        let durationSec = max(0, now.timeIntervalSince(start.startDate))
+        let snap = parallelStats
+        let trainingSnap = trainingStats
+        let liveSnap = trainingBox?.snapshot()
+        let bufferAdded = replayBuffer?.totalPositionsAdded ?? start.startingTotalPositions
+        let endLoss: Double? = {
+            guard let p = liveSnap?.rollingPolicyLoss,
+                  let v = liveSnap?.rollingValueLoss else { return nil }
+            return p + v
+        }()
+        let segment = SessionCheckpointState.TrainingSegment(
+            startUnix: start.startUnix,
+            endUnix: endUnix,
+            durationSec: durationSec,
+            startingTrainingStep: start.startingTrainingStep,
+            endingTrainingStep: trainingSnap?.steps ?? start.startingTrainingStep,
+            startingTotalPositions: start.startingTotalPositions,
+            endingTotalPositions: bufferAdded,
+            startingSelfPlayGames: start.startingSelfPlayGames,
+            endingSelfPlayGames: snap?.selfPlayGames ?? start.startingSelfPlayGames,
+            buildNumber: start.buildNumber,
+            buildGitHash: start.buildGitHash,
+            buildGitDirty: start.buildGitDirty,
+            endPolicyEntropy: liveSnap?.rollingPolicyEntropy,
+            endLossTotal: endLoss,
+            endGradNorm: liveSnap?.rollingGradGlobalNorm
+        )
+        completedTrainingSegments.append(segment)
+        activeSegmentStart = nil
+        SessionLogger.shared.log(
+            String(format: "[SEGMENT] close (%@) duration=%.1fs steps=%d -> %d positions=%d -> %d",
+                   reason,
+                   durationSec,
+                   segment.startingTrainingStep,
+                   segment.endingTrainingStep,
+                   segment.startingTotalPositions,
+                   segment.endingTotalPositions)
+        )
+    }
+
+    /// Total active training wall-time across all segments, including
+    /// the currently-running one if any. Excludes any time when
+    /// training was stopped — sum of segment durations only.
+    private var cumulativeActiveTrainingSec: Double {
+        let completed = completedTrainingSegments.reduce(0.0) { $0 + $1.durationSec }
+        let active = activeSegmentStart.map { Date().timeIntervalSince($0.startDate) } ?? 0
+        return completed + max(0, active)
+    }
+
+    /// Total run count: segments closed + 1 if a run is currently
+    /// active. Useful for "this session has had N runs."
+    private var cumulativeRunCount: Int {
+        completedTrainingSegments.count + (activeSegmentStart != nil ? 1 : 0)
+    }
+
+    /// Cumulative status bar — sums across all completed
+    /// Play-and-Train segments + the in-flight one. Visible
+    /// whenever this session has had any training (current run
+    /// or a hydrated history from a loaded session). Hidden on
+    /// a fresh session that has never trained, since all values
+    /// would be zero.
+    ///
+    /// Always includes a small `Run Arena` button when an arena
+    /// is not in progress and a network exists, so the user can
+    /// kick off an arena from a glanceable spot without hunting
+    /// the menu. Hidden during arena runs to avoid double-fire.
+    ///
+    /// Pulled out into its own computed view to keep the main `body`
+    /// under SwiftUI's type-checker complexity threshold.
+    @ViewBuilder
+    private var cumulativeStatusBar: some View {
+        let totalSteps = trainingStats?.steps ?? 0
+        let hasHistory = cumulativeRunCount > 0 || totalSteps > 0
+        let canRunArena = !isArenaRunning && network != nil && trainer != nil
+        if hasHistory || canRunArena {
+            let totalPositions = totalSteps * Self.trainingBatchSize
+            let activeSec = cumulativeActiveTrainingSec
+            HStack(spacing: 16) {
+                if hasHistory {
+                    statusBarItem(
+                        label: "Active training time",
+                        value: GameWatcher.Snapshot.formatHMS(seconds: activeSec)
+                    )
+                    statusBarItem(
+                        label: "Training steps",
+                        value: Int(totalSteps).formatted()
+                    )
+                    statusBarItem(
+                        label: "Positions trained",
+                        value: Self.formatCompactCount(totalPositions)
+                    )
+                    statusBarItem(
+                        label: "Runs",
+                        value: "\(cumulativeRunCount)"
+                    )
+                }
+                Spacer()
+                if canRunArena {
+                    Button {
+                        // Defensive guard mirroring the menu's runArena
+                        // closure (line ~4125) — the parent view hides
+                        // this button when isArenaRunning=true, but a
+                        // rapid double-click could still slip through
+                        // before SwiftUI re-evaluates. Guard makes
+                        // double-fire a no-op.
+                        guard !isArenaRunning else { return }
+                        SessionLogger.shared.log("[BUTTON] Run Arena (status-bar)")
+                        arenaTriggerBox?.trigger()
+                    } label: {
+                        Label("Run Arena Now", systemImage: "flag.checkered")
+                            .font(.callout)
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.secondary.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    /// Build a single status-bar cell — small caption label above a
+    /// monospaced numeric value. Pulled out so the four cells in the
+    /// status bar share consistent typography.
+    @ViewBuilder
+    private func statusBarItem(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(.callout, design: .monospaced).weight(.semibold))
+                .monospacedDigit()
+        }
+    }
+
+    // MARK: - Engine Diagnostics
+
+    /// Run a one-shot battery of correctness probes and log results
+    /// with `[DIAG]` prefix. Designed to be triggered on demand after
+    /// significant code changes (architecture refactors, encoder
+    /// changes) so the user can confirm the engine still passes basic
+    /// invariants without waiting for a full training session to
+    /// surface any regression.
+    ///
+    /// Probes:
+    ///   1. PolicyEncoding round-trip across all legal moves at the
+    ///      starting position.
+    ///   2. PolicyEncoding round-trip in a position with promotions.
+    ///   3. PolicyEncoding distinct-index check (no two legal moves
+    ///      share an index).
+    ///   4. ChessGameEngine 3-fold detection on knight shuffle.
+    ///   5. BoardEncoder produces correct tensor length.
+    ///   6. Network forward pass shape check (if a network exists).
+    ///
+    /// Designed to complete in well under a second so the user sees
+    /// immediate pass/fail feedback. Results go to the session log,
+    /// not to a dialog — the log is the canonical record.
+    private func runEngineDiagnostics() {
+        SessionLogger.shared.log("[BUTTON] Engine Diagnostics")
+        // Wrap in a Task so we can `await` the network's async
+        // evaluate cleanly. Pure-logic probes run synchronously
+        // inside; only the network probe needs the await. Failures
+        // are reported via the [DIAG] log lines, not via UI alerts.
+        let networkRef = network
+        Task {
+            await runEngineDiagnosticsAsync(net: networkRef)
+        }
+    }
+
+    private func runEngineDiagnosticsAsync(net: ChessMPSNetwork?) async {
+        SessionLogger.shared.log("[DIAG] === Engine diagnostics begin ===")
+        var failed = 0
+        var ran = 0
+
+        func check(_ name: String, _ predicate: () -> Bool) {
+            ran += 1
+            if predicate() {
+                SessionLogger.shared.log("[DIAG] PASS  \(name)")
+            } else {
+                SessionLogger.shared.log("[DIAG] FAIL  \(name)")
+                failed += 1
+            }
+        }
+
+        // 1. PolicyEncoding round-trip on starting position.
+        check("PolicyEncoding round-trip at starting position") {
+            let state = GameState.starting
+            let legals = MoveGenerator.legalMoves(for: state)
+            for move in legals {
+                let (chan, r, c) = PolicyEncoding.encode(move, currentPlayer: state.currentPlayer)
+                guard let decoded = PolicyEncoding.decode(channel: chan, row: r, col: c, state: state),
+                      decoded == move else { return false }
+            }
+            return !legals.isEmpty
+        }
+
+        // 2. Round-trip with promotions on the board.
+        check("PolicyEncoding round-trip with promotions") {
+            var board: [Piece?] = Array(repeating: nil, count: 64)
+            board[7 * 8 + 0] = Piece(type: .king, color: .white)
+            board[0 * 8 + 7] = Piece(type: .king, color: .black)
+            for col in 1..<7 { board[1 * 8 + col] = Piece(type: .pawn, color: .white) }
+            let state = GameState(
+                board: board, currentPlayer: .white,
+                whiteKingsideCastle: false, whiteQueensideCastle: false,
+                blackKingsideCastle: false, blackQueensideCastle: false,
+                enPassantSquare: nil, halfmoveClock: 0
+            )
+            let legals = MoveGenerator.legalMoves(for: state)
+            for move in legals {
+                let (chan, r, c) = PolicyEncoding.encode(move, currentPlayer: state.currentPlayer)
+                guard let decoded = PolicyEncoding.decode(channel: chan, row: r, col: c, state: state),
+                      decoded == move else { return false }
+            }
+            // Verify all 4 promotion variants are distinct
+            let promos = legals.filter { $0.promotion != nil && $0.fromCol == 1 && $0.toCol == 1 }
+            let promoIndices = Set(promos.map {
+                PolicyEncoding.policyIndex($0, currentPlayer: state.currentPlayer)
+            })
+            return promos.count == 4 && promoIndices.count == 4
+        }
+
+        // 3. Distinct policy indices for all legal moves.
+        check("PolicyEncoding produces distinct indices for legal moves") {
+            let legals = MoveGenerator.legalMoves(for: .starting)
+            let indices = legals.map { PolicyEncoding.policyIndex($0, currentPlayer: .white) }
+            return Set(indices).count == indices.count
+        }
+
+        // 4. 3-fold detection via knight shuffle.
+        check("ChessGameEngine detects 3-fold via knight shuffle") {
+            let engine = ChessGameEngine()
+            let nf3 = ChessMove(fromRow: 7, fromCol: 6, toRow: 5, toCol: 5, promotion: nil)
+            let nc6 = ChessMove(fromRow: 0, fromCol: 1, toRow: 2, toCol: 2, promotion: nil)
+            let ng1 = ChessMove(fromRow: 5, fromCol: 5, toRow: 7, toCol: 6, promotion: nil)
+            let nb8 = ChessMove(fromRow: 2, fromCol: 2, toRow: 0, toCol: 1, promotion: nil)
+            for _ in 0..<2 {
+                _ = try? engine.applyMoveAndAdvance(nf3)
+                _ = try? engine.applyMoveAndAdvance(nc6)
+                _ = try? engine.applyMoveAndAdvance(ng1)
+                _ = try? engine.applyMoveAndAdvance(nb8)
+            }
+            if case .drawByThreefoldRepetition = engine.result { return true }
+            return false
+        }
+
+        // 5. BoardEncoder shape check.
+        check("BoardEncoder produces tensorLength floats (= \(BoardEncoder.tensorLength))") {
+            let tensor = BoardEncoder.encode(.starting)
+            return tensor.count == BoardEncoder.tensorLength
+        }
+
+        // 6. Network forward-pass shape (only if a network is built).
+        if let net = net {
+            ran += 1
+            do {
+                let board = BoardEncoder.encode(.starting)
+                let (policy, _) = try await net.evaluate(board: board)
+                if policy.count == ChessNetwork.policySize {
+                    SessionLogger.shared.log(
+                        "[DIAG] PASS  Network forward-pass produces \(ChessNetwork.policySize) logits"
+                    )
+                } else {
+                    SessionLogger.shared.log(
+                        "[DIAG] FAIL  Network forward-pass: expected \(ChessNetwork.policySize) logits, got \(policy.count)"
+                    )
+                    failed += 1
+                }
+            } catch {
+                SessionLogger.shared.log(
+                    "[DIAG] FAIL  Network forward-pass error: \(error.localizedDescription)"
+                )
+                failed += 1
+            }
+        } else {
+            SessionLogger.shared.log("[DIAG] SKIP  Network forward-pass shape (no network built yet)")
+        }
+
+        SessionLogger.shared.log("[DIAG] === Engine diagnostics done: \(ran - failed)/\(ran) passed ===")
+    }
+
+    /// Compact human-readable count: 12,345 → "12.3K", 1,234,567 →
+    /// "1.23M", 1,234,567,890 → "1.23B". Status-bar version of the
+    /// "Positions trained" cell — keeps the label narrow regardless
+    /// of order-of-magnitude.
+    static func formatCompactCount(_ value: Int) -> String {
+        let abs = Swift.abs(value)
+        switch abs {
+        case 0..<1_000:
+            return "\(value)"
+        case 1_000..<1_000_000:
+            return String(format: "%.1fK", Double(value) / 1_000)
+        case 1_000_000..<1_000_000_000:
+            return String(format: "%.2fM", Double(value) / 1_000_000)
+        default:
+            return String(format: "%.2fB", Double(value) / 1_000_000_000)
+        }
     }
 
     // MARK: - Sweep Actions
@@ -5931,12 +6427,25 @@ struct ContentView: View {
             lines.append("  Loss total:  \(totalStr)")
             lines.append("    Loss policy:   \(policyStr)")
             lines.append("    Loss value:    \(valueStr)")
+            // Value-head diagnostics: signed mean and absolute mean of v
+            // across the trainer's rolling-window batches. vMean drifting
+            // strongly negative indicates the value head is over-predicting
+            // losses (often a draw-penalty interaction); vAbs near 1.0
+            // signals tanh saturation and impending gradient vanishing.
+            if let snap = trainingBox?.snapshot() {
+                let vMeanStr = snap.rollingValueMean
+                    .map { String(format: "%+.4f", $0) } ?? dash
+                let vAbsStr = snap.rollingValueAbsMean
+                    .map { String(format: "%.4f", $0) } ?? dash
+                lines.append("    v mean:        \(vMeanStr)")
+                lines.append("    v abs:         \(vAbsStr)")
+            }
             if let gNorm = trainingBox?.snapshot().rollingGradGlobalNorm {
                 lines.append(String(format: "  Grad norm:   %.3f", gNorm))
             }
-            lines.append(String(format: "  Ent reg:     %.2e", trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault))
-            lines.append(String(format: "  Grad clip:   %.1f", ChessTrainer.gradClipMaxNorm))
-            lines.append(String(format: "  Weight dec:  %.0e", ChessTrainer.weightDecayC))
+            // Ent reg / Grad clip / Weight dec previously listed here are
+            // duplicates of the editable fields shown above the loss
+            // section. Removed to avoid redundancy.
             lines.append(String(format: "  Draw pen:    %.3f", trainer?.drawPenalty ?? Self.drawPenaltyDefault))
             // Candidate-test probe counter + time-since-last, so the user
             // can distinguish "probes firing but imperceptible" from "probes
@@ -5947,14 +6456,27 @@ struct ContentView: View {
             // Probes removed from display (internal timing only).
             // 1-minute rolling rates from the replay-ratio controller
             if let snap = replayRatioSnapshot {
-                let prodStr = snap.productionRate > 0
-                ? String(format: "%.0f", snap.productionRate)
-                : dash
-                let consStr = snap.consumptionRate > 0
-                ? String(format: "%.0f", snap.consumptionRate)
-                : dash
-                lines.append("  1m gen rate: \(prodStr) pos/s")
-                lines.append("  1m trn rate: \(consStr) pos/s")
+                // Display per-second alongside per-hour so the user can
+                // map directly to the [STATS] line's `Moves/hr` figure
+                // without doing the ×3600 in their head.
+                let prodStr: String
+                if snap.productionRate > 0 {
+                    let perSec = snap.productionRate
+                    let perHr = Int(perSec * 3600).formatted()
+                    prodStr = String(format: "%.0f pos/s   (\(perHr)/hr)", perSec)
+                } else {
+                    prodStr = dash
+                }
+                let consStr: String
+                if snap.consumptionRate > 0 {
+                    let perSec = snap.consumptionRate
+                    let perHr = Int(perSec * 3600).formatted()
+                    consStr = String(format: "%.0f pos/s   (\(perHr)/hr)", perSec)
+                } else {
+                    consStr = dash
+                }
+                lines.append("  1m gen rate: \(prodStr)")
+                lines.append("  1m trn rate: \(consStr)")
             }
             if let divSnap = selfPlayDiversityTracker?.snapshot(),
                divSnap.gamesInWindow > 0 {
@@ -6377,29 +6899,37 @@ struct ContentView: View {
         var lines: [String] = []
         var topMoves: [MoveVisualization] = []
         let board = BoardEncoder.encode(state)
-        let flip = state.currentPlayer == .black
 
         do {
-            let inference = try await runner.evaluate(board: board, pieces: state.board, flip: flip)
+            let inference = try await runner.evaluate(board: board, state: state, pieces: state.board)
             topMoves = inference.topMoves
 
             lines.append(String(format: "Forward pass: %.2f ms", inference.inferenceTimeMs))
             lines.append("")
             lines.append("Value Head")
             lines.append(String(format: "  Output: %+.6f", inference.value))
-            lines.append(String(format: "  %.3f%% win / %.3f%% loss",
-                                (inference.value + 1) / 2 * 100, (1 - inference.value) / 2 * 100))
+            // Removed the (v+1)/2 → "X% win / Y% loss" line. With a single
+            // tanh scalar (no WDL output) and a non-zero draw penalty in
+            // training, that mapping was misleading. Just show the raw
+            // value; readers familiar with the engine can interpret the
+            // sign and magnitude themselves.
             lines.append("")
-            lines.append("Policy Head (Top 4)")
+            lines.append("Policy Head (Top 4 raw — includes illegal)")
+            // The list deliberately includes illegal candidates so we
+            // can see whether the network has learned move-validity.
+            // After enough training, illegal cells should fall out of
+            // the top-K; if they keep appearing, the policy hasn't
+            // learned legality conditioning on the current position.
             for (rank, move) in inference.topMoves.enumerated() {
                 let fromName = BoardEncoder.squareName(move.fromRow * 8 + move.fromCol)
                 let toName = BoardEncoder.squareName(move.toRow * 8 + move.toCol)
                 let rankCol = String(rank + 1).padding(toLength: 4, withPad: " ", startingAt: 0)
                 let moveCol = "\(fromName)-\(toName)".padding(toLength: 8, withPad: " ", startingAt: 0)
-                lines.append("  \(rankCol)\(moveCol)\(String(format: "%.6f%%", move.probability * 100))")
+                let legalMark = move.isLegal ? "" : "  (illegal)"
+                lines.append("  \(rankCol)\(moveCol)\(String(format: "%.6f%%", move.probability * 100))\(legalMark)")
             }
             // Sum of the top-100 move probabilities. With a freshly-
-            // initialized network this sits near 100/4096 ≈ 2.44%; as the
+            // initialized network this sits near 100/policySize ≈ 2.06%; as the
             // policy head learns to concentrate mass on promising moves,
             // this number climbs — a cheap scalar that changes visibly
             // between candidate-test probes even when the top-4 move
@@ -6409,9 +6939,42 @@ struct ContentView: View {
             lines.append("")
             lines.append("Policy Stats")
             lines.append(String(format: "  Sum: %.8f", inference.policy.reduce(0, +)))
-            let uniformProb = 1.0 / Float(ChessNetwork.policySize)
-            let nonNegCount = inference.policy.filter { $0 > uniformProb }.count
-            lines.append(String(format: "  NonNegligible: %d / %d", nonNegCount, ChessNetwork.policySize))
+            // Legality-aware "above-uniform" count for THIS specific
+            // position. Counts how many of the legal moves the network
+            // gives mass above `1 / N_legal` (i.e., above what a
+            // perfectly-uniform-over-legal policy would produce).
+            // Direct, interpretable signal: at the starting position
+            // there are 20 legal moves and uniform-over-legal threshold
+            // is 5%; "8 / 20" means the network rates 8 of those 20
+            // moves above uniform. Replaces the old "NonNegligible:
+            // X / 4864" metric, which was confusing because most of
+            // the 4864 cells in the new 76-channel encoding correspond
+            // to physically-impossible moves and so always sit far
+            // below the 1/4864 baseline regardless of training.
+            let legalMoves = MoveGenerator.legalMoves(for: state)
+            let nLegal = max(1, legalMoves.count)
+            let legalUniformThreshold = 1.0 / Float(nLegal)
+            let abovePerLegalCount = legalMoves
+                .map { PolicyEncoding.policyIndex($0, currentPlayer: state.currentPlayer) }
+                .filter { idx in
+                    idx >= 0 && idx < inference.policy.count
+                        && inference.policy[idx] > legalUniformThreshold
+                }
+                .count
+            lines.append(String(format: "  Above uniform: %d / %d legal  (threshold = 1/%d = %.3f%%)",
+                                abovePerLegalCount, nLegal, nLegal,
+                                Double(legalUniformThreshold) * 100))
+            // Total mass on legal moves vs illegal — at training
+            // convergence, mass-on-illegal should approach zero since
+            // illegal cells never appear as one-hot training targets.
+            let legalMassSum = legalMoves
+                .map { PolicyEncoding.policyIndex($0, currentPlayer: state.currentPlayer) }
+                .reduce(Float(0)) { acc, idx in
+                    (idx >= 0 && idx < inference.policy.count) ? acc + inference.policy[idx] : acc
+                }
+            lines.append(String(format: "  Legal mass sum: %.6f%%   (illegal = %.6f%%)",
+                                Double(legalMassSum) * 100,
+                                Double(1 - legalMassSum) * 100))
             if let maxProb = inference.policy.max(), let minProb = inference.policy.min() {
                 lines.append(String(format: "  Min: %.8f", minProb))
                 lines.append(String(format: "  Max: %.8f", maxProb))

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A from-scratch self-play chess engine written in Swift/SwiftUI for macOS. The neural network runs on MetalPerformanceShadersGraph (MPSGraph) on Apple Silicon.
 
-**This project does not use MCTS.** There is no tree search of any kind — no MCTS, no alpha-beta, no minimax, no rollouts. Move selection is a single forward pass: network emits 4096 policy logits + a value scalar, the CPU masks illegal moves, temperature-scales, softmaxes, and categorical-samples. That's it. Do not add search, and do not suggest "for MCTS you'd…" style edits — AlphaZero-style search is an explicit non-goal. Strength comes entirely from the network itself, bootstrapped through self-play + arena promotion. See `chess-engine-design.md` ("My Goal") and `sampling-parameters.md` ("Sampling method") for the explicit rationale.
+**This project does not use MCTS.** There is no tree search of any kind — no MCTS, no alpha-beta, no minimax, no rollouts. Move selection is a single forward pass: network emits 4864 policy logits (76 channels × 64 squares, AlphaZero-shape encoding) + a value scalar, the CPU masks illegal moves, temperature-scales, softmaxes, and categorical-samples. That's it. Do not add search, and do not suggest "for MCTS you'd…" style edits — AlphaZero-style search is an explicit non-goal. Strength comes entirely from the network itself, bootstrapped through self-play + arena promotion. See `chess-engine-design.md` ("My Goal") and `sampling-parameters.md` ("Sampling method") for the explicit rationale.
 
 There is also no opening book and no human training data.
 
@@ -64,10 +64,10 @@ Shrink/grow the slot count carefully: the batcher's `expectedSlotCount` must be 
 
 ### Board encoding and policy space
 
-- Input: **18 planes × 8 × 8** NCHW, always from the current player's perspective. See `BoardEncoder.swift` and `chess-engine-design.md` for the full plane table.
-- Policy output: **4096 logits**, indexed as `fromSquare * 64 + toSquare` in the (possibly vertically-flipped) encoder frame. Move extraction in `ChessRunner.extractTopMoves` un-flips rows back to the display frame.
+- Input: **20 planes × 8 × 8** NCHW, always from the current player's perspective. Planes 0-15 are pieces + castling, plane 16 en passant, plane 17 halfmove clock normalized as `min(clock, 99) / 99` (Leela convention), planes 18-19 threefold-repetition signals (≥1× before, ≥2× before). See `BoardEncoder.swift` and `chess-engine-design.md` for the full plane table.
+- Policy output: **4864 logits** = 76 channels × 64 squares. AlphaZero-shape encoding: 56 queen-style (8 directions × 7 distances) + 8 knight + 9 underpromotion (3 pieces × 3 directions) + 3 queen-promotion. Indexed as `channel * 64 + row * 8 + col` in the (vertically-flipped for black) encoder frame. The bijection between `ChessMove` and `(channel, row, col)` lives in `PolicyEncoding.swift` — every site that converts moves ↔ indices must use it (deliberately no `policyIndex` property on `ChessMove` itself, so callers must think about the side to move).
 - Value output: single `tanh` scalar in `[-1, +1]`, always relative to the current player.
-- Network: stem (18→128) → 8 residual blocks → policy head + value head → ~2.9M parameters. See `ChessNetwork.swift`.
+- Network: stem (20→128) → 8 residual blocks (each with an SE channel-attention module, reduction ratio 4) → fully-convolutional policy head (1×1 conv 128→76) + value head → ~2.4M parameters. See `ChessNetwork.swift`. SE blocks match modern lc0 practice; the fully-conv policy head replaces the prior FC bottleneck head.
 - Legal-move masking is done CPU-side in `MPSChessPlayer.chooseMove` after softmax; the graph emits raw logits, not a masked softmax.
 
 ### Sampling (temperature schedules)

@@ -60,11 +60,63 @@ struct GameState: Sendable {
     let enPassantSquare: (row: Int, col: Int)?
     /// Moves since last pawn move or capture (for fifty-move rule).
     let halfmoveClock: Int
+    /// Number of times this exact position has occurred *previously* in
+    /// the game (excluding the current visit). Saturated at 2 — a value
+    /// of 2 means the next visit would force a 3-fold draw claim. Drives
+    /// `BoardEncoder` planes 18 and 19. Default 0 so existing test/UI
+    /// constructions of `GameState` (which don't track game history)
+    /// produce the correct "no repetitions" encoding without breaking.
+    /// `ChessGameEngine` populates the actual count after each move.
+    let repetitionCount: Int
+
+    /// Explicit memberwise initializer with default for `repetitionCount`
+    /// so legacy callsites (tests, UI editable position, applyMove that
+    /// doesn't know about game history) keep compiling without changes.
+    /// `ChessGameEngine` is the only caller that supplies a non-default
+    /// value, derived from its `positionCounts` table after each move.
+    init(
+        board: [Piece?],
+        currentPlayer: PieceColor,
+        whiteKingsideCastle: Bool,
+        whiteQueensideCastle: Bool,
+        blackKingsideCastle: Bool,
+        blackQueensideCastle: Bool,
+        enPassantSquare: (row: Int, col: Int)?,
+        halfmoveClock: Int,
+        repetitionCount: Int = 0
+    ) {
+        self.board = board
+        self.currentPlayer = currentPlayer
+        self.whiteKingsideCastle = whiteKingsideCastle
+        self.whiteQueensideCastle = whiteQueensideCastle
+        self.blackKingsideCastle = blackKingsideCastle
+        self.blackQueensideCastle = blackQueensideCastle
+        self.enPassantSquare = enPassantSquare
+        self.halfmoveClock = halfmoveClock
+        self.repetitionCount = repetitionCount
+    }
 
     /// Convenience: read the piece at (row, col). Equivalent to board[row * 8 + col].
     @inline(__always)
     func piece(at row: Int, _ col: Int) -> Piece? {
         board[row * 8 + col]
+    }
+
+    /// Return a copy with `repetitionCount` replaced. Used by
+    /// `ChessGameEngine` to layer the rep count onto a state produced
+    /// by `MoveGenerator.applyMove` (which has no history awareness).
+    func withRepetitionCount(_ count: Int) -> GameState {
+        GameState(
+            board: board,
+            currentPlayer: currentPlayer,
+            whiteKingsideCastle: whiteKingsideCastle,
+            whiteQueensideCastle: whiteQueensideCastle,
+            blackKingsideCastle: blackKingsideCastle,
+            blackQueensideCastle: blackQueensideCastle,
+            enPassantSquare: enPassantSquare,
+            halfmoveClock: halfmoveClock,
+            repetitionCount: count
+        )
     }
 
     static let starting: GameState = {
@@ -91,7 +143,7 @@ struct GameState: Sendable {
 
 // MARK: - Board Encoder
 
-/// Encodes chess positions into the 18x8x8 tensor format expected by the network.
+/// Encodes chess positions into the 20x8x8 tensor format expected by the network.
 ///
 /// Always encoded from the current player's perspective:
 /// - Board flipped vertically if black is playing (so current player is always at bottom)
@@ -100,17 +152,21 @@ struct GameState: Sendable {
 /// - Plane 12-13: current player's castling rights (kingside, queenside)
 /// - Plane 14-15: opponent's castling rights (kingside, queenside)
 /// - Plane 16: en passant target square
-/// - Plane 17: halfmove clock (normalized 0.0-1.0)
+/// - Plane 17: halfmove clock, normalized as `min(clock, 99) / 99` (Leela-style)
+/// - Plane 18: 1.0 if current position has occurred ≥1 time before in this game
+///   (this is at least the 2nd visit — a repeat that signals possible shuffling)
+/// - Plane 19: 1.0 if current position has occurred ≥2 times before
+///   (this is at least the 3rd visit — the game is at the 3-fold draw threshold)
 enum BoardEncoder {
 
-    /// Number of floats one encoded position occupies: 18 planes × 64 squares.
-    static let tensorLength = 18 * 64
+    /// Number of floats one encoded position occupies: 20 planes × 64 squares = 1280.
+    static let tensorLength = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
 
-    /// Encode a game state into a caller-owned slice of 1,152 floats.
+    /// Encode a game state into a caller-owned slice of `tensorLength` (= 1,280) floats.
     ///
     /// The per-move inference hot path uses this variant so the encoded
     /// tensor can live in a pre-allocated per-game scratch buffer,
-    /// avoiding a fresh `[Float](1152)` allocation on every ply. The
+    /// avoiding a fresh `[Float](tensorLength)` allocation on every ply. The
     /// buffer is zero-filled in place first — callers do not need to
     /// clear it themselves — then the occupancy, castling, en-passant
     /// and halfmove planes are written according to the standard
@@ -125,10 +181,10 @@ enum BoardEncoder {
         )
         // Pointer form once, then reuse — `UnsafeMutableBufferPointer`
         // subscripting bounds-checks every access, which adds up over
-        // 1,152 writes per ply.
+        // `tensorLength` writes per ply.
         guard let base = buffer.baseAddress else { return }
 
-        // Zero the 1152-slot tensor region. Sparse planes (pieces, EP)
+        // Zero the full tensorLength region. Sparse planes (pieces, EP)
         // rely on this being cleared first. Uses `update` (not
         // `initialize`) because callers pass in already-initialized
         // storage — a slice of a reused `[Float]` array or a
@@ -180,14 +236,40 @@ enum BoardEncoder {
             base[16 * 64 + epRow * 8 + ep.col] = 1.0
         }
 
-        // Plane 17: halfmove clock (normalized, 100 = fifty-move rule limit)
-        let normalized = Float(min(state.halfmoveClock, 100)) / 100.0
+        // Plane 17: halfmove clock, normalized as `min(clock, 99) / 99`.
+        // Saturates at 1.0 on the 99th ply of no progress — the last ply
+        // before either side can claim the 50-move rule on their next
+        // turn. Matches Leela Chess Zero's `rule50_count / 99` convention:
+        // putting the saturation point at the move-decision boundary
+        // rather than at the rule-firing moment gives the value head a
+        // signal aligned with when a player must actually act on the
+        // approaching draw, not one ply later. The actual 50-move-rule
+        // game logic (in ChessGameEngine) still fires at clock >= 100;
+        // only the normalization of this *input feature* changes.
+        let normalized = Float(min(state.halfmoveClock, 99)) / 99.0
         if normalized > 0 {
             fillPlane(base, plane: 17, value: normalized)
         }
+
+        // Planes 18 and 19: threefold-repetition signals. Always-fill
+        // pattern (no skip-if-zero optimization) so each plane is
+        // self-contained and doesn't depend on the leading clear at
+        // line 136 — easier to reason about and immune to the silent
+        // failure mode where someone bumps `tensorLength` without
+        // updating the leading clear's count. Cost is 128 extra writes
+        // per encode, negligible against the existing tensorLength-float clear.
+        //
+        // The rep count is read from the GameState itself (populated
+        // by ChessGameEngine after every move from its positionCounts
+        // table). For tests / UI editable positions / .starting where
+        // the count defaults to 0, both planes are zero — the correct
+        // "no repetition history" encoding.
+        let repCount = state.repetitionCount
+        fillPlane(base, plane: 18, value: repCount >= 1 ? 1.0 : 0.0)
+        fillPlane(base, plane: 19, value: repCount >= 2 ? 1.0 : 0.0)
     }
 
-    /// Encode a game state into an 18x8x8 = 1,152 float tensor.
+    /// Encode a game state into a 20×8×8 = 1,280 float tensor.
     ///
     /// Allocating variant — delegates to `encode(_:into:)` so both
     /// paths share the same encoding logic. Used by non-hot-path

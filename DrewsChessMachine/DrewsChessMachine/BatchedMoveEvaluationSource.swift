@@ -46,8 +46,8 @@ enum BatchedMoveEvaluationSourceError: LocalizedError {
 actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     // MARK: - Configuration
 
-    private static let boardFloats = 18 * 8 * 8
-    private static let policySize = 4096
+    private static let boardFloats = BoardEncoder.tensorLength
+    private static let policySize = ChessNetwork.policySize
 
     // MARK: - State
 
@@ -74,7 +74,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         let continuation: CheckedContinuation<(policy: [Float], value: Float), Error>
     }
 
-    /// Reusable scratch for packing `count × 1152` floats into one
+    /// Reusable scratch for packing `count × BoardEncoder.tensorLength` floats into one
     /// contiguous buffer before the batched `graph.run`. Grown on
     /// demand to the largest batch size the driver ever fires.
     /// Swift `[Float]` so storage management is automatic and the

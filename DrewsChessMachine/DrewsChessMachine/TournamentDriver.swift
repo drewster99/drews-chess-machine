@@ -93,17 +93,22 @@ final class TournamentDriver {
             let white: any ChessPlayer = aIsWhite ? a : b
             let black: any ChessPlayer = aIsWhite ? b : a
 
-            // beginNewGame only throws if a game is already in progress, and
-            // this machine was just constructed — so the throw cannot happen
-            // here. If it ever does, treat the game as a draw and continue.
-            let task: Task<GameResult, Never>
+            // `beginNewGame` can throw `alreadyPlaying` (impossible here
+            // — this machine was just constructed) or `CancellationError`
+            // if the caller's Task is cancelled mid-game. On cancellation
+            // we bail out of the tournament with whatever results we've
+            // tallied so far rather than counting the partial game as a
+            // draw — the outer loop's `Task.isCancelled` / `isCancelled`
+            // guards would break on the next iteration anyway.
+            let result: GameResult
             do {
-                task = try machine.beginNewGame(white: white, black: black)
+                result = try await machine.beginNewGame(white: white, black: black)
+            } catch is CancellationError {
+                break
             } catch {
                 draws += 1
                 continue
             }
-            let result = await task.value
 
             diversityTracker?.recordGame(moves: machine.moveHistory)
 

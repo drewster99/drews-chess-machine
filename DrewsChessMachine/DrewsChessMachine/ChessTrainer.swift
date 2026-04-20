@@ -47,10 +47,10 @@ struct TrainStepTiming: Sendable {
     let valueLoss: Float
     /// Mean Shannon entropy (in nats) of the trainee's policy softmax over
     /// this batch. Diagnostic only — not part of `loss`. Range is
-    /// [0, log(4096)] ≈ [0, 8.32]. Random init sits near the ceiling;
-    /// a collapsed policy heads toward 0. Watch for monotonic drift to
-    /// either extreme — that's the signature of policy collapse or a
-    /// stuck-at-uniform learning failure.
+    /// [0, log(policySize)] ≈ [0, 8.49] for the current 4864-logit head.
+    /// Random init sits near the ceiling; a collapsed policy heads toward 0.
+    /// Watch for monotonic drift to either extreme — that's the signature
+    /// of policy collapse or a stuck-at-uniform learning failure.
     let policyEntropy: Float
     let policyNonNegligibleCount: Float
     /// Global L2 norm of the flattened gradient vector across every
@@ -75,6 +75,21 @@ struct TrainStepTiming: Sendable {
     /// regardless of position, even if `valueMean` happens to sit
     /// near 0. Range [0, 1].
     let valueAbsMean: Float
+
+    /// Mean absolute delta between the fresh per-position v(s)
+    /// computed by the trainer's CURRENT value head and the stale
+    /// vBaseline that was stored in the replay buffer at play-time
+    /// (the champion's frozen-at-random-init value head). Nil on the
+    /// random-data sweep path which has no meaningful play-time
+    /// vBaseline. A rising delta shows the trainer's value head has
+    /// shifted away from the play-time champion's view — i.e., the
+    /// trainer is genuinely diverging.
+    let vBaselineDelta: Float?
+
+    /// Wall-clock cost of the fresh-baseline forward pass added to
+    /// each real-data training step. Nil on paths that skip it
+    /// (random-data sweep). Diagnostic only — included in `totalMs`.
+    let freshBaselineMs: Double?
 }
 
 // MARK: - Sweep Result
@@ -268,6 +283,15 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let rollingGradGlobalNorm: Double?
         let rollingValueMean: Double?
         let rollingValueAbsMean: Double?
+        /// Rolling-window mean of `TrainStepTiming.vBaselineDelta` —
+        /// the per-step mean absolute distance between the trainer's
+        /// CURRENT v(s) and the play-time-frozen vBaseline that was
+        /// stored in the replay buffer when the move was originally
+        /// played. Higher = the trainer's value head has drifted
+        /// further from the random-init champion's view = the trainer
+        /// is genuinely diverging. nil while the random-data sweep
+        /// path is the source (no real vBaselines).
+        let rollingVBaselineDelta: Double?
         let error: String?
     }
 
@@ -281,6 +305,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _gradNormWindow: [Double] = []
     private var _valueMeanWindow: [Double] = []
     private var _valueAbsMeanWindow: [Double] = []
+    private var _vBaselineDeltaWindow: [Double] = []
     private var _error: String?
     private let rollingWindow: Int
 
@@ -334,6 +359,13 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             if self._valueAbsMeanWindow.count > self.rollingWindow {
                 self._valueAbsMeanWindow.removeFirst(self._valueAbsMeanWindow.count - self.rollingWindow)
             }
+            // Optional — only the real-data path supplies vBaselineDelta.
+            if let delta = timing.vBaselineDelta {
+                self._vBaselineDeltaWindow.append(Double(delta))
+                if self._vBaselineDeltaWindow.count > self.rollingWindow {
+                    self._vBaselineDeltaWindow.removeFirst(self._vBaselineDeltaWindow.count - self.rollingWindow)
+                }
+            }
         }
     }
 
@@ -363,6 +395,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._gradNormWindow.removeAll(keepingCapacity: true)
             self._valueMeanWindow.removeAll(keepingCapacity: true)
             self._valueAbsMeanWindow.removeAll(keepingCapacity: true)
+            self._vBaselineDeltaWindow.removeAll(keepingCapacity: true)
         }
     }
 
@@ -376,6 +409,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingGradNorm = Self.mean(_gradNormWindow)
             let rollingVMean = Self.mean(_valueMeanWindow)
             let rollingVAbs = Self.mean(_valueAbsMeanWindow)
+            let rollingVBaseDelta = Self.mean(_vBaselineDeltaWindow)
             return Snapshot(
                 stats: _stats,
                 lastTiming: _lastTiming,
@@ -386,6 +420,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 rollingGradGlobalNorm: rollingGradNorm,
                 rollingValueMean: rollingVMean,
                 rollingValueAbsMean: rollingVAbs,
+                rollingVBaselineDelta: rollingVBaseDelta,
                 error: _error
             )
         }
@@ -731,7 +766,7 @@ final class ChessTrainer: @unchecked Sendable {
 
         let oneHot = graph.oneHot(
             withIndicesTensor: movePlayed,
-            depth: 4096,
+            depth: ChessNetwork.policySize,
             axis: 1,
             dataType: dtype,
             onValue: 1.0,
@@ -801,8 +836,9 @@ final class ChessTrainer: @unchecked Sendable {
         // --- Policy entropy ---
         //
         // H(p) = −Σ p · log p, per position, then mean across batch.
-        // Range is [0, log(4096)] ≈ [0, 8.32] nats; random init sits near
-        // the ceiling, a collapsed policy heads toward 0.
+        // Range is [0, log(policySize)] ≈ [0, 8.49] nats for the current
+        // 4864-logit head; random init sits near the ceiling, a collapsed
+        // policy heads toward 0.
         //
         // This tensor serves two roles: a diagnostic read via run-time
         // fetch AND a predecessor of totalLoss via the entropy
@@ -847,9 +883,9 @@ final class ChessTrainer: @unchecked Sendable {
 
         // --- Policy non-negligible count (diagnostic) ---
         //
-        // Count of softmax entries above 1/4096 (the uniform
+        // Count of softmax entries above 1/policySize (the uniform
         // probability), averaged across the batch. Starts near
-        // ~2048 with random init and drops as the policy
+        // ~policySize/2 with random init and drops as the policy
         // concentrates on promising moves. Like entropy, this is
         // diagnostic-only and not in totalLoss.
         let nonNegThreshold = graph.constant(
@@ -879,7 +915,7 @@ final class ChessTrainer: @unchecked Sendable {
 
         // --- Total loss ---
         //
-        // Policy loss is REINFORCE on the played move over a 4096-way
+        // Policy loss is REINFORCE on the played move over a `policySize`-way
         // softmax, so its gradient is naturally much weaker than the
         // value head's (z−v)² gradient. Scale the policy term up by K
         // so both heads get meaningful gradient during the pre-MCTS
@@ -1097,7 +1133,7 @@ final class ChessTrainer: @unchecked Sendable {
         Self.fillRandomFloats(&boardFloats)
 
         var moveIndices = [Int32](repeating: 0, count: batchSize)
-        // Random move indices in [0, 4096). One per batch row.
+        // Random move indices in [0, policySize). One per batch row.
         for i in 0..<batchSize {
             moveIndices[i] = Int32.random(in: 0..<Int32(ChessNetwork.policySize))
         }
@@ -1157,69 +1193,167 @@ final class ChessTrainer: @unchecked Sendable {
     /// Run a single training step on a batch sampled directly from the
     /// replay buffer into trainer-owned staging storage. Returns `nil`
     /// when the buffer has not yet accumulated `batchSize` positions.
+    ///
+    /// **Fresh-baseline forward pass:** before the actual training
+    /// step runs, this method does a forward-only pass on the
+    /// trainer's CURRENT network to compute v(s) for every position
+    /// in the batch. Those fresh v values overwrite the play-time-
+    /// frozen `vBaseline` values stored in the replay buffer, so the
+    /// policy-gradient advantage `(z - vBaseline)` reflects the
+    /// trainer's current belief instead of the random-init champion's
+    /// belief from when the move was played.
+    ///
+    /// Why this is necessary: MPSGraph has no `stop_gradient` op, so
+    /// computing v(s) inside the same training graph as both the
+    /// value-loss target AND the policy-baseline causes gradient to
+    /// leak back through the baseline path into the tower (verified
+    /// empirically — see `MPSGraphGradientSemanticsTests`). The
+    /// `vBaseline` placeholder mechanism that's already in the
+    /// training graph IS a stop-gradient boundary; we just feed
+    /// fresher values into it via this extra forward pass.
+    ///
+    /// Cost: ~33% extra forward FLOPs per training step. Worth it
+    /// because the previous behavior used random-init values forever
+    /// (until promotion happened), causing seed-dependent training
+    /// dynamics and biasing draw advantages toward positive (which
+    /// reinforced shuffle moves).
     func trainStep(
         replayBuffer: ReplayBuffer,
         batchSize: Int
     ) async throws -> TrainStepTiming? {
-        return try await enqueue {
-            try self.internalTrainStep(replayBuffer: replayBuffer, batchSize: batchSize)
+        // Phase 1 (trainer queue): sample into the staging buffers and
+        // copy the boards out as a Sendable [Float] for the cross-queue
+        // hop into the network's evaluate. Also copy the stale
+        // vBaselines so we can compute the diagnostic delta at the end.
+        struct Phase1: Sendable {
+            let boardsCopy: [Float]
+            let staleVBaselines: [Float]
         }
-    }
-
-    private func internalTrainStep(
-        replayBuffer: ReplayBuffer,
-        batchSize: Int
-    ) throws -> TrainStepTiming? {
-        let totalStart = CFAbsoluteTimeGetCurrent()
-        let prepStart = CFAbsoluteTimeGetCurrent()
-
-        ensureReplayBatchCapacity(batchSize)
-        guard
-            let boards = replayBatchBoards,
-            let moves = replayBatchMoves,
-            let zs = replayBatchZs,
-            let vBaselines = replayBatchVBaselines
-        else {
-            preconditionFailure("ChessTrainer.ensureReplayBatchCapacity should populate replay staging buffers")
-        }
-
-        let didSample = replayBuffer.sample(
-            count: batchSize,
-            intoBoards: boards,
-            moves: moves,
-            zs: zs,
-            vBaselines: vBaselines
-        )
-        guard didSample else { return nil }
-
-        // Draw-penalty rewrite: draws arrive with z=0.0 exactly (see
-        // `MPSChessPlayer.onGameEnded` — the four draw results all
-        // assign `0.0` with no float arithmetic in between). When
-        // `drawPenalty > 0`, substitute `-drawPenalty` for every
-        // drawn position in this batch. Mutating the replay staging
-        // buffer in place is safe — it's private to the trainer and
-        // is fully overwritten by the next `sample()` call.
-        if drawPenalty > 0 {
-            let penalty = -drawPenalty
-            for i in 0..<batchSize where zs[i] == 0.0 {
-                zs[i] = penalty
+        let phase1: Phase1? = try await enqueue { [batchSize] in
+            self.ensureReplayBatchCapacity(batchSize)
+            guard
+                let boards = self.replayBatchBoards,
+                let moves = self.replayBatchMoves,
+                let zs = self.replayBatchZs,
+                let vBaselines = self.replayBatchVBaselines
+            else {
+                preconditionFailure("ChessTrainer.ensureReplayBatchCapacity should populate replay staging buffers")
             }
+            let didSample = replayBuffer.sample(
+                count: batchSize,
+                intoBoards: boards,
+                moves: moves,
+                zs: zs,
+                vBaselines: vBaselines
+            )
+            guard didSample else { return nil }
+            let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+            let totalFloats = batchSize * floatsPerBoard
+            let boardsCopy = Array(UnsafeBufferPointer(start: boards, count: totalFloats))
+            let staleCopy = Array(UnsafeBufferPointer(start: vBaselines, count: batchSize))
+            return Phase1(boardsCopy: boardsCopy, staleVBaselines: staleCopy)
         }
+        guard let phase1 else { return nil }
 
-        let feeds = buildFeeds(
-            batchSize: batchSize,
-            boards: UnsafePointer(boards),
-            moves: UnsafePointer(moves),
-            zs: UnsafePointer(zs),
-            vBaselines: UnsafePointer(vBaselines)
+        // Phase 2 (network queue, async): forward-only pass on the
+        // trainer's network to compute v(s) for every position. We
+        // discard the policy output and keep only the value scalars.
+        let freshBaselineStart = CFAbsoluteTimeGetCurrent()
+        let (_, freshValues) = try await network.evaluate(
+            batchBoards: phase1.boardsCopy,
+            count: batchSize
         )
-        let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
+        let freshBaselineMs = (CFAbsoluteTimeGetCurrent() - freshBaselineStart) * 1000
 
-        return try runPreparedStep(
-            feeds: feeds,
-            prepMs: prepMs,
-            totalStart: totalStart
-        )
+        // Compute the diagnostic mean-absolute-delta between the
+        // trainer's current value head and the play-time champion's
+        // frozen value head. If this stays near zero, the trainer
+        // isn't diverging from the champion — bad. If it grows over
+        // time, the trainer is genuinely learning something different.
+        var sumAbsDelta: Float = 0
+        for i in 0..<batchSize {
+            sumAbsDelta += abs(freshValues[i] - phase1.staleVBaselines[i])
+        }
+        let meanAbsDelta = sumAbsDelta / Float(batchSize)
+
+        // Phase 3 (trainer queue): overwrite vBaselines with the fresh
+        // values, apply draw penalty, build feeds, run the training
+        // graph. Same flow as the pre-fresh-baseline implementation,
+        // just with vBaselines now containing current-trainer values
+        // instead of replay-buffer-frozen values.
+        return try await enqueue { [batchSize, freshValues, freshBaselineMs, meanAbsDelta] in
+            let totalStart = CFAbsoluteTimeGetCurrent()
+            let prepStart = CFAbsoluteTimeGetCurrent()
+
+            guard
+                let boards = self.replayBatchBoards,
+                let moves = self.replayBatchMoves,
+                let zs = self.replayBatchZs,
+                let vBaselines = self.replayBatchVBaselines
+            else {
+                preconditionFailure("ChessTrainer staging buffers vanished between phases")
+            }
+
+            // Overwrite the play-time-frozen vBaselines with the
+            // fresh current-trainer values from phase 2.
+            for i in 0..<batchSize {
+                vBaselines[i] = freshValues[i]
+            }
+
+            // Draw-penalty rewrite: draws arrive with z=0.0 exactly
+            // (see `MPSChessPlayer.onGameEnded` — the four draw
+            // results all assign `0.0` with no float arithmetic in
+            // between). When `drawPenalty > 0`, substitute
+            // `-drawPenalty` for every drawn position in this batch.
+            // Mutating the replay staging buffer in place is safe —
+            // it's private to the trainer and is fully overwritten by
+            // the next `sample()` call.
+            if self.drawPenalty > 0 {
+                let penalty = -self.drawPenalty
+                for i in 0..<batchSize where zs[i] == 0.0 {
+                    zs[i] = penalty
+                }
+            }
+
+            let feeds = self.buildFeeds(
+                batchSize: batchSize,
+                boards: UnsafePointer(boards),
+                moves: UnsafePointer(moves),
+                zs: UnsafePointer(zs),
+                vBaselines: UnsafePointer(vBaselines)
+            )
+            let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
+
+            // Run the training step. The returned timing has nil
+            // fresh-baseline fields; we patch them in below.
+            guard let baseTiming = try self.runPreparedStep(
+                feeds: feeds,
+                prepMs: prepMs,
+                totalStart: totalStart
+            ) else { return nil }
+
+            return TrainStepTiming(
+                dataPrepMs: baseTiming.dataPrepMs,
+                gpuRunMs: baseTiming.gpuRunMs,
+                readbackMs: baseTiming.readbackMs,
+                // totalMs as reported here is just the phase-3 wall
+                // time, not including the fresh-baseline forward pass.
+                // That cost is captured separately as `freshBaselineMs`
+                // — keeping them split lets the user see how much of
+                // each step is "real" training vs the baseline pass.
+                totalMs: baseTiming.totalMs,
+                loss: baseTiming.loss,
+                policyLoss: baseTiming.policyLoss,
+                valueLoss: baseTiming.valueLoss,
+                policyEntropy: baseTiming.policyEntropy,
+                policyNonNegligibleCount: baseTiming.policyNonNegligibleCount,
+                gradGlobalNorm: baseTiming.gradGlobalNorm,
+                valueMean: baseTiming.valueMean,
+                valueAbsMean: baseTiming.valueAbsMean,
+                vBaselineDelta: meanAbsDelta,
+                freshBaselineMs: freshBaselineMs
+            )
+        }
     }
 
     private func ensureReplayBatchCapacity(_ needed: Int) {
@@ -1537,7 +1671,12 @@ final class ChessTrainer: @unchecked Sendable {
             policyNonNegligibleCount: nonNegBufValue,
             gradGlobalNorm: gradNormBufValue,
             valueMean: valueMeanBufValue,
-            valueAbsMean: valueAbsMeanBufValue
+            valueAbsMean: valueAbsMeanBufValue,
+            // Defaults — the real-data path overwrites these at the
+            // outer trainStep level once it has computed the fresh
+            // baseline. The random-data sweep path leaves them nil.
+            vBaselineDelta: nil,
+            freshBaselineMs: nil
         )
         }  // autoreleasepool
     }
@@ -1604,8 +1743,8 @@ final class ChessTrainer: @unchecked Sendable {
             // Largest single MTLBuffer we'll ask Metal for. Exact, not
             // estimated: the trainer literally uploads a [batch, 128, 8, 8]
             // float32 activation tensor and that's the biggest buffer in
-            // the graph (beats the [batch, 4096] policy tensors and the
-            // [batch, 18, 8, 8] input).
+            // the graph (beats the [batch, policySize] policy tensors and
+            // the [batch, inputPlanes, 8, 8] input).
             let largestBufferBytes = Self.largestBufferBytes(forBatchSize: batchSize)
             // Working-set prediction comes from a least-squares fit over
             // the rows we've already run. Returns nil before we have any
@@ -1720,8 +1859,8 @@ final class ChessTrainer: @unchecked Sendable {
 
     /// Exact size of the largest single MTLBuffer the trainer requests at
     /// this batch size — one [batch, 128, 8, 8] float32 activation tensor.
-    /// That's larger than the [batch, 4096] policy tensors and the
-    /// [batch, 18, 8, 8] input, so it's the buffer that would first hit
+    /// That's larger than the [batch, policySize] policy tensors and the
+    /// [batch, inputPlanes, 8, 8] input, so it's the buffer that would first hit
     /// `maxBufferLength`. This is an architectural fact, not a guess.
     static func largestBufferBytes(forBatchSize batchSize: Int) -> UInt64 {
         let floatBytes = MemoryLayout<Float>.size

@@ -1,7 +1,7 @@
 import Foundation
 
 /// A chess move defined by source and destination squares, with optional promotion.
-struct ChessMove: Sendable, Equatable {
+struct ChessMove: Sendable, Equatable, Hashable {
     let fromRow: Int
     let fromCol: Int
     let toRow: Int
@@ -9,13 +9,15 @@ struct ChessMove: Sendable, Equatable {
     /// Promotion piece type when a pawn reaches the last rank. Nil for non-promotion moves.
     let promotion: PieceType?
 
-    /// Policy tensor index for this move: from_square * 64 + to_square.
-    /// Squares numbered row-by-row from rank 8: 0=a8, 7=h8, ..., 56=a1, 63=h1.
-    var policyIndex: Int {
-        let fromSquare = fromRow * 8 + fromCol
-        let toSquare = toRow * 8 + toCol
-        return fromSquare * 64 + toSquare
-    }
+    // Note: there is no `policyIndex` property on `ChessMove`. The policy
+    // index depends on the current player (encoder-frame perspective flip
+    // for black) and on the AlphaZero-style 76-channel encoding, neither
+    // of which a `ChessMove` knows about on its own. Use
+    // `PolicyEncoding.policyIndex(_:currentPlayer:)` instead — the caller
+    // must supply the side to move so the encoding picks the right
+    // perspective. The compile-time absence of this convenience property
+    // is intentional: it forces every callsite to think about which
+    // encoding (and which side) it's working with.
 
     /// Algebraic notation for display (e.g., "e2-e4", "a7-a8=Q").
     var notation: String {

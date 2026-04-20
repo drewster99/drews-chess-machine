@@ -21,7 +21,8 @@ import Foundation
 /// all mutable state access.
 final class ReplayBuffer: @unchecked Sendable {
     /// Number of floats required to hold one encoded board position
-    /// (18 planes × 8 × 8).
+    /// (`inputPlanes` × 8 × 8 — currently 20 × 64 = 1280 with the v2
+    /// architecture refresh that added two repetition planes).
     static let floatsPerBoard = ChessNetwork.inputPlanes
         * ChessNetwork.boardSize
         * ChessNetwork.boardSize
@@ -155,7 +156,7 @@ final class ReplayBuffer: @unchecked Sendable {
     // MARK: - Append
 
     /// Append one finished game's positions in bulk. The caller passes
-    /// contiguous buffers of `count` board tensors (`count * 1152`
+    /// contiguous buffers of `count` board tensors (`count * floatsPerBoard`
     /// floats) and `count` policy indices, plus a single outcome to
     /// broadcast across every row. When the ring is full, new rows
     /// overwrite the oldest in FIFO order with wraparound handled via
@@ -294,13 +295,20 @@ final class ReplayBuffer: @unchecked Sendable {
     private static let fileMagic: [UInt8] = Array("DCMRPBUF".utf8)
     /// Format version. Bump on any on-disk layout change.
     ///
-    /// - v1: boards, moves, outcomes
-    /// - v2: boards, moves, outcomes, vBaselines (advantage baseline)
+    /// Current format is v3:
+    ///   - boards: `BoardEncoder.tensorLength` floats per slot
+    ///     (currently `inputPlanes` × 8 × 8 = 1,280).
+    ///   - moves: one Int32 policy index per slot.
+    ///   - outcomes: one Float (z) per slot.
+    ///   - vBaselines: one Float (frozen v at play time) per slot.
     ///
-    /// Current writer always writes v2. Reader accepts both; v1 files
-    /// load with vBaselines zeroed out, which degrades gracefully to
-    /// the pre-advantage formulation (z − 0 = z).
-    private static let fileVersion: UInt32 = 2
+    /// Earlier format versions (v1 without vBaselines, v2 with the
+    /// pre-refresh 18-plane board stride) are no longer supported —
+    /// the reader cleanly rejects them with `unsupportedVersion`. Per
+    /// project convention (no migration without explicit request),
+    /// older files from previous architecture iterations are not
+    /// loadable.
+    private static let fileVersion: UInt32 = 3
     /// Header size in bytes: 8 magic + 4 version + 4 pad + 5 × Int64 fields.
     private static let headerSize: Int = 8 + 4 + 4 + 8 * 5
     /// Chunk size for raw-buffer writes/reads. Keeps peak Data
@@ -529,9 +537,11 @@ final class ReplayBuffer: @unchecked Sendable {
         let version: UInt32 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
         }
-        // Accept both v1 (pre-advantage, no vBaselines region) and v2
-        // (with vBaselines). Reader fills vBaselines with zeros on v1.
-        guard version == 1 || version == 2 else {
+        // v3 is the only currently supported format. Earlier versions
+        // (from prior architecture iterations with a different per-
+        // slot board stride) are rejected with `unsupportedVersion`.
+        // No migration code per project convention.
+        guard version == 3 else {
             throw PersistenceError.unsupportedVersion(version)
         }
         let fpbFile: Int64 = headerData.withUnsafeBytes {
@@ -617,25 +627,18 @@ final class ReplayBuffer: @unchecked Sendable {
                 count: target
             )
 
-            // vBaselines — only present in v2+. On v1 files, leave the
-            // whole region zero (pre-filled during the reset above via
-            // storedCount=0 → next append will overwrite, but defensive
-            // zero-init for sampling against a partially-restored buffer).
-            if version >= 2 {
-                if skip > 0 {
-                    try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
-                }
-                try readContiguous(
-                    handle: handle,
-                    into: UnsafeMutableRawPointer(vBaselineStorage),
-                    slotBytes: MemoryLayout<Float>.size,
-                    count: target
-                )
-            } else {
-                // v1 file: zero out the vBaselines region for the slots
-                // we just restored so sampling returns a clean 0 baseline.
-                (vBaselineStorage).update(repeating: 0, count: target)
+            // vBaselines — present in v3 (and v2 historically; we only
+            // accept v3 now). Skip + read with the same pattern as the
+            // other fields.
+            if skip > 0 {
+                try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
             }
+            try readContiguous(
+                handle: handle,
+                into: UnsafeMutableRawPointer(vBaselineStorage),
+                slotBytes: MemoryLayout<Float>.size,
+                count: target
+            )
 
             storedCount = target
             writeIndex = (target == capacity) ? 0 : target

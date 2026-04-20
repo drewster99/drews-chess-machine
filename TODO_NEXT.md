@@ -67,22 +67,6 @@ These came up during the audit and were verified to not be bugs. Recording them 
 - **Deprecated 1-arg `.onChange`**: no 1-arg usages in the codebase; the 2-arg form `{ _, _ in ... }` is the current non-deprecated API.
 - **Softmax overflow at low tau**: `MPSChessPlayer.sampleMove` subtracts `maxLogit` before `expf`, and `floorTau > 0` is enforced by precondition on `SamplingSchedule`.
 
-## In-flight from last session (pending verify/commit)
-
-The window-close teardown from commit `6c96437` hooks `NSWindow.willCloseNotification` without filtering by window. That notification is global and also fires for the Log Analysis auxiliary window (`LogAnalysisWindowController`, `LogAnalysisWindow.swift:32`) and for any `NSOpenPanel` / `NSSavePanel` raised by the File menu (Save Session, Load Session…, Load Model…, Open Data Folder in Finder). As-shipped, dismissing any of those dialogs will cancel the training run mid-save.
-
-Fix is written but not yet verified:
-- Added a `WindowAccessor: NSViewRepresentable` that captures the hosting `NSWindow` into a `@State var contentWindow: NSWindow?`.
-- Body now calls `.background(WindowAccessor(window: $contentWindow))`.
-- The `.onReceive(...)` handler filters `note.object === contentWindow` before calling `stopAnyContinuous()` + `clearTrainingAlarm()`.
-
-Pending: rerun `mcp__xcode-mcp-server__build_project` (last attempt hit an Apple-Event scheme-action error unrelated to the code), smoke-test (open Log Analysis window, close it, confirm training continues; raise a Save panel, cancel, confirm training continues; close the main window, confirm training stops), then commit.
-
-Critical files still modified / uncommitted from that work:
-- `DrewsChessMachine/DrewsChessMachine/ContentView.swift` — WindowAccessor + contentWindow state + filtered onReceive.
-
-Also note: the user's AdamW `shouldDecay` refactor in `ChessNetwork.swift` was in flight at the same time. That file is modified but intentionally excluded from `6c96437` and is the user's work — don't commit it without asking.
-
 ## ML / MPSGraph Review (2026-04-19) — deferred items
 
 These came out of the deep ML/MPSGraph code review on 2026-04-19. Items #1 (He init fan_in for FC layers), #5 (weight decay on BN/biases), #7 (Dirichlet noise), #8 (vDSP_vclip comment), and #9 (sweep contaminates BN running stats) are already fixed and merged. The four items below are deferred — each requires either retraining-from-scratch, an architectural decision, or a forward-incompatible weight change, so they need ROADMAP-level discussion before implementation. Original review numbering preserved.
@@ -114,10 +98,35 @@ This is a defensible variance-reduction choice, but it's not what "advantage bas
 
 If you wanted the textbook formulation: drop `vBaseline` entirely and feed the trainer's `network.valueOutput` through a `stop_gradient` equivalent. MPSGraph doesn't have `stop_gradient`, but one workaround is to forward the value head twice and compute the policy-loss baseline from a `placeholder` that's fed the *just-computed* `v(s)` from the same training batch (one extra forward + one CPU readback per step). Or: accept the current design and document why the staleness is acceptable — currently the comment defends *why feeding via placeholder works*, not why a frozen baseline is the right algorithm.
 
-### #6 — Castling-rights planes waste 4× more space than needed
+### #6 — Missing repetition planes (draw-loop pathology)
 
-`BoardEncoder.encode` fills 4 entire 8×8 planes (256 floats) to encode 4 boolean bits. This is "broadcast a scalar over a spatial plane" which works but inflates input tensor by ~22%. For a network this small the cost is in the noise, but as a model-design question it's also denying the input-stem the chance to keep castling-rights-as-scalar features distinct from spatial features. More impactful: there's **no repetition-count plane** and **no fullmove counter**. Without repetition planes the network cannot in principle learn to play for / avoid threefold repetition, which is one of the major sources of draw-loop pathology in early self-play. The halfmove-clock plane (17) covers 50-move-rule but not 3-fold.
+The network has no input feature for "this position has occurred before." `BoardEncoder` sees only the current `GameState`, with no position history. Plane 17 (halfmove clock) partially covers the 50-move rule, but **threefold repetition is not represented at all**. Without repetition planes the network cannot in principle learn to play for or avoid 3-fold — which is one of the major sources of draw-loop pathology in early self-play (shuffle loops the value head can't even *see* are repeats).
 
-A common compact variant: planes 12 (kingside-castle bool for me), 13 (queenside-castle bool for me), 14 (kingside opp), 15 (queenside opp), plus 2 repetition planes (1 if position has occurred 1× before, 1 if 2× before). Same plane count, much more useful.
+Audit verified the existing castling encoding is correct and not "wasteful" — broadcasting a scalar bit across an 8×8 plane is the standard CNN-friendly way to feed a global feature, costs ~0.16% of network parameters, and matches how AlphaZero feeds castling, side-to-move, repetition, and total-move-count. Don't conflate that with the repetition gap; only the latter is a real bug.
 
-(Note: this is an input-shape change. Existing checkpoints become incompatible — needs a `currentArchHash` bump in `ModelCheckpointFile`. Also requires plumbing position-history tracking into `ChessGameEngine` / `BoardEncoder` since the encoder currently sees only the current `GameState` with no history.)
+**Design — 2 binary planes (AlphaZero-shape):**
+
+```
+Plane 18: 1.0 if current position has occurred ≥1 time before in this game
+Plane 19: 1.0 if current position has occurred ≥2 times before  (next visit = 3-fold draw)
+```
+
+Both broadcast as 0/1 constants across all 64 squares, same idiom as castling.
+
+Why two binary planes instead of one continuous `rep_count / 3` plane: the two cases are *qualitatively* different decisions, not points on a continuum. "Seen once" = mild signal we may be shuffling. "Seen twice" = one more visit *forces a draw by rule* — if I'm winning, avoid; if losing, seek. A single linear plane of `rep/3` requires the conv to learn its own threshold to recover those two regimes; two binary planes hand the thresholds in for free with independent weights. Cost is one extra 64 floats per position; immaterial.
+
+Why not stack 8 historical board snapshots like real AlphaZero (112 history planes): we have no MCTS to amortize the 6× larger input over, en passant is already its own plane (16), and "how the position evolved" mostly helps a search engine. The 2-plane summary captures the rule itself, which is the actual gap.
+
+**"Same position" semantics (FIDE 3-fold):** identical piece placement, side to move, all four castling rights, and en passant target. Standard Zobrist hashing mixes all four — one `UInt64` per ply suffices.
+
+**Pruning trick:** any pawn move or capture makes earlier positions unreachable (irreversible). So the search window is bounded by `halfmoveClock` (≤100, usually <20). Maintain `[UInt64]` of Zobrist hashes per game; clear on every halfmove-clock reset. Repetition count = O(halfmove_clock) linear scan — trivially fast.
+
+**Implementation work:**
+- New per-game Zobrist hash list owned by `ChessGameEngine` (or the per-worker game wrapper). Updated incrementally on `applyMove`. Cleared on halfmove-clock reset.
+- Extend `BoardEncoder.encode` signature to take `repetitionCount: Int` (saturates at 2). Caller computes from the hash list. Both `encode(_:into:)` and `encode(_:)` variants.
+- Bump `BoardEncoder.tensorLength` 18 → 20. Use **always-fill** for the new planes: `fillPlane(base, plane: 18, value: repetitionCount >= 1 ? 1.0 : 0.0)` and the same for plane 19 with `>= 2`. Do NOT use the existing "skip if zero, rely on initial clear" pattern — it's correct today only because line 136 zeroes the whole `tensorLength` region, and that's an implicit cross-section dependency easily broken by a missed `tensorLength` bump in a future change. ~128 extra writes per encode (negligible against the 1152-float leading clear) buys self-contained per-plane correctness. Don't retrofit the existing planes — separate scope.
+- Update `ChessNetwork` stem `inputChannels` 18 → 20.
+- `ReplayBuffer` v3: store `repetitionCount` per slot (1 byte, saturated; or pack with another small field). Format-version bump in header.
+- `MPSChessPlayer`, `BatchedMoveEvaluationSource`, `ChessTrainer` — plumb the count alongside `GameState` everywhere `BoardEncoder.encode` is called. Inference path computes from the live game's hash list; training path reads from replay-buffer slot.
+- Input-shape change → `currentArchHash` bumps automatically (it mixes `inputChannels`) → existing `.dcmmodel` and `.dcmsession` files cleanly fail with `.archMismatch`. No migration code (per CLAUDE.md).
+- Confirm `ModelCheckpointFile.maxTensorElementCount` still covers the largest tensor after the change (stem conv weights = `inputChannels × channels × 9 = 20 × 128 × 9 = 23,040`, much smaller than the policy FC, so no impact).

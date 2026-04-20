@@ -16,8 +16,9 @@ struct DrewsChessMachineApp: App {
         // file under the app's Library/Logs directory.
         SessionLogger.shared.start()
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
+        let archHashHex = String(format: "0x%08x", ModelCheckpointFile.currentArchHash)
         SessionLogger.shared.log(
-            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp)"
+            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp) arch_hash=\(archHashHex) inputPlanes=\(ChessNetwork.inputPlanes) policySize=\(ChessNetwork.policySize)"
         )
         if let path = SessionLogger.shared.activeLogPath {
             SessionLogger.shared.log("[APP] session log: \(path)")
@@ -154,6 +155,9 @@ struct DrewsChessMachineApp: App {
                         || commandHub.continuousTraining
                         || commandHub.realTraining
                     )
+                Divider()
+                Button("Run Engine Diagnostics") { commandHub.runEngineDiagnostics() }
+                    .disabled(commandHub.isBusy)
                 Divider()
                 Button("Open Session Log") {
                     if let path = SessionLogger.shared.activeLogPath {

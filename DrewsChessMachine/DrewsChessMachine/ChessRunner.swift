@@ -15,21 +15,22 @@ final class ChessRunner: @unchecked Sendable {
 
     /// Run the forward pass on a board position.
     ///
-    /// The network emits raw policy logits (no softmax in the graph). For the
-    /// UI demo we softmax over all 4096 slots once here so the displayed
-    /// percentages are real probabilities. Self-play does not go through
-    /// this path; it consumes the logits directly via MPSChessPlayer.
+    /// The network emits raw policy logits (no softmax in the graph). For
+    /// the UI demo we softmax over all `policySize` (4864) slots once here
+    /// so the displayed percentages are real probabilities. Self-play does
+    /// not go through this path; it consumes the logits directly via
+    /// MPSChessPlayer.
     ///
     /// `pieces` is the unflipped display board used to look up ghost-piece
-    /// icons for each arrow. `flip` must match whatever `BoardEncoder.encode`
-    /// did to produce `board`: true when the position was black-to-move, so
-    /// the network's policy frame is vertically mirrored relative to the
-    /// display. We un-mirror the extracted move coordinates here so arrows
-    /// land on the right squares regardless of side-to-move.
+    /// icons for each arrow. `state` is the source GameState the board was
+    /// encoded from; `PolicyEncoding.decode` uses it both to interpret the
+    /// (channel, row, col) cells back into absolute coordinates AND to
+    /// filter to the legal subset (so absurd top-K cells like "knight jump
+    /// from a square with no piece" don't appear as ghost arrows).
     func evaluate(
         board: [Float],
-        pieces: [Piece?],
-        flip: Bool
+        state: GameState,
+        pieces: [Piece?]
     ) async throws -> InferenceResult {
         let start = CFAbsoluteTimeGetCurrent()
         let (logits, value) = try await network.evaluate(board: board)
@@ -37,17 +38,17 @@ final class ChessRunner: @unchecked Sendable {
         return Self.makeInferenceResult(
             logits: logits,
             value: value,
+            state: state,
             pieces: pieces,
-            flip: flip,
             inferenceTimeMs: inferenceTimeMs
         )
     }
 
     /// Package raw logits + value from any forward pass into the
     /// `InferenceResult` the UI consumes: softmaxes the logits, extracts
-    /// the top-4 move visualizations (un-flipped when needed), and records
-    /// the inference wall time. Shared between the inference-network path
-    /// (`evaluate(board:pieces:flip:)`, which uses the frozen-BN inference
+    /// the top-4 LEGAL move visualizations, and records the inference
+    /// wall time. Shared between the inference-network path
+    /// (`evaluate(board:state:pieces:)`, which uses the frozen-BN inference
     /// network) and the Candidate test probe path in ContentView, which
     /// runs forward directly on the trainer's internal training-mode
     /// network so the user sees the candidate-in-training's opinion
@@ -55,13 +56,13 @@ final class ChessRunner: @unchecked Sendable {
     static func makeInferenceResult(
         logits: [Float],
         value: Float,
+        state: GameState,
         pieces: [Piece?],
-        flip: Bool,
         inferenceTimeMs: Double
     ) -> InferenceResult {
         let policy = softmax(logits)
         return InferenceResult(
-            topMoves: extractTopMoves(from: policy, pieces: pieces, flip: flip, count: 4),
+            topMoves: extractTopMoves(from: policy, state: state, pieces: pieces, count: 4),
             policy: policy,
             value: value,
             inferenceTimeMs: inferenceTimeMs
@@ -81,37 +82,66 @@ final class ChessRunner: @unchecked Sendable {
 
     // MARK: - Move Extraction
 
+    /// Extract the top-K policy cells by raw probability — INCLUDING
+    /// illegal candidates. This is the diagnostic for "is the network
+    /// learning what's a valid move?" — illegal-but-geometrically-
+    /// valid candidates surfacing in the top-K signal that the policy
+    /// hasn't yet learned to suppress them.
+    ///
+    /// Iterates the full `policy` vector rather than the legal-move
+    /// subset so cells the network favors but that aren't legal here
+    /// still appear (with `isLegal: false` on the resulting
+    /// `MoveVisualization`). Off-board geometry → cell skipped.
+    /// Geometric-decode result legality is checked once via
+    /// `MoveGenerator.legalMoves(for: state)`.
+    ///
+    /// Cost: O(policySize) for the sort, O(legalMoves) once for the
+    /// legality lookup set. Trivial for a 4864-cell policy.
     static func extractTopMoves(
         from policy: [Float],
+        state: GameState,
         pieces: [Piece?],
-        flip: Bool,
         count: Int
     ) -> [MoveVisualization] {
-        let indexed = policy.indices.map { (index: $0, prob: policy[$0]) }
-        return indexed
+        // Pre-compute a hashable set of legal moves so per-cell
+        // legality lookup is O(1) instead of O(legalMoves).
+        let legalSet = Set(MoveGenerator.legalMoves(for: state))
+
+        // Sort all policy cells by probability descending, take more
+        // than `count` to allow filtering off-board cells without
+        // running out before we hit the requested K. 4× headroom is
+        // plenty — almost no top cells are off-board for a trained
+        // network, and even an untrained one rarely concentrates mass
+        // there.
+        let topByProb = policy.indices
+            .map { (index: $0, prob: policy[$0]) }
             .sorted { $0.prob > $1.prob }
-            .prefix(count)
-            .map { entry in
-                // The policy index is `fromSquare * 64 + toSquare` in the
-                // network's (possibly flipped) coordinate frame. We decode
-                // into that frame first, then un-flip rows back to the
-                // display frame so the arrows land on the right squares.
-                let netFromRow = (entry.index / 64) / 8
-                let netFromCol = (entry.index / 64) % 8
-                let netToRow = (entry.index % 64) / 8
-                let netToCol = (entry.index % 64) % 8
-                let fromRow = flip ? (7 - netFromRow) : netFromRow
-                let toRow = flip ? (7 - netToRow) : netToRow
-                let piece = pieces[fromRow * 8 + netFromCol]
-                return MoveVisualization(
-                    fromRow: fromRow,
-                    fromCol: netFromCol,
-                    toRow: toRow,
-                    toCol: netToCol,
-                    probability: entry.prob,
-                    piece: piece?.assetName
-                )
-            }
+            .prefix(count * 4)
+
+        var results: [MoveVisualization] = []
+        results.reserveCapacity(count)
+        for entry in topByProb {
+            if results.count >= count { break }
+            let chan = entry.index / 64
+            let row = (entry.index % 64) / 8
+            let col = entry.index % 8
+            guard let candidate = PolicyEncoding.geometricDecode(
+                channel: chan, row: row, col: col,
+                currentPlayer: state.currentPlayer
+            ) else { continue }  // off-board — skip
+            let isLegal = legalSet.contains(candidate)
+            let piece = pieces[candidate.fromRow * 8 + candidate.fromCol]
+            results.append(MoveVisualization(
+                fromRow: candidate.fromRow,
+                fromCol: candidate.fromCol,
+                toRow: candidate.toRow,
+                toCol: candidate.toCol,
+                probability: entry.prob,
+                piece: piece?.assetName,
+                isLegal: isLegal
+            ))
+        }
+        return results
     }
 
     // MARK: - Result Type

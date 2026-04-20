@@ -804,29 +804,30 @@ struct TrainingChartGridView: View {
         }
     }
 
-    // MARK: - Non-negligible count chart (fixed Y-axis 0-4096)
+    // MARK: - Non-negligible count chart (fixed Y-axis 0..policySize)
 
     private var nonNegChart: some View {
         let readout = hoverReadout(path: \.rollingPolicyNonNegCount)
+        let policyMax = ChessNetwork.policySize
         let headerText: String
         switch readout {
         case .notHovering:
             if let lastValue = trainingChartSamples.last?.rollingPolicyNonNegCount {
-                let pct = lastValue / Double(ChessNetwork.policySize) * 100
-                headerText = String(format: "%d / 4096 (%.1f%%)", Int(lastValue), pct)
+                let pct = lastValue / Double(policyMax) * 100
+                headerText = String(format: "%d / %d (%.1f%%)", Int(lastValue), policyMax, pct)
             } else {
-                headerText = "-- / 4096"
+                headerText = "-- / \(policyMax)"
             }
         case .hoveringNoData(let t):
             headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
         case .hoveringWithData(let t, let v):
-            let pct = v / Double(ChessNetwork.policySize) * 100
-            headerText = "t=\(Self.formatElapsedAxis(t)) \(String(format: "%d / 4096 (%.1f%%)", Int(v), pct))"
+            let pct = v / Double(policyMax) * 100
+            headerText = "t=\(Self.formatElapsedAxis(t)) \(String(format: "%d / %d (%.1f%%)", Int(v), policyMax, pct))"
         }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
-                    Text("Non-negligible policy count")
+                    Text("Above-uniform policy count")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -857,7 +858,7 @@ struct TrainingChartGridView: View {
                             .symbolSize(40)
                     }
                 }
-                .chartYScale(domain: 0...4096)
+                .chartYScale(domain: 0...Double(policyMax))
                 .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
                 .chartYAxis {
                     AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in

@@ -4,6 +4,37 @@ Long-term goals, deferred work, and notes on decisions.
 
 ## Future improvements
 
+- **Adaptive learning-rate schedule.** Currently `learnRate` is a static
+  hyperparameter (default 5e-5) that the user adjusts manually via the
+  UI. Real-world deep-RL training benefits from LR scheduling — high LR
+  early to make fast progress on raw signal, then decay as the network
+  converges so late-stage updates don't oscillate. Candidate triggers
+  for the schedule (pick one or compose):
+    - **Step-based decay.** LR multiplied by γ every N training steps
+      (e.g., γ=0.5 every 100K steps). Predictable, tunable, but blind
+      to actual training health.
+    - **Plateau detection.** Watch a smoothed loss; when it stops
+      decreasing for N consecutive measurements, multiply LR by 0.5.
+      Standard "ReduceLROnPlateau" pattern.
+    - **Promotion-driven.** Drop LR by a factor on every successful
+      arena promotion. The intuition: promotion proves the current
+      policy has shifted meaningfully, so subsequent updates should be
+      gentler to lock in that progress before the next promotion
+      window. Conversely, a long arena-failure streak could *raise*
+      LR to escape a local minimum.
+    - **Cosine annealing with restarts (SGDR).** Smoothly decays LR
+      across an "epoch" then restarts to the high value. Often
+      empirically strong but adds another tunable (epoch length).
+    - **Replay-ratio aware.** Tie LR to the cons/prod ratio so that
+      undertraining (cons < prod) doesn't get amplified by a too-hot
+      LR.
+  Implementation note: keep manual UI override in place. Schedule
+  proposes; user can lock to a fixed value if they want. Log every
+  schedule-driven LR change as a `[PARAM] learningRate ...` line so
+  the change is visible in the session log alongside training metrics.
+  No specific design picked yet — open question which trigger best
+  matches our pre-MCTS bootstrap regime.
+
 - **Model and session save/load.** Today nothing persists across app
   launches — quit mid-training and you lose the champion, the trainer,
   every accumulated counter, and the replay buffer. Two file formats,

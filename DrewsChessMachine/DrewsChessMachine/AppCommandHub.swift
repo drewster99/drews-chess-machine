@@ -68,4 +68,9 @@ final class AppCommandHub {
     var loadSession: () -> Void = {}
     var loadModel: () -> Void = {}
     var revealSaves: () -> Void = {}
+    /// Run the engine diagnostics probe — encoder/decoder round-trips,
+    /// repetition tracking, network forward-pass shape check. All
+    /// output goes to the session log with `[DIAG]` prefix. Suitable
+    /// for one-shot health checks after major code changes.
+    var runEngineDiagnostics: () -> Void = {}
 }

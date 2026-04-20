@@ -140,14 +140,31 @@ struct ModelCheckpointFile {
     static let minimumEncodedSize: Int = 8 + 4 + 4 + 4 + 8 + 4 + 4 + 32
 
     /// Sanity cap on the per-tensor element count read from disk.
-    /// The current largest tensor is the policy-head FC weight
-    /// matrix at `channels × policySize` ≈ 524K elements; 600K
-    /// leaves headroom without allowing a corrupted or hand-edited
-    /// file to request a multi-gigabyte allocation. Paired with the
-    /// SHA-256 trailer (which already catches corruption pre-decode)
-    /// this is defense-in-depth: if the hash ever happens to match
-    /// a malformed element count, we still reject before allocating.
-    static let maxTensorElementCount: Int = 600_000
+    /// Computed from the live arch constants so it auto-tracks any
+    /// architecture change (channels, policy width, input planes,
+    /// SE width) instead of needing a manual bump.
+    ///
+    /// Current largest tensors at the post-refresh architecture:
+    /// - residual conv weights: `channels × channels × 9 = 147,456`
+    /// - stem conv: `inputPlanes × channels × 9 = 23,040`
+    /// - policy 1×1 conv: `channels × policyChannels = 9,728`
+    /// - SE FC: `channels × (channels / r) = 4,096`
+    /// All well below the cap. The 65,536-element slack lets a minor
+    /// architectural tweak land without immediately tripping the
+    /// implausibleTensorSize guard.
+    ///
+    /// Paired with the SHA-256 trailer (which already catches corruption
+    /// pre-decode) this is defense-in-depth: if the hash ever matches a
+    /// malformed element count, we still reject before allocating.
+    static var maxTensorElementCount: Int {
+        let residualConv = ChessNetwork.channels * ChessNetwork.channels * 9
+        let stemConv = ChessNetwork.inputPlanes * ChessNetwork.channels * 9
+        let policyConv = ChessNetwork.channels * ChessNetwork.policyChannels
+        let seReduced = ChessNetwork.channels / ChessNetwork.seReductionRatio
+        let seFC = ChessNetwork.channels * seReduced
+        let largest = max(residualConv, stemConv, policyConv, seFC)
+        return largest + 65_536
+    }
 
     let modelID: String
     let createdAtUnix: Int64

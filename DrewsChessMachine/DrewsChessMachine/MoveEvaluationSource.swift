@@ -17,7 +17,8 @@ import Foundation
 ///   submission fires one batched `graph.run`; all N resume with their
 ///   own `(policy, value)` slice.
 ///
-/// `encodedBoard` is 1152 floats (18 × 8 × 8 NCHW) produced by
+/// `encodedBoard` is `BoardEncoder.tensorLength` floats (currently
+/// `inputPlanes` × 8 × 8 = 1280 floats in NCHW layout) produced by
 /// `BoardEncoder.encode`, wrapped in a plain `[Float]` so the value
 /// can cross the actor boundary into `BatchedMoveEvaluationSource`
 /// (raw `UnsafeBufferPointer` is not `Sendable`). `MPSChessPlayer`
@@ -25,10 +26,11 @@ import Foundation
 /// to the copy the batcher used to take internally — total copies are
 /// unchanged, the copy just moves one actor boundary earlier.
 ///
-/// Returned `policy` is a fresh Swift `[Float]` of 4096 raw logits —
-/// the caller owns the bytes, so batchers can safely reuse their
-/// readback scratch on the next batch without invalidating any
-/// outstanding policy buffer. `value` is a single scalar in [-1, +1].
+/// Returned `policy` is a fresh Swift `[Float]` of `policySize` raw
+/// logits (currently 4864) — the caller owns the bytes, so batchers
+/// can safely reuse their readback scratch on the next batch without
+/// invalidating any outstanding policy buffer. `value` is a single
+/// scalar in [-1, +1].
 protocol MoveEvaluationSource: AnyObject, Sendable {
     func evaluate(
         encodedBoard: [Float]
@@ -44,10 +46,11 @@ protocol MoveEvaluationSource: AnyObject, Sendable {
 /// `BatchedMoveEvaluationSource`.
 ///
 /// The underlying `ChessMPSNetwork`'s policy readback is non-reentrant,
-/// so this source copies the 4096 policy logits into a fresh `[Float]`
-/// before returning. That copy matches the `BatchedMoveEvaluationSource`
-/// contract (caller owns the bytes) and costs one 16 KB allocation per
-/// move — negligible at non-self-play cadence.
+/// so this source copies the `policySize` policy logits into a fresh
+/// `[Float]` before returning. That copy matches the
+/// `BatchedMoveEvaluationSource` contract (caller owns the bytes) and
+/// costs one ~19 KB allocation per move — negligible at non-self-play
+/// cadence.
 final class DirectMoveEvaluationSource: MoveEvaluationSource, @unchecked Sendable {
     let network: ChessMPSNetwork
 

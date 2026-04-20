@@ -105,7 +105,7 @@ final class ChessMachine: @unchecked Sendable {
     private var engine: ChessGameEngine?
     private var whitePlayer: (any ChessPlayer)?
     private var blackPlayer: (any ChessPlayer)?
-    private var gameTask: Task<GameResult, Never>?
+    private var gameInProgress: Bool = false
 
     weak var delegate: (any ChessMachineDelegate)?
 
@@ -115,46 +115,51 @@ final class ChessMachine: @unchecked Sendable {
     var gameState: GameState { engine?.state ?? .starting }
     var result: GameResult? { engine?.result }
     var moveHistory: [ChessMove] { engine?.moveHistory ?? [] }
-    var isPlaying: Bool { gameTask != nil && result == nil }
+    var isPlaying: Bool { gameInProgress }
 
-    /// Start a new game. Throws if a game is already in progress.
+    /// Play one game to completion against the supplied players.
+    ///
+    /// Structured concurrency: this is a single `async` call on the
+    /// caller's Task rather than an unstructured inner `Task`. Cancelling
+    /// the caller's Task propagates to the game loop at the next
+    /// ply-boundary `Task.checkCancellation()` (or at any `await`
+    /// downstream of `onChooseNextMove`), so `stopAll`-style pauses no
+    /// longer have to wait out an entire 300-ply game before a slot can
+    /// exit. That was the mechanism behind the 15-second save-session
+    /// pause timeouts observed in the session log.
+    ///
+    /// On cancellation this throws `CancellationError` **before**
+    /// calling `onGameEnded` on either player and **before** emitting the
+    /// `gameEnded` delegate event. Partial-game positions that
+    /// `MPSChessPlayer` recorded in per-game scratch during the cancelled
+    /// game therefore never reach the replay buffer — they're silently
+    /// discarded when `onNewGame` resets the scratch for the next game.
+    /// This keeps fake-stalemate labels out of training data on every
+    /// cancellation event.
+    ///
+    /// Throws `ChessMachineError.alreadyPlaying` if a game is already
+    /// in progress (same contract as before).
     @discardableResult
-    func beginNewGame(white: any ChessPlayer, black: any ChessPlayer) throws -> Task<GameResult, Never> {
-        if isPlaying {
+    func beginNewGame(white: any ChessPlayer, black: any ChessPlayer) async throws -> GameResult {
+        if gameInProgress {
             throw ChessMachineError.alreadyPlaying
         }
 
         whitePlayer = white
         blackPlayer = black
         engine = ChessGameEngine()
+        gameInProgress = true
+        defer { gameInProgress = false }
 
         white.onNewGame(true)
         black.onNewGame(false)
 
-        let task = Task(priority: .userInitiated) { [weak self] in
-            await self?.runGameLoop() ?? .stalemate
-        }
-        gameTask = task
-        return task
-    }
-
-    /// Request that the in-progress game stop after its current move.
-    ///
-    /// **Stop is cooperative, not immediate.** This sets the cancellation
-    /// flag on the game task and clears the local handle, but the running
-    /// game loop checks `Task.isCancelled` only between moves. The current
-    /// move (and its delegate callbacks) will complete before the loop
-    /// exits, so callers should not assume `isPlaying == false` immediately
-    /// after calling this. If a fast cancellation is ever needed, the
-    /// MPSGraph inference call would also need to be made cancellable.
-    func cancelGame() {
-        gameTask?.cancel()
-        gameTask = nil
+        return try await runGameLoop()
     }
 
     // MARK: - Game Loop
 
-    private func runGameLoop() async -> GameResult {
+    private func runGameLoop() async throws -> GameResult {
         guard let engine else { return .stalemate }
 
         let gameStart = CFAbsoluteTimeGetCurrent()
@@ -169,13 +174,19 @@ final class ChessMachine: @unchecked Sendable {
         // never call legalMoves() more than once per ply.
         var currentLegalMoves = MoveGenerator.legalMoves(for: engine.state)
 
-        while engine.result == nil, !Task.isCancelled {
+        while engine.result == nil {
+            // Cooperative cancellation point between plies. Throwing
+            // here bails *before* the end-of-game emit block below —
+            // which is intentional: we don't want to flush fake-
+            // stalemate outcomes into training data on a real cancel
+            // (save-session pause, concurrency step-down, session
+            // stop). `Task.sleep` and `player.onChooseNextMove`
+            // further down are also cancellation points whose
+            // `CancellationError` propagates the same way.
+            try Task.checkCancellation()
+
             if moveDelay > .zero {
-                do {
-                    try await Task.sleep(for: moveDelay)
-                } catch {
-                    break
-                }
+                try await Task.sleep(for: moveDelay)
             }
 
             let isWhiteTurn = engine.state.currentPlayer == .white
@@ -206,14 +217,25 @@ final class ChessMachine: @unchecked Sendable {
                 }
 
                 // Apply the move; engine generates the next ply's legal
-                // moves and uses them for end-detection. We reuse the same
-                // list on the next iteration.
+                // moves and uses them for end-detection. We reuse the
+                // same list on the next iteration. Engine errors here
+                // (e.g. an illegal move slipping through) go through
+                // the same `playerErrored` + break path as player
+                // errors — partial-game positions the players recorded
+                // up to this point are still flushed to the replay
+                // buffer with a stalemate outcome in the end-of-game
+                // block below, matching the pre-refactor behavior.
                 currentLegalMoves = try engine.applyMoveAndAdvance(move)
                 lastMove = move
 
                 let snapshotState = engine.state
                 let event = DelegateEvent.didApplyMove(move: move, newState: snapshotState)
                 emit(event)
+            } catch is CancellationError {
+                // Propagate cancellation through runGameLoop so the
+                // caller sees `CancellationError` and skips the
+                // end-of-game bookkeeping path below.
+                throw CancellationError()
             } catch {
                 let event = DelegateEvent.playerErrored(player: player, error: error)
                 emit(event)

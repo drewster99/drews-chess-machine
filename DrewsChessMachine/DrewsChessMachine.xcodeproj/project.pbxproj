@@ -6,11 +6,27 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		49B1100F2F95D9DB00FC2EA5 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 94BC0F86D32F45EEAA506B7A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A518E8D686F24553969207F3;
+			remoteInfo = DrewsChessMachine;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		49B1100B2F95D9DB00FC2EA5 /* DrewsChessMachineTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DrewsChessMachineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		618032EAEFC34DC58F82443A /* DrewsChessMachine.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DrewsChessMachine.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		49B1100C2F95D9DB00FC2EA5 /* DrewsChessMachineTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = DrewsChessMachineTests;
+			sourceTree = "<group>";
+		};
 		6FD06647B2764DFE9218188D /* DrewsChessMachine */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = DrewsChessMachine;
@@ -19,6 +35,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		49B110082F95D9DB00FC2EA5 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		7C0F5DBFEA4343D3A03DAA4B /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				6FD06647B2764DFE9218188D /* DrewsChessMachine */,
+				49B1100C2F95D9DB00FC2EA5 /* DrewsChessMachineTests */,
 				A68BA0E5513B4019B1A9EDF9 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				618032EAEFC34DC58F82443A /* DrewsChessMachine.app */,
+				49B1100B2F95D9DB00FC2EA5 /* DrewsChessMachineTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -48,6 +73,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		49B1100A2F95D9DB00FC2EA5 /* DrewsChessMachineTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 49B110112F95D9DB00FC2EA5 /* Build configuration list for PBXNativeTarget "DrewsChessMachineTests" */;
+			buildPhases = (
+				49B110072F95D9DB00FC2EA5 /* Sources */,
+				49B110082F95D9DB00FC2EA5 /* Frameworks */,
+				49B110092F95D9DB00FC2EA5 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				49B110102F95D9DB00FC2EA5 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				49B1100C2F95D9DB00FC2EA5 /* DrewsChessMachineTests */,
+			);
+			name = DrewsChessMachineTests;
+			packageProductDependencies = (
+			);
+			productName = DrewsChessMachineTests;
+			productReference = 49B1100B2F95D9DB00FC2EA5 /* DrewsChessMachineTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		A518E8D686F24553969207F3 /* DrewsChessMachine */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = DF5D5893A4044C28AF0E9B67 /* Build configuration list for PBXNativeTarget "DrewsChessMachine" */;
@@ -78,9 +126,13 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 1600;
+				LastSwiftUpdateCheck = 2640;
 				LastUpgradeCheck = 2640;
 				TargetAttributes = {
+					49B1100A2F95D9DB00FC2EA5 = {
+						CreatedOnToolsVersion = 26.4;
+						TestTargetID = A518E8D686F24553969207F3;
+					};
 					A518E8D686F24553969207F3 = {
 						CreatedOnToolsVersion = 16.0;
 					};
@@ -101,11 +153,19 @@
 			projectRoot = "";
 			targets = (
 				A518E8D686F24553969207F3 /* DrewsChessMachine */,
+				49B1100A2F95D9DB00FC2EA5 /* DrewsChessMachineTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		49B110092F95D9DB00FC2EA5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		E35C0E25C0964AFFA6E0B4D4 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -145,9 +205,68 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		49B110072F95D9DB00FC2EA5 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		49B110102F95D9DB00FC2EA5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A518E8D686F24553969207F3 /* DrewsChessMachine */;
+			targetProxy = 49B1100F2F95D9DB00FC2EA5 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		49B110122F95D9DB00FC2EA5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = P8MA38JTXY;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.3;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nuclearcyborg.DrewsChessMachineTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DrewsChessMachine.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/DrewsChessMachine";
+			};
+			name = Debug;
+		};
+		49B110132F95D9DB00FC2EA5 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = P8MA38JTXY;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.3;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.nuclearcyborg.DrewsChessMachineTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DrewsChessMachine.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/DrewsChessMachine";
+			};
+			name = Release;
+		};
 		681DA8A236D54F1ABC61B2D8 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -318,6 +437,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		49B110112F95D9DB00FC2EA5 /* Build configuration list for PBXNativeTarget "DrewsChessMachineTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				49B110122F95D9DB00FC2EA5 /* Debug */,
+				49B110132F95D9DB00FC2EA5 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		D7A9F8335C984B9F9CDCCED2 /* Build configuration list for PBXProject "DrewsChessMachine" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

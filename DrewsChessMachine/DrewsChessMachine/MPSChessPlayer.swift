@@ -156,7 +156,7 @@ struct SamplingSchedule: Sendable {
 /// Encodes the board from the current player's perspective, runs inference,
 /// masks illegal moves, renormalizes, and samples from the policy distribution.
 /// Records every played position into a per-game flat scratch buffer so the
-/// self-play hot path allocates no per-move `[Float](1152)` tensors; at
+/// self-play hot path allocates no per-move `[Float](tensorLength)` tensors; at
 /// game end the whole buffer is pushed into the shared `ReplayBuffer` in
 /// one bulk copy.
 ///
@@ -217,10 +217,11 @@ final class MPSChessPlayer: ChessPlayer {
     /// `gameBoardScratchCapacity * boardFloats` floats.
     private var gameBoardScratchCapacity: Int
 
-    /// Policy-target indices (0–4095) for each recorded ply, in the
-    /// network's flipped coordinate system. Pre-reserved so growth is
-    /// rare. Grown automatically if the game exceeds the initial
-    /// capacity.
+    /// Policy-target indices for each recorded ply, computed via
+    /// `PolicyEncoding.policyIndex` in the network's encoder-frame
+    /// coordinate system (0..<policySize, currently 0..<4864). Pre-
+    /// reserved so growth is rare; grown automatically if the game
+    /// exceeds the initial capacity.
     private var gamePolicyIndices: [Int32]
 
     /// Inference-time value estimate `v(position)` for each recorded
@@ -330,8 +331,6 @@ final class MPSChessPlayer: ChessPlayer {
             throw ChessPlayerError.noLegalMoves
         }
 
-        let flip = gameState.currentPlayer == .black
-
         // Grow the per-game scratch if this ply would overflow the
         // currently-allocated ring. Amortized constant: doubling keeps
         // the total allocations at log2(plies/starting) across a game.
@@ -351,12 +350,12 @@ final class MPSChessPlayer: ChessPlayer {
         // materialize `[Float]` from the per-ply scratch row because
         // the evaluation source is potentially actor-isolated and
         // raw `UnsafeBufferPointer` isn't `Sendable`. That copy is
-        // 1152 floats per move; the batcher used to make an
+        // tensorLength floats per move; the batcher used to make an
         // equivalent copy internally, so this just moves the copy
         // one actor hop earlier — net allocations are unchanged.
         //
         // The returned `policy` is a fresh, caller-owned `[Float]`
-        // of 4096 raw logits — batchers can reuse their readback
+        // of `policySize` raw logits — batchers can reuse their readback
         // scratch on the next batch without invalidating this
         // array. `value` is the scalar `v(position)` from the value
         // head; we stash it as the advantage baseline so the
@@ -367,10 +366,10 @@ final class MPSChessPlayer: ChessPlayer {
         let encoded = Array(rowConst)
         let (policy, value) = try await source.evaluate(encodedBoard: encoded)
         let move = policy.withUnsafeBufferPointer { policyBuf in
-            sampleMove(from: policyBuf, legalMoves: legalMoves, flip: flip)
+            sampleMove(from: policyBuf, legalMoves: legalMoves, currentPlayer: gameState.currentPlayer)
         }
 
-        gamePolicyIndices.append(Int32(Self.networkPolicyIndex(for: move, flip: flip)))
+        gamePolicyIndices.append(Int32(PolicyEncoding.policyIndex(move, currentPlayer: gameState.currentPlayer)))
         gameValueScalars.append(value)
         gamePliesRecorded += 1
 
@@ -437,22 +436,6 @@ final class MPSChessPlayer: ChessPlayer {
         gameBoardScratchCapacity = newCapacity
     }
 
-    // MARK: - Coordinate Mapping
-
-    /// Convert a move's absolute coordinates to the network's policy index.
-    ///
-    /// The network always sees the board from the current player's perspective.
-    /// When black plays, BoardEncoder flips rows (row → 7-row). The policy output
-    /// uses this same flipped coordinate system, so move indices must be flipped
-    /// to match. Files (columns) stay unchanged — only ranks flip.
-    private static func networkPolicyIndex(for move: ChessMove, flip: Bool) -> Int {
-        let fromRow = flip ? (7 - move.fromRow) : move.fromRow
-        let toRow = flip ? (7 - move.toRow) : move.toRow
-        let fromSquare = fromRow * 8 + move.fromCol
-        let toSquare = toRow * 8 + move.toCol
-        return fromSquare * 64 + toSquare
-    }
-
     // MARK: - Move Sampling
 
     /// Sample a move from the policy distribution over legal moves.
@@ -460,7 +443,13 @@ final class MPSChessPlayer: ChessPlayer {
     /// The network emits raw logits, not a softmax distribution — softmax is
     /// fused with the legal-move mask here on the CPU. We exponentiate only
     /// the ~30 legal-move logits (with max-subtract for numerical stability)
-    /// rather than running softmax over all 4096 slots and then masking.
+    /// rather than running softmax over all `policySize` slots and then masking.
+    ///
+    /// Per-move logit lookup goes through `PolicyEncoding.policyIndex`,
+    /// which converts each legal `ChessMove` to its `(channel, row, col)`
+    /// encoder-frame address and flat index in one call. The encoder-frame
+    /// flip for black-to-move is internal to `PolicyEncoding` and matches
+    /// what `BoardEncoder.encode` did to produce the inputs.
     ///
     /// Performance-critical: runs once per ply. The gathered logits, the
     /// in-place softmax, and the sampling all run through `sampleScratch`
@@ -472,7 +461,7 @@ final class MPSChessPlayer: ChessPlayer {
     private func sampleMove(
         from logits: UnsafeBufferPointer<Float>,
         legalMoves: [ChessMove],
-        flip: Bool
+        currentPlayer: PieceColor
     ) -> ChessMove {
         let n = legalMoves.count
         precondition(
@@ -503,7 +492,7 @@ final class MPSChessPlayer: ChessPlayer {
         return sampleScratch.withUnsafeMutableBufferPointer { scratch in
             // Gather temperature-scaled logits for legal moves only.
             for i in 0..<n {
-                scratch[i] = logits[Self.networkPolicyIndex(for: legalMoves[i], flip: flip)] * invTau
+                scratch[i] = logits[PolicyEncoding.policyIndex(legalMoves[i], currentPlayer: currentPlayer)] * invTau
             }
 
             // Numerically stable softmax: subtract max, exp, normalize

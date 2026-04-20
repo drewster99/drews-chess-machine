@@ -157,6 +157,17 @@ struct SessionCheckpointState: Codable, Equatable {
     var replayBufferCapacity: Int?
     var replayBufferTotalPositionsAdded: Int?
 
+    /// Per-run training history. Each `TrainingSegment` represents one
+    /// continuous Play-and-Train period (start → stop, save, or
+    /// session-quit). Cumulative status-bar metrics sum across this
+    /// array plus the in-memory current run. Optional for back-compat
+    /// with older session files written before segments existed; the
+    /// loader treats nil/missing as "no historical segments." Each
+    /// save closes the current segment with `endUnix = saveTime` and
+    /// appends it; on resume, a new segment begins on the next
+    /// Play-and-Train start.
+    var trainingSegments: [TrainingSegment]?
+
     // Network identity — duplicated from the `.dcmmodel` headers so
     // a future "browse saved sessions" UI can read just
     // `session.json` and still show model IDs.
@@ -165,6 +176,46 @@ struct SessionCheckpointState: Codable, Equatable {
 
     // Arena history (audit log — displayed in the UI on resume)
     let arenaHistory: [ArenaHistoryEntryCodable]
+
+    // MARK: - Training Segments
+
+    /// One Play-and-Train run, bounded by start and end wall-clock
+    /// times. Status-bar wall-time totals sum `durationSec` across the
+    /// session's full segment array — that's "active training time"
+    /// and excludes idle gaps when training was stopped. The segment
+    /// also captures starting/ending counter snapshots so per-run
+    /// progress can be reconstructed (e.g., "this run added 12K
+    /// training steps and 3.5M positions to the buffer").
+    ///
+    /// The build/git fields are captured on segment-start so each
+    /// segment is attributable to a specific code version — invaluable
+    /// for "which build produced this entropy curve?" forensics across
+    /// architecture changes.
+    struct TrainingSegment: Codable, Equatable {
+        let startUnix: Int64
+        let endUnix: Int64
+        let durationSec: Double
+
+        let startingTrainingStep: Int
+        let endingTrainingStep: Int
+
+        let startingTotalPositions: Int
+        let endingTotalPositions: Int
+
+        let startingSelfPlayGames: Int
+        let endingSelfPlayGames: Int
+
+        let buildNumber: Int?
+        let buildGitHash: String?
+        let buildGitDirty: Bool?
+
+        // Optional summary captured at segment-end (last [STATS] tick
+        // values). Used by detail views; not required for cumulative
+        // status-bar metrics.
+        var endPolicyEntropy: Double?
+        var endLossTotal: Double?
+        var endGradNorm: Double?
+    }
 
     // MARK: JSON serialization
 
@@ -183,6 +234,18 @@ struct SessionCheckpointState: Codable, Equatable {
                 detail: String(data: data.prefix(2000), encoding: .utf8) ?? "(non-utf8)"
             )
         }
+    }
+
+    /// Return a copy with `trainingSegments` replaced. Builder helper
+    /// that lets `buildCurrentSessionState` construct the bulk of the
+    /// state via the synthesized memberwise init (which is already at
+    /// the SwiftUI/Swift type-checker complexity threshold) and then
+    /// layer the segments in afterward, without forcing the init call
+    /// site to grow another argument.
+    func withTrainingSegments(_ segments: [TrainingSegment]?) -> SessionCheckpointState {
+        var copy = self
+        copy.trainingSegments = segments
+        return copy
     }
 
     func encode() throws -> Data {

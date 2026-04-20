@@ -75,10 +75,17 @@ final class GameDiversityTracker: @unchecked Sendable {
     ///
     /// - Parameter moves: The full ordered list of moves played in
     ///   the game (both players interleaved, white first). The
-    ///   tracker extracts each move's `policyIndex` for compact
-    ///   storage and comparison.
+    ///   tracker extracts each move's `PolicyEncoding.policyIndex`
+    ///   for compact storage and comparison. Player alternates white
+    ///   then black starting from index 0; the encoding is
+    ///   deterministic per (move, player) so any two games that play
+    ///   the same physical move at the same ply produce the same
+    ///   stored index, which is what diversity comparison needs.
     func recordGame(moves: [ChessMove]) {
-        let indices = moves.map { Int16(clamping: $0.policyIndex) }
+        let indices = moves.enumerated().map { (i, move) -> Int16 in
+            let player: PieceColor = (i % 2 == 0) ? .white : .black
+            return Int16(clamping: PolicyEncoding.policyIndex(move, currentPlayer: player))
+        }
         let hash = Self.fnv1a(indices)
 
         queue.async { [weak self] in

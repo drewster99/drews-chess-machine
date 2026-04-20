@@ -198,8 +198,18 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             let gameStart = CFAbsoluteTimeGetCurrent()
             let result: GameResult
             do {
-                let task = try machine.beginNewGame(white: white, black: black)
-                result = await task.value
+                result = try await machine.beginNewGame(white: white, black: black)
+            } catch is CancellationError {
+                // Slot task was cancelled (driver shrink, arena pause,
+                // session stop). `beginNewGame` threw before emitting
+                // `onGameEnded`, so `MPSChessPlayer`'s partial-game
+                // scratch was not flushed to the replay buffer — no
+                // fake-stalemate pollution. Skip stats recording for
+                // the incomplete game and exit the slot.
+                if liveDisplay {
+                    gameWatcher?.markPlaying(false)
+                }
+                break
             } catch {
                 if liveDisplay {
                     gameWatcher?.markPlaying(false)

@@ -8,6 +8,228 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-20 — Post-v2 polish: UI, diagnostics, segments, parameter logging, tests
+
+**Files:** `ContentView.swift`, `ChessRunner.swift`, `ChessBoardView.swift`,
+`ChessMove.swift`, `PolicyEncoding.swift`, `SessionCheckpointFile.swift`,
+`ModelCheckpointFile.swift`, `TrainingChartGridView.swift`,
+`AppCommandHub.swift`, `DrewsChessMachineApp.swift`,
+`TensorCarouselView.swift`, `ReplayBuffer.swift`. New tests:
+`PolicyEncodingTests.swift`, `BoardEncoderTests.swift`,
+`RepetitionTrackingTests.swift`, `ReplayBufferTests.swift`. ROADMAP entry
+for adaptive learn-rate schedule.
+
+Follow-up pass after the v2 architecture refresh shipped — covers
+runtime polish surfaced by the user's first training sessions, plus
+the deferred test target and engine diagnostics work.
+
+### UI / display
+
+- **Cumulative status bar** at top of window: `Active training time`
+  (HH:MM:SS), `Training steps`, `Positions trained` (compact format
+  like `52.6M`), `Runs` (segment count). Computed across all completed
+  Play-and-Train segments + the in-flight one. Hidden until the
+  session has had any training. Includes a `Run Arena Now` button
+  (right-aligned) when an arena isn't already running.
+- **Training-segment tracking**: new `SessionCheckpointState.TrainingSegment`
+  struct captures one Play-and-Train run's start/end times, training-
+  step + position-counter snapshots, and the build/git context active
+  at the time. Segments accumulate across save/load so cumulative
+  wall-time excludes idle gaps. Save closes the in-flight segment AND
+  reopens a fresh one if training continues — without the reopen,
+  post-save training time would silently disappear from totals.
+- **Title-bar contrast**: build-banner text bumped from
+  `.caption + .tertiary` → `.callout + .secondary` (bigger AND
+  higher-contrast); right-side ID + status text bumped from `.caption`
+  → `.callout` (just bigger). Both legibility complaints from the
+  user.
+- **Alarm banner**: title now `Color.black` (was washing out as white
+  on yellow); detail text now medium-weight + dark red `(0.55, 0, 0)`
+  for legibility against the yellow background; "Silenced" label also
+  black. New `Dismiss` button alongside `Silence` — Dismiss clears
+  the banner AND resets the divergence streak counters so the alarm
+  only re-raises on a fresh deterioration from a healthy baseline.
+- **Training column** display: `vMean` and `vAbs` rows added under
+  `Loss value:` (read from the trainer's rolling-window snapshot,
+  same source as the `[STATS]` log line). Removed duplicate `Ent reg`,
+  `Grad clip`, and `Weight dec` rows (those values are already shown
+  in the editable hyperparameter section above).
+- **Hourly rate** added next to per-second rates in the gen/trn rate
+  display: `1m gen rate: 3500 pos/s   (12,600,000/hr)`. Comma grouping
+  via `Int.formatted()`.
+- **Chart label** "Non-negligible policy count" → "Above-uniform policy
+  count". Underlying metric unchanged; the new label avoids the
+  misleading implication that the X / 4864 ratio is a "fraction of
+  useful cells" (most of the 4864 cells are physically-impossible
+  moves anywhere, so they always sit below the 1/4864 baseline).
+
+### Diagnostic & logging
+
+- **Engine Diagnostics** menu item (Debug → Run Engine Diagnostics):
+  one-shot battery of probes — PolicyEncoding round-trips, no-shared-
+  index check, ChessGameEngine 3-fold detection, BoardEncoder shape,
+  network forward-pass shape if a network exists. Output goes to
+  the session log with `[DIAG]` prefix; designed to complete in well
+  under a second for immediate pass/fail feedback.
+- **Build banner** at session start now includes
+  `arch_hash=0xXXXXXXXX inputPlanes=20 policySize=4864` so log
+  forensics can immediately tell which architecture variant produced
+  a given session.
+- **Parameter-change logging**: every UI commit on Learn Rate, Entropy
+  Reg, Draw Penalty, Self-Play Workers, Step Delay (manual), Replay
+  Ratio Target, and Replay Ratio Auto-Adjust writes a `[PARAM] name:
+  old -> new` line to the session log. No-op edits are suppressed.
+- **Alarm banner activity** always logged: every raise (new or
+  changed-severity) writes `[ALARM] <title>: <detail>`; clear writes
+  `[ALARM] cleared: <title>`; silence and dismiss similarly.
+- **Save errors** auto-log: every `setCheckpointStatus(isError: true)`
+  call also writes `[CHECKPOINT-ERR] <message>` to the session log so
+  the on-screen 12-second-auto-clear message is permanently
+  recoverable from the log.
+- **Policy entropy alarm threshold**: 7.0 → 7.2 → 5.0 (multiple steps
+  as we calibrated against the v2 architecture's actual init entropy).
+  The new policy head has no BN before its 1×1 conv, so init logits
+  have larger σ than v1 — entropy starts ~6.5 instead of ~8.3. The
+  5.0 threshold leaves ~1.5 nat margin below init for healthy
+  training while still flagging genuine collapse.
+
+### Candidate Test view
+
+- Removed the misleading `(v+1)/2 → "X% win / Y% loss"` line. Without
+  WDL output, that mapping was dishonest about what the scalar value
+  meant. Now shows just the raw value scalar.
+- Replaced the misleading `NonNegligible: X / 4864` metric with two
+  legality-aware metrics: `Above uniform: X / N legal (threshold =
+  1/N)` and `Legal mass sum: Y%`. Both compute over the legal-move
+  subset for the current position.
+- **Top-K display now shows raw policy cells, not legal-only.** My
+  earlier refactor of `extractTopMoves` to iterate legal moves only
+  lost the diagnostic for "is the network learning what's a valid
+  move?" Restored: top-4 raw cells with `(illegal)` flag on cells
+  that decode to illegal moves in this position. Board ghost arrows
+  show the same set (illegal-but-on-board candidates draw normally;
+  off-board cells skipped). Required:
+  - New `PolicyEncoding.geometricDecode(channel:row:col:currentPlayer:)`
+    method that returns a `ChessMove?` based on geometry only (off-
+    board → nil), no legality filter.
+  - `PolicyEncoding.decode(...)` refactored to call `geometricDecode`
+    and add the legal-moves filter on top.
+  - `MoveVisualization` gained `isLegal: Bool` field (defaults to
+    true for legacy callers).
+  - `ChessMove` now conforms to `Hashable` (synthesized) — used to
+    build a fast `Set` for legality lookup in `extractTopMoves`.
+
+### Tests (new XCTest target — DrewsChessMachineTests)
+
+- **`PolicyEncodingTests`**: round-trips for starting position, after-
+  1.e4, all 6 promotion files × 4 piece variants, knight-corner
+  positions, castling positions. Bijection check across many
+  positions (no two legal moves share an index). Off-board guard
+  rejection. Out-of-range channel/row/col rejection. Castling
+  encoded as queen-style E direction distance 2 (channel 15).
+  Symmetric pawn pushes (white e2-e4 ↔ black e7-e5) hit the same
+  channel.
+- **`BoardEncoderTests`**: tensor length matches `inputPlanes × 64`.
+  Starting position has correct piece counts per plane (8 pawns, 2
+  knights, etc.). All four castling planes all-1 at start. EP plane
+  exactly one cell after 1.e4. Halfmove plane saturates at /99 and
+  doesn't overflow above 99. Repetition planes 18/19 follow always-
+  fill semantics with proper saturation at count=2. Black-to-move
+  perspective flip puts black king at encoder row 7.
+- **`RepetitionTrackingTests`**: starting position has rep count 0.
+  First move resets to 0 (novel position). Knight-shuffle
+  Nf3/Nc6/Ng1/Nb8 × 2 produces correct count escalation (0, 1, 2)
+  and triggers `drawByThreefoldRepetition`. Pawn move clears the
+  history table.
+- **`ReplayBufferTests`**: empty buffer round-trips. Single position
+  round-trips (board floats, move index, outcome, vBaseline all
+  exact). Synthetic v2 file (with the older 1152-float board stride)
+  rejected with `unsupportedVersion(2)`. Bad magic and truncated
+  header also reject cleanly.
+- All 38 tests pass via `mcp__xcode-mcp-server__run_project_tests`.
+
+### Misc
+
+- ROADMAP entry added for adaptive learn-rate schedule, with five
+  candidate trigger families (step decay, plateau detection,
+  promotion-driven, cosine annealing, replay-ratio aware) and notes
+  on how each interacts with our pre-MCTS bootstrap regime.
+- Stale `1152` doc references in `ReplayBuffer.swift` cleaned up
+  (now describes only the current v3 format).
+
+---
+
+## 2026-04-19 (DESIGN+IMPL) — Architecture v2: 76-channel policy head, SE blocks, 20-plane input
+
+**Files:** `ChessNetwork.swift`, `BoardEncoder.swift`, `PolicyEncoding.swift` (new),
+`ChessGameEngine.swift`, `ChessTrainer.swift`, `MPSChessPlayer.swift`,
+`BatchedMoveEvaluationSource.swift`, `ChessRunner.swift`,
+`GameDiversityTracker.swift`, `TrainingChartGridView.swift`,
+`ContentView.swift`, `ChessMove.swift`, `ReplayBuffer.swift`,
+`ModelCheckpointFile.swift`, `TensorCarouselView.swift`, `MoveEvaluationSource.swift`,
+`ChessMPSNetwork.swift`. Plan: `dcm_architecture_v2.md`.
+
+Bundled architectural refresh — three independent improvements landed
+together to amortize one forced retrain. **All existing checkpoints
+become incompatible** (arch hash bumps automatically; ReplayBuffer v2
+files reject as `unsupportedVersion`). User explicitly accepted the
+clean break.
+
+- **Policy head: FC bottleneck → fully convolutional 1×1 conv 128→76.**
+  Old head was `1×1 conv 128→2 → BN → ReLU → flatten → FC 128→4096`,
+  collapsing all spatial structure through a 128-float bottleneck.
+  New head is a single 1×1 conv emitting `[B, 76, 8, 8]` reshaped to
+  `[B, 4864]` logits. 76 = 56 queen-style + 8 knight + 9 underpromotion
+  + 3 queen-promotion (AlphaZero-shape with dedicated queen-promotion
+  channels for symmetry). Move ↔ logit-index bijection lives in
+  `PolicyEncoding.swift`. Translation equivariance preserved end-to-
+  end. Underpromotion gets dedicated channels (fixes the prior
+  policy-collision bug where Q/R/B/N for the same (from, to) all hit
+  one logit). ~50× fewer head parameters (~9.8K vs ~528K).
+
+- **SE blocks added to every residual block.** Squeeze-and-Excitation
+  module sits between BN2 and the skip-add: global avg pool → FC 128→32
+  + ReLU → FC 32→128 + sigmoid → channel-wise scale. Provides per-
+  position dynamic channel reweighting. Matches modern lc0 design;
+  reduction ratio 4. ~67K added params.
+
+- **Input planes 18 → 20: threefold-repetition signals.** Plane 18 is
+  1.0 if current position has occurred ≥1 time before this game; plane
+  19 is 1.0 if ≥2× before. Computed via the existing
+  `ChessGameEngine.positionCounts` table (no new Zobrist machinery —
+  the existing `PositionKey`-based tracking already exists for
+  threefold-detection). Saturated at 2 (only the rule-relevant
+  thresholds matter). `GameState` gains a `repetitionCount` field with
+  default 0 and a `withRepetitionCount(_:)` helper; the engine layers
+  the count onto each new state after `applyMove`.
+
+Side effects rolled in:
+- `ChessMove.policyIndex` deleted (forces every callsite to use
+  `PolicyEncoding.policyIndex(_:currentPlayer:)` which knows about the
+  encoder-frame perspective flip).
+- `ReplayBuffer` format bump to v3; v1/v2 cleanly rejected.
+- `ModelCheckpointFile.maxTensorElementCount` made computed (auto-
+  tracks arch changes instead of needing a manual bump).
+- `MPSChessPlayer.networkPolicyIndex` removed (replaced by
+  `PolicyEncoding.policyIndex` everywhere).
+- `ChessRunner.extractTopMoves` rewritten to iterate legal moves
+  through `PolicyEncoding.decode` instead of decoding the flat policy
+  vector geometrically.
+- `policyEntropyAlarmThreshold` 7.0 → 7.2 (preserves the same ~1.3-nat
+  margin below the new uniform-init entropy `log(4864) ≈ 8.49`).
+- `TensorCarouselView` plane labels extended for the two new planes.
+- `TrainingChartGridView` non-negligible-count Y-axis derived from
+  `policySize` instead of hardcoded 4096.
+- BatchedMoveEvaluationSource's hardcoded `policySize = 4096` /
+  `boardFloats = 18*8*8` constants now derived from
+  `ChessNetwork.policySize` / `BoardEncoder.tensorLength`.
+
+Total network parameter count: ~2.92M → ~2.4M (-17.7%). Forward FLOPs
+essentially unchanged (+0.15%). Replay buffer storage per slot grows
+~11% (board floats: 1152 → 1280).
+
+---
+
 ## 2026-04-18 23:30 CDT — Bootstrap hyperparameter retune: arena tau, draw penalty, LR
 
 **Files:** `MPSChessPlayer.swift`, `ChessTrainer.swift`, `ContentView.swift`,

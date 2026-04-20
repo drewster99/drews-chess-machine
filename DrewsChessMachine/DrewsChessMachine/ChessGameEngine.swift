@@ -80,7 +80,11 @@ final class ChessGameEngine {
     private var positionCounts: [PositionKey: Int] = [:]
 
     init(state: GameState = .starting) {
-        self.state = state
+        // The starting position has occurred zero times before — fold that
+        // into the state itself so encoders downstream see a consistent
+        // `repetitionCount`. Every state subsequently produced by
+        // applyMoveAndAdvance also carries its rep count.
+        self.state = state.withRepetitionCount(0)
         positionCounts[PositionKey(from: state)] = 1
     }
 
@@ -97,20 +101,27 @@ final class ChessGameEngine {
             throw ChessGameError.gameAlreadyOver
         }
 
-        state = MoveGenerator.applyMove(move, to: state)
+        let appliedState = MoveGenerator.applyMove(move, to: state)
         moveHistory.append(move)
 
         // Pawn moves and captures reset halfmoveClock to 0 and make all
         // prior positions unreachable. Drop the table so it doesn't grow
         // unbounded across long games and so prior positions can never
         // accidentally match.
-        if state.halfmoveClock == 0 {
+        if appliedState.halfmoveClock == 0 {
             positionCounts.removeAll(keepingCapacity: true)
         }
-        let key = PositionKey(from: state)
-        let count = (positionCounts[key] ?? 0) + 1
-        positionCounts[key] = count
-        let isThreefold = count >= 3
+        let key = PositionKey(from: appliedState)
+        let totalVisits = (positionCounts[key] ?? 0) + 1
+        positionCounts[key] = totalVisits
+        let isThreefold = totalVisits >= 3
+
+        // `repetitionCount` is occurrences *before* the current visit,
+        // saturated at 2 (the encoder's plane representation only
+        // distinguishes 0 / ≥1 / ≥2). Layer it onto the state so the
+        // encoder reads a consistent value via `state.repetitionCount`.
+        let priorOccurrences = min(totalVisits - 1, 2)
+        state = appliedState.withRepetitionCount(priorOccurrences)
 
         let nextMoves = MoveGenerator.legalMoves(for: state)
         updateResult(nextLegalMoves: nextMoves, isThreefoldRepetition: isThreefold)

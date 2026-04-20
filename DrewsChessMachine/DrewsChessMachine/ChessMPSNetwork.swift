@@ -73,8 +73,8 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// only until the next `evaluate` call on this wrapper. See
     /// `ChessNetwork.evaluate(board:)` for the full contract.
     ///
-    /// - Parameter board: 18×8×8 = 1,152 floats (from `BoardEncoder.encode`).
-    /// - Returns: 4,096 raw policy logits and the scalar value head.
+    /// - Parameter board: `inputPlanes`×8×8 = 1,280 floats (from `BoardEncoder.encode`).
+    /// - Returns: `policySize` (4,864) raw policy logits and the scalar value head.
     func evaluate(
         board: UnsafeBufferPointer<Float>
     ) async throws -> (policy: [Float], value: Float) {
@@ -98,10 +98,11 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// `ChessNetwork.evaluate(batchBoards:count:)` for the full contract.
     ///
     /// - Parameters:
-    ///   - batchBoards: `count * 1152` floats, NCHW order, positions laid
+    ///   - batchBoards: `count * BoardEncoder.tensorLength` floats (currently
+    ///                  `count * 1280`), NCHW order, positions laid
     ///                  out back-to-back.
     ///   - count: batch size; must be >= 1.
-    /// - Returns: `policy` — `count * 4096` logits; `values` — `count`
+    /// - Returns: `policy` — `count * policySize` logits; `values` — `count`
     ///            scalars in [-1, +1].
     func evaluate(
         batchBoards: UnsafeBufferPointer<Float>,

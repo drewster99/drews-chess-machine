@@ -56,14 +56,24 @@ enum BNMode {
 
 /// Chess engine neural network forward pass implemented with MPSGraph.
 ///
-/// Architecture (from chess-engine-design.md):
-/// - Input: 18x8x8 board tensor (NCHW layout)
-/// - Stem: 3x3 conv (18 -> 128 channels), batch norm, ReLU
-/// - Tower: 8 residual blocks (each: conv -> BN -> ReLU -> conv -> BN -> skip add -> ReLU)
-/// - Policy head: 1x1 conv (128 -> 2) -> BN -> ReLU -> flatten -> FC(128 -> 4096) (logits)
+/// Architecture v2 (post-refresh — see dcm_architecture_v2.md):
+/// - Input: 20x8x8 board tensor (NCHW layout). Planes 18 and 19 are
+///   threefold-repetition signals (≥1× before, ≥2× before).
+/// - Stem: 3x3 conv (20 -> 128 channels), batch norm, ReLU
+/// - Tower: 8 residual blocks. Each block:
+///     conv -> BN -> ReLU -> conv -> BN -> [SE module] -> skip add -> ReLU
+///   The SE module is squeeze (global avg pool) -> FC(128 -> 32) ->
+///   ReLU -> FC(32 -> 128) -> sigmoid -> channel-wise scale, providing
+///   per-position dynamic channel attention (lc0-style).
+/// - Policy head: 1x1 conv (128 -> 76) → reshape to [B, 4864] (logits).
+///   76 channels = 56 queen-style + 8 knight + 9 underpromotion +
+///   3 queen-promotion. See `PolicyEncoding` for the layout.
 /// - Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 1) -> tanh
 ///
-/// Total parameters: ~2,917,383 (~2.9M)
+/// Total parameters: ~2.47M (down from ~2.92M pre-refresh — the FC
+/// policy head was the largest single component and has been replaced
+/// with a fully-convolutional 1×1 conv that uses ~50× fewer params
+/// while preserving spatial structure end-to-end).
 ///
 /// Marked `@unchecked Sendable` because MPSGraph/Metal state is not
 /// Sendable, but all public entry points serialize access through the
@@ -84,10 +94,19 @@ final class ChessNetwork: @unchecked Sendable {
     static let dataType: MPSDataType = .float32
 
     static let channels = 128
-    static let inputPlanes = 18
+    static let inputPlanes = 20
     static let boardSize = 8
     static let numBlocks = 8
-    static let policySize = 4096
+    /// Number of policy output channels: 56 queen-style (8 dirs × 7 dists)
+    /// + 8 knight + 9 underpromotion (3 pieces × 3 dirs) + 3 queen-promotion
+    /// (3 dirs) = 76. See `PolicyEncoding` for the full layout.
+    static let policyChannels = 76
+    /// Total raw policy logits emitted by the network: `policyChannels × 64`.
+    static let policySize = policyChannels * boardSize * boardSize
+    /// Squeeze-and-Excitation reduction ratio inside each residual block:
+    /// the SE module compresses 128 channels to `128 / seReductionRatio` in
+    /// the squeeze MLP before re-expanding to 128 with sigmoid scaling.
+    static let seReductionRatio = 4
 
     // MARK: Graph Tensors
 
@@ -147,7 +166,7 @@ final class ChessNetwork: @unchecked Sendable {
     private let weightLoadNDArrays: [MPSNDArray]
     private let weightLoadTensorData: [MPSGraphTensorData]
 
-    /// Pre-allocated `[1, 18, 8, 8]` input feed reused on every
+    /// Pre-allocated `[1, inputPlanes, 8, 8]` input feed reused on every
     /// `evaluate(board:)` call. The ND array holds the board floats in
     /// `Self.dataType`; the tensor data wrapper is built once and fed
     /// into `graph.run` unchanged. The per-move inference hot path
@@ -165,7 +184,7 @@ final class ChessNetwork: @unchecked Sendable {
     private let inferenceTargets: [MPSGraphTensor]
 
     /// Readback scratch for the policy logits. `evaluate(board:)` asks
-    /// MPSGraph to write the 4096-element policy output directly into
+    /// MPSGraph to write the policySize-element policy output directly into
     /// this buffer and returns an `UnsafeBufferPointer` over it to the
     /// caller. The buffer is reused across calls — **not re-entrant**;
     /// the returned pointer is valid only until the next `evaluate` call
@@ -179,7 +198,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// pointer, so the aliasing concern does not apply there.
     private let inferenceValueScratchPtr: UnsafeMutablePointer<Float>
 
-    /// Zero-filled `[1, 18, 8, 8]` feed shared by `exportWeights()` and
+    /// Zero-filled `[1, inputPlanes, 8, 8]` feed shared by `exportWeights()` and
     /// `loadWeights(_:)` to satisfy MPSGraph's requirement that every
     /// graph placeholder be fed even when the target ops don't consume
     /// it. Filled once at init, never modified afterwards.
@@ -188,7 +207,7 @@ final class ChessNetwork: @unchecked Sendable {
     // MARK: Batched Inference Scratch
 
     /// Per-batch-size input feed cache for `evaluate(batchBoards:count:)`.
-    /// Keyed by batch count. Each entry holds one `[count, 18, 8, 8]`
+    /// Keyed by batch count. Each entry holds one `[count, inputPlanes, 8, 8]`
     /// MPSNDArray (bytes overwritten in place on every call) plus a
     /// pre-built feeds dict. Entries are added lazily the first time a
     /// given batch size is requested and retained for the life of the
@@ -243,9 +262,9 @@ final class ChessNetwork: @unchecked Sendable {
         let conv3x3 = try Self.makeConv3x3Descriptor()
         let conv1x1 = try Self.makeConv1x1Descriptor()
 
-        // Input: [batch, 18, 8, 8]
+        // Input: [batch, inputPlanes, 8, 8]
         let input = g.placeholder(
-            shape: [-1, 18, 8, 8],
+            shape: [-1, NSNumber(value: Self.inputPlanes), 8, 8],
             dataType: Self.dataType,
             name: "board_input"
         )
@@ -267,11 +286,11 @@ final class ChessNetwork: @unchecked Sendable {
         var runningStats: [MPSGraphTensor] = []
         var runningStatsAssigns: [MPSGraphOperation] = []
 
-        // --- Stem: 3x3 conv (18 -> 128) -> BN -> ReLU ---
+        // --- Stem: 3x3 conv (inputPlanes -> 128) -> BN -> ReLU ---
 
         let stemWeights = g.variable(
-            with: Self.heInitDataConvOIHW(shape: [128, 18, 3, 3]),
-            shape: [128, 18, 3, 3],
+            with: Self.heInitDataConvOIHW(shape: [128, Self.inputPlanes, 3, 3]),
+            shape: [128, NSNumber(value: Self.inputPlanes), 3, 3],
             dataType: Self.dataType,
             name: "stem_conv_weights"
         )
@@ -368,13 +387,13 @@ final class ChessNetwork: @unchecked Sendable {
         weightLoadNDArrays = loadNDArrays
         weightLoadTensorData = loadTensorData
 
-        // Reusable `[1, 18, 8, 8]` inference input ND array + wrapper.
+        // Reusable `[1, inputPlanes, 8, 8]` inference input ND array + wrapper.
         // `evaluate(board:)` writes new floats directly into this
         // array's storage each call and feeds the same wrapper — no
         // per-move MPS allocations.
         let inputDesc = MPSNDArrayDescriptor(
             dataType: Self.dataType,
-            shape: [1, 18, 8, 8]
+            shape: [1, NSNumber(value: Self.inputPlanes), 8, 8]
         )
         let inputND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
         inferenceInputNDArray = inputND
@@ -383,7 +402,7 @@ final class ChessNetwork: @unchecked Sendable {
         // Zero-filled dummy input shared by exportWeights / loadWeights.
         let dummyND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
         Self.writeFloats(
-            [Float](repeating: 0, count: 1 * 18 * 8 * 8),
+            [Float](repeating: 0, count: 1 * Self.inputPlanes * Self.boardSize * Self.boardSize),
             into: dummyND
         )
         dummyInferenceInputTensorData = MPSGraphTensorData(dummyND)
@@ -440,8 +459,8 @@ final class ChessNetwork: @unchecked Sendable {
     /// one network must give each game its own `ChessNetwork` or add
     /// explicit serialization here.
     ///
-    /// - Parameter board: 18×8×8 = 1,152 floats in NCHW order (planes, rows, cols).
-    /// - Returns: `UnsafeBufferPointer` over 4,096 policy logits plus the scalar value in [-1, +1].
+    /// - Parameter board: `inputPlanes`×8×8 = 1,280 floats in NCHW order (planes, rows, cols).
+    /// - Returns: `UnsafeBufferPointer` over `policySize` (4864) policy logits plus the scalar value in [-1, +1].
     func evaluate(
         board: UnsafeBufferPointer<Float>
     ) async throws -> (policy: [Float], value: Float) {
@@ -528,12 +547,12 @@ final class ChessNetwork: @unchecked Sendable {
     /// hot path — steady-state batches allocate nothing.
     ///
     /// - Parameters:
-    ///   - batchBoards: `count * 18 * 8 * 8 = count * 1152` floats in
+    ///   - batchBoards: `count * inputPlanes * 8 * 8 = count * 1280` floats in
     ///                  NCHW order, one position after another.
     ///   - count: number of positions in the batch; must be >= 1.
-    /// - Returns: `policy` — `count * 4096` raw logits laid out
+    /// - Returns: `policy` — `count * policySize` raw logits laid out
     ///            position-major (slot `i` starts at
-    ///            `i * 4096`); `values` — `count` scalars in [-1, +1].
+    ///            `i * policySize`); `values` — `count` scalars in [-1, +1].
     func evaluate(
         batchBoards: UnsafeBufferPointer<Float>,
         count: Int
@@ -615,7 +634,7 @@ final class ChessNetwork: @unchecked Sendable {
         }
         let desc = MPSNDArrayDescriptor(
             dataType: Self.dataType,
-            shape: [NSNumber(value: count), 18, 8, 8]
+            shape: [NSNumber(value: count), NSNumber(value: Self.inputPlanes), 8, 8]
         )
         let nda = MPSNDArray(device: metalDevice, descriptor: desc)
         let tensorData = MPSGraphTensorData(nda)
@@ -967,7 +986,17 @@ final class ChessNetwork: @unchecked Sendable {
         )
     }
 
-    /// One residual block: conv1 -> BN -> ReLU -> conv2 -> BN -> skip add -> ReLU
+    /// One residual block (with SE channel-attention module):
+    ///   conv1 -> BN -> ReLU -> conv2 -> BN -> [SE] -> skip add -> ReLU
+    ///
+    /// SE module sits between BN2 and the skip-add so the channel
+    /// attention reweights only the residual contribution, leaving the
+    /// skip path at full strength. This preserves the identity-mapping
+    /// behavior at init when sigmoid output sits near 0.5 — block
+    /// initially propagates 0.5 × residual + 1.0 × skip, then learns to
+    /// push relevant channels toward 1.0 and tamp down others.
+    /// Reduction ratio = `seReductionRatio` (default 4): squeeze
+    /// 128 → 32 → 128 in the per-block MLP.
     private static func residualBlock(
         graph: MPSGraph,
         input: MPSGraphTensor,
@@ -1022,6 +1051,63 @@ final class ChessNetwork: @unchecked Sendable {
             runningStatsAssignOps: &runningStatsAssignOps
         )
 
+        // === SE module: channel attention ===========================
+        //
+        // Squeeze: global average pool over spatial dims [H, W].
+        // graph.mean(of:axes:) keeps the reduced dims, so
+        // [B, 128, 8, 8] → [B, 128, 1, 1].
+        var s = graph.mean(of: x, axes: [2, 3], name: "\(prefix)_se_squeeze")
+
+        // Flatten to [B, 128] for the FC layers.
+        s = graph.reshape(s, shape: [-1, 128], name: "\(prefix)_se_squeeze_flatten")
+
+        // Excite FC1: 128 → (128 / r) + ReLU.
+        let reduced = 128 / Self.seReductionRatio
+        let seFC1W = graph.variable(
+            with: heInitDataFCInOut(shape: [128, reduced]),
+            shape: [128, NSNumber(value: reduced)],
+            dataType: Self.dataType,
+            name: "\(prefix)_se_fc1_weights"
+        )
+        let seFC1Bias = graph.variable(
+            with: zerosData(count: reduced),
+            shape: [1, NSNumber(value: reduced)],
+            dataType: Self.dataType,
+            name: "\(prefix)_se_fc1_bias"
+        )
+        trainables.append(seFC1W);    shouldDecay.append(true)
+        trainables.append(seFC1Bias); shouldDecay.append(false)
+        s = graph.matrixMultiplication(primary: s, secondary: seFC1W, name: "\(prefix)_se_fc1")
+        s = graph.addition(s, seFC1Bias, name: "\(prefix)_se_fc1_bias_add")
+        s = graph.reLU(with: s, name: "\(prefix)_se_fc1_relu")
+
+        // Excite FC2: (128 / r) → 128 + sigmoid.
+        let seFC2W = graph.variable(
+            with: heInitDataFCInOut(shape: [reduced, 128]),
+            shape: [NSNumber(value: reduced), 128],
+            dataType: Self.dataType,
+            name: "\(prefix)_se_fc2_weights"
+        )
+        let seFC2Bias = graph.variable(
+            with: zerosData(count: 128),
+            shape: [1, 128],
+            dataType: Self.dataType,
+            name: "\(prefix)_se_fc2_bias"
+        )
+        trainables.append(seFC2W);    shouldDecay.append(true)
+        trainables.append(seFC2Bias); shouldDecay.append(false)
+        s = graph.matrixMultiplication(primary: s, secondary: seFC2W, name: "\(prefix)_se_fc2")
+        s = graph.addition(s, seFC2Bias, name: "\(prefix)_se_fc2_bias_add")
+        s = graph.sigmoid(with: s, name: "\(prefix)_se_fc2_sigmoid")
+
+        // Reshape back to [B, 128, 1, 1] for broadcast-multiply.
+        s = graph.reshape(s, shape: [-1, 128, 1, 1], name: "\(prefix)_se_scale_reshape")
+
+        // Apply channel attention. MPSGraph multiplication broadcasts
+        // [B, 128, 1, 1] across the H=8, W=8 axes of [B, 128, 8, 8].
+        x = graph.multiplication(x, s, name: "\(prefix)_se_scale")
+        // ============================================================
+
         // Skip connection: add original input, then ReLU
         x = graph.addition(input, x, name: "\(prefix)_skip")
         x = graph.reLU(with: x, name: "\(prefix)_relu2")
@@ -1029,13 +1115,25 @@ final class ChessNetwork: @unchecked Sendable {
         return x
     }
 
-    /// Policy head: 1x1 conv (128 -> 2) -> BN -> ReLU -> flatten -> FC (128 -> 4096) (logits)
+    /// Policy head: 1×1 conv (128 → policyChannels=76) → reshape to flat
+    /// `[batch, policySize=4864]` logits.
     ///
-    /// Note: this used to end with a 4096-way softmax. We dropped it because
-    /// the CPU has to mask illegal moves anyway, and computing softmax over
-    /// only the ~30 legal moves is far cheaper than softmax over 4096 slots
-    /// followed by mask + renormalize. The CPU side (MPSChessPlayer.sampleMove)
-    /// now does softmax-over-legal-moves directly from these logits.
+    /// Fully convolutional — no BN, no activation, no FC. The 1×1 conv's
+    /// weights are shared across all 64 spatial positions (translation
+    /// equivariance), so each output cell at `(channel, row, col)` is
+    /// the logit for "move of type `channel` from square `(row, col)`"
+    /// in the current player's encoder frame. See `PolicyEncoding` for
+    /// the channel layout (76 = 56 queen-style + 8 knight + 9 underpromo
+    /// + 3 queen-promo).
+    ///
+    /// Replaced the prior FC head (1×1 → 2 ch → flatten 128 → FC 128→4096)
+    /// which collapsed all spatial structure through a 128-float bottleneck
+    /// before scoring 4096 moves. The new head preserves spatial structure
+    /// end-to-end and uses ~50× fewer parameters (~9.8 K vs ~528 K).
+    ///
+    /// `bnMode` parameter retained for signature consistency with
+    /// `valueHead`; the new policy head has no BN so the parameter is
+    /// unused.
     private static func policyHead(
         graph: MPSGraph,
         input: MPSGraphTensor,
@@ -1046,53 +1144,34 @@ final class ChessNetwork: @unchecked Sendable {
         runningStats: inout [MPSGraphTensor],
         runningStatsAssignOps: inout [MPSGraphOperation]
     ) -> MPSGraphTensor {
-        // 1x1 conv: compress 128 channels to 2
+        _ = bnMode  // intentionally unused — see doc above
+        _ = runningStats
+        _ = runningStatsAssignOps
+
+        // 1×1 conv: 128 channels → policyChannels (76).
         let convW = graph.variable(
-            with: heInitDataConvOIHW(shape: [2, 128, 1, 1]),
-            shape: [2, 128, 1, 1],
+            with: heInitDataConvOIHW(shape: [Self.policyChannels, 128, 1, 1]),
+            shape: [NSNumber(value: Self.policyChannels), 128, 1, 1],
             dataType: Self.dataType,
             name: "policy_conv_weights"
         )
-        trainables.append(convW)
-        shouldDecay.append(true)
+        let convBias = graph.variable(
+            with: zerosData(count: Self.policyChannels),
+            shape: [1, NSNumber(value: Self.policyChannels), 1, 1],
+            dataType: Self.dataType,
+            name: "policy_conv_bias"
+        )
+        trainables.append(convW);    shouldDecay.append(true)
+        trainables.append(convBias); shouldDecay.append(false)
         var x = graph.convolution2D(
             input, weights: convW, descriptor: descriptor, name: "policy_conv"
         )
-        x = batchNorm(
-            graph: graph, input: x, channels: 2, name: "policy_bn", bnMode: bnMode,
-            trainables: &trainables,
-            shouldDecay: &shouldDecay,
-            runningStats: &runningStats,
-            runningStatsAssignOps: &runningStatsAssignOps
-        )
-        x = graph.reLU(with: x, name: "policy_relu")
+        x = graph.addition(x, convBias, name: "policy_conv_bias_add")
 
-        // Flatten: [batch, 2, 8, 8] -> [batch, 128]
-        x = graph.reshape(x, shape: [-1, 128], name: "policy_flatten")
-
-        // FC: 128 -> 4096
-        let fcW = graph.variable(
-            with: heInitDataFCInOut(shape: [128, 4096]),
-            shape: [128, 4096],
-            dataType: Self.dataType,
-            name: "policy_fc_weights"
-        )
-        let fcBias = graph.variable(
-            with: zerosData(count: 4096),
-            shape: [1, 4096],
-            dataType: Self.dataType,
-            name: "policy_fc_bias"
-        )
-        trainables.append(fcW)
-        shouldDecay.append(true)
-        trainables.append(fcBias)
-        shouldDecay.append(false)
-        x = graph.matrixMultiplication(primary: x, secondary: fcW, name: "policy_fc")
-        x = graph.addition(x, fcBias, name: "policy_fc_bias_add")
-
-        // Logits, not probabilities — softmax happens on the CPU over only
-        // the legal moves (see MPSChessPlayer.sampleMove).
-        return x
+        // Reshape [B, policyChannels, 8, 8] → [B, policySize] for
+        // downstream consumption. NCHW row-major flatten matches
+        // `PolicyEncoding.policyIndex = channel * 64 + row * 8 + col`.
+        return graph.reshape(x, shape: [-1, NSNumber(value: Self.policySize)], name: "policy_flatten")
     }
 
     /// Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 1) -> tanh
@@ -1189,7 +1268,9 @@ final class ChessNetwork: @unchecked Sendable {
     /// i.e. the first dimension — the opposite of the conv case. A
     /// previous implementation that always used `shape.dropFirst()` was
     /// silently 8× too generous for `value_fc2` ([64, 1]) and 5.7× too
-    /// stingy for `policy_fc` ([128, 4096]).
+    /// stingy for the prior FC policy head's `policy_fc` ([128, 4096])
+    /// — that FC head has since been replaced with a 1×1 conv, but the
+    /// fan_in fix remains correct for the value head's FC layers.
     ///
     /// Implementation note: this used to be a per-element scalar Box-Muller
     /// loop. With ~2.9M weights to initialize, that dominated build time. The
