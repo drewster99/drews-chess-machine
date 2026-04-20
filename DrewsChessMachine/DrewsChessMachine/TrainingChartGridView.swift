@@ -112,6 +112,26 @@ struct TrainingChartGridView: View {
     let visibleDomainSec: Double
     @Binding var scrollX: Double
 
+    /// Full-data X domain used by every time-series chart. Computed
+    /// lazily from the current sample buffers. When the data span
+    /// `[0, maxElapsed]` is shorter than `visibleDomainSec`, the
+    /// domain is widened to the visible-window length so the chart
+    /// still renders the full visible area (and scrolling is a no-op
+    /// — `chartScrollableAxes` won't allow scrolling past the data,
+    /// which is the correct behavior while the session is young).
+    /// When data is longer than the visible window, the full domain
+    /// is what lets `chartScrollableAxes(.horizontal)` actually
+    /// expose a scroll region — without an explicit `chartXScale`
+    /// the Charts framework auto-fits to the plot frame and scroll
+    /// becomes a no-op even with plenty of data.
+    private var timeSeriesXDomain: ClosedRange<Double> {
+        let lastElapsed = trainingChartSamples.last?.elapsedSec
+            ?? progressRateSamples.last?.elapsedSec
+            ?? 0
+        let end = max(lastElapsed, visibleDomainSec)
+        return 0...end
+    }
+
     /// Shared hover selection across every time-series chart. Set
     /// by `.onContinuousHover` on each chart's overlay; `nil` means
     /// the mouse isn't over any time-series chart right now. When
@@ -342,6 +362,7 @@ struct TrainingChartGridView: View {
                         }
                     }
                 }
+                .chartXScale(domain: timeSeriesXDomain)
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
@@ -476,6 +497,7 @@ struct TrainingChartGridView: View {
                         AxisGridLine()
                     }
                 }
+                .chartXScale(domain: timeSeriesXDomain)
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
@@ -715,6 +737,7 @@ struct TrainingChartGridView: View {
                     }
                 }
                 .chartLegend(.hidden)
+                .chartXScale(domain: timeSeriesXDomain)
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
@@ -793,6 +816,7 @@ struct TrainingChartGridView: View {
                         }
                     }
                 }
+                .chartXScale(domain: timeSeriesXDomain)
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
@@ -872,6 +896,7 @@ struct TrainingChartGridView: View {
                         }
                     }
                 }
+                .chartXScale(domain: timeSeriesXDomain)
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
@@ -954,6 +979,7 @@ struct TrainingChartGridView: View {
                         }
                     }
                 }
+                .chartXScale(domain: timeSeriesXDomain)
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)
@@ -1068,6 +1094,7 @@ struct TrainingChartGridView: View {
                         }
                     }
                 }
+                .chartXScale(domain: timeSeriesXDomain)
                 .chartScrollableAxes(.horizontal)
                 .chartXVisibleDomain(length: visibleDomainSec)
                 .chartScrollPosition(x: $scrollX)

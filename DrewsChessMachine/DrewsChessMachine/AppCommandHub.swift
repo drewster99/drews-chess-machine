@@ -49,6 +49,21 @@ final class AppCommandHub {
     /// Train" (cold start) and "Continue Training" (resume).
     var pendingLoadedSessionExists: Bool = false
 
+    /// `true` when there is a `LastSessionPointer` on disk whose
+    /// target `.dcmsession` folder still exists, the app is not
+    /// already mid-training, and no auto-resume load is in flight.
+    /// Drives the File menu's "Resume training from autosave" item
+    /// enable/disable state. Refreshed at the same cadence as the
+    /// other command-hub mirrored flags (menu-command-hub sync).
+    var canResumeFromAutosave: Bool = false
+
+    // Chart-zoom gating. Disabled when no Play-and-Train session is
+    // live (the chart grid is hidden), and at the zoom-in / zoom-out
+    // extremes so the menu items dim at the boundaries.
+    var chartZoomInAvailable: Bool = false
+    var chartZoomOutAvailable: Bool = false
+    var chartZoomAutoAvailable: Bool = false
+
     // MARK: - Action closures
 
     var buildNetwork: () -> Void = {}
@@ -67,10 +82,23 @@ final class AppCommandHub {
     var saveChampion: () -> Void = {}
     var loadSession: () -> Void = {}
     var loadModel: () -> Void = {}
+    /// File menu > Resume training from autosave. Auto-loads the
+    /// most recently saved `.dcmsession` and immediately starts
+    /// Play-and-Train on it. Same code path the launch-time
+    /// countdown sheet uses.
+    var resumeFromAutosave: () -> Void = {}
     var revealSaves: () -> Void = {}
     /// Run the engine diagnostics probe — encoder/decoder round-trips,
     /// repetition tracking, network forward-pass shape check. All
     /// output goes to the session log with `[DIAG]` prefix. Suitable
     /// for one-shot health checks after major code changes.
     var runEngineDiagnostics: () -> Void = {}
+
+    // Chart-zoom actions. Wired to the View menu's ⌘= / ⌘- items
+    // and the Auto toggle. A manual in/out press flips auto off
+    // and stamps the recency timer that controls the 1-hour
+    // auto-re-engage; pressing Auto re-enables it directly.
+    var chartZoomIn: () -> Void = {}
+    var chartZoomOut: () -> Void = {}
+    var chartZoomEnableAuto: () -> Void = {}
 }

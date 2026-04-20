@@ -80,6 +80,16 @@ struct ArenaHistoryEntryCodable: Codable, Equatable {
     let durationSec: Double
     var gamesPlayed: Int?
     var promotionKind: String?
+    // Per-side candidate W/L/D — optional for back-compat with
+    // session files written before side tracking existed. Missing
+    // values decode as `nil` and load-path code substitutes 0 so
+    // the display shows "—" for the side breakdown on legacy data.
+    var candidateWinsAsWhite: Int?
+    var candidateWinsAsBlack: Int?
+    var candidateLossesAsWhite: Int?
+    var candidateLossesAsBlack: Int?
+    var candidateDrawsAsWhite: Int?
+    var candidateDrawsAsBlack: Int?
 }
 
 // MARK: - Session State

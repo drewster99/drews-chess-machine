@@ -3260,7 +3260,7 @@ struct ContentView: View {
             maybePresentAutoResumeSheet()
         }
         .sheet(isPresented: $autoResumeSheetShowing) {
-            autoResumeSheetContent
+            autoResumeSheetContentView()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
             // Teardown on actual main-window close only — NOT on minimize
@@ -3292,7 +3292,6 @@ struct ContentView: View {
         .onChange(of: gameSnapshot.isPlaying) { _, _ in syncMenuCommandHubState() }
         .onChange(of: network != nil) { _, _ in syncMenuCommandHubState() }
         .onChange(of: pendingLoadedSession != nil) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: chartZoomStateVersion) { _, _ in syncMenuCommandHubState() }
         .onChange(of: autoResumeStateVersion) { _, _ in syncMenuCommandHubState() }
         .background(controlSideEffectsProbe)
         .onChange(of: progressRateScrollX) { _, newValue in
@@ -3502,6 +3501,8 @@ struct ContentView: View {
         let dataSec = progressRateSamples.last?.elapsedSec
             ?? trainingChartSamples.last?.elapsedSec
             ?? 0
+        let priorIdx = chartZoomIdx
+        let priorAuto = chartZoomAuto
 
         // Auto re-engage check. A manual ⌘= / ⌘- recency acts as a
         // keep-alive; past the threshold we flip auto back on so
@@ -3529,6 +3530,14 @@ struct ContentView: View {
                 chartZoomIdx = maxIdx
             }
         }
+
+        // Sync the command hub's zoom-availability flags when state
+        // actually changed. Done inline here (rather than via an
+        // `.onChange(of:)` modifier on `body`) to keep the body's
+        // modifier chain within SwiftUI's type-checker budget.
+        if chartZoomIdx != priorIdx || chartZoomAuto != priorAuto {
+            syncMenuCommandHubState()
+        }
     }
 
     /// Handle a ⌘= / ⌘- / Auto-button action. Centralized so the
@@ -3546,6 +3555,7 @@ struct ContentView: View {
         lastManualChartZoomAt = Date()
         let newIdx = max(0, chartZoomIdx - 1)
         chartZoomIdx = ChartZoom.clamp(newIdx, forDataSec: dataSec)
+        syncMenuCommandHubState()
     }
 
     @MainActor
@@ -3557,6 +3567,7 @@ struct ContentView: View {
         lastManualChartZoomAt = Date()
         let maxIdx = ChartZoom.maxZoomOutIndex(forDataSec: dataSec)
         chartZoomIdx = min(chartZoomIdx + 1, maxIdx)
+        syncMenuCommandHubState()
     }
 
     @MainActor
@@ -3567,6 +3578,7 @@ struct ContentView: View {
             ?? trainingChartSamples.last?.elapsedSec
             ?? 0
         chartZoomIdx = ChartZoom.autoIndex(forDataSec: dataSec)
+        syncMenuCommandHubState()
     }
 
     /// Can the user zoom in further? Used to gate the View menu
@@ -5075,8 +5087,9 @@ struct ContentView: View {
         }
         guard pointer.directoryExists else {
             SessionLogger.shared.log(
-                "[RESUME] Last-session pointer names missing folder \(pointer.directoryPath) — skipping"
+                "[RESUME] Last-session pointer names missing folder \(pointer.directoryPath) — clearing stale pointer"
             )
+            LastSessionPointer.clear()
             return
         }
         autoResumePointer = pointer
@@ -5151,62 +5164,62 @@ struct ContentView: View {
         loadSessionFrom(url: pointer.directoryURL, startAfterLoad: true)
     }
 
-    /// SwiftUI content for the auto-resume sheet. Extracted to a
-    /// computed property so the huge containing view body does not
-    /// have to embed the sheet's layout directly — the type-checker
-    /// routinely blows through its time budget on the parent body
-    /// when inline branching is added near this level of nesting.
-    @ViewBuilder
-    private var autoResumeSheetContent: some View {
-        if let pointer = autoResumePointer {
-            let savedAt = Date(timeIntervalSince1970: TimeInterval(pointer.savedAtUnix))
-            let formatter: DateFormatter = {
-                let f = DateFormatter()
-                f.dateStyle = .medium
-                f.timeStyle = .short
-                return f
-            }()
-            let savedAtString = formatter.string(from: savedAt)
-            let agoString = autoResumeRelativeAgoString(savedAtUnix: pointer.savedAtUnix)
-            let remaining = autoResumeCountdownRemaining
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Resume last training session?")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Session: \(pointer.sessionID)")
-                    Text("Saved \(agoString) (\(savedAtString)) — trigger: \(pointer.trigger)")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Text(pointer.directoryURL.lastPathComponent)
-                        .font(.system(.callout, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Text("Training will automatically resume in \(remaining) second\(remaining == 1 ? "" : "s").")
+    /// SwiftUI content for the auto-resume sheet. Returns `AnyView`
+    /// (rather than `some View` via `@ViewBuilder`) so the call
+    /// site in the main body doesn't contribute to the already-huge
+    /// body's type-inference cost — the `.sheet { ... }` modifier
+    /// only has to prove the closure returns a concrete `View`,
+    /// not figure out which of two opaque branches it is.
+    private func autoResumeSheetContentView() -> AnyView {
+        guard let pointer = autoResumePointer else {
+            return AnyView(EmptyView())
+        }
+        let savedAt = Date(timeIntervalSince1970: TimeInterval(pointer.savedAtUnix))
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        let savedAtString = formatter.string(from: savedAt)
+        let agoString = autoResumeRelativeAgoString(savedAtUnix: pointer.savedAtUnix)
+        let remaining = autoResumeCountdownRemaining
+        let plural = (remaining == 1 ? "" : "s")
+        let sessionLine = "Session: \(pointer.sessionID)"
+        let savedLine = "Saved \(agoString) (\(savedAtString)) — trigger: \(pointer.trigger)"
+        let folderLine = pointer.directoryURL.lastPathComponent
+        let countdownLine = "Training will automatically resume in \(remaining) second\(plural)."
+        let resumeLabel = "Resume Training (\(remaining))"
+        let content = VStack(alignment: .leading, spacing: 12) {
+            Text("Resume last training session?")
+                .font(.title2)
+                .fontWeight(.semibold)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(sessionLine)
+                Text(savedLine)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                HStack(spacing: 12) {
-                    Spacer()
-                    Button("Not Now") {
-                        dismissAutoResumeSheet()
-                    }
-                    .keyboardShortcut(.cancelAction)
-                    Button("Resume Training (\(remaining))") {
-                        performAutoResume()
-                    }
-                    .keyboardShortcut(.defaultAction)
-                }
+                Text(folderLine)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            .padding(20)
-            .frame(minWidth: 460)
-        } else {
-            // Defensive empty view — should not render in practice
-            // because `autoResumeSheetShowing` only flips true when
-            // `autoResumePointer` is populated.
-            EmptyView()
+            Text(countdownLine)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Spacer()
+                Button("Not Now") {
+                    dismissAutoResumeSheet()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(resumeLabel) {
+                    performAutoResume()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
         }
+        .padding(20)
+        .frame(minWidth: 460)
+        return AnyView(content)
     }
 
     /// Human-friendly "N minutes ago" string for the sheet body.
@@ -5243,8 +5256,21 @@ struct ContentView: View {
             return
         }
         guard !autoResumeInFlight else { return }
-        guard let pointer = LastSessionPointer.read(), pointer.directoryExists else {
+        guard let pointer = LastSessionPointer.read() else {
             refuseMenuAction("No saved session available to resume.")
+            return
+        }
+        guard pointer.directoryExists else {
+            // Pointer names a folder the user has since deleted.
+            // Clear it so subsequent menu-sync ticks disable this
+            // item and the next launch's auto-resume prompt does
+            // not reappear for a session that will never load.
+            SessionLogger.shared.log(
+                "[RESUME] Menu resume target missing on disk (\(pointer.directoryPath)) — clearing stale pointer"
+            )
+            LastSessionPointer.clear()
+            refuseMenuAction("Saved session no longer on disk.")
+            syncMenuCommandHubState()
             return
         }
         autoResumePointer = pointer
