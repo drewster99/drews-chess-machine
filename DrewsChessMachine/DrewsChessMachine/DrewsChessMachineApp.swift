@@ -26,6 +26,12 @@ struct DrewsChessMachineApp: App {
         } else {
             print("[APP] session log: (failed to open)")
         }
+
+        // Sweep away `.tmp` staging debris from a save that was
+        // interrupted mid-flight by a prior process kill, kernel
+        // panic, or power loss. Runs once at launch, before any save
+        // or load can race with the cleanup.
+        CheckpointPaths.cleanupOrphans()
     }
 
     var body: some Scene {

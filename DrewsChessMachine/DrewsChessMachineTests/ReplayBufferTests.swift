@@ -2,14 +2,19 @@
 //  ReplayBufferTests.swift
 //  DrewsChessMachineTests
 //
-//  Round-trip and version-rejection tests for `ReplayBuffer`'s on-disk
-//  persistence (format v3). Because the buffer is the unit of training
-//  data, a write/read regression here would corrupt every saved
-//  session. Tests cover:
-//   - empty buffer round-trips cleanly
+//  Round-trip, integrity, and corruption-rejection tests for
+//  `ReplayBuffer`'s on-disk persistence (current format v4). Because
+//  the buffer is the unit of training data, a write/read regression
+//  here would corrupt every saved session. Tests cover:
+//   - empty buffer round-trips cleanly through SHA verify
 //   - single-position round-trip preserves exact float bytes
-//   - small buffer round-trip preserves all fields
-//   - older format versions cleanly reject with `unsupportedVersion`
+//   - older format versions (v2, v3) cleanly reject with
+//     `unsupportedVersion`
+//   - tampered body byte → hashMismatch
+//   - file truncated by one byte → sizeMismatch
+//   - file with trailing garbage → sizeMismatch
+//   - header with Int64.max capacity → upperBoundExceeded (not crash)
+//   - bad magic / truncated header still rejected
 //
 
 import XCTest
@@ -165,6 +170,176 @@ final class ReplayBufferTests: XCTestCase {
             guard case ReplayBuffer.PersistenceError.truncatedHeader = error else {
                 XCTFail("Expected truncatedHeader, got \(error)")
                 return
+            }
+        }
+    }
+
+    func testV3FileRejectedWithUnsupportedVersion() throws {
+        // Synthesize a v3-formatted file (no SHA trailer) and attempt to
+        // restore. v3 shared v4's header layout but had no SHA-256
+        // trailer and no size-invariant check. The v4 reader must
+        // reject v3 cleanly via `unsupportedVersion(3)`.
+        let magic = "DCMRPBUF".data(using: .utf8)!
+        var version: UInt32 = 3
+        var pad: UInt32 = 0
+        var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
+        var cap: Int64 = 100
+        var stored: Int64 = 0
+        var writeIdx: Int64 = 0
+        var totalAdded: Int64 = 0
+
+        var header = Data()
+        header.append(magic)
+        withUnsafeBytes(of: &version) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &pad) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &fpb) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &cap) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &stored) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &writeIdx) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &totalAdded) { header.append(contentsOf: $0) }
+
+        try header.write(to: tempFile)
+
+        let restored = ReplayBuffer(capacity: 100)
+        XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
+            guard case ReplayBuffer.PersistenceError.unsupportedVersion(let v) = error else {
+                XCTFail("Expected unsupportedVersion(3), got \(error)")
+                return
+            }
+            XCTAssertEqual(v, 3, "Should report the rejected version number")
+        }
+    }
+
+    // MARK: - v4 integrity checks
+
+    func testV4SHAMismatchRejected() throws {
+        // Write a valid v4 file with one real position, then flip a
+        // single byte somewhere in the body (past the 56-byte header
+        // and before the 32-byte trailer). Decode must throw
+        // hashMismatch — the SHA-256 trailer is the first line of
+        // defense against any unnoticed corruption.
+        let buffer = ReplayBuffer(capacity: 10)
+        try appendOnePosition(to: buffer, seed: 7)
+        try buffer.write(to: tempFile)
+
+        var bytes = try Data(contentsOf: tempFile)
+        XCTAssertGreaterThan(bytes.count, 56 + 32, "File should have a body")
+
+        // Flip the lowest-order bit of the first body byte (offset 56).
+        let tamperOffset = 56
+        bytes[tamperOffset] ^= 0x01
+        try bytes.write(to: tempFile)
+
+        let restored = ReplayBuffer(capacity: 10)
+        XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
+            guard case ReplayBuffer.PersistenceError.hashMismatch = error else {
+                XCTFail("Expected hashMismatch, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testV4SizeMismatchOnTruncation() throws {
+        // Truncate a valid v4 file by one byte. The size-equality
+        // check runs before the SHA pass, so the error must be
+        // sizeMismatch (not hashMismatch).
+        let buffer = ReplayBuffer(capacity: 10)
+        try appendOnePosition(to: buffer, seed: 11)
+        try buffer.write(to: tempFile)
+
+        let original = try Data(contentsOf: tempFile)
+        let truncated = original.prefix(original.count - 1)
+        try truncated.write(to: tempFile)
+
+        let restored = ReplayBuffer(capacity: 10)
+        XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
+            guard case ReplayBuffer.PersistenceError.sizeMismatch = error else {
+                XCTFail("Expected sizeMismatch, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testV4SizeMismatchOnTrailingGarbage() throws {
+        // Append a single byte past the valid end. The SHA trailer
+        // is still at its correct offset, but the file is now one
+        // byte too long — strict `==` size check must reject.
+        let buffer = ReplayBuffer(capacity: 10)
+        try appendOnePosition(to: buffer, seed: 13)
+        try buffer.write(to: tempFile)
+
+        var bytes = try Data(contentsOf: tempFile)
+        bytes.append(0xFF)
+        try bytes.write(to: tempFile)
+
+        let restored = ReplayBuffer(capacity: 10)
+        XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
+            guard case ReplayBuffer.PersistenceError.sizeMismatch = error else {
+                XCTFail("Expected sizeMismatch, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testV4UpperBoundRejectedOnCapacity() throws {
+        // Synthesize a v4-versioned header with capacity = Int64.max.
+        // The upper-bound cap check runs after the header is parsed
+        // but before any allocation or seek arithmetic — it must
+        // throw upperBoundExceeded, not crash.
+        let magic = "DCMRPBUF".data(using: .utf8)!
+        var version: UInt32 = 4
+        var pad: UInt32 = 0
+        var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
+        var cap: Int64 = .max
+        var stored: Int64 = 0
+        var writeIdx: Int64 = 0
+        var totalAdded: Int64 = 0
+
+        var header = Data()
+        header.append(magic)
+        withUnsafeBytes(of: &version) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &pad) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &fpb) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &cap) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &stored) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &writeIdx) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &totalAdded) { header.append(contentsOf: $0) }
+        // No SHA trailer — but the upper-bound check runs before the
+        // SHA pass, so this rejects at the cap check regardless.
+        try header.write(to: tempFile)
+
+        let restored = ReplayBuffer(capacity: 100)
+        XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
+            guard case ReplayBuffer.PersistenceError.upperBoundExceeded(let field, _, _) = error else {
+                XCTFail("Expected upperBoundExceeded, got \(error)")
+                return
+            }
+            XCTAssertEqual(field, "capacity",
+                "Should name the offending field as 'capacity'")
+        }
+    }
+
+    // MARK: - Append helper
+
+    /// Push one deterministic position into `buffer` so it has a
+    /// non-empty body (and therefore a SHA trailer that actually
+    /// depends on content). Used by the integrity-check tests that
+    /// need something to corrupt.
+    private func appendOnePosition(to buffer: ReplayBuffer, seed: UInt64) throws {
+        let boardFloats = makeFakeBoard(seed: seed)
+        var move: Int32 = Int32(seed % 4096)
+        var vBaseline: Float = Float(seed % 100) / 100.0
+        boardFloats.withUnsafeBufferPointer { boardsBuf in
+            withUnsafePointer(to: &move) { moveP in
+                withUnsafePointer(to: &vBaseline) { vP in
+                    buffer.append(
+                        boards: boardsBuf.baseAddress!,
+                        policyIndices: moveP,
+                        vBaselines: vP,
+                        outcome: 1.0,
+                        count: 1
+                    )
+                }
             }
         }
     }

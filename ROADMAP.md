@@ -310,6 +310,216 @@ Long-term goals, deferred work, and notes on decisions.
 
 ## Completed
 
+- **Session durability hardening — "saved means golden" (2026-04-20).**
+  Closes TODO_NEXT.md #3. The save pipeline now guarantees that either
+  a fully-verified, fsync'd `.dcmsession` bundle appears on disk under
+  its final name, or nothing appears with that name. Restored
+  sessions are bit-identical to what was saved, or loading fails with
+  a specific error describing which check tripped.
+
+  **Principle.** If any piece of a session save cannot be fully
+  verified end-to-end, the whole save fails, all partials are removed,
+  and no final-named artifact appears on disk. Built as a coordinated
+  change across `ReplayBuffer.swift`, `CheckpointManager.swift`,
+  `DrewsChessMachineApp.swift`, and `ContentView.swift`, plus docs in
+  `replay_buffer_file_format.md` (new) and `dcmmodel_file_format.md`
+  (new), and five new XCTest cases in `ReplayBufferTests.swift`.
+
+  ### ReplayBuffer format v3 → v4
+
+  `ReplayBuffer.fileVersion` bumped 3 → 4. Readers reject v1/v2/v3
+  cleanly with `PersistenceError.unsupportedVersion`. No migration
+  path — matches the project's delete-and-retrain stance (the user's
+  existing v3 `.replay_buffer.bin` files will not load; the replay
+  buffer is recovered by resumed self-play).
+
+  - **SHA-256 trailer.** 32-byte digest appended over header + all
+    four body sections, verified before any header field is trusted
+    at load time. Mirrors the `.dcmmodel` integrity-trailer
+    convention. Computed streaming during write (CryptoKit
+    `SHA256.update(data:)` per chunk), so no extra hashing pass — the
+    bytes fed to `handle.write(...)` are also fed to the hasher.
+  - **Strict file-size equality check.** Restore computes
+    `expectedBytes = headerSize(56) + storedCount × (floatsPerBoard ×
+    4 + 12) + trailerSize(32)` and requires `actualFileSize ==
+    expectedBytes`. Uses `==`, not `>=`, because the format is fully
+    deterministic — any deviation is corruption. New
+    `PersistenceError.sizeMismatch(expected, got)`.
+  - **Upper-bound sanity caps.** Applied before any allocation or
+    seek arithmetic so a corrupted header can't drive a
+    multi-terabyte allocation or overflow the size computation.
+    Caps: `floatsPerBoard ≤ 8_192`, `capacity ≤ 10_000_000`,
+    `storedCount ≤ 10_000_000`. New
+    `PersistenceError.upperBoundExceeded(field, value, max)`.
+  - **`handle.synchronize()` before close.** In `_writeLocked`,
+    forces APFS to flush dirty pages to the device before the file
+    handle closes. On top of this, `CheckpointManager.saveSession`
+    adds `fcntl(F_FULLFSYNC)` via `fullSyncPath` for drive-cache-bypass
+    durability.
+  - **Atomic write-and-snapshot.** `ReplayBuffer.write(to:)` now
+    returns the `StateSnapshot` reflecting exactly the state
+    serialized into the file, captured under the same `queue.sync`
+    lock that serializes the write. Post-save verification compares
+    against this value — a subsequent `stateSnapshot()` call would
+    diverge because concurrent self-play workers resume appending
+    after the save-gate releases the trainer pause. Annotated
+    `@discardableResult` so existing callers (tests, etc.) compile
+    unchanged. **This was a recheck-catch** — the first pass
+    compared against a freshly-called `live.stateSnapshot()` and
+    would have spuriously failed the counter comparison every time
+    saves happened during active training.
+
+  ### `CheckpointManager` durability pipeline
+
+  `saveSession` now runs a full fsync pipeline on top of the existing
+  tmp-dir-then-rename atomicity:
+
+  1. Write all four files (two `.dcmmodel`, `session.json`,
+     `.replay_buffer.bin`) into a `.tmp` staging directory.
+  2. `fullSyncPath` each of the four files — issues `fcntl(fd,
+     F_FULLFSYNC)` on Apple filesystems (falls back to `fsync` if
+     unsupported). Bypasses the drive's write cache, not just the VFS
+     page cache.
+  3. Verify:
+     - Both `.dcmmodel`: existing bit-exact + forward-pass
+       round-trip (unchanged).
+     - `session.json`: existing decode round-trip (unchanged).
+     - **NEW** — `.replay_buffer.bin`: re-load into a scratch
+       `ReplayBuffer` via `restore(from:)`. The scratch restore runs
+       the full v4 verification stack (SHA, size, caps). Scratch is
+       allocated at `max(1, writtenSnap.storedCount)` — sized to the
+       actual data, not to the live ring's full capacity — so a
+       half-full 1 M-slot ring does not double peak memory during
+       verify. Then compare the restored `storedCount` and
+       `totalPositionsAdded` against the `writtenSnap` captured
+       atomically from the write. Drift here implies a write-path
+       regression that produced a valid-SHA file with wrong bytes
+       (the SHA alone cannot catch this class of bug if the write is
+       internally consistent but semantically wrong).
+  4. `fullSyncPath(tmpDir)` — flush directory-entry metadata.
+  5. `fm.moveItem(tmpDir, finalDir)` — atomic rename.
+     `FileManager.moveItem` aborts if the destination already
+     exists (unlike POSIX `mv`); plus the existing
+     `fileExists(finalDirURL)` guard. Two independent guards.
+  6. `fullSyncPath(CheckpointPaths.sessionsDir)` — flush the parent
+     so the rename itself is durable. A failure here leaves the
+     session visible (rename already committed) and logs a warning
+     that the parent-directory flush wasn't guaranteed — we do not
+     remove the session, as it's already the "best we've got" on
+     disk.
+
+  Any failure in steps 1–4 triggers `cleanupTmp()` and throws. No
+  final-named artifact appears on disk.
+
+  `saveModel` gets the same treatment: `fullSyncPath` on the tmp file
+  before verify-and-rename, and `fullSyncPath` on
+  `CheckpointPaths.modelsDir` after rename.
+
+  **New `CheckpointManagerError` cases:** `fsyncFailed(URL, Error)`,
+  `replayVerificationFailed(String)`, `sessionReplayMismatch(detail:
+  String)`.
+
+  ### Load-time cross-check
+
+  New helper `CheckpointManager.verifyReplayBufferMatchesSession(buffer:
+  state:)` runs after `ReplayBuffer.restore(from:)` at session load
+  time. Compares `buffer.stateSnapshot().totalPositionsAdded` against
+  `state.replayBufferTotalPositionsAdded` from `session.json`.
+  Mismatch throws `CheckpointManagerError.sessionReplayMismatch` and
+  surfaces in the load UI.
+
+  Only the lifetime counter is cross-checked, not `storedCount` or
+  `capacity` — those two intentionally diverge when loading a larger
+  saved ring into a smaller live one (existing restore
+  `skip = fileStored - target` logic). `totalPositionsAdded` survives
+  that logic verbatim and is effectively unique across sessions, so a
+  mismatch strongly implies a file-pairing error (wrong replay paired
+  with wrong session.json) or SHA-collision-scale corruption.
+  `replayBufferTotalPositionsAdded` is Optional in
+  `SessionCheckpointState` (back-compat) — missing → check is skipped
+  rather than forced to mismatch.
+
+  Wired into `ContentView.loadSessionFrom`'s post-restore path.
+
+  ### Launch-time orphan sweep
+
+  New `CheckpointPaths.cleanupOrphans()` runs from
+  `DrewsChessMachineApp.init` after `SessionLogger.start`. Removes:
+
+  - `Sessions/<name>.tmp/` directories — `saveSession`'s staging
+    directory (matches the `.tmp` suffix appended to the target
+    session dir name).
+  - `Models/<name>.dcmmodel.tmp` files — `saveModel`'s staging file
+    (matches the `.tmp` extension appended to the final `.dcmmodel`
+    filename).
+
+  Each removal is logged `[CLEANUP] Removed orphan <name>`; failures
+  log `[CLEANUP-ERR]` and do not abort the sweep (a stuck orphan
+  should not prevent the app from starting). Runs once at launch,
+  before any save/load UI activates.
+
+  ### Documentation
+
+  - **NEW** `dcmmodel_file_format.md` — full byte-level spec for the
+    `.dcmmodel` format, with expanded FNV-1a documentation
+    (constants `0x811C9DC5` offset basis and `0x01000193` prime,
+    algorithm pseudocode, Swift reference implementation, byte-order
+    rationale, worked example, comparison vs. CRC32/xxHash/SHA-256),
+    SHA-256 trailer spec, decode protocol, error taxonomy, explicit
+    non-goals.
+  - **NEW** `replay_buffer_file_format.md` — v3 (historical) + v4
+    (current) sections. v4 section includes full layout, decode
+    protocol ordering, write protocol, durability pipeline in
+    session saves, cross-check semantics, launch-time orphan sweep,
+    and full error taxonomy.
+  - `CHANGELOG.md` entry at top (short form — points here for full
+    detail).
+  - `TODO_NEXT.md` §3 removed (was detailed there during planning;
+    now done).
+
+  ### Tests
+
+  `DrewsChessMachineTests/ReplayBufferTests.swift` — 5 new tests, all
+  green:
+
+  - `testV3FileRejectedWithUnsupportedVersion` — synthesized v3
+    header (no SHA trailer) rejects with `unsupportedVersion(3)`.
+  - `testV4SHAMismatchRejected` — valid v4 file with one byte flipped
+    at offset 56 rejects with `hashMismatch`.
+  - `testV4SizeMismatchOnTruncation` — valid v4 file truncated by
+    one byte rejects with `sizeMismatch`.
+  - `testV4SizeMismatchOnTrailingGarbage` — valid v4 file with an
+    extra byte appended rejects with `sizeMismatch`.
+  - `testV4UpperBoundRejectedOnCapacity` — header with
+    `capacity = Int64.max` rejects with `upperBoundExceeded(field:
+    "capacity", ...)`, not an allocation crash.
+
+  Existing tests (`testEmptyBufferWriteRead`,
+  `testSinglePositionWriteRead`, `testV2FileRejectedWithUnsupportedVersion`,
+  `testBadMagicRejected`, `testTruncatedHeaderRejected`) pass
+  unchanged against v4 via the public API. Full test suite: 55/55
+  green.
+
+  ### Scope limits explicitly not taken
+
+  - No per-record hashing (file-level SHA-256 is sufficient).
+  - No compression (writes stay raw-float).
+  - No cross-architecture or cross-version migration.
+  - No `session.json` schema change (cross-check reads existing
+    Optional fields).
+
+  ### Parameter reference
+
+  New constants (private statics on `ReplayBuffer`):
+  - `fileVersion: UInt32 = 4` (was 3)
+  - `trailerSize: Int = 32`
+  - `maxReasonableCapacity: Int64 = 10_000_000`
+  - `maxReasonableStoredCount: Int64 = 10_000_000`
+  - `maxReasonableFloatsPerBoard: Int64 = 8_192`
+
+  No existing hyperparameter (LR, batch size, clip, tau, etc.) was
+  changed.
+
 - **N-worker concurrent self-play in Play and Train.** Play and Train
   previously ran a single self-play worker, which at ~357 moves/sec against
   a 3,012 moves/sec training consumer meant every replay-buffer position

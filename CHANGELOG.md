@@ -8,6 +8,41 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-20 (later still) — Session durability hardening (ReplayBuffer v4, fsync pipeline)
+
+**Files:** `ReplayBuffer.swift`, `CheckpointManager.swift`, `DrewsChessMachineApp.swift`, `ContentView.swift`, `DrewsChessMachineTests/ReplayBufferTests.swift`, `replay_buffer_file_format.md`, `dcmmodel_file_format.md` (new), `ROADMAP.md`, `TODO_NEXT.md`.
+
+Closes `TODO_NEXT.md` #3. Session saves now guarantee bit-identical restore-or-fail-with-precise-error. Full detail in `ROADMAP.md` → Completed.
+
+- **ReplayBuffer format v3 → v4**: SHA-256 trailer (32 bytes), strict file-size equality check, upper-bound caps on header counters, `handle.synchronize()` before close. v1/v2/v3 files reject cleanly with `unsupportedVersion`. No migration path.
+- **`CheckpointManager`**: new `fullSyncPath(_:)` helper using `fcntl(F_FULLFSYNC)` (fallback: `fsync`). Applied to each staged file, the tmp directory, and the parent `Sessions/` / `Models/` directories. `saveSession` now re-loads the replay buffer into a scratch `ReplayBuffer` post-write and compares counters against the `StateSnapshot` returned by `write(to:)` (captured atomically under the write lock — avoids a race where concurrent self-play appends advance the live ring between write and verify).
+- **`ReplayBuffer.write(to:)` now returns `@discardableResult StateSnapshot`** — the snapshot that was actually serialized. Existing callers (tests, etc.) compile unchanged.
+- **Load-time cross-check**: `verifyReplayBufferMatchesSession(buffer:state:)` compares `totalPositionsAdded` between restored buffer and `session.json`. Surfaced in `ContentView` session-resume path.
+- **Launch-time orphan sweep**: `CheckpointPaths.cleanupOrphans()` removes `Sessions/*.tmp/` and `Models/*.dcmmodel.tmp` left behind by crashed-mid-save runs. Invoked from `DrewsChessMachineApp.init`. Logs `[CLEANUP]` / `[CLEANUP-ERR]`.
+- **New `CheckpointManagerError` cases**: `fsyncFailed(URL, Error)`, `replayVerificationFailed(String)`, `sessionReplayMismatch(detail: String)`.
+- **New `ReplayBuffer.PersistenceError` cases**: `hashMismatch`, `sizeMismatch(expected: Int64, got: Int64)`, `upperBoundExceeded(field: String, value: Int64, max: Int64)`.
+
+### Parameter reference
+
+New private statics on `ReplayBuffer`:
+- `fileVersion: UInt32 = 4` (was 3)
+- `trailerSize: Int = 32`
+- `maxReasonableCapacity: Int64 = 10_000_000`
+- `maxReasonableStoredCount: Int64 = 10_000_000`
+- `maxReasonableFloatsPerBoard: Int64 = 8_192`
+
+No existing hyperparameter (LR, batch size, clip, tau, draw penalty, entropy reg, policy scale K, etc.) was changed.
+
+### Tests
+
+5 new XCTests in `ReplayBufferTests.swift` covering v3 rejection, SHA-tamper rejection, size-mismatch on truncation and trailing garbage, upper-bound cap rejection on `capacity = Int64.max`. Full suite: 55/55 green.
+
+### Docs
+
+New `dcmmodel_file_format.md` (full byte spec, FNV-1a detail) and `replay_buffer_file_format.md` (v3 historical + v4 current) created. `ROADMAP.md` Completed section has the full writeup.
+
+---
+
 ## 2026-04-20 (later) — Advantage standardization, live hyperparameters, stats expansion, session format
 
 **Files:** `ChessTrainer.swift`, `ChessNetwork.swift`, `BatchedSelfPlayDriver.swift`, `MPSChessPlayer.swift`, `ContentView.swift`, `SessionCheckpointFile.swift`.

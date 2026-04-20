@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Thread-safe fixed-capacity ring of labeled self-play positions.
@@ -271,6 +272,9 @@ final class ReplayBuffer: @unchecked Sendable {
         case incompatibleBoardSize(expected: Int, got: Int)
         case invalidCounts(capacity: Int, stored: Int, writeIndex: Int)
         case truncatedBody(expected: Int, got: Int)
+        case sizeMismatch(expected: Int64, got: Int64)
+        case hashMismatch
+        case upperBoundExceeded(field: String, value: Int64, max: Int64)
         case writeFailed(Error)
         case readFailed(Error)
 
@@ -285,6 +289,12 @@ final class ReplayBuffer: @unchecked Sendable {
                 return "Invalid replay buffer counts (capacity=\(cap) stored=\(stored) writeIndex=\(wi))"
             case .truncatedBody(let exp, let got):
                 return "Replay buffer body truncated (expected \(exp) bytes, got \(got))"
+            case .sizeMismatch(let exp, let got):
+                return "Replay buffer file size mismatch: header predicts \(exp) bytes, file is \(got) bytes"
+            case .hashMismatch:
+                return "Replay buffer integrity check failed: SHA-256 trailer does not match file contents"
+            case .upperBoundExceeded(let field, let value, let max):
+                return "Replay buffer header field '\(field)' value \(value) exceeds sanity cap \(max) — file is malformed or corrupted"
             case .writeFailed(let err): return "Replay buffer write failed: \(err)"
             case .readFailed(let err): return "Replay buffer read failed: \(err)"
             }
@@ -295,25 +305,45 @@ final class ReplayBuffer: @unchecked Sendable {
     private static let fileMagic: [UInt8] = Array("DCMRPBUF".utf8)
     /// Format version. Bump on any on-disk layout change.
     ///
-    /// Current format is v3:
-    ///   - boards: `BoardEncoder.tensorLength` floats per slot
-    ///     (currently `inputPlanes` × 8 × 8 = 1,280).
-    ///   - moves: one Int32 policy index per slot.
-    ///   - outcomes: one Float (z) per slot.
-    ///   - vBaselines: one Float (frozen v at play time) per slot.
+    /// Current format is v4:
+    ///   - Header: 8-byte magic + 4-byte version + 4-byte pad + 5 × Int64
+    ///     (floatsPerBoard, capacity, storedCount, writeIndex,
+    ///     totalPositionsAdded).
+    ///   - Body: four parallel arrays of `storedCount` entries, oldest-first
+    ///     — boards (`floatsPerBoard` × Float32), moves (Int32), outcomes
+    ///     (Float32), vBaselines (Float32).
+    ///   - Trailer: 32-byte SHA-256 digest over every preceding byte
+    ///     (header + all four body arrays). Verified before any header
+    ///     field is trusted at load time.
+    ///
+    /// The v4 file-size invariant (checked strictly at load) is:
+    /// ```
+    /// totalBytes == headerSize + storedCount × (floatsPerBoard × 4 + 12) + 32
+    /// ```
     ///
     /// Earlier format versions (v1 without vBaselines, v2 with the
-    /// pre-refresh 18-plane board stride) are no longer supported —
-    /// the reader cleanly rejects them with `unsupportedVersion`. Per
-    /// project convention (no migration without explicit request),
-    /// older files from previous architecture iterations are not
-    /// loadable.
-    private static let fileVersion: UInt32 = 3
+    /// pre-refresh 18-plane board stride, v3 without SHA trailer) are no
+    /// longer supported — the reader cleanly rejects them with
+    /// `unsupportedVersion`. Per project convention (no migration without
+    /// explicit request), older files from previous architecture or
+    /// durability iterations are not loadable.
+    private static let fileVersion: UInt32 = 4
     /// Header size in bytes: 8 magic + 4 version + 4 pad + 5 × Int64 fields.
     private static let headerSize: Int = 8 + 4 + 4 + 8 * 5
+    /// SHA-256 trailer size in bytes.
+    private static let trailerSize: Int = 32
     /// Chunk size for raw-buffer writes/reads. Keeps peak Data
     /// allocations bounded even when the ring holds ~1 M positions.
     private static let persistenceChunkBytes: Int = 32 * 1024 * 1024
+
+    /// Sanity caps on header counter fields. Applied before any
+    /// allocation or seek arithmetic during load so a corrupted or
+    /// hostile header cannot coax the decoder into a massive allocation
+    /// or integer overflow. Paired with the SHA-256 trailer (which
+    /// catches corruption pre-parse) this is defense-in-depth.
+    private static let maxReasonableCapacity: Int64 = 10_000_000
+    private static let maxReasonableStoredCount: Int64 = 10_000_000
+    private static let maxReasonableFloatsPerBoard: Int64 = 8_192
 
     /// Write the buffer's current contents to `url` in oldest-first
     /// order. On-disk size is proportional to `storedCount` (not
@@ -321,9 +351,29 @@ final class ReplayBuffer: @unchecked Sendable {
     /// file. Thread-safe — runs on the serial queue for the duration
     /// of the write, which pauses appends and samples until the write
     /// finishes.
-    func write(to url: URL) throws {
+    ///
+    /// Returns the `StateSnapshot` that was actually serialized.
+    /// Post-save verification code that wants to compare the written
+    /// file's counters against ground truth must use this return
+    /// value, NOT call `stateSnapshot()` separately — concurrent
+    /// appends between the write and the follow-up snapshot would
+    /// make the two observations diverge and the comparison
+    /// spuriously fail. Annotated `@discardableResult` so callers
+    /// that just want "save and move on" semantics (tests,
+    /// fire-and-forget saves) compile unchanged.
+    @discardableResult
+    func write(to url: URL) throws -> StateSnapshot {
         try queue.sync {
             try _writeLocked(to: url)
+            // Captured under the same lock that serializes the write,
+            // so the returned snapshot reflects exactly the state
+            // whose bytes just landed in the file.
+            return StateSnapshot(
+                storedCount: storedCount,
+                capacity: capacity,
+                writeIndex: writeIndex,
+                totalPositionsAdded: _totalPositionsAdded
+            )
         }
     }
 
@@ -382,74 +432,107 @@ final class ReplayBuffer: @unchecked Sendable {
         // mask the real failure.
         defer { try? handle.close() }
 
+        // Streaming SHA-256 hasher. Every byte written to the file
+        // (header + all body sections) is fed through this hasher; the
+        // finalized 32-byte digest is appended as the trailer. The
+        // trailer is itself NOT hashed (same convention as .dcmmodel).
+        var hasher = SHA256()
+        hasher.update(data: header)
+
         do {
             try handle.write(contentsOf: header)
         } catch {
             throw PersistenceError.writeFailed(error)
         }
 
-        guard stored > 0 else { return }
+        if stored > 0 {
+            // Start position of the oldest stored entry in the ring.
+            let startIndex = (stored == cap) ? wIndex : 0
 
-        // Start position of the oldest stored entry in the ring.
-        let startIndex = (stored == cap) ? wIndex : 0
+            // Boards — stride in positions, copy in chunks of up to
+            // persistenceChunkBytes to bound peak memory on 1 M-position rings.
+            let boardStride = floatsPerBoard * MemoryLayout<Float>.size
+            let boardChunkPositions = max(1, Self.persistenceChunkBytes / boardStride)
+            try writeRange(
+                handle: handle,
+                hasher: &hasher,
+                start: startIndex,
+                total: stored,
+                capacity: cap,
+                chunkPositions: boardChunkPositions,
+                elementBytes: boardStride,
+                basePtr: UnsafeRawPointer(boardStorage),
+                elementsPerSlot: floatsPerBoard,
+                slotSize: boardStride
+            )
 
-        // Boards — stride in positions, copy in chunks of up to
-        // persistenceChunkBytes to bound peak memory on 1 M-position rings.
-        let boardStride = floatsPerBoard * MemoryLayout<Float>.size
-        let boardChunkPositions = max(1, Self.persistenceChunkBytes / boardStride)
-        try writeRange(
-            handle: handle,
-            start: startIndex,
-            total: stored,
-            capacity: cap,
-            chunkPositions: boardChunkPositions,
-            elementBytes: boardStride,
-            basePtr: UnsafeRawPointer(boardStorage),
-            elementsPerSlot: floatsPerBoard,
-            slotSize: boardStride
-        )
+            // Moves — 4 bytes per slot.
+            let moveChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<Int32>.size)
+            try writeRange(
+                handle: handle,
+                hasher: &hasher,
+                start: startIndex,
+                total: stored,
+                capacity: cap,
+                chunkPositions: moveChunk,
+                elementBytes: MemoryLayout<Int32>.size,
+                basePtr: UnsafeRawPointer(moveStorage),
+                elementsPerSlot: 1,
+                slotSize: MemoryLayout<Int32>.size
+            )
 
-        // Moves — 4 bytes per slot.
-        let moveChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<Int32>.size)
-        try writeRange(
-            handle: handle,
-            start: startIndex,
-            total: stored,
-            capacity: cap,
-            chunkPositions: moveChunk,
-            elementBytes: MemoryLayout<Int32>.size,
-            basePtr: UnsafeRawPointer(moveStorage),
-            elementsPerSlot: 1,
-            slotSize: MemoryLayout<Int32>.size
-        )
+            // Outcomes — 4 bytes per slot.
+            let outChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<Float>.size)
+            try writeRange(
+                handle: handle,
+                hasher: &hasher,
+                start: startIndex,
+                total: stored,
+                capacity: cap,
+                chunkPositions: outChunk,
+                elementBytes: MemoryLayout<Float>.size,
+                basePtr: UnsafeRawPointer(outcomeStorage),
+                elementsPerSlot: 1,
+                slotSize: MemoryLayout<Float>.size
+            )
 
-        // Outcomes — 4 bytes per slot.
-        let outChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<Float>.size)
-        try writeRange(
-            handle: handle,
-            start: startIndex,
-            total: stored,
-            capacity: cap,
-            chunkPositions: outChunk,
-            elementBytes: MemoryLayout<Float>.size,
-            basePtr: UnsafeRawPointer(outcomeStorage),
-            elementsPerSlot: 1,
-            slotSize: MemoryLayout<Float>.size
-        )
+            // vBaselines — 4 bytes per slot. Present since v2.
+            let vBaseChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<Float>.size)
+            try writeRange(
+                handle: handle,
+                hasher: &hasher,
+                start: startIndex,
+                total: stored,
+                capacity: cap,
+                chunkPositions: vBaseChunk,
+                elementBytes: MemoryLayout<Float>.size,
+                basePtr: UnsafeRawPointer(vBaselineStorage),
+                elementsPerSlot: 1,
+                slotSize: MemoryLayout<Float>.size
+            )
+        }
 
-        // vBaselines — 4 bytes per slot. Present in v2 and later.
-        let vBaseChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<Float>.size)
-        try writeRange(
-            handle: handle,
-            start: startIndex,
-            total: stored,
-            capacity: cap,
-            chunkPositions: vBaseChunk,
-            elementBytes: MemoryLayout<Float>.size,
-            basePtr: UnsafeRawPointer(vBaselineStorage),
-            elementsPerSlot: 1,
-            slotSize: MemoryLayout<Float>.size
-        )
+        // Trailer — 32 bytes of SHA-256 over all preceding bytes.
+        let digest = Data(hasher.finalize())
+        do {
+            try handle.write(contentsOf: digest)
+        } catch {
+            throw PersistenceError.writeFailed(error)
+        }
+
+        // Force APFS to flush dirty pages to stable storage before the
+        // handle closes. Without this, a crash or power loss after
+        // close-returns but before the OS flushes would leave a torn
+        // file on disk even though Swift saw the write as successful.
+        // Regular `synchronize()` (equivalent to fsync(2)) commits the
+        // bytes to the device; for drive-cache-bypass durability,
+        // `CheckpointManager.fullSyncPath` uses fcntl(F_FULLFSYNC) on
+        // the file after we return.
+        do {
+            try handle.synchronize()
+        } catch {
+            throw PersistenceError.writeFailed(error)
+        }
     }
 
     /// Serialize a contiguous logical range of the ring starting at
@@ -457,8 +540,16 @@ final class ReplayBuffer: @unchecked Sendable {
     /// is identified by `basePtr` (raw pointer to its element 0) and
     /// `slotSize` bytes per ring slot. Caller must be executing on
     /// the serial `queue` (e.g. from inside `_writeLocked`).
+    ///
+    /// Every byte written is also fed into `hasher` — the streaming
+    /// SHA-256 hasher whose final digest becomes the file's integrity
+    /// trailer. Passing the hasher inout (rather than capturing it in
+    /// an escaping closure) lets the single hasher object accumulate
+    /// across all four section writes from a single `_writeLocked`
+    /// call.
     private func writeRange(
         handle: FileHandle,
+        hasher: inout SHA256,
         start: Int,
         total: Int,
         capacity: Int,
@@ -479,10 +570,10 @@ final class ReplayBuffer: @unchecked Sendable {
                 let take = min(runRemaining, chunkPositions)
                 let byteCount = take * slotSize
                 let srcPtr = basePtr.advanced(by: runIdx * slotSize)
+                let chunk = Data(bytes: srcPtr, count: byteCount)
+                hasher.update(data: chunk)
                 do {
-                    try handle.write(
-                        contentsOf: Data(bytes: srcPtr, count: byteCount)
-                    )
+                    try handle.write(contentsOf: chunk)
                 } catch {
                     throw PersistenceError.writeFailed(error)
                 }
@@ -504,6 +595,33 @@ final class ReplayBuffer: @unchecked Sendable {
     /// `totalPositionsAdded` counter is restored verbatim so the
     /// replay-ratio controller's production-rate window stays
     /// continuous across save/resume.
+    ///
+    /// v4 validation order (each step throws a specific error on
+    /// failure and aborts; no field is trusted until all preceding
+    /// checks pass):
+    ///
+    /// 1. File opens and header can be fully read (`truncatedHeader`).
+    /// 2. Magic matches "DCMRPBUF" (`badMagic`).
+    /// 3. `fileVersion == 4` (`unsupportedVersion`).
+    /// 4. `floatsPerBoard` matches the running build's tensor length
+    ///    (`incompatibleBoardSize`) — replay-buffer analog of the
+    ///    `.dcmmodel` arch-hash check.
+    /// 5. Counter upper-bound caps: `capacity`, `storedCount`,
+    ///    `floatsPerBoard` each ≤ their `maxReasonable*` threshold
+    ///    (`upperBoundExceeded`). Catches corrupt headers before
+    ///    any allocation or seek arithmetic.
+    /// 6. Counter relationships: non-negative, `storedCount ≤ capacity`,
+    ///    `writeIndex` in range (`invalidCounts`).
+    /// 7. Actual file size == header-predicted size (`sizeMismatch`).
+    ///    Uses strict equality; any deviation is corruption.
+    /// 8. SHA-256 over the first `totalBytes - 32` bytes matches the
+    ///    32-byte trailer (`hashMismatch`). Full read of the file's
+    ///    content bytes before any state is mutated.
+    ///
+    /// Only after all eight pass does the function mutate any live
+    /// state (locking `queue.sync`, resetting counters, re-seeking
+    /// to the header end, and reading the four sections into the
+    /// ring storage).
     func restore(from url: URL) throws {
         let handle: FileHandle
         do {
@@ -537,11 +655,12 @@ final class ReplayBuffer: @unchecked Sendable {
         let version: UInt32 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
         }
-        // v3 is the only currently supported format. Earlier versions
-        // (from prior architecture iterations with a different per-
-        // slot board stride) are rejected with `unsupportedVersion`.
-        // No migration code per project convention.
-        guard version == 3 else {
+        // v4 is the only currently supported format. Earlier versions
+        // (v1 without vBaselines, v2 with the pre-refresh 18-plane
+        // board stride, v3 without the SHA trailer) are rejected with
+        // `unsupportedVersion`. No migration code per project
+        // convention.
+        guard version == Self.fileVersion else {
             throw PersistenceError.unsupportedVersion(version)
         }
         let fpbFile: Int64 = headerData.withUnsafeBytes {
@@ -566,6 +685,33 @@ final class ReplayBuffer: @unchecked Sendable {
                 got: Int(fpbFile)
             )
         }
+
+        // Upper-bound caps before any further arithmetic. A corrupted
+        // header with `Int64.max` in any field would otherwise survive
+        // the non-negative sanity checks below and could either drive
+        // a huge allocation or overflow the size computation.
+        guard fpbFile <= Self.maxReasonableFloatsPerBoard else {
+            throw PersistenceError.upperBoundExceeded(
+                field: "floatsPerBoard",
+                value: fpbFile,
+                max: Self.maxReasonableFloatsPerBoard
+            )
+        }
+        guard capFile <= Self.maxReasonableCapacity else {
+            throw PersistenceError.upperBoundExceeded(
+                field: "capacity",
+                value: capFile,
+                max: Self.maxReasonableCapacity
+            )
+        }
+        guard stcFile <= Self.maxReasonableStoredCount else {
+            throw PersistenceError.upperBoundExceeded(
+                field: "storedCount",
+                value: stcFile,
+                max: Self.maxReasonableStoredCount
+            )
+        }
+
         guard capFile >= 0, stcFile >= 0, stcFile <= capFile,
               wiFile >= 0, wiFile < max(1, capFile) else {
             throw PersistenceError.invalidCounts(
@@ -573,6 +719,91 @@ final class ReplayBuffer: @unchecked Sendable {
                 stored: Int(stcFile),
                 writeIndex: Int(wiFile)
             )
+        }
+
+        // Compute expected file size from the header, then require
+        // strict byte-for-byte equality against what's on disk. The
+        // format is fully deterministic — any deviation is corruption.
+        let perSlotBytes: Int64 = fpbFile * Int64(MemoryLayout<Float>.size)
+            + Int64(MemoryLayout<Int32>.size)       // moves
+            + Int64(MemoryLayout<Float>.size)       // outcomes
+            + Int64(MemoryLayout<Float>.size)       // vBaselines
+        let expectedBytes: Int64 = Int64(Self.headerSize)
+            + stcFile * perSlotBytes
+            + Int64(Self.trailerSize)
+
+        let actualBytes: Int64
+        do {
+            let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard let size = attrs[.size] as? NSNumber else {
+                throw PersistenceError.readFailed(
+                    NSError(
+                        domain: "ReplayBuffer",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "FileManager returned no size attribute"]
+                    )
+                )
+            }
+            actualBytes = size.int64Value
+        } catch let err as PersistenceError {
+            throw err
+        } catch {
+            throw PersistenceError.readFailed(error)
+        }
+
+        guard actualBytes == expectedBytes else {
+            throw PersistenceError.sizeMismatch(
+                expected: expectedBytes,
+                got: actualBytes
+            )
+        }
+
+        // SHA-256 verification. Stream-read every byte before the
+        // trailer through a fresh hasher, then compare the finalized
+        // digest against the last 32 bytes. On match, seek back to
+        // the header end so the section reads below can proceed from
+        // the correct offset.
+        do {
+            try handle.seek(toOffset: 0)
+            var hasher = SHA256()
+            var remaining = actualBytes - Int64(Self.trailerSize)
+            while remaining > 0 {
+                let take = Int(min(Int64(Self.persistenceChunkBytes), remaining))
+                guard let chunk = try handle.read(upToCount: take),
+                      chunk.count == take else {
+                    throw PersistenceError.readFailed(
+                        NSError(
+                            domain: "ReplayBuffer",
+                            code: -1,
+                            userInfo: [NSLocalizedDescriptionKey: "Short read during SHA verify"]
+                        )
+                    )
+                }
+                hasher.update(data: chunk)
+                remaining -= Int64(take)
+            }
+            let computed = Data(hasher.finalize())
+            guard let storedTrailer = try handle.read(upToCount: Self.trailerSize),
+                  storedTrailer.count == Self.trailerSize else {
+                throw PersistenceError.readFailed(
+                    NSError(
+                        domain: "ReplayBuffer",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Short read on SHA trailer"]
+                    )
+                )
+            }
+            guard computed == storedTrailer else {
+                throw PersistenceError.hashMismatch
+            }
+            // Reposition the handle at the start of the body (just past
+            // the 56-byte header) so the section-reads below start at
+            // the right offset.
+            try handle.seek(toOffset: UInt64(Self.headerSize))
+        } catch let err as PersistenceError {
+            throw err
+        } catch {
+            throw PersistenceError.readFailed(error)
         }
 
         let fileStored = Int(stcFile)
@@ -627,9 +858,8 @@ final class ReplayBuffer: @unchecked Sendable {
                 count: target
             )
 
-            // vBaselines — present in v3 (and v2 historically; we only
-            // accept v3 now). Skip + read with the same pattern as the
-            // other fields.
+            // vBaselines — present since v2. Skip + read with the same
+            // pattern as the other fields.
             if skip > 0 {
                 try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
             }

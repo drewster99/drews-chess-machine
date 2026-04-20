@@ -5921,11 +5921,23 @@ struct ContentView: View {
             // detached I/O task so ~GB-scale reads don't block the
             // cooperative hop cadence.
             if let bufferURL = resumedBufferURL {
+                let resumedState: SessionCheckpointState? = await MainActor.run {
+                    pendingLoadedSession?.state
+                }
                 do {
                     try await Task.detached(priority: .userInitiated) {
                         [buffer, bufferURL] in
                         try buffer.restore(from: bufferURL)
                     }.value
+                    // Cross-check lifetime counter against session.json.
+                    // Mismatch here indicates file-pairing error or
+                    // residual corruption that happened to SHA-match.
+                    if let resumedState {
+                        try CheckpointManager.verifyReplayBufferMatchesSession(
+                            buffer: buffer,
+                            state: resumedState
+                        )
+                    }
                     let snap = buffer.stateSnapshot()
                     SessionLogger.shared.log(
                         "[CHECKPOINT] Restored replay buffer: stored=\(snap.storedCount)/\(snap.capacity) totalAdded=\(snap.totalPositionsAdded) writeIndex=\(snap.writeIndex)"
