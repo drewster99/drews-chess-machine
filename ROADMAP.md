@@ -8,32 +8,128 @@ Long-term goals, deferred work, and notes on decisions.
   hyperparameter (default 5e-5) that the user adjusts manually via the
   UI. Real-world deep-RL training benefits from LR scheduling — high LR
   early to make fast progress on raw signal, then decay as the network
-  converges so late-stage updates don't oscillate. Candidate triggers
-  for the schedule (pick one or compose):
-    - **Step-based decay.** LR multiplied by γ every N training steps
-      (e.g., γ=0.5 every 100K steps). Predictable, tunable, but blind
-      to actual training health.
-    - **Plateau detection.** Watch a smoothed loss; when it stops
-      decreasing for N consecutive measurements, multiply LR by 0.5.
-      Standard "ReduceLROnPlateau" pattern.
-    - **Promotion-driven.** Drop LR by a factor on every successful
-      arena promotion. The intuition: promotion proves the current
-      policy has shifted meaningfully, so subsequent updates should be
-      gentler to lock in that progress before the next promotion
-      window. Conversely, a long arena-failure streak could *raise*
-      LR to escape a local minimum.
-    - **Cosine annealing with restarts (SGDR).** Smoothly decays LR
-      across an "epoch" then restarts to the high value. Often
-      empirically strong but adds another tunable (epoch length).
-    - **Replay-ratio aware.** Tie LR to the cons/prod ratio so that
-      undertraining (cons < prod) doesn't get amplified by a too-hot
-      LR.
-  Implementation note: keep manual UI override in place. Schedule
-  proposes; user can lock to a fixed value if they want. Log every
-  schedule-driven LR change as a `[PARAM] learningRate ...` line so
-  the change is visible in the session log alongside training metrics.
-  No specific design picked yet — open question which trigger best
-  matches our pre-MCTS bootstrap regime.
+  converges so late-stage updates don't oscillate.
+
+  ### Candidate trigger families (surveyed)
+
+  - **Step-based decay.** LR multiplied by γ every N training steps
+    (e.g., γ=0.5 every 100K steps). Predictable, tunable, but blind
+    to actual training health.
+  - **Plateau detection.** Watch a smoothed loss; when it stops
+    decreasing for N consecutive measurements, multiply LR by 0.5.
+    Standard "ReduceLROnPlateau" pattern.
+  - **Promotion-driven.** Drop LR by a factor on every successful
+    arena promotion. The intuition: promotion proves the current
+    policy has shifted meaningfully, so subsequent updates should be
+    gentler to lock in that progress before the next promotion
+    window. Rejected as an upward-bump mechanism: arena failure more
+    likely means the candidate diverged in a worse direction (LR too
+    hot, or replay overfit) than "stuck in a flat region that a
+    bigger step would escape." Raising LR on failure would make those
+    cases worse. Promotion-driven *downward* nudge still useful as a
+    secondary overlay.
+  - **Cosine annealing with restarts (SGDR).** Smoothly decays LR
+    across an "epoch" then restarts to the high value. Often
+    empirically strong in supervised vision but adds another tunable
+    (epoch length) and has no natural "epoch" concept in self-play.
+  - **Replay-ratio aware.** Tie LR to the cons/prod ratio so that
+    undertraining (cons < prod) doesn't get amplified by a too-hot
+    LR.
+
+  ### What AZ-family engines actually use (survey, 2026-04)
+
+  Researched the five canonical systems' published LR schedules,
+  normalized to positions-seen so batch-size differences don't
+  confuse the comparison:
+
+  - **AlphaZero** (Silver et al., 1712.01815 v1 + Science 2018). SGD
+    + momentum 0.9. Start 0.2, step decay 10× per drop at 100K /
+    300K / 500K training steps → 0.0002 floor. Batch 4,096 positions.
+    Normalized: first drop at ~410M positions, final at ~2.05B, total
+    ~2.87B positions across 700K steps. (Go variant starts at 0.02
+    rather than 0.2.)
+  - **AlphaGo Zero** (Silver et al., Nature 2017). SGD + momentum
+    0.9, L2 = 1e-4. Start 1e-2, step decay 10× → 1e-3 → 1e-4.
+    Extended Data Table 3 milestones not confirmable from primary
+    source in this pass; ELF OpenGo (1902.04522), which explicitly
+    reproduces AGZ faithfully, used 500K / 1M / 1.5M minibatches.
+    Batch 2,048 positions. Normalized (via ELF): ~1.0B / ~2.0B /
+    ~3.0B positions.
+  - **Leela Chess Zero** (`lczero-training/tf/configs/example.yaml`).
+    `lr_values=[0.02, 0.002, 0.0005]`, `lr_boundaries=[100000,
+    130000]` steps, 250-step warmup, 140K total. Batch 2,048.
+    Normalized: drops at 205M / 266M positions, total 287M. Caveat:
+    that's the documented *example* — T60/T70/T78/T80/BT production
+    runs don't publish per-run YAML values anywhere I could find.
+    The blog/wiki describe "LR starts high and is occasionally
+    reduced" without numbers.
+  - **KataGo** (Wu, 1902.10565, and the live `python/train.py`).
+    Parameterized in *samples* (= positions), not gradient steps.
+    Paper "g170" run: base per-sample 6e-5, batch 256 →
+    effective per-batch 0.01536. Warmup: first 5M samples at ⅓ LR.
+    For the b20c256 run, one 10× drop late (after ~17.5 days). Not
+    really step-decay in the AZ sense — effectively constant LR with
+    warmup + one late drop, combined with SWA / EMA of snapshots
+    (every ~250K samples snapshot; every ~1M samples a new EMA
+    candidate with decay 0.75) doing work the others get from
+    discrete drops. Current `train.py` has drifted to base per-sample
+    3e-5 with a 9-stage warmup over first 2M samples and a piecewise
+    `lr_scale_auto2` multiplier ramping 12× down to 0.05× over ~600M
+    samples — much more elaborate than the paper.
+  - **MuZero** (Schrittwieser et al., Nature 2020, board-games
+    config in the paper's pseudocode). SGD + momentum 0.9, WD 1e-4.
+    Start 0.1 (chess/shogi) or 0.01 (Go). **Exponential** decay, not
+    step decay:
+    `lr = lr_init · 0.1^(training_step / 400_000)`. Batch 2,048; 1M
+    total steps. Normalized: LR falls 10× every ~819M positions. At
+    1M steps (~2.05B positions) LR has decayed ~316× (chess final
+    ≈ 3.2e-4).
+
+  **Synthesis.** Common pattern is step decay at 10× per drop, ~3
+  drops total, first drop somewhere between ~200M and ~1B positions
+  seen. Nobody in this family uses cosine, cyclic, or warm restarts.
+  Batches cluster at 2,048 (AGZ, lc0, MuZero), with AZ doubling to
+  4,096 and KataGo going small at 256. Outliers: KataGo in *shape*
+  (mostly flat + late drop + EMA), MuZero in *mechanism* (continuous
+  exponential vs. discrete drops). At our current `learnRate = 5e-5`
+  we're roughly at KataGo's paper per-sample scale.
+
+  ### Chosen design
+
+  MuZero-style continuous exponential decay keyed to
+  `trainingPositionsSeen` (an invariant under live batch-size
+  changes), with a promotion-driven secondary overlay:
+
+  - **Primary schedule**: `lr = lr_init · γ_e^(positions / τ)` with
+    `γ_e = 0.1` (10× per τ, matching the family) and default
+    `τ = 500M` positions per 10× — puts us in the AZ / MuZero zone.
+    Both `lr_init` and `τ` live-tunable in the UI.
+  - **Promotion overlay**: on every successful arena promotion,
+    additionally multiply LR by ~0.9 (consolidation nudge). Monotonic
+    non-increasing — no upward bumps on arena failure. Per the
+    rejection above, failure-upward is more likely to hurt than help.
+  - **Floor**: 1e-7 so long runs don't collapse to zero.
+  - **Optional warmup**: linear ramp from 0 → `lr_init` over first
+    ~2K steps, added only if early-training instability shows up.
+  - **Manual UI override wins**: "Schedule: auto / off" toggle; with
+    off, the slider is authoritative and the schedule is paused
+    (preserves the current auto value so re-enabling doesn't snap).
+    With on, the slider shows the current scheduled value read-only.
+  - **Logging**: every schedule-driven change logged as
+    `[PARAM] learningRate <old>→<new> reason=<decay|promotion|warmup>`
+    so change history lives alongside `[STATS]` in the session log.
+  - **Persistence**: `lr_init`, `τ`, `γ_promotion`, schedule on/off,
+    and the last-computed LR all live in `session.json` so a reload
+    resumes at the same scheduled value rather than jumping.
+
+  Deliberately *not* doing: step-milestone decay (operates on
+  training steps, which our live-tunable batch size makes
+  non-invariant), plateau-on-loss (our `pLoss` is outcome-weighted
+  and unbounded — unreliable plateau signal), replay-ratio aware
+  (the `ReplayRatioController` already handles cons/prod; doubling
+  up couples two control loops with no clear benefit), cosine/SGDR
+  (no natural epoch in self-play; adds a tunable without a
+  principled way to set it).
 
 - **Model and session save/load.** Today nothing persists across app
   launches — quit mid-training and you lose the champion, the trainer,
