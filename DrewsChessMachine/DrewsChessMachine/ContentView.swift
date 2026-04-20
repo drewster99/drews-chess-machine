@@ -3941,6 +3941,7 @@ struct ContentView: View {
             selfPlayWorkerCount: selfPlayWorkerCount,
             gradClipMaxNorm: Float(gradClipMaxNorm),
             weightDecayCoeff: Float(weightDecayC),
+            policyScaleK: Float(policyScaleK),
             replayRatioTarget: replayRatioTarget,
             replayRatioAutoAdjust: replayRatioAutoAdjust,
             stepDelayMs: trainingStepDelayMs,
@@ -5591,10 +5592,45 @@ struct ContentView: View {
             } else {
                 trainer.drawPenalty = Float(drawPenalty)
             }
+            // Regularization knobs that became editable post-v1 session
+            // files: hydrate when present, otherwise leave the current
+            // @AppStorage-backed value alone.
+            if let wd = rs.weightDecayCoeff {
+                trainer.weightDecayC = wd
+                weightDecayC = Double(wd)
+            } else {
+                trainer.weightDecayC = Float(weightDecayC)
+            }
+            if let clip = rs.gradClipMaxNorm {
+                trainer.gradClipMaxNorm = clip
+                gradClipMaxNorm = Double(clip)
+            } else {
+                trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
+            }
+            if let k = rs.policyScaleK {
+                trainer.policyScaleK = k
+                policyScaleK = Double(k)
+            } else {
+                trainer.policyScaleK = Float(policyScaleK)
+            }
+            // Sampling schedule — TauConfigCodable is non-Optional on
+            // the session schema (added in v1), so no fallback branch.
+            // Writes to @AppStorage propagate through
+            // `buildSelfPlaySchedule` / `buildArenaSchedule` the next
+            // time the schedule box is built below.
+            spStartTau = Double(rs.selfPlayTau.startTau)
+            spFloorTau = Double(rs.selfPlayTau.floorTau)
+            spDecayPerPly = Double(rs.selfPlayTau.decayPerPly)
+            arStartTau = Double(rs.arenaTau.startTau)
+            arFloorTau = Double(rs.arenaTau.floorTau)
+            arDecayPerPly = Double(rs.arenaTau.decayPerPly)
         } else {
             trainer.learningRate = Float(trainerLearningRate)
             trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
             trainer.drawPenalty = Float(drawPenalty)
+            trainer.weightDecayC = Float(weightDecayC)
+            trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
+            trainer.policyScaleK = Float(policyScaleK)
         }
         var initialTrainingStats = TrainingRunStats()
         if let rs = resumeState {
@@ -6963,11 +6999,50 @@ struct ContentView: View {
                 lines.append("    v mean:        \(vMeanStr)")
                 lines.append("    v abs:         \(vAbsStr)")
             }
-            if let gNorm = trainingBox?.snapshot().rollingGradGlobalNorm {
+            // Take a single snapshot for all diagnostic lines below so
+            // they're all reading the same moment rather than racing
+            // against independent box reads.
+            let diagSnap = trainingBox?.snapshot()
+            if let gNorm = diagSnap?.rollingGradGlobalNorm {
                 lines.append(String(format: "  Grad norm:   %.3f", gNorm))
             }
-            if let pwNorm = trainingBox?.snapshot().rollingPolicyHeadWeightNorm {
+            if let pwNorm = diagSnap?.rollingPolicyHeadWeightNorm {
                 lines.append(String(format: "  pWeight ||₂:  %.3f", pwNorm))
+            }
+            if let pLogitMax = diagSnap?.rollingPolicyLogitAbsMax {
+                lines.append(String(format: "  pLogit |max|: %.3f", pLogitMax))
+            }
+            if let playedProb = diagSnap?.rollingPlayedMoveProb {
+                lines.append(String(format: "  p(played):   %.4f", playedProb))
+            }
+            // Advantage distribution — per-batch mean / std / signed
+            // fractions show whether the fresh-baseline is centering
+            // correctly. p05/p50/p95 are percentiles of raw advantage
+            // values over the rolling window.
+            if let advMean = diagSnap?.rollingAdvMean,
+               let advStd = diagSnap?.rollingAdvStd {
+                let posStr = diagSnap?.rollingAdvFracPositive
+                    .map { String(format: "%.2f", $0) } ?? dash
+                let smallStr = diagSnap?.rollingAdvFracSmall
+                    .map { String(format: "%.2f", $0) } ?? dash
+                lines.append(String(
+                    format: "  Adv μ/σ:      %+.4f / %.4f  frac+=%@ fracSmall=%@",
+                    advMean, advStd, posStr, smallStr
+                ))
+                if let advMin = diagSnap?.rollingAdvMin,
+                   let advMax = diagSnap?.rollingAdvMax {
+                    lines.append(String(
+                        format: "  Adv [min,max]: [%+.3f, %+.3f]", advMin, advMax
+                    ))
+                }
+                if let p05 = diagSnap?.advantageP05,
+                   let p50 = diagSnap?.advantageP50,
+                   let p95 = diagSnap?.advantageP95 {
+                    lines.append(String(
+                        format: "  Adv pct (05/50/95): %+.3f / %+.3f / %+.3f",
+                        p05, p50, p95
+                    ))
+                }
             }
             // Ent reg / Grad clip / Weight dec / Draw pen previously
             // listed here are duplicates of the editable fields shown

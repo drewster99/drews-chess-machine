@@ -8,6 +8,64 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-20 (later) — Advantage standardization, live hyperparameters, stats expansion, session format
+
+**Files:** `ChessTrainer.swift`, `ChessNetwork.swift`, `BatchedSelfPlayDriver.swift`, `MPSChessPlayer.swift`, `ContentView.swift`, `SessionCheckpointFile.swift`.
+
+Follow-up to the ML review of the 80 %-draw training plateau. The review highlighted three root causes: (1) uncentered advantages biasing the policy gradient into the trunk in one direction, (2) gradient clip sitting 160× below the natural gNorm so the effective LR was driven by clip, not by `lr`, and (3) no visibility into the logit-scale / played-move-probability / advantage-distribution signals that would diagnose policy collapse early.
+
+### Per-batch advantage standardization
+
+Before this change the policy gradient used raw `A = z − vBaseline`. With a value head stuck at a global bias (e.g. `E[v] ≈ 0.45` under the current draw-heavy regime), raw advantages were systematically asymmetric — wins ≈ +0.55, draws ≈ −0.75 after `drawPenalty`, losses ≈ −1.45 — pushing the shared trunk in a biased direction regardless of position content.
+
+`weightedCE = advantage_normalized * negLogProb`, where `advantage_normalized = (A − E[A]) / √(Var[A] + 1e-6)`. `E[A]` and `Var[A]` are computed over the current batch; ε = 1e-6 floors the denominator.
+
+Correctness: MPSGraph has no `stopGradient`, but this is a non-issue because `advantage` is a pure function of the two placeholders `z` and `vBaseline`. The gradient of the total loss w.r.t. trainable variables flows through `negLogProb` only, with `advantage_normalized` acting as a batch-constant coefficient. The standardization adjusts the forward REINFORCE weight and never touches the autograd path.
+
+Raw-advantage diagnostics (`advantageMean/Std/Min/Max/FracPos/FracSmall/Raw`) are unchanged — they still measure the unnormalized distribution so the baseline's fit is visible in the log.
+
+### Policy scale K lowered from 50 to 5
+
+`policyWeight × policyLoss` was amplifying the policy-gradient by 50×, which is what drove gNorm to ~800 and pinned the clip scale at `5/800 ≈ 0.6 %`. Combined with the normalized advantages (which already have unit scale), K = 5 is enough to keep both heads comparable without fighting the clip.
+
+### Live-editable hyperparameters (LR already existed)
+
+The following now flow through the training graph as per-step scalar placeholders (`graph.placeholder(shape: [1], …)`), fed every step via `MPSNDArray.writeBytes` into a pre-allocated feed:
+
+- `weightDecayC` (default 1e-4)
+- `gradClipMaxNorm` (default 5.0)
+- `policyScaleK` (default 5.0)
+
+UI: editable text fields on the Entropy Reg row (`clip` / `decay` / `K`). Persisted via `@AppStorage`. Trainer init takes the current values; edits take effect at the next SGD step without graph rebuild.
+
+Sampling schedule (self-play + arena `startTau` / `floorTau` / `decayPerPly`) is also now live-editable via a new `SamplingScheduleBox` threaded through `BatchedSelfPlayDriver`. Driver reads the schedule at each game boundary and assigns `player.schedule` on the (reused) `MPSChessPlayer`. `MPSChessPlayer.schedule` changed from `let` to `var`; writes are guaranteed to happen between games by the slot loop structure, so no data race with mid-game `sampleMove` reads. Arena snapshots the schedule at tournament start for stability.
+
+### New training-health diagnostics
+
+All read via graph `targetTensors` (GPU-computed, zero extra round-trips beyond the readback) and surfaced on both the `[STATS]` log line and the in-app Training panel:
+
+- **`policyHeadWeightNorm`** — L2 norm of the policy head's final 1×1 conv weights. Direct measure of the tensor whose growth drives logit-scale runaway. Requires exposing `ChessNetwork.policyHeadFinalWeights` (wrapped with `graph.read()` before the reshape to avoid an MPSGraph lowering edge case with variable-fed reshapes).
+- **`policyLogitAbsMax`** — batch mean of `max_i |logits[i]|`. Pre-saturation early warning; grows before entropy collapses.
+- **`playedMoveProb`** — batch mean of `softmax[movePlayed]`. Action-index sanity check: under a working loop it rises from `~1/policySize` toward 1.0 over training; a flat plateau despite pLoss moving = action-index mismatch.
+- **`advantageMean` / `advantageStd` / `advantageMin` / `advantageMax` / `advantageFracPositive` / `advantageFracSmall`** — scalar reductions over the raw advantage tensor, plus p05/p50/p95 percentiles over a rolling ring of raw batch-concatenated advantages maintained in `TrainingLiveStatsBox`.
+- **`legalMass` / `top1Legal`** — batch mean of softmax mass on legal moves, and fraction of positions where the full-policy argmax is a legal move. Computed via a separate forward-only probe (`ChessTrainer.legalMassSnapshot`) on `sampleSize` replay-buffer positions, refreshed every ~25 steps during the bootstrap STATS window and every 60 s thereafter.
+
+The `[STATS]` emitter was restructured into a bootstrap phase (one line per new step until step ≥ `bootstrapStatsStepCount`) + steady-state phase (one line every 60 s).
+
+### Session checkpoint format
+
+Added `policyScaleK: Float?` to `SessionCheckpointState`. Optional for back-compat with session files written before the field became editable.
+
+### Cleanup
+
+Removed dead `policySoftmaxTensor` field (stored but never referenced as a target tensor or by the separate `legalMassSnapshot` path, which runs its own inference-graph pass).
+
+### What this does NOT fix
+
+The `Unsupported MPS operation mps.placeholder` runtime assertion observed during training is **not yet resolved**. The scalar placeholders for `weightDecay`/`clip`/`K` use the exact same construction pattern as the already-working `lr` and `entropyCoeff` placeholders; the `graph.read(...)` addition for the policy-weight-norm path is defensive but speculative. Root cause still under investigation.
+
+---
+
 ## 2026-04-20 (later) — Fresh-baseline forward pass + tau=2.0 bump
 
 **Files:** `ChessTrainer.swift`, `MPSChessPlayer.swift`, `ContentView.swift`.

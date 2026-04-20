@@ -792,11 +792,6 @@ final class ChessTrainer: @unchecked Sendable {
     /// [batch, 1] raw advantage tensor — read back per step so the
     /// stats box can maintain a rolling percentile window.
     private var advantageRawTensor: MPSGraphTensor
-    /// [batch, policySize] softmax tensor — exposed for the periodic
-    /// `legalMass` snapshot that wants full softmax for sampled replay
-    /// positions. Not read back per training step (too large); used
-    /// only by `legalMassSnapshot` via a separate forward pass.
-    private var policySoftmaxTensor: MPSGraphTensor
     private var assignOps: [MPSGraphOperation]
 
     /// Pre-allocated scalar ND array for the learning-rate feed.
@@ -921,7 +916,6 @@ final class ChessTrainer: @unchecked Sendable {
         self.advantageFracPosTensor = built.advantageFracPos
         self.advantageFracSmallTensor = built.advantageFracSmall
         self.advantageRawTensor = built.advantageRaw
-        self.policySoftmaxTensor = built.policySoftmax
         self.assignOps = built.assignOps
 
         // Scalar ND array for the learning rate feed, reused every step.
@@ -1014,7 +1008,6 @@ final class ChessTrainer: @unchecked Sendable {
         self.advantageFracPosTensor = built.advantageFracPos
         self.advantageFracSmallTensor = built.advantageFracSmall
         self.advantageRawTensor = built.advantageRaw
-        self.policySoftmaxTensor = built.policySoftmax
         self.assignOps = built.assignOps
         // Rebuild the LR scalar feed against the new network's device
         // so the new graph's placeholder maps to a fresh wrapper.
@@ -1075,7 +1068,6 @@ final class ChessTrainer: @unchecked Sendable {
         advantageFracPos: MPSGraphTensor,
         advantageFracSmall: MPSGraphTensor,
         advantageRaw: MPSGraphTensor,
-        policySoftmax: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
         let graph = network.graph
@@ -1157,7 +1149,63 @@ final class ChessTrainer: @unchecked Sendable {
         // baseline only has to be a function of state, not the
         // current network's prediction.
         let advantage = graph.subtraction(z, vBaseline, name: "advantage")
-        let weightedCE = graph.multiplication(advantage, negLogProb, name: "adv_weighted_ce")
+        // Per-batch advantage standardization: `(A − E[A]) / (σ[A] + ε)`
+        // before multiplying into the policy loss. Stabilizes the
+        // policy-gradient magnitude batch-to-batch and removes the
+        // bias-from-uncentered-baseline failure mode: when the value
+        // head has a global offset (e.g. `E[v] ≈ 0.45` because 80 % of
+        // self-play games are draws and the head has collapsed to the
+        // draw-penalty average), raw advantages are systematically
+        // skewed positive for wins and skewed negative for losses, so
+        // the shared trunk receives a biased gradient in one direction.
+        // Centering cancels the bias; std-dividing keeps step sizes
+        // comparable even when the batch happens to span extreme z.
+        //
+        // MPSGraph has no stopGradient — but advantage is a pure
+        // function of placeholders (`z`, `vBaseline`), so no gradient
+        // path flows through `mean` / `std` back into trainable
+        // variables. That's what makes this the "safe" standardization:
+        // it adjusts the forward value used as the REINFORCE weight,
+        // never touches the autograd path.
+        //
+        // ε of 1e-6 is conservative — the batch std is comfortably
+        // above that under any outcome mix we actually train on (z in
+        // {−1, 0, +1}, `drawPenalty ≈ 0.3`, batch=4096 → std ≈ 0.5+).
+        let advantageMeanForNorm = graph.mean(
+            of: advantage,
+            axes: [0, 1],
+            name: "advantage_mean_for_norm"
+        )
+        let advantageCentered = graph.subtraction(
+            advantage,
+            advantageMeanForNorm,
+            name: "advantage_centered"
+        )
+        let advantageCenteredSq = graph.square(
+            with: advantageCentered,
+            name: "advantage_centered_sq"
+        )
+        let advantageVarForNorm = graph.mean(
+            of: advantageCenteredSq,
+            axes: [0, 1],
+            name: "advantage_var_for_norm"
+        )
+        let advantageNormEps = graph.constant(1e-6, dataType: dtype)
+        let advantageVarPlusEps = graph.addition(
+            advantageVarForNorm,
+            advantageNormEps,
+            name: "advantage_var_plus_eps"
+        )
+        let advantageStdForNorm = graph.squareRoot(
+            with: advantageVarPlusEps,
+            name: "advantage_std_for_norm"
+        )
+        let advantageNormalized = graph.division(
+            advantageCentered,
+            advantageStdForNorm,
+            name: "advantage_normalized"
+        )
+        let weightedCE = graph.multiplication(advantageNormalized, negLogProb, name: "adv_weighted_ce")
         let policyLoss = graph.mean(of: weightedCE, axes: [0, 1], name: "policy_loss")
 
         // --- Value loss: L = mean( (z - v)^2 ) ---
@@ -1549,8 +1597,20 @@ final class ChessTrainer: @unchecked Sendable {
         // logits and saturate the softmax on one move. Read via
         // targetTensor alongside losses so the host never pulls the
         // full 9.8K-float weight buffer back each step.
-        let policyWeightFlat = graph.reshape(
+        //
+        // `graph.read(variable)` explicitly materializes the variable's
+        // current value as a tensor before the reshape. Reshaping a
+        // variable reference directly works in most MPSGraph paths, but
+        // has been observed to cause `mps.placeholder` lowering issues
+        // in some runtime configurations. The read is zero-cost at
+        // runtime (variables are already resident) and keeps the
+        // downstream op chain fully tensor-valued.
+        let policyWeightsRead = graph.read(
             network.policyHeadFinalWeights,
+            name: "policy_weights_read"
+        )
+        let policyWeightFlat = graph.reshape(
+            policyWeightsRead,
             shape: [-1],
             name: "policy_weight_flat"
         )
@@ -1654,7 +1714,7 @@ final class ChessTrainer: @unchecked Sendable {
             policyLogitAbsMax, playedMoveProbTensor,
             advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
             advantageFracPosTensor, advantageFracSmallTensor,
-            advantage, softmax,
+            advantage,
             ops
         )
     }

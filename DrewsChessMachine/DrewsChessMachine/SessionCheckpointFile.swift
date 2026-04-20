@@ -123,6 +123,10 @@ struct SessionCheckpointState: Codable, Equatable {
     let selfPlayWorkerCount: Int
     var gradClipMaxNorm: Float?
     var weightDecayCoeff: Float?
+    /// Policy-loss coefficient K applied to the policy term in total
+    /// loss. Optional for back-compat with session files written
+    /// before the field became editable.
+    var policyScaleK: Float?
 
     // Replay-ratio controller settings. All Optional so older
     // session.json files that lack these keys still decode.
