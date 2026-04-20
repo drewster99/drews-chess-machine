@@ -18,7 +18,7 @@ Always use **xcode-mcp-server** for building or running. Never invoke `xcodebuil
 
 - Project: `DrewsChessMachine/DrewsChessMachine.xcodeproj` (scheme `DrewsChessMachine`, macOS only).
 - A pre-Compile Run Script phase invokes `DrewsChessMachine/generate-build-info.sh`, which bumps `DrewsChessMachine/build_counter.txt` and regenerates `DrewsChessMachine/DrewsChessMachine/BuildInfo.swift` every build. Both files are expected to show up as modified after any build — never edit `BuildInfo.swift` by hand, and don't fight the counter changes.
-- No XCTest target. Testing is manual: build, run, exercise the UI, read the session log.
+- XCTest target `DrewsChessMachineTests` exists and covers the pure-logic components (PolicyEncoding bijection, BoardEncoder planes, repetition tracking, ReplayBuffer, MPSGraph gradient/reshape semantics, legal-move validation, sign consistency, ArenaEloStats, ChartZoom stops). Add tests for any new pure-logic component that has correctness invariants. Higher-level behaviors that require Metal/MPSGraph setup still rely on the Engine Diagnostics UI button and session-log observation rather than XCTest.
 
 ## Where to look for runtime state
 
@@ -41,17 +41,17 @@ One run of Play-and-Train spins up, in parallel:
 1. **N self-play workers** (driven by `BatchedSelfPlayDriver`, live-tunable via a Stepper in the UI, bounded by `ContentView.absoluteMaxSelfPlayWorkers`). Every worker owns a fresh `ChessMachine` per game; all share one `BatchedMoveEvaluationSource` that coalesces N simultaneous per-ply evaluate calls into a single batched `graph.run`. Completed games push their whole position sequence into `ReplayBuffer` in one bulk copy.
 2. **One trainer** (`ChessTrainer`) that pulls minibatches from `ReplayBuffer.sample(count:)` and runs MPSGraph SGD steps on a separate training-mode copy of the network.
 3. **Replay ratio controller** (`ReplayRatioController`) that auto-adjusts `stepDelay` so `cons/prod` approaches the configured target (default 1.0). The `[STATS]` line reports `ratio=(target=... cur=... prod=... cons=... auto=on/off delay=XXms)`.
-4. **Arena** on demand (`TournamentDriver` via the Run Arena button). Pauses every self-play worker via `WorkerPauseGate`, snapshots the current trainer weights into a candidate inference network, and plays a fixed-game tournament candidate-vs-champion using the arena `SamplingSchedule`. If score ≥ `promoteThreshold` (default 0.55), the candidate becomes the new champion — its weights are loaded into `network` and every `secondarySelfPlayNetworks[i]`, and `CheckpointManager` writes a `-promote.dcmsession` snapshot.
+4. **Arena** on demand (`TournamentDriver` via the Run Arena button). Pauses self-play via `selfPlayGate` and training via `trainingGate`, snapshots the current trainer weights into a dedicated candidate inference network, and plays a fixed-game tournament candidate-vs-champion (candidate on one network, a dedicated `arenaChampionNetwork` holding a snapshot of champion weights on the other) using the arena `SamplingSchedule`. If score ≥ `promoteThreshold` (default 0.55), the candidate's weights are copied into **both** the live champion (`network`) and the live trainer (`trainer.network`), so both lineages converge on the arena-validated snapshot. Champion inherits the candidate's ModelID; trainer gets a freshly-minted next-generation trainer ID forked from the promoted champion. `CheckpointManager` writes a `-promote.dcmsession` snapshot when `autosaveSessionsOnPromote` is on.
 
-### Networks are plural and pre-allocated
+### Networks are singular
 
-A session holds:
-- `network` — the primary inference network (also the arena champion source). Worker 0 uses this one.
-- `secondarySelfPlayNetworks[1..absoluteMax-1]` — pre-built at session start and kept alive across Stepper changes. Workers 1..N-1 use these. Mirrored from champion at session start and on every promotion.
-- `trainer.network` — internal to `ChessTrainer`, training-mode BN, the single source of weights for arena candidates.
-- `candidateNetwork` — ephemeral, alive only during an arena.
+A session holds exactly:
+- `network` — the live champion. Also what every self-play worker evaluates against, through a shared `BatchedMoveEvaluationSource` barrier batcher. Source of the arena-champion snapshot.
+- `trainer.network` — internal to `ChessTrainer`, training-mode BN. The single source of weights for arena candidates. Forked from `network` on a fresh start, or loaded from `trainer.dcmmodel` on session resume, or overwritten by a promoted candidate's weights after an arena win.
+- `candidateInferenceNetwork` — inference-mode, persists for the life of the app (lazy-built on first Play-and-Train start, reused across sessions). Receives the trainer's current weights at each arena start.
+- `arenaChampionNetwork` — inference-mode, also persists for the life of the app. Receives a snapshot of `network`'s weights at each arena start so the arena's "champion side" plays against a stable snapshot while the live champion remains free for continuous self-play.
 
-Idle workers stay allocated deliberately (memory vs. latency trade — see ROADMAP "N-worker concurrent self-play" for the full rationale).
+There are no per-worker inference networks. An earlier design allocated `secondarySelfPlayNetworks[1..N-1]` pre-built at session start and mirrored from champion at promotion; that design was replaced by the single shared batched evaluator (ContentView.swift comment near `candidateInferenceNetwork`).
 
 ### MoveEvaluationSource abstraction
 

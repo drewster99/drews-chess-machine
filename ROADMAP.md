@@ -4,6 +4,59 @@ Long-term goals, deferred work, and notes on decisions.
 
 ## Future improvements
 
+- **Autosave retention pruning.** Today every `.dcmsession` autosave
+  (post-promotion and the new 4-hour periodic save) is kept forever
+  per the project-wide "nothing is ever overwritten" invariant. A
+  long-running session therefore accumulates on the order of 6
+  periodic saves per day plus one per promotion, each carrying the
+  full replay buffer (can be multi-GB). Add a retention policy that
+  prunes autosaves older than the last N, where:
+  - Manual saves are always preserved (user explicitly asked for
+    them; they are authoritative history).
+  - Post-promotion autosaves are pruned beyond the last N
+    (configurable, default on the order of 20).
+  - Periodic autosaves are pruned beyond the last N, same knob or
+    a separate knob — decide at implementation time based on how
+    users actually use them.
+  - Pruning should run lazily (e.g. after each successful save) so
+    there is never a dedicated sweep pass that could race with
+    other save/load activity.
+  - UI surface: a "Manage Autosaves" item in the File menu that
+    shows total disk footprint, counts per trigger, and a
+    "Trim to last N" button. Not critical for v2.
+  - Deferred until users report the disk-footprint problem in
+    practice — the "never overwrite" invariant stays in force
+    for now so no existing save is at risk.
+
+- **Human-vs-model play.** Let a human play a game against either
+  the champion or a trainer snapshot from the UI. Two motivating
+  cases: (1) sanity-checking the champion's actual play quality
+  outside arena numbers — does its play feel reasonable, does it
+  blunder obviously, does it understand basic tactics? (2) comparing
+  a mid-training trainer's behavior against its parent champion to
+  decide whether to force a promotion or keep training. Design
+  sketch:
+  - Move selection already goes through `MPSChessPlayer` /
+    `DirectMoveEvaluationSource`; the engine side needs no new
+    primitives.
+  - UI: extend the existing Play Game path to accept a slot picker
+    (champion / candidate / arbitrary trainer snapshot) plus a
+    side-to-play picker.
+  - Trainer snapshot handling: since the trainer's weights change
+    every SGD step, "play against the current trainer" needs to
+    copy trainer weights into the candidate inference network at
+    game start (the same `exportWeights → loadWeights` path the
+    arena uses). If the user wants to freeze a specific mid-training
+    snapshot for longer play, expose a "Freeze Trainer Snapshot"
+    button that saves weights into a named slot.
+  - Must not block Play-and-Train: human-vs-model play uses the
+    persistent `candidateInferenceNetwork` (or a new dedicated
+    slot), not `trainer.network` directly, so SGD keeps running
+    while the human thinks.
+  - Not yet implemented — listed here as an active item so that
+    subsequent infrastructure changes (slot picker, named-snapshot
+    persistence, game-view plumbing) consider it.
+
 - **Adaptive learning-rate schedule.** Currently `learnRate` is a static
   hyperparameter (default 5e-5) that the user adjusts manually via the
   UI. Real-world deep-RL training benefits from LR scheduling — high LR
@@ -549,7 +602,26 @@ Long-term goals, deferred work, and notes on decisions.
   No existing hyperparameter (LR, batch size, clip, tau, etc.) was
   changed.
 
-- **N-worker concurrent self-play in Play and Train.** Play and Train
+- **N-worker concurrent self-play in Play and Train.**
+
+  **Superseded, 2026-04 onwards:** the per-worker-network topology
+  described below was replaced by a single shared `BatchedMoveEvaluationSource`
+  on the champion network — see the "Batched self-play evaluator"
+  entry in the Completed section. The original design is preserved
+  verbatim here (per the ROADMAP convention) for historical context
+  and rationale. **Do not use this section as a description of
+  current runtime behavior.** In particular:
+    - `secondarySelfPlayNetworks` no longer exists (ContentView.swift
+      has an in-code note to that effect where the field used to
+      live).
+    - On promotion, candidate weights are now copied into **both**
+      the champion (`network`) and the trainer (`trainer.network`);
+      there is no per-worker network to mirror.
+    - The "topology is asymmetric — worker 0 reuses champion,
+      workers 1..N-1 use secondaries" split is obsolete; all
+      workers share the champion through the batcher.
+
+  **Original design (as shipped, now historical):** Play and Train
   previously ran a single self-play worker, which at ~357 moves/sec against
   a 3,012 moves/sec training consumer meant every replay-buffer position
   was sampled ~8.4× on average before eviction — far above the 2–4×

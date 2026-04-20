@@ -78,10 +78,30 @@ struct DrewsChessMachineApp: App {
                         || commandHub.gameIsPlaying
                         || commandHub.isBuilding
                         || commandHub.checkpointSaveInFlight
-                        || !commandHub.networkReady
                     )
                 Divider()
+                Button("Resume Training from Autosave") {
+                    commandHub.resumeFromAutosave()
+                }
+                .disabled(!commandHub.canResumeFromAutosave)
+                Divider()
                 Button("Open Data Folder in Finder") { commandHub.revealSaves() }
+            }
+
+            // View menu additions — zoom in/out and auto-zoom for
+            // the training chart grid. Merges into the system View
+            // menu (after the Show Sidebar slot) rather than
+            // declaring a new top-level menu.
+            CommandGroup(after: .sidebar) {
+                Divider()
+                Button("Zoom In Charts") { commandHub.chartZoomIn() }
+                    .keyboardShortcut("=", modifiers: .command)
+                    .disabled(!commandHub.chartZoomInAvailable)
+                Button("Zoom Out Charts") { commandHub.chartZoomOut() }
+                    .keyboardShortcut("-", modifiers: .command)
+                    .disabled(!commandHub.chartZoomOutAvailable)
+                Button("Auto Zoom Charts") { commandHub.chartZoomEnableAuto() }
+                    .disabled(!commandHub.chartZoomAutoAvailable)
             }
 
             // Train menu — the primary training-session lifecycle

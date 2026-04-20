@@ -19,6 +19,66 @@ struct SweepProgress: Sendable {
     let elapsedSec: Double
 }
 
+/// Kind of ephemeral checkpoint status message shown in the status
+/// row. Determines the leading icon (none / green check / red error
+/// glyph), the text color, and the auto-clear lifetime.
+///
+/// Success messages are visually distinct and linger longer because
+/// the original flow — "Saving session (manual)…" then a same-styled
+/// gray "Saved <filename>" that cleared after 6 seconds — was easy to
+/// miss, leaving the user unsure whether the save had actually
+/// completed. A green checkmark plus a longer dwell time gives a
+/// durable confirmation of success without resorting to a modal
+/// alert.
+enum CheckpointStatusKind: Sendable {
+    case progress
+    case success
+    case error
+}
+
+/// Which code path initiated a session save. Used to pick the
+/// on-disk filename tag, the UI status-line suffix, and the log
+/// prefix so every save-success line is unambiguous when grepping
+/// through a long session log.
+///
+/// Kept outside of `ContentView` so it is also visible to whatever
+/// caller the periodic autosave path eventually lives in. Deliberately
+/// excludes `.postPromotion` — that save runs in an inline detached
+/// task in the arena coordinator and does not go through the shared
+/// `saveSessionInternal` helper, so it has its own display strings
+/// hard-coded there.
+enum SessionSaveTrigger: Sendable {
+    /// User explicitly invoked File > Save Session (or the
+    /// equivalent menu command).
+    case manual
+    /// Fired by `PeriodicSaveController` when its 4-hour deadline
+    /// elapsed. Arena-conflicts are already resolved by the
+    /// controller before we get here.
+    case periodic
+
+    /// Short tag written into the `.dcmsession` filename.
+    /// Matches the `trigger:` string the existing `CheckpointManager`
+    /// API already expects.
+    var diskTag: String {
+        switch self {
+        case .manual: "manual"
+        case .periodic: "periodic"
+        }
+    }
+
+    /// Suffix appended to the user-visible status line.
+    /// Manual saves intentionally show no suffix — the user just
+    /// clicked Save, they don't need a reminder — while periodic
+    /// saves are tagged so autosaves don't look like a surprise
+    /// save happened out of nowhere.
+    var uiSuffix: String {
+        switch self {
+        case .manual: ""
+        case .periodic: " (periodic)"
+        }
+    }
+}
+
 struct TrainingAlarm: Identifiable, Equatable, Sendable {
     enum Severity: String, Sendable {
         case warning
@@ -554,6 +614,40 @@ struct TournamentRecord: Sendable, Identifiable {
     /// trainer → candidate sync through the last game. Promotion copy
     /// after the score threshold check is not included.
     let durationSec: Double
+
+    // Per-side W/L/D from the candidate's perspective. Populated
+    // from `TournamentStats` (playerA = candidate at the arena call
+    // site). Defaulted to 0 on older load paths that predate this
+    // split — with no data we still want the display to render
+    // (showing "—" for the side breakdown) rather than crash.
+    let candidateWinsAsWhite: Int
+    let candidateWinsAsBlack: Int
+    let candidateLossesAsWhite: Int
+    let candidateLossesAsBlack: Int
+    let candidateDrawsAsWhite: Int
+    let candidateDrawsAsBlack: Int
+
+    /// AlphaZero-style score for candidate's white games only.
+    /// 0 if the tournament was aborted before a white game finished.
+    var candidateScoreAsWhite: Double {
+        let n = candidateWinsAsWhite + candidateLossesAsWhite + candidateDrawsAsWhite
+        guard n > 0 else { return 0 }
+        return (Double(candidateWinsAsWhite) + 0.5 * Double(candidateDrawsAsWhite)) / Double(n)
+    }
+
+    /// AlphaZero-style score for candidate's black games only.
+    var candidateScoreAsBlack: Double {
+        let n = candidateWinsAsBlack + candidateLossesAsBlack + candidateDrawsAsBlack
+        guard n > 0 else { return 0 }
+        return (Double(candidateWinsAsBlack) + 0.5 * Double(candidateDrawsAsBlack)) / Double(n)
+    }
+
+    /// 95% CI summary computed from this record's W/D/L. Cached per
+    /// call — downstream formatters can call this freely without
+    /// worrying about recomputation cost (all scalar math).
+    var eloSummary: ArenaEloStats.Summary {
+        ArenaEloStats.summary(wins: candidateWins, draws: draws, losses: championWins)
+    }
 }
 
 /// Serial-queue-protected holder for live tournament progress, shared
@@ -1413,6 +1507,54 @@ struct ContentView: View {
     /// after each arena finishes. In-memory only for now — disk
     /// persistence is deferred.
     @State private var tournamentHistory: [TournamentRecord] = []
+    /// Status-bar "Score" cell display mode toggle. `false` =
+    /// percentage view (e.g. `"51.2%"`), `true` = Elo-with-CI view
+    /// (e.g. `"+28 [+13, +34]"`). Click on the cell flips it. Session-
+    /// local only — not persisted.
+    @State private var scoreStatusShowElo: Bool = false
+
+    // MARK: - Chart zoom state
+    //
+    // Discrete-stop zoom on the training chart grid's horizontal
+    // time window. See `ChartZoom` for the list of stops (15m..30d)
+    // and the one-hour auto-re-enable rule.
+
+    /// Current zoom-stop index. When `chartZoomAuto` is on, the
+    /// heartbeat assigns this from `ChartZoom.autoIndex(forDataSec:)`
+    /// so the visible window tracks the data's natural length.
+    /// When auto is off, the user sets it via ⌘= / ⌘- and we leave
+    /// it alone until the 1-hour idle timer flips auto back on.
+    @State private var chartZoomIdx: Int = ChartZoom.defaultIndex
+
+    /// Whether the zoom level is auto-managed. Flipped to `false`
+    /// when the user presses ⌘= or ⌘- (or toggles the Auto button
+    /// off); flipped back to `true` once an hour has elapsed with
+    /// no ⌘=/⌘- activity, or when the user explicitly clicks the
+    /// Auto button.
+    @State private var chartZoomAuto: Bool = true
+
+    /// Timestamp of the last manual ⌘= / ⌘- action. `nil` means no
+    /// manual zoom has ever happened this session. The heartbeat
+    /// re-enables auto mode once `Date().timeIntervalSince(this)`
+    /// exceeds `chartZoomAutoReengageSec`.
+    @State private var lastManualChartZoomAt: Date?
+
+    /// Idle threshold after which manual zoom reverts to auto.
+    /// One hour matches the user's spec. Small enough that a user
+    /// who forgot they bumped zoom doesn't stay stuck at the wrong
+    /// scale for a full day; large enough that inspecting history
+    /// for a solid stretch doesn't get yanked back prematurely.
+    nonisolated static let chartZoomAutoReengageSec: TimeInterval = 3600
+
+    /// Composite version stamp combining both zoom-state scalars
+    /// so a single `.onChange` handler can react to either. Pulled
+    /// out of two separate `.onChange(of:)` modifiers to keep the
+    /// body modifier chain short enough for SwiftUI's type-checker
+    /// to handle without hitting the "expression too complex"
+    /// ceiling.
+    private var chartZoomStateVersion: Int {
+        chartZoomIdx * 2 + (chartZoomAuto ? 1 : 0)
+    }
     /// Total number of games a single arena plays. 200 gives us enough
     /// decisive games (~26 at the current ~13% decisive rate with
     /// random networks) for the 0.55 score threshold to be meaningful.
@@ -1791,9 +1933,13 @@ struct ContentView: View {
     /// in the busy row. Cleared after a few seconds.
     @State private var checkpointStatusMessage: String?
 
-    /// True when the last checkpoint status message represents an
-    /// error (shown in red rather than secondary).
-    @State private var checkpointStatusIsError: Bool = false
+    /// Kind of the currently-shown checkpoint status message.
+    /// Drives both the icon (checkmark / error glyph) and the text
+    /// color, and the auto-clear lifetime. Success messages linger
+    /// noticeably longer than in-progress messages so the user
+    /// gets a durable "this actually saved" confirmation rather
+    /// than seeing the "Saving…" line silently vanish.
+    @State private var checkpointStatusKind: CheckpointStatusKind = .progress
 
     /// Drives the Load Model file importer sheet.
     @State private var showingLoadModelImporter: Bool = false
@@ -1801,11 +1947,155 @@ struct ContentView: View {
     /// Drives the Load Session file importer sheet.
     @State private var showingLoadSessionImporter: Bool = false
 
+    /// Message text for the "can't do that right now" alert surfaced
+    /// by in-function guards. Non-nil means show the alert. The same
+    /// alert also covers the post-Stop three-way start dialog's
+    /// course-correction messages (e.g., "champion was loaded since
+    /// last training — trainer was not").
+    @State private var menuActionError: String?
+
+    /// Drives the post-Stop three-way confirmation dialog. Shown only
+    /// when the user presses Play-and-Train after a prior training
+    /// session was stopped in this launch AND there is no pending
+    /// loaded session (a disk load has its own resume path).
+    @State private var showStartTrainingDialog: Bool = false
+
+    /// Distinguishes how Play-and-Train should treat in-memory state
+    /// when the user presses Start. Consumed inside
+    /// `startRealTraining(mode:)` to branch replay-buffer, counter,
+    /// and trainer-weight handling.
+    private enum TrainingStartMode {
+        /// Default path. First launch, or resuming from a
+        /// `pendingLoadedSession`. Existing behavior: fresh
+        /// replay buffer + counters, trainer weights come from
+        /// either the loaded session's `trainer.dcmmodel` or a
+        /// fresh fork of champion weights.
+        case freshOrFromLoadedSession
+        /// User stopped training earlier this launch and wants to
+        /// pick up exactly where they left off. Reuse the existing
+        /// replay buffer, parallel stats box, training stats box,
+        /// session ID, tournament history, chart samples, and
+        /// active trainer weights. Open a new training segment.
+        case continueAfterStop
+        /// User stopped training and wants a fresh session on the
+        /// existing trainer's weights. Fresh replay buffer +
+        /// counters + session ID, but do NOT overwrite trainer
+        /// weights with the champion's.
+        case newSessionKeepTrainer
+        /// User stopped training and wants a fresh session starting
+        /// from the champion — copy champion weights into the
+        /// trainer, mint a fresh trainer generation ID, fresh
+        /// replay buffer + counters + session ID.
+        case newSessionResetTrainerFromChampion
+    }
+
     /// Whether an autosave is currently in flight, so repeated
     /// promotions or rapid manual saves don't overlap. Advisory only
     /// — the save path is idempotent except for the "already exists"
     /// check which throws cleanly.
     @State private var checkpointSaveInFlight: Bool = false
+
+    /// Scheduler for the 4-hour periodic autosave. Created on
+    /// Play-and-Train start and torn down on Stop; `nil` while no
+    /// session is active. Polled on the main heartbeat (throttled
+    /// to once per second — a 4-hour deadline doesn't need 60 Hz
+    /// resolution). See `PeriodicSaveController` for the
+    /// arena-deferral and save-reset invariants.
+    @State private var periodicSaveController: PeriodicSaveController?
+
+    /// Last wall-clock time the heartbeat polled
+    /// `periodicSaveController.decide(now:)`. Throttles the poll to
+    /// roughly 1 Hz regardless of the 60 Hz heartbeat cadence,
+    /// which is more than sufficient resolution for a multi-hour
+    /// deadline and keeps the hot path cheap.
+    @State private var periodicSaveLastPollAt: Date?
+
+    /// `true` while a periodic autosave's write is in flight, so
+    /// the heartbeat doesn't schedule another one on the very next
+    /// tick. Set at fire time, cleared on success or failure.
+    /// Separate from `checkpointSaveInFlight` (which guards the
+    /// user-visible menu buttons) because a periodic save must be
+    /// able to run even while the menu items remain enabled.
+    @State private var periodicSaveInFlight: Bool = false
+
+    /// Interval between scheduled periodic saves while a
+    /// Play-and-Train session is active. 4 hours per the
+    /// product spec — long enough to keep disk churn low, short
+    /// enough that a crash never forfeits more than half a
+    /// working day of training.
+    nonisolated static let periodicSaveIntervalSec: TimeInterval = 4 * 60 * 60
+
+    // MARK: - Auto-resume sheet state
+    //
+    // Shown at app launch if a `LastSessionPointer` still names
+    // an on-disk `.dcmsession`. Offers the user a 30-second
+    // window to resume (after which the resume fires
+    // automatically) or dismiss. On dismiss the File menu item
+    // "Resume training from autosave" covers the same flow for
+    // the rest of the launch.
+
+    /// Drives the sheet presentation. Set to `true` once during
+    /// the first `.onAppear` pass when a valid pointer is found,
+    /// flipped back to `false` on either button press or the
+    /// countdown firing the auto-resume action.
+    @State private var autoResumeSheetShowing: Bool = false
+
+    /// Pointer the sheet is offering to resume. Captured when the
+    /// sheet is presented so the resume action uses the exact
+    /// pointer the user saw (not whatever the UserDefaults key
+    /// might hold if the next save raced in between).
+    @State private var autoResumePointer: LastSessionPointer?
+
+    /// Seconds remaining on the countdown. Ticks down once per
+    /// second from `autoResumeCountdownStartSec` while the sheet
+    /// is showing; displayed in the Resume button's label.
+    @State private var autoResumeCountdownRemaining: Int = 0
+
+    /// Handle to the countdown task. Cancelled when the user
+    /// dismisses the sheet (either via the Resume button or Not
+    /// Now) so the timer doesn't fire a load after the user has
+    /// explicitly opted out.
+    @State private var autoResumeCountdownTask: Task<Void, Never>?
+
+    /// True while a resume load is in flight, so the File menu
+    /// item stays disabled during the load and the Resume button
+    /// cannot be pressed twice. Cleared after the load-and-start
+    /// chain completes (or errors).
+    @State private var autoResumeInFlight: Bool = false
+
+    /// Initial value of the auto-resume countdown in seconds.
+    /// 30 s per the product spec — long enough for the user to
+    /// notice the dialog and read the session details, short
+    /// enough that an unattended app resumes quickly.
+    nonisolated static let autoResumeCountdownStartSec: Int = 30
+
+    /// True if a last-saved-session pointer exists and still
+    /// names an on-disk directory. Used by the File menu item
+    /// and the resume-in-flight guard. Computed live (cheap FS
+    /// stat) rather than mirrored into @State so it tracks
+    /// external deletions without us having to poll.
+    private var canResumeFromAutosave: Bool {
+        guard !realTraining,
+              !autoResumeInFlight,
+              !autoResumeSheetShowing else {
+            return false
+        }
+        guard let pointer = LastSessionPointer.read() else {
+            return false
+        }
+        return pointer.directoryExists
+    }
+
+    /// Composite scalar version of the three auto-resume gating
+    /// flags so a single `.onChange` handler on the view body can
+    /// drive `syncMenuCommandHubState()` when any of them flips.
+    /// Modelled on the existing `chartZoomStateVersion` pattern
+    /// for the same reason — adding N separate `.onChange` modifiers
+    /// near a body this large blows the type-checker's time budget.
+    private var autoResumeStateVersion: Int {
+        (autoResumeInFlight ? 1 : 0)
+        | (autoResumeSheetShowing ? 2 : 0)
+    }
 
     /// Live sampling schedules shared between UI edit fields and the
     /// self-play / arena players. Constructed at session start from the
@@ -2324,11 +2614,7 @@ struct ContentView: View {
                     busyLabelView
                 }
                 if let msg = checkpointStatusMessage {
-                    Text(msg)
-                        .font(.callout)
-                        .foregroundStyle(checkpointStatusIsError ? .red : .secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    checkpointStatusLine(message: msg)
                 }
                 Spacer(minLength: 0)
             }
@@ -2352,6 +2638,41 @@ struct ContentView: View {
                 showingLoadModelImporter
                 ? CheckpointPaths.modelsDir
                 : CheckpointPaths.sessionsDir
+            )
+            .alert(
+                "Can't do that right now",
+                isPresented: Binding(
+                    get: { menuActionError != nil },
+                    set: { newVal in
+                        if !newVal { menuActionError = nil }
+                    }
+                ),
+                actions: {
+                    Button("OK", role: .cancel) { menuActionError = nil }
+                },
+                message: {
+                    Text(menuActionError ?? "")
+                }
+            )
+            .confirmationDialog(
+                "Start training",
+                isPresented: $showStartTrainingDialog,
+                titleVisibility: .visible,
+                actions: {
+                    Button("Continue training") {
+                        startRealTraining(mode: .continueAfterStop)
+                    }
+                    Button("New session with current trainer") {
+                        startRealTraining(mode: .newSessionKeepTrainer)
+                    }
+                    Button("New session — trainer reset from champion") {
+                        startRealTraining(mode: .newSessionResetTrainerFromChampion)
+                    }
+                    Button("Cancel", role: .cancel) { }
+                },
+                message: {
+                    Text(startTrainingDialogMessage())
+                }
             )
 
             // Board + text side by side
@@ -2545,7 +2866,7 @@ struct ContentView: View {
                                             )
                                             .labelsHidden()
                                         }
-                                        Text(column.body)
+                                        Text(colorizedPanelBody(column.body))
                                     }
                                     .frame(minWidth: 330, alignment: .topLeading)
                                 } else {
@@ -2817,7 +3138,7 @@ struct ContentView: View {
                                                 .foregroundStyle(.secondary)
                                         }
                                     }
-                                    Text(column.body)
+                                    Text(colorizedPanelBody(column.body))
                                 }
                                 .frame(minWidth: 260, alignment: .topLeading)
                             }
@@ -2868,6 +3189,7 @@ struct ContentView: View {
             // showing training metrics over time.
             if realTraining {
                 Divider()
+                chartZoomControlRow
                 TrainingChartGridView(
                     progressRateSamples: progressRateSamples,
                     trainingChartSamples: trainingChartSamples,
@@ -2877,7 +3199,7 @@ struct ContentView: View {
                     promoteThreshold: Self.tournamentPromoteThreshold,
                     appMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
                     gpuMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
-                    visibleDomainSec: Self.progressRateVisibleDomainSec,
+                    visibleDomainSec: ChartZoom.stops[chartZoomIdx],
                     scrollX: $progressRateScrollX
                 )
             }
@@ -2928,6 +3250,17 @@ struct ContentView: View {
             if arDecayPerPlyEditText.isEmpty {
                 arDecayPerPlyEditText = String(format: "%.3f", arDecayPerPly)
             }
+            // Launch-time auto-resume prompt. Deferred until after
+            // the other field seeding above so any sheet presentation
+            // doesn't race with the text-field default population.
+            // `maybePresentAutoResumeSheet` is itself a no-op when
+            // no pointer exists or the target has been deleted —
+            // a first-launch of the app does not surface the sheet
+            // at all.
+            maybePresentAutoResumeSheet()
+        }
+        .sheet(isPresented: $autoResumeSheetShowing) {
+            autoResumeSheetContent
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
             // Teardown on actual main-window close only — NOT on minimize
@@ -2959,6 +3292,8 @@ struct ContentView: View {
         .onChange(of: gameSnapshot.isPlaying) { _, _ in syncMenuCommandHubState() }
         .onChange(of: network != nil) { _, _ in syncMenuCommandHubState() }
         .onChange(of: pendingLoadedSession != nil) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: chartZoomStateVersion) { _, _ in syncMenuCommandHubState() }
+        .onChange(of: autoResumeStateVersion) { _, _ in syncMenuCommandHubState() }
         .background(controlSideEffectsProbe)
         .onChange(of: progressRateScrollX) { _, newValue in
             // Flip off follow-latest when the user scrolls backward.
@@ -2977,7 +3312,8 @@ struct ContentView: View {
             // the histogram state churned.
             Task { @MainActor in
                 let latest = progressRateSamples.last?.elapsedSec ?? 0
-                let latestScrollX = max(0, latest - Self.progressRateVisibleDomainSec)
+                let windowSec = ChartZoom.stops[chartZoomIdx]
+                let latestScrollX = max(0, latest - windowSec)
                 let shouldFollow = abs(newValue - latestScrollX) < 1.0
                 if progressRateFollowLatest != shouldFollow {
                     progressRateFollowLatest = shouldFollow
@@ -3115,8 +3451,134 @@ struct ContentView: View {
                         currentDiversityHistogramBars = newBars
                     }
                 }
+                refreshChartZoomTick()
+                periodicSaveTick()
             }  // Task @MainActor
         }
+    }
+
+    /// Per-heartbeat tick that asks the periodic-save scheduler
+    /// whether to fire. Throttled to ~1 Hz — a 4-hour deadline does
+    /// not benefit from 60 Hz polling and the throttle keeps the
+    /// heartbeat hot path from paying a decision cost per frame. A
+    /// no-op when no session is active, and an immediate no-op
+    /// when a periodic save is already in flight (the fire flag is
+    /// cleared when the write task resolves).
+    @MainActor
+    private func periodicSaveTick() {
+        guard let controller = periodicSaveController else {
+            periodicSaveLastPollAt = nil
+            return
+        }
+        let now = Date()
+        if let lastPoll = periodicSaveLastPollAt,
+           now.timeIntervalSince(lastPoll) < 1.0 {
+            return
+        }
+        periodicSaveLastPollAt = now
+        if periodicSaveInFlight {
+            return
+        }
+        switch controller.decide(now: now) {
+        case .idle:
+            return
+        case .fire:
+            SessionLogger.shared.log(
+                "[CHECKPOINT] Periodic save tick — firing (interval=\(Int(Self.periodicSaveIntervalSec))s)"
+            )
+            handleSaveSessionPeriodic()
+        }
+    }
+
+    /// Drive the chart-zoom state machine once per heartbeat.
+    /// Responsibilities:
+    ///   - In `chartZoomAuto` mode, snap `chartZoomIdx` to the
+    ///     smallest stop that contains the current data span.
+    ///   - In manual mode, clamp `chartZoomIdx` down if the data
+    ///     has since shrunk past the 3-stops-past-fit ceiling.
+    ///   - Re-enable auto mode if the user hasn't touched the
+    ///     manual zoom controls for `chartZoomAutoReengageSec`.
+    private func refreshChartZoomTick() {
+        let dataSec = progressRateSamples.last?.elapsedSec
+            ?? trainingChartSamples.last?.elapsedSec
+            ?? 0
+
+        // Auto re-engage check. A manual ⌘= / ⌘- recency acts as a
+        // keep-alive; past the threshold we flip auto back on so
+        // the user isn't stuck at a stale scale across a multi-
+        // hour session. Toggling the Auto button clears the
+        // timestamp, which has the same effect.
+        if !chartZoomAuto,
+           let last = lastManualChartZoomAt,
+           Date().timeIntervalSince(last) >= Self.chartZoomAutoReengageSec {
+            chartZoomAuto = true
+            lastManualChartZoomAt = nil
+        }
+
+        if chartZoomAuto {
+            let autoIdx = ChartZoom.autoIndex(forDataSec: dataSec)
+            if chartZoomIdx != autoIdx {
+                chartZoomIdx = autoIdx
+            }
+        } else {
+            // Manual mode: only clamp when required. No-op when
+            // the current index is already legal — avoids a
+            // redraw on every tick.
+            let maxIdx = ChartZoom.maxZoomOutIndex(forDataSec: dataSec)
+            if chartZoomIdx > maxIdx {
+                chartZoomIdx = maxIdx
+            }
+        }
+    }
+
+    /// Handle a ⌘= / ⌘- / Auto-button action. Centralized so the
+    /// keyboard shortcut, the menu item, and the inline button all
+    /// share the same auto-off + recency-stamp behavior. Each
+    /// manual action stamps `lastManualChartZoomAt` so the 1-hour
+    /// re-engage timer resets; the Auto button zero case clears it
+    /// so auto turns back on immediately.
+    @MainActor
+    private func chartZoomIn() {
+        let dataSec = progressRateSamples.last?.elapsedSec
+            ?? trainingChartSamples.last?.elapsedSec
+            ?? 0
+        chartZoomAuto = false
+        lastManualChartZoomAt = Date()
+        let newIdx = max(0, chartZoomIdx - 1)
+        chartZoomIdx = ChartZoom.clamp(newIdx, forDataSec: dataSec)
+    }
+
+    @MainActor
+    private func chartZoomOut() {
+        let dataSec = progressRateSamples.last?.elapsedSec
+            ?? trainingChartSamples.last?.elapsedSec
+            ?? 0
+        chartZoomAuto = false
+        lastManualChartZoomAt = Date()
+        let maxIdx = ChartZoom.maxZoomOutIndex(forDataSec: dataSec)
+        chartZoomIdx = min(chartZoomIdx + 1, maxIdx)
+    }
+
+    @MainActor
+    private func chartZoomEnableAuto() {
+        chartZoomAuto = true
+        lastManualChartZoomAt = nil
+        let dataSec = progressRateSamples.last?.elapsedSec
+            ?? trainingChartSamples.last?.elapsedSec
+            ?? 0
+        chartZoomIdx = ChartZoom.autoIndex(forDataSec: dataSec)
+    }
+
+    /// Can the user zoom in further? Used to gate the View menu
+    /// item's disabled state and the Auto-row's ⌘= hint styling.
+    var canZoomChartIn: Bool { chartZoomIdx > 0 }
+
+    /// Can the user zoom out further given the current data span?
+    var canZoomChartOut: Bool {
+        let dataSec = progressRateSamples.last?.elapsedSec
+            ?? trainingChartSamples.last?.elapsedSec
+            ?? 0
+        return chartZoomIdx < ChartZoom.maxZoomOutIndex(forDataSec: dataSec)
     }
 
     /// Sample app and GPU memory at most every
@@ -3428,7 +3890,8 @@ struct ContentView: View {
         // flag when it sees a backward jump), so inspecting
         // history doesn't fight the 1 Hz tick.
         if progressRateFollowLatest {
-            progressRateScrollX = max(0, sample.elapsedSec - Self.progressRateVisibleDomainSec)
+            let windowSec = ChartZoom.stops[chartZoomIdx]
+            progressRateScrollX = max(0, sample.elapsedSec - windowSec)
         }
         // Append a training chart sample at the same 1Hz cadence.
         refreshTrainingChartIfNeeded()
@@ -3572,8 +4035,14 @@ struct ContentView: View {
         .chartXAxisLabel("Session time", position: .bottom, alignment: .center)
         .chartYAxisLabel("Moves / hour", position: .leading, alignment: .center)
         .chartLegend(position: .bottom, alignment: .center, spacing: 10)
+        .chartXScale(
+            domain: 0...max(
+                progressRateSamples.last?.elapsedSec ?? 0,
+                ChartZoom.stops[chartZoomIdx]
+            )
+        )
         .chartScrollableAxes(.horizontal)
-        .chartXVisibleDomain(length: Self.progressRateVisibleDomainSec)
+        .chartXVisibleDomain(length: ChartZoom.stops[chartZoomIdx])
         .chartScrollPosition(x: $progressRateScrollX)
         .chartOverlay { proxy in
             // Transparent hover-capture rectangle over the plot
@@ -3840,30 +4309,93 @@ struct ContentView: View {
 
     // MARK: - Checkpoint save / load handlers
 
+    /// Text color for the checkpoint status line. Green success
+    /// reads as "done, verified" at a glance; red error demands
+    /// attention; `.secondary` for in-progress blends in with the
+    /// rest of the status row so the eye doesn't snag on "Saving…".
+    private var checkpointStatusColor: Color {
+        switch checkpointStatusKind {
+        case .progress: .secondary
+        case .success: .green
+        case .error: .red
+        }
+    }
+
+    /// SF Symbol name for the status line's leading icon, or nil
+    /// while an action is in progress (the row's ProgressView spinner
+    /// already communicates "something is happening"). Split into a
+    /// helper so the status-row ViewBuilder stays trivial — an
+    /// inline `switch` inside the already-huge containing body tips
+    /// the SwiftUI type-checker over its "unable to type-check in
+    /// reasonable time" cliff.
+    private var checkpointStatusIconName: String? {
+        switch checkpointStatusKind {
+        case .progress: nil
+        case .success: "checkmark.circle.fill"
+        case .error: "exclamationmark.triangle.fill"
+        }
+    }
+
+    /// The full status line — icon plus message — rendered as a
+    /// single reusable view so the huge containing body doesn't
+    /// need to embed any conditional branching at that level.
+    /// Takes the non-nil message as a parameter so the helper
+    /// itself returns a concrete `some View` (no `@ViewBuilder`
+    /// optional branches) — that keeps the SwiftUI type-checker
+    /// from having to reason about two possible return shapes
+    /// when the call site is already inside the huge main body.
+    private func checkpointStatusLine(message: String) -> some View {
+        let iconName = checkpointStatusIconName
+        let color = checkpointStatusColor
+        return HStack(spacing: 4) {
+            if let iconName {
+                Image(systemName: iconName)
+                    .foregroundStyle(color)
+            }
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
+
     /// Publish a user-visible status line in the checkpoint row
     /// and clear it after a few seconds. Safe to call repeatedly
     /// — the latest message wins.
+    ///
+    /// `kind` drives the visual treatment (icon + color) and the
+    /// auto-clear lifetime. Success messages linger 20 s — long
+    /// enough for the user to glance up and confirm the save
+    /// actually landed — versus 6 s for progress lines and 12 s
+    /// for errors.
     @MainActor
-    private func setCheckpointStatus(_ message: String, isError: Bool) {
+    private func setCheckpointStatus(_ message: String, kind: CheckpointStatusKind) {
         checkpointStatusMessage = message
-        checkpointStatusIsError = isError
+        checkpointStatusKind = kind
         // Always echo errors to the session log so a transient on-screen
         // error message that auto-clears in 12 seconds is still
         // recoverable from the persistent log file. (Some callsites
         // also log their own more-detailed [CHECKPOINT] line — minor
         // duplication is fine; visibility is the priority.)
-        if isError {
+        if kind == .error {
             SessionLogger.shared.log("[CHECKPOINT-ERR] \(message)")
         }
-        // Auto-clear after 6 seconds. Grabs the current message at
-        // schedule time so a later message isn't wiped out by an
-        // earlier one's timer.
+        // Auto-clear after a kind-dependent lifetime. Grabs the
+        // current message at schedule time so a later message isn't
+        // wiped out by an earlier one's timer.
         let snapshotMessage = message
+        let lifetimeSeconds: Int
+        switch kind {
+        case .progress: lifetimeSeconds = 6
+        case .success: lifetimeSeconds = 20
+        case .error: lifetimeSeconds = 12
+        }
         Task {
-            try? await Task.sleep(for: .seconds(isError ? 12 : 6))
+            try? await Task.sleep(for: .seconds(lifetimeSeconds))
             if checkpointStatusMessage == snapshotMessage {
                 checkpointStatusMessage = nil
-                checkpointStatusIsError = false
+                checkpointStatusKind = .progress
             }
         }
     }
@@ -3910,7 +4442,13 @@ struct ContentView: View {
                 promotedID: record.promotedID?.description,
                 durationSec: record.durationSec,
                 gamesPlayed: record.gamesPlayed,
-                promotionKind: record.promotionKind?.rawValue
+                promotionKind: record.promotionKind?.rawValue,
+                candidateWinsAsWhite: record.candidateWinsAsWhite,
+                candidateWinsAsBlack: record.candidateWinsAsBlack,
+                candidateLossesAsWhite: record.candidateLossesAsWhite,
+                candidateLossesAsBlack: record.candidateLossesAsBlack,
+                candidateDrawsAsWhite: record.candidateDrawsAsWhite,
+                candidateDrawsAsBlack: record.candidateDrawsAsBlack
             )
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
@@ -3977,8 +4515,23 @@ struct ContentView: View {
     /// resumes. Uses `pauseAndWait(timeoutMs:)` so a
     /// mid-save session end can't deadlock the save task.
     private func handleSaveChampionAsModel() {
+        // Belt-and-suspenders guards — menu disable is the primary
+        // gate but these cover keyboard-shortcut / URL-scheme
+        // invocations under a race.
+        if checkpointSaveInFlight {
+            refuseMenuAction("A save is already in progress. Wait for it to finish.")
+            return
+        }
+        if isArenaRunning {
+            refuseMenuAction("Can't save the champion while the arena is running. Wait for it to finish.")
+            return
+        }
+        if isBusy && !realTraining {
+            refuseMenuAction("Another operation is in progress. Wait for it to finish, then try again.")
+            return
+        }
         guard let champion = network else {
-            setCheckpointStatus("No network to save", isError: true)
+            refuseMenuAction("Build or load a model first.")
             return
         }
         let championID = champion.identifier?.description ?? "unknown"
@@ -3987,7 +4540,7 @@ struct ContentView: View {
         // nobody is racing against us.
         let gate = activeSelfPlayGate
         checkpointSaveInFlight = true
-        setCheckpointStatus("Saving champion…", isError: false)
+        setCheckpointStatus("Saving champion…", kind: .progress)
 
         Task {
             // Pause worker 0 if a session is running. Bail with a
@@ -3998,7 +4551,7 @@ struct ContentView: View {
                 let acquired = await gate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
                 if !acquired {
                     checkpointSaveInFlight = false
-                    setCheckpointStatus("Save aborted: could not pause self-play (timeout)", isError: true)
+                    setCheckpointStatus("Save aborted: could not pause self-play (timeout)", kind: .error)
                     return
                 }
             }
@@ -4016,7 +4569,7 @@ struct ContentView: View {
 
             if let exportError {
                 checkpointSaveInFlight = false
-                setCheckpointStatus("Save failed (export): \(exportError.localizedDescription)", isError: true)
+                setCheckpointStatus("Save failed (export): \(exportError.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save champion export failed: \(exportError.localizedDescription)")
                 return
             }
@@ -4046,10 +4599,10 @@ struct ContentView: View {
             checkpointSaveInFlight = false
             switch outcome {
             case .success(let url):
-                setCheckpointStatus("Saved \(url.lastPathComponent)", isError: false)
+                setCheckpointStatus("Saved \(url.lastPathComponent)", kind: .success)
                 SessionLogger.shared.log("[CHECKPOINT] Saved champion: \(url.lastPathComponent)")
             case .failure(let error):
-                setCheckpointStatus("Save failed: \(error.localizedDescription)", isError: true)
+                setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save champion failed: \(error.localizedDescription)")
             }
         }
@@ -4069,12 +4622,23 @@ struct ContentView: View {
     /// trainer. Briefly pauses both self-play worker 0 and the
     /// training gate to snapshot the two networks' weights.
     private func handleSaveSessionManual() {
+        // Belt-and-suspenders guards — menu disable is the primary
+        // gate but these cover keyboard-shortcut / URL-scheme
+        // invocations under a race.
+        if checkpointSaveInFlight {
+            refuseMenuAction("A save is already in progress. Wait for it to finish.")
+            return
+        }
+        if isArenaRunning {
+            refuseMenuAction("Can't save the session while the arena is running. Wait for it to finish.")
+            return
+        }
         guard realTraining,
               let champion = network,
               let trainer,
               let selfPlayGate = activeSelfPlayGate,
               let trainingGate = activeTrainingGate else {
-            setCheckpointStatus("No active session to save", isError: true)
+            refuseMenuAction("No active training session to save. Start Play and Train first.")
             return
         }
         saveSessionInternal(
@@ -4082,26 +4646,71 @@ struct ContentView: View {
             trainer: trainer,
             selfPlayGate: selfPlayGate,
             trainingGate: trainingGate,
-            trigger: "manual"
+            trigger: .manual
+        )
+    }
+
+    /// Fired by `PeriodicSaveController` when its 4-hour deadline
+    /// elapses (after any arena-deferral has resolved). Behaves
+    /// exactly like the manual save path but tagged `.periodic` so
+    /// the filename, status-line, and log line distinguish the two
+    /// triggers. The controller has already decided we should fire;
+    /// any remaining guard failures here (no session, save already
+    /// in flight) just make the periodic attempt a no-op — the next
+    /// tick of the controller will re-fire since `noteSuccessfulSave`
+    /// is never called.
+    @MainActor
+    private func handleSaveSessionPeriodic() {
+        // Guard against an arena starting in the tiny race window
+        // between the controller's decide() and this call.
+        if isArenaRunning {
+            return
+        }
+        if checkpointSaveInFlight {
+            SessionLogger.shared.log("[CHECKPOINT] Periodic save skipped — another save is in flight")
+            return
+        }
+        guard realTraining,
+              let champion = network,
+              let trainer,
+              let selfPlayGate = activeSelfPlayGate,
+              let trainingGate = activeTrainingGate else {
+            // Should not happen if the controller is armed correctly,
+            // but disarm ourselves and bail to be safe.
+            periodicSaveController?.disarm()
+            return
+        }
+        periodicSaveInFlight = true
+        saveSessionInternal(
+            champion: champion,
+            trainer: trainer,
+            selfPlayGate: selfPlayGate,
+            trainingGate: trainingGate,
+            trigger: .periodic
         )
     }
 
     /// Shared save-session internal used by both the manual save
-    /// button and the post-promotion autosave hook. Handles the
-    /// gate dance, exports both networks, builds the session
-    /// state on the main actor, and fires off the actual write to
-    /// a detached task.
+    /// button and the periodic autosave. Handles the gate dance,
+    /// exports both networks, builds the session state on the main
+    /// actor, and fires off the actual write to a detached task.
+    /// The post-promotion autosave uses its own inline code path
+    /// (in the arena coordinator) because it re-uses weights already
+    /// snapshotted under the arena's own pause and so does not need
+    /// to dance the gates again here.
     private func saveSessionInternal(
         champion: ChessMPSNetwork,
         trainer: ChessTrainer,
         selfPlayGate: WorkerPauseGate,
         trainingGate: WorkerPauseGate,
-        trigger: String
+        trigger: SessionSaveTrigger
     ) {
         let championID = champion.identifier?.description ?? "unknown"
         let trainerID = trainer.identifier?.description ?? "unknown"
+        let diskTag = trigger.diskTag
+        let uiSuffix = trigger.uiSuffix
         checkpointSaveInFlight = true
-        setCheckpointStatus("Saving session (\(trigger))…", isError: false)
+        setCheckpointStatus("Saving session\(uiSuffix)…", kind: .progress)
 
         // Build the state snapshot on the main actor before
         // jumping to detached work. Capture the replay buffer handle
@@ -4118,14 +4727,24 @@ struct ContentView: View {
         let bufferForSave = replayBuffer
 
         Task {
+            // Helper to clear both in-flight flags consistently on
+            // every early-return path below. The periodic flag is
+            // only meaningful when `trigger == .periodic`, but it's
+            // cheap to always clear so we don't have to repeat the
+            // branch on every error exit.
+            @MainActor func clearInFlight() {
+                checkpointSaveInFlight = false
+                periodicSaveInFlight = false
+            }
+
             // Pause self-play briefly so the champion export is
             // race-free, snapshot weights, then resume. Uses the
             // bounded variant so a session end mid-save doesn't
             // spin forever waiting for workers that have exited.
             let selfPlayAcquired = await selfPlayGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
             guard selfPlayAcquired else {
-                checkpointSaveInFlight = false
-                setCheckpointStatus("Save aborted: could not pause self-play (timeout)", isError: true)
+                clearInFlight()
+                setCheckpointStatus("Save aborted: could not pause self-play (timeout)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session aborted at self-play pause timeout")
                 return
             }
@@ -4141,8 +4760,8 @@ struct ContentView: View {
             selfPlayGate.resume()
 
             if let championError {
-                checkpointSaveInFlight = false
-                setCheckpointStatus("Save failed (champion export): \(championError.localizedDescription)", isError: true)
+                clearInFlight()
+                setCheckpointStatus("Save failed (champion export): \(championError.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session failed at champion export: \(championError.localizedDescription)")
                 return
             }
@@ -4150,8 +4769,8 @@ struct ContentView: View {
             // Pause training briefly to snapshot trainer weights.
             let trainingAcquired = await trainingGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
             guard trainingAcquired else {
-                checkpointSaveInFlight = false
-                setCheckpointStatus("Save aborted: could not pause training (timeout)", isError: true)
+                clearInFlight()
+                setCheckpointStatus("Save aborted: could not pause training (timeout)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session aborted at training pause timeout")
                 return
             }
@@ -4167,8 +4786,8 @@ struct ContentView: View {
             trainingGate.resume()
 
             if let trainerError {
-                checkpointSaveInFlight = false
-                setCheckpointStatus("Save failed (trainer export): \(trainerError.localizedDescription)", isError: true)
+                clearInFlight()
+                setCheckpointStatus("Save failed (trainer export): \(trainerError.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session failed at trainer export: \(trainerError.localizedDescription)")
                 return
             }
@@ -4176,16 +4795,16 @@ struct ContentView: View {
             // Final write + verify on a detached task so UI stays
             // responsive during the ~150 ms scratch-network build.
             let championMetadata = ModelCheckpointMetadata(
-                creator: trigger,
+                creator: diskTag,
                 trainingStep: trainingStep,
                 parentModelID: "",
-                notes: "Session checkpoint (\(trigger))"
+                notes: "Session checkpoint (\(diskTag))"
             )
             let trainerMetadata = ModelCheckpointMetadata(
-                creator: trigger,
+                creator: diskTag,
                 trainingStep: trainingStep,
                 parentModelID: championID,
-                notes: "Trainer lineage at session checkpoint (\(trigger))"
+                notes: "Trainer lineage at session checkpoint (\(diskTag))"
             )
             let now = Int64(Date().timeIntervalSince1970)
             let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
@@ -4202,7 +4821,7 @@ struct ContentView: View {
                         trainerCreatedAtUnix: now,
                         state: sessionState,
                         replayBuffer: bufferForSave,
-                        trigger: trigger
+                        trigger: diskTag
                     )
                     return .success(url)
                 } catch {
@@ -4210,22 +4829,54 @@ struct ContentView: View {
                 }
             }.value
 
-            checkpointSaveInFlight = false
+            clearInFlight()
             switch outcome {
             case .success(let url):
-                setCheckpointStatus("Saved \(url.lastPathComponent)", isError: false)
+                setCheckpointStatus("Saved \(url.lastPathComponent)\(uiSuffix)", kind: .success)
                 let bufStr: String
                 if let snap = bufferForSave?.stateSnapshot() {
                     bufStr = " replay=\(snap.storedCount)/\(snap.capacity)"
                 } else {
                     bufStr = ""
                 }
-                SessionLogger.shared.log("[CHECKPOINT] Saved session: \(url.lastPathComponent) build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(bufStr)")
+                SessionLogger.shared.log(
+                    "[CHECKPOINT] Saved session (\(diskTag)): \(url.lastPathComponent) build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(bufStr)"
+                )
+                recordLastSessionPointer(
+                    directoryURL: url,
+                    sessionID: sessionState.sessionID,
+                    trigger: diskTag
+                )
+                periodicSaveController?.noteSuccessfulSave(at: Date())
             case .failure(let error):
-                setCheckpointStatus("Save failed: \(error.localizedDescription)", isError: true)
-                SessionLogger.shared.log("[CHECKPOINT] Save session failed: \(error.localizedDescription)")
+                setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// Persist a pointer to the session directory that was just
+    /// saved so the next app launch can offer to auto-resume it.
+    /// Called from every successful session-save path (manual,
+    /// post-promotion, periodic) so the pointer always names the
+    /// freshest on-disk session regardless of which trigger wrote
+    /// it.
+    @MainActor
+    private func recordLastSessionPointer(
+        directoryURL: URL,
+        sessionID: String,
+        trigger: String
+    ) {
+        let pointer = LastSessionPointer(
+            sessionID: sessionID,
+            directoryPath: directoryURL.path,
+            savedAtUnix: Int64(Date().timeIntervalSince1970),
+            trigger: trigger
+        )
+        pointer.write()
+        SessionLogger.shared.log(
+            "[CHECKPOINT] resume-pointer set → \(directoryURL.lastPathComponent) (\(trigger))"
+        )
     }
 
     /// Load a standalone `.dcmmodel` into the current champion
@@ -4235,7 +4886,7 @@ struct ContentView: View {
     private func handleLoadModelPickResult(_ result: Result<[URL], Error>) {
         switch result {
         case .failure(let error):
-            setCheckpointStatus("Load cancelled: \(error.localizedDescription)", isError: true)
+            setCheckpointStatus("Load cancelled: \(error.localizedDescription)", kind: .error)
         case .success(let urls):
             guard let url = urls.first else { return }
             loadModelFrom(url: url)
@@ -4243,47 +4894,67 @@ struct ContentView: View {
     }
 
     private func loadModelFrom(url: URL) {
-        guard let champion = network else {
-            setCheckpointStatus("Build the network first before loading weights", isError: true)
+        // In-function guards (belt-and-suspenders with menu disable).
+        if isBuildingOrBusy() {
+            refuseMenuAction(busyReasonMessage())
             return
         }
 
         checkpointSaveInFlight = true
-        setCheckpointStatus("Loading \(url.lastPathComponent)…", isError: false)
+        setCheckpointStatus("Loading \(url.lastPathComponent)…", kind: .progress)
 
         Task {
-            // Keep the security scope open across the entire
-            // detached read+load so files picked from outside the
-            // sandbox (Downloads, AirDrop, external volumes) stay
-            // accessible until the work finishes. Start/stop must
-            // happen inside the detached closure to bracket the
-            // actual I/O.
-            let outcome: Result<ModelCheckpointFile, Error> = await Task.detached(priority: .userInitiated) {
-                let scopeAccessed = url.startAccessingSecurityScopedResource()
-                defer {
-                    if scopeAccessed {
-                        url.stopAccessingSecurityScopedResource()
-                    }
-                }
-                do {
-                    let file = try CheckpointManager.loadModelFile(at: url)
-                    try await champion.loadWeights(file.weights)
-                    return .success(file)
-                } catch {
-                    return .failure(error)
-                }
-            }.value
-            checkpointSaveInFlight = false
-            switch outcome {
-            case .success(let file):
-                champion.identifier = ModelID(value: file.modelID)
-                networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
-                setCheckpointStatus("Loaded \(file.modelID)", isError: false)
-                SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
-                inferenceResult = nil
+            // Auto-build the champion shell if it doesn't exist yet.
+            // The weights are about to be overwritten, so the random
+            // init is only satisfying graph compilation — no reason
+            // to require the user to press Build first.
+            let championResult = await ensureChampionBuilt()
+            switch championResult {
             case .failure(let error):
-                setCheckpointStatus("Load failed: \(error.localizedDescription)", isError: true)
-                SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
+                checkpointSaveInFlight = false
+                setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Load model auto-build failed: \(error.localizedDescription)")
+                return
+            case .success(let champion):
+                // Keep the security scope open across the entire
+                // detached read+load so files picked from outside the
+                // sandbox (Downloads, AirDrop, external volumes) stay
+                // accessible until the work finishes. Start/stop must
+                // happen inside the detached closure to bracket the
+                // actual I/O.
+                let outcome: Result<ModelCheckpointFile, Error> = await Task.detached(priority: .userInitiated) {
+                    let scopeAccessed = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if scopeAccessed {
+                            url.stopAccessingSecurityScopedResource()
+                        }
+                    }
+                    do {
+                        let file = try CheckpointManager.loadModelFile(at: url)
+                        try await champion.loadWeights(file.weights)
+                        return .success(file)
+                    } catch {
+                        return .failure(error)
+                    }
+                }.value
+                checkpointSaveInFlight = false
+                switch outcome {
+                case .success(let file):
+                    champion.identifier = ModelID(value: file.modelID)
+                    networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
+                    setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
+                    SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
+                    inferenceResult = nil
+                    // Flag champion-replaced for the post-Stop Start
+                    // dialog's "Continue" annotation. Cleared as
+                    // soon as a new training segment starts.
+                    if replayBuffer != nil {
+                        championLoadedSinceLastTrainingSegment = true
+                    }
+                case .failure(let error):
+                    setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
+                }
             }
         }
     }
@@ -4296,23 +4967,37 @@ struct ContentView: View {
     private func handleLoadSessionPickResult(_ result: Result<[URL], Error>) {
         switch result {
         case .failure(let error):
-            setCheckpointStatus("Load cancelled: \(error.localizedDescription)", isError: true)
+            setCheckpointStatus("Load cancelled: \(error.localizedDescription)", kind: .error)
         case .success(let urls):
             guard let url = urls.first else { return }
             loadSessionFrom(url: url)
         }
     }
 
-    private func loadSessionFrom(url: URL) {
-        guard let champion = network else {
-            setCheckpointStatus("Build the network first before loading a session", isError: true)
+    private func loadSessionFrom(url: URL, startAfterLoad: Bool = false) {
+        // In-function guards (belt-and-suspenders with menu disable).
+        if isBuildingOrBusy() {
+            refuseMenuAction(busyReasonMessage())
             return
         }
 
         checkpointSaveInFlight = true
-        setCheckpointStatus("Loading session \(url.lastPathComponent)…", isError: false)
+        setCheckpointStatus("Loading session \(url.lastPathComponent)…", kind: .progress)
 
         Task {
+            // Auto-build the champion shell if it doesn't exist yet.
+            // The weights are about to be overwritten, so the random
+            // init is only satisfying graph compilation — no reason
+            // to require the user to press Build first.
+            let championResult = await ensureChampionBuilt()
+            guard case .success(let champion) = championResult else {
+                checkpointSaveInFlight = false
+                if case .failure(let error) = championResult {
+                    setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load session auto-build failed: \(error.localizedDescription)")
+                }
+                return
+            }
             let outcome: Result<LoadedSession, Error> = await Task.detached(priority: .userInitiated) {
                 let scopeAccessed = url.startAccessingSecurityScopedResource()
                 defer {
@@ -4342,7 +5027,7 @@ struct ContentView: View {
                     Steps: \(loaded.state.trainingSteps) / Games: \(loaded.state.selfPlayGames)
                     Click Play and Train to resume.
                     """
-                setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", isError: false)
+                setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", kind: .success)
                 let savedBuild = loaded.state.buildNumber.map(String.init) ?? "?"
                 let savedGit = loaded.state.buildGitHash ?? "?"
                 let bufStr: String
@@ -4354,11 +5039,216 @@ struct ContentView: View {
                 }
                 SessionLogger.shared.log("[CHECKPOINT] Loaded session: \(url.lastPathComponent) savedBuild=\(savedBuild) savedGit=\(savedGit)\(bufStr)")
                 inferenceResult = nil
+                if startAfterLoad {
+                    // Auto-resume path (from the launch-time sheet or
+                    // the File menu "Resume training from autosave"
+                    // command). Chain straight into Play-and-Train so
+                    // the user's single click results in the session
+                    // both loaded AND running.
+                    SessionLogger.shared.log("[CHECKPOINT] Auto-resume: starting Play-and-Train on loaded session")
+                    startRealTraining()
+                }
             case .failure(let error):
-                setCheckpointStatus("Load failed: \(error.localizedDescription)", isError: true)
+                setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Load session failed: \(error.localizedDescription)")
             }
+            if startAfterLoad {
+                autoResumeInFlight = false
+            }
         }
+    }
+
+    // MARK: - Auto-resume flow
+
+    /// Present the auto-resume sheet if a valid last-session
+    /// pointer is on disk. Called from the view's first `.onAppear`
+    /// pass. A no-op if no pointer exists, the target has been
+    /// deleted externally, or the app is already mid-training
+    /// (the latter should be impossible at launch, but the guard
+    /// is cheap and keeps this callable from anywhere).
+    @MainActor
+    private func maybePresentAutoResumeSheet() {
+        guard !realTraining, !autoResumeSheetShowing else { return }
+        guard let pointer = LastSessionPointer.read() else {
+            SessionLogger.shared.log("[RESUME] No last-session pointer found — skipping auto-resume prompt")
+            return
+        }
+        guard pointer.directoryExists else {
+            SessionLogger.shared.log(
+                "[RESUME] Last-session pointer names missing folder \(pointer.directoryPath) — skipping"
+            )
+            return
+        }
+        autoResumePointer = pointer
+        autoResumeCountdownRemaining = Self.autoResumeCountdownStartSec
+        autoResumeSheetShowing = true
+        let savedAgo = max(0, Int(Date().timeIntervalSince1970) - Int(pointer.savedAtUnix))
+        SessionLogger.shared.log(
+            "[RESUME] Presenting auto-resume sheet for \(pointer.sessionID) (\(pointer.trigger), saved \(savedAgo)s ago)"
+        )
+        startAutoResumeCountdownTask()
+    }
+
+    /// Kick off the 1 Hz countdown timer that ticks
+    /// `autoResumeCountdownRemaining` down to zero, at which point
+    /// it fires the resume action as if the user had clicked the
+    /// Resume button.
+    @MainActor
+    private func startAutoResumeCountdownTask() {
+        autoResumeCountdownTask?.cancel()
+        autoResumeCountdownTask = Task { @MainActor in
+            while autoResumeSheetShowing && autoResumeCountdownRemaining > 0 {
+                do {
+                    try await Task.sleep(for: .seconds(1))
+                } catch {
+                    // Cancelled (user dismissed). Nothing to do.
+                    return
+                }
+                if Task.isCancelled { return }
+                autoResumeCountdownRemaining -= 1
+            }
+            // Only fire if the sheet is still up — a dismiss path
+            // may have zeroed the counter on its way out.
+            if autoResumeSheetShowing {
+                performAutoResume()
+            }
+        }
+    }
+
+    /// Dismiss the sheet without resuming. The File menu item
+    /// "Resume training from autosave" stays available so the
+    /// user can still trigger the resume later during this
+    /// launch.
+    @MainActor
+    private func dismissAutoResumeSheet() {
+        autoResumeCountdownTask?.cancel()
+        autoResumeCountdownTask = nil
+        autoResumeSheetShowing = false
+        SessionLogger.shared.log("[RESUME] User dismissed auto-resume sheet")
+    }
+
+    /// Trigger the actual resume: tear down the sheet, then chain
+    /// through `loadSessionFrom(url:startAfterLoad:)` which handles
+    /// the network-build, weight-load, and Play-and-Train start.
+    /// Errors surface via `setCheckpointStatus(.error)` and the
+    /// session log — we deliberately do NOT delete the pointer or
+    /// the target folder on failure per the spec ("If the session
+    /// can't be loaded, throw up an error and stop. Don't delete
+    /// anything.").
+    @MainActor
+    private func performAutoResume() {
+        guard let pointer = autoResumePointer else {
+            dismissAutoResumeSheet()
+            return
+        }
+        autoResumeCountdownTask?.cancel()
+        autoResumeCountdownTask = nil
+        autoResumeSheetShowing = false
+        autoResumeInFlight = true
+        SessionLogger.shared.log(
+            "[RESUME] Starting auto-resume of \(pointer.sessionID) from \(pointer.directoryURL.lastPathComponent)"
+        )
+        loadSessionFrom(url: pointer.directoryURL, startAfterLoad: true)
+    }
+
+    /// SwiftUI content for the auto-resume sheet. Extracted to a
+    /// computed property so the huge containing view body does not
+    /// have to embed the sheet's layout directly — the type-checker
+    /// routinely blows through its time budget on the parent body
+    /// when inline branching is added near this level of nesting.
+    @ViewBuilder
+    private var autoResumeSheetContent: some View {
+        if let pointer = autoResumePointer {
+            let savedAt = Date(timeIntervalSince1970: TimeInterval(pointer.savedAtUnix))
+            let formatter: DateFormatter = {
+                let f = DateFormatter()
+                f.dateStyle = .medium
+                f.timeStyle = .short
+                return f
+            }()
+            let savedAtString = formatter.string(from: savedAt)
+            let agoString = autoResumeRelativeAgoString(savedAtUnix: pointer.savedAtUnix)
+            let remaining = autoResumeCountdownRemaining
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Resume last training session?")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Session: \(pointer.sessionID)")
+                    Text("Saved \(agoString) (\(savedAtString)) — trigger: \(pointer.trigger)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text(pointer.directoryURL.lastPathComponent)
+                        .font(.system(.callout, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Text("Training will automatically resume in \(remaining) second\(remaining == 1 ? "" : "s").")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 12) {
+                    Spacer()
+                    Button("Not Now") {
+                        dismissAutoResumeSheet()
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    Button("Resume Training (\(remaining))") {
+                        performAutoResume()
+                    }
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(20)
+            .frame(minWidth: 460)
+        } else {
+            // Defensive empty view — should not render in practice
+            // because `autoResumeSheetShowing` only flips true when
+            // `autoResumePointer` is populated.
+            EmptyView()
+        }
+    }
+
+    /// Human-friendly "N minutes ago" string for the sheet body.
+    /// Kept deliberately simple — not worth dragging in RelativeDateTimeFormatter
+    /// for a single-use string whose units only need to span seconds
+    /// through days.
+    private func autoResumeRelativeAgoString(savedAtUnix: Int64) -> String {
+        let deltaSec = max(0, Int(Date().timeIntervalSince1970) - Int(savedAtUnix))
+        if deltaSec < 60 {
+            return "\(deltaSec) second\(deltaSec == 1 ? "" : "s") ago"
+        }
+        let minutes = deltaSec / 60
+        if minutes < 60 {
+            return "\(minutes) minute\(minutes == 1 ? "" : "s") ago"
+        }
+        let hours = minutes / 60
+        if hours < 24 {
+            return "\(hours) hour\(hours == 1 ? "" : "s") ago"
+        }
+        let days = hours / 24
+        return "\(days) day\(days == 1 ? "" : "s") ago"
+    }
+
+    /// File-menu entry point for "Resume training from autosave".
+    /// Shares `performAutoResume`'s implementation but re-reads
+    /// the pointer from UserDefaults first, since the user may
+    /// have performed another save (which updated the pointer)
+    /// between the launch sheet and the menu click.
+    @MainActor
+    private func resumeFromAutosaveMenuAction() {
+        SessionLogger.shared.log("[BUTTON] Resume Training from Autosave")
+        guard !realTraining else {
+            refuseMenuAction("Stop the current training session before resuming from autosave.")
+            return
+        }
+        guard !autoResumeInFlight else { return }
+        guard let pointer = LastSessionPointer.read(), pointer.directoryExists else {
+            refuseMenuAction("No saved session available to resume.")
+            return
+        }
+        autoResumePointer = pointer
+        performAutoResume()
     }
 
     /// Open Finder pointed at the checkpoint root so the user can
@@ -4369,7 +5259,7 @@ struct ContentView: View {
         do {
             try CheckpointPaths.ensureDirectories()
         } catch {
-            setCheckpointStatus("Could not create save folder: \(error.localizedDescription)", isError: true)
+            setCheckpointStatus("Could not create save folder: \(error.localizedDescription)", kind: .error)
             return
         }
         CheckpointManager.revealInFinder(CheckpointPaths.rootURL)
@@ -4390,7 +5280,7 @@ struct ContentView: View {
         commandHub.startContinuousPlay = { startContinuousPlay() }
         commandHub.trainOnce = { trainOnce() }
         commandHub.startContinuousTraining = { startContinuousTraining() }
-        commandHub.startRealTraining = { startRealTraining() }
+        commandHub.startRealTraining = { startTrainingFromMenu() }
         commandHub.startSweep = { startSweep() }
         commandHub.stopAnyContinuous = { stopAnyContinuous() }
         commandHub.runArena = {
@@ -4423,7 +5313,13 @@ struct ContentView: View {
             SessionLogger.shared.log("[BUTTON] Load Model")
             showingLoadModelImporter = true
         }
+        commandHub.resumeFromAutosave = {
+            resumeFromAutosaveMenuAction()
+        }
         commandHub.revealSaves = { handleRevealSaves() }
+        commandHub.chartZoomIn = { chartZoomIn() }
+        commandHub.chartZoomOut = { chartZoomOut() }
+        commandHub.chartZoomEnableAuto = { chartZoomEnableAuto() }
     }
 
     /// Push the subset of view state that governs menu enable/disable
@@ -4443,10 +5339,99 @@ struct ContentView: View {
         commandHub.isArenaRunning = isArenaRunning
         commandHub.checkpointSaveInFlight = checkpointSaveInFlight
         commandHub.pendingLoadedSessionExists = pendingLoadedSession != nil
+        commandHub.canResumeFromAutosave = canResumeFromAutosave
+        // Zoom: the chart grid only renders during Play-and-Train, so
+        // the View menu items follow the same gate plus their
+        // individual extremum checks.
+        commandHub.chartZoomInAvailable = realTraining && canZoomChartIn
+        commandHub.chartZoomOutAvailable = realTraining && canZoomChartOut
+        commandHub.chartZoomAutoAvailable = realTraining && !chartZoomAuto
+    }
+
+    /// True iff any operation is currently running that conflicts
+    /// with menu-driven Build / Load / Save actions. Used by the
+    /// in-function guards in those functions — the menu items are
+    /// already disabled for the same conditions, so this fires
+    /// only when invoked via keyboard shortcut / URL scheme under
+    /// a race, or if the menu state is stale.
+    private func isBuildingOrBusy() -> Bool {
+        return realTraining
+            || continuousPlay
+            || continuousTraining
+            || sweepRunning
+            || gameSnapshot.isPlaying
+            || isBuilding
+            || checkpointSaveInFlight
+    }
+
+    /// Human-readable explanation of *why* `isBuildingOrBusy()` is
+    /// true, for the refusal alert.
+    private func busyReasonMessage() -> String {
+        if realTraining {
+            return "Training is running. Stop it before loading or building a model."
+        }
+        if continuousPlay || continuousTraining {
+            return "A continuous task is running. Stop it first."
+        }
+        if sweepRunning {
+            return "A sweep is running. Stop it first."
+        }
+        if gameSnapshot.isPlaying {
+            return "A game is in progress. Wait for it to finish."
+        }
+        if isBuilding {
+            return "The network is still being built. Wait for it to finish."
+        }
+        if checkpointSaveInFlight {
+            return "A save/load is already in progress. Wait for it to finish."
+        }
+        return "Another operation is in progress."
+    }
+
+    /// Ensure `network` exists. If it's already built, returns it.
+    /// Otherwise runs the same detached `performBuild` path the
+    /// menu's Build Network button uses and wires the result into
+    /// the view's state. Returns the champion network on success,
+    /// or the build error on failure.
+    private func ensureChampionBuilt() async -> Result<ChessMPSNetwork, Error> {
+        if let champion = network {
+            return .success(champion)
+        }
+        isBuilding = true
+        networkStatus = ""
+        trainer = nil
+        clearTrainingDisplay()
+        SessionLogger.shared.log("[BUILD] Auto-build before load")
+        let result = await Task.detached(priority: .userInitiated) {
+            Self.performBuild()
+        }.value
+        switch result {
+        case .success(let net):
+            net.identifier = ModelIDMinter.mint()
+            network = net
+            runner = ChessRunner(network: net)
+            isBuilding = false
+            return .success(net)
+        case .failure(let error):
+            network = nil
+            runner = nil
+            networkStatus = "Build failed: \(error.localizedDescription)"
+            isBuilding = false
+            return .failure(error)
+        }
     }
 
     private func buildNetwork() {
         SessionLogger.shared.log("[BUTTON] Build Network")
+        // In-function guards (belt-and-suspenders with menu disable).
+        if isBusy {
+            refuseMenuAction(busyReasonMessage())
+            return
+        }
+        if networkReady {
+            refuseMenuAction("A network is already built. Load Model or Load Session to replace its weights.")
+            return
+        }
         isBuilding = true
         networkStatus = ""
         // Drop the trainer (it owns graph state we're about to invalidate
@@ -4654,6 +5639,13 @@ struct ContentView: View {
         // disable the Run Arena button and adjust the busy label.
         arenaFlag.set()
         isArenaRunning = true
+        // Let the periodic-save scheduler know an arena is in
+        // progress. A 4-hour deadline that crosses while an arena
+        // runs will be held as a pending fire and only dispatched
+        // once the arena ends — unless a post-promotion autosave
+        // lands in the meantime, in which case the pending fire is
+        // swallowed (see `PeriodicSaveController`).
+        periodicSaveController?.noteArenaBegan()
         // Record the arena's start elapsed-second position so the
         // chart grid's arena activity tile can render a live band
         // as the arena progresses, rather than only showing the
@@ -4901,7 +5893,13 @@ struct ContentView: View {
             promoted: promoted,
             promotionKind: promoted ? promotionKind : nil,
             promotedID: promotedID,
-            durationSec: durationSec
+            durationSec: durationSec,
+            candidateWinsAsWhite: stats.playerAWinsAsWhite,
+            candidateWinsAsBlack: stats.playerAWinsAsBlack,
+            candidateLossesAsWhite: stats.playerALossesAsWhite,
+            candidateLossesAsBlack: stats.playerALossesAsBlack,
+            candidateDrawsAsWhite: stats.playerADrawsAsWhite,
+            candidateDrawsAsBlack: stats.playerADrawsAsBlack
         )
         tournamentHistory.append(record)
         // Mirror into the chart-tile event stream. Compute the
@@ -4970,6 +5968,17 @@ struct ContentView: View {
         // cancellation, and any post-return gate interaction
         // here would potentially deadlock against workers that
         // have already exited their loops.
+        //
+        // Status row: we publish the "Saving… / Saved" progression
+        // via the same `setCheckpointStatus` channel the manual
+        // save uses, tagged "(post-promotion)" so users can tell
+        // at a glance which autosave trigger produced the line.
+        // `periodicSaveController` sees the success callback and
+        // resets its 4-hour deadline, so a promotion that happens
+        // shortly before a scheduled periodic save implicitly
+        // defers the periodic one — which matches the spec: if a
+        // post-promotion save already covered the window, the
+        // next periodic tick runs a full 4 hours later from now.
         if promoted && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty {
             let championID = champion.identifier?.description ?? "unknown"
             let trainerID = trainer.identifier?.description ?? "unknown"
@@ -4997,18 +6006,21 @@ struct ContentView: View {
             let trainerWeightsSnapshot = trainerSnapshotWeights
             let bufferForAutosave = replayBuffer
 
+            setCheckpointStatus("Saving session (post-promotion)…", kind: .progress)
+            checkpointSaveInFlight = true
             // Fire-and-forget detached task. The closure captures
             // only Sendable value types (weight arrays, metadata
             // structs, the session state snapshot, and a few
             // strings) — explicitly NOT `self` — so we can safely
             // run past a session end without touching any View
-            // @State. Outcome is audited through SessionLogger,
-            // which is serial-queue-guarded and thread-safe. The
-            // user sees success via "Reveal Saves" finding the
-            // timestamped folder; failures show up in the
-            // session log.
+            // @State. The completion handler hops back to the
+            // MainActor to surface the outcome in the status row
+            // and to reset `periodicSaveController`'s deadline;
+            // that hop is safe because the handler only touches
+            // the View's @State (no network or gate reads).
             Task.detached(priority: .utility) {
                 [bufferForAutosave] in
+                let outcome: Result<(URL, String), Error>
                 do {
                     let url = try await CheckpointManager.saveSession(
                         championWeights: championWeightsSnapshot,
@@ -5029,24 +6041,62 @@ struct ContentView: View {
                     } else {
                         bufStr = ""
                     }
-                    SessionLogger.shared.log("[CHECKPOINT] Autosaved session: \(url.lastPathComponent) build=\(BuildInfo.buildNumber)\(bufStr)")
+                    outcome = .success((url, bufStr))
                 } catch {
-                    SessionLogger.shared.log("[CHECKPOINT] Autosave session failed: \(error.localizedDescription)")
+                    outcome = .failure(error)
+                }
+                await MainActor.run {
+                    switch outcome {
+                    case .success(let (url, bufStr)):
+                        setCheckpointStatus(
+                            "Saved \(url.lastPathComponent) (post-promotion)",
+                            kind: .success
+                        )
+                        SessionLogger.shared.log(
+                            "[CHECKPOINT] Saved session (post-promotion): \(url.lastPathComponent) build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(bufStr)"
+                        )
+                        recordLastSessionPointer(
+                            directoryURL: url,
+                            sessionID: sessionState.sessionID,
+                            trigger: "post-promotion"
+                        )
+                        periodicSaveController?.noteSuccessfulSave(at: Date())
+                    case .failure(let error):
+                        setCheckpointStatus(
+                            "Autosave failed (post-promotion): \(error.localizedDescription)",
+                            kind: .error
+                        )
+                        SessionLogger.shared.log(
+                            "[CHECKPOINT] Saved session (post-promotion) failed: \(error.localizedDescription)"
+                        )
+                    }
+                    checkpointSaveInFlight = false
                 }
             }
         }
     }
 
-    /// Emit a three-line summary of a just-finished arena tournament to
-    /// stdout (visible in Xcode's console). First line has the human-
-    /// readable result, second line has the training + sampling
-    /// parameters, third line has the model IDs of both arena sides
-    /// plus the trainer's current lineage ID. Running a long
-    /// Play-and-Train session leaves behind a greppable audit trail
-    /// of `[ARENA] …` lines correlating each result with its
-    /// configuration and the exact checkpoint it evaluated. Kept
-    /// deliberately on stdout rather than the UI
-    /// `TrainingLiveStatsBox` so external tooling can `tee` the log.
+    /// Emit an expanded multi-line summary of a just-finished arena
+    /// tournament to stdout and the session log. Format:
+    ///
+    ///   [ARENA] #N Candidate vs Champion @ step S
+    ///   [ARENA]     Games: G       (played/total)
+    ///   [ARENA]     Result: W wins / D draws / L losses (candidate perspective)
+    ///   [ARENA]     Score:  51.2% [48.1%, 54.3%]
+    ///   [ARENA]     Elo diff: +28 [+13, +34]
+    ///   [ARENA]     Draw rate: 17.5%
+    ///   [ARENA]     By side:
+    ///   [ARENA]       Candidate as white: 54.1%  (W/D/L n/n/n)
+    ///   [ARENA]       Candidate as black: 48.3%  (W/D/L n/n/n)
+    ///   [ARENA]     batch=… lr=… promote>=… sp.tau=… ar.tau=… workers=… build=…
+    ///   [ARENA]     candidate=…  champion=…  trainer=…
+    ///   [ARENA]     diversity: unique=…/… (…%) avgDiverge=…
+    ///   [ARENA]     Verdict: PROMOTED(auto)=ID | kept    dur=m:ss
+    ///   [ARENA] #N kv step=… games=… w=… d=… l=… score=… elo=… elo_lo=… elo_hi=… draw_rate=… cand_white_score=… cand_black_score=… promoted=… kind=… dur_sec=… build=… candidate=… champion=… trainer=…
+    ///
+    /// The trailing `kv` line stays a single key=value line so
+    /// grep-based tooling can pull every arena outcome without
+    /// reassembling the multi-line block.
     @MainActor
     private func logArenaResult(
         record: TournamentRecord,
@@ -5056,75 +6106,57 @@ struct ContentView: View {
         championSide: ChessMPSNetwork,
         diversity: GameDiversityTracker.Snapshot
     ) {
-        let durMin = Int(record.durationSec) / 60
-        let durSec = Int(record.durationSec) % 60
-        let durationStr = String(format: "%d:%02d", durMin, durSec)
-        // Promotion marker carries the promoted model's ID inline so
-        // the single-line header identifies exactly which checkpoint
-        // just took over as the champion — the same ID that already
-        // shows up in the trailing `ids` line, pulled forward so a
-        // `grep PROMOTED` on the session log is self-contained.
-        let statusStr: String
-        let kindSuffix: String
-        switch record.promotionKind {
-        case .automatic:
-            kindSuffix = " (auto)"
-        case .manual:
-            kindSuffix = " (manual)"
-        case .none:
-            kindSuffix = ""
-        }
-        if record.promoted, let pid = record.promotedID {
-            statusStr = "PROMOTED\(kindSuffix)=\(pid.description)"
-        } else if record.promoted {
-            statusStr = "PROMOTED\(kindSuffix)"
-        } else {
-            statusStr = "kept"
-        }
         let sp = samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()
         let ar = samplingScheduleBox?.arena ?? buildArenaSchedule()
-        let lrStr = String(format: "%.1e", trainer.learningRate)
-        let scoreStr = String(format: "%.3f", record.score)
-        let threshStr = String(format: "%.2f", Self.tournamentPromoteThreshold)
-        let spTauStr = String(
-            format: "%.2f/%.2f/%.3f",
-            Double(sp.startTau),
-            Double(sp.floorTau),
-            Double(sp.decayPerPly)
-        )
-        let arTauStr = String(
-            format: "%.2f/%.2f/%.3f",
-            Double(ar.startTau),
-            Double(ar.floorTau),
-            Double(ar.decayPerPly)
-        )
         let candidateIDStr = candidate.identifier?.description ?? "?"
         let championIDStr = championSide.identifier?.description ?? "?"
         let trainerIDStr = trainer.identifier?.description ?? "?"
 
-        let divStr = String(format: "unique=%d/%d(%.0f%%) avgDiverge=%.1f",
-                            diversity.uniqueGames, diversity.gamesInWindow,
-                            diversity.uniquePercent, diversity.avgDivergencePly)
+        let parameters = ArenaLogFormatter.Parameters(
+            batchSize: Self.trainingBatchSize,
+            learningRate: trainer.learningRate,
+            promoteThreshold: Self.tournamentPromoteThreshold,
+            tournamentGames: Self.tournamentGames,
+            spStartTau: sp.startTau,
+            spFloorTau: sp.floorTau,
+            spDecayPerPly: sp.decayPerPly,
+            arStartTau: ar.startTau,
+            arFloorTau: ar.floorTau,
+            arDecayPerPly: ar.decayPerPly,
+            workerCount: selfPlayWorkerCount,
+            buildNumber: BuildInfo.buildNumber
+        )
+        let diversityCtx = ArenaLogFormatter.Diversity(
+            uniqueGames: diversity.uniqueGames,
+            gamesInWindow: diversity.gamesInWindow,
+            uniquePercent: diversity.uniquePercent,
+            avgDivergencePly: diversity.avgDivergencePly
+        )
 
-        let wld = "\(record.candidateWins)-\(record.championWins)-\(record.draws)"
-        let gamesStr = "\(record.gamesPlayed)/\(Self.tournamentGames)"
-        let header = "[ARENA] #\(index) @ step \(record.finishedAtStep)  games=\(gamesStr)  W/L/D=\(wld)  score=\(scoreStr)  \(statusStr)  dur=\(durationStr)"
-        let params = "        batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(threshStr) games=\(Self.tournamentGames) sp.tau=\(spTauStr) ar.tau=\(arTauStr) workers=\(selfPlayWorkerCount) build=\(BuildInfo.buildNumber)"
-        let ids = "        candidate=\(candidateIDStr)  champion=\(championIDStr)  trainer=\(trainerIDStr)"
-        let div = "        diversity: \(divStr)"
+        let lines = ArenaLogFormatter.formatHumanReadable(
+            record: record,
+            index: index,
+            candidateID: candidateIDStr,
+            championID: championIDStr,
+            trainerID: trainerIDStr,
+            parameters: parameters,
+            diversity: diversityCtx
+        )
+        let kv = ArenaLogFormatter.formatKVLine(
+            record: record,
+            index: index,
+            candidateID: candidateIDStr,
+            championID: championIDStr,
+            trainerID: trainerIDStr,
+            buildNumber: BuildInfo.buildNumber
+        )
 
-        print(header)
-        print(params)
-        print(ids)
-        print(div)
-
-        // Mirror the same four lines into the session log so the
-        // on-disk file carries the full arena history even when the
-        // Xcode console isn't being captured.
-        SessionLogger.shared.log(header)
-        SessionLogger.shared.log(params)
-        SessionLogger.shared.log(ids)
-        SessionLogger.shared.log(div)
+        for line in lines {
+            print(line)
+            SessionLogger.shared.log(line)
+        }
+        print(kv)
+        SessionLogger.shared.log(kv)
     }
 
     /// Release arena-active state on an early return from
@@ -5144,6 +6176,13 @@ struct ContentView: View {
         // normal append-then-clear sequence. A no-op on the happy
         // path (the append site already cleared this).
         activeArenaStartElapsed = nil
+        // Release any pending periodic-save fire that was held
+        // back during the tournament. The controller decides on
+        // the next `decide(now:)` call whether a (post-promotion)
+        // successful save landed during the arena window (swallow
+        // the pending fire) or not (dispatch the save a little
+        // late).
+        periodicSaveController?.noteArenaEnded()
     }
 
     /// Kick off (or coalesce) a forward pass on the current `editableState`.
@@ -5515,6 +6554,85 @@ struct ContentView: View {
 
     // MARK: - Real Training (Self-Play) Actions
 
+    /// Surface a refusal to the user via the menu-action alert,
+    /// and log it. Used by in-function guards so pressing a menu
+    /// item whose disable state is stale (or invoked via keyboard
+    /// shortcut under a race) produces an explanation rather than
+    /// silent no-op. Also used for end-of-operation warnings like
+    /// "champion was loaded since last training — trainer still
+    /// has its prior weights".
+    private func refuseMenuAction(_ reason: String) {
+        SessionLogger.shared.log("[GUARD] refused: \(reason)")
+        menuActionError = reason
+    }
+
+    /// Whether there is resumable in-memory state from a prior
+    /// Stop in this launch. True iff a replay buffer exists AND
+    /// there is no `pendingLoadedSession` queued (a disk load
+    /// takes precedence and has its own resume semantics).
+    private var hasResumableInMemorySession: Bool {
+        pendingLoadedSession == nil && replayBuffer != nil
+    }
+
+    /// Message for the three-way Start dialog. Flags trainer/champion
+    /// divergence if the user loaded a model (champion) since the
+    /// last training session — "Continue" will keep the old trainer
+    /// weights playing against the new champion, which is valid but
+    /// worth calling out.
+    private func startTrainingDialogMessage() -> String {
+        var lines: [String] = []
+        lines.append("Continue picks up where you stopped, keeping the replay buffer and counters.")
+        lines.append("New session resets counters and clears the replay buffer.")
+        if championLoadedSinceLastTrainingSegment {
+            lines.append("")
+            lines.append("Note: the champion was replaced (Load Model) since the last training run. " +
+                         "If you pick \"Continue\", the trainer still has its pre-load weights.")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// True iff a Load Model has happened since the most recent
+    /// training segment closed. Used only to annotate the
+    /// three-way Start dialog.
+    @State private var championLoadedSinceLastTrainingSegment: Bool = false
+
+    /// Entry point for the "Play and Train" / "Continue Training"
+    /// menu button. Performs in-function guards, then either
+    /// starts training directly or raises the three-way
+    /// confirmation dialog when in-memory state from a prior Stop
+    /// is available.
+    private func startTrainingFromMenu() {
+        // In-function guards — belt-and-suspenders with the menu-item
+        // disable. Any of these being wrong means the menu got out
+        // of sync with view state; still better to refuse visibly
+        // than to silently no-op or corrupt state.
+        if isBusy && !realTraining {
+            refuseMenuAction("Another operation is in progress. Wait for it to finish, then try again.")
+            return
+        }
+        if realTraining {
+            refuseMenuAction("Training is already running.")
+            return
+        }
+        if continuousPlay || continuousTraining || sweepRunning {
+            refuseMenuAction("Another continuous task is running. Stop it first.")
+            return
+        }
+        if isBuilding {
+            refuseMenuAction("The network is still being built. Wait for it to finish.")
+            return
+        }
+        guard networkReady, network != nil else {
+            refuseMenuAction("Build or load a model first.")
+            return
+        }
+        if hasResumableInMemorySession {
+            showStartTrainingDialog = true
+        } else {
+            startRealTraining(mode: .freshOrFromLoadedSession)
+        }
+    }
+
     /// Kick off real-data training in parallel mode: self-play, training,
     /// and arena coordination run as three independent tasks inside a
     /// `TaskGroup`, sharing state only through the lock-protected
@@ -5528,7 +6646,10 @@ struct ContentView: View {
     /// and a fourth "arena champion" network — both snapshots taken
     /// under brief per-worker pauses so game play and training never
     /// actually stop, even during a tournament.
-    private func startRealTraining() {
+    ///
+    /// `mode` picks how in-memory state from a prior Stop is handled:
+    /// see `TrainingStartMode` for the four cases.
+    private func startRealTraining(mode: TrainingStartMode = .freshOrFromLoadedSession) {
         SessionLogger.shared.log("[BUTTON] Play and Train")
         // Begin a new training segment for cumulative wall-time
         // tracking. Closed via `closeActiveTrainingSegment` on Stop or
@@ -5555,88 +6676,113 @@ struct ContentView: View {
         inferenceResult = nil
         gameWatcher.resetAll()
         gameSnapshot = gameWatcher.snapshot()
-        clearTrainingDisplay()
         clearTrainingAlarm()
         divergenceWarningStreak = 0
         divergenceCriticalStreak = 0
         divergenceRecoveryStreak = 0
 
-        let buffer = ReplayBuffer(capacity: Self.replayBufferCapacity)
-        replayBuffer = buffer
-        let box = TrainingLiveStatsBox(rollingWindow: Self.rollingLossWindow)
-        if let rs = pendingLoadedSession?.state {
-            var seeded = TrainingRunStats()
-            seeded.steps = rs.trainingSteps
-            box.seed(seeded)
+        // `continueMode` controls whether we preserve in-memory state
+        // from a prior Stop. When true: reuse replay buffer, stats
+        // boxes, session ID, tournament history, chart samples, and
+        // trainer weights. The only fresh objects are the transient
+        // per-task gates and live schedule boxes (those get cancelled
+        // with the task on Stop, so they don't survive).
+        let continueMode = (mode == .continueAfterStop)
+        if !continueMode {
+            clearTrainingDisplay()
         }
-        trainingBox = box
-        realRollingPolicyLoss = nil
-        realRollingValueLoss = nil
+
+        let buffer: ReplayBuffer
+        if continueMode, let existing = replayBuffer {
+            buffer = existing
+        } else {
+            buffer = ReplayBuffer(capacity: Self.replayBufferCapacity)
+            replayBuffer = buffer
+        }
+        let box: TrainingLiveStatsBox
+        if continueMode, let existing = trainingBox {
+            box = existing
+        } else {
+            let fresh = TrainingLiveStatsBox(rollingWindow: Self.rollingLossWindow)
+            if let rs = pendingLoadedSession?.state {
+                var seeded = TrainingRunStats()
+                seeded.steps = rs.trainingSteps
+                fresh.seed(seeded)
+            }
+            trainingBox = fresh
+            realRollingPolicyLoss = nil
+            realRollingValueLoss = nil
+            box = fresh
+        }
         // Seed counters from the loaded session if resuming, or
         // start fresh. This covers the stats box (game/move/result
         // counters), training step count, tournament history, and
-        // worker count.
+        // worker count. In `.continueAfterStop` the trainer's
+        // hyperparameters and `trainingStats` stay untouched — the
+        // user wants to pick up exactly where they left off.
         let resumeState = pendingLoadedSession?.state
-        if let rs = resumeState {
-            trainer.learningRate = rs.learningRate
-            trainerLearningRate = Double(rs.learningRate)
-            if let entropyCoeff = rs.entropyRegularizationCoeff {
-                trainer.entropyRegularizationCoeff = entropyCoeff
-                entropyRegularizationCoeff = Double(entropyCoeff)
+        if !continueMode {
+            if let rs = resumeState {
+                trainer.learningRate = rs.learningRate
+                trainerLearningRate = Double(rs.learningRate)
+                if let entropyCoeff = rs.entropyRegularizationCoeff {
+                    trainer.entropyRegularizationCoeff = entropyCoeff
+                    entropyRegularizationCoeff = Double(entropyCoeff)
+                } else {
+                    trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
+                }
+                if let dp = rs.drawPenalty {
+                    trainer.drawPenalty = dp
+                    drawPenalty = Double(dp)
+                } else {
+                    trainer.drawPenalty = Float(drawPenalty)
+                }
+                // Regularization knobs that became editable post-v1 session
+                // files: hydrate when present, otherwise leave the current
+                // @AppStorage-backed value alone.
+                if let wd = rs.weightDecayCoeff {
+                    trainer.weightDecayC = wd
+                    weightDecayC = Double(wd)
+                } else {
+                    trainer.weightDecayC = Float(weightDecayC)
+                }
+                if let clip = rs.gradClipMaxNorm {
+                    trainer.gradClipMaxNorm = clip
+                    gradClipMaxNorm = Double(clip)
+                } else {
+                    trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
+                }
+                if let k = rs.policyScaleK {
+                    trainer.policyScaleK = k
+                    policyScaleK = Double(k)
+                } else {
+                    trainer.policyScaleK = Float(policyScaleK)
+                }
+                // Sampling schedule — TauConfigCodable is non-Optional on
+                // the session schema (added in v1), so no fallback branch.
+                // Writes to @AppStorage propagate through
+                // `buildSelfPlaySchedule` / `buildArenaSchedule` the next
+                // time the schedule box is built below.
+                spStartTau = Double(rs.selfPlayTau.startTau)
+                spFloorTau = Double(rs.selfPlayTau.floorTau)
+                spDecayPerPly = Double(rs.selfPlayTau.decayPerPly)
+                arStartTau = Double(rs.arenaTau.startTau)
+                arFloorTau = Double(rs.arenaTau.floorTau)
+                arDecayPerPly = Double(rs.arenaTau.decayPerPly)
             } else {
+                trainer.learningRate = Float(trainerLearningRate)
                 trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
-            }
-            if let dp = rs.drawPenalty {
-                trainer.drawPenalty = dp
-                drawPenalty = Double(dp)
-            } else {
                 trainer.drawPenalty = Float(drawPenalty)
-            }
-            // Regularization knobs that became editable post-v1 session
-            // files: hydrate when present, otherwise leave the current
-            // @AppStorage-backed value alone.
-            if let wd = rs.weightDecayCoeff {
-                trainer.weightDecayC = wd
-                weightDecayC = Double(wd)
-            } else {
                 trainer.weightDecayC = Float(weightDecayC)
-            }
-            if let clip = rs.gradClipMaxNorm {
-                trainer.gradClipMaxNorm = clip
-                gradClipMaxNorm = Double(clip)
-            } else {
                 trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
-            }
-            if let k = rs.policyScaleK {
-                trainer.policyScaleK = k
-                policyScaleK = Double(k)
-            } else {
                 trainer.policyScaleK = Float(policyScaleK)
             }
-            // Sampling schedule — TauConfigCodable is non-Optional on
-            // the session schema (added in v1), so no fallback branch.
-            // Writes to @AppStorage propagate through
-            // `buildSelfPlaySchedule` / `buildArenaSchedule` the next
-            // time the schedule box is built below.
-            spStartTau = Double(rs.selfPlayTau.startTau)
-            spFloorTau = Double(rs.selfPlayTau.floorTau)
-            spDecayPerPly = Double(rs.selfPlayTau.decayPerPly)
-            arStartTau = Double(rs.arenaTau.startTau)
-            arFloorTau = Double(rs.arenaTau.floorTau)
-            arDecayPerPly = Double(rs.arenaTau.decayPerPly)
-        } else {
-            trainer.learningRate = Float(trainerLearningRate)
-            trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
-            trainer.drawPenalty = Float(drawPenalty)
-            trainer.weightDecayC = Float(weightDecayC)
-            trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
-            trainer.policyScaleK = Float(policyScaleK)
+            var initialTrainingStats = TrainingRunStats()
+            if let rs = resumeState {
+                initialTrainingStats.steps = rs.trainingSteps
+            }
+            trainingStats = initialTrainingStats
         }
-        var initialTrainingStats = TrainingRunStats()
-        if let rs = resumeState {
-            initialTrainingStats.steps = rs.trainingSteps
-        }
-        trainingStats = initialTrainingStats
         playAndTrainBoardMode = .gameRun
         probeNetworkTarget = .candidate
         candidateProbeDirty = false
@@ -5654,7 +6800,12 @@ struct ContentView: View {
         arStartTauEditText = String(format: "%.2f", arStartTau)
         arFloorTauEditText = String(format: "%.2f", arFloorTau)
         arDecayPerPlyEditText = String(format: "%.3f", arDecayPerPly)
-        if let rs = resumeState {
+        if continueMode {
+            // Preserve `completedTrainingSegments` and
+            // `tournamentHistory` as they stood at Stop. The new
+            // training segment has already been opened by
+            // `beginActiveTrainingSegment` above.
+        } else if let rs = resumeState {
             // Hydrate prior training segments so cumulative wall-time
             // and run-count metrics carry across save/load. Missing
             // (older session files) → empty array, which means this
@@ -5690,17 +6841,35 @@ struct ContentView: View {
                     promoted: entry.promoted,
                     promotionKind: kind,
                     promotedID: entry.promotedID.map { ModelID(value: $0) },
-                    durationSec: entry.durationSec
+                    durationSec: entry.durationSec,
+                    candidateWinsAsWhite: entry.candidateWinsAsWhite ?? 0,
+                    candidateWinsAsBlack: entry.candidateWinsAsBlack ?? 0,
+                    candidateLossesAsWhite: entry.candidateLossesAsWhite ?? 0,
+                    candidateLossesAsBlack: entry.candidateLossesAsBlack ?? 0,
+                    candidateDrawsAsWhite: entry.candidateDrawsAsWhite ?? 0,
+                    candidateDrawsAsBlack: entry.candidateDrawsAsBlack ?? 0
                 )
             }
         } else {
+            // Fresh session (first Start of the launch, or one of
+            // the new-session modes from the Start dialog). Clear
+            // both the arena history and the training-segment
+            // wall-time history — "new session" means fresh
+            // counters. Pre-existing first-launch behavior left
+            // `completedTrainingSegments` alone (benign, since it
+            // was already empty at first launch), but after a
+            // Stop→"New session" pick the old value would bleed
+            // through, so normalize to "always fresh" here.
             tournamentHistory = []
+            completedTrainingSegments = []
         }
         tournamentProgress = nil
         let tBox = TournamentLiveBox()
         tournamentBox = tBox
         let pStatsBox: ParallelWorkerStatsBox
-        if let rs = resumeState {
+        if continueMode, let existing = parallelWorkerStatsBox {
+            pStatsBox = existing
+        } else if let rs = resumeState {
             pStatsBox = ParallelWorkerStatsBox(
                 sessionStart: Date(),
                 totalGames: rs.selfPlayGames,
@@ -5728,23 +6897,30 @@ struct ContentView: View {
         }
         parallelWorkerStatsBox = pStatsBox
         parallelStats = pStatsBox.snapshot()
-        let spDiversityTracker = GameDiversityTracker(windowSize: 200)
-        selfPlayDiversityTracker = spDiversityTracker
-        currentDiversityHistogramBars = []
-        arenaChartEvents = []
-        // Reset progress-rate sampler state so the new session's
-        // chart starts fresh at t=0. Leaving old samples in place
-        // would show up as a visible "step" from the previous
-        // session's trailing values to the new session's zero
-        // reading.
-        progressRateSamples = []
-        trainingChartSamples = []
-        trainingChartNextId = 0
-        prevChartTotalGpuMs = 0
-        progressRateLastFetch = .distantPast
-        progressRateNextId = 0
-        progressRateScrollX = 0
-        progressRateFollowLatest = true
+        let spDiversityTracker: GameDiversityTracker
+        if continueMode, let existing = selfPlayDiversityTracker {
+            spDiversityTracker = existing
+        } else {
+            spDiversityTracker = GameDiversityTracker(windowSize: 200)
+            selfPlayDiversityTracker = spDiversityTracker
+            currentDiversityHistogramBars = []
+        }
+        if !continueMode {
+            arenaChartEvents = []
+            // Reset progress-rate sampler state so the new session's
+            // chart starts fresh at t=0. Leaving old samples in place
+            // would show up as a visible "step" from the previous
+            // session's trailing values to the new session's zero
+            // reading.
+            progressRateSamples = []
+            trainingChartSamples = []
+            trainingChartNextId = 0
+            prevChartTotalGpuMs = 0
+            progressRateLastFetch = .distantPast
+            progressRateNextId = 0
+            progressRateScrollX = 0
+            progressRateFollowLatest = true
+        }
         // Single self-play gate. All self-play workers now share one
         // `BatchedMoveEvaluationSource` on the champion network, driven
         // by `BatchedSelfPlayDriver`, so there is exactly one consumer
@@ -5796,6 +6972,19 @@ struct ContentView: View {
         arenaOverrideBox = overrideBox
         isArenaRunning = false
         realTraining = true
+        // Arm the 4-hour periodic-save scheduler. Always construct
+        // a fresh controller on each start — a previous stop will
+        // have nil'd it out, and `.continueAfterStop` intentionally
+        // resets the next-save deadline to a full interval from
+        // now rather than inheriting whatever time was left on the
+        // prior arm, since the whole point of the scheduler is
+        // "saved within the last 4 hours" and the session was not
+        // being saved while stopped.
+        let controller = PeriodicSaveController(interval: Self.periodicSaveIntervalSec)
+        controller.arm(now: Date())
+        periodicSaveController = controller
+        periodicSaveLastPollAt = Date()
+        periodicSaveInFlight = false
 
         // Expose the two gates the checkpoint save path needs and
         // anchor the session ID + wall clock. `currentSessionID`
@@ -5810,7 +6999,12 @@ struct ContentView: View {
         // get polluted by the back-dated hours.
         activeSelfPlayGate = selfPlayGate
         activeTrainingGate = trainingGate
-        if let resumed = pendingLoadedSession {
+        if continueMode {
+            // Preserve `currentSessionID`, `currentSessionStart`,
+            // `replayRatioTarget`, `replayRatioAutoAdjust`, and any
+            // trainer-hyperparameter edits the user made between
+            // Stop and Start. Nothing to do here.
+        } else if let resumed = pendingLoadedSession {
             currentSessionID = resumed.state.sessionID
             currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
             replayRatioTarget = resumed.state.replayRatioTarget ?? 1.0
@@ -5870,23 +7064,28 @@ struct ContentView: View {
                 }
             }
 
-            // Reset the trainer's graph AND initialize its weights.
-            // Two paths:
+            // Reset the trainer's graph AND initialize its weights,
+            // branched by `mode`:
             //
-            // (1) Normal start: fork the trainer off the champion so
-            //     arena-at-step-0 is a fair tie by construction and
-            //     the trainer's starting point is a true fork of the
-            //     champion.
+            // - `.freshOrFromLoadedSession`: rebuild graph, then
+            //   load trainer weights from the loaded session's
+            //   `trainer.dcmmodel` if present, or fork them from
+            //   the champion. This is the default first-launch and
+            //   disk-resume path.
+            // - `.newSessionResetTrainerFromChampion`: rebuild
+            //   graph, fork trainer weights from the live champion.
+            //   User explicitly asked to throw away accumulated
+            //   trainer weights and start fresh from champion.
+            // - `.continueAfterStop` and `.newSessionKeepTrainer`:
+            //   leave the trainer's graph and weights untouched —
+            //   the trainer's MPSGraph stayed alive across Stop,
+            //   and preserving its weights is the whole point of
+            //   both modes.
             //
-            // (2) Resume from a loaded `.dcmsession`: load the trainer
-            //     from the session's `trainer.dcmmodel` payload so its
-            //     mid-training divergence from the champion is
-            //     preserved. Without this branch, resume would throw
-            //     away the trainer's in-flight SGD progress every
-            //     time. The champion has already been loaded from
-            //     disk into `network` at file-load time, so the
-            //     batcher (which wraps `network`) picks up the
-            //     restored weights automatically.
+            // In the fork-from-champion branch, champion weights
+            // loaded from disk at file-load time are already live
+            // in `network`, so the batcher (which wraps `network`)
+            // picks up the restored weights automatically.
             let resumedTrainerWeights: [[Float]]? = await MainActor.run {
                 pendingLoadedSession?.trainerFile.weights
             }
@@ -5894,16 +7093,27 @@ struct ContentView: View {
                 pendingLoadedSession?.replayBufferURL
             }
             do {
-                try await trainer.resetNetwork()
-                try await Task.detached(priority: .userInitiated) {
-                    [resumedTrainerWeights] in
-                    if let trainerWeights = resumedTrainerWeights {
-                        try await trainer.network.loadWeights(trainerWeights)
-                    } else {
+                switch mode {
+                case .continueAfterStop, .newSessionKeepTrainer:
+                    break
+                case .freshOrFromLoadedSession:
+                    try await trainer.resetNetwork()
+                    try await Task.detached(priority: .userInitiated) {
+                        [resumedTrainerWeights] in
+                        if let trainerWeights = resumedTrainerWeights {
+                            try await trainer.network.loadWeights(trainerWeights)
+                        } else {
+                            let championWeights = try await network.exportWeights()
+                            try await trainer.network.loadWeights(championWeights)
+                        }
+                    }.value
+                case .newSessionResetTrainerFromChampion:
+                    try await trainer.resetNetwork()
+                    try await Task.detached(priority: .userInitiated) {
                         let championWeights = try await network.exportWeights()
                         try await trainer.network.loadWeights(championWeights)
-                    }
-                }.value
+                    }.value
+                }
             } catch {
                 box.recordError("Reset failed: \(error.localizedDescription)")
                 await MainActor.run {
@@ -5950,18 +7160,42 @@ struct ContentView: View {
                 }
             }
 
-            // Trainer ID: on a fresh start, mint a new one. On a
-            // resume, inherit the trainer ID from the loaded session
-            // so the audit trail stays continuous.
+            // Trainer ID — branched by `mode`, matching the
+            // trainer-weights logic above:
+            //
+            // - `.freshOrFromLoadedSession`: inherit from the
+            //   loaded session's trainer file if present, else
+            //   mint a new generation off the champion.
+            // - `.newSessionResetTrainerFromChampion`: mint a new
+            //   generation off the current champion (trainer
+            //   weights were just forked from champion).
+            // - `.continueAfterStop` and `.newSessionKeepTrainer`:
+            //   keep the trainer's existing ID — its weights
+            //   weren't touched, so the lineage is continuous.
             await MainActor.run {
-                if let resumed = pendingLoadedSession {
-                    trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
-                } else {
-                    trainer.identifier = ModelIDMinter.mintTrainerGeneration(from: network.identifier ?? ModelIDMinter.mint())
+                switch mode {
+                case .continueAfterStop, .newSessionKeepTrainer:
+                    break
+                case .newSessionResetTrainerFromChampion:
+                    trainer.identifier = ModelIDMinter.mintTrainerGeneration(
+                        from: network.identifier ?? ModelIDMinter.mint()
+                    )
+                case .freshOrFromLoadedSession:
+                    if let resumed = pendingLoadedSession {
+                        trainer.identifier = ModelID(value: resumed.trainerFile.modelID)
+                    } else {
+                        trainer.identifier = ModelIDMinter.mintTrainerGeneration(
+                            from: network.identifier ?? ModelIDMinter.mint()
+                        )
+                    }
                 }
                 // Consume the pending load — from here on, the
                 // running session owns the restored state.
                 pendingLoadedSession = nil
+                // A training segment has started, so clear the
+                // "champion replaced since last training" flag
+                // (the Start dialog's annotation is resolved).
+                championLoadedSinceLastTrainingSegment = false
             }
 
             // Grab the candidate inference network and arena champion
@@ -6481,6 +7715,14 @@ struct ContentView: View {
         // buildCurrentSessionState will see the segment already closed
         // and won't double-count.
         closeActiveTrainingSegment(reason: "stop")
+        // Disarm the periodic-save scheduler so a Stop-then-Start
+        // doesn't fire an immediate save on Start. The next Start
+        // constructs a fresh controller with a fresh 4-hour
+        // deadline.
+        periodicSaveController?.disarm()
+        periodicSaveController = nil
+        periodicSaveLastPollAt = nil
+        periodicSaveInFlight = false
     }
 
     /// Begin a new training segment when Play-and-Train starts.
@@ -6596,22 +7838,27 @@ struct ContentView: View {
             let activeSec = cumulativeActiveTrainingSec
             HStack(spacing: 16) {
                 if hasHistory {
-                    statusBarItem(
+                    StatusBarCell(
                         label: "Active training time",
                         value: GameWatcher.Snapshot.formatHMS(seconds: activeSec)
                     )
-                    statusBarItem(
+                    StatusBarCell(
                         label: "Training steps",
                         value: Int(totalSteps).formatted()
                     )
-                    statusBarItem(
+                    StatusBarCell(
                         label: "Positions trained",
                         value: Self.formatCompactCount(totalPositions)
                     )
-                    statusBarItem(
+                    StatusBarCell(
                         label: "Runs",
                         value: "\(cumulativeRunCount)"
                     )
+                    StatusBarCell(
+                        label: "Arenas",
+                        value: "\(tournamentHistory.count)"
+                    )
+                    scoreStatusBarCell
                 }
                 Spacer()
                 if canRunArena {
@@ -6639,19 +7886,97 @@ struct ContentView: View {
         }
     }
 
-    /// Build a single status-bar cell — small caption label above a
-    /// monospaced numeric value. Pulled out so the four cells in the
-    /// status bar share consistent typography.
-    @ViewBuilder
-    private func statusBarItem(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(.callout, design: .monospaced).weight(.semibold))
-                .monospacedDigit()
+    /// Format the Score status-bar cell's value. `nil` lastArena
+    /// renders a dimmed em-dash. Otherwise the cell toggles between a
+    /// percentage view and an Elo-with-CI view controlled by
+    /// `scoreStatusShowElo`.
+    private func scoreStatusCellValue(lastArena: TournamentRecord?) -> String {
+        guard let r = lastArena else { return "—" }
+        if scoreStatusShowElo {
+            return ArenaEloStats.formatEloWithCI(r.eloSummary)
         }
+        return String(format: "%.1f%%", r.score * 100)
+    }
+
+    /// The Score / Elo cell for the status bar. Broken out of the
+    /// main `cumulativeStatusBar` HStack because the ternary-produced
+    /// optional closure and optional color were pushing SwiftUI's
+    /// type-checker past its complexity budget when inlined alongside
+    /// the other five cells.
+    private var scoreStatusBarCell: StatusBarCell {
+        let lastArena = tournamentHistory.last
+        let label = scoreStatusShowElo ? "Elo" : "Score"
+        let value = scoreStatusCellValue(lastArena: lastArena)
+        let hasArena = lastArena != nil
+        let action: (() -> Void)?
+        if hasArena {
+            action = { scoreStatusShowElo.toggle() }
+        } else {
+            action = nil
+        }
+        let color: Color = hasArena ? .primary : .secondary
+        return StatusBarCell(
+            label: label,
+            value: value,
+            action: action,
+            valueColor: color
+        )
+    }
+
+    /// Apply attribute-based color highlighting to the multi-line
+    /// body text of a stats panel. Wraps `AttributedMetricColor`
+    /// with the live grad-clip ceiling and the project's
+    /// `policyEntropyAlarmThreshold` so the entropy/gNorm bands stay
+    /// calibrated against whatever values are currently in use.
+    private func colorizedPanelBody(_ body: String) -> AttributedString {
+        let thresholds = AttributedMetricColor.Thresholds.default(
+            entropyCollapseBelow: Self.policyEntropyAlarmThreshold,
+            gradClipMaxNorm: gradClipMaxNorm
+        )
+        return AttributedMetricColor.colorize(body: body, thresholds: thresholds)
+    }
+
+    /// The bold zoom-level indicator row that sits above the upper-
+    /// left chart of the grid. Shows the current window length (e.g.
+    /// "30m"), the ⌘= / ⌘- keyboard hints, and an Auto toggle. The
+    /// indicator text is heavier than the chart tile titles
+    /// (`.title3.weight(.bold)` vs `.caption2` per tile) so the eye
+    /// picks it up as the row's left anchor.
+    @ViewBuilder
+    private var chartZoomControlRow: some View {
+        HStack(spacing: 12) {
+            Text(ChartZoom.labels[chartZoomIdx])
+                .font(.title3.weight(.bold))
+                .monospacedDigit()
+            Text("⌘=")
+                .font(.caption2)
+                .foregroundStyle(canZoomChartIn ? Color.secondary : Color.secondary.opacity(0.4))
+            Text("⌘-")
+                .font(.caption2)
+                .foregroundStyle(canZoomChartOut ? Color.secondary : Color.secondary.opacity(0.4))
+            Spacer()
+            Toggle(isOn: Binding(
+                get: { chartZoomAuto },
+                set: { newValue in
+                    if newValue {
+                        chartZoomEnableAuto()
+                    } else {
+                        // Flipping Auto off from the toggle is
+                        // semantically a manual action too —
+                        // stamp the recency timer so the 1-hour
+                        // re-engage rule applies uniformly whether
+                        // the user clicked Auto-off or pressed ⌘=.
+                        chartZoomAuto = false
+                        lastManualChartZoomAt = Date()
+                    }
+                }
+            )) {
+                Text("Auto")
+                    .font(.caption)
+            }
+            .toggleStyle(.checkbox)
+        }
+        .padding(.horizontal, 4)
     }
 
     // MARK: - Engine Diagnostics
