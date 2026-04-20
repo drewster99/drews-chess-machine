@@ -969,7 +969,9 @@ All figures below appear as fields on `TrainStepTiming`, are aggregated in `Trai
 - **Build banner:** includes `arch_hash`, `inputPlanes`, `policySize`.
 - **Parameter logging:** every UI commit on Learn Rate, Entropy Reg, Draw Penalty, Weight Decay, Grad Clip, Policy Scale K, Self-Play Workers, Step Delay (manual), Replay Ratio Target, Replay Ratio Auto-Adjust, `sp.startTau / floorTau / decayPerPly`, `ar.startTau / floorTau / decayPerPly` writes a `[PARAM] name: old -> new` line.
 - **Alarm banner:** black title + dark-red medium-weight detail for legibility against yellow background. New `Dismiss` button alongside `Silence` (resets divergence streak counters). Every raise/clear/silence/dismiss logs `[ALARM] …`.
-- **Save errors** auto-log via `setCheckpointStatus(isError: true)` → `[CHECKPOINT-ERR]`.
+- **Save errors** auto-log via `setCheckpointStatus(_, kind: .error)` → `[CHECKPOINT-ERR]`. The three-kind status line (`.progress / .success / .error`) replaces the earlier two-state boolean; success messages show a green ✓ and linger 20 s for durable confirmation.
+- **Periodic session autosave** every 4 hours while Play-and-Train is active, plus a post-promotion autosave that already existed. Both run through `setCheckpointStatus` with trigger-tagged wording (`(periodic)` / `(post-promotion)`). Arena-deferral and post-promotion swallow handled by the testable `PeriodicSaveController` (pure logic, no timer).
+- **Launch-time auto-resume** driven by `LastSessionPointer` (UserDefaults). Sheet with 30 s countdown on first `.onAppear`; File menu "Resume Training from Autosave" covers the rest of the launch. Failed loads surface as status-bar errors — files are never deleted on failure. Stale pointers (target folder missing) are cleared on first observation.
 - **Hourly rate** shown next to per-second gen/trn rates: `1m gen rate: 3500 pos/s   (12,600,000/hr)`.
 - **vMean / vAbs** rows added under `Loss value:` in the Training column.
 - **Title-bar contrast:** build banner and right-side ID bumped from `.caption` to `.callout`.

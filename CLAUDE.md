@@ -30,7 +30,15 @@ The app terminal console only shows SwiftUI chart warnings and bring-up noise. A
 
 ## Saved model state
 
-`CheckpointManager` writes both single-model (`.dcmmodel`) and full-session (`.dcmsession`) checkpoints under `~/Library/Application Support/DrewsChessMachine/{Models,Sessions}/`. **Nothing is ever overwritten** — every save is a new file, naming scheme `<YYYYMMDD-HHMMSS>-<modelID>-<trigger>.<ext>`. See ROADMAP.md for the full design including the bit-exact forward-pass verification that runs on every save. Autosave on arena promotion is on by default.
+`CheckpointManager` writes both single-model (`.dcmmodel`) and full-session (`.dcmsession`) checkpoints under `~/Library/Application Support/DrewsChessMachine/{Models,Sessions}/`. **Nothing is ever overwritten** — every save is a new file, naming scheme `<YYYYMMDD-HHMMSS>-<modelID>-<trigger>.<ext>`. See ROADMAP.md for the full design including the bit-exact forward-pass verification that runs on every save.
+
+Three triggers produce a `.dcmsession` — the trigger tag appears in the filename, the status bar, and the `[CHECKPOINT] Saved session (<trigger>): …` log line so every save is grep-distinct:
+
+- **`manual`** — user clicked File > Save Session.
+- **`post-promotion`** — fires automatically after each arena promotion (on by default; `autosaveSessionsOnPromote`). Re-uses the weight snapshots taken under the arena's self-play and training pauses.
+- **`periodic`** — 4-hour autosave while Play-and-Train is active. Driven by `PeriodicSaveController`; the controller defers a deadline crossing that lands inside an arena, then either swallows it (if a post-promotion save landed during the deferred window) or fires a little late (otherwise). Any successful save of any trigger resets the 4-hour clock.
+
+The most recent save's path is persisted to `UserDefaults` as a `LastSessionPointer`. On app launch, if the pointer's target folder still exists, a sheet offers one-click "Resume Training" with a live 30-second countdown that auto-fires if the user doesn't interact; the File menu item "Resume Training from Autosave" covers the same flow for the rest of the launch. Load failures surface via `setCheckpointStatus(.error)` and stop — the session is never auto-deleted on a failed load (the user may want to repair the folder manually). Pointers whose target was deleted externally are cleared on first observation so they don't re-prompt.
 
 ## High-level architecture
 

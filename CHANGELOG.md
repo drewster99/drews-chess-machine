@@ -8,6 +8,82 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-20 (latest) — Save confirmation UI, periodic autosave, launch-time auto-resume
+
+**Files:** `ContentView.swift`, `AppCommandHub.swift`, `DrewsChessMachineApp.swift`, `PeriodicSaveController.swift` (new), `LastSessionPointer.swift` (new), `DrewsChessMachineTests/PeriodicSaveControllerTests.swift` (new), `DrewsChessMachineTests/LastSessionPointerTests.swift` (new), `DrewsChessMachineTests/CheckpointManagerRoundTripTests.swift` (new), `ROADMAP.md`. Committed as `642df6f` (bundled with the arena/chart-zoom/status-bar batch) plus a follow-up for stale-pointer cleanup.
+
+Motivated by the "Saving session (manual)…" status line silently disappearing without a clear success acknowledgement. The fix grew into three coupled features: a visually distinct three-kind status line (progress/success/error), a 4-hour periodic autosave during Play-and-Train, and an app-launch auto-resume prompt so the most recent autosave isn't just "written and forgotten".
+
+### Save-status UI
+
+- **`CheckpointStatusKind` enum** (`.progress, .success, .error`) replaces the earlier `isError: Bool` flag. Drives both the leading icon (green `checkmark.circle.fill` for success, red `exclamationmark.triangle.fill` for error, none for progress) and the text color (`.green` / `.red` / `.secondary`). All callsites updated to the new `setCheckpointStatus(_:kind:)` signature.
+- **Auto-clear lifetimes** diverged by kind: 6 s for progress, 20 s for success, 12 s for error. Success lingers long enough that a user glancing up after a save sees the confirmation instead of the line silently vanishing.
+- **Status-line row** extracted into `checkpointStatusLine(message:)` helper returning a plain `some View` (no `@ViewBuilder` optional branching) — the SwiftUI type-checker was already at budget in the containing body and an inline `switch`-in-HStack tipped it over. `autoResumeSheetContentView()` uses the same pattern (returns `AnyView`) to keep the body compiling.
+
+### Save-trigger differentiation
+
+- **`SessionSaveTrigger` enum** (`.manual, .periodic`) replaces the earlier free-form `trigger: String` passed into `saveSessionInternal`. Maps to both the on-disk filename tag (`manual` / `periodic`) and a UI-side suffix (`""` / `" (periodic)"`). The promotion-autosave path stays inline in the arena coordinator (it re-uses weights already snapshotted under the arena's pause) and uses its own `"(post-promotion)"` wording.
+- **Unified log line format**: every session save now emits `[CHECKPOINT] Saved session (<trigger>): <filename> build=N git=H replay=X/Y` on success. Three trigger tags are live: `manual`, `post-promotion`, `periodic`. Failures emit `[CHECKPOINT] Saved session (<trigger>) failed: <reason>`.
+- **Promotion autosave routed through the status bar**: was previously silent except for the log line. Now posts `Saving session (post-promotion)…` → `Saved <filename> (post-promotion)`. Still detached from the arena task so a mid-save session cancel cannot deadlock against worker exits.
+
+### `PeriodicSaveController`
+
+New pure-logic scheduler (`PeriodicSaveController.swift`). Main-actor-isolated `final class`; holds no `Task` / `Timer` and makes no date decisions internally — the caller polls `decide(now:)` at whatever cadence is convenient, and every state transition is driven by an explicit method call. Built this way so the full behavior is unit-testable against an injected wall-clock.
+
+Behavior:
+- `arm(now:)` when Play-and-Train starts; sets `nextFireAt = now + interval`. `disarm()` on Stop clears the deadline and any pending fire.
+- `noteSuccessfulSave(at:)` on every successful session save (manual, post-promotion, periodic) slides `nextFireAt` forward by one interval and clears `pendingFire`. Manual saves reset the clock — a user save within the last hour pushes the next periodic save out by a full 4 hours.
+- `noteArenaBegan()` / `noteArenaEnded()` bracket each arena tournament. A deadline crossing with `arenaRunning == true` becomes a `pendingFire` flag rather than a `.fire` decision; `decide(now:)` after `noteArenaEnded()` then either dispatches the held fire (arena ran to completion with no promotion) or swallows it (a post-promotion successful save already covered the window).
+- Failed saves don't call `noteSuccessfulSave`; the deadline stays in the past and the next `decide(now:)` re-fires until the save eventually succeeds, so a flaky save doesn't silently skip an interval.
+
+Wired in `ContentView`:
+- `periodicSaveController: PeriodicSaveController?` @State, constructed with `periodicSaveIntervalSec = 4 * 60 * 60` on `startRealTraining`, torn down on `stopRealTraining`.
+- `periodicSaveTick()` runs from the existing 60 Hz heartbeat, throttled to ~1 Hz via `periodicSaveLastPollAt`. On `.fire` calls `handleSaveSessionPeriodic()` which shares the gate-dance with `handleSaveSessionManual` via `saveSessionInternal(trigger: .periodic)`.
+- `periodicSaveInFlight: Bool` @State prevents a second fire while the write task is running, since the 1 Hz tick would otherwise issue multiple `.fire` decisions during the few hundred ms the actual save takes.
+
+### `LastSessionPointer` + launch auto-resume
+
+New `LastSessionPointer.swift`. Codable struct `(sessionID, directoryPath, savedAtUnix, trigger)` persisted in `UserDefaults` under `DrewsChessMachine.LastSessionPointer.v1`. Written on every successful session save (via `recordLastSessionPointer(directoryURL:sessionID:trigger:)`). Only one pointer is tracked — latest save wins.
+
+Launch-time sheet:
+- `maybePresentAutoResumeSheet()` fires from the view's first `.onAppear`. No-op on first launch (no pointer) or when the pointer names a deleted folder.
+- SwiftUI `.sheet` with a 30-second live countdown in the Resume button label (`Resume Training (30)` → `Resume Training (1)`). Clicking Resume — or the countdown expiring — chains through `loadSessionFrom(url:, startAfterLoad: true)`, which builds the network if needed, loads weights, and immediately calls `startRealTraining()`.
+- Clicking Not Now dismisses the sheet and cancels the countdown task; the `Resume Training from Autosave` File-menu item stays available for the rest of the launch via the `canResumeFromAutosave` guard.
+- Load errors surface via `setCheckpointStatus(.error)` and the session log. **No files are deleted on failure** — the user is expected to handle a corrupt session deliberately.
+- **Stale-pointer cleanup**: if the recorded directory is missing on disk, both the launch check and the menu-action path call `LastSessionPointer.clear()` and log `[RESUME] … clearing stale pointer` so the dead pointer doesn't re-prompt on the next launch.
+
+### File menu
+
+- New `Resume Training from Autosave` entry between `Load Model…` and `Open Data Folder in Finder`. Disabled when `realTraining`, `autoResumeInFlight`, `autoResumeSheetShowing`, or the pointer's target folder is absent. Wired through `AppCommandHub.resumeFromAutosave` + `canResumeFromAutosave` flag.
+- `autoResumeStateVersion` composite `Int` (packs `autoResumeInFlight` and `autoResumeSheetShowing`) lets a single `.onChange` handler drive the menu-sync — keeping the body's `.onChange` chain short enough for SwiftUI's type-checker.
+
+### Tests
+
+- `PeriodicSaveControllerTests.swift` — 16 tests. Arm/disarm, deadline reset on manual/periodic/promotion save, arena-deferred pending fire, post-promotion swallow, multiple sequential rollovers, disarmed-safety.
+- `LastSessionPointerTests.swift` — 9 tests. Encode/decode round-trip, overwrite semantics, clear, corrupt-data-returns-nil-without-crash (and doesn't wipe the key), `directoryExists` true/false/regular-file cases.
+- `CheckpointManagerRoundTripTests.swift` — 7 tests. File-format round-trip at the read layer (bypasses MPSGraph verification so no `~/Library/Application Support` pollution): stage synthetic state + two model files into a tmp directory via `SessionCheckpointLayout`, call `CheckpointManager.loadSession(at:)`, compare bit-exact. Missing-file errors for each of the three required files. Replay-buffer-flag-present-but-file-absent produces a `nil` URL (graceful).
+
+### Log tags added
+
+- `[CHECKPOINT] Saved session (<trigger>): …`
+- `[CHECKPOINT] Saved session (<trigger>) failed: …`
+- `[CHECKPOINT] Autosaved session (post-promotion): …` (status-bar-routed equivalent, same level of detail)
+- `[CHECKPOINT] resume-pointer set → <filename> (<trigger>)`
+- `[CHECKPOINT] Periodic save tick — firing (interval=<N>s)`
+- `[CHECKPOINT] Periodic save skipped — another save is in flight`
+- `[CHECKPOINT] Auto-resume: starting Play-and-Train on loaded session`
+- `[RESUME] Presenting auto-resume sheet for <sessionID> (<trigger>, saved Ns ago)`
+- `[RESUME] Last-session pointer names missing folder … — clearing stale pointer`
+- `[RESUME] Menu resume target missing on disk … — clearing stale pointer`
+- `[RESUME] User dismissed auto-resume sheet`
+- `[RESUME] Starting auto-resume of <sessionID> from <filename>`
+
+### ROADMAP
+
+Added "Autosave retention pruning" as a deferred item in `Future improvements`. With 6 periodic saves/day plus one per promotion, each carrying a multi-GB replay buffer, the "never overwrite" invariant will eventually need a retention policy; deferred until users report the problem so the invariant stays in force for now.
+
+---
+
 ## 2026-04-20 (later still) — Session durability hardening (ReplayBuffer v4, fsync pipeline)
 
 **Files:** `ReplayBuffer.swift`, `CheckpointManager.swift`, `DrewsChessMachineApp.swift`, `ContentView.swift`, `DrewsChessMachineTests/ReplayBufferTests.swift`, `replay_buffer_file_format.md`, `dcmmodel_file_format.md` (new), `ROADMAP.md`, `TODO_NEXT.md`.
