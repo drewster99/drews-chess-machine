@@ -107,16 +107,21 @@ final class ChessRunner: @unchecked Sendable {
         // legality lookup is O(1) instead of O(legalMoves).
         let legalSet = Set(MoveGenerator.legalMoves(for: state))
 
-        // Sort all policy cells by probability descending, take more
-        // than `count` to allow filtering off-board cells without
-        // running out before we hit the requested K. 4× headroom is
-        // plenty — almost no top cells are off-board for a trained
-        // network, and even an untrained one rarely concentrates mass
-        // there.
+        // Sort ALL policy cells by probability descending. The prior
+        // implementation took only `count * 4` as headroom under the
+        // assumption that few top cells would decode to off-board
+        // geometry. That breaks for catastrophically collapsed
+        // policies where a single off-board cell holds ~100% of the
+        // probability mass (observed with policy collapse) — in that
+        // case the result list came back empty or near-empty because
+        // the top N cells were all off-board and we ran out of
+        // headroom. Sorting the full 4864-cell vector costs nothing
+        // (policy-size array, one pass) and guarantees we'll always
+        // find `count` on-board cells if they exist in the
+        // distribution at all.
         let topByProb = policy.indices
             .map { (index: $0, prob: policy[$0]) }
             .sorted { $0.prob > $1.prob }
-            .prefix(count * 4)
 
         var results: [MoveVisualization] = []
         results.reserveCapacity(count)

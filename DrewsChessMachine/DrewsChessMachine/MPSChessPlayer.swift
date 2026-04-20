@@ -243,6 +243,25 @@ final class MPSChessPlayer: ChessPlayer {
     /// the Play and Train driver to report positions/sec stats.
     var recordedPliesCount: Int { gamePliesRecorded }
 
+    /// Count of plies in the current game where the policy's legal-
+    /// move softmax was effectively UNIFORM — i.e., the network had
+    /// no meaningful opinion about which legal move to play, so the
+    /// sampler picked essentially at random. A "random-ish" ply is
+    /// defined as: max legal-move softmax probability is less than
+    /// 1.5× the uniform probability `1/n_legal`. Flags:
+    ///   - Collapsed policies (all mass on illegal cells → legal
+    ///     logits all ~0 → softmax = uniform over legal)
+    ///   - Freshly random-init networks (all legal logits similar
+    ///     magnitude → softmax is close to uniform)
+    /// A useful signal for "is the model actually choosing, or is
+    /// every move effectively random?"
+    private var gameRandomishMoveCount: Int = 0
+
+    /// Read-only: number of essentially-uniform ("random-ish") plies
+    /// this player has played in the current game so far. Drivers can
+    /// query this after the game ends to report the random-ish rate.
+    var recordedRandomishMoves: Int { gameRandomishMoveCount }
+
     /// Reusable softmax scratch used by `sampleMove`. Pre-sized to the
     /// max chess-position legal-move count so every per-ply sample runs
     /// without allocating a temporary `[Float]` for the gathered logits.
@@ -323,6 +342,7 @@ final class MPSChessPlayer: ChessPlayer {
         gamePolicyIndices.removeAll(keepingCapacity: true)
         gameValueScalars.removeAll(keepingCapacity: true)
         gamePliesRecorded = 0
+        gameRandomishMoveCount = 0
     }
 
     func onChooseNextMove(
@@ -467,6 +487,11 @@ final class MPSChessPlayer: ChessPlayer {
         currentPlayer: PieceColor
     ) -> ChessMove {
         let n = legalMoves.count
+        // Captured here for the random-ish check below. Done early so
+        // the closure can reference the value without re-reading `n`
+        // after the scratch is overwritten.
+        let uniformProb = 1 / Float(n)
+        let randomishCutoff = 1.5 * uniformProb
         precondition(
             n <= sampleScratch.count,
             "MPSChessPlayer.sampleMove: legalMoves.count (\(n)) exceeds scratch capacity \(sampleScratch.count)"
@@ -514,8 +539,21 @@ final class MPSChessPlayer: ChessPlayer {
             // exp() is strictly positive, so sum is strictly positive
             // whenever legalMoves is non-empty.
             let invSum = 1 / sum
+            var maxProb: Float = 0
             for i in 0..<n {
                 scratch[i] *= invSum
+                if scratch[i] > maxProb { maxProb = scratch[i] }
+            }
+
+            // Record whether the post-temperature softmax over legal
+            // moves is essentially uniform — i.e. the sampler was
+            // picking at random, not acting on a network opinion. We
+            // measure *before* Dirichlet noise because noise is a
+            // deliberate exploration mix, not a policy-collapse signal.
+            // With n == 1 the max prob is 1.0 and this always fails,
+            // which is what we want: a forced move isn't random.
+            if n > 1 && maxProb < randomishCutoff {
+                gameRandomishMoveCount += 1
             }
 
             if let noise = activeNoise {
