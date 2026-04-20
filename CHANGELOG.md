@@ -8,6 +8,75 @@ that precede implementation are tagged `(DESIGN)`.
 
 ---
 
+## 2026-04-20 (later) — Fresh-baseline forward pass + tau=2.0 bump
+
+**Files:** `ChessTrainer.swift`, `MPSChessPlayer.swift`, `ContentView.swift`.
+New tests: `MPSGraphGradientSemanticsTests.swift`.
+
+Two correctness/exploration fixes after deeper analysis of why the
+trainer wasn't winning arenas. Both are runtime hyperparameter / data-
+flow changes; no architecture or schema impact.
+
+### Fresh-baseline forward pass (resolves ML Review #4)
+
+The `vBaseline` values stored in the replay buffer at play time come
+from the champion's value head — and since no promotion has happened,
+the champion is still the random-init network. So every advantage
+`(z - vBaseline)` was being computed against essentially-noise
+baselines that varied by random seed. With our particular run's seed
+landing vBaseline at ~-0.48, draws (z=-0.1) got advantage = +0.38 —
+small POSITIVE, meaning the policy gradient was REINFORCING shuffle
+moves. Combined with 84% drawn games in self-play, the trainer was
+~2.7× more strongly pushed toward shuffles than toward winning moves,
+locking in a "draw plateau" failure mode.
+
+Fix: trainer now does a forward-only pass on its CURRENT network for
+every training batch, before the actual training step runs. The fresh
+v(s) values overwrite the staging `vBaselines` before they feed the
+training graph. The `vBaseline` placeholder boundary already provides
+stop-gradient semantics; only the source of values changed.
+
+Required because empirical tests (`MPSGraphGradientSemanticsTests`)
+confirmed:
+- MPSGraph has NO `stop_gradient` op — only one autodiff method,
+  `gradients(of:with:name:)`.
+- The `with` parameter selects which gradients to RETURN; it does not
+  prune backward-pass paths (verified with two distilled scenarios).
+
+So the fresh-baseline-via-placeholder-feed pattern is the only
+correct way to get the trainer's current v(s) into the policy
+advantage. Cost: ~33% extra forward FLOPs per training step. Worth
+it — eliminates seed-dependent training trajectories and removes the
+shuffle-reinforcement bias.
+
+`TrainStepTiming` gained `vBaselineDelta: Float?` (mean abs delta
+between fresh and stale baseline values — divergence diagnostic) and
+`freshBaselineMs: Double?`. `totalMs` now includes the fresh-baseline
+phase so the replay-ratio controller throttles correctly.
+`TrainingLiveStatsBox` gained a rolling `vBaselineDelta` window.
+`[STATS]` line gained `vBaseDelta=0.XXXX`.
+
+### Sampling tau bumped to 2.0 (both schedules)
+
+Both `SamplingSchedule.selfPlay.startTau` and `.arena.startTau`
+raised from 1.0 / 0.7 → **2.0**. Decay rates and floors unchanged:
+- self-play: 2.0 → 0.4, decay 0.03/ply, floor at ply 54
+- arena: 2.0 → 0.2, decay 0.04/ply, floor at ply 45
+
+Tau=2.0 halves the legal-move logits before softmax, flattening the
+early-game distribution. With the bootstrap-phase policy concentrated
+on a small set of cells (entropy ~6.5 vs uniform 8.49), this pulls
+mass back toward broader move selection. Goals: more decisive games
+in self-play (currently ~16%), shorter average game length (currently
+~342 plies), more candidate-vs-champion divergence in arenas.
+
+### Misc UI cleanup
+
+Removed duplicate `Draw pen:` row from the Training column display —
+already shown in the editable hyperparameter section above.
+
+---
+
 ## 2026-04-20 — Post-v2 polish: UI, diagnostics, segments, parameter logging, tests
 
 **Files:** `ContentView.swift`, `ChessRunner.swift`, `ChessBoardView.swift`,

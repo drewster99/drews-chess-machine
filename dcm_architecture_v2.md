@@ -35,9 +35,18 @@ These constants drive arch hash, replay buffer size, training target depth, and 
 
 ---
 
-## Phase 1 — Engine-side: Zobrist hashing & position history
+## Phase 1 — Engine-side: position-history-based repetition tracking
 
-**Files: `MoveGenerator.swift`, `ChessMachine.swift` (or wherever per-game state lives), new `ZobristTable.swift`.**
+**IMPLEMENTATION DEVIATION (2026-04-19/20):** the plan as originally written added a Zobrist hashing layer with a new `ZobristTable.swift`, an incremental `zobrist: UInt64` field on `GameState`, and a per-game `positionHistory: [UInt64]` array owned by `ChessMachine`. **This was simplified during implementation** — `ChessGameEngine` already maintained `positionCounts: [PositionKey: Int]` for its existing 3-fold detection logic, with `PositionKey` providing FIDE-correct position equality (board + side + castling + EP). We reused that mechanism instead of introducing a parallel Zobrist layer:
+
+- **No `ZobristTable.swift` created.** No new file.
+- **No `zobrist` field on `GameState`.** GameState gained a `repetitionCount: Int` field (default 0) plus a `withRepetitionCount(_:)` convenience method.
+- **No new `applyMove` signature change.** `MoveGenerator.applyMove` is unchanged. The new `repetitionCount` defaults to 0 so existing callsites still compile.
+- **`ChessGameEngine.applyMoveAndAdvance`** — unchanged in concept, but now after applying the move and incrementing `positionCounts[key]`, it computes `priorOccurrences = min(totalVisits - 1, 2)` and stamps that onto the new state via `state.withRepetitionCount(priorOccurrences)`. The encoder downstream reads `state.repetitionCount`.
+
+Net effect: equivalent correctness, ~150 lines of new code avoided, no GameState memberwise-init ripple. The Zobrist hashing performance argument was real but moot — `PositionKey` is hashed via Swift's auto-synthesized `Hashable` over a 64-element `[Piece?]` array, which costs ~O(64) per move vs Zobrist's O(1) incremental. At our self-play throughput this difference is well under a microsecond per move. Negligible.
+
+**Files actually modified: `BoardEncoder.swift`, `ChessGameEngine.swift`.**
 
 **Important boundary:** the Zobrist hash itself is **never fed to the network**. It is purely a CPU-side bookkeeping device for fast position-equality comparison. The only thing the network ever sees from this whole mechanism is the two binary repetition planes (18 and 19) — derived from the rep count (0/1/2), which is in turn derived from counting hash matches in the per-game `positionHistory` list. The hash function could be swapped for any other position-equality scheme (full `GameState` ==, bitboard tuple compare, FEN string compare) and the network's input would be byte-identical. Zobrist is chosen because it gives O(1) incremental updates and O(1) equality tests — performance, not learning signal. Feeding the raw 64-bit hash to a CNN would be actively harmful (uniform-random bits with no spatial structure).
 
@@ -811,3 +820,77 @@ For us this is *much* more expensive than for AlphaZero because we don't have MC
 **When to revisit:** if and when training shows the network plateauing in tactical patterns that visibly require seeing history (e.g., consistently failing to follow up forcing sequences). Until then, the snapshot + repetition planes is sufficient.
 
 **Lighter-weight alternative to consider first:** add planes for "squares of pieces moved in the last 1-2 plies" (small, cheap, gives the network most of the "what just happened" signal without the full history stack). This is a fraction of AlphaZero's full history scheme and might capture most of the benefit at 5-10% the input cost.
+
+---
+
+## Post-implementation addenda (2026-04-20)
+
+Items not in the original plan that were implemented during the follow-up runtime-debugging pass.
+
+### A. Fresh-baseline forward pass (variant C from the value-baseline discussion)
+
+After empirically verifying via `MPSGraphGradientSemanticsTests` that MPSGraph has no `stop_gradient` op and that excluding tensors from the `with` array of `gradients(of:with:name:)` does NOT prune backward-pass paths, the trainer was restructured to compute fresh `v(s)` for every training batch.
+
+`ChessTrainer.trainStep(replayBuffer:batchSize:)` is now a three-phase async sequence:
+
+1. **Phase 1 (trainer queue):** sample from replay buffer into staging buffers; copy boards to a Sendable `[Float]`.
+2. **Phase 2 (network queue, async):** `network.evaluate(batchBoards:count:)` — forward-only pass yielding fresh per-position v scalars.
+3. **Phase 3 (trainer queue):** overwrite `vBaselines` staging with fresh values, apply draw penalty, run training graph.
+
+The `vBaseline` placeholder boundary already provides stop-gradient semantics; only the values being fed into it changed (from the random-init champion's frozen view to the trainer's current view).
+
+Cost: ~33% extra forward FLOPs per training step. `TrainStepTiming` gained `vBaselineDelta: Float?` (mean abs delta between fresh and stale per-position v values, useful as a divergence diagnostic) and `freshBaselineMs: Double?` (cost of phase 2). `totalMs` includes the phase-2 cost so the replay-ratio controller throttles correctly. `TrainingLiveStatsBox` gained a rolling `vBaselineDelta` window. `[STATS]` log line gained `vBaseDelta=` field.
+
+### B. Sampling-temperature defaults bumped to 2.0
+
+Both `SamplingSchedule.selfPlay.startTau` and `.arena.startTau` raised from `1.0` and `0.7` respectively to `2.0`. Decay rates and floors unchanged. With the bootstrap-phase policy concentrated on a small set of cells (entropy ~6.5 vs uniform 8.49), the higher starting tau flattens the early-game distribution, increases opening diversity, and pulls more decisive games out of the trainer-vs-champion arena. `pliesUntilFloor` recomputes correctly (54 plies for selfPlay, 45 for arena).
+
+### C. Candidate Test view: top-K policy display restored to RAW cells
+
+The plan's Phase 2 / Phase 9.4 had legal-only top-K display via `PolicyEncoding.decode`. Post-shipping the user pointed out this lost the diagnostic for "is the network learning what's a valid move?" Restored:
+
+- New `PolicyEncoding.geometricDecode(channel:row:col:currentPlayer:)` returns a `ChessMove?` based on geometry only (off-board → nil), no legality filter.
+- `PolicyEncoding.decode(channel:row:col:state:)` refactored to call `geometricDecode` and add the legal-moves filter on top.
+- `MoveVisualization` gained `isLegal: Bool` field.
+- `ChessMove` now conforms to `Hashable` (synthesized) for fast Set lookup of legal moves in `extractTopMoves`.
+- `ChessRunner.extractTopMoves` rewritten to iterate the full policy vector, geometrically decode top cells with 4× headroom for off-board skips, mark legality.
+- Candidate Test text output renamed to "Policy Head (Top 4 raw — includes illegal)" with `(illegal)` suffix on cells that fail the legality check.
+
+### D. Candidate Test view: misleading metrics replaced
+
+- `(v+1)/2 → "X% win / Y% loss"` line removed (without WDL output that mapping was dishonest about what a single tanh scalar means).
+- `NonNegligible: X / 4864` replaced with two legality-aware metrics: `Above uniform: X / N legal (threshold = 1/N)` and `Legal mass sum: Y%`.
+- `TrainingChartGridView` chart label "Non-negligible policy count" → "Above-uniform policy count".
+
+### E. UI / observability additions
+
+- **Cumulative status bar** at top of window: Active training time, Training steps, Positions trained, Runs. Sums across all completed Play-and-Train segments + the in-flight one.
+- **Training segments**: new `SessionCheckpointState.TrainingSegment` codable struct + per-run lifecycle (start on Play-and-Train, close on Stop or Save, reopen on save-while-training-continues). Persists across save/load. `[SEGMENT]` log lines on every transition.
+- **Run Arena Now button** in the status bar (visible whenever no arena is running and a network exists).
+- **Engine Diagnostics menu item** (Debug → Run Engine Diagnostics) — runs PolicyEncoding round-trip, distinct-index check, repetition-tracking 3-fold detection, BoardEncoder shape, network forward-pass shape probes. Output via `[DIAG]` log lines.
+- **Build banner** now includes `arch_hash`, `inputPlanes`, `policySize`.
+- **Parameter logging**: every UI commit on Learn Rate, Entropy Reg, Draw Penalty, Self-Play Workers, Step Delay (manual), Replay Ratio Target, Replay Ratio Auto-Adjust writes `[PARAM] name: old -> new`.
+- **Alarm banner**: black title + dark-red medium-weight detail for legibility against yellow background. New `Dismiss` button alongside `Silence` (resets divergence streak counters). Every raise/clear/silence/dismiss logs `[ALARM] ... ` line.
+- **Save errors auto-log** via `setCheckpointStatus(isError: true)` → `[CHECKPOINT-ERR]`.
+- **Hourly rate** shown next to per-second gen/trn rates: `1m gen rate: 3500 pos/s   (12,600,000/hr)`.
+- **vMean / vAbs** rows added under `Loss value:` in the Training column.
+- **Title-bar contrast**: build banner and right-side ID bumped from `.caption` to `.callout`.
+- Removed duplicate `Ent reg`, `Grad clip`, `Weight dec`, `Draw pen` rows that were already shown in the editable hyperparameter section.
+
+### F. Policy entropy alarm threshold
+
+Calibrated against actual v2 init-entropy behavior. Original plan said 7.2 (1.3 nats below `log(4864) ≈ 8.49`). Empirically the new policy head with no BN before the 1×1 conv produces wider initial logit distributions, landing entropy at ~6.5 at step 0. Threshold dropped to **5.0** (~1.5-nat margin below v2 init baseline) — wide enough to avoid false alarms during normal training, narrow enough to flag genuine collapse.
+
+### G. ROADMAP entry: adaptive learn-rate schedule
+
+Added to ROADMAP.md as a future-work entry with five candidate trigger families (step decay, plateau detection, promotion-driven, cosine annealing, replay-ratio aware) and notes on how each interacts with our pre-MCTS bootstrap regime. Not implemented; recorded for design discussion.
+
+### H. Tests — XCTest target populated
+
+After the user added the XCTest target via Xcode, the target was populated with 40 tests across 5 files:
+
+- `PolicyEncodingTests.swift` — round-trips, distinct indices, off-board guard, perspective flip, castling encoding.
+- `BoardEncoderTests.swift` — tensor length, plane content for pieces / castling / EP / halfmove / repetition planes, perspective flip.
+- `RepetitionTrackingTests.swift` — 3-fold detection, halfmove-clock-reset history clearing.
+- `ReplayBufferTests.swift` — round-trip, version rejection (synthesized v2 file), bad magic, truncated header.
+- `MPSGraphGradientSemanticsTests.swift` — empirical verification that excluding tensors from `with` does NOT prune backward paths (40/40 passing).

@@ -1326,22 +1326,24 @@ final class ChessTrainer: @unchecked Sendable {
 
             // Run the training step. The returned timing has nil
             // fresh-baseline fields; we patch them in below.
-            guard let baseTiming = try self.runPreparedStep(
+            let baseTiming = try self.runPreparedStep(
                 feeds: feeds,
                 prepMs: prepMs,
                 totalStart: totalStart
-            ) else { return nil }
+            )
 
             return TrainStepTiming(
                 dataPrepMs: baseTiming.dataPrepMs,
                 gpuRunMs: baseTiming.gpuRunMs,
                 readbackMs: baseTiming.readbackMs,
-                // totalMs as reported here is just the phase-3 wall
-                // time, not including the fresh-baseline forward pass.
-                // That cost is captured separately as `freshBaselineMs`
-                // — keeping them split lets the user see how much of
-                // each step is "real" training vs the baseline pass.
-                totalMs: baseTiming.totalMs,
+                // Include the fresh-baseline forward-pass time so the
+                // replay-ratio controller (and any downstream throughput
+                // calculation) sees the true wall-clock cost of one
+                // training step. `freshBaselineMs` is also kept as a
+                // separate diagnostic field for visibility, but
+                // `totalMs` is the user-facing "this step took N ms"
+                // figure that controllers throttle against.
+                totalMs: baseTiming.totalMs + freshBaselineMs,
                 loss: baseTiming.loss,
                 policyLoss: baseTiming.policyLoss,
                 valueLoss: baseTiming.valueLoss,

@@ -98,29 +98,32 @@ struct SamplingSchedule: Sendable {
         self.dirichletNoise = dirichletNoise
     }
 
-    /// Self-play data-generation schedule: starts at tau=1.0, decays
-    /// by 0.03 per ply, flooring at 0.4 (reached at ply 20). The
-    /// smooth ramp keeps early-game diversity for replay-buffer
-    /// coverage while gradually tightening toward decisive play.
-    /// AlphaZero-default Dirichlet noise is mixed into the opening
-    /// 30 plies per player so off-trunk lines keep getting played.
+    /// Self-play data-generation schedule: starts at tau=2.0, decays
+    /// by 0.03 per ply, flooring at 0.4 (reached at ply ~53 per
+    /// player). Higher starting temperature than the prior 1.0 to
+    /// flatten the policy more aggressively in the opening, broaden
+    /// replay-buffer coverage of off-trunk lines, and pull more
+    /// decisive games out of an early-bootstrap policy that
+    /// otherwise concentrates on shuffle moves. Combined with the
+    /// AlphaZero-default Dirichlet noise mixed into the opening 30
+    /// plies per player.
     static let selfPlay = SamplingSchedule(
-        startTau: 1.0,
+        startTau: 2.0,
         decayPerPly: 0.03,
         floorTau: 0.4,
         dirichletNoise: .alphaZero
     )
 
-    /// Arena-evaluation schedule: starts at tau=0.7, decays by 0.04
-    /// per ply, flooring at 0.2 (reached at ply 13). Lower starting
-    /// temperature than self-play keeps opening play closer to each
-    /// network's actual preferences — opening diversity still comes
-    /// from color-alternating pairings and the residual 0.7 tau —
-    /// while the faster decay and lower floor ensure the middlegame
-    /// onward reflects decisive play rather than sampling noise. No
+    /// Arena-evaluation schedule: starts at tau=2.0, decays by 0.04
+    /// per ply, flooring at 0.2 (reached at ply 45). Higher starting
+    /// temperature than the prior 0.7 to expose more candidate-vs-
+    /// champion divergence in the opening (helps surface the small
+    /// signal that survives the dominant-draw regime). The faster
+    /// decay and lower floor still ensure the middlegame onward
+    /// reflects decisive play rather than sampling noise. No
     /// Dirichlet noise — arena games measure actual strength.
     static let arena = SamplingSchedule(
-        startTau: 0.7,
+        startTau: 2.0,
         decayPerPly: 0.04,
         floorTau: 0.2
     )

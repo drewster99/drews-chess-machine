@@ -6443,10 +6443,9 @@ struct ContentView: View {
             if let gNorm = trainingBox?.snapshot().rollingGradGlobalNorm {
                 lines.append(String(format: "  Grad norm:   %.3f", gNorm))
             }
-            // Ent reg / Grad clip / Weight dec previously listed here are
-            // duplicates of the editable fields shown above the loss
-            // section. Removed to avoid redundancy.
-            lines.append(String(format: "  Draw pen:    %.3f", trainer?.drawPenalty ?? Self.drawPenaltyDefault))
+            // Ent reg / Grad clip / Weight dec / Draw pen previously
+            // listed here are duplicates of the editable fields shown
+            // above the loss section. Removed to avoid redundancy.
             // Candidate-test probe counter + time-since-last, so the user
             // can distinguish "probes firing but imperceptible" from "probes
             // stuck". Shown in both Game run and Candidate test modes so
