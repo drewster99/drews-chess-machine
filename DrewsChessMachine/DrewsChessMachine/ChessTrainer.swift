@@ -401,18 +401,31 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _advFracPosWindow: [Double] = []
     private var _advFracSmallWindow: [Double] = []
     /// Ring of raw per-position advantage values across the rolling
-    /// window of recent steps. Sized at
-    /// `rollingWindow * maxBatchObserved` — grown on demand, never
-    /// shrunk. `_advRawRingHead` is the write cursor (FIFO); the ring
-    /// is contiguous in time only if `_advRawRingFilled == capacity`,
-    /// but `snapshot()` doesn't care about time order — it sorts the
-    /// whole live set for percentile extraction.
+    /// window of recent steps. Capped at `advRawRingMaxCapacity`
+    /// floats (see the constant for the full rationale). `snapshot()`
+    /// sorts the live set for percentile extraction, and that sort
+    /// runs on main via the UI heartbeat's `queue.sync` — a larger
+    /// ring was blocking main for ~150 ms per snapshot at 10 Hz,
+    /// starving `fireCandidateProbeIfNeeded`'s MainActor hop and
+    /// collapsing training throughput to ~300 moves/sec from a
+    /// normal 2300 moves/sec.
     private var _advRawRing: [Float] = []
     private var _advRawRingHead: Int = 0
     private var _advRawRingFilled: Int = 0
     private var _advRawRingCapacity: Int = 0
     private var _error: String?
     private let rollingWindow: Int
+
+    /// Hard cap on `_advRawRing` capacity in Float entries. At 32 K
+    /// floats the copy + sort inside `percentiles()` runs in ~1 ms
+    /// (vs. ~150 ms at the prior 2 M-entry ceiling), yet 32 K samples
+    /// already pin the empirical p05/p50/p95 to within ~0.5% of the
+    /// true distribution — more than tight enough for a diagnostic
+    /// that's eyeballed in logs. Sized so that at the default batch
+    /// of 4096 the ring still holds 8 full batches' worth of raw
+    /// advantages; at smaller batches the ring is effectively the
+    /// `rollingWindow` * batchSize product anyway.
+    private static let advRawRingMaxCapacity: Int = 32_768
 
     init(rollingWindow: Int) {
         precondition(rollingWindow > 0, "Rolling window must be positive")
@@ -519,7 +532,10 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// use (and whenever `rollingWindow * batchSize` changes) to avoid
     /// reallocating in steady state.
     private func pushAdvRaw(_ batch: [Float]) {
-        let desiredCapacity = self.rollingWindow * batch.count
+        let desiredCapacity = min(
+            self.rollingWindow * batch.count,
+            Self.advRawRingMaxCapacity
+        )
         if self._advRawRing.count != desiredCapacity {
             // First push (or batch-size change) — resize. Losing any
             // currently-held samples is fine since they were collected
