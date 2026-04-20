@@ -279,3 +279,140 @@ Long-term goals, deferred work, and notes on decisions.
   that footprint ever becomes a problem on tighter hardware, the
   release-on-shrink design is the fallback; for now the latency win on
   live tuning is worth the static allocation.
+
+- **Bundled architecture refresh (v2), 2026-04-19/20.** A coordinated
+  redesign of the policy encoding, input planes, policy head, and
+  value-baseline semantics, delivered as one bundle because the moves
+  are coupled (the policy-encoding bijection and the fully-conv head
+  both change the meaning of the 4864 logits; a staged rollout would
+  have required throwaway migration code). Full design and phase
+  breakdown live in `dcm_architecture_v2.md`. Summary of what shipped:
+
+    - **AlphaZero-shape policy encoding (Phase 2).** The old flat 4096
+      = 64×64 from-to encoding was replaced with 4864 = 76 × 64
+      channel-square logits: 56 queen-style directions × distances, 8
+      knight, 9 underpromotion (N/R/B × 3 directions, channels 64–72),
+      3 queen-promotion (channel 73–75). Dedicated underpromotion
+      channels fix the prior silent-collapse where all four promotion
+      pieces mapped to the same index. The bijection lives in
+      `PolicyEncoding.policyIndex(_:currentPlayer:)` — `ChessMove.policyIndex`
+      was deleted so callers must think about the side-to-move frame flip.
+    - **Fully-convolutional 1×1 policy head (Phase 4.3).** The old FC
+      head (`128 × 64 → 4096`, ~528K params) was replaced with a 1×1
+      conv `128 → 76` (~9.8K params, ~50× smaller). Translation
+      equivariance is preserved end-to-end, which matches modern lc0
+      practice and was the motivation cited in the ML review.
+    - **20-plane input (Phase 3).** Planes 18 (≥1× before) and 19 (≥2×
+      before) feed the network threefold-repetition context.
+      Implementation reuses the engine's existing `positionCounts`
+      table — no Zobrist machinery was needed (see `dcm_architecture_v2.md`
+      Phase 1 for why we deviated from the originally-planned Zobrist
+      path).
+    - **Fresh-baseline value targets (Post-impl Addendum A).** The old
+      `vBaseline` was a frozen self-play-time value; the trainer now
+      runs an extra forward-only pass on its *current* network before
+      each training step to recompute per-position `v(s)`, then
+      overwrites the play-time staging before feeding the training
+      graph. `MPSGraphGradientSemanticsTests` verified the
+      placeholder-boundary stop-gradient semantics (MPSGraph has no
+      `stop_gradient` op, and `with`-array exclusion does not prune
+      backward-pass paths — the placeholder feed is the only correct
+      way). Cost is ~33% extra forward FLOPs per training step;
+      diagnostic `vBaselineDelta` now appears in `[STATS]`.
+    - **`maxTensorElementCount` now computed from live arch
+      (Phase 7.2).** `ModelCheckpointFile.maxTensorElementCount` is
+      derived from `ChessNetwork.channels`, `inputPlanes`,
+      `policyChannels`, and `seReductionRatio` (covers stem conv,
+      residual conv, policy conv, SE FC). Acts as a defense-in-depth
+      sanity cap on per-tensor element counts during `.dcmmodel`
+      load — rejects implausible sizes before allocation, even when
+      the SHA-256 trailer happens to match. Auto-tracks any future
+      architecture change, no manual bump needed.
+
+  The v2 bundle also introduced a `ReplayBuffer` format v3 (old
+  buffers rejected cleanly on load), arch-hash bump on `.dcmmodel`
+  (old checkpoints rejected with `.archMismatch`), and the first
+  XCTest target. `CHANGELOG.md` has the commit-level breakdown;
+  `dcm_architecture_v2.md` has the phase-by-phase design and a
+  consolidated "Current state (as-built)" section that includes the
+  post-impl follow-ups (sampling tau bump to 2.0, Candidate Test RAW-
+  cell top-K display, entropy-alarm threshold) *and* the four post-v2
+  commits listed below, plus a full parameter-defaults table.
+
+  **Post-v2 follow-ups shipped during the first v2 run** (commits
+  `9298273` → `068f805` → `7757418` → `cf1cc24`, all 2026-04-20):
+
+    - **Advantage standardization + K dropped 50 → 5.** The policy-
+      gradient weight is now `A_norm = (A − mean(A)) / sqrt(var(A) + 1e-6)`
+      computed per batch inside the graph, autograd-safe because `A`
+      depends only on the `z` and `vBaseline` placeholders. Removes the
+      systematic bias when the value head has a global offset (e.g.
+      `E[v] ≈ 0.45` once draws dominated self-play). With `A_norm`
+      already at unit stdev, the pre-standardization `policyScaleK = 50`
+      was pinning `gradClipMaxNorm` almost every step; dropped to `5.0`.
+    - **Live-editable hyperparameters.** `weightDecayC`, `gradClipMaxNorm`,
+      `policyScaleK`, `learnRate`, `entropyRegCoeff`, `drawPenalty`, and
+      both sampling schedules are now fed to the training graph per step
+      via scalar placeholders, so UI edits commit immediately without
+      rebuilding the graph. Values persist in `@AppStorage` where
+      applicable and are restored on session load. Every commit writes
+      a `[PARAM] name: old -> new` line. `SessionCheckpointState` gained
+      `policyScaleK: Float?` (Optional for back-compat) and the full
+      `wd / clip / K / sp+ar tau` set on load.
+    - **Diagnostics expansion.** New `TrainStepTiming` fields:
+      `playedMoveProb`, `policyLogitAbsMax`, `policyHeadWeightNorm`,
+      advantage distribution (`mean / std / min / max / fracPos / fracSmall`),
+      plus `p05 / p50 / p95` from a rolling raw-advantage ring.
+      Separate `legalMassSnapshot` probe (legal-mass + top1-legal) via
+      `BoardEncoder.decodeSynthetic`, refreshed every 25 steps during
+      bootstrap. `ParallelWorkerStatsBox` gained a 512-entry game-length
+      ring (`p50 / p95 / avgLen`). `MPSChessPlayer` now counts
+      "randomish" plies where post-temperature max probability is below
+      `1.5 / N_legal` (policy-collapse signal independent of tau).
+      `[STATS]` emitter restructured into bootstrap (per-step, first 500
+      steps) + steady-state (60 s) phases.
+    - **Full-sort top-K for catastrophic collapse.**
+      `ChessRunner.extractTopMoves` now sorts the full 4864-cell policy
+      vector rather than capping at `count × 4`, so a collapsed policy
+      whose top cells are all off-board still produces `count` legal
+      visualizations instead of an empty Candidate Test panel.
+    - **MPSGraph reshape layout + sign-consistency tests.** New
+      `MPSGraphReshapeLayoutTests` empirically verifies the policy head's
+      `[B, 76, 8, 8] → [B, 4864]` reshape is NCHW row-major under
+      `c·64 + r·8 + col` (plus end-to-end through `oneHot` +
+      `softMaxCrossEntropy`). New `SignConsistencyTests` covers encoder
+      symmetry, policy-index symmetry for mirrored moves, outcome-sign
+      truth table, advantage-formula sign convention, geometric-decode
+      round-trip, and bit-identical network output for bit-identical
+      inputs.
+    - **Advantage raw ring capped at 32K.** The `_advRawRing`
+      in `TrainingLiveStatsBox` was originally sized `rollingWindow ×
+      batchSize = 512 × 4096 ≈ 2 M Float`. `snapshot()` sorts the full
+      filled portion for percentile extraction, and the 10 Hz UI
+      heartbeat's `Task { @MainActor }` calls `snapshot()` via
+      `queue.sync` — once the ring filled (~step 500) each sort cost
+      ~150 ms on main, saturating the main actor. Because
+      `fireCandidateProbeIfNeeded` is `@MainActor` and awaited after
+      every training step, training throughput collapsed from
+      ~2300 moves/sec to ~300 moves/sec and the UI went non-responsive.
+      `advRawRingMaxCapacity = 32_768` drops sort cost from ~150 ms to
+      ~1 ms while keeping percentile error below 0.5 % for a
+      log-eyeballed diagnostic.
+
+  **Default-parameter drift to record** (relative to this ROADMAP's
+  earlier "N-worker concurrent self-play" entry):
+  `initialSelfPlayWorkerCount` is now `24` (was `6`),
+  `absoluteMaxSelfPlayWorkers` is now `64` (was `16`),
+  `trainingBatchSize` is `4096`, `replayBufferCapacity` is `1_000_000`,
+  `tournamentGames` is `200`, `tournamentPromoteThreshold` is `0.55`.
+  The memory-vs-latency analysis in that older entry still applies —
+  the numbers scaled up, the trade-off didn't change. The full current
+  parameter-default table lives in `dcm_architecture_v2.md` under
+  "Current parameter defaults".
+
+  **Still open after v2.** `TODO_NEXT.md` #3 (ReplayBuffer durability —
+  `fsync` + length invariant + reordered atomic save) remains
+  unaddressed; adaptive LR schedule remains a design-only entry.
+  One runtime regression observed but not yet root-caused: an
+  `Unsupported MPS operation mps.placeholder` assertion during
+  training after the live-hyperparameters change in `7757418`.

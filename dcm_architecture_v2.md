@@ -823,74 +823,173 @@ For us this is *much* more expensive than for AlphaZero because we don't have MC
 
 ---
 
-## Post-implementation addenda (2026-04-20)
+## Current state (as-built, through commit `cf1cc24`, 2026-04-20)
 
-Items not in the original plan that were implemented during the follow-up runtime-debugging pass.
+The plan above (Pre-flight → Phase 11) is the as-designed bundle. This section is the as-built snapshot of what actually ships in the current tree. It folds in both the immediate post-implementation follow-ups (originally logged as addenda A–H) and the four post-v2 commits that landed before this section was written: `9298273` (random-ish-move counter, full-sort top-K, sign-consistency tests), `068f805` (action-index health stats + MPSGraph reshape layout tests), `7757418` (advantage standardization + live-editable hyperparameters + diagnostics expansion), and `cf1cc24` (advantage raw-ring capped at 32K to unblock the main actor).
 
-### A. Fresh-baseline forward pass (variant C from the value-baseline discussion)
+**This is the first v2 run.** The champion active when this section was written is the first network trained end-to-end on the v2 architecture; any discussion of "prior behavior" refers to pre-v2 code that no longer runs.
 
-After empirically verifying via `MPSGraphGradientSemanticsTests` that MPSGraph has no `stop_gradient` op and that excluding tensors from the `with` array of `gradients(of:with:name:)` does NOT prune backward-pass paths, the trainer was restructured to compute fresh `v(s)` for every training batch.
+### Network architecture (fixed constants)
 
-`ChessTrainer.trainStep(replayBuffer:batchSize:)` is now a three-phase async sequence:
+From `ChessNetwork.swift`:
+
+| Constant | Value | Notes |
+|---|---|---|
+| `inputPlanes` | `20` | 16 piece/castling + EP + halfmove + 2 repetition planes |
+| `channels` | `128` | residual-tower channel count |
+| 8 residual blocks | hardcoded at `ChessNetwork.swift:323` | each block = 3×3 conv → BN → ReLU → 3×3 conv → BN → SE → add → ReLU |
+| `seReductionRatio` | `4` | SE bottleneck = `channels/4 = 32` |
+| `policyChannels` | `76` | 56 queen-style + 8 knight + 9 underpromotion + 3 queen-promotion |
+| `policySize` | `4864` | `= policyChannels × 64` |
+| Value head | `tanh` scalar | WDL remains deferred |
+| Total trainable params | ~2.4 M | |
+
+### Training-loop structure (as built)
+
+Per-step, `ChessTrainer.trainStep(replayBuffer:batchSize:)` is a three-phase async sequence:
 
 1. **Phase 1 (trainer queue):** sample from replay buffer into staging buffers; copy boards to a Sendable `[Float]`.
-2. **Phase 2 (network queue, async):** `network.evaluate(batchBoards:count:)` — forward-only pass yielding fresh per-position v scalars.
-3. **Phase 3 (trainer queue):** overwrite `vBaselines` staging with fresh values, apply draw penalty, run training graph.
+2. **Phase 2 (network queue, async):** `network.evaluate(batchBoards:count:)` — forward-only pass on the *current* trainer network, yielding fresh per-position `v(s)` scalars.
+3. **Phase 3 (trainer queue):** overwrite the `vBaseline` staging with the fresh values, apply draw penalty, run the training graph.
 
-The `vBaseline` placeholder boundary already provides stop-gradient semantics; only the values being fed into it changed (from the random-init champion's frozen view to the trainer's current view).
+Empirically verified via `MPSGraphGradientSemanticsTests`: MPSGraph has no `stop_gradient` op, and excluding tensors from the `with` array of `gradients(of:with:name:)` does NOT prune backward-pass paths. The only way to detach `vBaseline` from autograd is the placeholder boundary — which is why Phase 3 feeds the fresh values through the same `vBaseline` placeholder rather than computing them inside the graph. Cost: ~33% extra forward FLOPs per training step; `TrainStepTiming.freshBaselineMs` exposes the Phase 2 cost and `totalMs` includes it so the replay-ratio controller throttles correctly.
 
-Cost: ~33% extra forward FLOPs per training step. `TrainStepTiming` gained `vBaselineDelta: Float?` (mean abs delta between fresh and stale per-position v values, useful as a divergence diagnostic) and `freshBaselineMs: Double?` (cost of phase 2). `totalMs` includes the phase-2 cost so the replay-ratio controller throttles correctly. `TrainingLiveStatsBox` gained a rolling `vBaselineDelta` window. `[STATS]` log line gained `vBaseDelta=` field.
+**Advantage standardization.** The policy-gradient weight is `A_norm = (A − mean(A)) / sqrt(var(A) + 1e-6)` computed per batch inside the graph, where `A = z − vBaseline`. This is autograd-safe because `A` depends only on the `z` and `vBaseline` placeholders — no gradient path flows through `mean`/`std` back into trainable variables. The forward `A_norm` is what multiplies `−log p(a*)`; the backward path is just the standard REINFORCE-with-baseline one. Removes the systematic bias that appeared when the value head developed a global offset (e.g. `E[v] ≈ 0.45` once draws dominated self-play, which skewed raw advantages positive for wins and negative for losses and pushed the trunk in one direction). Also stabilizes gradient magnitude batch-to-batch.
 
-### B. Sampling-temperature defaults bumped to 2.0
+**Policy scale K = 5** (from `ChessTrainer.policyScaleKDefault`). K multiplies `A_norm · (−log p)` before the total-loss sum. Dropped from the pre-standardization value of 50 once standardization was in place — since `A_norm` already has unit stdev, the 50× multiplier was pinning `gradClipMaxNorm` almost every step (~0.6 % unclipped).
 
-Both `SamplingSchedule.selfPlay.startTau` and `.arena.startTau` raised from `1.0` and `0.7` respectively to `2.0`. Decay rates and floors unchanged. With the bootstrap-phase policy concentrated on a small set of cells (entropy ~6.5 vs uniform 8.49), the higher starting tau flattens the early-game distribution, increases opening diversity, and pulls more decisive games out of the trainer-vs-champion arena. `pliesUntilFloor` recomputes correctly (54 plies for selfPlay, 45 for arena).
+**Live-editable hyperparameters.** `weightDecayC`, `gradClipMaxNorm`, `policyScaleK`, `learningRate`, `entropyRegularizationCoeff`, and `drawPenalty` are all fed to the training graph per step through scalar `placeholder` tensors. UI edits to any of these commit immediately without rebuilding the graph; values persist in `@AppStorage` (where applicable) and are restored on session load (`SessionCheckpointState` hydrates the full set: `wd`, `clip`, `K`, `sp+ar tau`). Every commit writes a `[PARAM] name: old -> new` line to the session log. The self-play and arena `SamplingSchedule` values are similarly live-tunable: a `SamplingScheduleBox` threads through `BatchedSelfPlayDriver`, and reused `MPSChessPlayer` slots read the latest schedule at each new-game boundary.
 
-### C. Candidate Test view: top-K policy display restored to RAW cells
+### Current parameter defaults
 
-The plan's Phase 2 / Phase 9.4 had legal-only top-K display via `PolicyEncoding.decode`. Post-shipping the user pointed out this lost the diagnostic for "is the network learning what's a valid move?" Restored:
+Every value below is the ship-default on a fresh session. UI-editable values can be overridden at runtime; non-UI values are architectural or require source-code edits.
 
-- New `PolicyEncoding.geometricDecode(channel:row:col:currentPlayer:)` returns a `ChessMove?` based on geometry only (off-board → nil), no legality filter.
-- `PolicyEncoding.decode(channel:row:col:state:)` refactored to call `geometricDecode` and add the legal-moves filter on top.
-- `MoveVisualization` gained `isLegal: Bool` field.
-- `ChessMove` now conforms to `Hashable` (synthesized) for fast Set lookup of legal moves in `extractTopMoves`.
-- `ChessRunner.extractTopMoves` rewritten to iterate the full policy vector, geometrically decode top cells with 4× headroom for off-board skips, mark legality.
-- Candidate Test text output renamed to "Policy Head (Top 4 raw — includes illegal)" with `(illegal)` suffix on cells that fail the legality check.
+**Optimizer / losses (`ChessTrainer.swift`):**
 
-### D. Candidate Test view: misleading metrics replaced
+| Name | Default | UI-editable | Role |
+|---|---|---|---|
+| `trainerLearningRateDefault` | `5e-5` | yes | Adam-like effective step (actually plain SGD with momentum in the trainer graph) |
+| `entropyRegularizationCoeffDefault` | `1e-1` | yes | weight on `+H(π)` term that pushes toward uniform |
+| `drawPenaltyDefault` | `0.1` | yes | adds to `z` on drawn games so policy doesn't converge to "play for a draw" |
+| `weightDecayCDefault` | `1e-4` | yes | decoupled L2 on weights in the `shouldDecay` group (conv/FC weights only; BN γ/β and biases excluded) |
+| `gradClipMaxNormDefault` | `5.0` | yes | global gradient L2 clip |
+| `policyScaleKDefault` | `5.0` | yes | multiplier on the REINFORCE policy-loss term |
 
-- `(v+1)/2 → "X% win / Y% loss"` line removed (without WDL output that mapping was dishonest about what a single tanh scalar means).
-- `NonNegligible: X / 4864` replaced with two legality-aware metrics: `Above uniform: X / N legal (threshold = 1/N)` and `Legal mass sum: Y%`.
-- `TrainingChartGridView` chart label "Non-negligible policy count" → "Above-uniform policy count".
+**Batching and replay (`ContentView.swift`):**
 
-### E. UI / observability additions
+| Name | Value |
+|---|---|
+| `trainingBatchSize` | `4096` |
+| `replayBufferCapacity` | `1_000_000` |
+| `minBufferBeforeTraining` | `max(25_000, capacity/5) = 200_000` |
+| `rollingLossWindow` | `512` (steps, for STATS smoothing) |
+| `TrainingLiveStatsBox.advRawRingMaxCapacity` | `32_768` Float entries (see below) |
+| `replayRatioTarget` | `1.0` (default in `@AppStorage`) |
+| `replayRatioAutoAdjust` | `true` |
+
+**Self-play driver (`ContentView.swift`):**
+
+| Name | Value |
+|---|---|
+| `initialSelfPlayWorkerCount` | `24` |
+| `absoluteMaxSelfPlayWorkers` | `64` |
+| `stepDelayMaxMs` | `2000` |
+| `stepDelayLadder` | `[0, 5, 10, 15, 20, 25, 50, 75, …, 2000]` (25 ms steps above 25) |
+
+(These are higher than the figures originally quoted in the ROADMAP "N-worker concurrent self-play" entry, which cited `6 / 16`. The memory-vs-latency trade-off analysis in that entry still applies — at `64` pre-allocated workers the steady-state memory footprint is ~720 MB of idle network state plus ~300 MB of `MPSChessPlayer` scratch, which is acceptable on 64 GB Apple Silicon where this project is actually run.)
+
+**Arena (`ContentView.swift`):**
+
+| Name | Value |
+|---|---|
+| `tournamentGames` | `200` |
+| `tournamentPromoteThreshold` | `0.55` |
+
+**Sampling schedules (`MPSChessPlayer.swift`, `SamplingSchedule`):**
+
+| Preset | `startTau` | `decayPerPly` | `floorTau` | `pliesUntilFloor` | Dirichlet noise |
+|---|---|---|---|---|---|
+| `.selfPlay` | `2.0` | `0.03` | `0.4` | `54` | `DirichletNoiseConfig.alphaZero` (α=0.3, ε=0.25, plyLimit=30) |
+| `.arena` | `2.0` | `0.04` | `0.2` | `45` | none |
+| `.uniform` | `1.0` | `0.0` | `1.0` | `Int.max` | none |
+
+Both `.selfPlay` and `.arena` were bumped from the pre-v2 defaults (`1.0` and `0.7`) to `2.0` after the new policy head (no BN before the 1×1 conv) produced wider initial logit distributions than the FC head did. Higher starting `tau` flattens the early-game distribution, increases opening diversity, and pulls more decisive games out of the trainer-vs-champion arena.
+
+**Alarm thresholds (`ContentView.swift`):**
+
+| Name | Value | Rationale |
+|---|---|---|
+| `policyEntropyAlarmThreshold` | `5.0` | `log(4864) ≈ 8.49`; v2 init entropy ~6.5 (wider logits than the FC head produced). A `5.0` floor is ~1.5 nats below init — wide enough to avoid false alarms, narrow enough to flag genuine collapse. |
+
+### Diagnostics surface
+
+All figures below appear as fields on `TrainStepTiming`, are aggregated in `TrainingLiveStatsBox`, and feed both the in-app training panel and the `[STATS]` log line.
+
+**Losses / grads / values:**
+- `policyLoss`, `valueLoss`, `loss` (total)
+- `policyEntropy` — Shannon entropy over the softmaxed policy, in nats; uniform = `log(4864) ≈ 8.49`
+- `policyNonNegligibleCount` — count of cells with `p > 1/policySize` (displayed as "Above-uniform policy count")
+- `gradGlobalNorm` — pre-clip L2 norm across all trainable vars
+- `valueMean`, `valueAbsMean` — tanh-saturation probe
+
+**Value-baseline divergence:**
+- `vBaselineDelta` — batch mean of `|v_fresh(s) − v_playtime(s)|`. Rising delta = trainer value head has shifted away from the play-time champion's view. Nil on random-data sweep path.
+- `freshBaselineMs` — wall-clock cost of Phase 2.
+
+**Policy health (added by `068f805` / `7757418`):**
+- `playedMoveProb` — batch mean of `p(a*)` for the actually-played move, computed as `sum(softmax · oneHot)` along the class axis. Random init sits at `1/4864 ≈ 2e-4`. A plateau near this value while `pLoss` moves would indicate an action-index mismatch.
+- `policyLogitAbsMax` — batch mean of `max_i |logits[i]|`. Pairs with `policyEntropy`: entropy can look healthy while one runaway logit is pre-saturating the softmax.
+- `policyHeadWeightNorm` — L2 norm of the 1×1 conv's final weight tensor (128 → 76 = 9,728 floats), read via an MPSGraph `targetTensor` so the host never pulls the weights back to CPU just to measure them. Tracks whether weight-decay is balancing the pull from `pLoss`.
+- `legalMassSnapshot` — separate `ChessTrainer.legalMassSnapshot` forward-only probe over a sampled replay subset: CPU-computes `legalMass` (sum of softmax probability on legal moves) and `top1Legal` (fraction of batch where `argmax(softmax) ∈ legal`). Uses `BoardEncoder.decodeSynthetic` to reconstruct positions for legality. Refreshed every 25 steps during the bootstrap phase and on every steady-state emit.
+
+**Advantage distribution (from `7757418`):**
+- Summary scalars: `advantageMean`, `advantageStd`, `advantageMin`, `advantageMax`, `advantageFracPositive` (fraction with `A > 0`), `advantageFracSmall` (fraction with `|A| < 0.05`). Reduced graph-side.
+- Percentiles: `p05 / p50 / p95` computed CPU-side from `TrainingLiveStatsBox._advRawRing`, a rolling ring of raw per-position values.
+
+**The 32K ring cap (from `cf1cc24`).** `_advRawRing` was originally sized `rollingWindow × batchSize = 512 × 4096 ≈ 2M Float`. `snapshot()` sorts the full filled portion for percentile extraction, and the UI heartbeat's 10 Hz `Task { @MainActor }` calls `snapshot()` via `queue.sync` — once the ring filled (~step 500) each sort cost ~150 ms on main, saturating the main actor. `fireCandidateProbeIfNeeded` is `@MainActor` and awaited after every training step, so training throughput collapsed from ~2300 moves/sec to ~300 moves/sec and the UI went non-responsive. The cap drops each sort from ~150 ms to ~1 ms while keeping percentile error below 0.5 % for a log-eyeballed diagnostic.
+
+**Self-play / game-diversity (from `068f805` / `9298273`):**
+- `ParallelWorkerStatsBox` maintains a 512-entry game-length ring producing `p50 / p95 / avgLen` on top of the existing `GameDiversityTracker` unique-game histogram.
+- `MPSChessPlayer.recordedRandomishMoves` — per-game counter of plies where the post-temperature legal-move softmax `max` probability fell below `1.5 / N_legal`. Signal that the sampler was effectively picking at random — a policy-collapse or degenerate-logit indicator independent of temperature. Driver-level aggregation is a follow-up.
+
+**Top-K decoder robustness (from `9298273`).** `ChessRunner.extractTopMoves` now fully sorts the 4864-cell policy vector rather than capping at `count × 4`. The bounded-heap scheme failed when a catastrophically collapsed policy's top cells were *all* off-board: `extractTopMoves` returned an empty list and the Candidate Test panel silently showed nothing. With a full sort, collapsed policies still produce `count` legal visualizations (geometrically decoded with off-board skips).
+
+### Candidate Test view
+
+- Top-K displayed as RAW cells (includes illegal), labelled "Policy Head (Top 4 raw — includes illegal)" with `(illegal)` suffix where legality fails. Implemented via `PolicyEncoding.geometricDecode(channel:row:col:currentPlayer:)` (geometry only, no legality filter) + a post-hoc legal-move `Set<ChessMove>` lookup. `ChessMove` is `Hashable` (synthesized) for fast membership checks.
+- Metrics: "Above uniform: X / N legal (threshold = 1/N)" and "Legal mass sum: Y %" replaced the earlier `NonNegligible: X / 4864` and the misleading `(v+1)/2 → "X % win / Y % loss"` line (scalar-tanh→WDL conversion was dishonest without a WDL head).
+- `TrainingChartGridView` chart label: "Above-uniform policy count".
+
+### UI and observability
 
 - **Cumulative status bar** at top of window: Active training time, Training steps, Positions trained, Runs. Sums across all completed Play-and-Train segments + the in-flight one.
-- **Training segments**: new `SessionCheckpointState.TrainingSegment` codable struct + per-run lifecycle (start on Play-and-Train, close on Stop or Save, reopen on save-while-training-continues). Persists across save/load. `[SEGMENT]` log lines on every transition.
-- **Run Arena Now button** in the status bar (visible whenever no arena is running and a network exists).
-- **Engine Diagnostics menu item** (Debug → Run Engine Diagnostics) — runs PolicyEncoding round-trip, distinct-index check, repetition-tracking 3-fold detection, BoardEncoder shape, network forward-pass shape probes. Output via `[DIAG]` log lines.
-- **Build banner** now includes `arch_hash`, `inputPlanes`, `policySize`.
-- **Parameter logging**: every UI commit on Learn Rate, Entropy Reg, Draw Penalty, Self-Play Workers, Step Delay (manual), Replay Ratio Target, Replay Ratio Auto-Adjust writes `[PARAM] name: old -> new`.
-- **Alarm banner**: black title + dark-red medium-weight detail for legibility against yellow background. New `Dismiss` button alongside `Silence` (resets divergence streak counters). Every raise/clear/silence/dismiss logs `[ALARM] ... ` line.
-- **Save errors auto-log** via `setCheckpointStatus(isError: true)` → `[CHECKPOINT-ERR]`.
+- **Training segments:** `SessionCheckpointState.TrainingSegment` codable struct + per-run lifecycle (start on Play-and-Train, close on Stop or Save, reopen on save-while-training-continues). Persists across save/load. `[SEGMENT]` log lines on every transition.
+- **Run Arena Now** button in the status bar (visible whenever no arena is running and a network exists).
+- **Engine Diagnostics** menu item (Debug → Run Engine Diagnostics): PolicyEncoding round-trip, distinct-index check, repetition-tracking 3-fold detection, BoardEncoder shape, network forward-pass shape probes. Output as `[DIAG]` log lines.
+- **Build banner:** includes `arch_hash`, `inputPlanes`, `policySize`.
+- **Parameter logging:** every UI commit on Learn Rate, Entropy Reg, Draw Penalty, Weight Decay, Grad Clip, Policy Scale K, Self-Play Workers, Step Delay (manual), Replay Ratio Target, Replay Ratio Auto-Adjust, `sp.startTau / floorTau / decayPerPly`, `ar.startTau / floorTau / decayPerPly` writes a `[PARAM] name: old -> new` line.
+- **Alarm banner:** black title + dark-red medium-weight detail for legibility against yellow background. New `Dismiss` button alongside `Silence` (resets divergence streak counters). Every raise/clear/silence/dismiss logs `[ALARM] …`.
+- **Save errors** auto-log via `setCheckpointStatus(isError: true)` → `[CHECKPOINT-ERR]`.
 - **Hourly rate** shown next to per-second gen/trn rates: `1m gen rate: 3500 pos/s   (12,600,000/hr)`.
 - **vMean / vAbs** rows added under `Loss value:` in the Training column.
-- **Title-bar contrast**: build banner and right-side ID bumped from `.caption` to `.callout`.
+- **Title-bar contrast:** build banner and right-side ID bumped from `.caption` to `.callout`.
+- **STATS emitter** runs per-step for the first 500 steps (bootstrap phase, dense signal during the most interesting period), then every 60 s in steady state. `legalMassSnapshot` refreshes on a 25-step stride during bootstrap and on each steady-state emit.
 - Removed duplicate `Ent reg`, `Grad clip`, `Weight dec`, `Draw pen` rows that were already shown in the editable hyperparameter section.
 
-### F. Policy entropy alarm threshold
+### Tests (XCTest target populated)
 
-Calibrated against actual v2 init-entropy behavior. Original plan said 7.2 (1.3 nats below `log(4864) ≈ 8.49`). Empirically the new policy head with no BN before the 1×1 conv produces wider initial logit distributions, landing entropy at ~6.5 at step 0. Threshold dropped to **5.0** (~1.5-nat margin below v2 init baseline) — wide enough to avoid false alarms during normal training, narrow enough to flag genuine collapse.
-
-### G. ROADMAP entry: adaptive learn-rate schedule
-
-Added to ROADMAP.md as a future-work entry with five candidate trigger families (step decay, plateau detection, promotion-driven, cosine annealing, replay-ratio aware) and notes on how each interacts with our pre-MCTS bootstrap regime. Not implemented; recorded for design discussion.
-
-### H. Tests — XCTest target populated
-
-After the user added the XCTest target via Xcode, the target was populated with 40 tests across 5 files:
+Populated after the user added the XCTest target via Xcode. Current count: 40 + 7 + tests from `068f805` / `9298273` additions, spread across:
 
 - `PolicyEncodingTests.swift` — round-trips, distinct indices, off-board guard, perspective flip, castling encoding.
 - `BoardEncoderTests.swift` — tensor length, plane content for pieces / castling / EP / halfmove / repetition planes, perspective flip.
 - `RepetitionTrackingTests.swift` — 3-fold detection, halfmove-clock-reset history clearing.
 - `ReplayBufferTests.swift` — round-trip, version rejection (synthesized v2 file), bad magic, truncated header.
-- `MPSGraphGradientSemanticsTests.swift` — empirical verification that excluding tensors from `with` does NOT prune backward paths (40/40 passing).
+- `MPSGraphGradientSemanticsTests.swift` — empirical verification that excluding tensors from the `with` array of `gradients(of:with:name:)` does NOT prune backward-pass paths.
+- `MPSGraphReshapeLayoutTests.swift` (from `068f805`) — empirical check that the policy head's `[B, 76, 8, 8] → [B, 4864]` reshape is NCHW row-major under `c·64 + r·8 + col`, plus end-to-end round-trip through `oneHot` + `softMaxCrossEntropy`.
+- `SignConsistencyTests.swift` (from `9298273`) — encoder symmetry, policy-index symmetry for mirrored moves, outcome-sign truth table, advantage formula sign convention, geometric decode round-trip, bit-identical network output for bit-identical inputs.
+
+### Known open items carried forward
+
+- **TODO #3 — ReplayBuffer durability.** Not addressed in v2 or in any post-v2 commit. `ReplayBuffer.write(to:)` still has no `synchronize()`; `restore(from:)` still has no length-invariant check; `CheckpointManager.saveSession` still writes JSON before the replay buffer (so the tmp→rename atomic-move does not cover a torn replay write). Fix recorded in `TODO_NEXT.md`.
+- **Adaptive learn-rate schedule.** Recorded in `ROADMAP.md` as a future-work entry with five candidate trigger families (step decay, plateau detection, promotion-driven, cosine annealing, replay-ratio aware). Not implemented.
+- **`mps.placeholder` runtime assertion.** Observed during training after the live-hyperparameters change in `7757418`. `graph.read(…)` is defensive but speculative; the three new scalar placeholders use the same pattern as the working `lr` / `entropyCoeff` placeholders. Root cause still under investigation as of this writing.

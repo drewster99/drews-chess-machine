@@ -1,53 +1,10 @@
 # TODO_NEXT
 
-Status: most of the items originally listed here have been resolved by the
-v2 architecture refresh (`dcm_architecture_v2.md`). What remains is the
-durability fix and the ML/MPSGraph review's deferred items that were
+Status: the v2 architecture refresh and its post-v2 follow-ups are
+recorded in `dcm_architecture_v2.md` (under "Current state
+(as-built)") and `ROADMAP.md` (under "Completed"). What remains is
+the durability fix and the deferred ML-review items that were
 explicitly NOT bundled with v2.
-
----
-
-## Resolved by the v2 architecture refresh (2026-04-19/20)
-
-The following items from prior audits are no longer actionable — the
-underlying code has been replaced. See `dcm_architecture_v2.md` and
-`CHANGELOG.md` for details.
-
-- ~~**#1 — Promotion-target collapse in the 4096 policy.**~~ Resolved
-  by the AZ-shape 76-channel policy head. Underpromotions get dedicated
-  channels (64–72 for N/R/B × 3 directions); queen-promotion gets its
-  own 3-channel block (73–75). `ChessMove.policyIndex` was deleted;
-  every callsite now goes through `PolicyEncoding.policyIndex(_:currentPlayer:)`.
-- ~~**#5 follow-up — Make `maxTensorElementCount` track the live arch.**~~
-  Resolved. `ModelCheckpointFile.maxTensorElementCount` is now a
-  computed property derived from `ChessNetwork.channels`, `inputPlanes`,
-  `policyChannels`, and `seReductionRatio`. Auto-updates on any
-  architecture change.
-- ~~**ML Review #2 — Policy head has no spatial structure.**~~
-  Resolved. Old FC head replaced with a fully-convolutional 1×1 conv
-  128→76. Translation equivariance preserved end-to-end. Head
-  parameter count dropped ~50× (~9.8K vs ~528K).
-- ~~**ML Review #3 — Move encoding silently collapses underpromotion.**~~
-  Same as #1 above; resolved.
-- ~~**ML Review #4 — `vBaseline` is a frozen baseline, not the current
-  value-head estimate.**~~ Resolved (post-v2 follow-up). The trainer
-  now runs an extra forward-only pass on its current network before
-  each training step to compute fresh per-position v(s), and
-  overwrites the play-time vBaseline staging with those values before
-  feeding the training graph. The `vBaseline` placeholder boundary
-  already provides stop-gradient semantics; only the source of values
-  changed. Empirically verified (`MPSGraphGradientSemanticsTests`)
-  that MPSGraph has no `stop_gradient` op and that `with`-array
-  exclusion does not prune backward-pass paths, so this placeholder-
-  feed approach is the only correct way. Cost ~33% extra forward
-  FLOPs per training step. Diagnostic `vBaselineDelta` now in
-  `[STATS]` line.
-- ~~**ML Review #6 — Missing repetition planes.**~~ Resolved. Input
-  tensor expanded from 18 → 20 planes; planes 18 (≥1× before) and 19
-  (≥2× before) feed the network the threefold-repetition signal.
-  Implementation reuses the engine's existing `positionCounts`
-  table — no new Zobrist machinery was needed (see
-  `dcm_architecture_v2.md` Phase 1 for the deviation rationale).
 
 ---
 
