@@ -50,11 +50,14 @@ struct PositionKey: Hashable {
 
 enum ChessGameError: LocalizedError {
     case gameAlreadyOver
+    case illegalMove(ChessMove)
 
     var errorDescription: String? {
         switch self {
         case .gameAlreadyOver:
             return "The game has already ended"
+        case .illegalMove(let move):
+            return "Illegal move for the current position: \(move)"
         }
     }
 }
@@ -64,14 +67,26 @@ enum ChessGameError: LocalizedError {
 /// Manages a chess game between two players: applies moves, updates state,
 /// detects game-ending conditions (checkmate, stalemate, draws).
 ///
-/// Move legality is **not** validated here — the caller (`ChessMachine`) is
-/// required to pass moves drawn from `MoveGenerator.legalMoves(for:)`. The
-/// game loop already needs that list for player choice and end-detection, so
-/// re-deriving it inside `applyMove` would be wasted work.
+/// The engine owns the authoritative legal-move list for the current
+/// side-to-move (`currentLegalMoves`), computed once at init and refreshed
+/// inside `applyMoveAndAdvance` after each move. Every incoming move is
+/// validated against that list before apply — callers can hand moves in
+/// from any source (self-play player, arena player, UI, tests, file load)
+/// and the engine rejects anything illegal with
+/// `ChessGameError.illegalMove` instead of trusting the caller and
+/// potentially trapping inside `MoveGenerator.applyMove`'s force unwrap.
+/// `MoveGenerator.legalMoves(for:)` still runs exactly once per ply — the
+/// list the engine produces after applying move N is reused both for
+/// end-of-game detection and as the guard for move N+1.
 final class ChessGameEngine {
     private(set) var state: GameState
     private(set) var result: GameResult?
     private(set) var moveHistory: [ChessMove] = []
+
+    /// Legal moves for `state`'s side-to-move. Refreshed inside
+    /// `applyMoveAndAdvance`; callers can read this instead of calling
+    /// `MoveGenerator.legalMoves(for: engine.state)` themselves.
+    private(set) var currentLegalMoves: [ChessMove]
 
     /// Tally of how many times each position has appeared since the last
     /// irreversible move. Cleared whenever halfmoveClock resets to 0
@@ -84,21 +99,30 @@ final class ChessGameEngine {
         // into the state itself so encoders downstream see a consistent
         // `repetitionCount`. Every state subsequently produced by
         // applyMoveAndAdvance also carries its rep count.
-        self.state = state.withRepetitionCount(0)
+        let seeded = state.withRepetitionCount(0)
+        self.state = seeded
+        self.currentLegalMoves = MoveGenerator.legalMoves(for: seeded)
         positionCounts[PositionKey(from: state)] = 1
     }
 
     /// Apply a move and recompute the result given the legal moves available
-    /// in the *new* position. The caller is responsible for generating
-    /// `nextLegalMoves` after the move is applied — the engine reuses that
-    /// list for end-of-game detection (no second `legalMoves` call).
+    /// in the *new* position.
+    ///
+    /// Throws `ChessGameError.gameAlreadyOver` if a result has already been
+    /// latched, or `ChessGameError.illegalMove` if `move` is not in
+    /// `currentLegalMoves`. On success, `state`, `currentLegalMoves`, and
+    /// (if game-ending) `result` are all updated before return.
     ///
     /// Returns the legal moves for the next position so the caller can hand
-    /// them straight back to the next player.
+    /// them straight back to the next player; the same value is also
+    /// available via the `currentLegalMoves` property.
     @discardableResult
     func applyMoveAndAdvance(_ move: ChessMove) throws -> [ChessMove] {
         guard result == nil else {
             throw ChessGameError.gameAlreadyOver
+        }
+        guard currentLegalMoves.contains(move) else {
+            throw ChessGameError.illegalMove(move)
         }
 
         let appliedState = MoveGenerator.applyMove(move, to: state)
@@ -124,6 +148,7 @@ final class ChessGameEngine {
         state = appliedState.withRepetitionCount(priorOccurrences)
 
         let nextMoves = MoveGenerator.legalMoves(for: state)
+        currentLegalMoves = nextMoves
         updateResult(nextLegalMoves: nextMoves, isThreefoldRepetition: isThreefold)
         return nextMoves
     }

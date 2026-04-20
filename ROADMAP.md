@@ -245,20 +245,6 @@ Long-term goals, deferred work, and notes on decisions.
   | Progress rate chart samples | not saved | rebuilds from new data |
   | Rolling loss windows | not saved | rebuilds from new steps |
 
-- **Bitboard board representation.** `GameState.board` is currently a flat
-  `[Piece?]` of 64 entries. The next step for performance is twelve `UInt64`
-  bitboards (one per piece kind/color), with attack tables. Move generation,
-  attack detection, and tensor encoding all become bit operations and would
-  be dramatically faster than the current per-square scan.
-
-- **Engine-level legal-move validation.** `ChessGameEngine.applyMove` and
-  `MoveGenerator.applyMove` no longer validate that the supplied move is
-  legal — callers are required to do so. Higher-level code (the game loop in
-  `ChessMachine`) currently feeds only legal moves into apply, so this is
-  safe. If we ever expose a public API where moves arrive from untrusted
-  sources (UI, network, file load), we should add a validating wrapper that
-  calls `legalMoves(for:)` and checks membership before delegating to apply.
-
 - **Compiled `MPSGraphExecutable`.** `ChessNetwork.evaluate` currently calls
   `graph.run(with:feeds:targetTensors:targetOperations:)`. MPSGraph caches a
   compiled executable internally keyed on feed shapes, so the steady-state
@@ -309,6 +295,49 @@ Long-term goals, deferred work, and notes on decisions.
   sweep walks the full ladder and makes its limits visible.
 
 ## Completed
+
+- **Engine-level legal-move validation (2026-04-20).** Previously
+  `ChessGameEngine.applyMoveAndAdvance` trusted the caller to supply a
+  legal move, and `MoveGenerator.applyMove` would trap on a force-unwrap
+  for moves whose from-square was empty. The argument for the
+  performance shortcut was that the game loop in `ChessMachine` already
+  generates the legal-move list per ply for player choice and
+  end-detection, so re-deriving it inside apply would be wasted work.
+  That trust held in practice — the only caller was `ChessMachine`,
+  which always sampled from `MoveGenerator.legalMoves(for:)` — but it
+  left the engine unsafe for any future caller (UI drag-drop, loaded
+  PGN, network input, a buggy player) to invoke directly.
+
+  The fix preserves the one-`legalMoves`-call-per-ply invariant by
+  having the engine *own* the legal-move list rather than duplicating
+  it on the caller side. `ChessGameEngine` gained a
+  `private(set) var currentLegalMoves: [ChessMove]` that is computed
+  once at init (seeded from the starting state) and refreshed inside
+  `applyMoveAndAdvance` after each successful move — using the same
+  `nextMoves = MoveGenerator.legalMoves(for: state)` call that already
+  powered end-of-game detection. `applyMoveAndAdvance` now guards
+  `currentLegalMoves.contains(move)` before apply and throws the new
+  `ChessGameError.illegalMove(ChessMove)` if the guard fails
+  (`ChessMove` is already `Equatable`). No extra `legalMoves` calls on
+  the hot path.
+
+  `ChessMachine.runGameLoop` dropped its local `var currentLegalMoves`
+  and now reads `engine.currentLegalMoves` both when calling
+  `player.onChooseNextMove(...)` and implicitly through the engine's
+  self-refresh. Illegal moves from a buggy player flow through the
+  existing `playerErrored` + break path in the game loop, identical to
+  any other thrown error — partial-game positions up to the failure
+  point still flush to the replay buffer as before. `applyMoveAndAdvance`
+  retains `@discardableResult` on its `[ChessMove]` return (kept for
+  callers who prefer the inline value, e.g. tests), so the change is
+  API-additive rather than breaking. Callers that used `try?` to
+  discard errors (the ContentView sanity-check knight-shuffle probe,
+  `RepetitionTrackingTests` paths) continue to work: their moves are
+  legal so validation passes, and any genuine illegal move is now
+  surfaced through the same error-swallowing behavior that already
+  existed for `gameAlreadyOver`.
+
+  Build green. This closes the roadmap item of the same name.
 
 - **Session durability hardening — "saved means golden" (2026-04-20).**
   Closes TODO_NEXT.md #3. The save pipeline now guarantees that either

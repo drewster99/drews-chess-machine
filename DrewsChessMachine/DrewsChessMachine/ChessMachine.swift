@@ -169,10 +169,11 @@ final class ChessMachine: @unchecked Sendable {
         var blackMoveCount = 0
         var lastMove: ChessMove?
 
-        // Generate the initial legal moves once. From here on, every
-        // applyMoveAndAdvance returns the next ply's legal moves, so we
-        // never call legalMoves() more than once per ply.
-        var currentLegalMoves = MoveGenerator.legalMoves(for: engine.state)
+        // The engine owns `currentLegalMoves` — computed once at init
+        // and refreshed inside `applyMoveAndAdvance` after each move —
+        // so `MoveGenerator.legalMoves(for:)` still runs exactly once
+        // per ply and the engine validates every incoming move against
+        // that same list.
 
         while engine.result == nil {
             // Cooperative cancellation point between plies. Throwing
@@ -204,7 +205,7 @@ final class ChessMachine: @unchecked Sendable {
                 let move = try await player.onChooseNextMove(
                     opponentMove: lastMove,
                     newGameState: engine.state,
-                    legalMoves: currentLegalMoves
+                    legalMoves: engine.currentLegalMoves
                 )
                 let moveTimeMs = (CFAbsoluteTimeGetCurrent() - moveStart) * 1000
 
@@ -216,16 +217,18 @@ final class ChessMachine: @unchecked Sendable {
                     blackMoveCount += 1
                 }
 
-                // Apply the move; engine generates the next ply's legal
-                // moves and uses them for end-detection. We reuse the
-                // same list on the next iteration. Engine errors here
-                // (e.g. an illegal move slipping through) go through
-                // the same `playerErrored` + break path as player
-                // errors — partial-game positions the players recorded
-                // up to this point are still flushed to the replay
-                // buffer with a stalemate outcome in the end-of-game
-                // block below, matching the pre-refactor behavior.
-                currentLegalMoves = try engine.applyMoveAndAdvance(move)
+                // Apply the move; the engine validates it against
+                // `currentLegalMoves`, then generates the next ply's
+                // legal moves and uses them for end-detection. We pick
+                // up the refreshed list from `engine.currentLegalMoves`
+                // on the next iteration. Engine errors here (e.g. an
+                // illegal move from a buggy player) go through the
+                // same `playerErrored` + break path as player errors —
+                // partial-game positions the players recorded up to
+                // this point are still flushed to the replay buffer
+                // with a stalemate outcome in the end-of-game block
+                // below, matching the pre-refactor behavior.
+                try engine.applyMoveAndAdvance(move)
                 lastMove = move
 
                 let snapshotState = engine.state
