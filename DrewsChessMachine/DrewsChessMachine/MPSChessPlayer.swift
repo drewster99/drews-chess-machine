@@ -202,7 +202,15 @@ final class MPSChessPlayer: ChessPlayer {
     /// Temperature schedule applied per-ply in `sampleMove`. Defaults to
     /// `.uniform` (flat tau=1.0) so non-training callers keep their
     /// pre-schedule behavior; self-play and arena pass their own presets.
-    private let schedule: SamplingSchedule
+    ///
+    /// Mutable so the driver can hand a reused player a new schedule at
+    /// each game boundary (UI can tune tau without destroying the
+    /// slot's allocated scratches). Writes must happen between games —
+    /// `sampleMove` reads this once per ply and the player is
+    /// single-threaded within a game, so an in-game swap would be a
+    /// use-after-free-style race; callers MUST only set this outside
+    /// of an active `beginNewGame`.
+    var schedule: SamplingSchedule
     private var isWhite = true
 
     // MARK: - Per-game recorded positions

@@ -288,6 +288,100 @@ enum BoardEncoder {
         encode(.starting)
     }
 
+    /// Reconstruct a "synthetic white-to-move" `GameState` from a raw
+    /// encoded tensor.
+    ///
+    /// The encoding is always from the current player's perspective
+    /// (board flipped for black-to-move so the mover sits at rows 6-7)
+    /// and the policy-index encoding runs in the same encoder frame.
+    /// That means the mover's color is **not recoverable** from the
+    /// tensor alone — and doesn't need to be for either legal-move
+    /// enumeration or policy-index computation. Labeling the mover as
+    /// white (no flip) yields a state whose `MoveGenerator.legalMoves`
+    /// returns moves in encoder-frame coordinates, which are exactly
+    /// what `PolicyEncoding.policyIndex(_:currentPlayer: .white)`
+    /// expects to produce the same flat indices the network is
+    /// already emitting.
+    ///
+    /// Used by `ChessTrainer.legalMassSnapshot` to compute how much
+    /// softmax mass the current policy places on the legal-move set
+    /// for a sampled batch of replay-buffer positions. The repetition
+    /// planes (18/19) and `halfmoveClock`'s exact value don't affect
+    /// legality (the 50-move-rule fires at clock ≥ 100, handled
+    /// separately in `MoveGenerator`), so we ignore them.
+    ///
+    /// - Parameter buffer: Exactly `tensorLength` (1280) floats in the
+    ///   NCHW row-major layout produced by `encode(_:into:)`.
+    /// - Returns: A `GameState` with `currentPlayer = .white` whose
+    ///   `MoveGenerator.legalMoves` output lines up with the policy
+    ///   indices stored for this position in the replay buffer.
+    static func decodeSynthetic(
+        from buffer: UnsafePointer<Float>
+    ) -> GameState {
+        var board: [Piece?] = Array(repeating: nil, count: 64)
+
+        // Planes 0-5: mover's pieces (pawn..king) — labeled as white.
+        for plane in 0..<6 {
+            let pieceType = PieceType(rawValue: plane)!
+            for row in 0..<8 {
+                for col in 0..<8 {
+                    if buffer[plane * 64 + row * 8 + col] > 0.5 {
+                        board[row * 8 + col] = Piece(type: pieceType, color: .white)
+                    }
+                }
+            }
+        }
+        // Planes 6-11: opponent's pieces — labeled as black.
+        for plane in 6..<12 {
+            let pieceType = PieceType(rawValue: plane - 6)!
+            for row in 0..<8 {
+                for col in 0..<8 {
+                    if buffer[plane * 64 + row * 8 + col] > 0.5 {
+                        board[row * 8 + col] = Piece(type: pieceType, color: .black)
+                    }
+                }
+            }
+        }
+
+        // Planes 12-15: castling rights (mover's kingside, mover's
+        // queenside, opp kingside, opp queenside). Plane-is-solid-1 =
+        // right available. Read a single corner square as a cheap
+        // probe — `fillPlane` writes the whole 64-square plane so any
+        // cell carries the flag.
+        let myKingside = buffer[12 * 64] > 0.5
+        let myQueenside = buffer[13 * 64] > 0.5
+        let oppKingside = buffer[14 * 64] > 0.5
+        let oppQueenside = buffer[15 * 64] > 0.5
+
+        // Plane 16: en passant target (single cell). Scan the whole
+        // plane since we don't know which cell is hot — under a legal
+        // encoding at most one cell is set.
+        var enPassant: (row: Int, col: Int)?
+        for idx in 0..<64 where buffer[16 * 64 + idx] > 0.5 {
+            enPassant = (idx / 8, idx % 8)
+            break
+        }
+
+        // Plane 17: halfmove clock, normalized as min(clock,99)/99.
+        // Round-trip to an integer clock for the reconstructed state.
+        // The exact value only matters for 50-move-rule termination,
+        // not legality.
+        let clockProbe = buffer[17 * 64]
+        let halfmoveClock = Int((clockProbe * 99).rounded())
+
+        return GameState(
+            board: board,
+            currentPlayer: .white,
+            whiteKingsideCastle: myKingside,
+            whiteQueensideCastle: myQueenside,
+            blackKingsideCastle: oppKingside,
+            blackQueensideCastle: oppQueenside,
+            enPassantSquare: enPassant,
+            halfmoveClock: halfmoveClock,
+            repetitionCount: 0
+        )
+    }
+
     // MARK: - Piece Lookup
 
     /// Piece symbols for the starting position, used by the board visualization.

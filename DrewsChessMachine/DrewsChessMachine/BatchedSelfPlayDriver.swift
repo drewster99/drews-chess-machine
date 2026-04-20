@@ -43,6 +43,10 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     let countBox: WorkerCountBox
     let pauseGate: WorkerPauseGate
     let gameWatcher: GameWatcher?
+    /// Live self-play schedule source. Read at each new-game boundary
+    /// inside `slotLoop` so UI edits take effect on the next game a
+    /// slot starts, without killing the long-lived slot task.
+    let scheduleBox: SamplingScheduleBox
 
     // MARK: - Init
 
@@ -53,7 +57,8 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         diversityTracker: GameDiversityTracker,
         countBox: WorkerCountBox,
         pauseGate: WorkerPauseGate,
-        gameWatcher: GameWatcher?
+        gameWatcher: GameWatcher?,
+        scheduleBox: SamplingScheduleBox
     ) {
         self.batcher = batcher
         self.buffer = buffer
@@ -62,6 +67,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         self.countBox = countBox
         self.pauseGate = pauseGate
         self.gameWatcher = gameWatcher
+        self.scheduleBox = scheduleBox
     }
 
     // MARK: - Driver Loop
@@ -163,21 +169,32 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     private func slotLoop(index: Int) async {
         // Reusable players per slot — `ChessMachine.beginNewGame` calls
         // `onNewGame` on each before starting, resetting per-game scratch
-        // without reallocating the board / policy / value buffers.
+        // without reallocating the board / policy / value buffers. The
+        // `schedule` is refreshed at the top of each game from
+        // `scheduleBox` so UI edits to tau start / floor / decay take
+        // effect on the next game a slot starts, without re-allocating
+        // the per-player scratch.
         let white = MPSChessPlayer(
             name: "White",
             source: batcher,
             replayBuffer: buffer,
-            schedule: .selfPlay
+            schedule: scheduleBox.selfPlay
         )
         let black = MPSChessPlayer(
             name: "Black",
             source: batcher,
             replayBuffer: buffer,
-            schedule: .selfPlay
+            schedule: scheduleBox.selfPlay
         )
 
         while !Task.isCancelled {
+            // Refresh schedule between games so live UI edits propagate
+            // without having to restart the session. Safe here because
+            // the player is not yet inside a `beginNewGame` call.
+            let liveSchedule = scheduleBox.selfPlay
+            white.schedule = liveSchedule
+            black.schedule = liveSchedule
+
             // Live-display gating matches today's worker logic: slot 0
             // animates the board if and only if exactly one slot is
             // active. Evaluated per game (not at spawn) so a Stepper

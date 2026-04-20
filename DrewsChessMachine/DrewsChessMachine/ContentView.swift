@@ -676,6 +676,42 @@ final class WorkerPauseGate: @unchecked Sendable {
     }
 }
 
+/// Lock-protected holder for the current self-play and arena
+/// `SamplingSchedule` objects. Written by the SwiftUI edit fields
+/// (on the main actor) and read by the `BatchedSelfPlayDriver`'s
+/// slot tasks when constructing each new `MPSChessPlayer` pair, and
+/// by the arena setup code when building arena players. Because
+/// `MPSChessPlayer` captures its `SamplingSchedule` at init and the
+/// player is reused across games within a slot, edits take effect
+/// on newly-constructed players — i.e. at the next game-boundary
+/// within the driver's slotLoop, not mid-game.
+final class SamplingScheduleBox: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "drewschess.samplingschedulebox.serial")
+    private var _selfPlay: SamplingSchedule
+    private var _arena: SamplingSchedule
+
+    init(selfPlay: SamplingSchedule, arena: SamplingSchedule) {
+        self._selfPlay = selfPlay
+        self._arena = arena
+    }
+
+    var selfPlay: SamplingSchedule {
+        queue.sync { _selfPlay }
+    }
+
+    var arena: SamplingSchedule {
+        queue.sync { _arena }
+    }
+
+    func setSelfPlay(_ s: SamplingSchedule) {
+        queue.sync { _selfPlay = s }
+    }
+
+    func setArena(_ s: SamplingSchedule) {
+        queue.sync { _arena = s }
+    }
+}
+
 /// Lock-protected current-N holder shared between the SwiftUI
 /// Stepper (which mutates the value on the main actor) and the
 /// concurrent self-play worker tasks (which poll it between games).
@@ -945,6 +981,15 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     private var _insufficientMaterialDraws: Int = 0
     private var _trainingSteps: Int = 0
     private var _recentGames: [GameRecord] = []
+    /// Fixed-capacity ring of recent game lengths (plies), used to
+    /// compute p50/p95 in `Snapshot`. Sized for a few hundred games
+    /// — plenty for a meaningful percentile on the 10-minute
+    /// cadence without carrying the rolling-window memory back to
+    /// a per-game scan. Lengths-only (no timestamps) because
+    /// percentile semantics don't age the samples out by time.
+    private var _recentGameLengths: [Int] = []
+    private var _recentGameLengthsHead: Int = 0
+    private static let gameLengthRingCapacity: Int = 512
     /// Wall-clock anchor used as the denominator for every session
     /// rate the UI shows (games/hr, moves/hr, steps/sec, avg move ms,
     /// "Total session time", ...). Initially set to the moment the
@@ -1019,6 +1064,8 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             self._threefoldRepetitionDraws = 0
             self._insufficientMaterialDraws = 0
             self._recentGames.removeAll()
+            self._recentGameLengths.removeAll(keepingCapacity: true)
+            self._recentGameLengthsHead = 0
         }
     }
 
@@ -1057,6 +1104,16 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
 
             self._recentGames.append(GameRecord(timestamp: now, moves: moves, durationMs: durationMs))
             self.pruneRecentOnQueue(now: now)
+
+            // Percentile ring. Pre-sized lazily; FIFO overwrite once
+            // full. `moves` is plies (not half-moves pairs), matching
+            // every other game-length counter the app exposes.
+            if self._recentGameLengths.count < Self.gameLengthRingCapacity {
+                self._recentGameLengths.append(moves)
+            } else {
+                self._recentGameLengths[self._recentGameLengthsHead] = moves
+                self._recentGameLengthsHead = (self._recentGameLengthsHead + 1) % Self.gameLengthRingCapacity
+            }
         }
     }
 
@@ -1099,6 +1156,12 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         /// Starts at 0 and grows to `recentWindow` over the first 10
         /// minutes of a session. `0` means the window holds no games.
         let recentWindowSeconds: Double
+        /// Percentiles of recent game lengths (plies) from the
+        /// fixed-capacity length ring. `nil` while the ring is empty.
+        /// Pairs with `avgLen` in the `[STATS]` line to expose the
+        /// draw/mate bimodality that a mean alone hides.
+        let gameLenP50: Int?
+        let gameLenP95: Int?
     }
 
     func snapshot() -> Snapshot {
@@ -1119,6 +1182,17 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 recentWindowSec = 0
             }
 
+            let (p50, p95): (Int?, Int?) = {
+                guard !_recentGameLengths.isEmpty else { return (nil, nil) }
+                var sorted = _recentGameLengths
+                sorted.sort()
+                let n = sorted.count
+                func idx(_ p: Double) -> Int {
+                    max(0, min(n - 1, Int((p * Double(n - 1)).rounded())))
+                }
+                return (sorted[idx(0.50)], sorted[idx(0.95)])
+            }()
+
             return Snapshot(
                 selfPlayGames: _totalGames,
                 selfPlayPositions: _totalMoves,
@@ -1134,7 +1208,9 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 recentGames: _recentGames.count,
                 recentMoves: recentMoves,
                 recentGameWallMs: recentGameWallMs,
-                recentWindowSeconds: recentWindowSec
+                recentWindowSeconds: recentWindowSec,
+                gameLenP50: p50,
+                gameLenP95: p95
             )
         }
     }
@@ -1428,6 +1504,14 @@ struct ContentView: View {
     /// just a handful of moves, the classic "policy collapse"
     /// failure mode).
     nonisolated static let policyEntropyAlarmThreshold: Double = 5.0
+    /// Number of training steps at the start of a Play-and-Train
+    /// session for which the `[STATS]` line fires on every step.
+    /// After this many steps the STATS ticker switches to a 60 s
+    /// time-based cadence. 500 picked so the bootstrap window covers
+    /// the first few minutes of training — long enough to see the
+    /// initial loss curve shape without flooding the log once
+    /// training settles.
+    nonisolated static let bootstrapStatsStepCount: Int = 500
     nonisolated static let divergenceAlarmGradNormWarningThreshold: Double = 50.0
     nonisolated static let divergenceAlarmGradNormCriticalThreshold: Double = 500.0
     nonisolated static let divergenceAlarmEntropyCriticalThreshold: Double = 3.0
@@ -1723,6 +1807,14 @@ struct ContentView: View {
     /// check which throws cleanly.
     @State private var checkpointSaveInFlight: Bool = false
 
+    /// Live sampling schedules shared between UI edit fields and the
+    /// self-play / arena players. Constructed at session start from the
+    /// persisted `@AppStorage` values; `onChange` handlers on the
+    /// tau fields call `setSelfPlay` / `setArena` with freshly
+    /// constructed `SamplingSchedule` objects so edits take effect at
+    /// each slot's next game boundary. Cleared when a session ends.
+    @State private var samplingScheduleBox: SamplingScheduleBox?
+
     /// Live reference to worker 0's self-play pause gate for the
     /// current Play-and-Train session. Set at session start by
     /// `startRealTraining` and cleared at session end. Used by
@@ -1763,6 +1855,41 @@ struct ContentView: View {
     /// bootstrap phase. See `ChessTrainer.drawPenalty`.
     @AppStorage("drawPenalty")
     private var drawPenalty: Double = Double(drawPenaltyDefault)
+    /// L2 weight-decay coefficient (decoupled / AdamW-style). Default
+    /// matches `ChessTrainer.weightDecayCDefault` (1e-4); live edits
+    /// flow through `ensureTrainer()` into the trainer's per-step feed
+    /// so new values take effect on the next SGD step without graph
+    /// rebuild.
+    @AppStorage("weightDecayC")
+    private var weightDecayC: Double = Double(ChessTrainer.weightDecayCDefault)
+    /// Global L2-norm gradient clip. Default matches
+    /// `ChessTrainer.gradClipMaxNormDefault` (5.0); edits are
+    /// hot-applied per step.
+    @AppStorage("gradClipMaxNorm")
+    private var gradClipMaxNorm: Double = Double(ChessTrainer.gradClipMaxNormDefault)
+    /// Policy-loss coefficient K. Scales the policy term in the
+    /// total loss so its gradient is comparable to the value term's.
+    /// Default matches `ChessTrainer.policyScaleKDefault` (5).
+    @AppStorage("policyScaleK")
+    private var policyScaleK: Double = Double(ChessTrainer.policyScaleKDefault)
+
+    // Self-play sampling schedule (live-tunable). Backed by
+    // `SamplingSchedule.selfPlay` defaults. New schedules take effect
+    // on each newly-constructed player at the next game start within
+    // a slot; currently-playing games keep their schedule to avoid
+    // per-ply reads of shared mutable state.
+    @AppStorage("spStartTau")
+    private var spStartTau: Double = Double(SamplingSchedule.selfPlay.startTau)
+    @AppStorage("spFloorTau")
+    private var spFloorTau: Double = Double(SamplingSchedule.selfPlay.floorTau)
+    @AppStorage("spDecayPerPly")
+    private var spDecayPerPly: Double = Double(SamplingSchedule.selfPlay.decayPerPly)
+    @AppStorage("arStartTau")
+    private var arStartTau: Double = Double(SamplingSchedule.arena.startTau)
+    @AppStorage("arFloorTau")
+    private var arFloorTau: Double = Double(SamplingSchedule.arena.floorTau)
+    @AppStorage("arDecayPerPly")
+    private var arDecayPerPly: Double = Double(SamplingSchedule.arena.decayPerPly)
     /// Last auto-computed step delay, persisted so the next session
     /// starts from where the auto-adjuster left off instead of
     /// falling back to the manual default.
@@ -2014,6 +2141,15 @@ struct ContentView: View {
     @State private var learningRateEditText: String = ""
     @State private var entropyRegularizationEditText: String = ""
     @State private var drawPenaltyEditText: String = ""
+    @State private var weightDecayEditText: String = ""
+    @State private var gradClipMaxNormEditText: String = ""
+    @State private var policyScaleKEditText: String = ""
+    @State private var spStartTauEditText: String = ""
+    @State private var spFloorTauEditText: String = ""
+    @State private var spDecayPerPlyEditText: String = ""
+    @State private var arStartTauEditText: String = ""
+    @State private var arFloorTauEditText: String = ""
+    @State private var arDecayPerPlyEditText: String = ""
 
     /// Binding for the side-to-move segmented picker. Writes rebuild
     /// `editableState` with the new current-player (nothing else changes)
@@ -2536,9 +2672,122 @@ struct ContentView: View {
                                                     entropyRegularizationCoeff
                                                 )
                                             }
-                                            Text("clip \(String(format: "%.1f", ChessTrainer.gradClipMaxNorm))")
+                                            Text("clip")
                                                 .foregroundStyle(.secondary)
-                                            Text("decay \(String(format: "%.0e", ChessTrainer.weightDecayC))")
+                                            TextField("Clip", text: $gradClipMaxNormEditText)
+                                                .monospacedDigit()
+                                                .frame(width: 70)
+                                                .textFieldStyle(.roundedBorder)
+                                                .onSubmit {
+                                                    if let parsed = Double(gradClipMaxNormEditText),
+                                                       parsed > 0, parsed.isFinite {
+                                                        let prior = gradClipMaxNorm
+                                                        if abs(parsed - prior) > Double.ulpOfOne {
+                                                            SessionLogger.shared.log(
+                                                                String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", prior, parsed)
+                                                            )
+                                                        }
+                                                        gradClipMaxNorm = parsed
+                                                        trainer?.gradClipMaxNorm = Float(parsed)
+                                                    }
+                                                    gradClipMaxNormEditText = String(
+                                                        format: "%.2f",
+                                                        gradClipMaxNorm
+                                                    )
+                                                }
+                                            Text("decay")
+                                                .foregroundStyle(.secondary)
+                                            TextField("Decay", text: $weightDecayEditText)
+                                                .monospacedDigit()
+                                                .frame(width: 80)
+                                                .textFieldStyle(.roundedBorder)
+                                                .onSubmit {
+                                                    if let parsed = Double(weightDecayEditText),
+                                                       parsed >= 0, parsed.isFinite {
+                                                        let prior = weightDecayC
+                                                        if abs(parsed - prior) > Double.ulpOfOne {
+                                                            SessionLogger.shared.log(
+                                                                String(format: "[PARAM] weightDecayC: %.2e -> %.2e", prior, parsed)
+                                                            )
+                                                        }
+                                                        weightDecayC = parsed
+                                                        trainer?.weightDecayC = Float(parsed)
+                                                    }
+                                                    weightDecayEditText = String(
+                                                        format: "%.2e",
+                                                        weightDecayC
+                                                    )
+                                                }
+                                            Text("K")
+                                                .foregroundStyle(.secondary)
+                                            TextField("K", text: $policyScaleKEditText)
+                                                .monospacedDigit()
+                                                .frame(width: 60)
+                                                .textFieldStyle(.roundedBorder)
+                                                .onSubmit {
+                                                    if let parsed = Double(policyScaleKEditText),
+                                                       parsed > 0, parsed.isFinite {
+                                                        let prior = policyScaleK
+                                                        if abs(parsed - prior) > Double.ulpOfOne {
+                                                            SessionLogger.shared.log(
+                                                                String(format: "[PARAM] policyScaleK: %.2f -> %.2f", prior, parsed)
+                                                            )
+                                                        }
+                                                        policyScaleK = parsed
+                                                        trainer?.policyScaleK = Float(parsed)
+                                                    }
+                                                    policyScaleKEditText = String(
+                                                        format: "%.2f",
+                                                        policyScaleK
+                                                    )
+                                                }
+                                        }
+                                        HStack(spacing: 6) {
+                                            Text("  SP tau:")
+                                            TextField("SP start", text: $spStartTauEditText)
+                                                .monospacedDigit()
+                                                .frame(width: 60)
+                                                .textFieldStyle(.roundedBorder)
+                                                .onSubmit { applySpTauEdit() }
+                                            Text("→")
+                                                .foregroundStyle(.secondary)
+                                            TextField("SP floor", text: $spFloorTauEditText)
+                                                .monospacedDigit()
+                                                .frame(width: 60)
+                                                .textFieldStyle(.roundedBorder)
+                                                .onSubmit { applySpTauEdit() }
+                                            Text("decay")
+                                                .foregroundStyle(.secondary)
+                                            TextField("SP decay", text: $spDecayPerPlyEditText)
+                                                .monospacedDigit()
+                                                .frame(width: 70)
+                                                .textFieldStyle(.roundedBorder)
+                                                .onSubmit { applySpTauEdit() }
+                                            Text("/ply")
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        HStack(spacing: 6) {
+                                            Text("  Arena tau:")
+                                            TextField("Ar start", text: $arStartTauEditText)
+                                                .monospacedDigit()
+                                                .frame(width: 60)
+                                                .textFieldStyle(.roundedBorder)
+                                                .onSubmit { applyArTauEdit() }
+                                            Text("→")
+                                                .foregroundStyle(.secondary)
+                                            TextField("Ar floor", text: $arFloorTauEditText)
+                                                .monospacedDigit()
+                                                .frame(width: 60)
+                                                .textFieldStyle(.roundedBorder)
+                                                .onSubmit { applyArTauEdit() }
+                                            Text("decay")
+                                                .foregroundStyle(.secondary)
+                                            TextField("Ar decay", text: $arDecayPerPlyEditText)
+                                                .monospacedDigit()
+                                                .frame(width: 70)
+                                                .textFieldStyle(.roundedBorder)
+                                                .onSubmit { applyArTauEdit() }
+                                            Text("/ply")
                                                 .foregroundStyle(.secondary)
                                         }
                                         HStack(spacing: 6) {
@@ -2643,6 +2892,42 @@ struct ContentView: View {
         .onAppear {
             wireMenuCommandHub()
             syncMenuCommandHubState()
+            if learningRateEditText.isEmpty {
+                learningRateEditText = String(format: "%.1e", trainerLearningRate)
+            }
+            if entropyRegularizationEditText.isEmpty {
+                entropyRegularizationEditText = String(format: "%.2e", entropyRegularizationCoeff)
+            }
+            if drawPenaltyEditText.isEmpty {
+                drawPenaltyEditText = String(format: "%.3f", drawPenalty)
+            }
+            if weightDecayEditText.isEmpty {
+                weightDecayEditText = String(format: "%.2e", weightDecayC)
+            }
+            if gradClipMaxNormEditText.isEmpty {
+                gradClipMaxNormEditText = String(format: "%.2f", gradClipMaxNorm)
+            }
+            if policyScaleKEditText.isEmpty {
+                policyScaleKEditText = String(format: "%.2f", policyScaleK)
+            }
+            if spStartTauEditText.isEmpty {
+                spStartTauEditText = String(format: "%.2f", spStartTau)
+            }
+            if spFloorTauEditText.isEmpty {
+                spFloorTauEditText = String(format: "%.2f", spFloorTau)
+            }
+            if spDecayPerPlyEditText.isEmpty {
+                spDecayPerPlyEditText = String(format: "%.3f", spDecayPerPly)
+            }
+            if arStartTauEditText.isEmpty {
+                arStartTauEditText = String(format: "%.2f", arStartTau)
+            }
+            if arFloorTauEditText.isEmpty {
+                arFloorTauEditText = String(format: "%.2f", arFloorTau)
+            }
+            if arDecayPerPlyEditText.isEmpty {
+                arDecayPerPlyEditText = String(format: "%.3f", arDecayPerPly)
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
             // Teardown on actual main-window close only — NOT on minimize
@@ -3651,11 +3936,11 @@ struct ContentView: View {
             drawPenalty: drawPen,
             promoteThreshold: Self.tournamentPromoteThreshold,
             arenaGames: Self.tournamentGames,
-            selfPlayTau: TauConfigCodable(SamplingSchedule.selfPlay),
-            arenaTau: TauConfigCodable(SamplingSchedule.arena),
+            selfPlayTau: TauConfigCodable(samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()),
+            arenaTau: TauConfigCodable(samplingScheduleBox?.arena ?? buildArenaSchedule()),
             selfPlayWorkerCount: selfPlayWorkerCount,
-            gradClipMaxNorm: ChessTrainer.gradClipMaxNorm,
-            weightDecayCoeff: ChessTrainer.weightDecayC,
+            gradClipMaxNorm: Float(gradClipMaxNorm),
+            weightDecayCoeff: Float(weightDecayC),
             replayRatioTarget: replayRatioTarget,
             replayRatioAutoAdjust: replayRatioAutoAdjust,
             stepDelayMs: trainingStepDelayMs,
@@ -4475,9 +4760,13 @@ struct ContentView: View {
         // out is one in-flight arena game (~400 ms).
         let cancelBox = CancelBox()
         let arenaDiversity = GameDiversityTracker(windowSize: totalGames)
+        // Snapshot the current arena schedule once at tournament start
+        // so every game in this arena uses the same tau settings, even
+        // if the user edits the fields mid-tournament.
+        let arenaScheduleSnapshot = samplingScheduleBox?.arena ?? buildArenaSchedule()
         let stats = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
-                [arenaChampion, candidateInference, tBox, cancelBox, overrideBox, arenaDiversity] in
+                [arenaChampion, candidateInference, tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot] in
                 let driver = TournamentDriver()
                 driver.delegate = nil
                 return await driver.run(
@@ -4485,14 +4774,14 @@ struct ContentView: View {
                         MPSChessPlayer(
                             name: "Candidate",
                             source: DirectMoveEvaluationSource(network: candidateInference),
-                            schedule: .arena
+                            schedule: arenaScheduleSnapshot
                         )
                     },
                     playerB: {
                         MPSChessPlayer(
                             name: "Champion",
                             source: DirectMoveEvaluationSource(network: arenaChampion),
-                            schedule: .arena
+                            schedule: arenaScheduleSnapshot
                         )
                     },
                     games: totalGames,
@@ -4791,8 +5080,8 @@ struct ContentView: View {
         } else {
             statusStr = "kept"
         }
-        let sp = SamplingSchedule.selfPlay
-        let ar = SamplingSchedule.arena
+        let sp = samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()
+        let ar = samplingScheduleBox?.arena ?? buildArenaSchedule()
         let lrStr = String(format: "%.1e", trainer.learningRate)
         let scoreStr = String(format: "%.3f", record.score)
         let threshStr = String(format: "%.2f", Self.tournamentPromoteThreshold)
@@ -5031,19 +5320,120 @@ struct ContentView: View {
             trainer.learningRate = Float(trainerLearningRate)
             trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
             trainer.drawPenalty = Float(drawPenalty)
+            trainer.weightDecayC = Float(weightDecayC)
+            trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
+            trainer.policyScaleK = Float(policyScaleK)
             return trainer
         }
         do {
             let t = try ChessTrainer(
                 learningRate: Float(trainerLearningRate),
                 entropyRegularizationCoeff: Float(entropyRegularizationCoeff),
-                drawPenalty: Float(drawPenalty)
+                drawPenalty: Float(drawPenalty),
+                weightDecayC: Float(weightDecayC),
+                gradClipMaxNorm: Float(gradClipMaxNorm),
+                policyScaleK: Float(policyScaleK)
             )
             trainer = t
             return t
         } catch {
             trainingError = "Trainer init failed: \(error.localizedDescription)"
             return nil
+        }
+    }
+
+    /// Build a `SamplingSchedule` for self-play from the live
+    /// `@AppStorage` tau values. Dirichlet noise matches the default
+    /// `.selfPlay` preset (AlphaZero noise) — not exposed in the UI,
+    /// only the temperature schedule is editable.
+    private func buildSelfPlaySchedule() -> SamplingSchedule {
+        SamplingSchedule(
+            startTau: Float(max(0.01, spStartTau)),
+            decayPerPly: Float(max(0.0, spDecayPerPly)),
+            floorTau: Float(max(0.01, spFloorTau)),
+            dirichletNoise: SamplingSchedule.selfPlay.dirichletNoise
+        )
+    }
+
+    /// Build a `SamplingSchedule` for arena play from the live
+    /// `@AppStorage` tau values. Arena never applies Dirichlet noise
+    /// (pure strength measurement).
+    private func buildArenaSchedule() -> SamplingSchedule {
+        SamplingSchedule(
+            startTau: Float(max(0.01, arStartTau)),
+            decayPerPly: Float(max(0.0, arDecayPerPly)),
+            floorTau: Float(max(0.01, arFloorTau))
+        )
+    }
+
+    /// Commit edits to the self-play tau fields. Parses each of the
+    /// three `@State` strings, clamps to reasonable ranges, writes back
+    /// to `@AppStorage`, and pushes the new schedule into the live
+    /// `samplingScheduleBox` so the next game played on each self-play
+    /// slot picks it up. Invalid entries revert to the persisted value.
+    private func applySpTauEdit() {
+        var changed = false
+        if let v = Double(spStartTauEditText), v > 0, v.isFinite, v <= 10 {
+            if abs(v - spStartTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] sp.startTau: %.3f -> %.3f", spStartTau, v))
+                spStartTau = v
+                changed = true
+            }
+        }
+        if let v = Double(spFloorTauEditText), v > 0, v.isFinite, v <= 10 {
+            if abs(v - spFloorTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] sp.floorTau: %.3f -> %.3f", spFloorTau, v))
+                spFloorTau = v
+                changed = true
+            }
+        }
+        if let v = Double(spDecayPerPlyEditText), v >= 0, v.isFinite, v <= 1 {
+            if abs(v - spDecayPerPly) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] sp.decayPerPly: %.4f -> %.4f", spDecayPerPly, v))
+                spDecayPerPly = v
+                changed = true
+            }
+        }
+        spStartTauEditText = String(format: "%.2f", spStartTau)
+        spFloorTauEditText = String(format: "%.2f", spFloorTau)
+        spDecayPerPlyEditText = String(format: "%.3f", spDecayPerPly)
+        if changed {
+            samplingScheduleBox?.setSelfPlay(buildSelfPlaySchedule())
+        }
+    }
+
+    /// Commit edits to the arena tau fields. Same contract as
+    /// `applySpTauEdit` but writes into the arena slot of the box;
+    /// in-flight arenas keep the snapshot they were created with and
+    /// only the next arena picks up the new schedule.
+    private func applyArTauEdit() {
+        var changed = false
+        if let v = Double(arStartTauEditText), v > 0, v.isFinite, v <= 10 {
+            if abs(v - arStartTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] ar.startTau: %.3f -> %.3f", arStartTau, v))
+                arStartTau = v
+                changed = true
+            }
+        }
+        if let v = Double(arFloorTauEditText), v > 0, v.isFinite, v <= 10 {
+            if abs(v - arFloorTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] ar.floorTau: %.3f -> %.3f", arFloorTau, v))
+                arFloorTau = v
+                changed = true
+            }
+        }
+        if let v = Double(arDecayPerPlyEditText), v >= 0, v.isFinite, v <= 1 {
+            if abs(v - arDecayPerPly) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] ar.decayPerPly: %.4f -> %.4f", arDecayPerPly, v))
+                arDecayPerPly = v
+                changed = true
+            }
+        }
+        arStartTauEditText = String(format: "%.2f", arStartTau)
+        arFloorTauEditText = String(format: "%.2f", arFloorTau)
+        arDecayPerPlyEditText = String(format: "%.3f", arDecayPerPly)
+        if changed {
+            samplingScheduleBox?.setArena(buildArenaSchedule())
         }
     }
 
@@ -5219,6 +5609,15 @@ struct ContentView: View {
         learningRateEditText = String(format: "%.1e", trainer.learningRate)
         entropyRegularizationEditText = String(format: "%.2e", trainer.entropyRegularizationCoeff)
         drawPenaltyEditText = String(format: "%.3f", Double(trainer.drawPenalty))
+        weightDecayEditText = String(format: "%.2e", trainer.weightDecayC)
+        gradClipMaxNormEditText = String(format: "%.2f", trainer.gradClipMaxNorm)
+        policyScaleKEditText = String(format: "%.2f", trainer.policyScaleK)
+        spStartTauEditText = String(format: "%.2f", spStartTau)
+        spFloorTauEditText = String(format: "%.2f", spFloorTau)
+        spDecayPerPlyEditText = String(format: "%.3f", spDecayPerPly)
+        arStartTauEditText = String(format: "%.2f", arStartTau)
+        arFloorTauEditText = String(format: "%.2f", arFloorTau)
+        arDecayPerPlyEditText = String(format: "%.3f", arDecayPerPly)
         if let rs = resumeState {
             // Hydrate prior training segments so cumulative wall-time
             // and run-count metrics carry across save/load. Missing
@@ -5324,6 +5723,18 @@ struct ContentView: View {
         // (between sessions).
         let countBox = WorkerCountBox(initial: initialWorkerCount)
         workerCountBox = countBox
+        // Live schedule box, seeded from the current @AppStorage tau
+        // values. Edits in the tau text fields push new schedules into
+        // this box; the self-play driver's slots read at the top of
+        // each new game, so the next game played uses the edited
+        // values.
+        let spSchedule = buildSelfPlaySchedule()
+        let arSchedule = buildArenaSchedule()
+        let scheduleBox = SamplingScheduleBox(
+            selfPlay: spSchedule,
+            arena: arSchedule
+        )
+        samplingScheduleBox = scheduleBox
         // Shared live delay holder. The Stepper writes through to
         // both `@State trainingStepDelayMs` and this box; the
         // training worker reads from the box at the bottom of each
@@ -5557,7 +5968,8 @@ struct ContentView: View {
                 diversityTracker: spDiversityTracker,
                 countBox: countBox,
                 pauseGate: selfPlayGate,
-                gameWatcher: gameWatcher
+                gameWatcher: gameWatcher,
+                scheduleBox: scheduleBox
             )
 
             await withTaskGroup(of: Void.self) { group in
@@ -5695,35 +6107,63 @@ struct ContentView: View {
                     }
                 }
 
-                // Periodic session-log ticker. Fires at 30s, 1m, 2m,
-                // 5m, 10m, 15m, 20m from Play-and-Train start and
-                // then once every 10 minutes for the rest of the
-                // session.
-                // Each wake-up snapshots the thread-safe stats boxes
-                // and writes one `[STATS]` line to the on-disk
-                // session log. Identifiers are pulled through a brief
-                // MainActor hop since they live on classes whose var
-                // mutation is otherwise main-actor-driven.
+                // Periodic session-log ticker. Emits one [STATS] line
+                // per training step for the first 500 steps (every step
+                // matters during bootstrap — you want to see the curve
+                // shape of the first few hundred updates) then drops to
+                // one line per 60 seconds for the rest of the session.
+                //
+                // Each wake-up snapshots the thread-safe stats boxes,
+                // optionally refreshes `legalMass` via a sampled
+                // forward pass (cadence-gated so the CPU work doesn't
+                // pile up during the per-step bootstrap window), and
+                // writes one `[STATS]` line. Identifiers are pulled
+                // through a brief MainActor hop since they live on
+                // classes whose var mutation is otherwise main-actor-
+                // driven.
                 group.addTask(priority: .utility) {
-                    [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox] in
+                    [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox, scheduleBox] in
                     let sessionStart = Date()
-                    // Ramp up quickly then cap at every 10 minutes.
-                    let fixedTargets: [TimeInterval] = [30, 60, 120, 300, 600, 900, 1200]
+                    // Bootstrap-phase step threshold for the per-step
+                    // emit. `Self.bootstrapStatsStepCount` is tunable
+                    // on the view; at default 500 steps this covers
+                    // roughly the first 1-3 minutes of real-data
+                    // training at typical throughput.
+                    let bootstrapSteps = Self.bootstrapStatsStepCount
+                    // Time between STATS emits after the bootstrap
+                    // window closes. 60 s chosen so a session's
+                    // steady-state log file grows at a manageable rate
+                    // (~60 lines/hr) while still capturing drift
+                    // inside the typical 30-minute arena cadence.
+                    let steadyInterval: TimeInterval = 60
+                    // Cadence for refreshing legalMass during the
+                    // per-step bootstrap window — refreshing every
+                    // step would double per-step CPU cost for little
+                    // additional signal. Every 25 steps roughly
+                    // matches the 60-second cadence used afterwards
+                    // at typical throughput.
+                    let legalMassBootstrapStride = 25
+                    let legalMassSampleSize = 128
 
-                    func logOne(elapsedTarget: TimeInterval) async {
+                    func logOne(elapsedTarget: TimeInterval, legalMassOverride: ChessTrainer.LegalMassSnapshot?) async {
                         let trainingSnap = box.snapshot()
                         let parallelSnap = pStatsBox.snapshot()
                         let bufCount = buffer.count
                         let bufCap = buffer.capacity
                         let ratioSnap = ratioController.snapshot()
                         let workerN = countBox.count
-                        let (trainerID, championID, lr, entropyCoeff, drawPen) = await MainActor.run {
+                        let spSched = scheduleBox.selfPlay
+                        let arSched = scheduleBox.arena
+                        let (trainerID, championID, lr, entropyCoeff, drawPen, weightDec, gradClip, kScale) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
                                 trainer.learningRate,
                                 trainer.entropyRegularizationCoeff,
-                                trainer.drawPenalty
+                                trainer.drawPenalty,
+                                trainer.weightDecayC,
+                                trainer.gradClipMaxNorm,
+                                trainer.policyScaleK
                             )
                         }
                         let policyStr: String
@@ -5776,10 +6216,14 @@ struct ContentView: View {
                         let m = (Int(elapsedTarget) % 3600) / 60
                         let s = Int(elapsedTarget) % 60
                         let elapsedStr = String(format: "%d:%02d:%02d", h, m, s)
-                        let spSched = SamplingSchedule.selfPlay
-                        let arSched = SamplingSchedule.arena
                         let spTau = String(format: "%.2f/%.2f/%.3f", spSched.startTau, spSched.floorTau, spSched.decayPerPly)
                         let arTau = String(format: "%.2f/%.2f/%.3f", arSched.startTau, arSched.floorTau, arSched.decayPerPly)
+                        let pwNormStr: String
+                        if let pwn = trainingSnap.rollingPolicyHeadWeightNorm {
+                            pwNormStr = String(format: "%.3f", pwn)
+                        } else {
+                            pwNormStr = "--"
+                        }
                         let divSnap = spDiversityTracker.snapshot()
                         let divStr = divSnap.gamesInWindow > 0
                         ? String(format: "unique=%d/%d(%.0f%%) diverge=%.1f", divSnap.uniqueGames, divSnap.gamesInWindow, divSnap.uniquePercent, divSnap.avgDivergencePly)
@@ -5795,11 +6239,12 @@ struct ContentView: View {
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", Self.tournamentPromoteThreshold)) arenaGames=\(Self.tournamentGames) workers=\(workerN)"
                         let regStr = String(
-                            format: "clip=%.1f decay=%.0e ent=%.1e drawPen=%.3f",
-                            ChessTrainer.gradClipMaxNorm,
-                            ChessTrainer.weightDecayC,
+                            format: "clip=%.1f decay=%.0e ent=%.1e drawPen=%.3f K=%.2f",
+                            gradClip,
+                            weightDec,
                             entropyCoeff,
-                            drawPen
+                            drawPen,
+                            kScale
                         )
                         // Average game length: lifetime and 10-min
                         // rolling window. `selfPlayPositions` counts
@@ -5813,8 +6258,55 @@ struct ContentView: View {
                         let rollingAvgLen: Double = parallelSnap.recentGames > 0
                         ? Double(parallelSnap.recentMoves) / Double(parallelSnap.recentGames)
                         : 0
-                        let gameLenStr = String(format: "avgLen=%.1f rollingAvgLen=%.1f", lifetimeAvgLen, rollingAvgLen)
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let p50Str: String
+                        let p95Str: String
+                        if let p50 = parallelSnap.gameLenP50 {
+                            p50Str = String(p50)
+                        } else {
+                            p50Str = "--"
+                        }
+                        if let p95 = parallelSnap.gameLenP95 {
+                            p95Str = String(p95)
+                        } else {
+                            p95Str = "--"
+                        }
+                        let gameLenStr = String(format: "avgLen=%.1f rollingAvgLen=%.1f p50=\(p50Str) p95=\(p95Str)", lifetimeAvgLen, rollingAvgLen)
+                        // New encoding/gradient-health signals.
+                        let playedProbStr: String
+                        if let pm = trainingSnap.rollingPlayedMoveProb {
+                            playedProbStr = String(format: "%.4f", pm)
+                        } else {
+                            playedProbStr = "--"
+                        }
+                        let pLogitMaxStr: String
+                        if let pm = trainingSnap.rollingPolicyLogitAbsMax {
+                            pLogitMaxStr = String(format: "%.3f", pm)
+                        } else {
+                            pLogitMaxStr = "--"
+                        }
+                        // Advantage distribution summary. Lots of
+                        // fields but they go in one parenthesized
+                        // block in the line so grep for
+                        // "adv=(" when analyzing.
+                        func advFmt(_ d: Double?) -> String {
+                            guard let d else { return "--" }
+                            return String(format: "%+.4f", d)
+                        }
+                        func advFracFmt(_ d: Double?) -> String {
+                            guard let d else { return "--" }
+                            return String(format: "%.2f", d)
+                        }
+                        let advStr = "mean=\(advFmt(trainingSnap.rollingAdvMean)) std=\(advFmt(trainingSnap.rollingAdvStd)) min=\(advFmt(trainingSnap.rollingAdvMin)) max=\(advFmt(trainingSnap.rollingAdvMax)) frac+=\(advFracFmt(trainingSnap.rollingAdvFracPositive)) fracSmall=\(advFracFmt(trainingSnap.rollingAdvFracSmall)) p05=\(advFmt(trainingSnap.advantageP05)) p50=\(advFmt(trainingSnap.advantageP50)) p95=\(advFmt(trainingSnap.advantageP95))"
+                        let legalMassStr: String
+                        let top1LegalStr: String
+                        if let lm = legalMassOverride {
+                            legalMassStr = String(format: "%.4f", lm.legalMass)
+                            top1LegalStr = String(format: "%.2f", lm.top1LegalFraction)
+                        } else {
+                            legalMassStr = "--"
+                            top1LegalStr = "--"
+                        }
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // Policy-entropy alarm: fires whenever the
@@ -5833,31 +6325,71 @@ struct ContentView: View {
                         }
                     }
 
-                    func sleepUntil(elapsed: TimeInterval) async -> Bool {
-                        let remaining = elapsed - Date().timeIntervalSince(sessionStart)
-                        if remaining > 0 {
-                            do {
-                                try await Task.sleep(for: .seconds(remaining))
-                            } catch {
-                                return false
+                    // Cache the most recent legalMass probe result so
+                    // we can include it in back-to-back per-step emits
+                    // without paying the ~5-20 ms forward-pass cost on
+                    // every single step. Refreshed every
+                    // `legalMassBootstrapStride` steps during bootstrap
+                    // and every time-based emit afterward.
+                    var lastLegalMass: ChessTrainer.LegalMassSnapshot? = nil
+                    var lastEmittedStep: Int = -1
+                    var bootstrapDone = false
+
+                    // Bootstrap phase: poll at short interval, emit one
+                    // line per new training step until
+                    // bootstrapSteps steps have been logged.
+                    while !Task.isCancelled && !bootstrapDone {
+                        let trainingSnap = box.snapshot()
+                        let steps = trainingSnap.stats.steps
+                        if steps > lastEmittedStep && steps > 0 {
+                            // Refresh legalMass on a stride so
+                            // back-to-back per-step emits share the
+                            // most recent probe.
+                            if steps == 1 || (steps - max(0, lastEmittedStep)) >= legalMassBootstrapStride {
+                                if buffer.count >= legalMassSampleSize {
+                                    lastLegalMass = (try? await trainer.legalMassSnapshot(
+                                        replayBuffer: buffer,
+                                        sampleSize: legalMassSampleSize
+                                    )) ?? lastLegalMass
+                                }
+                            }
+                            let elapsed = Date().timeIntervalSince(sessionStart)
+                            await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
+                            lastEmittedStep = steps
+                            if steps >= bootstrapSteps {
+                                bootstrapDone = true
+                                break
                             }
                         }
-                        return !Task.isCancelled
+                        // Short poll — a training step at typical
+                        // throughput completes in 50-200 ms, and we
+                        // want the per-step cadence to track closely.
+                        do {
+                            try await Task.sleep(for: .milliseconds(50))
+                        } catch {
+                            return
+                        }
                     }
+                    if Task.isCancelled { return }
 
-                    // Fixed schedule.
-                    for target in fixedTargets {
-                        if Task.isCancelled { return }
-                        guard await sleepUntil(elapsed: target) else { return }
-                        await logOne(elapsedTarget: target)
-                    }
-
-                    // Every 10 minutes after the fixed schedule, forever.
-                    var elapsed = fixedTargets.last ?? 900
+                    // Steady-state: one emit every `steadyInterval`
+                    // seconds. Each emit refreshes the legalMass probe
+                    // too.
                     while !Task.isCancelled {
-                        elapsed += 600
-                        guard await sleepUntil(elapsed: elapsed) else { return }
-                        await logOne(elapsedTarget: elapsed)
+                        do {
+                            try await Task.sleep(for: .seconds(steadyInterval))
+                        } catch {
+                            return
+                        }
+                        if Task.isCancelled { return }
+                        if buffer.count >= legalMassSampleSize {
+                            lastLegalMass = (try? await trainer.legalMassSnapshot(
+                                replayBuffer: buffer,
+                                sampleSize: legalMassSampleSize
+                            )) ?? lastLegalMass
+                        }
+                        let elapsed = Date().timeIntervalSince(sessionStart)
+                        await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
                     }
                 }
 
@@ -5881,6 +6413,7 @@ struct ContentView: View {
                 activeArenaStartElapsed = nil
                 workerCountBox = nil
                 trainingStepDelayBox = nil
+                samplingScheduleBox = nil
                 activeSelfPlayGate = nil
                 activeTrainingGate = nil
                 currentSessionID = nil
@@ -6373,19 +6906,9 @@ struct ContentView: View {
         let trainerIDStr = trainer?.identifier?.description ?? dash
         let header = "Training [\(trainerIDStr)]"
         lines.append("  Batch size:  \(Self.trainingBatchSize)")
-        // Sampling schedule parameters — shown so the user can verify
-        // what temperature regime is in effect without checking code.
-        let spSched = SamplingSchedule.selfPlay
-        let arSched = SamplingSchedule.arena
-        let spTauDisplay = String(format: "%.2f→%.2f  decay %.3f/ply", spSched.startTau, spSched.floorTau, spSched.decayPerPly)
-        let arTauDisplay = String(format: "%.2f→%.2f  decay %.3f/ply", arSched.startTau, arSched.floorTau, arSched.decayPerPly)
-        lines.append("  SP tau:      \(spTauDisplay)")
-        lines.append("  Arena tau:   \(arTauDisplay)")
-        // Learning rate — read off the trainer so we can't drift out of
-        // sync with what the graph is actually applying. Shown in every
-        // training mode since it's the same knob across all of them.
-        // Learning rate is displayed in the interactive text field
-        // in the training controls section — not duplicated here.
+        // SP tau / Arena tau / clip / decay are now surfaced as editable
+        // text fields above the body, so they are not duplicated here.
+        // Learning rate likewise lives in the interactive text field.
 
         // Self-Play adds two extra header lines (replay buffer fill, rolling
         // loss). Both are present from the first render of a self-play run,
@@ -6442,6 +6965,9 @@ struct ContentView: View {
             }
             if let gNorm = trainingBox?.snapshot().rollingGradGlobalNorm {
                 lines.append(String(format: "  Grad norm:   %.3f", gNorm))
+            }
+            if let pwNorm = trainingBox?.snapshot().rollingPolicyHeadWeightNorm {
+                lines.append(String(format: "  pWeight ||₂:  %.3f", pwNorm))
             }
             // Ent reg / Grad clip / Weight dec / Draw pen previously
             // listed here are duplicates of the editable fields shown

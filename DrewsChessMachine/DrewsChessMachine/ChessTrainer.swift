@@ -90,6 +90,60 @@ struct TrainStepTiming: Sendable {
     /// each real-data training step. Nil on paths that skip it
     /// (random-data sweep). Diagnostic only — included in `totalMs`.
     let freshBaselineMs: Double?
+
+    /// L2 norm (sqrt of sum of squares) of the policy head's final
+    /// 1×1 conv weight tensor (128 → 76). Tracks whether the decoupled
+    /// weight decay is actually holding the weights that produce the
+    /// policy logits in check. Monotonic growth here, especially if
+    /// logit gaps on the Candidate Test panel look extreme, means the
+    /// weight-decay coefficient is too small relative to the learning
+    /// rate to balance the pull from pLoss. Read via a graph targetTensor
+    /// rather than computed on CPU so the host never pulls the 9.8K
+    /// float weight tensor back from the GPU just to measure it.
+    let policyHeadWeightNorm: Float
+
+    /// Batch mean of `max_i |logits[i]|` — the typical largest raw
+    /// logit magnitude in absolute value. Pairs with `policyEntropy`:
+    /// entropy can look healthy while a single runaway logit is
+    /// already pre-saturating the softmax. Watch for monotonic growth
+    /// much faster than `policyHeadWeightNorm`.
+    let policyLogitAbsMax: Float
+
+    /// Batch mean of softmax probability on the actually-played move.
+    /// Strong single-number health signal: random init sits near
+    /// `1/policySize ≈ 0.0002`, and under a working training loop
+    /// (and a correct action-index encoding) it rises as the policy
+    /// reproduces high-reward plays. A plateau near `1/policySize`
+    /// despite pLoss moving would indicate action-index mismatch —
+    /// the one-hot target is landing on a different cell than the
+    /// sampler read. Computed graph-side as `sum(softmax * oneHot)`
+    /// along the class axis, then mean over batch. Zero extra readback.
+    let playedMoveProb: Float
+
+    /// Advantage summary for this batch. `advantageMean` is the batch
+    /// mean of `A = z − v_baseline`; with a perfect baseline it sits
+    /// near zero. `advantageStd` is the batch stdev — large values
+    /// mean high-variance policy-gradient updates. `advantageMin` /
+    /// `advantageMax` capture the tails. `advantageFracPositive` is
+    /// the fraction of positions with A > 0 (positions where REINFORCE
+    /// pushes p(a*) up); `advantageFracSmall` is the fraction with
+    /// `|A| < 0.05` — "near-zero-signal" positions whose gradient
+    /// contribution is tiny. Computed graph-side as scalar reductions.
+    let advantageMean: Float
+    let advantageStd: Float
+    let advantageMin: Float
+    let advantageMax: Float
+    let advantageFracPositive: Float
+    let advantageFracSmall: Float
+
+    /// Per-position advantage values for this step, one float per
+    /// batch row. Used by `TrainingLiveStatsBox` to maintain a rolling
+    /// window of raw values for p05/p50/p95 percentile computation.
+    /// Readback cost is a single `[batch, 1]` tensor (~2 KB at
+    /// batch=512) — trivial against the existing per-step readback
+    /// budget. Nil on the random-data sweep path (percentile view is
+    /// meaningless there).
+    let advantageRaw: [Float]?
 }
 
 // MARK: - Sweep Result
@@ -292,6 +346,37 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         /// is genuinely diverging. nil while the random-data sweep
         /// path is the source (no real vBaselines).
         let rollingVBaselineDelta: Double?
+        /// Rolling-window mean of `TrainStepTiming.policyHeadWeightNorm`.
+        /// Growing over a long run alongside extreme logit concentration
+        /// signals weight decay is too weak for the current learning rate.
+        let rollingPolicyHeadWeightNorm: Double?
+        /// Rolling-window mean of `TrainStepTiming.policyLogitAbsMax`.
+        /// Batch-averaged magnitude of the largest raw logit — rises
+        /// before entropy collapses, so a sharper pre-saturation signal.
+        let rollingPolicyLogitAbsMax: Double?
+        /// Rolling-window mean of `TrainStepTiming.playedMoveProb`.
+        /// Strong action-index sanity signal: under a mis-aligned
+        /// encoding this plateaus near `1/policySize ≈ 0.0002`; under
+        /// a working loop it rises from there as the policy sharpens
+        /// on actually-played moves.
+        let rollingPlayedMoveProb: Double?
+        /// Rolling-window mean of the advantage distribution
+        /// summaries. `advMean` near zero and a stable `advStd` is
+        /// the expected signature of a working baseline.
+        let rollingAdvMean: Double?
+        let rollingAdvStd: Double?
+        let rollingAdvMin: Double?
+        let rollingAdvMax: Double?
+        let rollingAdvFracPositive: Double?
+        let rollingAdvFracSmall: Double?
+        /// Percentiles (p05, p50, p95) of raw per-position advantage
+        /// values over the rolling window of recent training steps.
+        /// Each call to `snapshot()` copies out the raw-value ring
+        /// (~ window × batch floats), sorts, and reads the percentile
+        /// positions. Nil while the ring is empty.
+        let advantageP05: Double?
+        let advantageP50: Double?
+        let advantageP95: Double?
         let error: String?
     }
 
@@ -306,6 +391,26 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _valueMeanWindow: [Double] = []
     private var _valueAbsMeanWindow: [Double] = []
     private var _vBaselineDeltaWindow: [Double] = []
+    private var _policyHeadWeightNormWindow: [Double] = []
+    private var _policyLogitAbsMaxWindow: [Double] = []
+    private var _playedMoveProbWindow: [Double] = []
+    private var _advMeanWindow: [Double] = []
+    private var _advStdWindow: [Double] = []
+    private var _advMinWindow: [Double] = []
+    private var _advMaxWindow: [Double] = []
+    private var _advFracPosWindow: [Double] = []
+    private var _advFracSmallWindow: [Double] = []
+    /// Ring of raw per-position advantage values across the rolling
+    /// window of recent steps. Sized at
+    /// `rollingWindow * maxBatchObserved` — grown on demand, never
+    /// shrunk. `_advRawRingHead` is the write cursor (FIFO); the ring
+    /// is contiguous in time only if `_advRawRingFilled == capacity`,
+    /// but `snapshot()` doesn't care about time order — it sorts the
+    /// whole live set for percentile extraction.
+    private var _advRawRing: [Float] = []
+    private var _advRawRingHead: Int = 0
+    private var _advRawRingFilled: Int = 0
+    private var _advRawRingCapacity: Int = 0
     private var _error: String?
     private let rollingWindow: Int
 
@@ -366,6 +471,75 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                     self._vBaselineDeltaWindow.removeFirst(self._vBaselineDeltaWindow.count - self.rollingWindow)
                 }
             }
+            self._policyHeadWeightNormWindow.append(Double(timing.policyHeadWeightNorm))
+            if self._policyHeadWeightNormWindow.count > self.rollingWindow {
+                self._policyHeadWeightNormWindow.removeFirst(self._policyHeadWeightNormWindow.count - self.rollingWindow)
+            }
+            self._policyLogitAbsMaxWindow.append(Double(timing.policyLogitAbsMax))
+            if self._policyLogitAbsMaxWindow.count > self.rollingWindow {
+                self._policyLogitAbsMaxWindow.removeFirst(self._policyLogitAbsMaxWindow.count - self.rollingWindow)
+            }
+            self._playedMoveProbWindow.append(Double(timing.playedMoveProb))
+            if self._playedMoveProbWindow.count > self.rollingWindow {
+                self._playedMoveProbWindow.removeFirst(self._playedMoveProbWindow.count - self.rollingWindow)
+            }
+            self._advMeanWindow.append(Double(timing.advantageMean))
+            if self._advMeanWindow.count > self.rollingWindow {
+                self._advMeanWindow.removeFirst(self._advMeanWindow.count - self.rollingWindow)
+            }
+            self._advStdWindow.append(Double(timing.advantageStd))
+            if self._advStdWindow.count > self.rollingWindow {
+                self._advStdWindow.removeFirst(self._advStdWindow.count - self.rollingWindow)
+            }
+            self._advMinWindow.append(Double(timing.advantageMin))
+            if self._advMinWindow.count > self.rollingWindow {
+                self._advMinWindow.removeFirst(self._advMinWindow.count - self.rollingWindow)
+            }
+            self._advMaxWindow.append(Double(timing.advantageMax))
+            if self._advMaxWindow.count > self.rollingWindow {
+                self._advMaxWindow.removeFirst(self._advMaxWindow.count - self.rollingWindow)
+            }
+            self._advFracPosWindow.append(Double(timing.advantageFracPositive))
+            if self._advFracPosWindow.count > self.rollingWindow {
+                self._advFracPosWindow.removeFirst(self._advFracPosWindow.count - self.rollingWindow)
+            }
+            self._advFracSmallWindow.append(Double(timing.advantageFracSmall))
+            if self._advFracSmallWindow.count > self.rollingWindow {
+                self._advFracSmallWindow.removeFirst(self._advFracSmallWindow.count - self.rollingWindow)
+            }
+            if let raw = timing.advantageRaw, !raw.isEmpty {
+                self.pushAdvRaw(raw)
+            }
+        }
+    }
+
+    /// Push a batch's raw advantage values into the percentile ring.
+    /// Called from within `recordStep`'s queue-async closure, so no
+    /// additional serialization is needed. Capacity is grown on first
+    /// use (and whenever `rollingWindow * batchSize` changes) to avoid
+    /// reallocating in steady state.
+    private func pushAdvRaw(_ batch: [Float]) {
+        let desiredCapacity = self.rollingWindow * batch.count
+        if self._advRawRing.count != desiredCapacity {
+            // First push (or batch-size change) — resize. Losing any
+            // currently-held samples is fine since they were collected
+            // under a different batch size and would otherwise skew
+            // the distribution weighting.
+            self._advRawRing = [Float](repeating: 0, count: desiredCapacity)
+            self._advRawRingCapacity = desiredCapacity
+            self._advRawRingHead = 0
+            self._advRawRingFilled = 0
+        }
+        guard self._advRawRingCapacity > 0 else { return }
+        for value in batch {
+            self._advRawRing[self._advRawRingHead] = value
+            self._advRawRingHead += 1
+            if self._advRawRingHead >= self._advRawRingCapacity {
+                self._advRawRingHead = 0
+            }
+            if self._advRawRingFilled < self._advRawRingCapacity {
+                self._advRawRingFilled += 1
+            }
         }
     }
 
@@ -396,6 +570,18 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._valueMeanWindow.removeAll(keepingCapacity: true)
             self._valueAbsMeanWindow.removeAll(keepingCapacity: true)
             self._vBaselineDeltaWindow.removeAll(keepingCapacity: true)
+            self._policyHeadWeightNormWindow.removeAll(keepingCapacity: true)
+            self._policyLogitAbsMaxWindow.removeAll(keepingCapacity: true)
+            self._playedMoveProbWindow.removeAll(keepingCapacity: true)
+            self._advMeanWindow.removeAll(keepingCapacity: true)
+            self._advStdWindow.removeAll(keepingCapacity: true)
+            self._advMinWindow.removeAll(keepingCapacity: true)
+            self._advMaxWindow.removeAll(keepingCapacity: true)
+            self._advFracPosWindow.removeAll(keepingCapacity: true)
+            self._advFracSmallWindow.removeAll(keepingCapacity: true)
+            self._advRawRingHead = 0
+            self._advRawRingFilled = 0
+            // Keep _advRawRing capacity allocated — next push reuses it.
         }
     }
 
@@ -410,6 +596,19 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingVMean = Self.mean(_valueMeanWindow)
             let rollingVAbs = Self.mean(_valueAbsMeanWindow)
             let rollingVBaseDelta = Self.mean(_vBaselineDeltaWindow)
+            let rollingPolicyHeadWNorm = Self.mean(_policyHeadWeightNormWindow)
+            let rollingPLogitAbsMax = Self.mean(_policyLogitAbsMaxWindow)
+            let rollingPlayedMoveP = Self.mean(_playedMoveProbWindow)
+            let rollingAdvMean = Self.mean(_advMeanWindow)
+            let rollingAdvStd = Self.mean(_advStdWindow)
+            let rollingAdvMin = Self.mean(_advMinWindow)
+            let rollingAdvMax = Self.mean(_advMaxWindow)
+            let rollingAdvFracPos = Self.mean(_advFracPosWindow)
+            let rollingAdvFracSmall = Self.mean(_advFracSmallWindow)
+            let (advP05, advP50, advP95) = Self.percentiles(
+                ring: _advRawRing,
+                filled: _advRawRingFilled
+            )
             return Snapshot(
                 stats: _stats,
                 lastTiming: _lastTiming,
@@ -421,6 +620,18 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 rollingValueMean: rollingVMean,
                 rollingValueAbsMean: rollingVAbs,
                 rollingVBaselineDelta: rollingVBaseDelta,
+                rollingPolicyHeadWeightNorm: rollingPolicyHeadWNorm,
+                rollingPolicyLogitAbsMax: rollingPLogitAbsMax,
+                rollingPlayedMoveProb: rollingPlayedMoveP,
+                rollingAdvMean: rollingAdvMean,
+                rollingAdvStd: rollingAdvStd,
+                rollingAdvMin: rollingAdvMin,
+                rollingAdvMax: rollingAdvMax,
+                rollingAdvFracPositive: rollingAdvFracPos,
+                rollingAdvFracSmall: rollingAdvFracSmall,
+                advantageP05: advP05,
+                advantageP50: advP50,
+                advantageP95: advP95,
                 error: _error
             )
         }
@@ -430,6 +641,25 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         guard !window.isEmpty else { return nil }
         let sum = window.reduce(0, +)
         return sum / Double(window.count)
+    }
+
+    /// Compute (p05, p50, p95) from the live portion of a raw-value
+    /// ring. Sorts a copy of the first `filled` elements (so the
+    /// caller's ring storage isn't reordered) and indexes by fraction.
+    /// Returns (nil, nil, nil) when the ring is empty.
+    private static func percentiles(
+        ring: [Float],
+        filled: Int
+    ) -> (Double?, Double?, Double?) {
+        guard filled > 0, filled <= ring.count else { return (nil, nil, nil) }
+        var sorted = Array(ring.prefix(filled))
+        sorted.sort()
+        let n = sorted.count
+        func pct(_ p: Double) -> Double {
+            let idx = Int((p * Double(n - 1)).rounded())
+            return Double(sorted[max(0, min(n - 1, idx))])
+        }
+        return (pct(0.05), pct(0.50), pct(0.95))
     }
 }
 
@@ -454,28 +684,55 @@ final class ChessTrainer: @unchecked Sendable {
 
     // MARK: Configuration
 
-    /// L2 weight-decay coefficient applied per training step (decoupled,
-    /// AdamW-style). The update rule for decay-eligible variables is
-    /// `v_new = v - lr * (clipped_grad + weightDecayC * v)`, equivalent
-    /// to `(1 - lr*c) * v - lr * clipped_grad`. Decay is applied only
-    /// to conv and FC weight matrices; BN gamma/beta and FC biases
-    /// are excluded, matching the standard PyTorch / AdamW recipe.
-    /// (Decaying BN gamma toward zero zeros out a channel and reduces
-    /// effective capacity — the prior "L2 on all params" decision was
-    /// reverted after the deep ML review.)
-    static let weightDecayC: Float = 1e-4
+    /// Default L2 weight-decay coefficient applied per training step
+    /// (decoupled, AdamW-style). The update rule for decay-eligible
+    /// variables is `v_new = v - lr * (clipped_grad + weightDecayC * v)`,
+    /// equivalent to `(1 - lr*c) * v - lr * clipped_grad`. Decay is
+    /// applied only to conv and FC weight matrices; BN gamma/beta and
+    /// FC biases are excluded, matching the standard PyTorch / AdamW
+    /// recipe. (Decaying BN gamma toward zero zeros out a channel and
+    /// reduces effective capacity — the prior "L2 on all params"
+    /// decision was reverted after the deep ML review.)
+    ///
+    /// The actual value applied by the graph is read from
+    /// `weightDecayC` and fed as a per-step scalar so the user can
+    /// tune it live.
+    static let weightDecayCDefault: Float = 1e-4
 
-    /// Global L2-norm gradient clipping threshold. If the L2 norm of
-    /// the concatenated gradient vector over every trainable variable
-    /// exceeds this value, every gradient is scaled by
+    /// Default global L2-norm gradient clipping threshold. If the L2
+    /// norm of the concatenated gradient vector over every trainable
+    /// variable exceeds this value, every gradient is scaled by
     /// `maxNorm / globalNorm` so the effective step is capped. 5.0 is
     /// a conservative value that sits well above steady-state norms
     /// under healthy training but cuts off the single-step blowups
-    /// (see 2026-04-15 incident).
-    static let gradClipMaxNorm: Float = 5.0
+    /// (see 2026-04-15 incident). Under heavy policy-collapse
+    /// pressure the natural gradient norm can vastly exceed this,
+    /// nullifying effective learning rate — live-tunable to let the
+    /// user widen the valve when that happens.
+    static let gradClipMaxNormDefault: Float = 5.0
+
+    /// Default policy-loss coefficient K. Policy loss is REINFORCE
+    /// on the played move over a `policySize`-way softmax, so its
+    /// gradient is naturally much weaker than the value head's
+    /// (z−v)² gradient. The K coefficient rescales the policy loss
+    /// term in the total loss so both heads get meaningful gradient
+    /// during early bootstrap. Lowered from 50 → 5 after review —
+    /// the prior 50× multiplier was an amplifier on the gradient
+    /// magnitude that the clip was eating nearly all of.
+    static let policyScaleKDefault: Float = 5.0
 
     var learningRate: Float
     var entropyRegularizationCoeff: Float
+    /// Live weight-decay coefficient. Fed into the training graph
+    /// every step via a scalar placeholder, so edits take effect on
+    /// the next step without graph rebuild.
+    var weightDecayC: Float
+    /// Live gradient-clip max norm. Fed via scalar placeholder each
+    /// step.
+    var gradClipMaxNorm: Float
+    /// Live policy-loss coefficient K. Fed via scalar placeholder
+    /// each step.
+    var policyScaleK: Float
 
     /// Bootstrap-phase knob that rewrites drawn-game `z` values from 0
     /// to `-drawPenalty` before they reach the graph. Applied CPU-side
@@ -512,6 +769,9 @@ final class ChessTrainer: @unchecked Sendable {
     private var vBaselinePlaceholder: MPSGraphTensor    // [batch, 1] float
     private var lrPlaceholder: MPSGraphTensor           // [] scalar float
     private var entropyCoeffPlaceholder: MPSGraphTensor // [] scalar float
+    private var weightDecayPlaceholder: MPSGraphTensor  // [] scalar float
+    private var gradClipMaxNormPlaceholder: MPSGraphTensor // [] scalar float
+    private var policyScaleKPlaceholder: MPSGraphTensor // [] scalar float
     private var totalLoss: MPSGraphTensor               // scalar
     private var policyLossTensor: MPSGraphTensor        // scalar
     private var valueLossTensor: MPSGraphTensor         // scalar
@@ -520,6 +780,23 @@ final class ChessTrainer: @unchecked Sendable {
     private var gradGlobalNormTensor: MPSGraphTensor    // scalar (diagnostic)
     private var valueMeanTensor: MPSGraphTensor         // scalar (diagnostic)
     private var valueAbsMeanTensor: MPSGraphTensor      // scalar (diagnostic)
+    private var policyHeadWeightNormTensor: MPSGraphTensor // scalar (diagnostic)
+    private var policyLogitAbsMaxTensor: MPSGraphTensor // scalar (diagnostic)
+    private var playedMoveProbTensor: MPSGraphTensor    // scalar (diagnostic)
+    private var advantageMeanTensor: MPSGraphTensor     // scalar (diagnostic)
+    private var advantageStdTensor: MPSGraphTensor      // scalar (diagnostic)
+    private var advantageMinTensor: MPSGraphTensor      // scalar (diagnostic)
+    private var advantageMaxTensor: MPSGraphTensor      // scalar (diagnostic)
+    private var advantageFracPosTensor: MPSGraphTensor  // scalar (diagnostic)
+    private var advantageFracSmallTensor: MPSGraphTensor // scalar (diagnostic)
+    /// [batch, 1] raw advantage tensor — read back per step so the
+    /// stats box can maintain a rolling percentile window.
+    private var advantageRawTensor: MPSGraphTensor
+    /// [batch, policySize] softmax tensor — exposed for the periodic
+    /// `legalMass` snapshot that wants full softmax for sampled replay
+    /// positions. Not read back per training step (too large); used
+    /// only by `legalMassSnapshot` via a separate forward pass.
+    private var policySoftmaxTensor: MPSGraphTensor
     private var assignOps: [MPSGraphOperation]
 
     /// Pre-allocated scalar ND array for the learning-rate feed.
@@ -532,6 +809,12 @@ final class ChessTrainer: @unchecked Sendable {
     private var lrTensorData: MPSGraphTensorData
     private var entropyCoeffNDArray: MPSNDArray
     private var entropyCoeffTensorData: MPSGraphTensorData
+    private var weightDecayNDArray: MPSNDArray
+    private var weightDecayTensorData: MPSGraphTensorData
+    private var gradClipMaxNormNDArray: MPSNDArray
+    private var gradClipMaxNormTensorData: MPSGraphTensorData
+    private var policyScaleKNDArray: MPSNDArray
+    private var policyScaleKTensorData: MPSGraphTensorData
 
     /// Pre-allocated ND-array-backed tensor data for the three training
     /// placeholders at a given batch size, plus the pre-built
@@ -572,7 +855,16 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotGradNorm: Int = 5
     private static let lossReadbackSlotValueMean: Int = 6
     private static let lossReadbackSlotValueAbsMean: Int = 7
-    private static let lossReadbackSlotCount: Int = 8
+    private static let lossReadbackSlotPolicyHeadWNorm: Int = 8
+    private static let lossReadbackSlotPLogitAbsMax: Int = 9
+    private static let lossReadbackSlotPlayedMoveProb: Int = 10
+    private static let lossReadbackSlotAdvMean: Int = 11
+    private static let lossReadbackSlotAdvStd: Int = 12
+    private static let lossReadbackSlotAdvMin: Int = 13
+    private static let lossReadbackSlotAdvMax: Int = 14
+    private static let lossReadbackSlotAdvFracPos: Int = 15
+    private static let lossReadbackSlotAdvFracSmall: Int = 16
+    private static let lossReadbackSlotCount: Int = 17
 
     /// Reusable host-side staging buffers for replay-buffer samples.
     /// The trainer owns these buffers so real-data training can hop
@@ -589,11 +881,17 @@ final class ChessTrainer: @unchecked Sendable {
     init(
         learningRate: Float = 5e-5,
         entropyRegularizationCoeff: Float = 0.0,
-        drawPenalty: Float = 0.1
+        drawPenalty: Float = 0.1,
+        weightDecayC: Float = ChessTrainer.weightDecayCDefault,
+        gradClipMaxNorm: Float = ChessTrainer.gradClipMaxNormDefault,
+        policyScaleK: Float = ChessTrainer.policyScaleKDefault
     ) throws {
         self.learningRate = learningRate
         self.entropyRegularizationCoeff = entropyRegularizationCoeff
         self.drawPenalty = drawPenalty
+        self.weightDecayC = weightDecayC
+        self.gradClipMaxNorm = gradClipMaxNorm
+        self.policyScaleK = policyScaleK
         let net = try ChessNetwork(bnMode: .training)
         self.network = net
         let built = try Self.buildTrainingOps(network: net)
@@ -602,6 +900,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.vBaselinePlaceholder = built.vBaseline
         self.lrPlaceholder = built.lr
         self.entropyCoeffPlaceholder = built.entropyCoeff
+        self.weightDecayPlaceholder = built.weightDecay
+        self.gradClipMaxNormPlaceholder = built.gradClipMaxNorm
+        self.policyScaleKPlaceholder = built.policyScaleK
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
@@ -610,6 +911,17 @@ final class ChessTrainer: @unchecked Sendable {
         self.gradGlobalNormTensor = built.gradGlobalNorm
         self.valueMeanTensor = built.valueMean
         self.valueAbsMeanTensor = built.valueAbsMean
+        self.policyHeadWeightNormTensor = built.policyHeadWeightNorm
+        self.policyLogitAbsMaxTensor = built.policyLogitAbsMax
+        self.playedMoveProbTensor = built.playedMoveProb
+        self.advantageMeanTensor = built.advantageMean
+        self.advantageStdTensor = built.advantageStd
+        self.advantageMinTensor = built.advantageMin
+        self.advantageMaxTensor = built.advantageMax
+        self.advantageFracPosTensor = built.advantageFracPos
+        self.advantageFracSmallTensor = built.advantageFracSmall
+        self.advantageRawTensor = built.advantageRaw
+        self.policySoftmaxTensor = built.policySoftmax
         self.assignOps = built.assignOps
 
         // Scalar ND array for the learning rate feed, reused every step.
@@ -623,6 +935,15 @@ final class ChessTrainer: @unchecked Sendable {
         let entropyND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.entropyCoeffNDArray = entropyND
         self.entropyCoeffTensorData = MPSGraphTensorData(entropyND)
+        let weightDecayND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.weightDecayNDArray = weightDecayND
+        self.weightDecayTensorData = MPSGraphTensorData(weightDecayND)
+        let gradClipND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.gradClipMaxNormNDArray = gradClipND
+        self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipND)
+        let policyScaleKND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.policyScaleKNDArray = policyScaleKND
+        self.policyScaleKTensorData = MPSGraphTensorData(policyScaleKND)
 
         let lossPtr = UnsafeMutablePointer<Float>.allocate(
             capacity: Self.lossReadbackSlotCount
@@ -672,6 +993,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.vBaselinePlaceholder = built.vBaseline
         self.lrPlaceholder = built.lr
         self.entropyCoeffPlaceholder = built.entropyCoeff
+        self.weightDecayPlaceholder = built.weightDecay
+        self.gradClipMaxNormPlaceholder = built.gradClipMaxNorm
+        self.policyScaleKPlaceholder = built.policyScaleK
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
@@ -680,6 +1004,17 @@ final class ChessTrainer: @unchecked Sendable {
         self.gradGlobalNormTensor = built.gradGlobalNorm
         self.valueMeanTensor = built.valueMean
         self.valueAbsMeanTensor = built.valueAbsMean
+        self.policyHeadWeightNormTensor = built.policyHeadWeightNorm
+        self.policyLogitAbsMaxTensor = built.policyLogitAbsMax
+        self.playedMoveProbTensor = built.playedMoveProb
+        self.advantageMeanTensor = built.advantageMean
+        self.advantageStdTensor = built.advantageStd
+        self.advantageMinTensor = built.advantageMin
+        self.advantageMaxTensor = built.advantageMax
+        self.advantageFracPosTensor = built.advantageFracPos
+        self.advantageFracSmallTensor = built.advantageFracSmall
+        self.advantageRawTensor = built.advantageRaw
+        self.policySoftmaxTensor = built.policySoftmax
         self.assignOps = built.assignOps
         // Rebuild the LR scalar feed against the new network's device
         // so the new graph's placeholder maps to a fresh wrapper.
@@ -691,6 +1026,12 @@ final class ChessTrainer: @unchecked Sendable {
         self.lrTensorData = MPSGraphTensorData(lrNDArray)
         self.entropyCoeffNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.entropyCoeffTensorData = MPSGraphTensorData(entropyCoeffNDArray)
+        self.weightDecayNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.weightDecayTensorData = MPSGraphTensorData(weightDecayNDArray)
+        self.gradClipMaxNormNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipMaxNormNDArray)
+        self.policyScaleKNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.policyScaleKTensorData = MPSGraphTensorData(policyScaleKNDArray)
         // The cached ND arrays were allocated against the old network's
         // device and are keyed by batch size against the old graph's
         // placeholders. Drop the cache so the first trainStep after
@@ -713,6 +1054,9 @@ final class ChessTrainer: @unchecked Sendable {
         vBaseline: MPSGraphTensor,
         lr: MPSGraphTensor,
         entropyCoeff: MPSGraphTensor,
+        weightDecay: MPSGraphTensor,
+        gradClipMaxNorm: MPSGraphTensor,
+        policyScaleK: MPSGraphTensor,
         totalLoss: MPSGraphTensor,
         policyLoss: MPSGraphTensor,
         valueLoss: MPSGraphTensor,
@@ -721,6 +1065,17 @@ final class ChessTrainer: @unchecked Sendable {
         gradGlobalNorm: MPSGraphTensor,
         valueMean: MPSGraphTensor,
         valueAbsMean: MPSGraphTensor,
+        policyHeadWeightNorm: MPSGraphTensor,
+        policyLogitAbsMax: MPSGraphTensor,
+        playedMoveProb: MPSGraphTensor,
+        advantageMean: MPSGraphTensor,
+        advantageStd: MPSGraphTensor,
+        advantageMin: MPSGraphTensor,
+        advantageMax: MPSGraphTensor,
+        advantageFracPos: MPSGraphTensor,
+        advantageFracSmall: MPSGraphTensor,
+        advantageRaw: MPSGraphTensor,
+        policySoftmax: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
         let graph = network.graph
@@ -913,6 +1268,160 @@ final class ChessTrainer: @unchecked Sendable {
             name: "policy_nonneg_count"
         )
 
+        // --- Policy logit-magnitude probe (diagnostic) ---
+        //
+        // Batch mean of `max_i |logits[i]|`. Pre-saturation early
+        // warning: entropy alone can look healthy while a single
+        // runaway logit is already pulling the softmax toward a
+        // one-hot, so a direct measurement of the largest logit
+        // magnitude complements `policyEntropy`. Diagnostic only —
+        // not on the totalLoss autograd path, so the lack of a
+        // gradient for `reductionMaximum` is fine.
+        let policyLogitAbs = graph.absolute(
+            with: network.policyOutput,
+            name: "policy_logit_abs"
+        )
+        let policyLogitAbsMaxPerPos = graph.reductionMaximum(
+            with: policyLogitAbs,
+            axis: 1,
+            name: "policy_logit_abs_max_per_pos"
+        )
+        let policyLogitAbsMax = graph.mean(
+            of: policyLogitAbsMaxPerPos,
+            axes: [0, 1],
+            name: "policy_logit_abs_max"
+        )
+
+        // --- Played-move probability (diagnostic) ---
+        //
+        // Batch mean of softmax[movePlayed]. Cheap graph-side proxy
+        // for "is the policy concentrating probability on moves we
+        // actually played?" Under a healthy loop (and correct
+        // action-index encoding) this rises from ~1/policySize over
+        // training. Under an index mismatch it stays near
+        // ~1/policySize even as pLoss moves.
+        //
+        // Computed as `sum(softmax * oneHot)` along the class axis —
+        // the existing `oneHot` and `softmax` tensors are reused
+        // without re-materializing either.
+        let playedSoftmaxMasked = graph.multiplication(
+            softmax,
+            oneHot,
+            name: "played_softmax_masked"
+        )
+        let playedProbPerPos = graph.reductionSum(
+            with: playedSoftmaxMasked,
+            axis: 1,
+            name: "played_prob_per_pos"
+        )
+        let playedMoveProbTensor = graph.mean(
+            of: playedProbPerPos,
+            axes: [0, 1],
+            name: "played_move_prob"
+        )
+
+        // --- Advantage-distribution scalars (diagnostic) ---
+        //
+        // `advantage` is the [batch, 1] per-position `z − vBaseline`
+        // term that weights the policy loss. Its distribution tells
+        // us whether the baseline is absorbing outcome variance
+        // (advantageMean near 0, small std = good) or biasing
+        // updates in one direction (mean far from 0), and whether
+        // updates have the right dynamic range (std, min, max).
+        //
+        // None of these scalars flow into totalLoss — they are
+        // diagnostic-only `targetTensors`, so `reductionMinimum` /
+        // `reductionMaximum`'s missing autograd rules aren't an
+        // issue.
+        let advantageMeanTensor = graph.mean(
+            of: advantage,
+            axes: [0, 1],
+            name: "advantage_mean"
+        )
+        let advantageSqForStd = graph.square(
+            with: advantage,
+            name: "advantage_sq"
+        )
+        let advantageMeanSq = graph.mean(
+            of: advantageSqForStd,
+            axes: [0, 1],
+            name: "advantage_mean_sq"
+        )
+        // Var = E[A²] − (E[A])². Use unbiased? No — the batch is not
+        // a sample of an unknown population; it's just this batch.
+        // Biased (population) variance is the natural descriptor.
+        let advantageMeanSquared = graph.multiplication(
+            advantageMeanTensor,
+            advantageMeanTensor,
+            name: "advantage_mean_squared"
+        )
+        let advantageVar = graph.subtraction(
+            advantageMeanSq,
+            advantageMeanSquared,
+            name: "advantage_var"
+        )
+        // Clamp to zero before sqrt — E[A²] − E[A]² is nonnegative
+        // in exact arithmetic but can go slightly negative under
+        // float rounding when the batch is extremely homogeneous.
+        let zeroConst = graph.constant(0.0, dataType: dtype)
+        let advantageVarClamped = graph.maximum(
+            advantageVar,
+            zeroConst,
+            name: "advantage_var_clamped"
+        )
+        let advantageStdTensor = graph.squareRoot(
+            with: advantageVarClamped,
+            name: "advantage_std"
+        )
+        let advantageMinTensor = graph.reductionMinimum(
+            with: advantage,
+            axes: [0, 1],
+            name: "advantage_min"
+        )
+        let advantageMaxTensor = graph.reductionMaximum(
+            with: advantage,
+            axes: [0, 1],
+            name: "advantage_max"
+        )
+        // frac(A > 0): cast comparison to float, mean over batch.
+        let advantageGreaterZero = graph.greaterThan(
+            advantage,
+            zeroConst,
+            name: "advantage_pos_mask"
+        )
+        let advantageGreaterZeroFloat = graph.cast(
+            advantageGreaterZero,
+            to: dtype,
+            name: "advantage_pos_mask_float"
+        )
+        let advantageFracPosTensor = graph.mean(
+            of: advantageGreaterZeroFloat,
+            axes: [0, 1],
+            name: "advantage_frac_pos"
+        )
+        // frac(|A| < 0.05): "near-zero-signal" positions whose
+        // policy-gradient contribution is tiny. Threshold 0.05
+        // picked to match the default `drawPenalty` — positions
+        // where the fresh baseline already predicts z closely are
+        // "well-learned" and shouldn't update much.
+        let advantageAbs = graph.absolute(with: advantage, name: "advantage_abs")
+        let smallThreshold = graph.constant(0.05, dataType: dtype)
+        let advantageSmallMask = graph.lessThan(
+            advantageAbs,
+            smallThreshold,
+            name: "advantage_small_mask"
+        )
+        let advantageSmallMaskFloat = graph.cast(
+            advantageSmallMask,
+            to: dtype,
+            name: "advantage_small_mask_float"
+        )
+        let advantageFracSmallTensor = graph.mean(
+            of: advantageSmallMaskFloat,
+            axes: [0, 1],
+            name: "advantage_frac_small"
+        )
+
         // --- Total loss ---
         //
         // Policy loss is REINFORCE on the played move over a `policySize`-way
@@ -925,13 +1434,10 @@ final class ChessTrainer: @unchecked Sendable {
         // global normalizer, because dividing the sum divides every
         // term and cancels the relative boost. If the larger effective
         // learning rate on the shared trunk causes instability, lower
-        // the LR rather than adding a normalizer.
-        let policyWeight = graph.constant(50.0, dataType: dtype)
-        let weightedPolicy = graph.multiplication(
-            policyWeight,
-            policyLoss,
-            name: "weighted_policy_loss"
-        )
+        // the LR rather than adding a normalizer. Live-tunable via
+        // the `policyScaleK` placeholder so the user can dial it
+        // down if the amplified policy gradient is the source of
+        // gradient-clip saturation.
         let lrTensor = graph.placeholder(
             shape: [1],
             dataType: dtype,
@@ -941,6 +1447,26 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [1],
             dataType: dtype,
             name: "entropy_regularization_coeff"
+        )
+        let weightDecayTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "weight_decay_coeff"
+        )
+        let gradClipMaxNormTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "grad_clip_max_norm"
+        )
+        let policyScaleKTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "policy_scale_k"
+        )
+        let weightedPolicy = graph.multiplication(
+            policyScaleKTensor,
+            policyLoss,
+            name: "weighted_policy_loss"
         )
         let entropyPenalty = graph.multiplication(
             entropyCoeffTensor,
@@ -1015,6 +1541,33 @@ final class ChessTrainer: @unchecked Sendable {
             name: "grad_global_norm"
         )
 
+        // --- Policy head final-conv weight L2 norm (diagnostic) ---
+        //
+        // Tracks the magnitude of the specific tensor whose logit-scale
+        // growth is the mechanism behind extreme policy concentration:
+        // large ||W||₂ means at least one row can produce outsized
+        // logits and saturate the softmax on one move. Read via
+        // targetTensor alongside losses so the host never pulls the
+        // full 9.8K-float weight buffer back each step.
+        let policyWeightFlat = graph.reshape(
+            network.policyHeadFinalWeights,
+            shape: [-1],
+            name: "policy_weight_flat"
+        )
+        let policyWeightSq = graph.square(
+            with: policyWeightFlat,
+            name: "policy_weight_sq"
+        )
+        let policyWeightSqSum = graph.reductionSum(
+            with: policyWeightSq,
+            axis: 0,
+            name: "policy_weight_sq_sum"
+        )
+        let policyHeadWeightNormTensor = graph.squareRoot(
+            with: policyWeightSqSum,
+            name: "policy_weight_norm"
+        )
+
         // --- Gradient clip scale: maxNorm / max(norm, maxNorm) ---
         //
         // Equivalent to `min(1, maxNorm / norm)`. When `norm ≤ maxNorm`
@@ -1022,17 +1575,13 @@ final class ChessTrainer: @unchecked Sendable {
         // shrinks so the resulting update has L2 norm exactly
         // `maxNorm`. No epsilon needed because `max(norm, maxNorm)`
         // is always ≥ maxNorm > 0.
-        let maxNormScalar = graph.constant(
-            Double(Self.gradClipMaxNorm),
-            dataType: dtype
-        )
         let clipDenom = graph.maximum(
             gradGlobalNorm,
-            maxNormScalar,
+            gradClipMaxNormTensor,
             name: "grad_clip_denom"
         )
         let clipScale = graph.division(
-            maxNormScalar,
+            gradClipMaxNormTensor,
             clipDenom,
             name: "grad_clip_scale"
         )
@@ -1050,11 +1599,6 @@ final class ChessTrainer: @unchecked Sendable {
         // can be changed between steps without rebuilding the graph.
         // Each training step feeds the current `self.learningRate`
         // via the pre-allocated `lrNDArray`.
-
-        let weightDecayConstant = graph.constant(
-            Double(Self.weightDecayC),
-            dataType: dtype
-        )
 
         var ops: [MPSGraphOperation] = []
         ops.reserveCapacity(network.trainableVariables.count)
@@ -1079,7 +1623,7 @@ final class ChessTrainer: @unchecked Sendable {
             if network.trainableShouldDecay[i] {
                 let decayTerm = graph.multiplication(
                     variable,
-                    weightDecayConstant,
+                    weightDecayTensor,
                     name: nil
                 )
                 combinedUpdate = graph.addition(clippedGrad, decayTerm, name: nil)
@@ -1102,7 +1646,17 @@ final class ChessTrainer: @unchecked Sendable {
         // loadWeights().
         ops.append(contentsOf: network.bnRunningStatsAssignOps)
 
-        return (movePlayed, z, vBaseline, lrTensor, entropyCoeffTensor, totalLossTensor, policyLoss, valueLoss, policyEntropy, policyNonNegCount, gradGlobalNorm, valueMean, valueAbsMean, ops)
+        return (
+            movePlayed, z, vBaseline,
+            lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyScaleKTensor,
+            totalLossTensor, policyLoss, valueLoss,
+            policyEntropy, policyNonNegCount, gradGlobalNorm, valueMean, valueAbsMean, policyHeadWeightNormTensor,
+            policyLogitAbsMax, playedMoveProbTensor,
+            advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
+            advantageFracPosTensor, advantageFracSmallTensor,
+            advantage, softmax,
+            ops
+        )
     }
 
     // MARK: - Training Step
@@ -1353,9 +1907,159 @@ final class ChessTrainer: @unchecked Sendable {
                 valueMean: baseTiming.valueMean,
                 valueAbsMean: baseTiming.valueAbsMean,
                 vBaselineDelta: meanAbsDelta,
-                freshBaselineMs: freshBaselineMs
+                freshBaselineMs: freshBaselineMs,
+                policyHeadWeightNorm: baseTiming.policyHeadWeightNorm,
+                policyLogitAbsMax: baseTiming.policyLogitAbsMax,
+                playedMoveProb: baseTiming.playedMoveProb,
+                advantageMean: baseTiming.advantageMean,
+                advantageStd: baseTiming.advantageStd,
+                advantageMin: baseTiming.advantageMin,
+                advantageMax: baseTiming.advantageMax,
+                advantageFracPositive: baseTiming.advantageFracPositive,
+                advantageFracSmall: baseTiming.advantageFracSmall,
+                advantageRaw: baseTiming.advantageRaw
             )
         }
+    }
+
+    /// Snapshot of the current policy's mass distribution over legal
+    /// moves, computed over a fresh sample of `sampleSize` positions
+    /// from `replayBuffer`. Used by the periodic STATS emit to log a
+    /// number that is robust to policy sharpening: as training
+    /// progresses, the softmax mass the network places on the legal
+    /// move set rises from `~n_legal/policySize` (random init, most
+    /// mass on illegal cells) toward 1.0. An index-mismatch bug would
+    /// pin this near the random-init value even as other losses move.
+    ///
+    /// Returns nil when the replay buffer hasn't accumulated
+    /// `sampleSize` positions yet.
+    func legalMassSnapshot(
+        replayBuffer: ReplayBuffer,
+        sampleSize: Int
+    ) async throws -> LegalMassSnapshot? {
+        // Sample boards on the trainer queue so we reuse the same
+        // replay-buffer concurrency guards as trainStep. We only
+        // need the boards — moves/zs/vBaselines are ignored for
+        // this probe.
+        struct Sampled: Sendable {
+            let boards: [Float]
+            let count: Int
+        }
+        let sampled: Sampled? = try await enqueue { [sampleSize] in
+            self.ensureReplayBatchCapacity(sampleSize)
+            guard
+                let boards = self.replayBatchBoards,
+                let moves = self.replayBatchMoves,
+                let zs = self.replayBatchZs,
+                let vBaselines = self.replayBatchVBaselines
+            else {
+                preconditionFailure("ChessTrainer staging buffers missing")
+            }
+            let ok = replayBuffer.sample(
+                count: sampleSize,
+                intoBoards: boards,
+                moves: moves,
+                zs: zs,
+                vBaselines: vBaselines
+            )
+            guard ok else { return nil }
+            let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+            let total = sampleSize * floatsPerBoard
+            return Sampled(
+                boards: Array(UnsafeBufferPointer(start: boards, count: total)),
+                count: sampleSize
+            )
+        }
+        guard let sampled else { return nil }
+
+        // Forward-only pass on the trainer's network. Returns raw
+        // logits (not softmaxed) in position-major layout.
+        let (policy, _) = try await network.evaluate(
+            batchBoards: sampled.boards,
+            count: sampled.count
+        )
+
+        let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+        let policySize = ChessNetwork.policySize
+
+        var legalMassSum: Double = 0
+        var top1LegalCount: Int = 0
+        var positionsWithLegal: Int = 0
+
+        // CPU decode + softmax + mask on legal indices. ~2 ms total
+        // for sampleSize=128 in micro-benchmarks.
+        sampled.boards.withUnsafeBufferPointer { boardsBuf in
+            guard let boardsBase = boardsBuf.baseAddress else { return }
+            for pos in 0..<sampled.count {
+                let boardPtr = boardsBase.advanced(by: pos * floatsPerBoard)
+                let state = BoardEncoder.decodeSynthetic(from: boardPtr)
+                let legalMoves = MoveGenerator.legalMoves(for: state)
+                guard !legalMoves.isEmpty else { continue }
+                positionsWithLegal += 1
+
+                // Stable softmax over the slot's policy slice:
+                // max-subtract, exp, normalize.
+                let base = pos * policySize
+                var maxLogit: Float = -.infinity
+                for i in 0..<policySize {
+                    let v = policy[base + i]
+                    if v > maxLogit { maxLogit = v }
+                }
+                var expSum: Double = 0
+                for i in 0..<policySize {
+                    expSum += Double(expf(policy[base + i] - maxLogit))
+                }
+                // Argmax over the full policy — for top1Legal check.
+                var argmax = 0
+                var argmaxLogit = policy[base]
+                for i in 1..<policySize {
+                    let v = policy[base + i]
+                    if v > argmaxLogit {
+                        argmaxLogit = v
+                        argmax = i
+                    }
+                }
+
+                // Sum softmax mass over the legal set.
+                var legalExpSum: Double = 0
+                var legalIndexSet = Set<Int>()
+                legalIndexSet.reserveCapacity(legalMoves.count)
+                for move in legalMoves {
+                    let idx = PolicyEncoding.policyIndex(move, currentPlayer: .white)
+                    guard idx >= 0, idx < policySize else { continue }
+                    if legalIndexSet.insert(idx).inserted {
+                        legalExpSum += Double(expf(policy[base + idx] - maxLogit))
+                    }
+                }
+                let legalMass = expSum > 0 ? legalExpSum / expSum : 0
+                legalMassSum += legalMass
+                if legalIndexSet.contains(argmax) {
+                    top1LegalCount += 1
+                }
+            }
+        }
+
+        guard positionsWithLegal > 0 else { return nil }
+        return LegalMassSnapshot(
+            sampleSize: positionsWithLegal,
+            legalMass: legalMassSum / Double(positionsWithLegal),
+            top1LegalFraction: Double(top1LegalCount) / Double(positionsWithLegal)
+        )
+    }
+
+    /// Result of `legalMassSnapshot`: batch-averaged softmax mass on
+    /// the legal move set and batch fraction where the full-policy
+    /// argmax corresponds to a legal move.
+    struct LegalMassSnapshot: Sendable {
+        let sampleSize: Int
+        /// Batch-mean softmax probability mass placed on legal cells.
+        /// Range [0, 1]. `legalMoves.count / policySize` at random init
+        /// (~0.006 with ~30 legal moves), rising toward 1.0 as the
+        /// policy sharpens on the rules.
+        let legalMass: Double
+        /// Fraction of positions where the full-4864-way argmax
+        /// corresponds to a legal move. Rank-based sanity signal.
+        let top1LegalFraction: Double
     }
 
     private func ensureReplayBatchCapacity(_ needed: Int) {
@@ -1466,6 +2170,12 @@ final class ChessTrainer: @unchecked Sendable {
         lrNDArray.writeBytes(&lr, strideBytes: nil)
         var entropyCoeff = entropyRegularizationCoeff
         entropyCoeffNDArray.writeBytes(&entropyCoeff, strideBytes: nil)
+        var weightDecay = weightDecayC
+        weightDecayNDArray.writeBytes(&weightDecay, strideBytes: nil)
+        var gradClip = gradClipMaxNorm
+        gradClipMaxNormNDArray.writeBytes(&gradClip, strideBytes: nil)
+        var kScale = policyScaleK
+        policyScaleKNDArray.writeBytes(&kScale, strideBytes: nil)
 
         return cached.feedsDict
     }
@@ -1528,7 +2238,10 @@ final class ChessTrainer: @unchecked Sendable {
             zPlaceholder: zTD,
             vBaselinePlaceholder: vBaselineTD,
             lrPlaceholder: lrTensorData,
-            entropyCoeffPlaceholder: entropyCoeffTensorData
+            entropyCoeffPlaceholder: entropyCoeffTensorData,
+            weightDecayPlaceholder: weightDecayTensorData,
+            gradClipMaxNormPlaceholder: gradClipMaxNormTensorData,
+            policyScaleKPlaceholder: policyScaleKTensorData
         ]
 
         let feeds = BatchFeeds(
@@ -1567,7 +2280,15 @@ final class ChessTrainer: @unchecked Sendable {
         let results = network.graph.run(
             with: network.commandQueue,
             feeds: feeds,
-            targetTensors: [totalLoss, policyLossTensor, valueLossTensor, policyEntropyTensor, policyNonNegCountTensor, gradGlobalNormTensor, valueMeanTensor, valueAbsMeanTensor],
+            targetTensors: [
+                totalLoss, policyLossTensor, valueLossTensor,
+                policyEntropyTensor, policyNonNegCountTensor, gradGlobalNormTensor,
+                valueMeanTensor, valueAbsMeanTensor, policyHeadWeightNormTensor,
+                policyLogitAbsMaxTensor, playedMoveProbTensor,
+                advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
+                advantageFracPosTensor, advantageFracSmallTensor,
+                advantageRawTensor
+            ],
             targetOperations: assignOps
         )
         let gpuMs = (CFAbsoluteTimeGetCurrent() - gpuStart) * 1000
@@ -1581,7 +2302,17 @@ final class ChessTrainer: @unchecked Sendable {
             let nonNegData = results[policyNonNegCountTensor],
             let gradNormData = results[gradGlobalNormTensor],
             let valueMeanData = results[valueMeanTensor],
-            let valueAbsMeanData = results[valueAbsMeanTensor]
+            let valueAbsMeanData = results[valueAbsMeanTensor],
+            let policyHeadWNormData = results[policyHeadWeightNormTensor],
+            let pLogitAbsMaxData = results[policyLogitAbsMaxTensor],
+            let playedMoveProbData = results[playedMoveProbTensor],
+            let advMeanData = results[advantageMeanTensor],
+            let advStdData = results[advantageStdTensor],
+            let advMinData = results[advantageMinTensor],
+            let advMaxData = results[advantageMaxTensor],
+            let advFracPosData = results[advantageFracPosTensor],
+            let advFracSmallData = results[advantageFracSmallTensor],
+            let advRawData = results[advantageRawTensor]
         else {
             throw ChessTrainerError.lossOutputMissing
         }
@@ -1625,6 +2356,65 @@ final class ChessTrainer: @unchecked Sendable {
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueAbsMean),
             count: 1
         )
+        ChessNetwork.readFloats(
+            from: policyHeadWNormData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyHeadWNorm),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: pLogitAbsMaxData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPLogitAbsMax),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: playedMoveProbData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProb),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: advMeanData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMean),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: advStdData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvStd),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: advMinData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMin),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: advMaxData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMax),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: advFracPosData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracPos),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: advFracSmallData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracSmall),
+            count: 1
+        )
+        // Raw per-position advantage — batch-sized vector. Read into
+        // a fresh [Float] since the size depends on the runtime batch
+        // and we don't want to resize the scratch every time.
+        let advRawBatchSize: Int = advRawData.shape.reduce(1) { acc, dim in
+            acc * Int(truncating: dim)
+        }
+        var advRawValues = [Float](repeating: 0, count: advRawBatchSize)
+        if advRawBatchSize > 0 {
+            advRawValues.withUnsafeMutableBufferPointer { buf in
+                if let base = buf.baseAddress {
+                    ChessNetwork.readFloats(from: advRawData, into: base, count: advRawBatchSize)
+                }
+            }
+        }
         let totalBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotTotal]
         let policyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicy]
         let valueBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValue]
@@ -1633,6 +2423,15 @@ final class ChessTrainer: @unchecked Sendable {
         let gradNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotGradNorm]
         let valueMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueMean]
         let valueAbsMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueAbsMean]
+        let policyHeadWNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicyHeadWNorm]
+        let pLogitAbsMaxBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPLogitAbsMax]
+        let playedMoveProbBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProb]
+        let advMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvMean]
+        let advStdBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvStd]
+        let advMinBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvMin]
+        let advMaxBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvMax]
+        let advFracPosBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvFracPos]
+        let advFracSmallBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvFracSmall]
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         // Health check: any NaN/Inf in the headline loss or grad scalars means
@@ -1678,7 +2477,17 @@ final class ChessTrainer: @unchecked Sendable {
             // outer trainStep level once it has computed the fresh
             // baseline. The random-data sweep path leaves them nil.
             vBaselineDelta: nil,
-            freshBaselineMs: nil
+            freshBaselineMs: nil,
+            policyHeadWeightNorm: policyHeadWNormBufValue,
+            policyLogitAbsMax: pLogitAbsMaxBufValue,
+            playedMoveProb: playedMoveProbBufValue,
+            advantageMean: advMeanBufValue,
+            advantageStd: advStdBufValue,
+            advantageMin: advMinBufValue,
+            advantageMax: advMaxBufValue,
+            advantageFracPositive: advFracPosBufValue,
+            advantageFracSmall: advFracSmallBufValue,
+            advantageRaw: advRawValues
         )
         }  // autoreleasepool
     }
