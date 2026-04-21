@@ -135,7 +135,7 @@ Regardless of mode:
 
 **Before spawning** the subagent, assemble the context inputs. **Never paste the raw `results.json`** into a subagent prompt — it's ~1 MB / ~300k tokens. Use the summarizer.
 
-  a. `latest_summary` = stdout of `python3 $ROOT/.claude/skills/autotrain/summarize_results.py $ROOT/results.json`.
+  a. `current_best_summary` = stdout of `python3 $ROOT/.claude/skills/autotrain/summarize_results.py $ROOT/results.json`.
   b. `recent_history` = up to the **10 most recent** subfolders of `$ROOT/experiments/`, newest last. For each entry include:
        - `timestamp` — folder name.
        - `status` — `ACCEPTED` / `REJECTED` / `SEED` / `FAILED`.
@@ -155,9 +155,9 @@ Then spawn a general-purpose subagent with this prompt (pass as a fenced JSON bl
 ```json
 {
   "improvement_goal": "<contents of goal.txt>",
-  "current_parameter_configuration": <contents of $ROOT/parameters.json>,
-  "latest_results_summary": <latest_summary>,
-  "latest_results_json_path": "<absolute path to $ROOT/results.json>",
+  "current_best_parameters": <contents of $ROOT/parameters.json>,
+  "current_best_results_summary": <current_best_summary>,
+  "current_best_results_json_path": "<absolute path to $ROOT/results.json>",
   "recent_history": <recent_history>,
   "training_time_seconds_max": 600,
   "exploration_mode": <boolean>
@@ -165,6 +165,7 @@ Then spawn a general-purpose subagent with this prompt (pass as a fenced JSON bl
 ```
 
 Instructions embedded in the prompt:
+- **`current_best_parameters` is the baseline you are trying to beat.** It is the cumulative result of every previously-accepted iteration — each `ACCEPTED` entry in `recent_history` contributed to it, `REJECTED` / `FAILED` / `NEUTRAL` entries did not. `current_best_results_summary` is the training result that was recorded when this baseline was last ratcheted. Your proposal will be judged as an improvement over this baseline, not over the most recent iteration's result.
 - The summary is a digest. For detail not in it, run `jq` or `python3 -c "..."` via Bash against the path. **Do not use the Read tool on the JSON** — it's ~1 MB.
 - Example: `jq '.stats | map(.policy_entropy) | [.[0], min, max, .[-1]]' <path>`.
 - **If `exploration_mode` is true**: propose a **bolder or orthogonal change** than recent history — change a parameter you haven't touched recently, try a larger magnitude, or explore an axis the goal hasn't been examined against. Still respect physical bounds and the goal.
