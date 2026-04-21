@@ -28,5 +28,20 @@ window.EXPERIMENTS = [
     ],
     "analysis_commentary": "The change directly addresses diagnostic (2): max probability stays in [0.035, 0.135] the entire run versus baseline's hard collapse to 1.000, and no single move ever dominates. This is a clear, meaningful win on the stated peakiness collapse criterion. The tradeoff is that illegal_mass is held near 1.0 throughout (slightly worse than baseline's transient minimum of 0.798), indicating the entropy bonus is now strong enough to prevent the network from learning to distinguish legal from illegal moves within this window. However, the goal explicitly is to PREVENT collapse, and the catastrophic single-illegal-move collapse is gone \u2014 the network is now in a learnable (if currently stalled) regime rather than a stuck one-hot dead end. This is net progress toward the goal; the next step would be to reduce entropy_bonus slightly (e.g. 0.003-0.005) to restore learning signal while keeping peakiness controlled.",
     "folder": "experiments/20260421-182131"
+  },
+  {
+    "timestamp": "20260421-183711",
+    "start_time_iso": "2026-04-21T18:37:11",
+    "status": "ACCEPTED",
+    "change_details": "The 0.001 baseline learned signal (illegal_mass fell to 0.798) but collapsed after arena promotion; the 0.01 setting is so strong it flattens the distribution and prevents any learning of legal-vs-illegal. The sweet spot is almost certainly in between. I'm setting entropy_bonus=0.004 \u2014 high enough to damp the peakiness collapse that killed the baseline, but low enough that the cross-entropy gradient can still push illegal-move mass down and let legal moves clear the uniform threshold. Changing only this one knob isolates the effect cleanly against both prior runs; other concerns (arena-promotion feedback loop, sampling taus) are deferred to the next iteration once we know whether a mid-range entropy bonus alone gives simultaneous progress on diagnostics 1 and 2 within the 10-minute window.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.01,
+        "new": 0.004
+      }
+    ],
+    "analysis_commentary": "The new run at entropy_bonus=0.004 materially outperforms the previous 0.01 run against the stated goal. Peakiness stayed safely bounded (max range [0.048, 0.197], well below the 0.9 alarm), while illegal_mass fell monotonically from 0.9997 to 0.6696 (min 0.6650) versus being stuck at ~1.0 for the entire prior run. above_uniform_count_max improved from 0 to 2, indicating real legal-move signal emerging. Both diagnostics (1) and (2) are simultaneously satisfied for the first time with no post-arena regression, directly addressing the collapse-prevention goal.",
+    "folder": "experiments/20260421-183711"
   }
 ];
