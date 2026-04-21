@@ -99,6 +99,7 @@ WATCHDOG=$((TIME_LIMIT + 120))
 # wrong — send SIGTERM, and escalate to SIGKILL if still running.
 (
     "$RUN_DEBUG" \
+        --train \
         "$PARAMS_FLAG" "$PARAMS" \
         "$TIME_FLAG" "$TIME_LIMIT" \
         "$OUT_FLAG" "$OUTPUT"

@@ -1,0 +1,2 @@
+run_training.sh: launching DrewsChessMachine (limit=600s, params=experiments/20260421-180412/parameters.json, out=experiments/20260421-180412/result.json)
+run_training.sh: watchdog firing after 720s, sending SIGTERM
