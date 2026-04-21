@@ -110,15 +110,42 @@ struct TrainStepTiming: Sendable {
     let policyLogitAbsMax: Float
 
     /// Batch mean of softmax probability on the actually-played move.
-    /// Strong single-number health signal: random init sits near
-    /// `1/policySize ≈ 0.0002`, and under a working training loop
-    /// (and a correct action-index encoding) it rises as the policy
-    /// reproduces high-reward plays. A plateau near `1/policySize`
-    /// despite pLoss moving would indicate action-index mismatch —
-    /// the one-hot target is landing on a different cell than the
-    /// sampler read. Computed graph-side as `sum(softmax * oneHot)`
-    /// along the class axis, then mean over batch. Zero extra readback.
+    /// **Direction is undefined under the advantage-normalized policy
+    /// loss** in this trainer: adv_normalized has zero batch-mean by
+    /// construction, so ~half the positions push `p(a*)` up and ~half
+    /// push it down. The unconditional mean can stay near
+    /// `1/policySize ≈ 0.0002` even when training is perfectly healthy,
+    /// and can rise spuriously on outcome-skewed batches where the
+    /// `/σ[A]` normalization amplifies tail updates. Keep for backward
+    /// compatibility with prior logs and as a coarse index-mismatch
+    /// probe (both conditionals flat near `1/policySize` is strong
+    /// evidence of action-index misalignment), but read
+    /// `playedMoveProbPosAdv` / `playedMoveProbNegAdv` for the real
+    /// direction-of-learning signal. Computed graph-side as
+    /// `sum(softmax * oneHot)` along the class axis, then mean over
+    /// batch. Zero extra readback.
     let playedMoveProb: Float
+
+    /// Batch-conditional mean of `p(a*)` restricted to positions where
+    /// the raw advantage `A = z − vBaseline > 0`. These are the
+    /// positions whose REINFORCE update pushes `p(a*)` upward, so
+    /// under a correctly-wired loop with a live action-index encoding
+    /// this rises monotonically from `~1/policySize` as the policy
+    /// sharpens on moves that led to better-than-baseline outcomes.
+    /// A plateau near `1/policySize` while `pLoss` moves is the strong
+    /// action-index-mismatch signature. NaN when no batch row has
+    /// `A > 0` (rare — requires a fully negative-advantage batch).
+    let playedMoveProbPosAdv: Float
+
+    /// Batch-conditional mean of `p(a*)` restricted to positions where
+    /// the raw advantage `A = z − vBaseline < 0`. Complement of
+    /// `playedMoveProbPosAdv`. Under a working loop this *falls* from
+    /// `~1/policySize` as the policy learns to place less mass on
+    /// moves that led to worse-than-baseline outcomes. Combined with
+    /// the `PosAdv` conditional, the two move in opposite directions
+    /// — that divergence is the actual health signal, not the
+    /// unconditional mean. NaN when no batch row has `A < 0`.
+    let playedMoveProbNegAdv: Float
 
     /// Advantage summary for this batch. `advantageMean` is the batch
     /// mean of `A = z − v_baseline`; with a perfect baseline it sits
@@ -360,6 +387,18 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             guard count > 0 else { return nil }
             return sum / Double(count)
         }
+
+        /// Running sum of every value currently in the window. Paired
+        /// with `size` this lets callers expose exact counts for
+        /// 0/1-valued windows (e.g. the per-step skip markers for the
+        /// advantage-conditional played-move probabilities, where each
+        /// step appends either 0 or 1 and the total is a skip count).
+        var total: Double { sum }
+
+        /// Number of values currently in the window (capped at the
+        /// window limit). Useful as the denominator when presenting a
+        /// skip count scoped to the live window span.
+        var size: Int { count }
     }
 
     /// Immutable snapshot the UI reads. All fields are value types so
@@ -392,11 +431,33 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         /// before entropy collapses, so a sharper pre-saturation signal.
         let rollingPolicyLogitAbsMax: Double?
         /// Rolling-window mean of `TrainStepTiming.playedMoveProb`.
-        /// Strong action-index sanity signal: under a mis-aligned
-        /// encoding this plateaus near `1/policySize ≈ 0.0002`; under
-        /// a working loop it rises from there as the policy sharpens
-        /// on actually-played moves.
+        /// Coarse action-index probe — see the field's docstring for why
+        /// the unconditional mean is directionally ambiguous under the
+        /// advantage-normalized policy loss.
         let rollingPlayedMoveProb: Double?
+        /// Rolling-window means of the advantage-conditional played-move
+        /// probabilities. `Pos` should rise and `Neg` should fall under
+        /// a working loop; both staying flat near `1/policySize` is the
+        /// action-index-mismatch signature.
+        let rollingPlayedMoveProbPosAdv: Double?
+        let rollingPlayedMoveProbNegAdv: Double?
+        /// Count of steps in the current rolling window that skipped
+        /// the respective conditional mean because the batch had zero
+        /// positions on that side of the advantage sign (pure 0/0 →
+        /// NaN). Readers should interpret the rolling conditional means
+        /// as averages over `rollingPlayedMoveCondWindowSize − skipped`
+        /// samples rather than the full window. Zero before any
+        /// training steps have been observed — there is no "unknown"
+        /// state for a skip counter.
+        let rollingPlayedMoveProbPosAdvSkipped: Int
+        let rollingPlayedMoveProbNegAdvSkipped: Int
+        /// Total step count the skip counters are scoped to — the
+        /// denominator for the "skipped K of N" presentation. Equals
+        /// `min(stepsSinceReset, rollingWindow)`. Shared across the
+        /// two sign-conditional skip counters since they advance in
+        /// lockstep (every step appends to both). Zero before any
+        /// training step has been observed.
+        let rollingPlayedMoveCondWindowSize: Int
         /// Rolling-window mean of the advantage distribution
         /// summaries. `advMean` near zero and a stable `advStd` is
         /// the expected signature of a working baseline.
@@ -431,6 +492,18 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _policyHeadWeightNormWindow: RollingDoubleWindow
     private var _policyLogitAbsMaxWindow: RollingDoubleWindow
     private var _playedMoveProbWindow: RollingDoubleWindow
+    private var _playedMoveProbPosAdvWindow: RollingDoubleWindow
+    private var _playedMoveProbNegAdvWindow: RollingDoubleWindow
+    /// Per-step 0/1 skip markers for the advantage-conditional played-
+    /// move probabilities. Appended on every training step — 1.0 when
+    /// the conditional mean was NaN (zero batch rows on that sign of
+    /// the advantage), 0.0 otherwise. `sum` of the window is the
+    /// skip count in the window's span; `size` is the denominator.
+    /// Having this pair lets callers surface "mean over K/N samples"
+    /// rather than silently advertising the conditional mean as if
+    /// it reflected every step.
+    private var _playedMoveProbPosAdvSkipWindow: RollingDoubleWindow
+    private var _playedMoveProbNegAdvSkipWindow: RollingDoubleWindow
     private var _advMeanWindow: RollingDoubleWindow
     private var _advStdWindow: RollingDoubleWindow
     private var _advMinWindow: RollingDoubleWindow
@@ -478,6 +551,10 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._policyHeadWeightNormWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyLogitAbsMaxWindow = RollingDoubleWindow(limit: rollingWindow)
         self._playedMoveProbWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._playedMoveProbPosAdvWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._playedMoveProbNegAdvWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._playedMoveProbPosAdvSkipWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._playedMoveProbNegAdvSkipWindow = RollingDoubleWindow(limit: rollingWindow)
         self._advMeanWindow = RollingDoubleWindow(limit: rollingWindow)
         self._advStdWindow = RollingDoubleWindow(limit: rollingWindow)
         self._advMinWindow = RollingDoubleWindow(limit: rollingWindow)
@@ -516,6 +593,25 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._policyHeadWeightNormWindow.append(Double(timing.policyHeadWeightNorm))
             self._policyLogitAbsMaxWindow.append(Double(timing.policyLogitAbsMax))
             self._playedMoveProbWindow.append(Double(timing.playedMoveProb))
+            // NaN protection: the conditional means are NaN when the
+            // batch has zero positions on one side of the sign — skip
+            // those entries so the rolling mean stays well-defined.
+            // The parallel `…SkipWindow` ring is appended on every step
+            // (1.0 on skip, 0.0 on contribution) so consumers can
+            // present the conditional mean as "mean over K/N samples"
+            // rather than silently losing the skipped-batch count.
+            if timing.playedMoveProbPosAdv.isFinite {
+                self._playedMoveProbPosAdvWindow.append(Double(timing.playedMoveProbPosAdv))
+                self._playedMoveProbPosAdvSkipWindow.append(0.0)
+            } else {
+                self._playedMoveProbPosAdvSkipWindow.append(1.0)
+            }
+            if timing.playedMoveProbNegAdv.isFinite {
+                self._playedMoveProbNegAdvWindow.append(Double(timing.playedMoveProbNegAdv))
+                self._playedMoveProbNegAdvSkipWindow.append(0.0)
+            } else {
+                self._playedMoveProbNegAdvSkipWindow.append(1.0)
+            }
             self._advMeanWindow.append(Double(timing.advantageMean))
             self._advStdWindow.append(Double(timing.advantageStd))
             self._advMinWindow.append(Double(timing.advantageMin))
@@ -589,6 +685,10 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._policyHeadWeightNormWindow.removeAll()
             self._policyLogitAbsMaxWindow.removeAll()
             self._playedMoveProbWindow.removeAll()
+            self._playedMoveProbPosAdvWindow.removeAll()
+            self._playedMoveProbNegAdvWindow.removeAll()
+            self._playedMoveProbPosAdvSkipWindow.removeAll()
+            self._playedMoveProbNegAdvSkipWindow.removeAll()
             self._advMeanWindow.removeAll()
             self._advStdWindow.removeAll()
             self._advMinWindow.removeAll()
@@ -615,6 +715,14 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingPolicyHeadWNorm = _policyHeadWeightNormWindow.mean
             let rollingPLogitAbsMax = _policyLogitAbsMaxWindow.mean
             let rollingPlayedMoveP = _playedMoveProbWindow.mean
+            let rollingPlayedMovePosAdv = _playedMoveProbPosAdvWindow.mean
+            let rollingPlayedMoveNegAdv = _playedMoveProbNegAdvWindow.mean
+            // Skip-window size is the same on the pos and neg rings
+            // since both are appended on every step, so either one
+            // can supply the shared denominator.
+            let rollingCondWindowSize = _playedMoveProbPosAdvSkipWindow.size
+            let rollingPlayedMovePosAdvSkipped = Int(_playedMoveProbPosAdvSkipWindow.total.rounded())
+            let rollingPlayedMoveNegAdvSkipped = Int(_playedMoveProbNegAdvSkipWindow.total.rounded())
             let rollingAdvMean = _advMeanWindow.mean
             let rollingAdvStd = _advStdWindow.mean
             let rollingAdvMin = _advMinWindow.mean
@@ -639,6 +747,11 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 rollingPolicyHeadWeightNorm: rollingPolicyHeadWNorm,
                 rollingPolicyLogitAbsMax: rollingPLogitAbsMax,
                 rollingPlayedMoveProb: rollingPlayedMoveP,
+                rollingPlayedMoveProbPosAdv: rollingPlayedMovePosAdv,
+                rollingPlayedMoveProbNegAdv: rollingPlayedMoveNegAdv,
+                rollingPlayedMoveProbPosAdvSkipped: rollingPlayedMovePosAdvSkipped,
+                rollingPlayedMoveProbNegAdvSkipped: rollingPlayedMoveNegAdvSkipped,
+                rollingPlayedMoveCondWindowSize: rollingCondWindowSize,
                 rollingAdvMean: rollingAdvMean,
                 rollingAdvStd: rollingAdvStd,
                 rollingAdvMin: rollingAdvMin,
@@ -793,6 +906,8 @@ final class ChessTrainer: @unchecked Sendable {
     private var policyHeadWeightNormTensor: MPSGraphTensor // scalar (diagnostic)
     private var policyLogitAbsMaxTensor: MPSGraphTensor // scalar (diagnostic)
     private var playedMoveProbTensor: MPSGraphTensor    // scalar (diagnostic)
+    private var playedMoveProbPosAdvTensor: MPSGraphTensor // scalar (diagnostic)
+    private var playedMoveProbNegAdvTensor: MPSGraphTensor // scalar (diagnostic)
     private var advantageMeanTensor: MPSGraphTensor     // scalar (diagnostic)
     private var advantageStdTensor: MPSGraphTensor      // scalar (diagnostic)
     private var advantageMinTensor: MPSGraphTensor      // scalar (diagnostic)
@@ -869,7 +984,9 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotAdvMax: Int = 14
     private static let lossReadbackSlotAdvFracPos: Int = 15
     private static let lossReadbackSlotAdvFracSmall: Int = 16
-    private static let lossReadbackSlotCount: Int = 17
+    private static let lossReadbackSlotPlayedMoveProbPosAdv: Int = 17
+    private static let lossReadbackSlotPlayedMoveProbNegAdv: Int = 18
+    private static let lossReadbackSlotCount: Int = 19
 
     /// Reusable host-side staging buffers for replay-buffer samples.
     /// The trainer owns these buffers so real-data training can hop
@@ -919,6 +1036,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyHeadWeightNormTensor = built.policyHeadWeightNorm
         self.policyLogitAbsMaxTensor = built.policyLogitAbsMax
         self.playedMoveProbTensor = built.playedMoveProb
+        self.playedMoveProbPosAdvTensor = built.playedMoveProbPosAdv
+        self.playedMoveProbNegAdvTensor = built.playedMoveProbNegAdv
         self.advantageMeanTensor = built.advantageMean
         self.advantageStdTensor = built.advantageStd
         self.advantageMinTensor = built.advantageMin
@@ -1011,6 +1130,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyHeadWeightNormTensor = built.policyHeadWeightNorm
         self.policyLogitAbsMaxTensor = built.policyLogitAbsMax
         self.playedMoveProbTensor = built.playedMoveProb
+        self.playedMoveProbPosAdvTensor = built.playedMoveProbPosAdv
+        self.playedMoveProbNegAdvTensor = built.playedMoveProbNegAdv
         self.advantageMeanTensor = built.advantageMean
         self.advantageStdTensor = built.advantageStd
         self.advantageMinTensor = built.advantageMin
@@ -1071,6 +1192,8 @@ final class ChessTrainer: @unchecked Sendable {
         policyHeadWeightNorm: MPSGraphTensor,
         policyLogitAbsMax: MPSGraphTensor,
         playedMoveProb: MPSGraphTensor,
+        playedMoveProbPosAdv: MPSGraphTensor,
+        playedMoveProbNegAdv: MPSGraphTensor,
         advantageMean: MPSGraphTensor,
         advantageStd: MPSGraphTensor,
         advantageMin: MPSGraphTensor,
@@ -1367,16 +1490,25 @@ final class ChessTrainer: @unchecked Sendable {
 
         // --- Played-move probability (diagnostic) ---
         //
-        // Batch mean of softmax[movePlayed]. Cheap graph-side proxy
-        // for "is the policy concentrating probability on moves we
-        // actually played?" Under a healthy loop (and correct
-        // action-index encoding) this rises from ~1/policySize over
-        // training. Under an index mismatch it stays near
-        // ~1/policySize even as pLoss moves.
+        // Per-position probability the softmax assigns to the actually
+        // played move: `softmax[movePlayed]`, computed as
+        // `sum(softmax * oneHot)` along the class axis. Reuses the
+        // existing `oneHot` and `softmax` tensors so no new materialization
+        // is needed.
         //
-        // Computed as `sum(softmax * oneHot)` along the class axis —
-        // the existing `oneHot` and `softmax` tensors are reused
-        // without re-materializing either.
+        // The **unconditional** batch mean of this quantity is directionally
+        // ambiguous under this trainer's advantage-normalized policy loss.
+        // `advantage_normalized` has zero batch-mean by construction, so
+        // ~half the positions pull `p(a*)` up and ~half pull it down —
+        // the unconditional mean can sit near `1/policySize` even when
+        // learning is healthy. We keep it as a coarse index-mismatch
+        // probe (both conditionals flat near `1/policySize` is strong
+        // evidence of action-index misalignment) and emit two
+        // **advantage-sign-conditional** means as the real direction-of-
+        // learning signal: `playedMoveProbPosAdv` should rise and
+        // `playedMoveProbNegAdv` should fall as training progresses. The
+        // divergence between the two is the health signal, not the raw
+        // mean.
         let playedSoftmaxMasked = graph.multiplication(
             softmax,
             oneHot,
@@ -1391,6 +1523,79 @@ final class ChessTrainer: @unchecked Sendable {
             of: playedProbPerPos,
             axes: [0, 1],
             name: "played_move_prob"
+        )
+
+        // Advantage-sign masks on the raw advantage `A = z - vBaseline`
+        // (not the batch-normalized form — we want the intrinsic sign
+        // of the REINFORCE weight for the diagnostic, not a post-
+        // centering reclassification). Shape [batch, 1], same as
+        // `advantage` and `playedProbPerPos`.
+        let zeroConstPlayedProb = graph.constant(0.0, dataType: dtype)
+        let playedPosMaskBool = graph.greaterThan(
+            advantage,
+            zeroConstPlayedProb,
+            name: "played_prob_pos_mask_bool"
+        )
+        let playedPosMask = graph.cast(
+            playedPosMaskBool,
+            to: dtype,
+            name: "played_prob_pos_mask"
+        )
+        let playedNegMaskBool = graph.lessThan(
+            advantage,
+            zeroConstPlayedProb,
+            name: "played_prob_neg_mask_bool"
+        )
+        let playedNegMask = graph.cast(
+            playedNegMaskBool,
+            to: dtype,
+            name: "played_prob_neg_mask"
+        )
+        // Conditional mean = E[p(a*) · 1[A>0]] / E[1[A>0]]. Using batch
+        // means rather than raw sums keeps the scale identical to the
+        // unconditional `played_move_prob` so the three metrics are
+        // directly comparable in logs. Division by zero (no batch row
+        // has A>0) yields NaN; the Swift-side `recordStep` guards on
+        // `isFinite` before pushing into the rolling window.
+        let playedProbPosTensor = graph.multiplication(
+            playedProbPerPos,
+            playedPosMask,
+            name: "played_prob_pos"
+        )
+        let playedProbNegTensor = graph.multiplication(
+            playedProbPerPos,
+            playedNegMask,
+            name: "played_prob_neg"
+        )
+        let playedPosProductMean = graph.mean(
+            of: playedProbPosTensor,
+            axes: [0, 1],
+            name: "played_prob_pos_product_mean"
+        )
+        let playedNegProductMean = graph.mean(
+            of: playedProbNegTensor,
+            axes: [0, 1],
+            name: "played_prob_neg_product_mean"
+        )
+        let playedPosFrac = graph.mean(
+            of: playedPosMask,
+            axes: [0, 1],
+            name: "played_prob_pos_frac"
+        )
+        let playedNegFrac = graph.mean(
+            of: playedNegMask,
+            axes: [0, 1],
+            name: "played_prob_neg_frac"
+        )
+        let playedMoveProbPosAdvTensor = graph.division(
+            playedPosProductMean,
+            playedPosFrac,
+            name: "played_move_prob_pos_adv"
+        )
+        let playedMoveProbNegAdvTensor = graph.division(
+            playedNegProductMean,
+            playedNegFrac,
+            name: "played_move_prob_neg_adv"
         )
 
         // --- Advantage-distribution scalars (diagnostic) ---
@@ -1737,6 +1942,7 @@ final class ChessTrainer: @unchecked Sendable {
             totalLossTensor, policyLoss, valueLoss,
             policyEntropy, policyNonNegCount, gradGlobalNorm, valueMean, valueAbsMean, policyHeadWeightNormTensor,
             policyLogitAbsMax, playedMoveProbTensor,
+            playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
             advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
             advantageFracPosTensor, advantageFracSmallTensor,
             advantage,
@@ -1996,6 +2202,8 @@ final class ChessTrainer: @unchecked Sendable {
                 policyHeadWeightNorm: baseTiming.policyHeadWeightNorm,
                 policyLogitAbsMax: baseTiming.policyLogitAbsMax,
                 playedMoveProb: baseTiming.playedMoveProb,
+                playedMoveProbPosAdv: baseTiming.playedMoveProbPosAdv,
+                playedMoveProbNegAdv: baseTiming.playedMoveProbNegAdv,
                 advantageMean: baseTiming.advantageMean,
                 advantageStd: baseTiming.advantageStd,
                 advantageMin: baseTiming.advantageMin,
@@ -2370,6 +2578,7 @@ final class ChessTrainer: @unchecked Sendable {
                 policyEntropyTensor, policyNonNegCountTensor, gradGlobalNormTensor,
                 valueMeanTensor, valueAbsMeanTensor, policyHeadWeightNormTensor,
                 policyLogitAbsMaxTensor, playedMoveProbTensor,
+                playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
                 advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
                 advantageFracPosTensor, advantageFracSmallTensor,
                 advantageRawTensor
@@ -2391,6 +2600,8 @@ final class ChessTrainer: @unchecked Sendable {
             let policyHeadWNormData = results[policyHeadWeightNormTensor],
             let pLogitAbsMaxData = results[policyLogitAbsMaxTensor],
             let playedMoveProbData = results[playedMoveProbTensor],
+            let playedMoveProbPosAdvData = results[playedMoveProbPosAdvTensor],
+            let playedMoveProbNegAdvData = results[playedMoveProbNegAdvTensor],
             let advMeanData = results[advantageMeanTensor],
             let advStdData = results[advantageStdTensor],
             let advMinData = results[advantageMinTensor],
@@ -2457,6 +2668,16 @@ final class ChessTrainer: @unchecked Sendable {
             count: 1
         )
         ChessNetwork.readFloats(
+            from: playedMoveProbPosAdvData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbPosAdv),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: playedMoveProbNegAdvData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbNegAdv),
+            count: 1
+        )
+        ChessNetwork.readFloats(
             from: advMeanData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMean),
             count: 1
@@ -2511,6 +2732,8 @@ final class ChessTrainer: @unchecked Sendable {
         let policyHeadWNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicyHeadWNorm]
         let pLogitAbsMaxBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPLogitAbsMax]
         let playedMoveProbBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProb]
+        let playedMoveProbPosAdvBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProbPosAdv]
+        let playedMoveProbNegAdvBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProbNegAdv]
         let advMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvMean]
         let advStdBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvStd]
         let advMinBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvMin]
@@ -2566,6 +2789,8 @@ final class ChessTrainer: @unchecked Sendable {
             policyHeadWeightNorm: policyHeadWNormBufValue,
             policyLogitAbsMax: pLogitAbsMaxBufValue,
             playedMoveProb: playedMoveProbBufValue,
+            playedMoveProbPosAdv: playedMoveProbPosAdvBufValue,
+            playedMoveProbNegAdv: playedMoveProbNegAdvBufValue,
             advantageMean: advMeanBufValue,
             advantageStd: advStdBufValue,
             advantageMin: advMinBufValue,

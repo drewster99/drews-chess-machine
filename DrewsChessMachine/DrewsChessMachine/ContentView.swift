@@ -7593,6 +7593,49 @@ struct ContentView: View {
                         } else {
                             playedProbStr = "--"
                         }
+                        // Advantage-sign-conditional played-move
+                        // probabilities. Under a working training loop
+                        // `posAdv` rises above `1/policySize` and
+                        // `negAdv` falls — divergence between the two
+                        // is the real action-index/direction-of-
+                        // learning signal (the unconditional
+                        // `playedMoveProb` is ambiguous under adv-
+                        // normalized loss). The `skip=K/N` suffix
+                        // reports how many steps in the rolling window
+                        // dropped out because their batch had no
+                        // positions on that side of A — that's the
+                        // effective sample count behind the mean.
+                        let condWindowSize = trainingSnap.rollingPlayedMoveCondWindowSize
+                        let playedProbPosStr: String
+                        if let pm = trainingSnap.rollingPlayedMoveProbPosAdv {
+                            playedProbPosStr = String(
+                                format: "%.4f(skip=%d/%d)",
+                                pm,
+                                trainingSnap.rollingPlayedMoveProbPosAdvSkipped,
+                                condWindowSize
+                            )
+                        } else {
+                            playedProbPosStr = String(
+                                format: "--(skip=%d/%d)",
+                                trainingSnap.rollingPlayedMoveProbPosAdvSkipped,
+                                condWindowSize
+                            )
+                        }
+                        let playedProbNegStr: String
+                        if let pm = trainingSnap.rollingPlayedMoveProbNegAdv {
+                            playedProbNegStr = String(
+                                format: "%.4f(skip=%d/%d)",
+                                pm,
+                                trainingSnap.rollingPlayedMoveProbNegAdvSkipped,
+                                condWindowSize
+                            )
+                        } else {
+                            playedProbNegStr = String(
+                                format: "--(skip=%d/%d)",
+                                trainingSnap.rollingPlayedMoveProbNegAdvSkipped,
+                                condWindowSize
+                            )
+                        }
                         let pLogitMaxStr: String
                         if let pm = trainingSnap.rollingPolicyLogitAbsMax {
                             pLogitMaxStr = String(format: "%.3f", pm)
@@ -7621,7 +7664,7 @@ struct ContentView: View {
                             legalMassStr = "--"
                             top1LegalStr = "--"
                         }
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // Policy-entropy alarm: fires whenever the
@@ -7898,6 +7941,10 @@ struct ContentView: View {
                     StatusBarCell(
                         label: "Positions trained",
                         value: Self.formatCompactCount(totalPositions)
+                    )
+                    StatusBarCell(
+                        label: "Training rate",
+                        value: trainingRateStatusValue
                     )
                     StatusBarCell(
                         label: "Runs",
@@ -8197,6 +8244,35 @@ struct ContentView: View {
         }
     }
 
+    /// Format a moves/hour rate with an SI-ish suffix and the units
+    /// baked in, e.g. `9.26M moves/hr`, `523.4K moves/hr`,
+    /// `842 moves/hr`. Used by the "Training rate" status-bar cell
+    /// so the cell's value string is self-describing.
+    static func formatMovesPerHour(_ value: Double) -> String {
+        let abs = Swift.abs(value)
+        if abs >= 1_000_000 {
+            return String(format: "%.2fM moves/hr", value / 1_000_000)
+        } else if abs >= 1_000 {
+            return String(format: "%.1fK moves/hr", value / 1_000)
+        } else {
+            return String(format: "%.0f moves/hr", value)
+        }
+    }
+
+    /// Value for the status bar's "Training rate" cell: the most
+    /// recent 3-minute-rolling trainer moves/hour, or `"—"` before
+    /// any sample has been recorded this session. `progressRateSamples`
+    /// is populated at 1 Hz while `realTraining == true`; after Stop
+    /// the last value persists (until the next fresh Play-and-Train
+    /// start clears the buffer), which matches the rest of the row's
+    /// "last-known value" semantics.
+    private var trainingRateStatusValue: String {
+        guard let rate = progressRateSamples.last?.trainingMovesPerHour else {
+            return "—"
+        }
+        return Self.formatMovesPerHour(rate)
+    }
+
     // MARK: - Sweep Actions
 
     private func startSweep() {
@@ -8405,6 +8481,18 @@ struct ContentView: View {
             }
             if let playedProb = diagSnap?.rollingPlayedMoveProb {
                 lines.append(String(format: "  p(played):   %.4f", playedProb))
+            }
+            if let posProb = diagSnap?.rollingPlayedMoveProbPosAdv,
+               let negProb = diagSnap?.rollingPlayedMoveProbNegAdv,
+               let diag = diagSnap {
+                lines.append(String(
+                    format: "  p(played|A): +%.4f / -%.4f  skip=%d/%d,%d/%d",
+                    posProb, negProb,
+                    diag.rollingPlayedMoveProbPosAdvSkipped,
+                    diag.rollingPlayedMoveCondWindowSize,
+                    diag.rollingPlayedMoveProbNegAdvSkipped,
+                    diag.rollingPlayedMoveCondWindowSize
+                ))
             }
             // Advantage distribution — per-batch mean / std / signed
             // fractions show whether the fresh-baseline is centering

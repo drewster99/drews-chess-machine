@@ -388,16 +388,6 @@ enum BoardEncoder {
     /// Row 0 = rank 8 (top), row 7 = rank 1 (bottom). Indexed as row * 8 + col.
     static let startingPieces: [String?] = GameState.starting.board.map { $0?.assetName }
 
-    // MARK: - Move Decoding
-
-    /// Decode a policy index (0-4095) into source and destination square names.
-    /// Index encoding: from_square * 64 + to_square
-    static func decodeMove(index: Int) -> (from: String, to: String) {
-        let fromSquare = index / 64
-        let toSquare = index % 64
-        return (squareName(fromSquare), squareName(toSquare))
-    }
-
     /// Convert a square index (0-63) to algebraic notation (e.g., 0 = "a8", 63 = "h1").
     /// Squares numbered row-by-row from rank 8: 0=a8, 7=h8, 8=a7, ..., 56=a1, 63=h1.
     static func squareName(_ square: Int) -> String {
