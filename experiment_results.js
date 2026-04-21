@@ -177,11 +177,17 @@ window.EXPERIMENTS = [
   {
     "timestamp": "20260421-211313",
     "start_time_iso": "2026-04-21T21:13:13",
-    "status": "IN_PROGRESS",
+    "status": "ACCEPTED",
     "mode": "normal",
-    "change_details": "",
-    "changed_params": [],
-    "analysis_commentary": "",
+    "change_details": "Pushing entropy_bonus from 0.004 down to 0.003 to probe the lower edge of the stability basin. The basin is bounded below by 0.001 (collapsed) and above by ~0.01 (over-regularized); within the confirmed working region 0.004 beats 0.005 beats 0.01, suggesting that less entropy regularization yields better peakiness as long as we stay above the collapse edge. 0.003 is a single conservative step toward the edge \u2014 if it holds, we get sharper policy with still-bounded illegal mass; if it collapses, we've localized the lower bound of the basin to (0.001, 0.003]. All other knobs held fixed so the outcome is attributable to this one change.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.004,
+        "new": 0.003
+      }
+    ],
+    "analysis_commentary": "All three goal metrics improved materially: max ceiling 0.107 vs 0.197 (~46% lower), illegal_min 0.457 vs 0.665 (~31% absolute drop), and aboveU_max 5 vs 2. Trajectory shows monotonic illegal_mass decline from 0.9998 to 0.457 with no collapse signals.",
     "training_time_seconds": null,
     "folder": "experiments/20260421-211313"
   }
@@ -190,16 +196,16 @@ window.AGGREGATES = {
   "total_iterations": 11,
   "counts": {
     "SEED": 0,
-    "ACCEPTED": 2,
+    "ACCEPTED": 3,
     "NEUTRAL": 0,
     "REJECTED": 7,
     "FAILED": 1,
-    "IN_PROGRESS": 1
+    "IN_PROGRESS": 0
   },
-  "accept_rate": 0.2,
-  "failure_streak": 7,
+  "accept_rate": 0.2727272727272727,
+  "failure_streak": 0,
   "trailing_replicates": 0,
-  "arena_count": 8,
+  "arena_count": 9,
   "promotions": 0,
   "best_arena_score": 0.535,
   "best_arena_folder": "experiments/20260421-183711"

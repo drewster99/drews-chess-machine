@@ -1,0 +1,1 @@
+{"analysis_commentary": "All three goal metrics improved materially: max ceiling 0.107 vs 0.197 (~46% lower), illegal_min 0.457 vs 0.665 (~31% absolute drop), and aboveU_max 5 vs 2. Trajectory shows monotonic illegal_mass decline from 0.9998 to 0.457 with no collapse signals.", "classification": "improved"}
