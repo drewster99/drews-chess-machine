@@ -8,6 +8,15 @@ struct EvaluationResult: Sendable {
     let topMoves: [MoveVisualization]
     let textOutput: String
     let inputTensor: [Float]
+    /// Full forward-pass result surfaced alongside the formatted
+    /// text for the CLI recorder. The on-screen UI only reads
+    /// `topMoves` and `textOutput`; the recorder needs the raw
+    /// policy vector to extract a top-10 list and the full set of
+    /// policy stats without re-parsing the formatted string.
+    /// Nil when the forward pass threw — in that case the probe
+    /// retains its prior on-screen state and the recorder simply
+    /// skips the event rather than logging a half-populated entry.
+    let rawInference: ChessRunner.InferenceResult?
 }
 
 /// Live progress reported from inside a sweep task. The trainer fires the
@@ -1346,6 +1355,77 @@ struct ContentView: View {
     /// and keeps the hub's mirrored state flags synced so the
     /// `.commands` DSL can enable/disable menu items correctly.
     let commandHub: AppCommandHub
+
+    /// True iff the process was launched with `--train` on the
+    /// command line. When set, the first `.onAppear` suppresses
+    /// the Resume-from-Autosave sheet entirely and chains Build
+    /// Network → Play-and-Train → switch the board picker to
+    /// Candidate Test as an automated headless-friendly sequence.
+    /// Plumbed in from `DrewsChessMachineApp` so the flag lives
+    /// alongside the other process-scope wiring rather than
+    /// being discovered via `CommandLine.arguments` at view time.
+    let autoTrainOnLaunch: Bool
+
+    /// Parsed `--parameters <file>` JSON. Applied to the relevant
+    /// `@AppStorage` / `@State` fields right before
+    /// `buildNetwork()` fires inside the auto-train sequence, so
+    /// every downstream path (`ensureTrainer`, the sampling
+    /// schedule builders, the worker-count binding) picks the
+    /// new values up through its normal channels. Nil outside
+    /// CLI-driven runs.
+    let cliConfig: CliTrainingConfig?
+
+    /// Destination URL for the `--output <file>` JSON snapshot.
+    /// Presence of this URL is what switches the runtime into
+    /// "headless CLI" mode: a `CliTrainingRecorder` is allocated,
+    /// arena/stats/probe events are captured into it, and the
+    /// `training_time_limit` deadline task writes + exits. Nil
+    /// when the flag wasn't passed.
+    let cliOutputURL: URL?
+
+    /// Idempotency guard for the auto-train launch sequence.
+    /// `.onAppear` can fire more than once over a view's lifetime
+    /// (e.g. on window re-parenting), and the auto-train chain
+    /// is a one-shot launch behavior — firing it twice would
+    /// either refuse (network already built) or thrash the
+    /// session. Flipped `true` the first time the sequence
+    /// starts and never cleared.
+    @State private var autoTrainFired: Bool = false
+
+    /// Live recorder for `--output` runs. Allocated at the start
+    /// of `startRealTraining` when `cliOutputURL` is set, and
+    /// appended to by the stats/arena/probe code paths while the
+    /// session is active. Nil in normal interactive runs — each
+    /// capture site guards on `cliRecorder != nil` so the
+    /// recording paths are zero-cost when the feature isn't
+    /// engaged.
+    @State private var cliRecorder: CliTrainingRecorder?
+
+    // MARK: - CLI-overridable effective values
+    //
+    // These start at the compile-time defaults (the matching
+    // `Self.X` static constants) and remain unchanged throughout
+    // a normal interactive run. When `--parameters` specifies an
+    // override, `applyCliConfigOverrides` writes the new value
+    // into the matching field here. Every runtime read site that
+    // formerly read `Self.X` now reads `effectiveX` instead, so
+    // the override flows to self-play, training, the arena, and
+    // the stats/arena log lines uniformly.
+    //
+    // The corresponding `Self.X` constants stay as the SSOT
+    // defaults — these @State fields exist only so a runtime
+    // value can shadow them. That split lets the compile-time
+    // value still be referenced from anywhere that does not
+    // have a `ContentView` instance in scope (e.g. type-level
+    // code, tests), while a live session reads the effective
+    // value.
+    @State private var effectiveTournamentGames: Int = 200
+    @State private var effectivePromoteThreshold: Double = 0.55
+    @State private var effectiveAutoArenaIntervalSec: Double = 30 * 60
+    @State private var effectiveTrainingBatchSize: Int = 4096
+    @State private var effectiveReplayBufferCapacity: Int = 1_000_000
+    @State private var effectiveMinBufferBeforeTraining: Int = 200_000
+    @State private var effectiveCandidateProbeIntervalSec: Double = 15
 
     // Network
     @State private var network: ChessMPSNetwork?
@@ -3196,7 +3276,7 @@ struct ContentView: View {
                     diversityHistogram: currentDiversityHistogramBars,
                     arenaEvents: arenaChartEvents,
                     activeArenaStartElapsed: activeArenaStartElapsed,
-                    promoteThreshold: Self.tournamentPromoteThreshold,
+                    promoteThreshold: effectivePromoteThreshold,
                     appMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
                     gpuMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
                     visibleDomainSec: ChartZoom.stops[chartZoomIdx],
@@ -3257,7 +3337,23 @@ struct ContentView: View {
             // no pointer exists or the target has been deleted —
             // a first-launch of the app does not surface the sheet
             // at all.
-            maybePresentAutoResumeSheet()
+            //
+            // The `--train` CLI flag short-circuits this entirely:
+            // the user has explicitly asked for a headless-style
+            // fresh build + train + jump-to-candidate-test flow,
+            // so we skip the sheet (requirement #1) and run the
+            // automated sequence instead. The File menu's
+            // "Resume Training from Autosave" remains available
+            // if the user changes their mind before training
+            // actually starts.
+            if autoTrainOnLaunch {
+                if !autoTrainFired {
+                    autoTrainFired = true
+                    runAutoTrainLaunchSequence()
+                }
+            } else {
+                maybePresentAutoResumeSheet()
+            }
         }
         .sheet(isPresented: $autoResumeSheetShowing) {
             autoResumeSheetContentView()
@@ -3844,7 +3940,7 @@ struct ContentView: View {
         guard let session = parallelStats else { return }
         let elapsed = max(0, now.timeIntervalSince(session.sessionStart))
         let curSp = session.selfPlayPositions
-        let curTr = (trainingStats?.steps ?? 0) * Self.trainingBatchSize
+        let curTr = (trainingStats?.steps ?? 0) * effectiveTrainingBatchSize
 
         // Walk newest → oldest, recording the last sample we see
         // that still falls inside the 3-minute window. Breaks out
@@ -4182,13 +4278,14 @@ struct ContentView: View {
     /// the promotion threshold) or red (below). All non-arena states
     /// fall through to `busyLabel` rendered in the usual secondary
     /// color. The promotion threshold is read from
-    /// `Self.tournamentPromoteThreshold` so flipping it in one place
-    /// re-colors the UI automatically.
+    /// `effectivePromoteThreshold` (the CLI-overridable mirror of
+    /// `Self.tournamentPromoteThreshold`) so flipping it in one
+    /// place re-colors the UI automatically.
     private var busyLabelView: Text {
         if let tp = tournamentProgress {
             let elapsed = Date().timeIntervalSince(tp.startTime)
             let scorePercent = tp.candidateScore * 100
-            let thresholdPercent = Self.tournamentPromoteThreshold * 100
+            let thresholdPercent = effectivePromoteThreshold * 100
             let scoreColor: Color = scorePercent >= thresholdPercent ? .green : .red
 
             let head = Text(String(
@@ -4479,13 +4576,13 @@ struct ContentView: View {
             trainingSteps: trainingSnap?.steps ?? 0,
             selfPlayGames: snap?.selfPlayGames ?? 0,
             selfPlayMoves: snap?.selfPlayPositions ?? 0,
-            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * Self.trainingBatchSize,
-            batchSize: Self.trainingBatchSize,
+            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * effectiveTrainingBatchSize,
+            batchSize: effectiveTrainingBatchSize,
             learningRate: lr,
             entropyRegularizationCoeff: entropyCoeff,
             drawPenalty: drawPen,
-            promoteThreshold: Self.tournamentPromoteThreshold,
-            arenaGames: Self.tournamentGames,
+            promoteThreshold: effectivePromoteThreshold,
+            arenaGames: effectiveTournamentGames,
             selfPlayTau: TauConfigCodable(samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()),
             arenaTau: TauConfigCodable(samplingScheduleBox?.arena ?? buildArenaSchedule()),
             selfPlayWorkerCount: selfPlayWorkerCount,
@@ -5140,6 +5237,180 @@ struct ContentView: View {
         SessionLogger.shared.log("[RESUME] User dismissed auto-resume sheet")
     }
 
+    /// Drive the `--train` CLI launch sequence: build a fresh
+    /// network, wait for it to finish, start Play-and-Train, and
+    /// flip the board picker to Candidate Test. Called once from
+    /// the first `.onAppear` when `autoTrainOnLaunch` is set, after
+    /// the menu command hub has been wired and its mirrored state
+    /// has been synced (so `buildNetwork`'s enable-check state is
+    /// live).
+    ///
+    /// The build completes asynchronously inside `buildNetwork` via
+    /// a detached `Task`, so we can't call `startRealTraining`
+    /// synchronously after it — `networkReady` would still be false.
+    /// A short polling loop on the MainActor bridges the two: it
+    /// awaits `isBuilding` returning to false (at which point either
+    /// `network` is populated on success or is nil on failure),
+    /// then either proceeds or bails with a log line. 100 ms is
+    /// fine because the build takes at least multiple seconds of
+    /// MPSGraph compile/graph-setup; we don't care about the exact
+    /// sub-second at which the poll observes completion.
+    ///
+    /// Setting `playAndTrainBoardMode = .candidateTest` *after*
+    /// `startRealTraining` is intentional. `startRealTraining` sets
+    /// `realTraining = true` synchronously, which is what gates the
+    /// Board picker's visibility — so the picker is already showing
+    /// by the time the mode flip lands, and the probe flip to
+    /// `.candidateTest` also marks `candidateProbeDirty` via the
+    /// existing `onChange` side-effect probe so the driver fires an
+    /// immediate forward-pass probe at the first gap point.
+    @MainActor
+    private func runAutoTrainLaunchSequence() {
+        SessionLogger.shared.log("[APP] --train: starting auto-train launch sequence")
+        // Defensive state checks. These should always pass on a
+        // fresh launch (no network built yet, nothing running),
+        // but if somehow another flow already kicked things off
+        // we prefer a visible log line over silently colliding.
+        if networkReady {
+            SessionLogger.shared.log("[APP] --train: network already ready; skipping auto-train")
+            return
+        }
+        if isBusy {
+            SessionLogger.shared.log("[APP] --train: app is busy; skipping auto-train")
+            return
+        }
+        // Apply any `--parameters` overrides BEFORE buildNetwork /
+        // startRealTraining so the trainer and sampling-schedule
+        // constructors read the overridden values out of their
+        // normal @AppStorage / @State sources. Doing this here
+        // instead of inside startRealTraining keeps the apply
+        // logic out of the interactive-user start path — the
+        // CLI-only concerns stay co-located with the CLI-only
+        // sequence.
+        applyCliConfigOverrides()
+        buildNetwork()
+        Task { @MainActor in
+            while isBuilding {
+                do {
+                    try await Task.sleep(for: .milliseconds(100))
+                } catch {
+                    // Task was cancelled (e.g. window closed during
+                    // launch). Leave state alone — the build Task
+                    // inside buildNetwork runs to completion
+                    // independently and will settle `isBuilding`
+                    // and `network` on its own.
+                    SessionLogger.shared.log("[APP] --train: auto-train poll cancelled before build completion")
+                    return
+                }
+            }
+            guard networkReady else {
+                SessionLogger.shared.log("[APP] --train: network build failed; aborting auto-train")
+                return
+            }
+            SessionLogger.shared.log("[APP] --train: network built; starting Play-and-Train")
+            startRealTraining(mode: .freshOrFromLoadedSession)
+            playAndTrainBoardMode = .candidateTest
+            SessionLogger.shared.log("[APP] --train: switched to Candidate Test view")
+        }
+    }
+
+    /// Write the `--parameters` JSON overrides into the relevant
+    /// `@AppStorage` / `@State` fields. Only runs when `cliConfig`
+    /// is non-nil (i.e. `--parameters` was supplied); each inner
+    /// field is independently optional so a partial file only
+    /// overrides the keys it names, leaving everything else at
+    /// whatever the UI default or persisted value already is.
+    ///
+    /// Values flow from here into the trainer and the self-play
+    /// / arena schedules through `ensureTrainer`, `buildSelfPlaySchedule`,
+    /// and `buildArenaSchedule` — the same paths an interactive
+    /// user triggers when they edit the same fields in the UI.
+    /// `replayRatioAutoAdjust` is left alone because no CLI knob
+    /// maps to it; a caller who wants a static training delay can
+    /// just set `trainingStepDelayMs` to their desired value.
+    @MainActor
+    private func applyCliConfigOverrides() {
+        guard let cfg = cliConfig else { return }
+        // Capture "before" values so the log line proves the
+        // override actually landed on top of whatever was
+        // previously in @AppStorage — including any stale value
+        // persisted from an earlier launch. Each write below
+        // goes through the @AppStorage projected setter, which
+        // synchronously flushes to UserDefaults; the subsequent
+        // @AppStorage read in `ensureTrainer` / schedule builders
+        // returns the written value.
+        var changes: [(String, String, String)] = []
+        func record<T: CustomStringConvertible>(_ label: String, _ before: T, _ after: T) {
+            changes.append((label, "\(before)", "\(after)"))
+        }
+        if let v = cfg.entropyBonus { record("entropy_bonus", entropyRegularizationCoeff, v); entropyRegularizationCoeff = v }
+        if let v = cfg.gradClipMaxNorm { record("grad_clip_max_norm", gradClipMaxNorm, v); gradClipMaxNorm = v }
+        if let v = cfg.weightDecay { record("weight_decay", weightDecayC, v); weightDecayC = v }
+        if let v = cfg.K { record("K", policyScaleK, v); policyScaleK = v }
+        if let v = cfg.learningRate { record("learning_rate", trainerLearningRate, v); trainerLearningRate = v }
+        if let v = cfg.drawPenalty { record("draw_penalty", drawPenalty, v); drawPenalty = v }
+        if let v = cfg.selfPlayStartTau { record("self_play_start_tau", spStartTau, v); spStartTau = v }
+        if let v = cfg.selfPlayTargetTau { record("self_play_target_tau", spFloorTau, v); spFloorTau = v }
+        if let v = cfg.selfPlayTauDecayPerPly { record("self_play_tau_decay_per_ply", spDecayPerPly, v); spDecayPerPly = v }
+        if let v = cfg.arenaStartTau { record("arena_start_tau", arStartTau, v); arStartTau = v }
+        if let v = cfg.arenaTargetTau { record("arena_target_tau", arFloorTau, v); arFloorTau = v }
+        if let v = cfg.arenaTauDecayPerPly { record("arena_tau_decay_per_ply", arDecayPerPly, v); arDecayPerPly = v }
+        if let v = cfg.replayRatioTarget { record("replay_ratio_target", replayRatioTarget, v); replayRatioTarget = v }
+        if let v = cfg.replayRatioAutoAdjust { record("replay_ratio_auto_adjust", replayRatioAutoAdjust, v); replayRatioAutoAdjust = v }
+        if let v = cfg.selfPlayWorkers {
+            let clamped = max(1, min(Self.absoluteMaxSelfPlayWorkers, v))
+            record("self_play_workers", selfPlayWorkerCount, clamped)
+            selfPlayWorkerCount = clamped
+        }
+        if let v = cfg.trainingStepDelayMs {
+            // Snap onto the stepDelayLadder so the Stepper's UI
+            // invariants ("the displayed value is always a ladder
+            // member") hold after the override lands — pick the
+            // nearest ladder rung to the requested value.
+            let clamped = max(0, min(Self.stepDelayMaxMs, v))
+            let ladder = Self.stepDelayLadder
+            let nearest = ladder.min(by: { abs($0 - clamped) < abs($1 - clamped) }) ?? clamped
+            record("training_step_delay_ms", trainingStepDelayMs, nearest)
+            trainingStepDelayMs = nearest
+        }
+        if let v = cfg.trainingBatchSize, v > 0 {
+            record("training_batch_size", effectiveTrainingBatchSize, v)
+            effectiveTrainingBatchSize = v
+        }
+        if let v = cfg.replayBufferCapacity, v > 0 {
+            record("replay_buffer_capacity", effectiveReplayBufferCapacity, v)
+            effectiveReplayBufferCapacity = v
+        }
+        if let v = cfg.replayBufferMinPositionsBeforeTraining, v >= 0 {
+            record("replay_buffer_min_positions_before_training", effectiveMinBufferBeforeTraining, v)
+            effectiveMinBufferBeforeTraining = v
+        }
+        if let v = cfg.arenaPromoteThreshold, v > 0, v <= 1 {
+            record("arena_promote_threshold", effectivePromoteThreshold, v)
+            effectivePromoteThreshold = v
+        }
+        if let v = cfg.arenaGamesPerTournament, v > 0 {
+            record("arena_games_per_tournament", effectiveTournamentGames, v)
+            effectiveTournamentGames = v
+        }
+        if let v = cfg.arenaAutoIntervalSec, v > 0 {
+            record("arena_auto_interval_sec", effectiveAutoArenaIntervalSec, v)
+            effectiveAutoArenaIntervalSec = v
+        }
+        if let v = cfg.candidateProbeIntervalSec, v > 0 {
+            record("candidate_probe_interval_sec", effectiveCandidateProbeIntervalSec, v)
+            effectiveCandidateProbeIntervalSec = v
+        }
+        for (label, before, after) in changes {
+            SessionLogger.shared.log("[APP] --parameters override: \(label): \(before) -> \(after)")
+        }
+        if changes.isEmpty {
+            SessionLogger.shared.log("[APP] --parameters: no overrides applied (empty or all-nil config)")
+        } else {
+            SessionLogger.shared.log("[APP] --parameters: applied \(changes.count) override(s) to live state")
+        }
+    }
+
     /// Trigger the actual resume: tear down the sheet, then chain
     /// through `loadSessionFrom(url:startAfterLoad:)` which handles
     /// the network-build, weight-load, and Play-and-Train start.
@@ -5537,7 +5808,7 @@ struct ContentView: View {
         let now = Date()
         let dirty = candidateProbeDirty
         let intervalElapsed = now.timeIntervalSince(lastCandidateProbeTime)
-        >= Self.candidateProbeIntervalSec
+        >= effectiveCandidateProbeIntervalSec
         guard dirty || intervalElapsed else { return }
 
         let state = editableState
@@ -5595,6 +5866,109 @@ struct ContentView: View {
         candidateProbeDirty = false
         lastCandidateProbeTime = Date()
         candidateProbeCount += 1
+        // CLI-mode capture: if an output JSON is configured, append
+        // this probe's diagnostics alongside the arena and stats
+        // streams. No-op in normal interactive runs — the recorder
+        // is only allocated when `cliOutputURL` is non-nil. Skipped
+        // when the forward pass failed (rawInference == nil) so a
+        // failed probe doesn't show up as a zeroed entry in the
+        // output.
+        if let recorder = cliRecorder,
+           let inf = result.rawInference,
+           let sessionStart = currentSessionStart {
+            let elapsed = Date().timeIntervalSince(sessionStart)
+            let event = buildCliCandidateTestEvent(
+                elapsedSec: elapsed,
+                probeIndex: candidateProbeCount,
+                target: target,
+                state: state,
+                inference: inf
+            )
+            recorder.appendCandidateTest(event)
+        }
+    }
+
+    /// Build a `CliTrainingRecorder.CandidateTest` from a finished
+    /// forward-pass result. Computes the same on-screen policy
+    /// diagnostics the text output shows (top-100 sum, above-uniform
+    /// count, legal-mass sum, min/max) plus a structured top-10
+    /// list — mirroring `performInference` so the JSON and the UI
+    /// stay in sync. Factored out so the probe fire path is short
+    /// and the capture logic can be exercised independently in
+    /// the future if we ever add a headless test for it.
+    nonisolated private func buildCliCandidateTestEvent(
+        elapsedSec: Double,
+        probeIndex: Int,
+        target: ProbeNetworkTarget,
+        state: GameState,
+        inference: ChessRunner.InferenceResult
+    ) -> CliTrainingRecorder.CandidateTest {
+        let policy = inference.policy
+        let sum = Double(policy.reduce(0, +))
+        let top100Sum = Double(policy.sorted(by: >).prefix(100).reduce(0, +))
+        let minP = Double(policy.min() ?? 0)
+        let maxP = Double(policy.max() ?? 0)
+        let legalMoves = MoveGenerator.legalMoves(for: state)
+        let nLegal = max(1, legalMoves.count)
+        let legalUniformThreshold = 1.0 / Double(nLegal)
+        let legalIndices = legalMoves
+            .map { PolicyEncoding.policyIndex($0, currentPlayer: state.currentPlayer) }
+        let abovePerLegalCount = legalIndices.filter { idx in
+            idx >= 0 && idx < policy.count
+                && Double(policy[idx]) > legalUniformThreshold
+        }.count
+        let legalMassSum: Double = legalIndices.reduce(0.0) { acc, idx in
+            (idx >= 0 && idx < policy.count) ? acc + Double(policy[idx]) : acc
+        }
+        // Top-10 raw — same extraction path the UI uses for top-4
+        // (legality-agnostic, geometrically decoded), just with a
+        // larger K.
+        let top10 = ChessRunner.extractTopMoves(
+            from: policy,
+            state: state,
+            pieces: state.board,
+            count: 10
+        )
+        let topMovesOut: [CliTrainingRecorder.CandidateTest.TopMove] = top10.enumerated().map { (rank, mv) in
+            CliTrainingRecorder.CandidateTest.TopMove(
+                rank: rank + 1,
+                from: BoardEncoder.squareName(mv.fromRow * 8 + mv.fromCol),
+                to: BoardEncoder.squareName(mv.toRow * 8 + mv.toCol),
+                fromRow: mv.fromRow,
+                fromCol: mv.fromCol,
+                toRow: mv.toRow,
+                toCol: mv.toCol,
+                probability: Double(mv.probability),
+                isLegal: mv.isLegal
+            )
+        }
+        let stats = CliTrainingRecorder.CandidateTest.PolicyStats(
+            sum: sum,
+            top100Sum: top100Sum,
+            aboveUniformCount: abovePerLegalCount,
+            legalMoveCount: legalMoves.count,
+            legalUniformThreshold: legalUniformThreshold,
+            legalMassSum: legalMassSum,
+            illegalMassSum: max(0.0, 1.0 - legalMassSum),
+            min: minP,
+            max: maxP
+        )
+        let targetStr: String
+        switch target {
+        case .candidate: targetStr = "candidate"
+        case .champion: targetStr = "champion"
+        }
+        return CliTrainingRecorder.CandidateTest(
+            elapsedSec: elapsedSec,
+            probeIndex: probeIndex,
+            probeNetworkTarget: targetStr,
+            inferenceTimeMs: inference.inferenceTimeMs,
+            valueHead: CliTrainingRecorder.CandidateTest.ValueHead(output: Double(inference.value)),
+            policyHead: CliTrainingRecorder.CandidateTest.PolicyHead(
+                policyStats: stats,
+                topRaw: topMovesOut
+            )
+        )
     }
 
     /// Run one arena tournament in parallel mode — 200 games between
@@ -5652,7 +6026,7 @@ struct ContentView: View {
             let vmStr = snap.rollingValueMean.map { String(format: "%+.4f", $0) } ?? "--"
             let vaStr = snap.rollingValueAbsMean.map { String(format: "%.4f", $0) } ?? "--"
             let bufCount = replayBuffer?.count ?? 0
-            let bufCap = replayBuffer?.capacity ?? Self.replayBufferCapacity
+            let bufCap = replayBuffer?.capacity ?? effectiveReplayBufferCapacity
             SessionLogger.shared.log(
                 "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) gNorm=\(gStr) vMean=\(vmStr) vAbs=\(vaStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
             )
@@ -5685,7 +6059,7 @@ struct ContentView: View {
             activeArenaStartElapsed = max(0, Date().timeIntervalSince(sessionStart))
         }
 
-        let totalGames = Self.tournamentGames
+        let totalGames = effectiveTournamentGames
         let startTime = Date()
         tBox.update(TournamentProgress(
             currentGame: 0,
@@ -5866,7 +6240,7 @@ struct ContentView: View {
             shouldPromote = true
             promotionKind = .manual
         case .none:
-            shouldPromote = playedGames >= totalGames && score >= Self.tournamentPromoteThreshold
+            shouldPromote = playedGames >= totalGames && score >= effectivePromoteThreshold
             promotionKind = shouldPromote ? .automatic : nil
         }
         // Holds the new champion weights if promotion succeeds,
@@ -6146,10 +6520,10 @@ struct ContentView: View {
         let trainerIDStr = trainer.identifier?.description ?? "?"
 
         let parameters = ArenaLogFormatter.Parameters(
-            batchSize: Self.trainingBatchSize,
+            batchSize: effectiveTrainingBatchSize,
             learningRate: trainer.learningRate,
-            promoteThreshold: Self.tournamentPromoteThreshold,
-            tournamentGames: Self.tournamentGames,
+            promoteThreshold: effectivePromoteThreshold,
+            tournamentGames: effectiveTournamentGames,
             spStartTau: sp.startTau,
             spFloorTau: sp.floorTau,
             spDecayPerPly: sp.decayPerPly,
@@ -6190,6 +6564,63 @@ struct ContentView: View {
         }
         print(kv)
         SessionLogger.shared.log(kv)
+
+        // CLI-mode capture: mirror the arena block's parse-target
+        // fields (KV line) plus the extras from the human-readable
+        // block that don't appear in the KV but are useful for
+        // downstream tooling (tau schedules, diversity snapshot,
+        // per-worker count). The recorder serializes these into
+        // the arena_results[] array of the `--output` JSON.
+        if let recorder = cliRecorder {
+            let elo = record.eloSummary
+            let entry = CliTrainingRecorder.Arena(
+                index: index,
+                finishedAtStep: record.finishedAtStep,
+                gamesPlayed: record.gamesPlayed,
+                tournamentGames: effectiveTournamentGames,
+                candidateWins: record.candidateWins,
+                championWins: record.championWins,
+                draws: record.draws,
+                score: record.score,
+                drawRate: ArenaLogFormatter.drawRateFraction(record: record),
+                elo: elo.elo,
+                eloLo: elo.eloLo,
+                eloHi: elo.eloHi,
+                scoreLo: elo.scoreLo,
+                scoreHi: elo.scoreHi,
+                candidateWinsAsWhite: record.candidateWinsAsWhite,
+                candidateDrawsAsWhite: record.candidateDrawsAsWhite,
+                candidateLossesAsWhite: record.candidateLossesAsWhite,
+                candidateWinsAsBlack: record.candidateWinsAsBlack,
+                candidateDrawsAsBlack: record.candidateDrawsAsBlack,
+                candidateLossesAsBlack: record.candidateLossesAsBlack,
+                candidateScoreAsWhite: record.candidateScoreAsWhite,
+                candidateScoreAsBlack: record.candidateScoreAsBlack,
+                promoted: record.promoted,
+                promotionKind: record.promotionKind?.rawValue,
+                promotedID: record.promotedID?.description,
+                durationSec: record.durationSec,
+                candidateID: candidateIDStr,
+                championID: championIDStr,
+                trainerID: trainerIDStr,
+                learningRate: Double(trainer.learningRate),
+                promoteThreshold: effectivePromoteThreshold,
+                batchSize: effectiveTrainingBatchSize,
+                workerCount: selfPlayWorkerCount,
+                spStartTau: Double(sp.startTau),
+                spFloorTau: Double(sp.floorTau),
+                spDecayPerPly: Double(sp.decayPerPly),
+                arStartTau: Double(ar.startTau),
+                arFloorTau: Double(ar.floorTau),
+                arDecayPerPly: Double(ar.decayPerPly),
+                diversityUniqueGames: diversity.uniqueGames,
+                diversityGamesInWindow: diversity.gamesInWindow,
+                diversityUniquePercent: diversity.uniquePercent,
+                diversityAvgDivergencePly: diversity.avgDivergencePly,
+                buildNumber: BuildInfo.buildNumber
+            )
+            recorder.appendArena(entry)
+        }
     }
 
     /// Release arena-active state on an early return from
@@ -6729,7 +7160,7 @@ struct ContentView: View {
         if continueMode, let existing = replayBuffer {
             buffer = existing
         } else {
-            buffer = ReplayBuffer(capacity: Self.replayBufferCapacity)
+            buffer = ReplayBuffer(capacity: effectiveReplayBufferCapacity)
             replayBuffer = buffer
         }
         let box: TrainingLiveStatsBox
@@ -6987,7 +7418,7 @@ struct ContentView: View {
         let stepDelayBox = TrainingStepDelayBox(initial: trainingStepDelayMs)
         trainingStepDelayBox = stepDelayBox
         let ratioController = ReplayRatioController(
-            batchSize: Self.trainingBatchSize,
+            batchSize: effectiveTrainingBatchSize,
             targetRatio: replayRatioTarget,
             autoAdjust: replayRatioAutoAdjust,
             initialDelayMs: replayRatioAutoAdjust
@@ -7051,10 +7482,48 @@ struct ContentView: View {
             currentSessionStart = Date()
         }
 
+        // CLI capture mode: allocate the recorder before the
+        // training Task starts so every downstream capture site
+        // (stats logger, arena, candidate probe) can append to it.
+        // Allocation fires when `--train` is on (headless CLI run,
+        // with a potential `training_time_limit` that needs a JSON
+        // artifact at expiry) OR when `--output <file>` was
+        // supplied (user wants artifact regardless of train mode).
+        // The recorder is `final class @unchecked Sendable` so we
+        // can capture the reference into each child task without
+        // wrestling MainActor isolation at each append. Cleared in
+        // the teardown block along with the other per-session state.
+        let recorder: CliTrainingRecorder?
+        if cliOutputURL != nil || autoTrainOnLaunch {
+            let r = CliTrainingRecorder()
+            r.setSessionID(currentSessionID)
+            recorder = r
+            cliRecorder = r
+        } else {
+            recorder = nil
+        }
+        let outputURL = cliOutputURL
+        let cliTrainingTimeLimitSec = cliConfig?.trainingTimeLimitSec
+        let isAutoTrainRun = autoTrainOnLaunch
+
+        // Snapshot the CLI-overridable effective values into plain
+        // `let`s so the detached Task bodies below can read them
+        // without a MainActor hop. These values don't change after
+        // session start in the current model, so a one-time capture
+        // is safe and keeps the Task-side code MainActor-free.
+        let sessionTrainingBatchSize = effectiveTrainingBatchSize
+        let sessionMinBufferBeforeTraining = effectiveMinBufferBeforeTraining
+        let sessionAutoArenaIntervalSec = effectiveAutoArenaIntervalSec
+        let sessionTournamentGames = effectiveTournamentGames
+        let sessionPromoteThreshold = effectivePromoteThreshold
+
         realTrainingTask = Task(priority: .userInitiated) {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
              selfPlayGate, trainingGate, arenaFlag, triggerBox, overrideBox, countBox,
-             gameWatcher, ratioController] in
+             gameWatcher, ratioController, recorder, outputURL, cliTrainingTimeLimitSec,
+             isAutoTrainRun,
+             sessionTrainingBatchSize, sessionMinBufferBeforeTraining,
+             sessionAutoArenaIntervalSec, sessionTournamentGames, sessionPromoteThreshold] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
@@ -7315,7 +7784,8 @@ struct ContentView: View {
                 // so the arena coordinator can briefly snapshot
                 // trainer weights.
                 group.addTask(priority: .userInitiated) {
-                    [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController] in
+                    [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController,
+                     sessionTrainingBatchSize, sessionMinBufferBeforeTraining, sessionAutoArenaIntervalSec] in
                     while !Task.isCancelled {
                         // Pause gate check (between steps).
                         if trainingGate.isRequestedToPause {
@@ -7332,7 +7802,7 @@ struct ContentView: View {
                         // haven't produced enough decorrelated samples
                         // yet. Short sleep + retry keeps the worker
                         // responsive to Stop and to pause requests.
-                        if buffer.count < Self.minBufferBeforeTraining {
+                        if buffer.count < sessionMinBufferBeforeTraining {
                             try? await Task.sleep(for: .milliseconds(100))
                             continue
                         }
@@ -7349,7 +7819,7 @@ struct ContentView: View {
                         do {
                             guard let sampledTiming = try await trainer.trainStep(
                                 replayBuffer: buffer,
-                                batchSize: Self.trainingBatchSize
+                                batchSize: sessionTrainingBatchSize
                             ) else {
                                 try? await Task.sleep(for: .milliseconds(100))
                                 continue
@@ -7373,7 +7843,7 @@ struct ContentView: View {
                         // Auto-trigger the arena on the 30-min cadence.
                         // Fires the trigger inbox; the arena coordinator
                         // task picks it up and runs the tournament.
-                        if triggerBox.shouldAutoTrigger(interval: Self.secondsPerTournament) {
+                        if triggerBox.shouldAutoTrigger(interval: sessionAutoArenaIntervalSec) {
                             triggerBox.trigger()
                         }
 
@@ -7437,7 +7907,8 @@ struct ContentView: View {
                 // classes whose var mutation is otherwise main-actor-
                 // driven.
                 group.addTask(priority: .utility) {
-                    [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox, scheduleBox] in
+                    [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox, scheduleBox, recorder,
+                     sessionTrainingBatchSize, sessionTournamentGames, sessionPromoteThreshold] in
                     let sessionStart = Date()
                     // Bootstrap-phase step threshold for the per-step
                     // emit. `Self.bootstrapStatsStepCount` is tunable
@@ -7552,7 +8023,7 @@ struct ContentView: View {
                                                 parallelSnap.whiteCheckmates, parallelSnap.blackCheckmates,
                                                 parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
-                        let cfgStr = "batch=\(Self.trainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", Self.tournamentPromoteThreshold)) arenaGames=\(Self.tournamentGames) workers=\(workerN)"
+                        let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", sessionPromoteThreshold)) arenaGames=\(sessionTournamentGames) workers=\(workerN)"
                         let regStr = String(
                             format: "clip=%.1f decay=%.0e ent=%.1e drawPen=%.3f K=%.2f",
                             gradClip,
@@ -7667,6 +8138,88 @@ struct ContentView: View {
                         let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
+                        // CLI `--output` capture: one StatsLine per
+                        // `[STATS]` log emit. All values come from the
+                        // same thread-safe snapshots the log line just
+                        // used, so the JSON and the log stay perfectly
+                        // consistent. No-op when `recorder == nil`.
+                        if let recorder {
+                            let entry = CliTrainingRecorder.StatsLine(
+                                elapsedSec: elapsedTarget,
+                                steps: trainingSnap.stats.steps,
+                                selfPlayGames: parallelSnap.selfPlayGames,
+                                positionsTrained: parallelSnap.selfPlayPositions,
+                                avgLen: lifetimeAvgLen,
+                                rollingAvgLen: rollingAvgLen,
+                                gameLenP50: parallelSnap.gameLenP50,
+                                gameLenP95: parallelSnap.gameLenP95,
+                                bufferCount: bufCount,
+                                bufferCapacity: bufCap,
+                                policyLoss: trainingSnap.rollingPolicyLoss,
+                                valueLoss: trainingSnap.rollingValueLoss,
+                                policyEntropy: trainingSnap.rollingPolicyEntropy,
+                                gradGlobalNorm: trainingSnap.rollingGradGlobalNorm,
+                                policyHeadWeightNorm: trainingSnap.rollingPolicyHeadWeightNorm,
+                                policyLogitAbsMax: trainingSnap.rollingPolicyLogitAbsMax,
+                                playedMoveProb: trainingSnap.rollingPlayedMoveProb,
+                                playedMoveProbPosAdv: trainingSnap.rollingPlayedMoveProbPosAdv,
+                                playedMoveProbPosAdvSkipped: trainingSnap.rollingPlayedMoveProbPosAdvSkipped,
+                                playedMoveProbNegAdv: trainingSnap.rollingPlayedMoveProbNegAdv,
+                                playedMoveProbNegAdvSkipped: trainingSnap.rollingPlayedMoveProbNegAdvSkipped,
+                                playedMoveCondWindowSize: trainingSnap.rollingPlayedMoveCondWindowSize,
+                                legalMass: legalMassOverride.map { Double($0.legalMass) },
+                                top1LegalFraction: legalMassOverride.map { Double($0.top1LegalFraction) },
+                                valueMean: trainingSnap.rollingValueMean,
+                                valueAbsMean: trainingSnap.rollingValueAbsMean,
+                                vBaselineDelta: trainingSnap.rollingVBaselineDelta,
+                                advMean: trainingSnap.rollingAdvMean,
+                                advStd: trainingSnap.rollingAdvStd,
+                                advMin: trainingSnap.rollingAdvMin,
+                                advMax: trainingSnap.rollingAdvMax,
+                                advFracPositive: trainingSnap.rollingAdvFracPositive,
+                                advFracSmall: trainingSnap.rollingAdvFracSmall,
+                                advP05: trainingSnap.advantageP05,
+                                advP50: trainingSnap.advantageP50,
+                                advP95: trainingSnap.advantageP95,
+                                spStartTau: Double(spSched.startTau),
+                                spFloorTau: Double(spSched.floorTau),
+                                spDecayPerPly: Double(spSched.decayPerPly),
+                                arStartTau: Double(arSched.startTau),
+                                arFloorTau: Double(arSched.floorTau),
+                                arDecayPerPly: Double(arSched.decayPerPly),
+                                diversityUniqueGames: divSnap.uniqueGames,
+                                diversityGamesInWindow: divSnap.gamesInWindow,
+                                diversityUniquePercent: divSnap.uniquePercent,
+                                diversityAvgDivergencePly: divSnap.avgDivergencePly,
+                                ratioTarget: ratioSnap.targetRatio,
+                                ratioCurrent: ratioSnap.currentRatio,
+                                ratioProductionRate: ratioSnap.productionRate,
+                                ratioConsumptionRate: ratioSnap.consumptionRate,
+                                ratioAutoAdjust: ratioSnap.autoAdjust,
+                                ratioComputedDelayMs: ratioSnap.computedDelayMs,
+                                whiteCheckmates: parallelSnap.whiteCheckmates,
+                                blackCheckmates: parallelSnap.blackCheckmates,
+                                stalemates: parallelSnap.stalemates,
+                                fiftyMoveDraws: parallelSnap.fiftyMoveDraws,
+                                threefoldRepetitionDraws: parallelSnap.threefoldRepetitionDraws,
+                                insufficientMaterialDraws: parallelSnap.insufficientMaterialDraws,
+                                batchSize: sessionTrainingBatchSize,
+                                learningRate: Double(lr),
+                                promoteThreshold: sessionPromoteThreshold,
+                                arenaGames: sessionTournamentGames,
+                                workerCount: workerN,
+                                gradClipMaxNorm: Double(gradClip),
+                                weightDecayC: Double(weightDec),
+                                entropyRegularizationCoeff: Double(entropyCoeff),
+                                drawPenalty: Double(drawPen),
+                                policyScaleK: Double(kScale),
+                                buildNumber: BuildInfo.buildNumber,
+                                trainerID: trainerID,
+                                championID: championID
+                            )
+                            recorder.appendStats(entry)
+                        }
+
                         // Policy-entropy alarm: fires whenever the
                         // rolling entropy (computed over the training
                         // stats window, same as logged above) is below
@@ -7767,6 +8320,76 @@ struct ContentView: View {
                     }
                 }
 
+                // Headless CLI deadline. Armed whenever the run
+                // started with `--train` AND `training_time_limit`
+                // is set — the time limit is the primary driver of
+                // output generation and exit, regardless of
+                // whether `--output <file>` was supplied. When
+                // `--output` is present the JSON snapshot is
+                // written to that file (overwriting); when absent
+                // the snapshot goes to stdout so the user can
+                // redirect or pipe it. Outside of `--train` mode
+                // (interactive use) the deadline is ignored — the
+                // user is driving the UI and an unexpected
+                // termination would be hostile.
+                //
+                // On wake-up: log the deadline event, emit the
+                // recorder's snapshot to the configured sink, then
+                // call `Darwin._exit(0)`. The crucial detail is
+                // `_exit` vs `exit`: `exit` runs C++ atexit
+                // handlers (including CoreAnalytics' exit barrier)
+                // while the MPS self-play worker is still mid-
+                // `graph.run` on its dedicated serial dispatch
+                // queue — the handler tears down global state
+                // that `MPSGraphOSLog` still reads, producing
+                // EXC_BAD_ACCESS at 0x8 inside the MPSGraph
+                // executable run path. `_exit` terminates the
+                // process immediately without running atexit or
+                // stdio cleanup, which sidesteps the race. It's
+                // safe because:
+                //   - snapshot file writes use `Data.write(atomic:)`
+                //     which fsyncs before rename,
+                //   - stdout writes go through `FileHandle`
+                //     which is an unbuffered syscall (no libc
+                //     stdio buffer to flush),
+                //   - session log writes have already been
+                //     flushed by SessionLogger before this point.
+                if isAutoTrainRun, let recorder, let deadlineSec = cliTrainingTimeLimitSec, deadlineSec > 0 {
+                    let runStart = Date()
+                    group.addTask(priority: .userInitiated) {
+                        do {
+                            try await Task.sleep(for: .seconds(deadlineSec))
+                        } catch {
+                            // Cancelled before the deadline hit —
+                            // session ended for another reason.
+                            return
+                        }
+                        if Task.isCancelled { return }
+                        let elapsed = Date().timeIntervalSince(runStart)
+                        let destDescription = outputURL?.path ?? "<stdout>"
+                        SessionLogger.shared.log(
+                            "[APP] --train: training_time_limit=\(deadlineSec)s reached at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
+                        )
+                        let counts = recorder.countsSnapshot()
+                        do {
+                            if let outputURL {
+                                try recorder.writeJSON(to: outputURL, totalTrainingSeconds: elapsed)
+                            } else {
+                                try recorder.writeJSONToStdout(totalTrainingSeconds: elapsed)
+                            }
+                            SessionLogger.shared.log(
+                                "[APP] --train: wrote snapshot to \(destDescription) (arenas=\(counts.arenas), stats=\(counts.stats), probes=\(counts.probes))"
+                            )
+                        } catch {
+                            SessionLogger.shared.log(
+                                "[APP] --train: snapshot write FAILED for \(destDescription): \(error.localizedDescription)"
+                            )
+                        }
+                        SessionLogger.shared.log("[APP] --train: exiting process after snapshot")
+                        Darwin._exit(0)
+                    }
+                }
+
                 // Wait for all four tasks to complete (only happens
                 // on cancellation since each loops forever).
                 for await _ in group { }
@@ -7794,6 +8417,7 @@ struct ContentView: View {
                 currentSessionStart = nil
                 replayRatioController = nil
                 replayRatioSnapshot = nil
+                cliRecorder = nil
             }
         }
     }
@@ -7926,7 +8550,7 @@ struct ContentView: View {
         let hasHistory = cumulativeRunCount > 0 || totalSteps > 0
         let canRunArena = !isArenaRunning && network != nil && trainer != nil
         if hasHistory || canRunArena {
-            let totalPositions = totalSteps * Self.trainingBatchSize
+            let totalPositions = totalSteps * effectiveTrainingBatchSize
             let activeSec = cumulativeActiveTrainingSec
             HStack(spacing: 16) {
                 if hasHistory {
@@ -8408,7 +9032,7 @@ struct ContentView: View {
         // header.
         let trainerIDStr = trainer?.identifier?.description ?? dash
         let header = "Training [\(trainerIDStr)]"
-        lines.append("  Batch size:  \(Self.trainingBatchSize)")
+        lines.append("  Batch size:  \(effectiveTrainingBatchSize)")
         // SP tau / Arena tau / clip / decay are now surfaced as editable
         // text fields above the body, so they are not duplicated here.
         // Learning rate likewise lives in the interactive text field.
@@ -8421,7 +9045,7 @@ struct ContentView: View {
         // last-step loss shown below.
         if isSelfPlay {
             let bufCount = replayBuffer?.count ?? 0
-            let bufCap = replayBuffer?.capacity ?? Self.replayBufferCapacity
+            let bufCap = replayBuffer?.capacity ?? effectiveReplayBufferCapacity
             let bufRamMB = Double(bufCap * ReplayBuffer.bytesPerPosition) / (1024.0 * 1024.0)
             let bufStr = String(format: "%6d / %d  (%.0f MB)", bufCount, bufCap, bufRamMB)
             lines.append("  Buffer:     \(bufStr)")
@@ -8606,7 +9230,7 @@ struct ContentView: View {
             ? Double(stats.steps) / rateDenomSec
             : 0
             let movesPerSec: Double = stats.steps > 0
-            ? Double(stats.steps * Self.trainingBatchSize) / rateDenomSec
+            ? Double(stats.steps * effectiveTrainingBatchSize) / rateDenomSec
             : 0
 
             let rateStr = stats.steps > 0 ? String(format: "%.2f", stepsPerSec) : dash
@@ -8671,7 +9295,7 @@ struct ContentView: View {
                 let durStr = Self.formatElapsed(record.durationSec)
                 // Games played vs configured total — e.g. "12/200"
                 // when the user aborted at game 12.
-                let gamesStr = "\(record.gamesPlayed)/\(Self.tournamentGames)"
+                let gamesStr = "\(record.gamesPlayed)/\(effectiveTournamentGames)"
                 lines.append(String(
                     format: "  #%@ @ %@ steps  games %@  %d-%d-%d  score %@  %@  (%@)",
                     number, stepStr, gamesStr,
@@ -8977,11 +9601,13 @@ struct ContentView: View {
     ) async -> EvaluationResult {
         var lines: [String] = []
         var topMoves: [MoveVisualization] = []
+        var rawInference: ChessRunner.InferenceResult? = nil
         let board = BoardEncoder.encode(state)
 
         do {
             let inference = try await runner.evaluate(board: board, state: state, pieces: state.board)
             topMoves = inference.topMoves
+            rawInference = inference
 
             lines.append(String(format: "Forward pass: %.2f ms", inference.inferenceTimeMs))
             lines.append("")
@@ -9062,10 +9688,20 @@ struct ContentView: View {
             lines.append("Error: \(error.localizedDescription)")
         }
 
-        return EvaluationResult(topMoves: topMoves, textOutput: lines.joined(separator: "\n"), inputTensor: board)
+        return EvaluationResult(
+            topMoves: topMoves,
+            textOutput: lines.joined(separator: "\n"),
+            inputTensor: board,
+            rawInference: rawInference
+        )
     }
 }
 
 #Preview {
-    ContentView(commandHub: AppCommandHub())
+    ContentView(
+        commandHub: AppCommandHub(),
+        autoTrainOnLaunch: false,
+        cliConfig: nil,
+        cliOutputURL: nil
+    )
 }

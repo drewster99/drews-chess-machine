@@ -9,7 +9,204 @@ struct DrewsChessMachineApp: App {
     /// `ContentView` in `WindowGroup` see the same instance.
     @State private var commandHub = AppCommandHub()
 
+    /// True iff the process was launched with `--train` on the
+    /// command line. When set, `ContentView` skips the Resume-from-
+    /// Autosave sheet on first appearance and instead chains
+    /// Build Network → Play-and-Train → switch to Candidate Test
+    /// as an automated sequence. Captured once in `init` from
+    /// `CommandLine.arguments` so the value is stable for the life
+    /// of the launch.
+    private let autoTrainOnLaunch: Bool
+
+    /// Parsed payload of `--parameters <file>`. Nil when the flag
+    /// wasn't passed, or when the file was missing / malformed
+    /// (in which case the load error is surfaced to the session
+    /// log and the app continues with UI defaults rather than
+    /// silently running with unknown values). Fields inside are
+    /// individually optional — a partial file only overrides the
+    /// keys it names.
+    private let cliConfig: CliTrainingConfig?
+
+    /// Destination URL for `--output <file>`. When set, the runtime
+    /// spins up a `CliTrainingRecorder`, wires arena/stats/probe
+    /// events into it, and writes a JSON snapshot at
+    /// `training_time_limit` expiry before terminating the process.
+    /// Nil = no snapshot.
+    private let cliOutputURL: URL?
+
     init() {
+        // Parse launch-time CLI flags before any logging so the
+        // [APP] banner can record whether auto-train mode is on
+        // for this launch. `CommandLine.arguments[0]` is the
+        // executable path; we only care about the tail.
+        //
+        // All flags are positional-free: each known flag is
+        // located by name, which lets the user pass them in any
+        // order (e.g. `--train --output X --parameters Y` and
+        // `--parameters Y --output X --train` are equivalent).
+        // After consuming every recognized flag + its value, any
+        // unrecognized leftover is a hard error — we print usage
+        // and `_exit(2)` rather than silently running with the
+        // stray arg ignored, because "it looked like it was
+        // accepted" is the exact failure mode that masks typos
+        // in scripted runs.
+        //
+        // Skip strict CLI parsing when running under XCTest:
+        // the xctest runner injects its own arguments (e.g.
+        // `-XCTest`, test-bundle paths) which the strict parser
+        // would reject, tearing down the whole test target.
+        // `XCTestConfigurationFilePath` is set by xctest and
+        // is the canonical "we are in a test run" signal.
+        let isRunningUnderXCTest = ProcessInfo.processInfo
+            .environment["XCTestConfigurationFilePath"] != nil
+        let rawArgs: [String] = isRunningUnderXCTest
+            ? []
+            : Array(CommandLine.arguments.dropFirst())
+
+        // Known flags.
+        let booleanFlags: Set<String> = ["--train"]
+        let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit"]
+
+        // Indices of rawArgs that were consumed by a known flag.
+        // Anything NOT in this set after parsing is unknown and
+        // triggers the usage-error path below.
+        var consumedIndices = Set<Int>()
+        var errors: [String] = []
+
+        // Extract the value that follows a value-flag. Validates
+        // that (a) the flag appears only once, (b) a value exists
+        // at idx+1, and (c) the value doesn't itself start with
+        // `--` (which would indicate the user forgot to supply a
+        // value before the next flag). Marks both the flag and
+        // its value as consumed on success; on failure marks only
+        // the flag so the value token falls through the
+        // unknown-argument scan below if it's actually a stray.
+        func takeValue(for flag: String) -> String? {
+            let indices = rawArgs.indices.filter { rawArgs[$0] == flag }
+            guard let idx = indices.first else { return nil }
+            consumedIndices.insert(idx)
+            if indices.count > 1 {
+                errors.append("\(flag) specified \(indices.count) times; only one allowed")
+                for extra in indices.dropFirst() { consumedIndices.insert(extra) }
+            }
+            let valueIdx = idx + 1
+            guard valueIdx < rawArgs.count else {
+                errors.append("\(flag) requires a value but none was given")
+                return nil
+            }
+            let value = rawArgs[valueIdx]
+            if value.hasPrefix("--") {
+                errors.append("\(flag) requires a value but got flag '\(value)' instead")
+                return nil
+            }
+            consumedIndices.insert(valueIdx)
+            return value
+        }
+
+        // `--train` — boolean flag, no value. Also reject if it
+        // appears more than once so a scripted invocation with a
+        // duplicate flag fails loudly.
+        let trainIndices = rawArgs.indices.filter { rawArgs[$0] == "--train" }
+        self.autoTrainOnLaunch = !trainIndices.isEmpty
+        for idx in trainIndices { consumedIndices.insert(idx) }
+        if trainIndices.count > 1 {
+            errors.append("--train specified \(trainIndices.count) times; only one allowed")
+        }
+
+        // `--parameters <path>` — optional hyperparameter override
+        // file. Values that the JSON doesn't name fall back to
+        // the normal UI defaults. File-not-found and malformed
+        // JSON are hard errors — a scripted run with a typo in
+        // the path or a mid-edit JSON file is exactly the case
+        // where silently running with defaults would be worst.
+        var parsedConfig: CliTrainingConfig? = nil
+        if let path = takeValue(for: "--parameters") {
+            let expanded = (path as NSString).expandingTildeInPath
+            let url = URL(fileURLWithPath: expanded)
+            do {
+                parsedConfig = try CliTrainingConfig.load(from: url)
+            } catch {
+                errors.append("--parameters: failed to load \(url.path): \(error.localizedDescription)")
+            }
+        }
+
+        // `--training-time-limit <seconds>` — standalone CLI flag
+        // for the single most commonly-scripted knob. When both
+        // `--parameters`' `training_time_limit` and this flag are
+        // present, the CLI flag wins.
+        var trainingTimeLimitCliOverride: Double? = nil
+        if let raw = takeValue(for: "--training-time-limit") {
+            if let parsed = Double(raw), parsed > 0, parsed.isFinite {
+                trainingTimeLimitCliOverride = parsed
+            } else {
+                errors.append("--training-time-limit value '\(raw)' is not a positive finite number")
+            }
+        }
+        if let override = trainingTimeLimitCliOverride {
+            if parsedConfig == nil {
+                var cfg = CliTrainingConfig()
+                cfg.trainingTimeLimitSec = override
+                parsedConfig = cfg
+            } else {
+                parsedConfig?.trainingTimeLimitSec = override
+            }
+        }
+        self.cliConfig = parsedConfig
+
+        // `--output <path>` — destination for the final JSON
+        // snapshot. Stored as a URL so later code doesn't have to
+        // re-resolve the tilde or the current working directory.
+        var parsedOutputURL: URL? = nil
+        if let path = takeValue(for: "--output") {
+            let expanded = (path as NSString).expandingTildeInPath
+            parsedOutputURL = URL(fileURLWithPath: expanded)
+        }
+        self.cliOutputURL = parsedOutputURL
+
+        // Unknown-argument scan. Anything that wasn't consumed
+        // by a known flag above is rejected — including stray
+        // positional args, typos like `--out` instead of
+        // `--output`, and unsupported flags such as `--help`.
+        // (A dedicated `--help` path could be added later; for
+        // now the error surfaces the same usage banner anyway.)
+        var unknown: [String] = []
+        for (i, arg) in rawArgs.enumerated() where !consumedIndices.contains(i) {
+            unknown.append("'\(arg)'")
+        }
+        if !unknown.isEmpty {
+            errors.append("unrecognized argument(s): \(unknown.joined(separator: ", "))")
+        }
+        _ = booleanFlags; _ = valueFlags  // kept for documentation; helper already enforces
+
+        // If anything was wrong, print the error(s) + usage to
+        // stderr and terminate. Use `_exit(2)` rather than `exit(2)`
+        // so the app bails before SwiftUI / AppKit / SessionLogger
+        // have done any setup — the user is clearly not running a
+        // valid session here, and a half-initialized window
+        // appearing briefly would be confusing.
+        if !errors.isEmpty {
+            let usage = """
+            Usage: DrewsChessMachine [--train] [--parameters <file>] [--output <file>] [--training-time-limit <seconds>]
+
+            Options (any order):
+              --train                         Headless mode: auto build fresh network, start Play-and-Train,
+                                              switch to Candidate Test view.
+              --parameters <file>             JSON file of hyperparameter overrides. Unknown keys are accepted
+                                              by the JSON decoder only if they match a known field.
+              --output <file>                 Write JSON snapshot to <file> on training_time_limit expiry.
+                                              Without this flag, the snapshot goes to stdout.
+              --training-time-limit <seconds> Seconds of Play-and-Train before the JSON snapshot is written
+                                              and the process exits. Overrides any value in --parameters.
+                                              Only honored under --train.
+            """
+            for err in errors {
+                let line = "DrewsChessMachine: error: \(err)\n"
+                FileHandle.standardError.write(Data(line.utf8))
+            }
+            FileHandle.standardError.write(Data("\(usage)\n".utf8))
+            Darwin._exit(2)
+        }
+
         // Start the session logger before any view work so every event
         // from this launch — button taps, arena results, periodic
         // stats — lands in a single `dcm_log_yyyymmdd-HHMMSS.txt`
@@ -17,14 +214,27 @@ struct DrewsChessMachineApp: App {
         SessionLogger.shared.start()
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
         let archHashHex = String(format: "0x%08x", ModelCheckpointFile.currentArchHash)
+        let autoTrainMarker = autoTrainOnLaunch ? " autoTrain=on" : ""
         SessionLogger.shared.log(
-            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp) arch_hash=\(archHashHex) inputPlanes=\(ChessNetwork.inputPlanes) policySize=\(ChessNetwork.policySize)"
+            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp) arch_hash=\(archHashHex) inputPlanes=\(ChessNetwork.inputPlanes) policySize=\(ChessNetwork.policySize)\(autoTrainMarker)"
         )
         if let path = SessionLogger.shared.activeLogPath {
             SessionLogger.shared.log("[APP] session log: \(path)")
             print("[APP] session log: \(path)")
         } else {
             print("[APP] session log: (failed to open)")
+        }
+        if autoTrainOnLaunch {
+            SessionLogger.shared.log("[APP] --train flag detected; will build fresh network and start Play-and-Train on first appear")
+        }
+        if let override = trainingTimeLimitCliOverride {
+            SessionLogger.shared.log("[APP] --training-time-limit=\(override)s (overrides any value in --parameters)")
+        }
+        if let cfg = cliConfig {
+            SessionLogger.shared.log("[APP] --parameters overrides: \(cfg.summaryString())")
+        }
+        if let outURL = cliOutputURL {
+            SessionLogger.shared.log("[APP] --output destination: \(outURL.path)")
         }
 
         // Sweep away `.tmp` staging debris from a save that was
@@ -36,7 +246,12 @@ struct DrewsChessMachineApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(commandHub: commandHub)
+            ContentView(
+                commandHub: commandHub,
+                autoTrainOnLaunch: autoTrainOnLaunch,
+                cliConfig: cliConfig,
+                cliOutputURL: cliOutputURL
+            )
         }
         .commands {
             // File menu additions — Save / Load / reveal-in-Finder.

@@ -24,9 +24,12 @@ enum AttributedMetricColor {
     struct Thresholds {
         /// Policy entropy "collapse" band — below this is red.
         /// Matches `ContentView.policyEntropyAlarmThreshold` (5.0
-        /// in-repo). Above `uniformEntropy - 0.1` reads as flat /
-        /// non-learning and gets an orange highlight. `maxEntropy`
-        /// is ln(4096) ≈ 8.317 (uniform over policy space).
+        /// in-repo). Above `uniformEntropy - 0.12` reads as flat /
+        /// non-learning and gets an orange highlight, where
+        /// `uniformEntropy = ln(ChessNetwork.policySize)` — currently
+        /// ln(4864) ≈ 8.489 for the 76-channel head. The default
+        /// factory derives the flat threshold from `policySize` so
+        /// the band cannot drift if the policy width changes.
         var entropyCollapseBelow: Double
         var entropyFlatAbove: Double
         /// Value-head absolute mean saturation bands. Above 0.9 is
@@ -44,9 +47,14 @@ enum AttributedMetricColor {
         var diversityGreenAbove: Double
 
         static func `default`(entropyCollapseBelow: Double, gradClipMaxNorm: Double) -> Thresholds {
-            Thresholds(
+            // Derived from the live policy width so the band tracks
+            // the head shape automatically. 0.12 nats below uniform
+            // matches the original calibration (8.20 vs ln(4096)≈8.32
+            // in the prior 4096-cell head).
+            let uniformEntropy = log(Double(ChessNetwork.policySize))
+            return Thresholds(
                 entropyCollapseBelow: entropyCollapseBelow,
-                entropyFlatAbove: 8.20,
+                entropyFlatAbove: uniformEntropy - 0.12,
                 vAbsRedAbove: 0.90,
                 vAbsOrangeAbove: 0.70,
                 gradClipMaxNorm: gradClipMaxNorm,

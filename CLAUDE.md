@@ -109,7 +109,7 @@ See `sampling-parameters.md` for rationale.
 
 The `[STATS]` line carries a dense set of counters. A few that matter for diagnosing training health:
 - `pLoss` — outcome-weighted policy cross-entropy. **Unbounded on both sides** (negative is fine when well-predicted winning plays dominate). Read alongside `pEnt`, not in isolation.
-- `pEnt` — mean Shannon entropy of the policy softmax, in nats. `log(4096) ≈ 8.32` at uniform init. Below `7.0` triggers `[ALARM] policy may be collapsing` (threshold `policyEntropyAlarmThreshold` in `ContentView.swift`).
+- `pEnt` — mean Shannon entropy of the policy softmax, in nats. `log(4864) ≈ 8.49` at uniform init for the current 4864-cell policy head. Below `policyEntropyAlarmThreshold` (5.0 in-repo, in `ContentView.swift`) triggers `[ALARM] policy may be collapsing`.
 - `vMean` / `vAbs` — value-head mean and mean-abs. If `vAbs → 1.0` the tanh has saturated; gradients through it will vanish.
 - `gNorm` — pre-clip global gradient L2 norm, reported every step. Compare against `ChessTrainer.gradClipMaxNorm`; values above it are clip events, not bugs.
 - `diversity=unique=X/Y(%) diverge=N.N` — rolling `GameDiversityTracker` snapshot over the last 200 games; `diverge` is the avg ply at which pairs of games first differ. Steady-state healthy is `[0-5]`-heavy in the histogram tile.

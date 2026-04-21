@@ -85,9 +85,10 @@ final class AttributedMetricColorTests: XCTestCase {
     }
 
     func testEntropyNearUniformIsOrange() {
-        // Above the flat threshold (default 8.20) → orange band.
-        let attr = colorize("  Entropy:     8.250000")
-        XCTAssertEqual(color(of: "8.250000", in: attr), .orange)
+        // Above the flat threshold (ln(policySize) - 0.12 ≈ 8.37 for
+        // the current 4864-cell head) → orange band.
+        let attr = colorize("  Entropy:     8.400000")
+        XCTAssertEqual(color(of: "8.400000", in: attr), .orange)
     }
 
     // MARK: - v abs bands

@@ -74,9 +74,17 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         let continuation: CheckedContinuation<(policy: [Float], value: Float), Error>
     }
 
-    /// Reusable scratch for packing `count × BoardEncoder.tensorLength` floats into one
-    /// contiguous buffer before the batched `graph.run`. Grown on
-    /// demand to the largest batch size the driver ever fires.
+    /// Reusable scratch for packing `count × BoardEncoder.tensorLength`
+    /// floats into one contiguous buffer before the batched `graph.run`.
+    /// Resized to *exactly* `totalFloats` each batch so the buffer can
+    /// be handed straight to `network.evaluate(batchBoards:count:)`
+    /// without a trimming copy — that API validates
+    /// `batchBoards.count == count * tensorLength`. Steady-state (stable
+    /// slot count) the resize is a no-op and the same COW storage is
+    /// reused indefinitely; a slot-count change or a reentrant
+    /// `fireBatch` overlap triggers at most one COW uniquify (still far
+    /// cheaper than the per-batch full-buffer copy the previous
+    /// implementation paid unconditionally to trim an oversized scratch).
     /// Swift `[Float]` so storage management is automatic and the
     /// actor doesn't need a manual `deinit` that would have to touch
     /// non-Sendable raw pointers from a nonisolated deinit.
@@ -165,7 +173,15 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
 
         let count = batch.count
         let totalFloats = count * Self.boardFloats
-        if packBuffer.count < totalFloats {
+        // Size the pack scratch to exactly what the batch needs. In the
+        // steady state (stable slot count) this is a no-op, the same
+        // COW storage is reused batch after batch, and the downstream
+        // `network.evaluate(batchBoards:count:)` call passes `packBuffer`
+        // straight through without any intermediate trimming copy.
+        // Reassignment (rather than `removeLast` / shrink-in-place)
+        // keeps the code path symmetric for grow and shrink and avoids
+        // accidentally carrying stale floats across a size change.
+        if packBuffer.count != totalFloats {
             packBuffer = [Float](repeating: 0, count: totalFloats)
         }
 
@@ -182,14 +198,16 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         }
 
         do {
-            // Slice the packed buffer down to just the filled range —
-            // `packBuffer.count` may exceed `totalFloats` after a
-            // high-water-mark grow. `ChessNetwork.evaluate` is async,
-            // so pass an owned array rather than trying to hold an
-            // unsafe buffer pointer across a suspension point.
-            let packed = Array(packBuffer.prefix(totalFloats))
+            // Pass `packBuffer` (an owned Swift `[Float]`) directly
+            // across the `await`. Swift's COW guarantees the buffer
+            // stays intact for the duration of the evaluation even if
+            // a reentrant `fireBatch` runs on this actor at a
+            // suspension point and resizes/rewrites our `packBuffer`
+            // stored property — the first mutating access there would
+            // uniquify a fresh buffer, leaving the one captured by the
+            // in-flight `network.evaluate` call untouched.
             let (policy, values) = try await network.evaluate(
-                batchBoards: packed,
+                batchBoards: packBuffer,
                 count: count
             )
             guard policy.count == count * Self.policySize else {

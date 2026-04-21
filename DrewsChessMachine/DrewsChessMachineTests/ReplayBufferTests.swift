@@ -327,7 +327,7 @@ final class ReplayBufferTests: XCTestCase {
     /// need something to corrupt.
     private func appendOnePosition(to buffer: ReplayBuffer, seed: UInt64) throws {
         let boardFloats = makeFakeBoard(seed: seed)
-        var move: Int32 = Int32(seed % 4096)
+        var move: Int32 = Int32(seed % UInt64(ChessNetwork.policySize))
         var vBaseline: Float = Float(seed % 100) / 100.0
         boardFloats.withUnsafeBufferPointer { boardsBuf in
             withUnsafePointer(to: &move) { moveP in
