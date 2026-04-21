@@ -1,1 +1,7 @@
 .claude/
+
+# LLVM coverage raw counter files written when a binary built with
+# -fprofile-instr-generate (Scheme > Test > Code Coverage enabled)
+# exits. Normally lands under DerivedData, but appears at the repo
+# root if the binary is launched directly from here.
+*.profraw
