@@ -311,10 +311,13 @@ enum MoveGenerator {
         guard !isSquareAttacked(state, row: homeRow, col: 4, by: color.opposite) else { return moves }
 
         let homeBase = homeRow * 8
+        let kingsideRook = Piece(type: .rook, color: color)
+        let queensideRook = Piece(type: .rook, color: color)
 
         // Kingside
         let hasKingside = color == .white ? state.whiteKingsideCastle : state.blackKingsideCastle
         if hasKingside,
+           state.board[homeBase + 7] == kingsideRook,
            state.board[homeBase + 5] == nil,
            state.board[homeBase + 6] == nil,
            !isSquareAttacked(state, row: homeRow, col: 5, by: color.opposite),
@@ -325,6 +328,7 @@ enum MoveGenerator {
         // Queenside
         let hasQueenside = color == .white ? state.whiteQueensideCastle : state.blackQueensideCastle
         if hasQueenside,
+           state.board[homeBase + 0] == queensideRook,
            state.board[homeBase + 3] == nil,
            state.board[homeBase + 2] == nil,
            state.board[homeBase + 1] == nil,

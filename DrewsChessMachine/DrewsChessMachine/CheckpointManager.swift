@@ -118,11 +118,17 @@ enum CheckpointPaths {
     static func cleanupOrphans() {
         let fm = FileManager.default
         let sweep = { (root: URL, suffix: String) in
-            guard let entries = try? fm.contentsOfDirectory(
-                at: root,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            ) else {
+            let entries: [URL]
+            do {
+                entries = try fm.contentsOfDirectory(
+                    at: root,
+                    includingPropertiesForKeys: nil,
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                SessionLogger.shared.log(
+                    "[CLEANUP-ERR] Could not list \(root.lastPathComponent): \(error.localizedDescription)"
+                )
                 return
             }
             for entry in entries where entry.lastPathComponent.hasSuffix(suffix) {

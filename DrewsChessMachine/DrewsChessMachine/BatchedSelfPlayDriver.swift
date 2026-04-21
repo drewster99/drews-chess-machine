@@ -47,6 +47,8 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     /// inside `slotLoop` so UI edits take effect on the next game a
     /// slot starts, without killing the long-lived slot task.
     let scheduleBox: SamplingScheduleBox
+    private let liveSlots = LiveSlotSet()
+    private var nextSlotID: Int = 0
 
     // MARK: - Init
 
@@ -73,9 +75,11 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     // MARK: - Driver Loop
 
     func run() async {
-        var slots: [Task<Void, Never>] = []
+        var slots: [(id: Int, task: Task<Void, Never>)] = []
 
         while !Task.isCancelled {
+            slots.removeAll { !liveSlots.contains($0.id) }
+
             // Arena pause: stop all slots, park at the gate.
             if pauseGate.isRequestedToPause {
                 await stopAll(slots: &slots)
@@ -97,7 +101,9 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // barrier threshold on arrival.
                 await batcher.setExpectedSlotCount(target)
                 while slots.count < target {
-                    let idx = slots.count
+                    let slotID = nextSlotID
+                    nextSlotID += 1
+                    liveSlots.insert(slotID)
                     // Strong self capture: the driver is owned by the
                     // parent `withTaskGroup`'s closure for the
                     // duration of this child task, so it will not be
@@ -105,9 +111,9 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                     // local so the capture is unambiguously strong.
                     let driverSelf: BatchedSelfPlayDriver = self
                     let slot = Task(priority: .userInitiated) {
-                        await driverSelf.slotLoop(index: idx)
+                        await driverSelf.slotLoop(id: slotID)
                     }
-                    slots.append(slot)
+                    slots.append((id: slotID, task: slot))
                 }
             } else if slots.count > target {
                 // Shrink: lower the barrier threshold FIRST. If we
@@ -127,8 +133,8 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 cancelled.reserveCapacity(toRemove)
                 for _ in 0..<toRemove {
                     let last = slots.removeLast()
-                    last.cancel()
-                    cancelled.append(last)
+                    last.task.cancel()
+                    cancelled.append(last.task)
                 }
                 for t in cancelled { _ = await t.value }
             }
@@ -147,7 +153,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         await stopAll(slots: &slots)
     }
 
-    private func stopAll(slots: inout [Task<Void, Never>]) async {
+    private func stopAll(slots: inout [(id: Int, task: Task<Void, Never>)]) async {
         let snapshot = slots
         slots.removeAll()
         // Drop the barrier threshold to 0 (drain mode) BEFORE waiting
@@ -160,13 +166,14 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         // as its own micro-batch, so every slot's current game runs
         // to completion and the slot can exit cleanly.
         await batcher.setExpectedSlotCount(0)
-        for s in snapshot { s.cancel() }
-        for s in snapshot { _ = await s.value }
+        for s in snapshot { s.task.cancel() }
+        for s in snapshot { _ = await s.task.value }
     }
 
     // MARK: - Slot Body
 
-    private func slotLoop(index: Int) async {
+    private func slotLoop(id: Int) async {
+        defer { liveSlots.remove(id) }
         // Reusable players per slot — `ChessMachine.beginNewGame` calls
         // `onNewGame` on each before starting, resetting per-game scratch
         // without reallocating the board / policy / value buffers. The
@@ -195,12 +202,12 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             white.schedule = liveSchedule
             black.schedule = liveSchedule
 
-            // Live-display gating matches today's worker logic: slot 0
-            // animates the board if and only if exactly one slot is
-            // active. Evaluated per game (not at spawn) so a Stepper
-            // toggle between 1 and >1 kicks in on the next game rather
-            // than being latched at spawn time.
-            let liveDisplay = index == 0 && countBox.count == 1
+            // Live-display gating matches today's worker logic: when
+            // exactly one slot is active, that slot animates the board.
+            // Evaluated per game (not at spawn) so a Stepper toggle
+            // between 1 and >1 kicks in on the next game rather than
+            // being latched at spawn time.
+            let liveDisplay = countBox.count == 1
 
             if liveDisplay {
                 gameWatcher?.resetCurrentGame()
@@ -246,5 +253,28 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             )
             diversityTracker.recordGame(moves: machine.moveHistory)
         }
+    }
+}
+
+private final class LiveSlotSet: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ids: Set<Int> = []
+
+    func insert(_ id: Int) {
+        lock.lock()
+        ids.insert(id)
+        lock.unlock()
+    }
+
+    func remove(_ id: Int) {
+        lock.lock()
+        ids.remove(id)
+        lock.unlock()
+    }
+
+    func contains(_ id: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return ids.contains(id)
     }
 }

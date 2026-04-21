@@ -137,6 +137,10 @@ final class ChessMachine: @unchecked Sendable {
     /// This keeps fake-stalemate labels out of training data on every
     /// cancellation event.
     ///
+    /// Non-cancellation player / engine errors propagate the same way:
+    /// the machine emits `playerErrored`, then throws without calling
+    /// `onGameEnded` or synthesizing a draw result.
+    ///
     /// Throws `ChessMachineError.alreadyPlaying` if a game is already
     /// in progress (same contract as before).
     @discardableResult
@@ -221,13 +225,7 @@ final class ChessMachine: @unchecked Sendable {
                 // `currentLegalMoves`, then generates the next ply's
                 // legal moves and uses them for end-detection. We pick
                 // up the refreshed list from `engine.currentLegalMoves`
-                // on the next iteration. Engine errors here (e.g. an
-                // illegal move from a buggy player) go through the
-                // same `playerErrored` + break path as player errors —
-                // partial-game positions the players recorded up to
-                // this point are still flushed to the replay buffer
-                // with a stalemate outcome in the end-of-game block
-                // below, matching the pre-refactor behavior.
+                // on the next iteration.
                 try engine.applyMoveAndAdvance(move)
                 lastMove = move
 
@@ -242,7 +240,7 @@ final class ChessMachine: @unchecked Sendable {
             } catch {
                 let event = DelegateEvent.playerErrored(player: player, error: error)
                 emit(event)
-                break
+                throw error
             }
         }
 

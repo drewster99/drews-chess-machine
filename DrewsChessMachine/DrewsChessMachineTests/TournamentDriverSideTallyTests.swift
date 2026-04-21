@@ -89,6 +89,31 @@ final class FoolsMateScriptedPlayer: ChessPlayer {
     func onGameEnded(_ result: GameResult, finalState: GameState) {}
 }
 
+private enum ScriptedPlayerFailure: Error {
+    case boom
+}
+
+private final class ThrowingPlayer: ChessPlayer {
+    let identifier = UUID().uuidString
+    let name: String
+
+    init(name: String) {
+        self.name = name
+    }
+
+    func onNewGame(_ isWhite: Bool) {}
+
+    func onChooseNextMove(
+        opponentMove: ChessMove?,
+        newGameState gameState: GameState,
+        legalMoves: [ChessMove]
+    ) async throws -> ChessMove {
+        throw ScriptedPlayerFailure.boom
+    }
+
+    func onGameEnded(_ result: GameResult, finalState: GameState) {}
+}
+
 /// Lock-protected sink for capturing `@Sendable` callback
 /// invocations from the driver's `onGameCompleted` hook. Matches
 /// the project's `@unchecked Sendable` + NSLock pattern.
@@ -113,9 +138,9 @@ final class TournamentDriverSideTallyTests: XCTestCase {
 
     // MARK: - Deterministic Fool's Mate outcomes
 
-    func testFoolsMateEvenGameCount() async {
+    func testFoolsMateEvenGameCount() async throws {
         let driver = TournamentDriver()
-        let stats = await driver.run(
+        let stats = try await driver.run(
             playerA: { FoolsMateScriptedPlayer(name: "A") },
             playerB: { FoolsMateScriptedPlayer(name: "B") },
             games: 4
@@ -137,11 +162,11 @@ final class TournamentDriverSideTallyTests: XCTestCase {
         XCTAssertEqual(stats.playerADrawsAsBlack, 0)
     }
 
-    func testFoolsMateOddGameCount() async {
+    func testFoolsMateOddGameCount() async throws {
         // Odd N means A plays white one more time than black.
         // 3 games: A=white in games 0, 2; A=black in game 1.
         let driver = TournamentDriver()
-        let stats = await driver.run(
+        let stats = try await driver.run(
             playerA: { FoolsMateScriptedPlayer(name: "A") },
             playerB: { FoolsMateScriptedPlayer(name: "B") },
             games: 3
@@ -155,12 +180,12 @@ final class TournamentDriverSideTallyTests: XCTestCase {
         XCTAssertEqual(stats.playerABlackGames, 1)
     }
 
-    func testFoolsMateLargerEvenGameCount() async {
+    func testFoolsMateLargerEvenGameCount() async throws {
         // Scales up to 10 games. Confirms the invariants hold over
         // a longer run and that the scripted player correctly
         // resets `ply` between games (the `onNewGame` hook).
         let driver = TournamentDriver()
-        let stats = await driver.run(
+        let stats = try await driver.run(
             playerA: { FoolsMateScriptedPlayer(name: "A") },
             playerB: { FoolsMateScriptedPlayer(name: "B") },
             games: 10
@@ -176,13 +201,13 @@ final class TournamentDriverSideTallyTests: XCTestCase {
 
     // MARK: - Identity invariants over a live driver run
 
-    func testPerSideCountersSumToTotals() async {
+    func testPerSideCountersSumToTotals() async throws {
         // Identity invariants: per-side tallies must reconcile with
         // side-agnostic totals. Catches any future regression that
         // forgets to bump one of the branch counters in the
         // tally switch-statement.
         let driver = TournamentDriver()
-        let stats = await driver.run(
+        let stats = try await driver.run(
             playerA: { FoolsMateScriptedPlayer(name: "A") },
             playerB: { FoolsMateScriptedPlayer(name: "B") },
             games: 6
@@ -211,9 +236,9 @@ final class TournamentDriverSideTallyTests: XCTestCase {
 
     // MARK: - Edge cases
 
-    func testZeroGamesReturnsEmptyStats() async {
+    func testZeroGamesReturnsEmptyStats() async throws {
         let driver = TournamentDriver()
-        let stats = await driver.run(
+        let stats = try await driver.run(
             playerA: { FoolsMateScriptedPlayer(name: "A") },
             playerB: { FoolsMateScriptedPlayer(name: "B") },
             games: 0
@@ -231,11 +256,11 @@ final class TournamentDriverSideTallyTests: XCTestCase {
         XCTAssertFalse(stats.playerAScoreAsBlack.isNaN)
     }
 
-    func testSingleGameAIsWhite() async {
+    func testSingleGameAIsWhite() async throws {
         // Game 0 → A=white always. Single-game run should produce
         // exactly one A-loss-as-white and nothing else.
         let driver = TournamentDriver()
-        let stats = await driver.run(
+        let stats = try await driver.run(
             playerA: { FoolsMateScriptedPlayer(name: "A") },
             playerB: { FoolsMateScriptedPlayer(name: "B") },
             games: 1
@@ -248,7 +273,7 @@ final class TournamentDriverSideTallyTests: XCTestCase {
 
     // MARK: - Cancellation + callback semantics
 
-    func testIsCancelledFlagStopsTournamentEarly() async {
+    func testIsCancelledFlagStopsTournamentEarly() async throws {
         // The driver checks an external `isCancelled` closure on
         // every iteration. When it returns true, the tournament
         // exits after the currently-in-flight game (not mid-game),
@@ -259,7 +284,7 @@ final class TournamentDriverSideTallyTests: XCTestCase {
         let sink = CallbackSink()
         let cancelledFlag = CancelFlag()
         let driver = TournamentDriver()
-        let stats = await driver.run(
+        let stats = try await driver.run(
             playerA: { FoolsMateScriptedPlayer(name: "A") },
             playerB: { FoolsMateScriptedPlayer(name: "B") },
             games: 100,
@@ -279,12 +304,12 @@ final class TournamentDriverSideTallyTests: XCTestCase {
         )
     }
 
-    func testOnGameCompletedFiresOncePerGame() async {
+    func testOnGameCompletedFiresOncePerGame() async throws {
         // The arena progress UI depends on this callback — verify
         // it fires once per completed game with cumulative totals.
         let sink = CallbackSink()
         let driver = TournamentDriver()
-        let stats = await driver.run(
+        let stats = try await driver.run(
             playerA: { FoolsMateScriptedPlayer(name: "A") },
             playerB: { FoolsMateScriptedPlayer(name: "B") },
             games: 4,
@@ -308,9 +333,34 @@ final class TournamentDriverSideTallyTests: XCTestCase {
         XCTAssertEqual(invocations.last!.draws, stats.draws)
     }
 
+    func testNonCancellationPlayerErrorPropagates() async {
+        let sink = CallbackSink()
+        let driver = TournamentDriver()
+        var didThrow = false
+
+        do {
+            _ = try await driver.run(
+                playerA: { ThrowingPlayer(name: "A") },
+                playerB: { FoolsMateScriptedPlayer(name: "B") },
+                games: 4,
+                onGameCompleted: { idx, aW, bW, d in
+                    sink.append((idx, aW, bW, d))
+                }
+            )
+        } catch {
+            didThrow = true
+        }
+
+        XCTAssertTrue(didThrow, "TournamentDriver.run should throw on player error")
+        XCTAssertTrue(
+            sink.invocations.isEmpty,
+            "Errored games should not be reported as completed tournament progress"
+        )
+    }
+
     // MARK: - Identity holds when A/B are swapped
 
-    func testSwappingPlayersFlipsWinsAsBlackAndLosses() async {
+    func testSwappingPlayersFlipsWinsAsBlackAndLosses() async throws {
         // If we swap which factory lands in playerA vs playerB, the
         // outcome flips: Fool's Mate always goes to whoever plays
         // black, so swapping the roles swaps the side-aware win
@@ -318,7 +368,7 @@ final class TournamentDriverSideTallyTests: XCTestCase {
         // `aIsWhite` branch that might look identity-correct but
         // produce wrong per-side attribution.
         let driver = TournamentDriver()
-        let stats = await driver.run(
+        let stats = try await driver.run(
             playerA: { FoolsMateScriptedPlayer(name: "A") },
             playerB: { FoolsMateScriptedPlayer(name: "B") },
             games: 4

@@ -305,7 +305,7 @@ struct TrainingRunStats: Sendable {
 /// Same design as `CancelBox` for the sweep: the worker calls
 /// `recordStep(_:)` after each `trainStep`, which takes the lock briefly,
 /// updates the running `TrainingRunStats`, and returns — no main-actor
-/// hop per step. The SwiftUI `snapshotTimer` polls `snapshot()` at ~60 Hz
+/// hop per step. The SwiftUI `snapshotTimer` polls `snapshot()` at ~10 Hz
 /// and mirrors the current values into `@State`, which is what actually
 /// triggers view redraws. This decouples view-update frequency from
 /// training-step rate: a 20 ms/step training loop used to fire 50
@@ -325,6 +325,43 @@ struct TrainingRunStats: Sendable {
 /// the training worker never blocks on the UI heartbeat's snapshot
 /// read, and vice-versa.
 final class TrainingLiveStatsBox: @unchecked Sendable {
+    private struct RollingDoubleWindow: Sendable {
+        private var storage: [Double]
+        private var head: Int = 0
+        private var count: Int = 0
+        private var sum: Double = 0
+
+        init(limit: Int) {
+            precondition(limit > 0, "Rolling window must be positive")
+            self.storage = [Double](repeating: 0, count: limit)
+        }
+
+        mutating func append(_ value: Double) {
+            if count < storage.count {
+                storage[count] = value
+                sum += value
+                count += 1
+                return
+            }
+            sum -= storage[head]
+            storage[head] = value
+            sum += value
+            head += 1
+            if head == storage.count { head = 0 }
+        }
+
+        mutating func removeAll() {
+            head = 0
+            count = 0
+            sum = 0
+        }
+
+        var mean: Double? {
+            guard count > 0 else { return nil }
+            return sum / Double(count)
+        }
+    }
+
     /// Immutable snapshot the UI reads. All fields are value types so
     /// the snapshot is independent of further worker writes.
     struct Snapshot: Sendable {
@@ -383,23 +420,23 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private let queue = DispatchQueue(label: "drewschess.traininglivestatsbox.serial")
     private var _stats = TrainingRunStats()
     private var _lastTiming: TrainStepTiming?
-    private var _policyLossWindow: [Double] = []
-    private var _valueLossWindow: [Double] = []
-    private var _policyEntropyWindow: [Double] = []
-    private var _policyNonNegWindow: [Double] = []
-    private var _gradNormWindow: [Double] = []
-    private var _valueMeanWindow: [Double] = []
-    private var _valueAbsMeanWindow: [Double] = []
-    private var _vBaselineDeltaWindow: [Double] = []
-    private var _policyHeadWeightNormWindow: [Double] = []
-    private var _policyLogitAbsMaxWindow: [Double] = []
-    private var _playedMoveProbWindow: [Double] = []
-    private var _advMeanWindow: [Double] = []
-    private var _advStdWindow: [Double] = []
-    private var _advMinWindow: [Double] = []
-    private var _advMaxWindow: [Double] = []
-    private var _advFracPosWindow: [Double] = []
-    private var _advFracSmallWindow: [Double] = []
+    private var _policyLossWindow: RollingDoubleWindow
+    private var _valueLossWindow: RollingDoubleWindow
+    private var _policyEntropyWindow: RollingDoubleWindow
+    private var _policyNonNegWindow: RollingDoubleWindow
+    private var _gradNormWindow: RollingDoubleWindow
+    private var _valueMeanWindow: RollingDoubleWindow
+    private var _valueAbsMeanWindow: RollingDoubleWindow
+    private var _vBaselineDeltaWindow: RollingDoubleWindow
+    private var _policyHeadWeightNormWindow: RollingDoubleWindow
+    private var _policyLogitAbsMaxWindow: RollingDoubleWindow
+    private var _playedMoveProbWindow: RollingDoubleWindow
+    private var _advMeanWindow: RollingDoubleWindow
+    private var _advStdWindow: RollingDoubleWindow
+    private var _advMinWindow: RollingDoubleWindow
+    private var _advMaxWindow: RollingDoubleWindow
+    private var _advFracPosWindow: RollingDoubleWindow
+    private var _advFracSmallWindow: RollingDoubleWindow
     /// Ring of raw per-position advantage values across the rolling
     /// window of recent steps. Capped at `advRawRingMaxCapacity`
     /// floats (see the constant for the full rationale). `snapshot()`
@@ -430,13 +467,30 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     init(rollingWindow: Int) {
         precondition(rollingWindow > 0, "Rolling window must be positive")
         self.rollingWindow = rollingWindow
+        self._policyLossWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._valueLossWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._policyEntropyWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._policyNonNegWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._gradNormWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._valueMeanWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._valueAbsMeanWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._vBaselineDeltaWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._policyHeadWeightNormWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._policyLogitAbsMaxWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._playedMoveProbWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._advMeanWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._advStdWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._advMinWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._advMaxWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._advFracPosWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._advFracSmallWindow = RollingDoubleWindow(limit: rollingWindow)
     }
 
     /// Seed the stats with values from a resumed session so the
     /// step counter and other totals don't restart from zero.
     func seed(_ stats: TrainingRunStats) {
-        queue.async { [weak self] in
-            self?._stats = stats
+        queue.async {
+            self._stats = stats
         }
     }
 
@@ -445,81 +499,29 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// serial queue asynchronously so the training worker never waits
     /// on the UI heartbeat's `snapshot()` read.
     func recordStep(_ timing: TrainStepTiming) {
-        queue.async { [weak self] in
-            guard let self else { return }
+        queue.async {
             self._stats.record(timing)
             self._lastTiming = timing
             self._policyLossWindow.append(Double(timing.policyLoss))
-            if self._policyLossWindow.count > self.rollingWindow {
-                self._policyLossWindow.removeFirst(self._policyLossWindow.count - self.rollingWindow)
-            }
             self._valueLossWindow.append(Double(timing.valueLoss))
-            if self._valueLossWindow.count > self.rollingWindow {
-                self._valueLossWindow.removeFirst(self._valueLossWindow.count - self.rollingWindow)
-            }
             self._policyEntropyWindow.append(Double(timing.policyEntropy))
-            if self._policyEntropyWindow.count > self.rollingWindow {
-                self._policyEntropyWindow.removeFirst(self._policyEntropyWindow.count - self.rollingWindow)
-            }
             self._policyNonNegWindow.append(Double(timing.policyNonNegligibleCount))
-            if self._policyNonNegWindow.count > self.rollingWindow {
-                self._policyNonNegWindow.removeFirst(self._policyNonNegWindow.count - self.rollingWindow)
-            }
             self._gradNormWindow.append(Double(timing.gradGlobalNorm))
-            if self._gradNormWindow.count > self.rollingWindow {
-                self._gradNormWindow.removeFirst(self._gradNormWindow.count - self.rollingWindow)
-            }
             self._valueMeanWindow.append(Double(timing.valueMean))
-            if self._valueMeanWindow.count > self.rollingWindow {
-                self._valueMeanWindow.removeFirst(self._valueMeanWindow.count - self.rollingWindow)
-            }
             self._valueAbsMeanWindow.append(Double(timing.valueAbsMean))
-            if self._valueAbsMeanWindow.count > self.rollingWindow {
-                self._valueAbsMeanWindow.removeFirst(self._valueAbsMeanWindow.count - self.rollingWindow)
-            }
             // Optional — only the real-data path supplies vBaselineDelta.
             if let delta = timing.vBaselineDelta {
                 self._vBaselineDeltaWindow.append(Double(delta))
-                if self._vBaselineDeltaWindow.count > self.rollingWindow {
-                    self._vBaselineDeltaWindow.removeFirst(self._vBaselineDeltaWindow.count - self.rollingWindow)
-                }
             }
             self._policyHeadWeightNormWindow.append(Double(timing.policyHeadWeightNorm))
-            if self._policyHeadWeightNormWindow.count > self.rollingWindow {
-                self._policyHeadWeightNormWindow.removeFirst(self._policyHeadWeightNormWindow.count - self.rollingWindow)
-            }
             self._policyLogitAbsMaxWindow.append(Double(timing.policyLogitAbsMax))
-            if self._policyLogitAbsMaxWindow.count > self.rollingWindow {
-                self._policyLogitAbsMaxWindow.removeFirst(self._policyLogitAbsMaxWindow.count - self.rollingWindow)
-            }
             self._playedMoveProbWindow.append(Double(timing.playedMoveProb))
-            if self._playedMoveProbWindow.count > self.rollingWindow {
-                self._playedMoveProbWindow.removeFirst(self._playedMoveProbWindow.count - self.rollingWindow)
-            }
             self._advMeanWindow.append(Double(timing.advantageMean))
-            if self._advMeanWindow.count > self.rollingWindow {
-                self._advMeanWindow.removeFirst(self._advMeanWindow.count - self.rollingWindow)
-            }
             self._advStdWindow.append(Double(timing.advantageStd))
-            if self._advStdWindow.count > self.rollingWindow {
-                self._advStdWindow.removeFirst(self._advStdWindow.count - self.rollingWindow)
-            }
             self._advMinWindow.append(Double(timing.advantageMin))
-            if self._advMinWindow.count > self.rollingWindow {
-                self._advMinWindow.removeFirst(self._advMinWindow.count - self.rollingWindow)
-            }
             self._advMaxWindow.append(Double(timing.advantageMax))
-            if self._advMaxWindow.count > self.rollingWindow {
-                self._advMaxWindow.removeFirst(self._advMaxWindow.count - self.rollingWindow)
-            }
             self._advFracPosWindow.append(Double(timing.advantageFracPositive))
-            if self._advFracPosWindow.count > self.rollingWindow {
-                self._advFracPosWindow.removeFirst(self._advFracPosWindow.count - self.rollingWindow)
-            }
             self._advFracSmallWindow.append(Double(timing.advantageFracSmall))
-            if self._advFracSmallWindow.count > self.rollingWindow {
-                self._advFracSmallWindow.removeFirst(self._advFracSmallWindow.count - self.rollingWindow)
-            }
             if let raw = timing.advantageRaw, !raw.isEmpty {
                 self.pushAdvRaw(raw)
             }
@@ -563,8 +565,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// The first error wins — subsequent calls are ignored so a
     /// follow-on error doesn't clobber the original cause.
     func recordError(_ message: String) {
-        queue.async { [weak self] in
-            guard let self else { return }
+        queue.async {
             if self._error == nil { self._error = message }
         }
     }
@@ -575,26 +576,25 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// aligned trainer/champion regime instead of inheriting the
     /// pre-promotion averages.
     func resetRollingWindows() {
-        queue.async { [weak self] in
-            guard let self else { return }
+        queue.async {
             self._lastTiming = nil
-            self._policyLossWindow.removeAll(keepingCapacity: true)
-            self._valueLossWindow.removeAll(keepingCapacity: true)
-            self._policyEntropyWindow.removeAll(keepingCapacity: true)
-            self._policyNonNegWindow.removeAll(keepingCapacity: true)
-            self._gradNormWindow.removeAll(keepingCapacity: true)
-            self._valueMeanWindow.removeAll(keepingCapacity: true)
-            self._valueAbsMeanWindow.removeAll(keepingCapacity: true)
-            self._vBaselineDeltaWindow.removeAll(keepingCapacity: true)
-            self._policyHeadWeightNormWindow.removeAll(keepingCapacity: true)
-            self._policyLogitAbsMaxWindow.removeAll(keepingCapacity: true)
-            self._playedMoveProbWindow.removeAll(keepingCapacity: true)
-            self._advMeanWindow.removeAll(keepingCapacity: true)
-            self._advStdWindow.removeAll(keepingCapacity: true)
-            self._advMinWindow.removeAll(keepingCapacity: true)
-            self._advMaxWindow.removeAll(keepingCapacity: true)
-            self._advFracPosWindow.removeAll(keepingCapacity: true)
-            self._advFracSmallWindow.removeAll(keepingCapacity: true)
+            self._policyLossWindow.removeAll()
+            self._valueLossWindow.removeAll()
+            self._policyEntropyWindow.removeAll()
+            self._policyNonNegWindow.removeAll()
+            self._gradNormWindow.removeAll()
+            self._valueMeanWindow.removeAll()
+            self._valueAbsMeanWindow.removeAll()
+            self._vBaselineDeltaWindow.removeAll()
+            self._policyHeadWeightNormWindow.removeAll()
+            self._policyLogitAbsMaxWindow.removeAll()
+            self._playedMoveProbWindow.removeAll()
+            self._advMeanWindow.removeAll()
+            self._advStdWindow.removeAll()
+            self._advMinWindow.removeAll()
+            self._advMaxWindow.removeAll()
+            self._advFracPosWindow.removeAll()
+            self._advFracSmallWindow.removeAll()
             self._advRawRingHead = 0
             self._advRawRingFilled = 0
             // Keep _advRawRing capacity allocated — next push reuses it.
@@ -604,23 +604,23 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// Snapshot all fields atomically for the UI poller.
     func snapshot() -> Snapshot {
         queue.sync {
-            let rollingPolicy = Self.mean(_policyLossWindow)
-            let rollingValue = Self.mean(_valueLossWindow)
-            let rollingEntropy = Self.mean(_policyEntropyWindow)
-            let rollingNonNeg = Self.mean(_policyNonNegWindow)
-            let rollingGradNorm = Self.mean(_gradNormWindow)
-            let rollingVMean = Self.mean(_valueMeanWindow)
-            let rollingVAbs = Self.mean(_valueAbsMeanWindow)
-            let rollingVBaseDelta = Self.mean(_vBaselineDeltaWindow)
-            let rollingPolicyHeadWNorm = Self.mean(_policyHeadWeightNormWindow)
-            let rollingPLogitAbsMax = Self.mean(_policyLogitAbsMaxWindow)
-            let rollingPlayedMoveP = Self.mean(_playedMoveProbWindow)
-            let rollingAdvMean = Self.mean(_advMeanWindow)
-            let rollingAdvStd = Self.mean(_advStdWindow)
-            let rollingAdvMin = Self.mean(_advMinWindow)
-            let rollingAdvMax = Self.mean(_advMaxWindow)
-            let rollingAdvFracPos = Self.mean(_advFracPosWindow)
-            let rollingAdvFracSmall = Self.mean(_advFracSmallWindow)
+            let rollingPolicy = _policyLossWindow.mean
+            let rollingValue = _valueLossWindow.mean
+            let rollingEntropy = _policyEntropyWindow.mean
+            let rollingNonNeg = _policyNonNegWindow.mean
+            let rollingGradNorm = _gradNormWindow.mean
+            let rollingVMean = _valueMeanWindow.mean
+            let rollingVAbs = _valueAbsMeanWindow.mean
+            let rollingVBaseDelta = _vBaselineDeltaWindow.mean
+            let rollingPolicyHeadWNorm = _policyHeadWeightNormWindow.mean
+            let rollingPLogitAbsMax = _policyLogitAbsMaxWindow.mean
+            let rollingPlayedMoveP = _playedMoveProbWindow.mean
+            let rollingAdvMean = _advMeanWindow.mean
+            let rollingAdvStd = _advStdWindow.mean
+            let rollingAdvMin = _advMinWindow.mean
+            let rollingAdvMax = _advMaxWindow.mean
+            let rollingAdvFracPos = _advFracPosWindow.mean
+            let rollingAdvFracSmall = _advFracSmallWindow.mean
             let (advP05, advP50, advP95) = Self.percentiles(
                 ring: _advRawRing,
                 filled: _advRawRingFilled
@@ -651,12 +651,6 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 error: _error
             )
         }
-    }
-
-    private static func mean(_ window: [Double]) -> Double? {
-        guard !window.isEmpty else { return nil }
-        let sum = window.reduce(0, +)
-        return sum / Double(window.count)
     }
 
     /// Compute (p05, p50, p95) from the live portion of a raw-value
@@ -1269,12 +1263,27 @@ final class ChessTrainer: @unchecked Sendable {
         // autodiff can walk the whole path cleanly. softMax is
         // numerically stable internally, and the ε clamp keeps
         // log/log-gradient finite on moves where p underflows to 0.
+        //
+        // ε = 1e-7 rather than 1e-10: in exact math the chain-rule
+        // p factor on the outer multiply cancels the 1/x blowup of
+        // log's local gradient (upstream grad for log(p+ε) is p, so
+        // the composed contribution is p/(p+ε) ∈ [0,1]). That bound
+        // holds regardless of ε, so a looser floor is free insurance
+        // against FP32 edge cases without meaningfully biasing the
+        // entropy estimate — at uniform init each p ≈ 1/4864 ≈ 2e-4,
+        // well above 1e-7, so the clamp only bites once the policy
+        // is already near-collapsed (at which point the pEnt alarm
+        // has fired anyway). MPSGraph as of macOS 26.4 SDK still
+        // exposes no stopGradient/detach, so feeding labels through
+        // a placeholder or rebuilding as log-softmax-from-logits
+        // (max-subtract needs reductionMaximum → no gradient) remain
+        // closed off; the ε-bumped form is the available mitigation.
         let softmax = graph.softMax(
             with: network.policyOutput,
             axis: 1,
             name: "policy_softmax"
         )
-        let logEpsConst = graph.constant(1e-10, dataType: dtype)
+        let logEpsConst = graph.constant(1e-7, dataType: dtype)
         let softmaxClamped = graph.addition(
             softmax,
             logEpsConst,

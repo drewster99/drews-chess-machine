@@ -74,7 +74,7 @@ struct TournamentStats: Sendable {
 /// ```
 /// let network = try ChessMPSNetwork(.randomWeights)
 /// let driver = TournamentDriver()
-/// let stats = await driver.run(
+/// let stats = try await driver.run(
 ///     playerA: { MPSChessPlayer(name: "Net", source: DirectMoveEvaluationSource(network: network)) },
 ///     playerB: { RandomPlayer() },
 ///     games: 100
@@ -105,6 +105,7 @@ final class TournamentDriver {
     ///     Used by the arena-evaluation caller to push live progress
     ///     into a lock-protected box the UI heartbeat polls.
     /// - Returns: Aggregated win/loss/draw statistics.
+    /// - Throws: Any non-cancellation error raised while running a game.
     func run(
         playerA: @Sendable () -> any ChessPlayer,
         playerB: @Sendable () -> any ChessPlayer,
@@ -112,7 +113,7 @@ final class TournamentDriver {
         diversityTracker: GameDiversityTracker? = nil,
         isCancelled: (@Sendable () -> Bool)? = nil,
         onGameCompleted: (@Sendable (Int, Int, Int, Int) -> Void)? = nil
-    ) async -> TournamentStats {
+    ) async throws -> TournamentStats {
         var aWins = 0
         var bWins = 0
         var draws = 0
@@ -157,16 +158,7 @@ final class TournamentDriver {
             } catch is CancellationError {
                 break
             } catch {
-                // Non-cancellation error — engine hiccup, player
-                // logic error, etc. Count as a draw for both the
-                // side-agnostic total AND the per-side counter
-                // corresponding to whichever side player A was
-                // on. Skipping the per-side update would break
-                // the identity `aDrawsAsWhite + aDrawsAsBlack ==
-                // draws` that all downstream consumers rely on.
-                draws += 1
-                if aIsWhite { aDrawsAsWhite += 1 } else { aDrawsAsBlack += 1 }
-                continue
+                throw error
             }
 
             diversityTracker?.recordGame(moves: machine.moveHistory)

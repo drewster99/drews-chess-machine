@@ -652,7 +652,7 @@ struct TournamentRecord: Sendable, Identifiable {
 
 /// Serial-queue-protected holder for live tournament progress, shared
 /// between the driver task (writer, one update per finished game) and
-/// the UI heartbeat (reader, polling at 60 Hz). Same pattern as
+/// the UI heartbeat (reader, polling at 10 Hz). Same pattern as
 /// `TrainingLiveStatsBox` and `CancelBox` — a private serial
 /// `DispatchQueue` serializes all state access, so the class is
 /// safely `@unchecked Sendable`.
@@ -1615,7 +1615,7 @@ struct ContentView: View {
     @State private var trainingError: String?
     /// Lock-protected live-stats holder shared with the background training
     /// task (continuous or self-play). The worker writes via `recordStep`
-    /// with no main-actor hop; the 60 Hz `snapshotTimer` poller mirrors the
+    /// with no main-actor hop; the 10 Hz `snapshotTimer` poller mirrors the
     /// latest values into `trainingStats` / `lastTrainStep` /
     /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
     /// count has actually advanced.
@@ -1672,7 +1672,7 @@ struct ContentView: View {
     @State private var replayBuffer: ReplayBuffer?
     /// Rolling-window averages of the most recent self-play training losses,
     /// split into the policy (outcome-weighted cross-entropy) and value
-    /// (bounded MSE) components. Mirrored from `trainingBox` by the 60 Hz
+    /// (bounded MSE) components. Mirrored from `trainingBox` by the 10 Hz
     /// poller. The windows themselves live inside the box — these are just
     /// the most recent display values. Split so we can tell whether an
     /// oscillating total-loss plot is the bounded value term going unstable
@@ -1757,7 +1757,7 @@ struct ContentView: View {
     /// Play and Train. Refreshed at most every
     /// `memoryStatsRefreshSec` seconds via
     /// `refreshMemoryStatsIfNeeded()` (called from the snapshot
-    /// timer) so the displayed numbers don't churn at 60 Hz.
+    /// timer) so the displayed numbers don't churn at 10 Hz.
     @State private var memoryStatsSnap: MemoryStatsSnapshot?
     /// Wall-clock timestamp of the most recent `memoryStatsSnap`
     /// refresh. Defaults to `.distantPast` so the first refresh
@@ -1998,14 +1998,14 @@ struct ContentView: View {
     /// Scheduler for the 4-hour periodic autosave. Created on
     /// Play-and-Train start and torn down on Stop; `nil` while no
     /// session is active. Polled on the main heartbeat (throttled
-    /// to once per second — a 4-hour deadline doesn't need 60 Hz
+    /// to once per second — a 4-hour deadline doesn't need 10 Hz
     /// resolution). See `PeriodicSaveController` for the
     /// arena-deferral and save-reset invariants.
     @State private var periodicSaveController: PeriodicSaveController?
 
     /// Last wall-clock time the heartbeat polled
     /// `periodicSaveController.decide(now:)`. Throttles the poll to
-    /// roughly 1 Hz regardless of the 60 Hz heartbeat cadence,
+    /// roughly 1 Hz regardless of the 10 Hz heartbeat cadence,
     /// which is more than sufficient resolution for a multi-hour
     /// deadline and keeps the hot path cheap.
     @State private var periodicSaveLastPollAt: Date?
@@ -2194,7 +2194,7 @@ struct ContentView: View {
     /// publisher is created when the view struct is initialized and SwiftUI
     /// manages the subscription lifecycle via `.onReceive` below.
     private let snapshotTimer = Timer.publish(
-        every: 1.0/60.0, on: .main, in: .common
+        every: 1.0/10.0, on: .main, in: .common
     ).autoconnect()
 
     /// Default on/off toggle for "autosave the full session after
@@ -3458,7 +3458,7 @@ struct ContentView: View {
 
     /// Per-heartbeat tick that asks the periodic-save scheduler
     /// whether to fire. Throttled to ~1 Hz — a 4-hour deadline does
-    /// not benefit from 60 Hz polling and the throttle keeps the
+    /// not benefit from 10 Hz polling and the throttle keeps the
     /// heartbeat hot path from paying a decision cost per frame. A
     /// no-op when no session is active, and an immediate no-op
     /// when a periodic save is already in flight (the fire flag is
@@ -3597,7 +3597,7 @@ struct ContentView: View {
     /// `memoryStatsRefreshSec` seconds, caching the result in
     /// `memoryStatsSnap` for the busy label to read. Cheap on a
     /// no-op tick (a single timestamp diff) so it's fine to call
-    /// from the 60 Hz heartbeat. The actual sampling reads
+    /// from the 10 Hz heartbeat. The actual sampling reads
     /// `task_info` and a couple of `MTLDevice` properties via
     /// the trainer's existing helpers.
     private func refreshMemoryStatsIfNeeded() {
@@ -5783,48 +5783,55 @@ struct ContentView: View {
         // so every game in this arena uses the same tau settings, even
         // if the user edits the fields mid-tournament.
         let arenaScheduleSnapshot = samplingScheduleBox?.arena ?? buildArenaSchedule()
-        let stats = await withTaskCancellationHandler {
-            await Task.detached(priority: .userInitiated) {
-                [arenaChampion, candidateInference, tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot] in
-                let driver = TournamentDriver()
-                driver.delegate = nil
-                return await driver.run(
-                    playerA: {
-                        MPSChessPlayer(
-                            name: "Candidate",
-                            source: DirectMoveEvaluationSource(network: candidateInference),
-                            schedule: arenaScheduleSnapshot
-                        )
-                    },
-                    playerB: {
-                        MPSChessPlayer(
-                            name: "Champion",
-                            source: DirectMoveEvaluationSource(network: arenaChampion),
-                            schedule: arenaScheduleSnapshot
-                        )
-                    },
-                    games: totalGames,
-                    diversityTracker: arenaDiversity,
-                    // The driver checks this between games. Either a
-                    // task-cancel (session Stop) or a user Abort /
-                    // Promote click breaks the game loop early; the
-                    // caller below disambiguates the two via the
-                    // override box's `consume()`.
-                    isCancelled: { cancelBox.isCancelled || overrideBox.isActive },
-                    onGameCompleted: { gameIndex, aWins, bWins, draws in
-                        tBox.update(TournamentProgress(
-                            currentGame: gameIndex,
-                            totalGames: totalGames,
-                            candidateWins: aWins,
-                            championWins: bWins,
-                            draws: draws,
-                            startTime: startTime
-                        ))
-                    }
-                )
-            }.value
-        } onCancel: {
-            cancelBox.cancel()
+        let stats: TournamentStats
+        do {
+            stats = try await withTaskCancellationHandler {
+                try await Task.detached(priority: .userInitiated) {
+                    [arenaChampion, candidateInference, tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot] in
+                    let driver = TournamentDriver()
+                    driver.delegate = nil
+                    return try await driver.run(
+                        playerA: {
+                            MPSChessPlayer(
+                                name: "Candidate",
+                                source: DirectMoveEvaluationSource(network: candidateInference),
+                                schedule: arenaScheduleSnapshot
+                            )
+                        },
+                        playerB: {
+                            MPSChessPlayer(
+                                name: "Champion",
+                                source: DirectMoveEvaluationSource(network: arenaChampion),
+                                schedule: arenaScheduleSnapshot
+                            )
+                        },
+                        games: totalGames,
+                        diversityTracker: arenaDiversity,
+                        // The driver checks this between games. Either a
+                        // task-cancel (session Stop) or a user Abort /
+                        // Promote click breaks the game loop early; the
+                        // caller below disambiguates the two via the
+                        // override box's `consume()`.
+                        isCancelled: { cancelBox.isCancelled || overrideBox.isActive },
+                        onGameCompleted: { gameIndex, aWins, bWins, draws in
+                            tBox.update(TournamentProgress(
+                                currentGame: gameIndex,
+                                totalGames: totalGames,
+                                candidateWins: aWins,
+                                championWins: bWins,
+                                draws: draws,
+                                startTime: startTime
+                            ))
+                        }
+                    )
+                }.value
+            } onCancel: {
+                cancelBox.cancel()
+            }
+        } catch {
+            trainingBox?.recordError("Arena tournament failed: \(error.localizedDescription)")
+            cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+            return
         }
 
         // --- Score and promotion ---
@@ -7655,10 +7662,17 @@ struct ContentView: View {
                             // most recent probe.
                             if steps == 1 || (steps - max(0, lastEmittedStep)) >= legalMassBootstrapStride {
                                 if buffer.count >= legalMassSampleSize {
-                                    lastLegalMass = (try? await trainer.legalMassSnapshot(
-                                        replayBuffer: buffer,
-                                        sampleSize: legalMassSampleSize
-                                    )) ?? lastLegalMass
+                                    do {
+                                        lastLegalMass = try await trainer.legalMassSnapshot(
+                                            replayBuffer: buffer,
+                                            sampleSize: legalMassSampleSize
+                                        )
+                                    } catch {
+                                        lastLegalMass = nil
+                                        SessionLogger.shared.log(
+                                            "[STATS-ERR] legalMassSnapshot failed at step \(steps): \(error.localizedDescription)"
+                                        )
+                                    }
                                 }
                             }
                             let elapsed = Date().timeIntervalSince(sessionStart)
@@ -7691,10 +7705,19 @@ struct ContentView: View {
                         }
                         if Task.isCancelled { return }
                         if buffer.count >= legalMassSampleSize {
-                            lastLegalMass = (try? await trainer.legalMassSnapshot(
-                                replayBuffer: buffer,
-                                sampleSize: legalMassSampleSize
-                            )) ?? lastLegalMass
+                            let trainingSnap = box.snapshot()
+                            let steps = trainingSnap.stats.steps
+                            do {
+                                lastLegalMass = try await trainer.legalMassSnapshot(
+                                    replayBuffer: buffer,
+                                    sampleSize: legalMassSampleSize
+                                )
+                            } catch {
+                                lastLegalMass = nil
+                                SessionLogger.shared.log(
+                                    "[STATS-ERR] legalMassSnapshot failed at step \(steps): \(error.localizedDescription)"
+                                )
+                            }
                         }
                         let elapsed = Date().timeIntervalSince(sessionStart)
                         await logOne(elapsedTarget: elapsed, legalMassOverride: lastLegalMass)
@@ -8044,12 +8067,17 @@ struct ContentView: View {
         var failed = 0
         var ran = 0
 
-        func check(_ name: String, _ predicate: () -> Bool) {
+        func check(_ name: String, _ predicate: () throws -> Bool) {
             ran += 1
-            if predicate() {
-                SessionLogger.shared.log("[DIAG] PASS  \(name)")
-            } else {
-                SessionLogger.shared.log("[DIAG] FAIL  \(name)")
+            do {
+                if try predicate() {
+                    SessionLogger.shared.log("[DIAG] PASS  \(name)")
+                } else {
+                    SessionLogger.shared.log("[DIAG] FAIL  \(name)")
+                    failed += 1
+                }
+            } catch {
+                SessionLogger.shared.log("[DIAG] FAIL  \(name): \(error.localizedDescription)")
                 failed += 1
             }
         }
@@ -8107,10 +8135,10 @@ struct ContentView: View {
             let ng1 = ChessMove(fromRow: 5, fromCol: 5, toRow: 7, toCol: 6, promotion: nil)
             let nb8 = ChessMove(fromRow: 2, fromCol: 2, toRow: 0, toCol: 1, promotion: nil)
             for _ in 0..<2 {
-                _ = try? engine.applyMoveAndAdvance(nf3)
-                _ = try? engine.applyMoveAndAdvance(nc6)
-                _ = try? engine.applyMoveAndAdvance(ng1)
-                _ = try? engine.applyMoveAndAdvance(nb8)
+                _ = try engine.applyMoveAndAdvance(nf3)
+                _ = try engine.applyMoveAndAdvance(nc6)
+                _ = try engine.applyMoveAndAdvance(ng1)
+                _ = try engine.applyMoveAndAdvance(nb8)
             }
             if case .drawByThreefoldRepetition = engine.result { return true }
             return false
