@@ -199,31 +199,57 @@ function renderRow(exp) {
     <td class="details">${escHTML(exp.change_details || '')}</td>
     <td>${deltas}</td>
     <td class="commentary">${escHTML(exp.analysis_commentary || '')}</td>
-    <td><code>${escHTML(exp.folder || '')}</code></td>
+    <td><a href="${escHTML(exp.folder || '')}/"><code>${escHTML(exp.folder || '')}</code></a></td>
   `;
   return tr;
 }
 
+function isNearBottom() {
+  const threshold = 80; // px slack so we still count as "at bottom" after small drift
+  return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - threshold);
+}
+
 function reconcile(experiments) {
+  // Snapshot scroll stickiness BEFORE mutating the DOM — if the user is
+  // already watching the newest row at the bottom, we'll re-stick after
+  // rendering. If they scrolled up to read an older row, we leave them alone.
+  const wasAtBottom = isNearBottom();
+
   const tbody = document.querySelector('#experiments tbody');
   const byKey = new Map();
   Array.from(tbody.children).forEach(tr => byKey.set(tr.dataset.key, tr));
+
+  let changed = false;
   experiments.forEach(exp => {
     const key = rowKey(exp);
+    // Canonical payload for equality checks. Comparing innerHTML is unreliable
+    // (browsers normalize attributes and entities inconsistently), which
+    // caused every row to spuriously re-render and flash on every poll.
+    const payload = JSON.stringify(exp);
     const existing = byKey.get(key);
-    const fresh = renderRow(exp);
     if (!existing) {
+      const fresh = renderRow(exp);
+      fresh.dataset.payload = payload;
       fresh.classList.add('flash');
       tbody.appendChild(fresh);
-    } else if (existing.className !== fresh.className ||
-               existing.innerHTML !== fresh.innerHTML) {
+      changed = true;
+    } else if (existing.dataset.payload !== payload) {
+      const fresh = renderRow(exp);
+      fresh.dataset.payload = payload;
       fresh.classList.add('flash');
       tbody.replaceChild(fresh, existing);
+      changed = true;
     }
+    // Unchanged rows are left in place — no flash, no DOM churn.
   });
+
   // Rows that disappeared from the backing data (e.g. folder deleted manually)
   // are left alone — we don't destructively remove anything the user might be
   // looking at.
+
+  if (changed && wasAtBottom) {
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+  }
 }
 
 function loadData() {
@@ -256,6 +282,11 @@ def main():
     rows = collect()
     payload = "window.EXPERIMENTS = " + json.dumps(rows, indent=2) + ";\n"
     OUT_JS.write_text(payload)
+    # Only write the HTML shell if it doesn't exist yet — overwriting on
+    # every regen would reset the file's mtime even when the template hasn't
+    # changed, and (historically) felt like it was causing spurious visual
+    # changes on the open page. To pick up template tweaks in this script,
+    # delete the file manually and run this generator again.
     if not OUT_HTML.is_file():
         OUT_HTML.write_text(HTML_TEMPLATE)
     print(f"regen_dashboard: {len(rows)} runs -> {OUT_JS.relative_to(REPO_ROOT)}")

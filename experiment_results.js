@@ -58,5 +58,25 @@ window.EXPERIMENTS = [
     ],
     "analysis_commentary": "Doubling learning_rate from 5e-5 to 1e-4 caused catastrophic re-collapse of the policy. Within 2 minutes (by probe 8 at t=134s) max reached 1.0 and illegal_mass reached 1.0, both locked for the remaining 8 minutes of the run. Compared to the previous best (max bounded [0.048, 0.197], illegal_mass falling to 0.665), this is a dramatic regression on both diagnostic (1) and (2) \u2014 the network has returned to the one-hot-on-a-single-illegal-move dead end. entropy_bonus=0.004 alone was insufficient to hold the faster gradient updates in check. Rejecting.",
     "folder": "experiments/20260421-185738"
+  },
+  {
+    "timestamp": "20260421-194653",
+    "start_time_iso": "2026-04-21T19:46:53",
+    "status": "REJECTED",
+    "change_details": "Pair a modest LR bump with a matching entropy bump to accelerate learning while preserving the collapse margin. The previous lr=1e-4 experiment blew up at entropy_bonus=0.004, so instead try lr 5e-5 -> 7.5e-5 (1.5x, not 2x) coupled with entropy_bonus 0.004 -> 0.006 (1.5x) so the regularization pressure scales with the step size. This is a tightly-related pair: both knobs control the same collapse/learning tradeoff, and scaling them together tests whether the healthy dynamics of the current best run transfer to a faster learning rate. All other knobs (grad clip, arena cadence, batch size) are held fixed so the attribution is clean.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.004,
+        "new": 0.006
+      },
+      {
+        "key": "learning_rate",
+        "old": 5e-05,
+        "new": 7.5e-05
+      }
+    ],
+    "analysis_commentary": "Paired lr 5e-5 -> 7.5e-5 with entropy_bonus 0.004 -> 0.006 (both 1.5x) still collapsed the policy. Max reached 1.0 by probe 6 (t=100s) and illegal_mass locked at 1.0, both held for the remaining 8 minutes \u2014 a worse trajectory than even the lr=1e-4 experiment (which took 134s to collapse). Scaling entropy with lr was not enough to preserve margin; the lr bump dominates because the cross-entropy gradient scales linearly with lr while the entropy-bonus gradient does not in the same way (entropy bonus enters as a coefficient on -H, and the effective regularization pressure at a given logit configuration doesn't scale with lr the way the CE pressure does). Rejecting. Sideshow: this was the first run after the probe-network fix (dedicated probe network separate from the arena's candidate inference network). The trajectory shows 37 probes fired continuously with no ~250s arena gap \u2014 the GOAL #2 observability fix is working as intended, even though this particular parameter iteration was unsuccessful.",
+    "folder": "experiments/20260421-194653"
   }
 ];
