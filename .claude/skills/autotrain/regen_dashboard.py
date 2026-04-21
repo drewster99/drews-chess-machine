@@ -76,9 +76,27 @@ def classify(folder: Path, proposal, analysis):
     if not isinstance(analysis, dict):
         return "FAILED"
     commentary = str(analysis.get("analysis_commentary", ""))
-    if commentary.startswith("training run failed"):
+    # Stub failure commentaries written by the skill when training crashed,
+    # timed out, or the proposer emitted an out-of-bounds proposal.
+    failure_prefixes = (
+        "training run failed",
+        "proposal failed bounds check",
+        "proposer returned invalid JSON",
+    )
+    if any(commentary.startswith(p) for p in failure_prefixes):
         return "FAILED"
-    return "ACCEPTED" if analysis.get("is_result_improved") else "REJECTED"
+    # New trichotomy field takes precedence.
+    c = analysis.get("classification")
+    if c == "improved":
+        return "ACCEPTED"
+    if c == "neutral":
+        return "NEUTRAL"
+    if c == "regressed":
+        return "REJECTED"
+    # Back-compat: legacy is_result_improved boolean from pre-trichotomy runs.
+    if "is_result_improved" in analysis:
+        return "ACCEPTED" if analysis.get("is_result_improved") else "REJECTED"
+    return "FAILED"
 
 
 def build_row(folder: Path):
@@ -154,19 +172,22 @@ def compute_aggregates(rows, folder_arenas):
             "best_arena_score": None,
             "best_arena_folder": None,
         }
-    counts = {"SEED": 0, "ACCEPTED": 0, "REJECTED": 0, "FAILED": 0, "IN_PROGRESS": 0}
+    counts = {"SEED": 0, "ACCEPTED": 0, "NEUTRAL": 0, "REJECTED": 0, "FAILED": 0, "IN_PROGRESS": 0}
     for r in rows:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
 
-    # Consecutive-failure streak — walk from newest backward, counting trailing
-    # REJECTED + FAILED. IN_PROGRESS doesn't break the streak (it's not a
-    # decision yet); ACCEPTED or SEED resets it to 0.
+    # Consecutive-failure streak — walk from newest backward.
+    #   REJECTED or FAILED → add 1 (it's a regression or crash).
+    #   NEUTRAL             → transparent: doesn't add, doesn't reset. The
+    #                         baseline held but didn't advance; streak pauses.
+    #   IN_PROGRESS         → transparent (not yet a decision).
+    #   ACCEPTED or SEED    → stop walking, streak = 0.
     streak = 0
     for r in reversed(rows):
         s = r["status"]
         if s in ("REJECTED", "FAILED"):
             streak += 1
-        elif s == "IN_PROGRESS":
+        elif s in ("NEUTRAL", "IN_PROGRESS"):
             continue
         else:
             break
@@ -181,7 +202,9 @@ def compute_aggregates(rows, folder_arenas):
         else:
             break
 
-    decided = counts["ACCEPTED"] + counts["REJECTED"] + counts["FAILED"]
+    # Accept rate denominator includes NEUTRAL: neutrals are decisions, just
+    # not promotions. A long streak of neutrals correctly shows 0% accept.
+    decided = counts["ACCEPTED"] + counts["NEUTRAL"] + counts["REJECTED"] + counts["FAILED"]
     accept_rate = (counts["ACCEPTED"] / decided) if decided > 0 else None
 
     arena_count = 0
@@ -231,6 +254,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
            text-align: left; }
   th { background: #f4f4f4; position: sticky; top: 0; z-index: 1; }
   tr.ACCEPTED    { background: #eaf7ea; }
+  tr.NEUTRAL     { background: #f4f1e4; }
   tr.REJECTED    { background: #fff5e6; }
   tr.FAILED      { background: #fde8e8; }
   tr.SEED        { background: #e6f0fb; }
@@ -404,7 +428,7 @@ function renderAggregates(agg) {
     <div class="agg-cell">
       <span class="agg-label">Iterations</span>
       <span class="agg-value">${agg.total_iterations}</span>
-      <span class="agg-sub">A:${c('ACCEPTED')} R:${c('REJECTED')} F:${c('FAILED')}</span>
+      <span class="agg-sub">A:${c('ACCEPTED')} N:${c('NEUTRAL')} R:${c('REJECTED')} F:${c('FAILED')}</span>
     </div>
     <div class="agg-cell">
       <span class="agg-label">Accept rate</span>

@@ -173,16 +173,28 @@ window.EXPERIMENTS = [
     "analysis_commentary": "Both runs satisfy the non-collapse goal, but the new run (entropy_bonus 0.005) shows strictly worse diagnostics on both axes: max peaked at 0.341 vs 0.197 for the current best, and illegal_mass bottomed at 0.841 vs 0.665. The new run's max also trended upward across the window (0.07 -> 0.34), which is a mildly concerning direction even though it stayed under the 0.90 threshold. The 38-probe continuous trajectory is a genuine observability win, but it comes from the probe-network code fix, not from the entropy_bonus change, so per the scoring guidance it does not count toward improvement. Net: comparable-but-slightly-worse sibling, not a meaningful improvement. Important takeaway independent of the reject: this run is the FIRST non-collapsing non-baseline result, which meaningfully weakens the 'current best is a seed fluke' hypothesis \u2014 two separate entropy settings (0.004 and 0.005) reliably produce healthy training, and all six rejections genuinely perturbed the system out of that basin.",
     "training_time_seconds": null,
     "folder": "experiments/20260421-205914"
+  },
+  {
+    "timestamp": "20260421-211313",
+    "start_time_iso": "2026-04-21T21:13:13",
+    "status": "IN_PROGRESS",
+    "mode": "normal",
+    "change_details": "",
+    "changed_params": [],
+    "analysis_commentary": "",
+    "training_time_seconds": null,
+    "folder": "experiments/20260421-211313"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 10,
+  "total_iterations": 11,
   "counts": {
     "SEED": 0,
     "ACCEPTED": 2,
+    "NEUTRAL": 0,
     "REJECTED": 7,
     "FAILED": 1,
-    "IN_PROGRESS": 0
+    "IN_PROGRESS": 1
   },
   "accept_rate": 0.2,
   "failure_streak": 7,

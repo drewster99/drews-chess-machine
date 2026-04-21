@@ -62,7 +62,13 @@ Before doing any work, check for conflicts so a `/loop` tick doesn't step on a m
 
 Walk `experiments/*/` newest → oldest and compute two numbers:
 
-- **`failure_streak`** — trailing count of `REJECTED` + `FAILED` iterations. `IN_PROGRESS` is transparent (skip over without resetting or incrementing). `ACCEPTED` or `SEED` resets it to 0. The dashboard already exposes this as `window.AGGREGATES.failure_streak` in `experiment_results.js`.
+- **`failure_streak`** — trailing count of iterations classified as `regressed` (dashboard status `REJECTED`) or `FAILED`. Walking newest → oldest:
+  - `regressed` / `FAILED` → add 1 to the streak.
+  - `neutral` (dashboard status `NEUTRAL`) → transparent: skip over without adding or resetting. A neutral result isn't a failure, but it isn't progress either; the streak pauses in place.
+  - `IN_PROGRESS` → transparent (same as before; not yet a decision).
+  - `improved` (status `ACCEPTED`) or `SEED` → stop walking and reset to 0.
+
+  The dashboard already exposes this as `window.AGGREGATES.failure_streak` in `experiment_results.js`.
 - **`trailing_replicates`** — trailing count of iterations whose folder name ends in `-replicate` (walking newest backward until the first non-replicate folder breaks the count). Resets implicitly the moment a non-replicate iteration happens.
 
 Then decide mode for this iteration:
@@ -221,34 +227,47 @@ Instructions embedded in the prompt:
 - Judge improvement strictly against `improvement_goal`. Do not invent a different goal. If the goal isn't moving but metrics unrelated to the goal look better, that's not an improvement.
 - If `training_time_seconds` is unusually short (say < 180 s) and the results are inconclusive, prefer `is_result_improved: false` and say so in the commentary — shorter runs shouldn't ratchet progress.
 - If the two summaries have **different `build_number`** values, the app code was rebuilt between runs. Flag this prominently in the commentary and lean toward `is_result_improved: false` unless the goal metric moved by a clearly-larger margin than plausible build-drift noise.
+- Classify the run into **one of three buckets** (this is how the skill decides whether to accept, do nothing, or count against the failure streak):
+  - **`improved`** — the goal metric(s) moved in the right direction by clearly more than plausible noise. Ratcheted progress. This iteration will be promoted to root and committed.
+  - **`neutral`** — the run was stable and within plausible noise of the baseline: didn't clearly help, didn't regress, collapse signals are no worse than before. The baseline holds; no changes are ratcheted. A neutral is NOT a failure.
+  - **`regressed`** — the goal metric(s) moved in the wrong direction, OR collapse signals got worse (pEnt fell below 5.0 when it previously held, top1_legal_fraction fell, vAbs saturated toward 1.0, gNorm exploded, etc.). This counts against the failure streak.
 - Return JSON of exactly this shape and nothing else:
   ```json
   {
     "analysis_commentary": "<BRIEF, 2-3 sentences, <= 80 words; cite 1-3 specific metrics that drove the decision>",
-    "is_result_improved": true
+    "classification": "improved"
   }
   ```
-- **Keep `analysis_commentary` brief**: under 80 words, 2-3 sentences. Don't restate the proposal or the full trajectory. Just: what metric(s) moved, by how much, and whether that meets the goal.
+- **Keep `analysis_commentary` brief**: under 80 words, 2-3 sentences. Don't restate the proposal or the full trajectory. Just: what metric(s) moved, by how much, and which classification that justifies.
+- Do NOT return the legacy `is_result_improved` field; use `classification` only.
 
 Save the subagent's JSON response to `<folder>/analysis.json`.
 
-### 8. Accept or reject
+### 8. Accept / neutral / reject
 
 Regardless of outcome, run `regen_dashboard.py` first so the HTML dashboard reflects the final status.
 
-- **Accepted** (`is_result_improved: true`): copy `<folder>/parameters.json` → `$ROOT/parameters.json` and `<folder>/result.json` → `$ROOT/results.json`. Stage:
+Read `classification` from `<folder>/analysis.json` and branch:
+
+- **`improved` (ACCEPTED)**: copy `<folder>/parameters.json` → `$ROOT/parameters.json` and `<folder>/result.json` → `$ROOT/results.json`. Stage:
   - `$ROOT/parameters.json`, `$ROOT/results.json`
   - the whole test folder under `experiments/`
   - `$ROOT/experiment_results.js` (and `$ROOT/experiment_results.html` if newly created on this iteration)
-  - any previously-uncommitted test folders and the current dashboard state from prior rejected iterations (those are legitimate evidence and ride along on the first subsequent accept)
-  
+  - any previously-uncommitted test folders and the current dashboard state from prior non-accepted iterations (those are legitimate evidence and ride along on the first subsequent accept)
+
   Commit with message:
   ```
   autotrain: accept <timestamp> — <first-line of change_details>
   ```
   Then `git push origin <branch-confirmed-in-step-0>`. (Per conversation authorization on 2026-04-21, autotrain is permitted to commit+push on accepted iterations to the user-confirmed branch — do not ask each time.)
 
-- **Rejected** (`is_result_improved: false`): do not touch root `parameters.json` or `results.json`. Leave the test folder in place — it's evidence. Leave the regenerated `experiment_results.js` uncommitted; it will be swept into the next accepted iteration's commit. Do not commit this iteration. Log a brief line to the user.
+- **`neutral` (NEUTRAL)**: do **not** touch root `parameters.json` or `results.json`. Do NOT commit this iteration (it'll ride along on the next accept). Log a brief line noting neutrality — the baseline held, the proposed change was safe but not an improvement. Crucially, a neutral does **not** count against the failure streak (see step 0.6).
+
+- **`regressed` (REJECTED)**: do not touch root files. Leave the test folder in place — it's evidence of a regression and feeds the proposer's future history. Do not commit. Log a brief line. This counts against the failure streak.
+
+- **`FAILED`** (from step 5's bounds-violation stub or step 6's training-failure stub): treated like REGRESSED for the streak counter; no commit. The stub `analysis.json` will carry a failure-shaped commentary, not a real `classification`.
+
+Legacy back-compat: if `analysis.json` has the old `is_result_improved` field instead of `classification` (from pre-trichotomy iterations), treat `true` as `improved` and `false` as `regressed` — no neutrals in old data.
 
 ### 9. End iteration
 

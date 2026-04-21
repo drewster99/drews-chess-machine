@@ -15,6 +15,7 @@
            text-align: left; }
   th { background: #f4f4f4; position: sticky; top: 0; z-index: 1; }
   tr.ACCEPTED    { background: #eaf7ea; }
+  tr.NEUTRAL     { background: #f4f1e4; }
   tr.REJECTED    { background: #fff5e6; }
   tr.FAILED      { background: #fde8e8; }
   tr.SEED        { background: #e6f0fb; }
@@ -188,7 +189,7 @@ function renderAggregates(agg) {
     <div class="agg-cell">
       <span class="agg-label">Iterations</span>
       <span class="agg-value">${agg.total_iterations}</span>
-      <span class="agg-sub">A:${c('ACCEPTED')} R:${c('REJECTED')} F:${c('FAILED')}</span>
+      <span class="agg-sub">A:${c('ACCEPTED')} N:${c('NEUTRAL')} R:${c('REJECTED')} F:${c('FAILED')}</span>
     </div>
     <div class="agg-cell">
       <span class="agg-label">Accept rate</span>
