@@ -38,9 +38,12 @@ Work through these steps in order. Do each step; don't skip.
 
 ### 0. Confirm branch with user
 
-Run `git rev-parse --abbrev-ref HEAD` and show the branch name to the user. Ask: "autotrain will commit and push accepted iterations to **<branch>** — proceed?" Wait for confirmation before continuing. If the user says switch branches, let them do that and re-invoke. (Do this every iteration — it's cheap insurance and `/loop` iterations can be interrupted.)
+Run `git rev-parse --abbrev-ref HEAD` to read the current branch.
 
-Once the user has confirmed the branch once in a given session, you may skip this prompt for subsequent `/loop` iterations **in that same session**, but resume asking if the branch ever changes under you.
+- **If the branch is literally `experiments`**, proceed without asking — that branch is the designated autotrain scratch branch, confirmation would be pure friction. Log a one-liner like `autotrain: branch=experiments, proceeding without prompt` and continue.
+- **On any other branch** (including `main`), show the branch name and ask: "autotrain will commit and push accepted iterations to **<branch>** — proceed?" Wait for confirmation before continuing. If the user says switch branches, let them do that and re-invoke.
+
+Once the user has confirmed a non-`experiments` branch once in a given session, you may skip this prompt for subsequent `/loop` iterations **in that same session**, but resume asking if the branch ever changes under you.
 
 ### 0.5. Bail if the GPU is busy
 
@@ -61,13 +64,16 @@ If `$ROOT/experiments/goal.txt` doesn't exist, ask the user: "What's the improve
 
 ### 3. Seed if needed
 
-If either `$ROOT/parameters.json` or `$ROOT/results.json` is missing:
-  a. Write the default parameters block (reproduced at the bottom of this file) to `$ROOT/parameters.json`.
-  b. Create a test folder `experiments/<timestamp>-seed/` and copy the params in there.
+A seed run is needed whenever `$ROOT/results.json` is missing (either first-ever run, or results got deleted). Handle `parameters.json` carefully:
+
+  a. **If `$ROOT/parameters.json` does not exist**, write the default parameters block (reproduced at the bottom of this file) to `$ROOT/parameters.json`. **If it already exists, leave it alone** — the user may have hand-tuned values they don't want clobbered with defaults.
+  b. Create a test folder `experiments/<timestamp>-seed/` and copy the current `$ROOT/parameters.json` in there.
   c. Run `run_training.sh` with **300 seconds** (5-minute seeding run) outputting to the test folder's `result.json`.
-  d. Copy the seed's `result.json` to `$ROOT/results.json` and `parameters.json` to `$ROOT/parameters.json`.
+  d. Copy the seed's `result.json` to `$ROOT/results.json`. Do **not** re-copy parameters back to root — they're already there.
   e. Run `regen_dashboard.py` so the dashboard shows the seed row.
   f. Skip straight to step 8 (commit) with commit message `autotrain: seed baseline`, then end this iteration.
+
+If `$ROOT/results.json` exists but `$ROOT/parameters.json` is missing, that's an inconsistent state — stop and tell the user; don't invent parameters to match a prior result.
 
 ### 4. Create the test folder
 
@@ -102,7 +108,7 @@ Then run `regen_dashboard.py` so the dashboard shows this iteration as `IN_PROGR
 
 ### 6. Run training
 
-Invoke `run_training.sh <folder>/parameters.json 900 <folder>/result.json <folder>/run.log`. Time cap is hard-capped at 900 seconds (15 min) regardless of anything else. If the script exits non-zero or `result.json` is missing/invalid, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "training run failed: <reason>"}`, run `regen_dashboard.py`, and jump to step 8 (reject).
+Invoke `run_training.sh <folder>/parameters.json 600 <folder>/result.json <folder>/run.log`. Time cap is hard-capped at 600 seconds (10 min) regardless of anything else. If the script exits non-zero or `result.json` is missing/invalid, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "training run failed: <reason>"}`, run `regen_dashboard.py`, and jump to step 8 (reject).
 
 ### 7. Analyze (subagent)
 
@@ -184,6 +190,6 @@ Print a one-line summary: `autotrain <timestamp>: ACCEPTED|REJECTED — <change_
 - Never run `git reset`, `git stash`, or `git rebase`.
 - Never force-push.
 - Never skip commit hooks.
-- The per-iteration time limit is hard-capped at 900 seconds. If a subagent requests a longer run, clamp it.
+- The per-iteration time limit is hard-capped at 600 seconds (10 min). If a subagent requests a longer run, clamp it.
 - Only push to the branch the user confirmed in step 0 of the current session. If branch changed mid-loop, re-confirm.
 - If `git status` shows unexpected staged changes at iteration start, stop and surface them — don't sweep them into an autotrain commit.

@@ -1,0 +1,18 @@
+GOAL: Prevent the policy collapse of this AI chess model trainer.
+
+DETAILS: Early in training we see policy collapse down to a single illegal chess move with 100% or nearly 100% probability mass. This can be seen in the results JSON in these properties:
+
+(1) candidate_tests[].policy_head.policy_stats.illegal_mass_sum
+ - Usually ends up over 99% (0.99) within 10 minutes
+
+(2) candidate_tests[].policy_head.policy_stats.max
+ - Usually ends up over 90% (0.90) within 10 minutes
+
+ADDITIONAL DETAILS: When we look at the top 10 raw moves (i.e., sorted by highest probability first), we generally see a single move with over 90% probability, and then other 9 moves are very near zero. 'raw' moves means moves from the policy head without doing any filtering of legal moves. You can see the top 10 raw moves here:
+
+(3) candidate_tests[].policy_head.top_raw[]
+
+Determine the cause and adjust parameters to prevent the collapse.
+If you improve it, you win 100 points on your permanent agent record and a gold star. If you fix it, it is 250 points and 2 gold stars.
+
+Do your best! Thanks!
