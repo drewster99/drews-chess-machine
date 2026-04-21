@@ -1432,27 +1432,41 @@ struct ContentView: View {
     @State private var runner: ChessRunner?
     @State private var networkStatus = ""
     @State private var isBuilding = false
-    /// Separate inference-mode network used *only* by the Candidate test
-    /// probe during Play and Train. Distinct from `network` (the
+    /// Separate inference-mode network used during arena as the
+    /// "candidate side" player. Distinct from `network` (the
     /// "champion" used by self-play / Play Game / Run Forward Pass)
     /// because we explicitly want the champion to stay frozen at
     /// whatever weights it was built with until a future arena-based
     /// promotion step decides otherwise. The trainer's current SGD
-    /// state is copied into this candidate inference network after
-    /// each training block, so the probe reflects "what the
-    /// candidate-in-training thinks right now" without disturbing the
-    /// network that's actually generating self-play data.
+    /// state is copied into this network at arena start so the
+    /// candidate plays its tournament games from a coherent, stable
+    /// snapshot rather than drifting mid-match as training continues.
     ///
     /// Cached across Play and Train sessions so the ~100 ms
     /// MPSGraph-build cost only happens once per app launch, not on
     /// every start.
     @State private var candidateInferenceNetwork: ChessMPSNetwork?
-    /// ChessRunner wrapping `candidateInferenceNetwork`. Built alongside
-    /// the network and used by `fireCandidateProbeIfNeeded` via the
-    /// same `performInference` code path as the pure forward-pass
-    /// mode — no special-case trainer-probe branch needed now that
-    /// the candidate has a dedicated inference-mode network of its own.
-    @State private var candidateRunner: ChessRunner?
+    /// Fifth network — dedicated exclusively to the candidate-test
+    /// probe. An earlier design had the probe share
+    /// `candidateInferenceNetwork` with the arena, which forced the
+    /// probe to pause for the entire duration of every arena (the
+    /// arena's games read the network while the probe would want to
+    /// overwrite it with a fresh trainer snapshot). Pausing produced
+    /// a visible discontinuity in `candidate_tests[]` across every
+    /// arena boundary — before the gap the probe tracked the trainer
+    /// smoothly, after the gap it jumped to reflect ~one-arena-
+    /// duration of accumulated SGD. Giving the probe its own network
+    /// removes that conflict, so the probe can fire through arenas
+    /// and the trajectory stays continuous.
+    ///
+    /// Built lazily on the first Play and Train session and cached
+    /// for the life of the app, same as the other inference
+    /// networks.
+    @State private var probeInferenceNetwork: ChessMPSNetwork?
+    /// ChessRunner wrapping `probeInferenceNetwork`. Used by
+    /// `fireCandidateProbeIfNeeded` via the same `performInference`
+    /// code path as the pure forward-pass mode.
+    @State private var probeRunner: ChessRunner?
     /// Fourth network — dedicated to the arena's "champion side"
     /// player. During arena, champion is copied into this network
     /// once at the start (under a brief self-play pause) and the
@@ -5789,21 +5803,23 @@ struct ContentView: View {
     /// the cooperative-gap model over a parallel timer.
     @MainActor
     private func fireCandidateProbeIfNeeded() async {
-        // Guards: Candidate test active, candidate runner built, trainer
-        // and candidate network both available for the trainer → candidate
-        // sync. All of these are normally true during Play and Train —
-        // the early-return cases cover "just-started race before the
-        // candidate was built" or "trainer wasn't initialized." We also
-        // skip if an arena is running because the arena is currently
-        // using the candidate inference network as its player-A; probe
-        // writes to the same network would race with arena reads.
+        // Guards: Candidate test active, probe runner and network
+        // built, trainer available for the trainer → probe sync. All
+        // of these are normally true during Play and Train — the
+        // early-return cases cover "just-started race before the
+        // probe network was built" or "trainer wasn't initialized."
+        // Arena-active is NOT a blanket skip any more: the candidate
+        // branch uses a dedicated probe network that the arena never
+        // touches, so it can fire freely through arenas. The champion
+        // branch still skips during arenas (see its case below) —
+        // the promotion step briefly writes into the champion under
+        // a self-play pause and we don't want to race that write.
         guard
             isCandidateTestActive,
-            let candidateRunner,
             let trainer,
-            let candidateInference = candidateInferenceNetwork,
-            let championRunner = runner,
-            arenaActiveFlag?.isActive != true
+            let probeRunner,
+            let probeInference = probeInferenceNetwork,
+            let championRunner = runner
         else { return }
         let now = Date()
         let dirty = candidateProbeDirty
@@ -5817,40 +5833,47 @@ struct ContentView: View {
         do {
             switch target {
             case .candidate:
-                // Snapshot the trainer's current state into the candidate
+                // Snapshot the trainer's current state into the probe
                 // inference network, then immediately run the probe. Doing
                 // the copy here — rather than after every training block —
-                // means the ~11.6 MB trainer → candidate transfer happens
-                // only when the probe is actually about to fire (every 15 s
-                // or on drag/side-to-move/mode-flip), not at the ~per-second
-                // cadence of training blocks. Copy cost is still trivial but
-                // the pattern is cleaner: "no one looks at the candidate
-                // except the probe, so no one needs to update it except the
-                // probe."
+                // means the ~11.6 MB trainer → probe transfer happens only
+                // when the probe is actually about to fire (every 15 s or
+                // on drag/side-to-move/mode-flip), not at the ~per-second
+                // cadence of training blocks.
+                //
+                // The probe network is dedicated — no one else reads or
+                // writes it — so the probe can run concurrently with an
+                // active arena (which reads `candidateInferenceNetwork`,
+                // a different object) without racing. The only potential
+                // concurrent operation is `trainer.network.exportWeights`
+                // during an arena's own trainer-snapshot step; both are
+                // reads under the network's internal lock and are safe.
                 //
                 // Both the sync and the forward pass run on a detached task
-                // so we don't stall MainActor while they execute. The driver
-                // task is awaiting this whole method, so no other user of
-                // the trainer or candidate network can run concurrently.
+                // so we don't stall MainActor while they execute.
                 result = try await Task.detached(priority: .userInitiated) {
                     let weights = try await trainer.network.exportWeights()
-                    try await candidateInference.loadWeights(weights)
-                    return await Self.performInference(with: candidateRunner, state: state)
+                    try await probeInference.loadWeights(weights)
+                    return await Self.performInference(with: probeRunner, state: state)
                 }.value
                 // Probe is a transient read-only snapshot, not a checkpoint —
-                // candidateInference inherits the trainer's current ID rather
+                // probeInference inherits the trainer's current ID rather
                 // than minting a fresh one. (Arena snapshots, by contrast,
                 // do mint — see runArenaParallel.)
-                candidateInference.identifier = trainer.identifier
+                probeInference.identifier = trainer.identifier
             case .champion:
+                // Skip champion probes while an arena is running — the
+                // promotion step briefly writes into the champion under
+                // a self-play pause and the probe would race that write.
+                // (The candidate branch above has no such constraint: it
+                // uses a dedicated probe network.)
+                if arenaActiveFlag?.isActive == true { return }
                 // Probe the champion directly — no sync. The champion is
                 // frozen between promotions, so reading from it through
                 // its own runner is the same path Run Forward Pass uses
                 // and is safe to call concurrently with self-play workers
                 // (they all read through a batcher; direct runner reads
-                // just add another fair-share consumer). Skipped while an
-                // arena is running because the promotion step briefly
-                // writes into the champion under a self-play pause.
+                // just add another fair-share consumer).
                 result = await Task.detached(priority: .userInitiated) {
                     await Self.performInference(with: championRunner, state: state)
                 }.value
@@ -6669,8 +6692,7 @@ struct ContentView: View {
                 // Pure forward-pass mode runs through the champion via
                 // `runner`. Candidate test mode takes a different path
                 // via `fireCandidateProbeIfNeeded`, which uses
-                // `candidateRunner` → the dedicated candidate inference
-                // network.
+                // `probeRunner` → the dedicated probe inference network.
                 await Self.performInference(with: runner, state: state)
             }.value
             inferenceResult = evalResult
@@ -7535,10 +7557,29 @@ struct ContentView: View {
                     }.value
                     await MainActor.run {
                         candidateInferenceNetwork = built
-                        candidateRunner = ChessRunner(network: built)
                     }
                 } catch {
                     box.recordError("Candidate network init failed: \(error.localizedDescription)")
+                    await MainActor.run {
+                        realTraining = false
+                        realTrainingTask = nil
+                    }
+                    return
+                }
+            }
+
+            let needsProbeBuild = await MainActor.run { probeInferenceNetwork == nil }
+            if needsProbeBuild {
+                do {
+                    let built = try await Task.detached(priority: .userInitiated) {
+                        try ChessMPSNetwork(.randomWeights)
+                    }.value
+                    await MainActor.run {
+                        probeInferenceNetwork = built
+                        probeRunner = ChessRunner(network: built)
+                    }
+                } catch {
+                    box.recordError("Probe network init failed: \(error.localizedDescription)")
                     await MainActor.run {
                         realTraining = false
                         realTrainingTask = nil

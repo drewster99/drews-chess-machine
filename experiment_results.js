@@ -43,5 +43,20 @@ window.EXPERIMENTS = [
     ],
     "analysis_commentary": "The new run at entropy_bonus=0.004 materially outperforms the previous 0.01 run against the stated goal. Peakiness stayed safely bounded (max range [0.048, 0.197], well below the 0.9 alarm), while illegal_mass fell monotonically from 0.9997 to 0.6696 (min 0.6650) versus being stuck at ~1.0 for the entire prior run. above_uniform_count_max improved from 0 to 2, indicating real legal-move signal emerging. Both diagnostics (1) and (2) are simultaneously satisfied for the first time with no post-arena regression, directly addressing the collapse-prevention goal.",
     "folder": "experiments/20260421-183711"
+  },
+  {
+    "timestamp": "20260421-185738",
+    "start_time_iso": "2026-04-21T18:57:38",
+    "status": "REJECTED",
+    "change_details": "Current best run shows healthy non-collapsing dynamics (max in [0.048, 0.197], illegal_mass monotonically declining to 0.665) but learning is slow \u2014 only 362 steps in 600s and illegal_mass is still well above target. With entropy_bonus=0.004 providing a solid anti-collapse floor and max well below 0.20, there is ample headroom to double the learning rate from 5e-5 to 1e-4 for faster convergence toward legal-move concentration. This is a single-knob change that directly targets GOAL #1's residual slowness without re-introducing collapse risk: the entropy regularizer remains unchanged to keep the guardrail, and grad_clip_max_norm=30 will catch any occasional large step. A 2x lr bump is the conservative version of the hint's suggestion and should be visible within 10 min via faster illegal_mass decay.",
+    "changed_params": [
+      {
+        "key": "learning_rate",
+        "old": 5e-05,
+        "new": 0.0001
+      }
+    ],
+    "analysis_commentary": "Doubling learning_rate from 5e-5 to 1e-4 caused catastrophic re-collapse of the policy. Within 2 minutes (by probe 8 at t=134s) max reached 1.0 and illegal_mass reached 1.0, both locked for the remaining 8 minutes of the run. Compared to the previous best (max bounded [0.048, 0.197], illegal_mass falling to 0.665), this is a dramatic regression on both diagnostic (1) and (2) \u2014 the network has returned to the one-hot-on-a-single-illegal-move dead end. entropy_bonus=0.004 alone was insufficient to hold the faster gradient updates in check. Rejecting.",
+    "folder": "experiments/20260421-185738"
   }
 ];
