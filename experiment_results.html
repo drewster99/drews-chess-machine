@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Autotrain Experiments</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+         margin: 16px; color: #222; }
+  header { display: flex; align-items: baseline; justify-content: space-between;
+           border-bottom: 1px solid #ccc; margin-bottom: 12px; padding-bottom: 6px; }
+  h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  #status { font-size: 12px; color: #666; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid #e3e3e3; vertical-align: top;
+           text-align: left; }
+  th { background: #f4f4f4; position: sticky; top: 0; z-index: 1; }
+  tr.ACCEPTED    { background: #eaf7ea; }
+  tr.REJECTED    { background: #fff5e6; }
+  tr.FAILED      { background: #fde8e8; }
+  tr.SEED        { background: #e6f0fb; }
+  tr.IN_PROGRESS { background: #fff9c4; }
+  code, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+  .diff { white-space: nowrap; line-height: 1.5; }
+  .old { color: #888; text-decoration: line-through; }
+  .new { color: #111; font-weight: 600; }
+  .commentary { max-width: 520px; white-space: pre-wrap; }
+  .details { max-width: 360px; white-space: pre-wrap; }
+  tr.flash { animation: flash 1.6s ease-out; }
+  @keyframes flash {
+    from { background-color: #fff59d; }
+    to { }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Autotrain Experiments</h1>
+  <span id="status">loading&hellip;</span>
+</header>
+<table id="experiments">
+  <thead>
+    <tr>
+      <th>Start (UTC)</th>
+      <th>Status</th>
+      <th>Change</th>
+      <th>Param deltas</th>
+      <th>Analysis</th>
+      <th>Folder</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<script>
+const POLL_INTERVAL_MS = 15000;
+let currentScriptEl = null;
+
+function escHTML(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function fmtVal(v) {
+  if (v === undefined) return '<em>absent</em>';
+  if (v === null) return 'null';
+  if (typeof v === 'number') return escHTML(v.toString());
+  return escHTML(JSON.stringify(v));
+}
+
+function rowKey(exp) {
+  return exp.timestamp;
+}
+
+function renderRow(exp) {
+  const tr = document.createElement('tr');
+  tr.dataset.key = rowKey(exp);
+  tr.className = exp.status;
+  const deltas = (exp.changed_params && exp.changed_params.length)
+    ? exp.changed_params.map(d =>
+        `<div class="diff"><code>${escHTML(d.key)}</code>: ` +
+        `<span class="old">${fmtVal(d.old)}</span> &rarr; ` +
+        `<span class="new">${fmtVal(d.new)}</span></div>`
+      ).join('')
+    : '<em>(none)</em>';
+  tr.innerHTML = `
+    <td class="mono">${escHTML(exp.start_time_iso || '')}</td>
+    <td>${escHTML(exp.status || '')}</td>
+    <td class="details">${escHTML(exp.change_details || '')}</td>
+    <td>${deltas}</td>
+    <td class="commentary">${escHTML(exp.analysis_commentary || '')}</td>
+    <td><code>${escHTML(exp.folder || '')}</code></td>
+  `;
+  return tr;
+}
+
+function reconcile(experiments) {
+  const tbody = document.querySelector('#experiments tbody');
+  const byKey = new Map();
+  Array.from(tbody.children).forEach(tr => byKey.set(tr.dataset.key, tr));
+  experiments.forEach(exp => {
+    const key = rowKey(exp);
+    const existing = byKey.get(key);
+    const fresh = renderRow(exp);
+    if (!existing) {
+      fresh.classList.add('flash');
+      tbody.appendChild(fresh);
+    } else if (existing.className !== fresh.className ||
+               existing.innerHTML !== fresh.innerHTML) {
+      fresh.classList.add('flash');
+      tbody.replaceChild(fresh, existing);
+    }
+  });
+  // Rows that disappeared from the backing data (e.g. folder deleted manually)
+  // are left alone — we don't destructively remove anything the user might be
+  // looking at.
+}
+
+function loadData() {
+  if (currentScriptEl) currentScriptEl.remove();
+  const s = document.createElement('script');
+  s.src = `experiment_results.js?t=${Date.now()}`;
+  s.onload = () => {
+    reconcile(window.EXPERIMENTS || []);
+    const n = (window.EXPERIMENTS || []).length;
+    document.getElementById('status').textContent =
+      `${n} run${n === 1 ? '' : 's'} — updated ${new Date().toLocaleTimeString()}`;
+  };
+  s.onerror = () => {
+    document.getElementById('status').textContent =
+      `load error at ${new Date().toLocaleTimeString()}`;
+  };
+  document.head.appendChild(s);
+  currentScriptEl = s;
+}
+
+loadData();
+setInterval(loadData, POLL_INTERVAL_MS);
+</script>
+</body>
+</html>

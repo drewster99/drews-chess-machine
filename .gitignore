@@ -1,4 +1,5 @@
-.claude/
+.claude/*
+!.claude/skills/
 
 # LLVM coverage raw counter files written when a binary built with
 # -fprofile-instr-generate (Scheme > Test > Code Coverage enabled)
