@@ -1621,7 +1621,7 @@ struct ContentView: View {
     /// count has actually advanced.
     @State private var trainingBox: TrainingLiveStatsBox?
     nonisolated static let trainerLearningRateDefault: Float = 5e-5
-    nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-1
+    nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-3
     nonisolated static let drawPenaltyDefault: Float = 0.1
     nonisolated static let trainingBatchSize = 4096
 
@@ -2153,7 +2153,7 @@ struct ContentView: View {
     @AppStorage("weightDecayC")
     private var weightDecayC: Double = Double(ChessTrainer.weightDecayCDefault)
     /// Global L2-norm gradient clip. Default matches
-    /// `ChessTrainer.gradClipMaxNormDefault` (5.0); edits are
+    /// `ChessTrainer.gradClipMaxNormDefault` (30.0); edits are
     /// hot-applied per step.
     @AppStorage("gradClipMaxNorm")
     private var gradClipMaxNorm: Double = Double(ChessTrainer.gradClipMaxNormDefault)

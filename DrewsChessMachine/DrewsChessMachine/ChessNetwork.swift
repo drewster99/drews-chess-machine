@@ -157,6 +157,23 @@ final class ChessNetwork: @unchecked Sendable {
     /// activations exhibit, which is what inference-mode BN needs.
     private(set) var bnRunningStatsAssignOps: [MPSGraphOperation] = []
 
+    /// Per-BN-layer fresh batch-mean tensors, exposed only in `.training`
+    /// mode (empty in `.inference`). Same order as
+    /// `bnRunningStatsVariables` mean entries (i.e. mean[layer i] sits
+    /// at index i of THIS list, matching index 2i of the running-stats
+    /// list which interleaves mean-then-variance). Read out by the
+    /// one-shot BN warmup path that primes a fresh inference network's
+    /// running stats from one batched forward through a sibling
+    /// training-mode network — see `loadBNRunningStatsFromBatchStats`.
+    private(set) var bnBatchMeanTensors: [MPSGraphTensor] = []
+
+    /// Per-BN-layer fresh batch-variance tensors. Same shape and
+    /// ordering convention as `bnBatchMeanTensors`. Together they let
+    /// the warmup path snapshot the population the inference network
+    /// will actually see at run time, without waiting for the EMA to
+    /// converge over hundreds of training steps.
+    private(set) var bnBatchVarTensors: [MPSGraphTensor] = []
+
     /// Per-persistent-variable placeholder / assign pair used by
     /// `loadWeights(_:)` to write fresh float data into variables at
     /// runtime. Built once at init time so loading is a single graph
@@ -292,6 +309,8 @@ final class ChessNetwork: @unchecked Sendable {
         var shouldDecay: [Bool] = []
         var runningStats: [MPSGraphTensor] = []
         var runningStatsAssigns: [MPSGraphOperation] = []
+        var batchMeans: [MPSGraphTensor] = []
+        var batchVars: [MPSGraphTensor] = []
 
         // --- Stem: 3x3 conv (inputPlanes -> 128) -> BN -> ReLU ---
 
@@ -314,7 +333,9 @@ final class ChessNetwork: @unchecked Sendable {
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
-            runningStatsAssignOps: &runningStatsAssigns
+            runningStatsAssignOps: &runningStatsAssigns,
+            batchMeans: &batchMeans,
+            batchVars: &batchVars
         )
         x = g.reLU(with: x, name: "stem_relu")
 
@@ -326,7 +347,9 @@ final class ChessNetwork: @unchecked Sendable {
                 trainables: &trainables,
                 shouldDecay: &shouldDecay,
                 runningStats: &runningStats,
-                runningStatsAssignOps: &runningStatsAssigns
+                runningStatsAssignOps: &runningStatsAssigns,
+                batchMeans: &batchMeans,
+                batchVars: &batchVars
             )
         }
 
@@ -353,13 +376,17 @@ final class ChessNetwork: @unchecked Sendable {
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
-            runningStatsAssignOps: &runningStatsAssigns
+            runningStatsAssignOps: &runningStatsAssigns,
+            batchMeans: &batchMeans,
+            batchVars: &batchVars
         )
 
         trainableVariables = trainables
         trainableShouldDecay = shouldDecay
         bnRunningStatsVariables = runningStats
         bnRunningStatsAssignOps = runningStatsAssigns
+        bnBatchMeanTensors = batchMeans
+        bnBatchVarTensors = batchVars
 
         // Build per-variable weight-load infrastructure. For each
         // persistent variable (trainable + running stat), add one
@@ -804,6 +831,169 @@ final class ChessNetwork: @unchecked Sendable {
         }
     }
 
+    // MARK: - BN Warmup
+
+    /// Run one batched forward pass on `boards` and return the per-BN-
+    /// layer batch_mean and batch_var, one entry per BN layer in build
+    /// order (matching `bnBatchMeanTensors` / `bnBatchVarTensors` and
+    /// the mean-then-variance interleaved order of
+    /// `bnRunningStatsVariables`).
+    ///
+    /// Only meaningful on a `.training`-mode network — that's the mode
+    /// in which `bnBatchMeanTensors` / `bnBatchVarTensors` are populated.
+    /// Calling this on an `.inference`-mode network throws because the
+    /// batch-stat tensors don't exist there. Pair this method with
+    /// `loadBNRunningStats` on a sibling inference-mode network to
+    /// prime its running stats from one real-distribution forward pass
+    /// without waiting for the EMA to converge over hundreds of steps.
+    ///
+    /// Each returned `[Float]` has shape `[1, C, 1, 1]` flattened —
+    /// element count equals the channel count of that BN layer.
+    func computeBatchStats(
+        boards: [Float],
+        count: Int
+    ) async throws -> (means: [[Float]], vars: [[Float]]) {
+        try await enqueue {
+            try self.internalComputeBatchStats(boards: boards, count: count)
+        }
+    }
+
+    private func internalComputeBatchStats(
+        boards: [Float],
+        count: Int
+    ) throws -> (means: [[Float]], vars: [[Float]]) {
+        guard !bnBatchMeanTensors.isEmpty else {
+            throw ChessNetworkError.outputMissing(
+                "computeBatchStats: bnBatchMeanTensors is empty — this method requires bnMode = .training"
+            )
+        }
+        guard count >= 1 else {
+            throw ChessNetworkError.boardSizeMismatch(
+                expected: Self.inputPlanes * Self.boardSize * Self.boardSize, got: 0
+            )
+        }
+        let expected = count * Self.inputPlanes * Self.boardSize * Self.boardSize
+        guard boards.count == expected else {
+            throw ChessNetworkError.boardSizeMismatch(expected: expected, got: boards.count)
+        }
+
+        let entry = batchInputEntry(for: count)
+
+        return try autoreleasepool {
+            Self.writeInferenceInput(boards, into: entry.ndArray)
+            // Targets: every BN layer's batch_mean and batch_var.
+            // Order: all means first, then all vars — caller splits.
+            let targets = bnBatchMeanTensors + bnBatchVarTensors
+            let results = graph.run(
+                with: commandQueue,
+                feeds: entry.feeds,
+                targetTensors: targets,
+                targetOperations: nil
+            )
+            var means: [[Float]] = []
+            var vars_: [[Float]] = []
+            means.reserveCapacity(bnBatchMeanTensors.count)
+            vars_.reserveCapacity(bnBatchVarTensors.count)
+            for t in bnBatchMeanTensors {
+                guard let data = results[t] else {
+                    throw ChessNetworkError.outputMissing(t.operation.name)
+                }
+                let n = try Self.elementCount(of: t)
+                means.append(Self.readFloats(from: data, count: n))
+            }
+            for t in bnBatchVarTensors {
+                guard let data = results[t] else {
+                    throw ChessNetworkError.outputMissing(t.operation.name)
+                }
+                let n = try Self.elementCount(of: t)
+                vars_.append(Self.readFloats(from: data, count: n))
+            }
+            return (means: means, vars: vars_)
+        }
+    }
+
+    /// Overwrite this network's BN running_mean and running_var
+    /// variables from caller-supplied per-layer batch stats. Used by
+    /// the construction-time warmup path: a fresh `.inference` network
+    /// has its (0, 1) defaults replaced with stats computed by a
+    /// sibling `.training` network's `computeBatchStats`. After this
+    /// call returns, inference-mode forward passes through the deep
+    /// residual tower see properly-normalized BN output instead of the
+    /// effectively-identity normalization the (0, 1) defaults produce.
+    ///
+    /// `means.count` and `vars.count` must each equal the BN layer
+    /// count; per-layer element counts must match the corresponding
+    /// running-stat variable's shape. Mismatches throw.
+    func loadBNRunningStats(
+        means: [[Float]],
+        vars: [[Float]]
+    ) async throws {
+        try await enqueue {
+            try self.internalLoadBNRunningStats(means: means, vars: vars)
+        }
+    }
+
+    private func internalLoadBNRunningStats(
+        means: [[Float]],
+        vars: [[Float]]
+    ) throws {
+        // Running-stat variables are stored interleaved mean-then-var
+        // per layer. Validate counts before any feed work so an off-by-
+        // one fails loudly.
+        let layerCount = bnRunningStatsVariables.count / 2
+        guard means.count == layerCount, vars.count == layerCount else {
+            throw ChessNetworkError.weightLoadMismatch(
+                "loadBNRunningStats: expected \(layerCount) mean+\(layerCount) var arrays, " +
+                "got \(means.count) mean + \(vars.count) var"
+            )
+        }
+
+        // Reuse the existing weight-load machinery. weightLoadPlaceholders
+        // is ordered trainables-first then running-stats; the running
+        // stats start at index trainableVariables.count and follow the
+        // same mean-then-var interleaving as bnRunningStatsVariables.
+        let nTrain = trainableVariables.count
+        var feeds: [MPSGraphTensor: MPSGraphTensorData] = [:]
+        feeds[inputPlaceholder] = dummyInferenceInputTensorData
+
+        var assignOpsToRun: [MPSGraphOperation] = []
+        assignOpsToRun.reserveCapacity(layerCount * 2)
+
+        for layer in 0..<layerCount {
+            let meanIdx = nTrain + 2 * layer
+            let varIdx = meanIdx + 1
+            let meanVar = bnRunningStatsVariables[2 * layer]
+            let varVar = bnRunningStatsVariables[2 * layer + 1]
+            let expectedMeanCount = try Self.elementCount(of: meanVar)
+            let expectedVarCount = try Self.elementCount(of: varVar)
+            guard means[layer].count == expectedMeanCount else {
+                throw ChessNetworkError.weightLoadMismatch(
+                    "loadBNRunningStats: layer \(layer) mean expected \(expectedMeanCount) floats, got \(means[layer].count)"
+                )
+            }
+            guard vars[layer].count == expectedVarCount else {
+                throw ChessNetworkError.weightLoadMismatch(
+                    "loadBNRunningStats: layer \(layer) var expected \(expectedVarCount) floats, got \(vars[layer].count)"
+                )
+            }
+            Self.writeFloats(means[layer], into: weightLoadNDArrays[meanIdx])
+            Self.writeFloats(vars[layer], into: weightLoadNDArrays[varIdx])
+            feeds[weightLoadPlaceholders[meanIdx]] = weightLoadTensorData[meanIdx]
+            feeds[weightLoadPlaceholders[varIdx]] = weightLoadTensorData[varIdx]
+            assignOpsToRun.append(weightLoadAssignOps[meanIdx])
+            assignOpsToRun.append(weightLoadAssignOps[varIdx])
+        }
+
+        autoreleasepool {
+            _ = graph.run(
+                with: commandQueue,
+                feeds: feeds,
+                targetTensors: [bnRunningStatsVariables[0]],
+                targetOperations: assignOpsToRun
+            )
+        }
+    }
+
     private func enqueue<T: Sendable>(_ work: @Sendable @escaping () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             executionQueue.async {
@@ -899,7 +1089,9 @@ final class ChessNetwork: @unchecked Sendable {
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool],
         runningStats: inout [MPSGraphTensor],
-        runningStatsAssignOps: inout [MPSGraphOperation]
+        runningStatsAssignOps: inout [MPSGraphOperation],
+        batchMeans: inout [MPSGraphTensor],
+        batchVars: inout [MPSGraphTensor]
     ) -> MPSGraphTensor {
         let ch = NSNumber(value: channels)
 
@@ -959,6 +1151,12 @@ final class ChessNetwork: @unchecked Sendable {
             let bVar = graph.variance(of: input, axes: [0, 2, 3], name: "\(name)_batch_var")
             meanTensor = bMean
             varianceTensor = bVar
+            // Surface the batch-stat tensors so a one-shot warmup pass
+            // can read them out and prime an inference network's
+            // running stats from them. See `bnBatchMeanTensors` /
+            // `bnBatchVarTensors` for the contract.
+            batchMeans.append(bMean)
+            batchVars.append(bVar)
 
             // EMA update: new_running = 0.99 * old_running + 0.01 * batch.
             // Emitted as assign ops that the trainer runs alongside SGD
@@ -1019,7 +1217,9 @@ final class ChessNetwork: @unchecked Sendable {
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool],
         runningStats: inout [MPSGraphTensor],
-        runningStatsAssignOps: inout [MPSGraphOperation]
+        runningStatsAssignOps: inout [MPSGraphOperation],
+        batchMeans: inout [MPSGraphTensor],
+        batchVars: inout [MPSGraphTensor]
     ) -> MPSGraphTensor {
         let prefix = "block\(blockIndex)"
 
@@ -1040,7 +1240,9 @@ final class ChessNetwork: @unchecked Sendable {
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
-            runningStatsAssignOps: &runningStatsAssignOps
+            runningStatsAssignOps: &runningStatsAssignOps,
+            batchMeans: &batchMeans,
+            batchVars: &batchVars
         )
         x = graph.reLU(with: x, name: "\(prefix)_relu1")
 
@@ -1061,7 +1263,9 @@ final class ChessNetwork: @unchecked Sendable {
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
-            runningStatsAssignOps: &runningStatsAssignOps
+            runningStatsAssignOps: &runningStatsAssignOps,
+            batchMeans: &batchMeans,
+            batchVars: &batchVars
         )
 
         // === SE module: channel attention ===========================
@@ -1198,7 +1402,9 @@ final class ChessNetwork: @unchecked Sendable {
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool],
         runningStats: inout [MPSGraphTensor],
-        runningStatsAssignOps: inout [MPSGraphOperation]
+        runningStatsAssignOps: inout [MPSGraphOperation],
+        batchMeans: inout [MPSGraphTensor],
+        batchVars: inout [MPSGraphTensor]
     ) -> MPSGraphTensor {
         // 1x1 conv: compress 128 channels to 1
         let convW = graph.variable(
@@ -1217,7 +1423,9 @@ final class ChessNetwork: @unchecked Sendable {
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
-            runningStatsAssignOps: &runningStatsAssignOps
+            runningStatsAssignOps: &runningStatsAssignOps,
+            batchMeans: &batchMeans,
+            batchVars: &batchVars
         )
         x = graph.reLU(with: x, name: "value_relu")
 

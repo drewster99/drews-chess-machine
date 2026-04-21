@@ -832,7 +832,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// pressure the natural gradient norm can vastly exceed this,
     /// nullifying effective learning rate — live-tunable to let the
     /// user widen the valve when that happens.
-    static let gradClipMaxNormDefault: Float = 5.0
+    static let gradClipMaxNormDefault: Float = 30.0
 
     /// Default policy-loss coefficient K. Policy loss is REINFORCE
     /// on the played move over a `policySize`-way softmax, so its
