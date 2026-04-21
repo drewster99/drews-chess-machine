@@ -37,12 +37,24 @@ def load_json(path: Path):
 
 
 def parse_timestamp(folder_name: str):
-    # Expected "YYYYMMDD-HHMMSS" with optional "-seed" suffix.
-    base = folder_name.split("-seed", 1)[0]
+    # Expected "YYYYMMDD-HHMMSS" with optional "-seed" or "-replicate" suffix.
+    base = folder_name
+    for suffix in ("-seed", "-replicate"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
     try:
         return datetime.strptime(base, "%Y%m%d-%H%M%S")
     except ValueError:
         return None
+
+
+def folder_mode(folder_name: str):
+    if folder_name.endswith("-seed"):
+        return "seed"
+    if folder_name.endswith("-replicate"):
+        return "replicate"
+    return "normal"
 
 
 def diff_params(old, new):
@@ -85,28 +97,121 @@ def build_row(folder: Path):
     commentary = ""
     if isinstance(analysis, dict):
         commentary = analysis.get("analysis_commentary", "") or ""
+    training_time = None
+    tt_file = folder / "training_time.txt"
+    if tt_file.is_file():
+        try:
+            training_time = int(tt_file.read_text().strip())
+        except (ValueError, OSError):
+            training_time = None
     return {
         "timestamp": folder.name,
         "start_time_iso": ts.strftime("%Y-%m-%dT%H:%M:%S"),
         "status": status,
+        "mode": folder_mode(folder.name),
         "change_details": change_details,
         "changed_params": diff_params(prev_params, new_params),
         "analysis_commentary": commentary,
+        "training_time_seconds": training_time,
         "folder": f"experiments/{folder.name}",
     }
 
 
+def extract_arenas(folder: Path):
+    """Pull the (usually tiny) arena_results list from a folder's result.json."""
+    result = load_json(folder / "result.json")
+    if not isinstance(result, dict):
+        return []
+    arenas = result.get("arena_results")
+    return arenas if isinstance(arenas, list) else []
+
+
 def collect():
     if not EXPERIMENTS_DIR.is_dir():
-        return []
+        return [], None
     rows = []
+    folder_arenas = []  # parallel to rows, for aggregate computation
     for folder in sorted(EXPERIMENTS_DIR.iterdir()):
         if not folder.is_dir():
             continue
         row = build_row(folder)
         if row is not None:
             rows.append(row)
-    return rows
+            folder_arenas.append(extract_arenas(folder))
+    aggregates = compute_aggregates(rows, folder_arenas)
+    return rows, aggregates
+
+
+def compute_aggregates(rows, folder_arenas):
+    if not rows:
+        return {
+            "total_iterations": 0,
+            "counts": {},
+            "accept_rate": None,
+            "failure_streak": 0,
+            "arena_count": 0,
+            "promotions": 0,
+            "best_arena_score": None,
+            "best_arena_folder": None,
+        }
+    counts = {"SEED": 0, "ACCEPTED": 0, "REJECTED": 0, "FAILED": 0, "IN_PROGRESS": 0}
+    for r in rows:
+        counts[r["status"]] = counts.get(r["status"], 0) + 1
+
+    # Consecutive-failure streak — walk from newest backward, counting trailing
+    # REJECTED + FAILED. IN_PROGRESS doesn't break the streak (it's not a
+    # decision yet); ACCEPTED or SEED resets it to 0.
+    streak = 0
+    for r in reversed(rows):
+        s = r["status"]
+        if s in ("REJECTED", "FAILED"):
+            streak += 1
+        elif s == "IN_PROGRESS":
+            continue
+        else:
+            break
+
+    # Trailing replicates — newest-first walk, stop at first non-replicate.
+    # IN_PROGRESS still counts if it's a replicate folder (mode is set from
+    # folder name, which doesn't depend on analysis).
+    trailing_replicates = 0
+    for r in reversed(rows):
+        if r.get("mode") == "replicate":
+            trailing_replicates += 1
+        else:
+            break
+
+    decided = counts["ACCEPTED"] + counts["REJECTED"] + counts["FAILED"]
+    accept_rate = (counts["ACCEPTED"] / decided) if decided > 0 else None
+
+    arena_count = 0
+    promotions = 0
+    best_arena_score = None
+    best_arena_folder = None
+    for r, arenas in zip(rows, folder_arenas):
+        for a in arenas:
+            arena_count += 1
+            if a.get("promoted"):
+                promotions += 1
+            score = a.get("score")
+            if isinstance(score, (int, float)):
+                if best_arena_score is None or score > best_arena_score:
+                    best_arena_score = score
+                    best_arena_folder = r["folder"]
+
+    total_iters = sum(v for k, v in counts.items() if k != "SEED")
+
+    return {
+        "total_iterations": total_iters,
+        "counts": counts,
+        "accept_rate": accept_rate,
+        "failure_streak": streak,
+        "trailing_replicates": trailing_replicates,
+        "arena_count": arena_count,
+        "promotions": promotions,
+        "best_arena_score": best_arena_score,
+        "best_arena_folder": best_arena_folder,
+    }
 
 
 HTML_TEMPLATE = """<!DOCTYPE html>
@@ -130,6 +235,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   tr.FAILED      { background: #fde8e8; }
   tr.SEED        { background: #e6f0fb; }
   tr.IN_PROGRESS { background: #fff9c4; }
+  tr.mode-replicate td:first-child { border-left: 4px solid #7c4dff; }
+  .badge { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 3px;
+           margin-left: 4px; font-weight: 600; letter-spacing: 0.02em; vertical-align: middle; }
+  .badge-replicate { background: #7c4dff; color: #fff; }
   code, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
   .diff { white-space: nowrap; line-height: 1.5; }
   .old { color: #888; text-decoration: line-through; }
@@ -141,6 +250,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     from { background-color: #fff59d; }
     to { }
   }
+  /* Aggregate banner */
+  #aggregates {
+    display: flex; flex-wrap: wrap; gap: 0; margin: 10px 0 12px 0;
+    border: 1px solid #ccc; border-radius: 4px; overflow: hidden;
+    background: #fafafa;
+  }
+  .agg-cell {
+    flex: 1 1 140px; padding: 8px 14px; border-right: 1px solid #e3e3e3;
+    display: flex; flex-direction: column; gap: 2px; min-width: 120px;
+  }
+  .agg-cell:last-child { border-right: none; }
+  .agg-label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.04em; }
+  .agg-value { font-size: 18px; font-weight: 600; font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .agg-cell.streak-hint .agg-value { color: #b27500; }
+  .agg-cell.streak-warn { background: #ffebee; }
+  .agg-cell.streak-warn .agg-value { color: #c62828; }
+  .agg-sub { font-size: 11px; color: #888; }
 </style>
 </head>
 <body>
@@ -148,11 +274,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <h1>Autotrain Experiments</h1>
   <span id="status">loading&hellip;</span>
 </header>
+<div id="aggregates"></div>
 <table id="experiments">
   <thead>
     <tr>
       <th>Start (UTC)</th>
       <th>Status</th>
+      <th>Dur.</th>
       <th>Change</th>
       <th>Param deltas</th>
       <th>Analysis</th>
@@ -185,7 +313,9 @@ function rowKey(exp) {
 function renderRow(exp) {
   const tr = document.createElement('tr');
   tr.dataset.key = rowKey(exp);
-  tr.className = exp.status;
+  tr.className = exp.status + (exp.mode === 'replicate' ? ' mode-replicate' : '');
+  const statusCell = escHTML(exp.status || '') +
+    (exp.mode === 'replicate' ? '<span class="badge badge-replicate">REPLICATE</span>' : '');
   const deltas = (exp.changed_params && exp.changed_params.length)
     ? exp.changed_params.map(d =>
         `<div class="diff"><code>${escHTML(d.key)}</code>: ` +
@@ -193,9 +323,13 @@ function renderRow(exp) {
         `<span class="new">${fmtVal(d.new)}</span></div>`
       ).join('')
     : '<em>(none)</em>';
+  const durCell = (typeof exp.training_time_seconds === 'number')
+    ? `${Math.round(exp.training_time_seconds / 60)}m`
+    : '—';
   tr.innerHTML = `
     <td class="mono">${escHTML(exp.start_time_iso || '')}</td>
-    <td>${escHTML(exp.status || '')}</td>
+    <td>${statusCell}</td>
+    <td class="mono">${durCell}</td>
     <td class="details">${escHTML(exp.change_details || '')}</td>
     <td>${deltas}</td>
     <td class="commentary">${escHTML(exp.analysis_commentary || '')}</td>
@@ -252,12 +386,64 @@ function reconcile(experiments) {
   }
 }
 
+function renderAggregates(agg) {
+  const el = document.getElementById('aggregates');
+  if (!agg || !agg.total_iterations) {
+    el.innerHTML = '';
+    return;
+  }
+  const streakClass = agg.failure_streak >= 8 ? 'streak-warn'
+                     : (agg.failure_streak >= 5 ? 'streak-hint' : '');
+  const rate = (agg.accept_rate === null || agg.accept_rate === undefined)
+               ? '—' : `${Math.round(agg.accept_rate * 100)}%`;
+  const best = (agg.best_arena_score === null || agg.best_arena_score === undefined)
+               ? '—' : agg.best_arena_score.toFixed(3);
+  const counts = agg.counts || {};
+  const c = (k) => counts[k] || 0;
+  el.innerHTML = `
+    <div class="agg-cell">
+      <span class="agg-label">Iterations</span>
+      <span class="agg-value">${agg.total_iterations}</span>
+      <span class="agg-sub">A:${c('ACCEPTED')} R:${c('REJECTED')} F:${c('FAILED')}</span>
+    </div>
+    <div class="agg-cell">
+      <span class="agg-label">Accept rate</span>
+      <span class="agg-value">${rate}</span>
+    </div>
+    <div class="agg-cell ${streakClass}">
+      <span class="agg-label">Fail streak</span>
+      <span class="agg-value">${agg.failure_streak}</span>
+      <span class="agg-sub">${agg.failure_streak >= 15 ? 'replicate mode' : (agg.failure_streak >= 10 ? 'replicate at 15' : (agg.failure_streak >= 5 ? 'watch' : ''))}</span>
+    </div>
+    ${(agg.trailing_replicates && agg.trailing_replicates > 0) ? `
+    <div class="agg-cell ${agg.trailing_replicates >= 3 ? 'streak-warn' : (agg.trailing_replicates >= 2 ? 'streak-hint' : '')}">
+      <span class="agg-label">Replicates</span>
+      <span class="agg-value">${agg.trailing_replicates}/3</span>
+      <span class="agg-sub">${agg.trailing_replicates >= 3 ? 'halted' : 'probing baseline'}</span>
+    </div>` : ''}
+    <div class="agg-cell">
+      <span class="agg-label">Arenas</span>
+      <span class="agg-value">${agg.arena_count}</span>
+    </div>
+    <div class="agg-cell">
+      <span class="agg-label">Promotions</span>
+      <span class="agg-value">${agg.promotions}</span>
+    </div>
+    <div class="agg-cell">
+      <span class="agg-label">Best arena</span>
+      <span class="agg-value">${best}</span>
+      <span class="agg-sub">${agg.best_arena_folder ? `<code>${escHTML(agg.best_arena_folder)}</code>` : ''}</span>
+    </div>
+  `;
+}
+
 function loadData() {
   if (currentScriptEl) currentScriptEl.remove();
   const s = document.createElement('script');
   s.src = `experiment_results.js?t=${Date.now()}`;
   s.onload = () => {
     reconcile(window.EXPERIMENTS || []);
+    renderAggregates(window.AGGREGATES);
     const n = (window.EXPERIMENTS || []).length;
     document.getElementById('status').textContent =
       `${n} run${n === 1 ? '' : 's'} — updated ${new Date().toLocaleTimeString()}`;
@@ -279,8 +465,11 @@ setInterval(loadData, POLL_INTERVAL_MS);
 
 
 def main():
-    rows = collect()
-    payload = "window.EXPERIMENTS = " + json.dumps(rows, indent=2) + ";\n"
+    rows, aggregates = collect()
+    payload = (
+        "window.EXPERIMENTS = " + json.dumps(rows, indent=2) + ";\n"
+        "window.AGGREGATES = " + json.dumps(aggregates, indent=2) + ";\n"
+    )
     OUT_JS.write_text(payload)
     # Only write the HTML shell if it doesn't exist yet — overwriting on
     # every regen would reset the file's mtime even when the template hasn't

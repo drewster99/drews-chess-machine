@@ -19,6 +19,10 @@
   tr.FAILED      { background: #fde8e8; }
   tr.SEED        { background: #e6f0fb; }
   tr.IN_PROGRESS { background: #fff9c4; }
+  tr.mode-replicate td:first-child { border-left: 4px solid #7c4dff; }
+  .badge { display: inline-block; font-size: 10px; padding: 1px 5px; border-radius: 3px;
+           margin-left: 4px; font-weight: 600; letter-spacing: 0.02em; vertical-align: middle; }
+  .badge-replicate { background: #7c4dff; color: #fff; }
   code, .mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
   .diff { white-space: nowrap; line-height: 1.5; }
   .old { color: #888; text-decoration: line-through; }
@@ -30,6 +34,23 @@
     from { background-color: #fff59d; }
     to { }
   }
+  /* Aggregate banner */
+  #aggregates {
+    display: flex; flex-wrap: wrap; gap: 0; margin: 10px 0 12px 0;
+    border: 1px solid #ccc; border-radius: 4px; overflow: hidden;
+    background: #fafafa;
+  }
+  .agg-cell {
+    flex: 1 1 140px; padding: 8px 14px; border-right: 1px solid #e3e3e3;
+    display: flex; flex-direction: column; gap: 2px; min-width: 120px;
+  }
+  .agg-cell:last-child { border-right: none; }
+  .agg-label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.04em; }
+  .agg-value { font-size: 18px; font-weight: 600; font-family: "SF Mono", Menlo, Consolas, monospace; }
+  .agg-cell.streak-hint .agg-value { color: #b27500; }
+  .agg-cell.streak-warn { background: #ffebee; }
+  .agg-cell.streak-warn .agg-value { color: #c62828; }
+  .agg-sub { font-size: 11px; color: #888; }
 </style>
 </head>
 <body>
@@ -37,11 +58,13 @@
   <h1>Autotrain Experiments</h1>
   <span id="status">loading&hellip;</span>
 </header>
+<div id="aggregates"></div>
 <table id="experiments">
   <thead>
     <tr>
       <th>Start (UTC)</th>
       <th>Status</th>
+      <th>Dur.</th>
       <th>Change</th>
       <th>Param deltas</th>
       <th>Analysis</th>
@@ -74,7 +97,9 @@ function rowKey(exp) {
 function renderRow(exp) {
   const tr = document.createElement('tr');
   tr.dataset.key = rowKey(exp);
-  tr.className = exp.status;
+  tr.className = exp.status + (exp.mode === 'replicate' ? ' mode-replicate' : '');
+  const statusCell = escHTML(exp.status || '') +
+    (exp.mode === 'replicate' ? '<span class="badge badge-replicate">REPLICATE</span>' : '');
   const deltas = (exp.changed_params && exp.changed_params.length)
     ? exp.changed_params.map(d =>
         `<div class="diff"><code>${escHTML(d.key)}</code>: ` +
@@ -82,9 +107,13 @@ function renderRow(exp) {
         `<span class="new">${fmtVal(d.new)}</span></div>`
       ).join('')
     : '<em>(none)</em>';
+  const durCell = (typeof exp.training_time_seconds === 'number')
+    ? `${Math.round(exp.training_time_seconds / 60)}m`
+    : '—';
   tr.innerHTML = `
     <td class="mono">${escHTML(exp.start_time_iso || '')}</td>
-    <td>${escHTML(exp.status || '')}</td>
+    <td>${statusCell}</td>
+    <td class="mono">${durCell}</td>
     <td class="details">${escHTML(exp.change_details || '')}</td>
     <td>${deltas}</td>
     <td class="commentary">${escHTML(exp.analysis_commentary || '')}</td>
@@ -141,12 +170,64 @@ function reconcile(experiments) {
   }
 }
 
+function renderAggregates(agg) {
+  const el = document.getElementById('aggregates');
+  if (!agg || !agg.total_iterations) {
+    el.innerHTML = '';
+    return;
+  }
+  const streakClass = agg.failure_streak >= 8 ? 'streak-warn'
+                     : (agg.failure_streak >= 5 ? 'streak-hint' : '');
+  const rate = (agg.accept_rate === null || agg.accept_rate === undefined)
+               ? '—' : `${Math.round(agg.accept_rate * 100)}%`;
+  const best = (agg.best_arena_score === null || agg.best_arena_score === undefined)
+               ? '—' : agg.best_arena_score.toFixed(3);
+  const counts = agg.counts || {};
+  const c = (k) => counts[k] || 0;
+  el.innerHTML = `
+    <div class="agg-cell">
+      <span class="agg-label">Iterations</span>
+      <span class="agg-value">${agg.total_iterations}</span>
+      <span class="agg-sub">A:${c('ACCEPTED')} R:${c('REJECTED')} F:${c('FAILED')}</span>
+    </div>
+    <div class="agg-cell">
+      <span class="agg-label">Accept rate</span>
+      <span class="agg-value">${rate}</span>
+    </div>
+    <div class="agg-cell ${streakClass}">
+      <span class="agg-label">Fail streak</span>
+      <span class="agg-value">${agg.failure_streak}</span>
+      <span class="agg-sub">${agg.failure_streak >= 15 ? 'replicate mode' : (agg.failure_streak >= 10 ? 'replicate at 15' : (agg.failure_streak >= 5 ? 'watch' : ''))}</span>
+    </div>
+    ${(agg.trailing_replicates && agg.trailing_replicates > 0) ? `
+    <div class="agg-cell ${agg.trailing_replicates >= 3 ? 'streak-warn' : (agg.trailing_replicates >= 2 ? 'streak-hint' : '')}">
+      <span class="agg-label">Replicates</span>
+      <span class="agg-value">${agg.trailing_replicates}/3</span>
+      <span class="agg-sub">${agg.trailing_replicates >= 3 ? 'halted' : 'probing baseline'}</span>
+    </div>` : ''}
+    <div class="agg-cell">
+      <span class="agg-label">Arenas</span>
+      <span class="agg-value">${agg.arena_count}</span>
+    </div>
+    <div class="agg-cell">
+      <span class="agg-label">Promotions</span>
+      <span class="agg-value">${agg.promotions}</span>
+    </div>
+    <div class="agg-cell">
+      <span class="agg-label">Best arena</span>
+      <span class="agg-value">${best}</span>
+      <span class="agg-sub">${agg.best_arena_folder ? `<code>${escHTML(agg.best_arena_folder)}</code>` : ''}</span>
+    </div>
+  `;
+}
+
 function loadData() {
   if (currentScriptEl) currentScriptEl.remove();
   const s = document.createElement('script');
   s.src = `experiment_results.js?t=${Date.now()}`;
   s.onload = () => {
     reconcile(window.EXPERIMENTS || []);
+    renderAggregates(window.AGGREGATES);
     const n = (window.EXPERIMENTS || []).length;
     document.getElementById('status').textContent =
       `${n} run${n === 1 ? '' : 's'} — updated ${new Date().toLocaleTimeString()}`;

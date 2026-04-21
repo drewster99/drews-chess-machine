@@ -31,6 +31,10 @@ The app is launched via `$ROOT/run_debug.sh` (a thin wrapper that locates the De
   Thin wrapper around `$ROOT/run_debug.sh` that passes the right CLI flags, waits for exit, and verifies the output file. Flag names are configurable via env vars `DCM_PARAMS_FLAG`, `DCM_TIME_FLAG`, `DCM_OUT_FLAG` if they ever change.
 - `$ROOT/.claude/skills/autotrain/regen_dashboard.py`
   Scans `experiments/*/` and rewrites `$ROOT/experiment_results.js` (and creates `$ROOT/experiment_results.html` the first time). The HTML page auto-polls the `.js` sidecar every 15 s via a cache-busted `<script>` reinjection — new rows are appended in place without reloading, so scroll position is preserved. Invoke as `python3 $ROOT/.claude/skills/autotrain/regen_dashboard.py`.
+- `$ROOT/.claude/skills/autotrain/summarize_results.py <path-to-results.json>`
+  Emits a compact (~1-5 KB) JSON digest of a results.json — arena scoreboards, per-metric trajectories (first/min/median/mean/max/final), collapse signals, candidate-probe first/mid/last, build-number stamp. Used to keep subagent prompts small; the raw file is ~1 MB / ~300k tokens and you should never paste it into a subagent directly.
+- `$ROOT/.claude/skills/autotrain/validate_params.py <path-to-parameters.json>`
+  Sanity-bound check on a proposed parameters.json. Bounds are intentionally very wide — the point is to catch proposer hallucinations (`learning_rate: 5.0`, fractional worker counts, capacity > 1e8), not to gatekeep tuning. Exits 0 on valid, 1 on violations (printed to stderr). Invoked by the skill after step 5's proposal lands; a violation rejects the iteration before any training run happens.
 
 ## Iteration procedure
 
@@ -53,6 +57,21 @@ Before doing any work, check for conflicts so a `/loop` tick doesn't step on a m
 - `$ROOT/.dcm.training.lock` — if the file exists, read the first line as a PID and run `kill -0 <pid>` to check liveness. Live PID → skip (same message, but mention the PID). Dead PID (stale lock from a crash) → leave it; `run_training.sh` will clear it on next use.
 
 `run_training.sh` itself enforces the same guards and exits with status **10** specifically for "skip iteration" (distinct from real failures at status ≠ 0). If you see exit code 10 from a training run, treat it as a skip, not a failure — don't write a FAILED analysis stub; just log and end.
+
+### 0.6. Replicate-or-halt check
+
+Walk `experiments/*/` newest → oldest and compute two numbers:
+
+- **`failure_streak`** — trailing count of `REJECTED` + `FAILED` iterations. `IN_PROGRESS` is transparent (skip over without resetting or incrementing). `ACCEPTED` or `SEED` resets it to 0. The dashboard already exposes this as `window.AGGREGATES.failure_streak` in `experiment_results.js`.
+- **`trailing_replicates`** — trailing count of iterations whose folder name ends in `-replicate` (walking newest backward until the first non-replicate folder breaks the count). Resets implicitly the moment a non-replicate iteration happens.
+
+Then decide mode for this iteration:
+
+- **`trailing_replicates ≥ 3`** → **HALT**. We've run the baseline verbatim three times in a row without an accept. Either the baseline is genuinely unreproducible or the analyzer's goal can't be satisfied by the current best. Print `autotrain: halted — 3 consecutive replicates did not promote, manual intervention recommended`, include pointers to those three folders, and end. Do NOT enter another replicate or a normal iteration.
+- **`failure_streak ≥ 15`** (and `trailing_replicates < 3`) → enter **REPLICATE mode**. The proposer has been failing to find improvements for 15 iterations; rather than ask it to try again, re-run the current-best parameters verbatim to probe whether the "best" result is actually reproducible. Set a local flag `replicate_mode = true` that step 4 and step 5 observe. Rationale: if the baseline reproduces, the proposer is the problem (analyzer confirms rejections are real); if the baseline does *not* reproduce, the "current best" was noise-lucky and we may get a free accept from a decent replicate.
+- **`failure_streak` 10–14** → proceed normally but note it in the iteration's summary line (`... (streak=12, replicate at 15)`).
+- **`failure_streak` 5–9** → proceed normally but note it (`... (streak=7, watch)`).
+- **`failure_streak` < 5** → proceed silently.
 
 ### 1. Check working tree is clean enough to commit
 
@@ -77,60 +96,141 @@ If `$ROOT/results.json` exists but `$ROOT/parameters.json` is missing, that's an
 
 ### 4. Create the test folder
 
-Timestamp = UTC `YYYYMMDD-HHMMSS`. Folder = `$ROOT/experiments/<timestamp>/`. Copy `$ROOT/results.json` to `<folder>/previous_result.json` **and** `$ROOT/parameters.json` to `<folder>/previous_parameters.json` (the dashboard's diff column uses the latter).
+Timestamp = UTC `YYYYMMDD-HHMMSS`.
+
+- **Normal mode**: Folder = `$ROOT/experiments/<timestamp>/`.
+- **Replicate mode** (set in step 0.6): Folder = `$ROOT/experiments/<timestamp>-replicate/`. The suffix is how the dashboard, the streak counter, and the next iteration's trailing-replicate count identify replicate iterations.
+
+Regardless of mode:
+
+- Copy `$ROOT/results.json` → `<folder>/previous_result.json`.
+- Copy `$ROOT/parameters.json` → `<folder>/previous_parameters.json`.
+- Copy `$ROOT/experiments/goal.txt` → `<folder>/goal.txt` so iterations are pinned to the goal at the time of the iteration. If the user edits `goal.txt` mid-loop, older history entries still reflect the goal they were actually judged against.
 
 ### 5. Propose a change (subagent)
 
-Spawn a general-purpose subagent with this structured prompt. Do NOT delegate the decision of what "better" means — that's encoded in the goal.
+**Replicate-mode shortcut** (if step 0.6 set `replicate_mode = true`): do NOT spawn a proposer subagent. Instead:
+- Copy `$ROOT/parameters.json` → `<folder>/parameters.json` verbatim (no change).
+- Write `<folder>/proposal.json`:
+  ```json
+  {
+    "change_details": "Replicate mode — re-running current best parameters verbatim to probe baseline reproducibility after a long non-accept streak.",
+    "parameters": <contents of $ROOT/parameters.json>,
+    "mode": "replicate"
+  }
+  ```
+- Write `<folder>/proposal.md` with the `change_details` text.
+- Write `<folder>/training_time.txt` with `600` (use the full cap; a short replicate wouldn't be informative).
+- Run `validate_params.py` as a sanity check (should trivially pass since the baseline already validates). If it somehow fails, that's a real problem — stub-reject and halt the replicate cascade for user attention.
+- Run `regen_dashboard.py`.
+- Skip the rest of step 5 and go straight to step 6.
 
-Request JSON (pass inside the prompt as a fenced block):
+**Normal mode** (from here on):
+
+**Before spawning** the subagent, assemble the context inputs. **Never paste the raw `results.json`** into a subagent prompt — it's ~1 MB / ~300k tokens. Use the summarizer.
+
+  a. `latest_summary` = stdout of `python3 $ROOT/.claude/skills/autotrain/summarize_results.py $ROOT/results.json`.
+  b. `recent_history` = up to the **10 most recent** subfolders of `$ROOT/experiments/`, newest last. For each entry include:
+       - `timestamp` — folder name.
+       - `status` — `ACCEPTED` / `REJECTED` / `SEED` / `FAILED`.
+       - `goal` — contents of `<folder>/goal.txt` if present, else `null`. Distinguishes iterations judged under an older goal from ones judged under the current goal.
+       - `change_details` — the proposer's original rationale (from `proposal.json`). Continuity of prior reasoning.
+       - `changed_params_diff` — the params-vs-previous diff.
+       - `analysis_commentary` — the analyzer's rebuttal (from `analysis.json`).
+       - `training_time_seconds` — from `<folder>/training_time.txt` if present, else `null`.
+       - `summary` — summarizer output on `<folder>/result.json` if valid, else `null`.
+       - `result_json_path` — absolute path to `<folder>/result.json`.
+       - `parameters_json_path` — absolute path to `<folder>/parameters.json`.
+       - `previous_parameters_json_path` — absolute path to `<folder>/previous_parameters.json`.
+     Skip the current iteration's folder. Skip corrupted or in-progress folders silently.
+  c. `exploration_mode` — set to `true` when the **current iteration number is a multiple of 10**, else `false`. Iteration number = count of existing non-seed experiment folders **plus 1** (counting the one we're about to run). So iterations 10, 20, 30, … get explore mode. Combats local-minimum ruts.
+
+Then spawn a general-purpose subagent with this prompt (pass as a fenced JSON block):
 ```json
 {
   "improvement_goal": "<contents of goal.txt>",
   "current_parameter_configuration": <contents of $ROOT/parameters.json>,
-  "latest_results": <contents of $ROOT/results.json>
+  "latest_results_summary": <latest_summary>,
+  "latest_results_json_path": "<absolute path to $ROOT/results.json>",
+  "recent_history": <recent_history>,
+  "training_time_seconds_max": 600,
+  "exploration_mode": <boolean>
 }
 ```
 
-Response must be JSON of exactly this shape:
-```json
-{
-  "change_details": "<one-paragraph rationale>",
-  "parameters": { ... full parameters object with every key preserved ... }
-}
-```
+Instructions embedded in the prompt:
+- The summary is a digest. For detail not in it, run `jq` or `python3 -c "..."` via Bash against the path. **Do not use the Read tool on the JSON** — it's ~1 MB.
+- Example: `jq '.stats | map(.policy_entropy) | [.[0], min, max, .[-1]]' <path>`.
+- **If `exploration_mode` is true**: propose a **bolder or orthogonal change** than recent history — change a parameter you haven't touched recently, try a larger magnitude, or explore an axis the goal hasn't been examined against. Still respect physical bounds and the goal.
+- **If `exploration_mode` is false**: propose an incremental, low-risk change aimed directly at the goal.
+- Return JSON of exactly this shape and **nothing else** (no markdown, no prose, no leading comment):
+  ```json
+  {
+    "change_details": "<BRIEF rationale, 1-2 sentences, <= 60 words>",
+    "parameters": { ... full parameters object, every key from input preserved exactly ... },
+    "training_time_seconds": <integer in [60, training_time_seconds_max], OPTIONAL>,
+    "training_time_rationale": "<BRIEF, one short sentence, <= 20 words, OPTIONAL>"
+  }
+  ```
+- **Keep `change_details` brief**: 1-2 sentences, under 60 words. Don't re-explain the overall strategy or restate prior history — the reader has all of it. Just state the change and its expected mechanism.
+- Preserve every key in the input parameters object. Never drop or rename a key.
+- Respect physical bounds: `replay_ratio_target > 0`, integer worker counts, non-negative decay values, positive batch sizes, etc. A separate validator enforces wide bounds on the server side — stay well within them.
+- Only set `training_time_seconds` if you have a specific reason. If you do, include a brief `training_time_rationale`.
 
-Instruct the subagent: preserve all parameter keys exactly (never drop or rename a key), respect obvious physical bounds (e.g. `replay_ratio_target > 0`, integer workers, non-negative decay). Return only the JSON — no prose around it.
-
-Save the raw JSON to `<folder>/proposal.json`. Write `change_details` to `<folder>/proposal.md`. Write the `parameters` object to `<folder>/parameters.json`.
+**After** the subagent returns:
+1. Parse the JSON. If parsing fails or required keys (`change_details`, `parameters`) are missing, retry once with a terser reminder of the schema. If the retry also fails, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "proposer returned invalid JSON twice — skipping iteration"}`, run `regen_dashboard.py`, and jump to step 8 (reject).
+2. If `training_time_seconds` is present, clamp to `[60, 600]`. If absent, use 600.
+3. Save the full raw JSON response to `<folder>/proposal.json`.
+4. Write `change_details` to `<folder>/proposal.md`.
+5. Write the `parameters` object to `<folder>/parameters.json`.
+6. Write the chosen (post-clamp) training time to `<folder>/training_time.txt` as a plain integer on one line.
+7. **Sanity-bound validation**: run `python3 $ROOT/.claude/skills/autotrain/validate_params.py <folder>/parameters.json`. If it exits non-zero, the proposal has an out-of-bounds value. Capture the violation message, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "proposal failed bounds check: <violations>"}`, run `regen_dashboard.py`, and jump to step 8 (reject). This iteration counts toward the failure streak (by design — if the proposer keeps hallucinating bad values, the loop should halt).
 
 Then run `regen_dashboard.py` so the dashboard shows this iteration as `IN_PROGRESS` while training runs.
 
 ### 6. Run training
 
-Invoke `run_training.sh <folder>/parameters.json 600 <folder>/result.json <folder>/run.log`. Time cap is hard-capped at 600 seconds (10 min) regardless of anything else. If the script exits non-zero or `result.json` is missing/invalid, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "training run failed: <reason>"}`, run `regen_dashboard.py`, and jump to step 8 (reject).
+Read the training time from `<folder>/training_time.txt` (fall back to 600 if the file is missing, e.g. during the seed path).
+
+Invoke `run_training.sh <folder>/parameters.json <training_time> <folder>/result.json <folder>/run.log`. `run_training.sh` enforces its own hard cap at 600 s — anything larger gets clamped down.
+
+If the script exits non-zero or `result.json` is missing/invalid, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "training run failed: <reason>"}`, run `regen_dashboard.py`, and jump to step 8 (reject). Exit status `10` from `run_training.sh` is not a failure — it means "skip iteration", handled in step 0.5.
 
 ### 7. Analyze (subagent)
+
+**Before spawning**, summarize both results files. **Never paste raw `result.json` / `previous_result.json` into the prompt** (same size concern as step 5):
+
+  a. `previous_summary` = stdout of `python3 $ROOT/.claude/skills/autotrain/summarize_results.py <folder>/previous_result.json`.
+  b. `new_summary` = stdout of `python3 $ROOT/.claude/skills/autotrain/summarize_results.py <folder>/result.json`.
 
 Spawn a general-purpose subagent with this prompt:
 ```json
 {
   "improvement_goal": "<contents of goal.txt>",
-  "previous_results": <contents of previous_result.json>,
+  "training_time_seconds": <contents of <folder>/training_time.txt as an integer>,
   "change_proposal": <contents of proposal.json>,
-  "new_results": <contents of result.json>
+  "previous_results_summary": <previous_summary>,
+  "previous_results_json_path": "<absolute path to <folder>/previous_result.json>",
+  "new_results_summary": <new_summary>,
+  "new_results_json_path": "<absolute path to <folder>/result.json>"
 }
 ```
 
-Response must be JSON of exactly this shape:
-```json
-{
-  "analysis_commentary": "<a few sentences explaining the comparison>",
-  "is_result_improved": true
-}
-```
+Instructions embedded in the prompt:
+- The summaries are digests of ~1 MB JSON files. For specific details not in the summaries, use `jq` or `python3` via Bash against the paths. **Do not Read the JSON files** — they'll blow your context.
+- Judge improvement strictly against `improvement_goal`. Do not invent a different goal. If the goal isn't moving but metrics unrelated to the goal look better, that's not an improvement.
+- If `training_time_seconds` is unusually short (say < 180 s) and the results are inconclusive, prefer `is_result_improved: false` and say so in the commentary — shorter runs shouldn't ratchet progress.
+- If the two summaries have **different `build_number`** values, the app code was rebuilt between runs. Flag this prominently in the commentary and lean toward `is_result_improved: false` unless the goal metric moved by a clearly-larger margin than plausible build-drift noise.
+- Return JSON of exactly this shape and nothing else:
+  ```json
+  {
+    "analysis_commentary": "<BRIEF, 2-3 sentences, <= 80 words; cite 1-3 specific metrics that drove the decision>",
+    "is_result_improved": true
+  }
+  ```
+- **Keep `analysis_commentary` brief**: under 80 words, 2-3 sentences. Don't restate the proposal or the full trajectory. Just: what metric(s) moved, by how much, and whether that meets the goal.
 
-Save to `<folder>/analysis.json`.
+Save the subagent's JSON response to `<folder>/analysis.json`.
 
 ### 8. Accept or reject
 
