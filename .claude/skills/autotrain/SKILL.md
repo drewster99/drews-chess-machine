@@ -239,6 +239,7 @@ Instructions embedded in the prompt:
   }
   ```
 - **Keep `analysis_commentary` brief**: under 80 words, 2-3 sentences. Don't restate the proposal or the full trajectory. Just: what metric(s) moved, by how much, and which classification that justifies.
+- **Always include a brief note on promotion activity**: state whether the trainer was promoted during the session (e.g., "promoted 1× at arena 2" or "no promotion"). The promotion count is in `new_summary.arenas.promoted` / `.count`; fetch specifics from the JSON path if needed. This is separate from the classification decision — a promotion isn't automatically an improvement, but the reader wants the fact visible at a glance.
 - Do NOT return the legacy `is_result_improved` field; use `classification` only.
 
 Save the subagent's JSON response to `<folder>/analysis.json`.
