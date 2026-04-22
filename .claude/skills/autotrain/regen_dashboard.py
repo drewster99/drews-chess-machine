@@ -129,6 +129,7 @@ def build_row(folder: Path):
         "mode": folder_mode(folder.name),
         "change_details": change_details,
         "changed_params": diff_params(prev_params, new_params),
+        "parameters": new_params if isinstance(new_params, dict) else None,
         "analysis_commentary": commentary,
         "training_time_seconds": training_time,
         "folder": f"experiments/{folder.name}",
@@ -291,6 +292,38 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .agg-cell.streak-warn { background: #ffebee; }
   .agg-cell.streak-warn .agg-value { color: #c62828; }
   .agg-sub { font-size: 11px; color: #888; }
+  /* params-modal */
+  .params-link { cursor: pointer; color: #1a5fb4; text-decoration: underline;
+                 font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+  .params-link:hover { color: #0d3d7a; }
+  #params-modal-backdrop {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+    z-index: 10; align-items: center; justify-content: center;
+  }
+  #params-modal-backdrop.open { display: flex; }
+  #params-modal {
+    background: #fff; border-radius: 6px; max-width: 720px; width: 90%;
+    max-height: 85vh; display: flex; flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+  }
+  #params-modal header {
+    border-bottom: 1px solid #ddd; padding: 10px 14px; margin: 0;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  #params-modal header h2 { margin: 0; font-size: 14px; font-weight: 600; }
+  #params-modal header .close { cursor: pointer; font-size: 18px; color: #666;
+                                 background: none; border: none; padding: 0 4px; }
+  #params-modal header .close:hover { color: #000; }
+  #params-modal pre {
+    margin: 0; padding: 14px; overflow: auto; font-size: 12px;
+    font-family: "SF Mono", Menlo, Consolas, monospace; white-space: pre;
+    background: #fafafa; flex: 1 1 auto; border-radius: 0 0 6px 6px;
+  }
+  #params-modal footer {
+    padding: 8px 14px; border-top: 1px solid #eee; font-size: 11px; color: #666;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #params-modal footer a { color: #1a5fb4; }
 </style>
 </head>
 <body>
@@ -307,12 +340,26 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <th>Dur.</th>
       <th>Change</th>
       <th>Param deltas</th>
+      <th>Params</th>
       <th>Analysis</th>
       <th>Folder</th>
     </tr>
   </thead>
   <tbody></tbody>
 </table>
+<div id="params-modal-backdrop" role="dialog" aria-modal="true">
+  <div id="params-modal">
+    <header>
+      <h2 id="params-modal-title">parameters.json</h2>
+      <button class="close" type="button" aria-label="Close">&times;</button>
+    </header>
+    <pre id="params-modal-body"></pre>
+    <footer>
+      <span id="params-modal-sub"></span>
+      <a id="params-modal-file" href="#" target="_blank">open file</a>
+    </footer>
+  </div>
+</div>
 <script>
 const POLL_INTERVAL_MS = 15000;
 let currentScriptEl = null;
@@ -350,17 +397,65 @@ function renderRow(exp) {
   const durCell = (typeof exp.training_time_seconds === 'number')
     ? `${Math.round(exp.training_time_seconds / 60)}m`
     : '—';
+  const paramsCell = exp.parameters
+    ? `<span class="params-link" data-key="${escHTML(rowKey(exp))}">view</span>`
+    : '<em>—</em>';
   tr.innerHTML = `
     <td class="mono">${escHTML(exp.start_time_iso || '')}</td>
     <td>${statusCell}</td>
     <td class="mono">${durCell}</td>
     <td class="details">${escHTML(exp.change_details || '')}</td>
     <td>${deltas}</td>
+    <td>${paramsCell}</td>
     <td class="commentary">${escHTML(exp.analysis_commentary || '')}</td>
     <td><a href="${escHTML(exp.folder || '')}/"><code>${escHTML(exp.folder || '')}</code></a></td>
   `;
   return tr;
 }
+
+function paramsByKey(key) {
+  const list = window.EXPERIMENTS || [];
+  for (const exp of list) {
+    if (rowKey(exp) === key) return exp;
+  }
+  return null;
+}
+
+function openParamsModal(key) {
+  const exp = paramsByKey(key);
+  if (!exp || !exp.parameters) return;
+  document.getElementById('params-modal-title').textContent =
+    `parameters.json — ${exp.timestamp}`;
+  document.getElementById('params-modal-body').textContent =
+    JSON.stringify(exp.parameters, null, 2);
+  document.getElementById('params-modal-sub').textContent =
+    `${Object.keys(exp.parameters).length} keys`;
+  const fileLink = document.getElementById('params-modal-file');
+  fileLink.href = `${exp.folder || ''}/parameters.json`;
+  document.getElementById('params-modal-backdrop').classList.add('open');
+}
+
+function closeParamsModal() {
+  document.getElementById('params-modal-backdrop').classList.remove('open');
+}
+
+document.addEventListener('click', (ev) => {
+  const link = ev.target.closest('.params-link');
+  if (link) {
+    openParamsModal(link.dataset.key);
+    return;
+  }
+  if (ev.target.closest('#params-modal .close')) {
+    closeParamsModal();
+    return;
+  }
+  // Click on backdrop (outside modal content) closes the modal.
+  if (ev.target.id === 'params-modal-backdrop') closeParamsModal();
+});
+
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') closeParamsModal();
+});
 
 function isNearBottom() {
   const threshold = 80; // px slack so we still count as "at bottom" after small drift
@@ -495,12 +590,13 @@ def main():
         "window.AGGREGATES = " + json.dumps(aggregates, indent=2) + ";\n"
     )
     OUT_JS.write_text(payload)
-    # Only write the HTML shell if it doesn't exist yet — overwriting on
-    # every regen would reset the file's mtime even when the template hasn't
-    # changed, and (historically) felt like it was causing spurious visual
-    # changes on the open page. To pick up template tweaks in this script,
-    # delete the file manually and run this generator again.
-    if not OUT_HTML.is_file():
+    # Write the HTML shell on first run. On subsequent runs, only overwrite if
+    # the file is missing a marker string that identifies the current template
+    # revision — that way existing dashboards auto-upgrade to new features
+    # (like the params modal) without the user having to delete the file, but
+    # we don't churn mtime every regen when the template hasn't changed.
+    template_marker = "params-modal-backdrop"
+    if not OUT_HTML.is_file() or template_marker not in OUT_HTML.read_text():
         OUT_HTML.write_text(HTML_TEMPLATE)
     print(f"regen_dashboard: {len(rows)} runs -> {OUT_JS.relative_to(REPO_ROOT)}")
 
