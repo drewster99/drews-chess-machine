@@ -1,0 +1,1 @@
+Stack the seed-stability win (min_positions 100k→300k, confirmed non-collapsing across two runs) with a slightly more selective promotion gate (arena_promote_threshold 0.55→0.60) to recover learning signal lost at 300k. Both axes known-stable individually; neutrals don't ratchet so need improved metrics.

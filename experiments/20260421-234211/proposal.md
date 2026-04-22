@@ -1,0 +1,1 @@
+Set replay_buffer_min_positions_before_training 100000 → 200000. Halfway between prior baseline (100k, collapse-prone) and last run's 300k (stable but too few training steps). Aims to preserve most seed-stability gain while recovering training throughput. Single-knob change; all other parameters held fixed.

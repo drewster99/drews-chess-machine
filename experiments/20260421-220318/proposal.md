@@ -1,0 +1,1 @@
+Probe the collapse edge by lowering entropy_bonus from 0.003 to 0.0025. This is the most incremental step along the only axis with a known stability basin, testing whether slightly less exploration pressure still holds.

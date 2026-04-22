@@ -1,0 +1,1 @@
+Probe a non-entropy axis: raise arena_auto_interval_sec from 300 to 600 so more training accumulates between arena interruptions, giving the candidate weights more time to diverge and producing a cleaner promotion signal while entropy stays at its sweet spot of 0.003.

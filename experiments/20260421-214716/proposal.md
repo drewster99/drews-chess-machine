@@ -1,0 +1,1 @@
+Halve training_batch_size from 4096 to 2048. Current-best run managed only 366 training steps in 600s with healthy but slow illegal_mass growth (0 to 0.54). Smaller batches roughly double step count per wall-clock and add mild SGD noise — a fresh axis that preserves the entropy=0.003 stability basin.

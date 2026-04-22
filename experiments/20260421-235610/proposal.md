@@ -1,0 +1,1 @@
+Set replay_buffer_min_positions_before_training to 300000 (up from 100k baseline, revisiting the value from 2 iterations ago). Last run at 200k collapsed (gNorm>100); 300k previously did not. Replicate the 300k run alone to test whether that earlier non-collapse was reproducible or seed luck before stacking another lever.

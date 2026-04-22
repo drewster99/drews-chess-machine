@@ -190,23 +190,237 @@ window.EXPERIMENTS = [
     "analysis_commentary": "All three goal metrics improved materially: max ceiling 0.107 vs 0.197 (~46% lower), illegal_min 0.457 vs 0.665 (~31% absolute drop), and aboveU_max 5 vs 2. Trajectory shows monotonic illegal_mass decline from 0.9998 to 0.457 with no collapse signals.",
     "training_time_seconds": null,
     "folder": "experiments/20260421-211313"
+  },
+  {
+    "timestamp": "20260421-214716",
+    "start_time_iso": "2026-04-21T21:47:16",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Halve training_batch_size from 4096 to 2048. Current-best run managed only 366 training steps in 600s with healthy but slow illegal_mass growth (0 to 0.54). Smaller batches roughly double step count per wall-clock and add mild SGD noise \u2014 a fresh axis that preserves the entropy=0.003 stability basin.",
+    "changed_params": [
+      {
+        "key": "training_batch_size",
+        "old": 4096,
+        "new": 2048
+      }
+    ],
+    "analysis_commentary": "Regressed on collapse signals: candidate last max_prob jumped 0.103->0.547 with legal_mass collapsing from 0.543 to 0.00012 and above_uniform_count 5->0, indicating mass concentrating on an illegal move. Arena Elo also fell 13.9->6.95.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260421-214716"
+  },
+  {
+    "timestamp": "20260421-220318",
+    "start_time_iso": "2026-04-21T22:03:18",
+    "status": "NEUTRAL",
+    "mode": "normal",
+    "change_details": "Probe the collapse edge by lowering entropy_bonus from 0.003 to 0.0025. This is the most incremental step along the only axis with a known stability basin, testing whether slightly less exploration pressure still holds.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.003,
+        "new": 0.0025
+      }
+    ],
+    "analysis_commentary": "Both runs satisfy collapse thresholds (max_max 0.52 vs 0.11, illegal_min 0.23 vs 0.46, entropy 6.62 vs 6.69 \u2014 both well above 5). Legal-mass improved meaningfully (0.69 vs 0.54) and top1_legal went positive for the first time, but max_prob jumped 5x (0.52 vs 0.11) \u2014 confidence grew on mostly-legal moves. Mixed signals, no clear goal win.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260421-220318"
+  },
+  {
+    "timestamp": "20260421-221834",
+    "start_time_iso": "2026-04-21T22:18:34",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Nudge entropy_bonus 0.003 \u2192 0.0035 (small step toward the upper edge of the working range [0.0025, 0.005]) to probe whether slightly stronger entropy regularization reduces illegal_mass further while keeping max low.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.003,
+        "new": 0.0035
+      }
+    ],
+    "analysis_commentary": "Goal-relevant diagnostics all worsened at entropy=0.0035: candidate's max_prob over run doubled (0.228 vs 0.107), illegal_min rose (0.599 vs 0.457), and aboveU ended at 2 vs 5 with legal_mass_sum dropping to 0.333 from 0.543. Collapse signals unchanged (pEnt never below 5, min entropy 6.81 vs 6.69), but the concentration/illegal-mass trend is clearly worse.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260421-221834"
+  },
+  {
+    "timestamp": "20260421-223230",
+    "start_time_iso": "2026-04-21T22:32:30",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Probe a non-entropy axis: raise arena_auto_interval_sec from 300 to 600 so more training accumulates between arena interruptions, giving the candidate weights more time to diverge and producing a cleaner promotion signal while entropy stays at its sweet spot of 0.003.",
+    "changed_params": [
+      {
+        "key": "arena_auto_interval_sec",
+        "old": 300,
+        "new": 600
+      }
+    ],
+    "analysis_commentary": "Catastrophic regression: candidate max_prob reached 1.0 by probe 11 (t=178s) and stayed pinned through all remaining candidate probes; legal_mass_sum=0 throughout. Critically, 0 arenas fired (interval=600 vs 600s training window), so arena promotion is definitively ruled out as the collapse driver. The bare entropy=0.003 basin is apparently seed-sensitive \u2014 this is the same parameters as the accepted current best, just a different initialization.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260421-223230"
+  },
+  {
+    "timestamp": "20260421-224611",
+    "start_time_iso": "2026-04-21T22:46:11",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Raise entropy_bonus 0.003\u21920.004 (known-working level) to widen the seed-space stability basin; seed-luck collapse evidence suggests more regularization is needed rather than further knob exploration.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.003,
+        "new": 0.004
+      }
+    ],
+    "analysis_commentary": "entropy_bonus 0.003\u21920.004 collapsed catastrophically: probe 1 max already 0.325, max=1.0 by probe 5 (t=90s), illegal=1.0 throughout all 37 probes. grad_norm_ever_exceeded_100=true (peak 117.6, a real collapse signal). This is decisive evidence the basin is seed-sensitive, not parameter-specific \u2014 entropy=0.004 worked on one seed (the old current best) but doesn't here.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260421-224611"
+  },
+  {
+    "timestamp": "20260421-230005",
+    "start_time_iso": "2026-04-21T23:00:05",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Bistable basin is seed-dominated; small knob nudges have low signal. Bump entropy_bonus 0.003\u21920.008 (2.67x) \u2014 a large regularization step sitting between known-working 0.005 and over-regularized 0.01. Goal: make the uniform-policy basin attractive enough that most seeds cannot escape into the single-move collapse, even when grad_norm spikes early.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.003,
+        "new": 0.008
+      }
+    ],
+    "analysis_commentary": "entropy_bonus 0.003\u21920.008 collapsed. Probe 1 max=0.658 (already elevated at init), growing to 0.9995 by end; illegal_mass_sum=1.0 throughout. Three consecutive runs now collapsed at three different entropy values (0.003, 0.004, 0.008) \u2014 collapse is seed-driven, not parameter-driven. Grad norms stayed under 100 this run (peak 50), so grad_clip is not the driver either.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260421-230005"
+  },
+  {
+    "timestamp": "20260421-231411",
+    "start_time_iso": "2026-04-21T23:14:11",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Halve learning_rate 5e-5 to 2.5e-5. Collapse is SGD-level bistability: large early steps push logits toward saturation before entropy regularization can act. Smaller steps give every seed more time in the linear regime before softmax saturates, attacking the mechanism itself rather than its regularization magnitude.",
+    "changed_params": [
+      {
+        "key": "learning_rate",
+        "old": 5e-05,
+        "new": 2.5e-05
+      }
+    ],
+    "analysis_commentary": "learning_rate 5e-5 \u2192 2.5e-5 delayed but did not prevent collapse: max reached 0.90 by t=248s and 1.0 by t=485s, illegal_mass locked at 1.0 from probe 7. Halving lr bought ~3 minutes of stable-looking trajectory, then collapsed the same way. Fourth consecutive seed-driven collapse across four different parameter configurations.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260421-231411"
+  },
+  {
+    "timestamp": "20260421-232810",
+    "start_time_iso": "2026-04-21T23:28:10",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Triple the pre-training buffer fill from 100k to 300k positions. Lets self-play diversify the replay buffer before any SGD fires, reducing early correlated-gradient risk that may be driving the repeated collapses. Conservative, untried-in-isolation axis; all other knobs held at current best.",
+    "changed_params": [
+      {
+        "key": "replay_buffer_min_positions_before_training",
+        "old": 100000,
+        "new": 300000
+      }
+    ],
+    "analysis_commentary": "Goal metrics regressed: max_prob rose 0.107\u21920.262 and illegal_min worsened 0.457\u21920.679, though both stay well under collapse thresholds. Grad norm improved (85.1\u219251.3) and aboveU dropped (5\u21921), but the 300k buffer delay cost training progress in the 10-min window without a clear safety win since neither run collapsed.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260421-232810"
+  },
+  {
+    "timestamp": "20260421-234211",
+    "start_time_iso": "2026-04-21T23:42:11",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Set replay_buffer_min_positions_before_training 100000 \u2192 200000. Halfway between prior baseline (100k, collapse-prone) and last run's 300k (stable but too few training steps). Aims to preserve most seed-stability gain while recovering training throughput. Single-knob change; all other parameters held fixed.",
+    "changed_params": [
+      {
+        "key": "replay_buffer_min_positions_before_training",
+        "old": 100000,
+        "new": 200000
+      }
+    ],
+    "analysis_commentary": "min_positions=200k collapsed: max reached 1.0 by probe 20 (t\u2248318s) and illegal_mass locked at 1.0 thereafter; max_grad_global_norm=106.7 (exceeded 100 alarm). Halfway-point was not enough to buffer past the early-training instability that 300k avoided \u2014 consistent with the pattern but not distinguishable from seed variance in a single run.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260421-234211"
+  },
+  {
+    "timestamp": "20260421-235610",
+    "start_time_iso": "2026-04-21T23:56:10",
+    "status": "NEUTRAL",
+    "mode": "normal",
+    "change_details": "Set replay_buffer_min_positions_before_training to 300000 (up from 100k baseline, revisiting the value from 2 iterations ago). Last run at 200k collapsed (gNorm>100); 300k previously did not. Replicate the 300k run alone to test whether that earlier non-collapse was reproducible or seed luck before stacking another lever.",
+    "changed_params": [
+      {
+        "key": "replay_buffer_min_positions_before_training",
+        "old": 100000,
+        "new": 300000
+      }
+    ],
+    "analysis_commentary": "Both runs satisfy collapse thresholds (max<0.90, illegal<0.99). Opposite-direction moves on stability signals: max ceiling worse (0.140 vs 0.107) and legal_mass_sum lower (0.199 vs 0.543), but grad norm substantially better (36.4 vs 85.1) and top1_legal_ever_positive flipped TRUE. Second consecutive non-collapse at 300k suggests seed-stability gain. No meaningful regression on primary collapse objective.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260421-235610"
+  },
+  {
+    "timestamp": "20260422-001010",
+    "start_time_iso": "2026-04-22T00:10:10",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Stack the seed-stability win (min_positions 100k\u2192300k, confirmed non-collapsing across two runs) with a slightly more selective promotion gate (arena_promote_threshold 0.55\u21920.60) to recover learning signal lost at 300k. Both axes known-stable individually; neutrals don't ratchet so need improved metrics.",
+    "changed_params": [
+      {
+        "key": "arena_promote_threshold",
+        "old": 0.55,
+        "new": 0.6
+      },
+      {
+        "key": "replay_buffer_min_positions_before_training",
+        "old": 100000,
+        "new": 300000
+      }
+    ],
+    "analysis_commentary": "min_positions=300k + arena_promote_threshold=0.60 showed healthy mid-run (max=0.35, aboveU=2 at t=321) but collapsed by end \u2014 max=1.0, illegal=1.0 at last probe. illegal_min=0.82 (vs current best 0.457, vs prior 300k-only run 0.641). The add-on (promote_threshold) didn't help; the seed path tipped into collapse late.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260422-001010"
+  },
+  {
+    "timestamp": "20260422-002419",
+    "start_time_iso": "2026-04-22T00:24:19",
+    "status": "ACCEPTED",
+    "mode": "normal",
+    "change_details": "Pair min_positions=300k (proven seed-stable in 2/2 prior non-collapsing runs) with entropy_bonus=0.0025 (slight reduction from 0.003). Larger pre-training buffer should let the lower-entropy regularization produce faster peakiness progression than current best without tripping late collapse. One tightly-related regularization pair.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.003,
+        "new": 0.0025
+      },
+      {
+        "key": "replay_buffer_min_positions_before_training",
+        "old": 100000,
+        "new": 300000
+      }
+    ],
+    "analysis_commentary": "New run shows broad improvement: illegal_min nearly halved (0.457\u21920.235), final legal_mass_sum rose 0.543\u21920.753, and aboveU_max grew 5\u21927. Grad norm dropped 85\u219252 (more stable). Transient max_prob peak 0.215 vs 0.107 is notable but still far below the 0.90 collapse threshold, and final max 0.141 remains comparable. No collapse signals tripped.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260422-002419"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 11,
+  "total_iterations": 23,
   "counts": {
     "SEED": 0,
-    "ACCEPTED": 3,
-    "NEUTRAL": 0,
-    "REJECTED": 7,
+    "ACCEPTED": 4,
+    "NEUTRAL": 2,
+    "REJECTED": 16,
     "FAILED": 1,
     "IN_PROGRESS": 0
   },
-  "accept_rate": 0.2727272727272727,
+  "accept_rate": 0.17391304347826086,
   "failure_streak": 0,
   "trailing_replicates": 0,
-  "arena_count": 9,
-  "promotions": 0,
-  "best_arena_score": 0.535,
-  "best_arena_folder": "experiments/20260421-183711"
+  "arena_count": 20,
+  "promotions": 1,
+  "best_arena_score": 0.555,
+  "best_arena_folder": "experiments/20260421-221834"
 };

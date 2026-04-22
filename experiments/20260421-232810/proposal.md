@@ -1,0 +1,1 @@
+Triple the pre-training buffer fill from 100k to 300k positions. Lets self-play diversify the replay buffer before any SGD fires, reducing early correlated-gradient risk that may be driving the repeated collapses. Conservative, untried-in-isolation axis; all other knobs held at current best.

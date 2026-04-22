@@ -1,0 +1,1 @@
+{"analysis_commentary": "Regressed on collapse signals: candidate last max_prob jumped 0.103->0.547 with legal_mass collapsing from 0.543 to 0.00012 and above_uniform_count 5->0, indicating mass concentrating on an illegal move. Arena Elo also fell 13.9->6.95.", "classification": "regressed"}

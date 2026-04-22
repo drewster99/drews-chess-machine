@@ -1,0 +1,1 @@
+Pair min_positions=300k (proven seed-stable in 2/2 prior non-collapsing runs) with entropy_bonus=0.0025 (slight reduction from 0.003). Larger pre-training buffer should let the lower-entropy regularization produce faster peakiness progression than current best without tripping late collapse. One tightly-related regularization pair.

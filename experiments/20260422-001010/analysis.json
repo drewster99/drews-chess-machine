@@ -1,0 +1,1 @@
+{"analysis_commentary": "min_positions=300k + arena_promote_threshold=0.60 showed healthy mid-run (max=0.35, aboveU=2 at t=321) but collapsed by end — max=1.0, illegal=1.0 at last probe. illegal_min=0.82 (vs current best 0.457, vs prior 300k-only run 0.641). The add-on (promote_threshold) didn't help; the seed path tipped into collapse late.", "classification": "regressed"}

@@ -1,0 +1,1 @@
+{"analysis_commentary":"Goal metrics regressed: max_prob rose 0.107→0.262 and illegal_min worsened 0.457→0.679, though both stay well under collapse thresholds. Grad norm improved (85.1→51.3) and aboveU dropped (5→1), but the 300k buffer delay cost training progress in the 10-min window without a clear safety win since neither run collapsed.","classification":"regressed"}

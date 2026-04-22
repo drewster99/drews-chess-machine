@@ -1,0 +1,1 @@
+Halve learning_rate 5e-5 to 2.5e-5. Collapse is SGD-level bistability: large early steps push logits toward saturation before entropy regularization can act. Smaller steps give every seed more time in the linear regime before softmax saturates, attacking the mechanism itself rather than its regularization magnitude.

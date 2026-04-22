@@ -1,0 +1,1 @@
+Bistable basin is seed-dominated; small knob nudges have low signal. Bump entropy_bonus 0.003→0.008 (2.67x) — a large regularization step sitting between known-working 0.005 and over-regularized 0.01. Goal: make the uniform-policy basin attractive enough that most seeds cannot escape into the single-move collapse, even when grad_norm spikes early.

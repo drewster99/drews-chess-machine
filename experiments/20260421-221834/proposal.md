@@ -1,0 +1,1 @@
+Nudge entropy_bonus 0.003 → 0.0035 (small step toward the upper edge of the working range [0.0025, 0.005]) to probe whether slightly stronger entropy regularization reduces illegal_mass further while keeping max low.
