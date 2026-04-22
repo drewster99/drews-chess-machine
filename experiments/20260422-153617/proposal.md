@@ -1,0 +1,1 @@
+Lower entropy_bonus 0.003 → 0.0025 (one click less regularization). Current regime over-regularized; illegal_mass stalled at 1.0 with no learning progress on lr/warmup axes. Warmup=500 still provides collapse protection. History shows 0.0025 worked when paired with stability.

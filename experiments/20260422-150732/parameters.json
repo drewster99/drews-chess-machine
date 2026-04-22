@@ -1,9 +1,9 @@
 {
-  "entropy_bonus": 0.0025,
+  "entropy_bonus": 0.003,
   "grad_clip_max_norm": 30,
   "weight_decay": 0.0001,
   "K": 5,
-  "learning_rate": 0.00005,
+  "learning_rate": 0.000075,
   "sqrt_batch_scaling_lr": true,
   "lr_warmup_steps": 500,
   "draw_penalty": 0.1,

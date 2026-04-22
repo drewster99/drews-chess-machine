@@ -1,0 +1,1 @@
+{"analysis_commentary":"lr 5e-5→1e-4 (2x) with warmup=500 collapsed: max reached 1.0 by mid-run, grad_norm_max=134 (exceeded 100 alarm), value saturated to 1.0. Warmup protected 1.5x (prior iter neutral) but not 2x. Upper bound of warmup's safe-lr protection identified. Regressed vs current best.","classification":"regressed"}

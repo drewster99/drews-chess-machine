@@ -1,0 +1,1 @@
+Bump learning_rate 5e-5 to 7.5e-5. Collapse was prevented by warmup=500 + entropy=0.003, but illegal_mass is stuck ~1.0 (stalled learning). Warmup ramps lr gradually so peak only hits after 500 steps, mitigating prior collapse risk from lr bumps. Faster learning to actually drive policy toward legal moves.

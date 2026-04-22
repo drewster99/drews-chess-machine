@@ -2036,22 +2036,157 @@ window.EXPERIMENTS = [
     "analysis_commentary": "Max collapse decisively prevented: bounded at 0.33 vs baseline 1.0 locked, well under the 0.90 bad threshold. Grad norm halved (68.9\u219230.7) and value head less saturated (0.37\u21920.22). Illegal_mass still ~1 because learning stalled under regularization, not collapsed. Of two goal diagnostics, one moved dramatically right, the other unchanged \u2014 net meaningful progress against policy collapse.",
     "training_time_seconds": 600,
     "folder": "experiments/20260422-145114"
+  },
+  {
+    "timestamp": "20260422-150732",
+    "start_time_iso": "2026-04-22T15:07:32",
+    "status": "NEUTRAL",
+    "mode": "normal",
+    "change_details": "Bump learning_rate 5e-5 to 7.5e-5. Collapse was prevented by warmup=500 + entropy=0.003, but illegal_mass is stuck ~1.0 (stalled learning). Warmup ramps lr gradually so peak only hits after 500 steps, mitigating prior collapse risk from lr bumps. Faster learning to actually drive policy toward legal moves.",
+    "changed_params": [
+      {
+        "key": "learning_rate",
+        "old": 5e-05,
+        "new": 7.5e-05
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.003,
+      "grad_clip_max_norm": 30,
+      "weight_decay": 0.0001,
+      "K": 5,
+      "learning_rate": 7.5e-05,
+      "sqrt_batch_scaling_lr": true,
+      "lr_warmup_steps": 500,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 32,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 250000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "lr 5e-5\u21927.5e-5 with warmup=500 safety net: no collapse, max_max 0.22 (vs baseline 0.33, better), grad_norm_max 22.9 (vs 30.7, better), top1_legal_ever_positive flipped TRUE. But illegal_min unchanged at 0.9996 vs 0.9997 and aboveU still 0 throughout \u2014 primary goal metric (illegal_mass) didn't move. Marginal secondary improvements only; within noise on the main diagnostic. Confirms warmup does protect against lr-bump collapse.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260422-150732"
+  },
+  {
+    "timestamp": "20260422-152218",
+    "start_time_iso": "2026-04-22T15:22:18",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Bump learning_rate 5e-5 -> 1e-4 (2x). Warmup=500 kept 1.5x safe last iter; test the natural 2x next step to drive more signal per step and attack pinned illegal_mass. All other keys held.",
+    "changed_params": [
+      {
+        "key": "learning_rate",
+        "old": 5e-05,
+        "new": 0.0001
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.003,
+      "grad_clip_max_norm": 30,
+      "weight_decay": 0.0001,
+      "K": 5,
+      "learning_rate": 0.0001,
+      "sqrt_batch_scaling_lr": true,
+      "lr_warmup_steps": 500,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 32,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 250000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "lr 5e-5\u21921e-4 (2x) with warmup=500 collapsed: max reached 1.0 by mid-run, grad_norm_max=134 (exceeded 100 alarm), value saturated to 1.0. Warmup protected 1.5x (prior iter neutral) but not 2x. Upper bound of warmup's safe-lr protection identified. Regressed vs current best.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260422-152218"
+  },
+  {
+    "timestamp": "20260422-153617",
+    "start_time_iso": "2026-04-22T15:36:17",
+    "status": "ACCEPTED",
+    "mode": "normal",
+    "change_details": "Lower entropy_bonus 0.003 \u2192 0.0025 (one click less regularization). Current regime over-regularized; illegal_mass stalled at 1.0 with no learning progress on lr/warmup axes. Warmup=500 still provides collapse protection. History shows 0.0025 worked when paired with stability.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.003,
+        "new": 0.0025
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.0025,
+      "grad_clip_max_norm": 30,
+      "weight_decay": 0.0001,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": true,
+      "lr_warmup_steps": 500,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 32,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 250000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Lower entropy (0.0025) produced the first illegal_min below 0.99 threshold (0.9836 vs 0.9997), a meaningful 0.016 absolute improvement on the primary goal metric. Final illegal also dropped (0.98 vs 1.0) and final max improved (0.16 vs 0.33). Grad norm slightly higher (38 vs 31) but well under alarm. Both non-collapsing with max<0.9.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260422-153617"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 44,
+  "total_iterations": 47,
   "counts": {
     "SEED": 1,
-    "ACCEPTED": 5,
-    "NEUTRAL": 4,
-    "REJECTED": 34,
+    "ACCEPTED": 6,
+    "NEUTRAL": 5,
+    "REJECTED": 35,
     "FAILED": 1,
     "IN_PROGRESS": 0
   },
-  "accept_rate": 0.11363636363636363,
+  "accept_rate": 0.1276595744680851,
   "failure_streak": 0,
   "trailing_replicates": 0,
-  "arena_count": 29,
+  "arena_count": 32,
   "promotions": 1,
   "best_arena_score": 0.555,
   "best_arena_folder": "experiments/20260421-221834"
