@@ -1,0 +1,1 @@
+{"analysis_commentary":"Warmup=100 let lr peak within the ~331-step window, enabling real learning. illegal_min fell from 0.98 (near the 0.99 collapse line) to 0.49, legal_mass_sum rose from 0.02 to 0.50, and 5 legal moves now exceed uniform (vs 0). Max prob stayed safely below 0.90. Clear progress on the primary anti-collapse goal.","classification":"improved"}

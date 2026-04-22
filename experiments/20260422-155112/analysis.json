@@ -1,0 +1,1 @@
+{"analysis_commentary":"lr=7.5e-5 collapsed under entropy=0.0025 (max=1.0 by end, illegal=1.0, grad_norm=128 — alarm), where the same lr was safe under entropy=0.003. Entropy lowering shrank the warmup's protection envelope. Regressed vs current best.","classification":"regressed"}

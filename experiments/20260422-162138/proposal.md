@@ -1,0 +1,1 @@
+Reduce lr_warmup_steps from 500 to 100. With ~331 training steps per window, warmup=500 meant lr never reached its configured 5e-5. Now warmup completes by step 100, letting full lr run for ~230 steps. Well within the 110 recommended cap. Isolate warmup-reduction effect; no other changes.

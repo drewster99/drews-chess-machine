@@ -1,0 +1,1 @@
+Raise learning_rate from 5e-5 to 7.5e-5 (1.5x). Last test of 1.5x under warmup=500 was safe/neutral at entropy=0.003; revisit under the newly-accepted lower-entropy baseline (0.0025) to push illegal_mass down faster while staying below the 1e-4 collapse threshold.

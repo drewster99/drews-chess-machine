@@ -1,0 +1,1 @@
+Raise replay_buffer_min_positions_before_training from 250000 to 350000. More diverse buffer before first SGD step should reduce early-collapse risk without altering SGD dynamics; strictly more conservative than current best.
