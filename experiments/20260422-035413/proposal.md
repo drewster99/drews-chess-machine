@@ -1,0 +1,1 @@
+Keep min_pos at 75k (proven non-collapsing under build 352) and bump entropy_bonus from 0.0025 to 0.003 for slight extra regularization. Both knobs are in regions known to work under build 352; two small moves aimed at beating prior non-collapsing run.

@@ -1,0 +1,1 @@
+Triple lr_warmup_steps 500→1500. Previous iteration (warmup=500, sqrt scaling flags on) showed grad_norm peak dropped from 103-217 to 64, confirming warmup suppresses early spikes but not enough to prevent drift into collapse. Isolate warmup-length signal; keep all other knobs at accepted-best values.

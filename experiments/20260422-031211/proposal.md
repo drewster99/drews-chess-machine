@@ -1,0 +1,1 @@
+Re-enable lr_warmup_steps=500 with sqrt_batch_scaling_lr=true and sqrt_batch_scaling_weight_decay=true. Previous warmup attempt showed grad norm spikes dropped ~100→~64 (warmup working) despite collapse. One more data point tests whether warmup helps on the slower build-352 throughput regime. All other params unchanged.

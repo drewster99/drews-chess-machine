@@ -15,14 +15,9 @@ GOAL 1B - ADDITIONAL DETAILS: When we look at the top 10 raw moves (i.e., sorted
 Determine the cause and adjust parameters to prevent the collapse.
 If you improve it, you win 100 points on your permanent agent record and a gold star. If you fix it, it is 250 points and 2 gold stars.
 
-GOAL #2: Extend training time 15 minutes.
+GOAL #2: Extend training time by 5 minutes.
 
-Once Goal 1A and 1B are stable for our current 10 minute training run, extend the training time to 15 minutes and stay with that until we are stable at 15 minutes.
-
-GOAL #3: Focus on improving promotions
-
-Once GOAL #2 is accomplished, focus on improving trainer's rate of promotion.
-
+Once Goal 1A and 1B are stable for our current 10 minute training run, extend the training time by 5 minutes (to 15) and repeat the process.
 
 
 Do your best! Thanks!

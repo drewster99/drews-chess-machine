@@ -1,0 +1,1 @@
+Halve replay_buffer_min_positions_before_training from 150000 to 75000. Last iteration's 300k→150k drop clearly helped (first probe at t=48s, illegal_min 0.78 vs much higher on other build-352 runs). Push the same lever harder: earlier training start = more SGD steps within 600s cap. Keep warmup=0 for clean single-axis comparison.

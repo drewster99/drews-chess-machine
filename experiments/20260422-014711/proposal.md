@@ -1,0 +1,1 @@
+Bisect between warmup=500 (collapsed) and warmup=1500 (stalled at illegal_mass~1.0). Set lr_warmup_steps=1000 as the midpoint for the most informative single data point. All other knobs held at current best. sqrt_batch_scaling flags kept true (no-op at batch=4096 but maintains plumbing).

@@ -1,0 +1,1 @@
+Activate new training-stability parameters: lr_warmup_steps=500 (linear warmup covering the first-few-minutes collapse window at ~1.7 steps/s ≈ 5 min), sqrt_batch_scaling_lr=true, sqrt_batch_scaling_weight_decay=true. Scaling flags are no-ops at batch=4096 but plumb them active for future safe batch changes.

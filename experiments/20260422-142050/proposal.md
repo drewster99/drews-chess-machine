@@ -1,0 +1,1 @@
+Bump lr_warmup_steps 100 → 500 to prevent early collapse. Baseline was collapsed (max=1.0, illegal=1.0, aboveU=0); 100 warmup steps is too short to matter. 500 is the original target before the display bug was discovered. All other params unchanged.

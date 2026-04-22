@@ -1,0 +1,1 @@
+Raise entropy_bonus 0.0025 -> 0.003. Single-knob anti-collapse step in historically-stable region; warmup=500 alone was neutral last run, so pivot to the strongest known anti-collapse lever. All other keys preserved; sqrt_batch_scaling_lr kept true; sqrt_batch_scaling_weight_decay not reintroduced.

@@ -1,0 +1,1 @@
+Bisect warmup between collapsed 500 and stalled 1500, skipping the anomalously slow 1000 zone. Set lr_warmup_steps=750 with sqrt_batch_scaling_lr and sqrt_batch_scaling_weight_decay enabled; all other params at accepted-best.

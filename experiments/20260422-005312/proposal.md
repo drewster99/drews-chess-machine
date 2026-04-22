@@ -1,0 +1,1 @@
+Nudge learning_rate 5e-5 → 6e-5 (+20%). Small increase to recover training pace at batch=4096 without touching batch-coupled knobs. Avoids noise-scaling/BN drift concerns from batch changes. Keeps K, promote threshold, and step_delay at their current accepted values.

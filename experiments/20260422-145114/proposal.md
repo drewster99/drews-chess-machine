@@ -1,0 +1,1 @@
+Stack both incremental anti-collapse levers: raise lr_warmup_steps 100->500 (slower lr ramp) AND entropy_bonus 0.0025->0.003 (stronger entropy regularizer). Each tried alone failed; pairing them is the next logical step to break the collapse trap on this tough seed. All other params preserved.

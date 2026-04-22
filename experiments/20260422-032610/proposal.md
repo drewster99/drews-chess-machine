@@ -1,0 +1,1 @@
+Lower replay_buffer_min_positions_before_training from 300000 to 150000. At regressed ~2.7x throughput, 300k pre-train fill eats most of the 600s window before SGD starts. Halving lets training begin ~2x earlier and accumulate more steps within the capped window. All other parameters (warmup=0, scaling flags false) held.

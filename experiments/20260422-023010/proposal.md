@@ -1,0 +1,1 @@
+Step away from warmup tuning (warmup sweep inconclusive/anomalous). Try orthogonal axis: sharpen self-play endgame replay by lowering self_play_target_tau 0.8 -> 0.6. Keeps lr_warmup_steps=0. Clean data point on whether sharper endgame targets reduce policy collapse without touching entropy/lr.

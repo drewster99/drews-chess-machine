@@ -1,0 +1,1 @@
+Re-run lr_warmup_steps=1000 to get a clean data point. Prior warmup=1000 trial was anomalous (only 62 steps in 600s vs normal ~340), making it uninformative. warmup=500 remained collapse-prone; warmup=1500 over-regularized. Need clean midpoint reading before deciding direction. Also enabling sqrt_batch_scaling flags=true (no-op at batch=4096 but keeps plumbing live).

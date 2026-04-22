@@ -1,0 +1,1 @@
+{"analysis_commentary":"lr 5e-5→6e-5 (just +20%) collapsed at mid-run despite 300k buffer and entropy=0.0025. Probe 1 started peaky (max=0.229, legal_mass=9e-5) and max reached 1.0 by probe ~20; max_grad_global_norm=217.6 (well above 100 alarm). Another seed-driven collapse — confirms lr sensitivity is steep even with the stability improvements.","classification":"regressed"}

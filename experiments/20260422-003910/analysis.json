@@ -1,0 +1,1 @@
+{"analysis_commentary":"Batch 2048 regresses sharply vs 4096: cand last legal_mass_sum collapsed 0.753→0.000 (illegal_min 0.235→0.996), max_prob climbed 0.215→0.568 (2.6x), and aboveU_max fell 7→0. No hard-collapse trigger (max<0.90, pEnt>5), but every learning-progress signal worsened.","classification":"regressed"}

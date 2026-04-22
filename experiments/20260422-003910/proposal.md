@@ -1,0 +1,1 @@
+Halve training_batch_size 4096→2048 to roughly double training steps/wallclock, recovering throughput lost to the 300k buffer fill. Previously collapsed at 100k buffer with entropy 0.003; now at 300k buffer + 0.0025 entropy (the stable new baseline), the larger buffer should absorb the higher update frequency without driving policy collapse.

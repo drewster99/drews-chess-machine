@@ -1,0 +1,1 @@
+Tighten grad_clip_max_norm 30→20 to suppress the collapse-inducing gradient spikes (last regression peaked gNorm=217) without perturbing the coupled {lr,batch,wd} trio. 30→10 regressed previously, so 20 is the untested middle ground — a single, isolated change aimed directly at the spike mechanism.
