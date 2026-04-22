@@ -1,0 +1,1 @@
+grad_clip_max_norm 30 -> 40. Loosen clipping to allow larger gradient updates through. 30->20 regressed in a prior trial; testing the opposite direction as the final untried axis after 9 consecutive regressions on varied knobs.

@@ -1,0 +1,1 @@
+Raise replay_ratio_target 1.0 → 1.25. The symmetric DOWN-test (0.5) was the worst collapse of the streak, suggesting the current-best sits near the lower edge of a stability region where the trainer is under-consuming fresh data. Pushing UP forces consumption slightly faster than production, biasing toward fresher, less-correlated samples.

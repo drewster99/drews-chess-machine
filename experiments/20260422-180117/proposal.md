@@ -1,0 +1,1 @@
+Increase self_play_start_tau from 2.0 to 2.5 for MORE early-ply exploration, boosting replay-buffer diversity. Opposite direction of failed target_tau=0.6 test — tests the hypothesis that MORE diversity (not less) helps prevent collapse at current config.

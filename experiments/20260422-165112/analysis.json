@@ -1,0 +1,1 @@
+{"analysis_commentary":"Both runs pass goal thresholds (illegal_mass<0.99, max<0.90). New run improves max ceiling (0.19 vs 0.29) and final max (0.07 vs 0.17), but regresses illegal_min (0.54 vs 0.49), has fewer legal moves above uniform (2 vs 5), and 2.3x higher peak grad norm (85 vs 37). Mixed trade-off within passing region.","classification":"neutral"}

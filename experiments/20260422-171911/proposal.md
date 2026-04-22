@@ -1,0 +1,1 @@
+Lower entropy_bonus 0.0025->0.002. Current best is stable local optimum; need a different axis. Entropy is the only axis that historically responded, and current warmup+scaling flags now act as a safety net that was absent the last time we tried 0.002. Less regularization, more learning signal.

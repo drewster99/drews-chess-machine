@@ -1,0 +1,1 @@
+Reduce lr_warmup_steps 100 → 75. Near-neighbors of the breakthrough value 100 have never been tested. A 25% reduction is meaningful but small enough to preserve the regime; brackets the warmup optimum on the low side.

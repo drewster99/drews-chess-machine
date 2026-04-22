@@ -1,0 +1,1 @@
+Bump learning_rate 5e-5 → 7.5e-5. With warmup now an effective 100 steps (not 500), full-lr window opens early and training is demonstrably productive. A modest 1.5x lr lift should accelerate illegal_mass reduction while entropy_bonus=0.0025 and warmup=100 retain their safety envelope.

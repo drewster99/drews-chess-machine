@@ -1,0 +1,1 @@
+Raise draw_penalty 0.1 -> 0.15. Untouched axis, orthogonal to fragile policy-side params. Draws dominate 70-90% of arena games, so sharpening the value-target signal against draws may improve value-head learning without disturbing the current best entropy/lr/K/warmup regime.

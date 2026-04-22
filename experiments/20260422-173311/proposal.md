@@ -1,0 +1,1 @@
+Explore untried value-loss axis: bump polarization exponent K from 5 to 6. Sharper value targets may improve value-head discrimination without perturbing the stable policy-entropy/lr/warmup/min_pos basin. All other parameters held at current best.

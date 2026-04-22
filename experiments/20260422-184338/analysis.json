@@ -1,0 +1,1 @@
+{"analysis_commentary":"weight_decay 1e-4→5e-5 collapsed: max reached 1.0 by mid-run, illegal=1.0 throughout latter half. Less weight-shrinkage left insufficient implicit regularization to pair with entropy=0.0025. Confirms current 1e-4 is near the minimum for this regime. Regressed.","classification":"regressed"}

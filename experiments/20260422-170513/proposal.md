@@ -1,0 +1,1 @@
+Lower min_positions_before_training from 250k to 150k to start SGD earlier, yielding more gradient steps per 10-min window while keeping the stable entropy/lr/warmup baseline that is already learning monotonically.

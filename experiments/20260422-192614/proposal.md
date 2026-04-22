@@ -1,0 +1,1 @@
+Reduce training_batch_size from 4096 to 3072 (0.75x). With sqrt_batch_scaling_lr=true, effective lr auto-scales to ~4.33e-5. Single-knob move preserving scale coupling; yields slightly noisier gradients and more steps per window, potentially improving stability at the current local maximum.

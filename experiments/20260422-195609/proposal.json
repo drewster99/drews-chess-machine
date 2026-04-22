@@ -1,0 +1,33 @@
+{
+  "change_details": "Decrease replay_ratio_target from 1.0 to 0.5. We are stuck at a fragile local optimum with policy collapse symptoms (illegal_mass_min=0.49, max=0.29, above_uniform max=5) and every nearby single-axis perturbation on LR/batch/entropy/weight-decay/clip/tau has regressed. The replay-ratio axis is completely untested and is the most principled knob for the collapse mode: at ratio=1.0 each self-play position is consumed by a training step roughly once, meaning with 32 concurrent workers the trainer is chewing heavily on recent on-policy data, which is the classic recipe for the policy narrowing onto its own current preferences and losing mass on unexplored legal moves. Halving the target to 0.5 doubles the self-play-to-training throughput ratio, giving the replay buffer a much more diverse, less self-correlated distribution per gradient step without touching the gradient itself (LR/entropy/clip all preserved). If it regresses we learn the axis is monotone-up and can try 1.25/1.5 next.",
+  "parameters": {
+    "entropy_bonus": 0.0025,
+    "grad_clip_max_norm": 30,
+    "weight_decay": 0.0001,
+    "K": 5,
+    "learning_rate": 0.00005,
+    "sqrt_batch_scaling_lr": true,
+    "lr_warmup_steps": 100,
+    "draw_penalty": 0.1,
+    "self_play_start_tau": 2,
+    "self_play_target_tau": 0.8,
+    "self_play_tau_decay_per_ply": 0.03,
+    "arena_start_tau": 2,
+    "arena_target_tau": 0.5,
+    "arena_tau_decay_per_ply": 0.01,
+    "replay_ratio_target": 0.5,
+    "replay_ratio_auto_adjust": true,
+    "self_play_workers": 32,
+    "training_step_delay_ms": 0,
+    "training_batch_size": 4096,
+    "replay_buffer_capacity": 500000,
+    "replay_buffer_min_positions_before_training": 250000,
+    "arena_promote_threshold": 0.55,
+    "arena_games_per_tournament": 100,
+    "arena_auto_interval_sec": 300,
+    "candidate_probe_interval_sec": 15,
+    "training_time_limit": 3600
+  },
+  "training_time_seconds": 600,
+  "training_time_rationale": "pin 10-min cap"
+}

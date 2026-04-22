@@ -1,0 +1,1 @@
+{"analysis_commentary":"Final-state worse on every goal metric: illegal 0.50→0.83, legal_mass 0.50→0.17, max_over_run 0.29→0.71, grad_norm 36.8→60.9. Mid-run peak (illegal 0.26) briefly beat baseline but training unlearned it. No hard collapse (max<0.9), but instability and regression are clear. lr=7.5e-5 too aggressive at this warmup/entropy.","classification":"regressed"}

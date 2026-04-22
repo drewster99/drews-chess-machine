@@ -1,0 +1,1 @@
+{"analysis_commentary":"entropy 0.0025→0.002 collapsed: max=1.0 by t=330, illegal=1.0 throughout latter half, aboveU=0. Grad norm stayed low (23.6) so not a gradient explosion — slow drift into one-hot saturation with insufficient entropy pressure to pull back. Confirms 0.0025 is the lower edge of the stable basin for this config. Regressed.","classification":"regressed"}

@@ -1,0 +1,1 @@
+{"analysis_commentary":"grad_clip_max_norm 30→40 collapsed. max reached 1.0 by mid-run, grad_norm peaked at 71 (below 100 alarm because clip is higher). Looser clipping let peaky updates through. Both directions from 30 have now regressed (20 and 40), confirming 30 as optimal.","classification":"regressed"}

@@ -1,0 +1,1 @@
+Pair lr bump with more entropy: lr 5e-5→7.5e-5 for faster learning (showed illegal=0.26 mid-run last try), entropy 0.0025→0.003 to dampen the instability that unlearned it. Two coupled knobs: speedup plus regularization.

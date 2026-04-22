@@ -1,0 +1,1 @@
+Raise self_play_tau_decay_per_ply from 0.03 to 0.05. Faster in-game tau ramp-down (start 2.0 → target 0.8) reaches focused play sooner, shifting replay distribution toward more decisive positions. Orthogonal to the mapped SGD axes (lr/K/warmup/wd/entropy/draw). All other params unchanged.

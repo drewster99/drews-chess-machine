@@ -1,0 +1,1 @@
+{"analysis_commentary":"self_play_tau_decay_per_ply 0.03→0.05 collapsed. Faster in-game tau decay reduced replay diversity (same root cause as target_tau=0.6 failure). max=1.0 by mid-run, grad_norm=185 (alarm), value saturated to 1.0. Regressed. Another edge mapped: diversity-reducing changes hurt this regime.","classification":"regressed"}

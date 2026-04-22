@@ -1,0 +1,1 @@
+Halve weight_decay from 1e-4 to 5e-5. Opposite direction of previously-regressed 2e-4 bump; less weight-shrinkage pressure may let policy learn faster without triggering under-reg collapse seen at entropy 0.002. Orthogonal, small step on a genuinely-untried axis.
