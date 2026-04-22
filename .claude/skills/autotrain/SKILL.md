@@ -286,7 +286,6 @@ Print a one-line summary: `autotrain <timestamp>: ACCEPTED|REJECTED — <change_
   "K": 6.0,
   "learning_rate": 7.5e-5,
   "sqrt_batch_scaling_lr": false,
-  "sqrt_batch_scaling_weight_decay": false,
   "lr_warmup_steps": 0,
   "draw_penalty": 0.15,
   "self_play_start_tau": 1.2,

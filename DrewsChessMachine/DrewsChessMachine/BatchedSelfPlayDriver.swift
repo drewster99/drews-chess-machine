@@ -268,13 +268,28 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             // Replay-ratio self-play throttle. Applied after a game
             // has fully flushed (recordCompletedGame + recordGame) and
             // *before* the next `beginNewGame`, so no partial-game
-            // state ever sits suspended across the sleep. Per-slot
-            // sleep means N workers at 100 ms each shave ~N × 10
-            // games/sec of aggregate production, which is the lever
-            // the controller wants when training can't keep up. A
-            // zero value (controller in the training-slowdown regime,
-            // or no controller supplied) skips the sleep entirely so
-            // this adds no overhead in the common case.
+            // state ever sits suspended across the sleep.
+            //
+            // Coupling note: while this slot sleeps between games,
+            // it is not submitting to the batcher. The other N-1
+            // slots will continue hitting the batcher's barrier
+            // (which still expects N submissions because expected
+            // slot count is unchanged), so they park at the barrier
+            // until this slot resumes and makes its first submission
+            // of the next game. Net effect: one slot's between-game
+            // sleep becomes a brief all-N-slot pause at the barrier,
+            // amplifying the production-rate reduction. This is
+            // benign — the controller's feedback loop converges on
+            // whatever sleep value actually produces the target
+            // ratio, regardless of coupling — and it is not a
+            // deadlock risk: cancellation interrupts `Task.sleep`
+            // immediately, and arena-pause / session-stop both drop
+            // `expectedSlotCount` to 0 via `stopAll` before awaiting
+            // slot exits, which releases any parked barrier slots.
+            //
+            // A zero value (controller in the training-slowdown
+            // regime, or no controller supplied) skips the sleep
+            // entirely so this adds no overhead in the common case.
             if let selfPlayDelayMs = replayRatioController?.computedSelfPlayDelayMs,
                selfPlayDelayMs > 0 {
                 try? await Task.sleep(for: .milliseconds(selfPlayDelayMs))

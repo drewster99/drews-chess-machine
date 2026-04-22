@@ -2241,17 +2241,16 @@ struct ContentView: View {
     /// each step. The stored `trainerLearningRate` remains the base
     /// value at the 4096 pivot. Persisted so the user's preference
     /// survives restarts. See `ChessTrainer.sqrtBatchScalingForLR`.
+    /// Weight decay is intentionally not batch-scaled (standard
+    /// AdamW convention is to keep wd fixed across batch sizes).
     @AppStorage("sqrtBatchScalingForLR")
     private var sqrtBatchScalingForLR: Bool = true
-    /// Same rule applied independently to weight decay.
-    @AppStorage("sqrtBatchScalingForWeightDecay")
-    private var sqrtBatchScalingForWeightDecay: Bool = true
     /// Linear LR warmup length, in SGD steps. 0 disables warmup.
     /// See `ChessTrainer.lrWarmupSteps` for the precise per-step
     /// multiplier; the trainer composes this multiplicatively with
     /// any sqrt-batch scaling.
     @AppStorage("lrWarmupSteps")
-    private var lrWarmupSteps: Int = 500
+    private var lrWarmupSteps: Int = 100
     @AppStorage("entropyRegularizationCoeff")
     private var entropyRegularizationCoeff: Double = Double(entropyRegularizationCoeffDefault)
     /// Bootstrap-phase draw penalty. Drawn games normally contribute
@@ -2476,13 +2475,16 @@ struct ContentView: View {
                 SessionLogger.shared.log("[PARAM] sqrtBatchScalingForLR: \(oldValue) -> \(newValue)")
                 trainer?.sqrtBatchScalingForLR = newValue
             }
-            .onChange(of: sqrtBatchScalingForWeightDecay) { oldValue, newValue in
-                SessionLogger.shared.log("[PARAM] sqrtBatchScalingForWeightDecay: \(oldValue) -> \(newValue)")
-                trainer?.sqrtBatchScalingForWeightDecay = newValue
-            }
             .onChange(of: lrWarmupSteps) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] lrWarmupSteps: \(oldValue) -> \(newValue)")
                 trainer?.lrWarmupSteps = newValue
+                // Re-sync the TextField's mirror state so the UI
+                // reflects CLI-driven overrides (applyCliConfigOverrides
+                // writes @AppStorage AFTER the view's onAppear has
+                // already copied the pre-override value into the edit
+                // text). Without this, the training loop sees the
+                // correct value but the field shows the stale one.
+                lrWarmupStepsEditText = String(newValue)
             }
             .onChange(of: replayRatioAutoAdjust) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] replayRatioAutoAdjust: \(oldValue) -> \(newValue)")
@@ -3196,9 +3198,6 @@ struct ContentView: View {
                                                         weightDecayC
                                                     )
                                                 }
-                                            Toggle("√batch", isOn: $sqrtBatchScalingForWeightDecay)
-                                                .toggleStyle(.checkbox)
-                                                .help("Scale weight_decay × sqrt(batch_size / 4096) each step. Independent of the LR √batch toggle. Base weight decay above is the value at the 4096 pivot.")
                                             Text("K")
                                                 .foregroundStyle(.secondary)
                                             TextField("K", text: $policyScaleKEditText)
@@ -5432,7 +5431,6 @@ struct ContentView: View {
         if let v = cfg.K { record("K", policyScaleK, v); policyScaleK = v }
         if let v = cfg.learningRate { record("learning_rate", trainerLearningRate, v); trainerLearningRate = v }
         if let v = cfg.sqrtBatchScalingForLR { record("sqrt_batch_scaling_lr", sqrtBatchScalingForLR, v); sqrtBatchScalingForLR = v }
-        if let v = cfg.sqrtBatchScalingForWeightDecay { record("sqrt_batch_scaling_weight_decay", sqrtBatchScalingForWeightDecay, v); sqrtBatchScalingForWeightDecay = v }
         if let v = cfg.lrWarmupSteps, v >= 0 { record("lr_warmup_steps", lrWarmupSteps, v); lrWarmupSteps = v }
         if let v = cfg.drawPenalty { record("draw_penalty", drawPenalty, v); drawPenalty = v }
         if let v = cfg.selfPlayStartTau { record("self_play_start_tau", spStartTau, v); spStartTau = v }
@@ -6922,7 +6920,6 @@ struct ContentView: View {
             trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
             trainer.policyScaleK = Float(policyScaleK)
             trainer.sqrtBatchScalingForLR = sqrtBatchScalingForLR
-            trainer.sqrtBatchScalingForWeightDecay = sqrtBatchScalingForWeightDecay
             trainer.lrWarmupSteps = lrWarmupSteps
             return trainer
         }
@@ -6935,7 +6932,6 @@ struct ContentView: View {
                 gradClipMaxNorm: Float(gradClipMaxNorm),
                 policyScaleK: Float(policyScaleK),
                 sqrtBatchScalingForLR: sqrtBatchScalingForLR,
-                sqrtBatchScalingForWeightDecay: sqrtBatchScalingForWeightDecay,
                 lrWarmupSteps: lrWarmupSteps
             )
             trainer = t
@@ -7322,16 +7318,16 @@ struct ContentView: View {
                 } else {
                     trainer.policyScaleK = Float(policyScaleK)
                 }
-                // Sqrt-batch scaling flags and LR warmup length aren't
-                // part of the session schema — they live in @AppStorage
-                // and persist across launches already, so we just push
-                // whatever the user had configured globally into the
-                // fresh trainer. The trainer's internal completed-step
-                // counter is seeded from the session's persisted
-                // `trainingSteps` so warmup scaling resumes mid-session
-                // instead of restarting from zero.
+                // Sqrt-batch LR scaling flag and LR warmup length
+                // aren't part of the session schema — they live in
+                // @AppStorage and persist across launches already, so
+                // we just push whatever the user had configured
+                // globally into the fresh trainer. The trainer's
+                // internal completed-step counter is seeded from the
+                // session's persisted `trainingSteps` so warmup
+                // scaling resumes mid-session instead of restarting
+                // from zero.
                 trainer.sqrtBatchScalingForLR = sqrtBatchScalingForLR
-                trainer.sqrtBatchScalingForWeightDecay = sqrtBatchScalingForWeightDecay
                 trainer.lrWarmupSteps = lrWarmupSteps
                 trainer.completedTrainSteps = rs.trainingSteps
                 // Sampling schedule — TauConfigCodable is non-Optional on
@@ -7353,7 +7349,6 @@ struct ContentView: View {
                 trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
                 trainer.policyScaleK = Float(policyScaleK)
                 trainer.sqrtBatchScalingForLR = sqrtBatchScalingForLR
-                trainer.sqrtBatchScalingForWeightDecay = sqrtBatchScalingForWeightDecay
                 trainer.lrWarmupSteps = lrWarmupSteps
             }
             var initialTrainingStats = TrainingRunStats()
@@ -8076,7 +8071,7 @@ struct ContentView: View {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, drawPen, weightDec, gradClip, kScale, sqrtLR, sqrtWD, warmupSteps, completedSteps) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, drawPen, weightDec, gradClip, kScale, sqrtLR, warmupSteps, completedSteps) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -8087,7 +8082,6 @@ struct ContentView: View {
                                 trainer.gradClipMaxNorm,
                                 trainer.policyScaleK,
                                 trainer.sqrtBatchScalingForLR,
-                                trainer.sqrtBatchScalingForWeightDecay,
                                 trainer.lrWarmupSteps,
                                 trainer.completedTrainSteps
                             )
@@ -8173,11 +8167,10 @@ struct ContentView: View {
                                                 parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", sessionPromoteThreshold)) arenaGames=\(sessionTournamentGames) workers=\(workerN)"
-                        let decayStr = String(format: "%.0e", weightDec) + (sqrtWD ? "·√b" : "")
                         let regStr = String(
-                            format: "clip=%.1f decay=%@ ent=%.1e drawPen=%.3f K=%.2f",
+                            format: "clip=%.1f decay=%.0e ent=%.1e drawPen=%.3f K=%.2f",
                             gradClip,
-                            decayStr,
+                            weightDec,
                             entropyCoeff,
                             drawPen,
                             kScale

@@ -27,9 +27,9 @@ struct CliTrainingConfig: Decodable, Sendable {
     /// Adam-family LR rule: when true, the optimizer feeds
     /// `learning_rate * sqrt(batch_size / 4096)` each step. The
     /// stored `learning_rate` stays the base value at the 4096 pivot.
+    /// Weight decay is intentionally NOT batch-scaled (standard
+    /// AdamW convention is to keep wd fixed across batch sizes).
     var sqrtBatchScalingForLR: Bool? = nil
-    /// Same rule applied to `weight_decay`, controlled independently.
-    var sqrtBatchScalingForWeightDecay: Bool? = nil
     /// Linear LR warmup length in training steps. Per-step multiplier
     /// is `min(1, completedTrainSteps / lr_warmup_steps)`. Zero
     /// disables warmup entirely (full LR from step 0).
@@ -83,7 +83,6 @@ struct CliTrainingConfig: Decodable, Sendable {
         case learningRate = "learning_rate"
         case drawPenalty = "draw_penalty"
         case sqrtBatchScalingForLR = "sqrt_batch_scaling_lr"
-        case sqrtBatchScalingForWeightDecay = "sqrt_batch_scaling_weight_decay"
         case lrWarmupSteps = "lr_warmup_steps"
 
         case selfPlayStartTau = "self_play_start_tau"
@@ -140,7 +139,6 @@ struct CliTrainingConfig: Decodable, Sendable {
         add("learning_rate", learningRate)
         add("draw_penalty", drawPenalty)
         add("sqrt_batch_scaling_lr", sqrtBatchScalingForLR)
-        add("sqrt_batch_scaling_weight_decay", sqrtBatchScalingForWeightDecay)
         add("lr_warmup_steps", lrWarmupSteps)
         add("self_play_start_tau", selfPlayStartTau)
         add("self_play_target_tau", selfPlayTargetTau)

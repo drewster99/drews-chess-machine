@@ -38,7 +38,6 @@ BOUNDS = {
     "replay_ratio_target":                        (1e-3,       1e4,       False),
     "replay_ratio_auto_adjust":                   (None,       None,      False),  # boolean, handled specially
     "sqrt_batch_scaling_lr":                      (None,       None,      False),  # boolean, handled specially
-    "sqrt_batch_scaling_weight_decay":            (None,       None,      False),  # boolean, handled specially
     "lr_warmup_steps":                            (0,          1000000,   True),
     "self_play_workers":                          (1,          256,       True),
     "training_step_delay_ms":                     (0,          600000,    True),
@@ -61,7 +60,6 @@ def validate(params):
     for bool_key in (
         "replay_ratio_auto_adjust",
         "sqrt_batch_scaling_lr",
-        "sqrt_batch_scaling_weight_decay",
     ):
         if params.get(bool_key) is not None and not isinstance(params[bool_key], bool):
             violations.append(
