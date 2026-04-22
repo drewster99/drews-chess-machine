@@ -845,11 +845,46 @@ final class ChessTrainer: @unchecked Sendable {
     static let policyScaleKDefault: Float = 5.0
 
     var learningRate: Float
+    /// Base batch size at which `learningRate` and `weightDecayC`
+    /// are taken as-is when sqrt-batch scaling is enabled. A step
+    /// with `batchSize == sqrtScaleBaseBatchSize` multiplies each
+    /// scaled value by exactly 1.0, so 4096 is the no-op pivot and
+    /// the UI-displayed values are the "base" values at that pivot.
+    /// Smaller batches scale down by `sqrt(batchSize/4096)` and
+    /// larger batches scale up by the same rule — the standard
+    /// Adam-family LR rule that preserves effective per-sample
+    /// update magnitude across batch-size changes.
+    static let sqrtScaleBaseBatchSize: Int = 4096
+    /// When true, `learningRate` as fed to the optimizer each step
+    /// is `learningRate * sqrt(batchSize / sqrtScaleBaseBatchSize)`.
+    /// When false, LR is fed verbatim. The property itself always
+    /// stores the user-facing base value regardless of this flag —
+    /// scaling is applied at write time, never persisted back. Live-
+    /// editable; a flip takes effect on the next training step.
+    var sqrtBatchScalingForLR: Bool
+    /// Linear warmup length for the learning rate. The LR fed to
+    /// the optimizer each step is multiplied by
+    /// `min(1, completedTrainSteps / lrWarmupSteps)` — so step 0
+    /// uses zero LR (pure warmup) and step `lrWarmupSteps` (and
+    /// later) uses the full configured LR. Composes multiplicatively
+    /// with `sqrtBatchScalingForLR`. Zero disables warmup entirely
+    /// (multiplier is a constant 1.0). Live-editable; a change takes
+    /// effect on the next training step and is evaluated against
+    /// the current step count, so lowering it mid-session can
+    /// instantly end warmup, while raising it re-engages warmup for
+    /// the remaining `lrWarmupSteps - completedTrainSteps` steps.
+    var lrWarmupSteps: Int
     var entropyRegularizationCoeff: Float
     /// Live weight-decay coefficient. Fed into the training graph
     /// every step via a scalar placeholder, so edits take effect on
     /// the next step without graph rebuild.
     var weightDecayC: Float
+    /// When true, `weightDecayC` as fed to the optimizer each step
+    /// is `weightDecayC * sqrt(batchSize / sqrtScaleBaseBatchSize)`.
+    /// Independent of `sqrtBatchScalingForLR` — the user controls
+    /// each separately. Same "applied at write time, never
+    /// persisted" discipline.
+    var sqrtBatchScalingForWeightDecay: Bool
     /// Live gradient-clip max norm. Fed via scalar placeholder each
     /// step.
     var gradClipMaxNorm: Float
@@ -874,6 +909,16 @@ final class ChessTrainer: @unchecked Sendable {
     /// self-limiting: it bootstraps while v is uninformed and
     /// diminishes as v converges.
     var drawPenalty: Float
+    /// Count of successfully-completed SGD steps this trainer has
+    /// run since construction (or since a session-resume `seed`).
+    /// Mutated only inside `executionQueue`-serialized contexts
+    /// (inside `runPreparedStep`) after a graph run returns without
+    /// throwing. Read by `buildFeeds` to compute the warmup
+    /// multiplier before each step is fed. Exposed to callers via
+    /// `completedTrainSteps` so a session resume can pre-seed it
+    /// to the persisted `trainingSteps` value — warmup then picks
+    /// up mid-session instead of restarting from zero.
+    private var _completedTrainSteps: Int = 0
     private let executionQueue = DispatchQueue(label: "drewschess.chesstrainer.serial")
 
     /// Optional stable identity for the trainer's internal network.
@@ -1006,7 +1051,10 @@ final class ChessTrainer: @unchecked Sendable {
         drawPenalty: Float = 0.1,
         weightDecayC: Float = ChessTrainer.weightDecayCDefault,
         gradClipMaxNorm: Float = ChessTrainer.gradClipMaxNormDefault,
-        policyScaleK: Float = ChessTrainer.policyScaleKDefault
+        policyScaleK: Float = ChessTrainer.policyScaleKDefault,
+        sqrtBatchScalingForLR: Bool = true,
+        sqrtBatchScalingForWeightDecay: Bool = true,
+        lrWarmupSteps: Int = 500
     ) throws {
         self.learningRate = learningRate
         self.entropyRegularizationCoeff = entropyRegularizationCoeff
@@ -1014,6 +1062,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.weightDecayC = weightDecayC
         self.gradClipMaxNorm = gradClipMaxNorm
         self.policyScaleK = policyScaleK
+        self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
+        self.sqrtBatchScalingForWeightDecay = sqrtBatchScalingForWeightDecay
+        self.lrWarmupSteps = lrWarmupSteps
         let net = try ChessNetwork(bnMode: .training)
         self.network = net
         let built = try Self.buildTrainingOps(network: net)
@@ -1965,6 +2016,17 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
+    /// Observed / seeded completed-step count. Getter hops through
+    /// `executionQueue.sync` so a UI or session-save-path reader
+    /// sees the atomic, post-increment value. Setter is the session-
+    /// resume path: assigning a non-negative value overwrites the
+    /// counter so warmup scaling resumes mid-session. Writes while
+    /// a training step is running are serialized by the queue.
+    var completedTrainSteps: Int {
+        get { executionQueue.sync { _completedTrainSteps } }
+        set { executionQueue.async { self._completedTrainSteps = max(0, newValue) } }
+    }
+
     private func internalTrainStep(batchSize: Int) throws -> TrainStepTiming {
         let totalStart = CFAbsoluteTimeGetCurrent()
 
@@ -2458,12 +2520,33 @@ final class ChessTrainer: @unchecked Sendable {
             strideBytes: nil
         )
 
-        // Write the current learning rate into the scalar feed.
-        var lr = learningRate
+        // Write the current learning rate and weight decay into the
+        // scalar feeds. Two independent multipliers can kick in on
+        // the LR side: sqrt-batch scaling (matches Adam-family
+        // batch-size rules around the 4096 pivot) and linear warmup
+        // over `lrWarmupSteps` steps (LR lerps from 0 → base over
+        // that count, evaluated against `_completedTrainSteps`).
+        // They compose multiplicatively — e.g. step 250 with a 500-
+        // step warmup at batch=2048 is `lr * 0.707 * 0.5 = lr * 0.354`.
+        // Weight decay gets the sqrt-batch scaling only (warmup is
+        // conventionally LR-specific); both flags read the same base
+        // properties, so the UI / parameters.json / persistence see
+        // only the base values regardless of per-step multipliers.
+        let sqrtBatchScale: Float = Float(
+            sqrt(Double(batchSize) / Double(Self.sqrtScaleBaseBatchSize))
+        )
+        let warmupMul: Float
+        if lrWarmupSteps > 0 {
+            warmupMul = Float(min(1.0, Double(_completedTrainSteps) / Double(lrWarmupSteps)))
+        } else {
+            warmupMul = 1.0
+        }
+        var lr = sqrtBatchScalingForLR ? learningRate * sqrtBatchScale : learningRate
+        lr *= warmupMul
         lrNDArray.writeBytes(&lr, strideBytes: nil)
         var entropyCoeff = entropyRegularizationCoeff
         entropyCoeffNDArray.writeBytes(&entropyCoeff, strideBytes: nil)
-        var weightDecay = weightDecayC
+        var weightDecay = sqrtBatchScalingForWeightDecay ? weightDecayC * sqrtBatchScale : weightDecayC
         weightDecayNDArray.writeBytes(&weightDecay, strideBytes: nil)
         var gradClip = gradClipMaxNorm
         gradClipMaxNormNDArray.writeBytes(&gradClip, strideBytes: nil)
@@ -2767,6 +2850,15 @@ final class ChessTrainer: @unchecked Sendable {
         }
 
         let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
+
+        // Count a successfully-completed SGD step. Incremented only
+        // once per call to `runPreparedStep`, after the graph has
+        // returned and readback has succeeded — a thrown
+        // `nonFiniteLoss` above exits before this point, so failed
+        // steps don't advance warmup. Always inside an
+        // `executionQueue`-serialized context, so no additional
+        // synchronization is needed.
+        _completedTrainSteps += 1
 
         return TrainStepTiming(
             dataPrepMs: prepMs,

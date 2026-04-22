@@ -37,6 +37,9 @@ BOUNDS = {
     "arena_tau_decay_per_ply":                    (0.0,        10.0,      False),
     "replay_ratio_target":                        (1e-3,       1e4,       False),
     "replay_ratio_auto_adjust":                   (None,       None,      False),  # boolean, handled specially
+    "sqrt_batch_scaling_lr":                      (None,       None,      False),  # boolean, handled specially
+    "sqrt_batch_scaling_weight_decay":            (None,       None,      False),  # boolean, handled specially
+    "lr_warmup_steps":                            (0,          1000000,   True),
     "self_play_workers":                          (1,          256,       True),
     "training_step_delay_ms":                     (0,          600000,    True),
     "training_batch_size":                        (1,          524288,    True),
@@ -55,11 +58,15 @@ def validate(params):
     if not isinstance(params, dict):
         return ["top-level value is not a JSON object"]
 
-    if params.get("replay_ratio_auto_adjust") is not None and \
-       not isinstance(params["replay_ratio_auto_adjust"], bool):
-        violations.append(
-            f"replay_ratio_auto_adjust: must be boolean, got {type(params['replay_ratio_auto_adjust']).__name__}"
-        )
+    for bool_key in (
+        "replay_ratio_auto_adjust",
+        "sqrt_batch_scaling_lr",
+        "sqrt_batch_scaling_weight_decay",
+    ):
+        if params.get(bool_key) is not None and not isinstance(params[bool_key], bool):
+            violations.append(
+                f"{bool_key}: must be boolean, got {type(params[bool_key]).__name__}"
+            )
 
     for key, (lo, hi, must_int) in BOUNDS.items():
         if key not in params:

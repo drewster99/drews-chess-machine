@@ -47,6 +47,16 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     /// inside `slotLoop` so UI edits take effect on the next game a
     /// slot starts, without killing the long-lived slot task.
     let scheduleBox: SamplingScheduleBox
+    /// Optional source of the self-play per-game sleep. When the
+    /// replay-ratio auto-adjuster decides training is the bottleneck
+    /// (GPU overhead exceeds the target cycle even at zero training
+    /// delay), it flips the sign of its signed delay state and asks
+    /// self-play to slow down instead. The slot loop reads
+    /// `controller.computedSelfPlayDelayMs` at the bottom of each
+    /// game and sleeps for that many ms before starting the next
+    /// game. `nil` (and zero) mean no extra delay — preserves the
+    /// original "as fast as the batcher allows" behavior.
+    let replayRatioController: ReplayRatioController?
     private let liveSlots = LiveSlotSet()
     private var nextSlotID: Int = 0
 
@@ -60,7 +70,8 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         countBox: WorkerCountBox,
         pauseGate: WorkerPauseGate,
         gameWatcher: GameWatcher?,
-        scheduleBox: SamplingScheduleBox
+        scheduleBox: SamplingScheduleBox,
+        replayRatioController: ReplayRatioController? = nil
     ) {
         self.batcher = batcher
         self.buffer = buffer
@@ -70,6 +81,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         self.pauseGate = pauseGate
         self.gameWatcher = gameWatcher
         self.scheduleBox = scheduleBox
+        self.replayRatioController = replayRatioController
     }
 
     // MARK: - Driver Loop
@@ -252,6 +264,21 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 result: result
             )
             diversityTracker.recordGame(moves: machine.moveHistory)
+
+            // Replay-ratio self-play throttle. Applied after a game
+            // has fully flushed (recordCompletedGame + recordGame) and
+            // *before* the next `beginNewGame`, so no partial-game
+            // state ever sits suspended across the sleep. Per-slot
+            // sleep means N workers at 100 ms each shave ~N × 10
+            // games/sec of aggregate production, which is the lever
+            // the controller wants when training can't keep up. A
+            // zero value (controller in the training-slowdown regime,
+            // or no controller supplied) skips the sleep entirely so
+            // this adds no overhead in the common case.
+            if let selfPlayDelayMs = replayRatioController?.computedSelfPlayDelayMs,
+               selfPlayDelayMs > 0 {
+                try? await Task.sleep(for: .milliseconds(selfPlayDelayMs))
+            }
         }
     }
 }

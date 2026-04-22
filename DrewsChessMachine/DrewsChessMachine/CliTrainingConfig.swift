@@ -24,6 +24,16 @@ struct CliTrainingConfig: Decodable, Sendable {
     var K: Double? = nil
     var learningRate: Double? = nil
     var drawPenalty: Double? = nil
+    /// Adam-family LR rule: when true, the optimizer feeds
+    /// `learning_rate * sqrt(batch_size / 4096)` each step. The
+    /// stored `learning_rate` stays the base value at the 4096 pivot.
+    var sqrtBatchScalingForLR: Bool? = nil
+    /// Same rule applied to `weight_decay`, controlled independently.
+    var sqrtBatchScalingForWeightDecay: Bool? = nil
+    /// Linear LR warmup length in training steps. Per-step multiplier
+    /// is `min(1, completedTrainSteps / lr_warmup_steps)`. Zero
+    /// disables warmup entirely (full LR from step 0).
+    var lrWarmupSteps: Int? = nil
 
     // MARK: - Self-play sampling schedule
 
@@ -72,6 +82,9 @@ struct CliTrainingConfig: Decodable, Sendable {
         case K
         case learningRate = "learning_rate"
         case drawPenalty = "draw_penalty"
+        case sqrtBatchScalingForLR = "sqrt_batch_scaling_lr"
+        case sqrtBatchScalingForWeightDecay = "sqrt_batch_scaling_weight_decay"
+        case lrWarmupSteps = "lr_warmup_steps"
 
         case selfPlayStartTau = "self_play_start_tau"
         case selfPlayTargetTau = "self_play_target_tau"
@@ -126,6 +139,9 @@ struct CliTrainingConfig: Decodable, Sendable {
         add("K", K)
         add("learning_rate", learningRate)
         add("draw_penalty", drawPenalty)
+        add("sqrt_batch_scaling_lr", sqrtBatchScalingForLR)
+        add("sqrt_batch_scaling_weight_decay", sqrtBatchScalingForWeightDecay)
+        add("lr_warmup_steps", lrWarmupSteps)
         add("self_play_start_tau", selfPlayStartTau)
         add("self_play_target_tau", selfPlayTargetTau)
         add("self_play_tau_decay_per_ply", selfPlayTauDecayPerPly)
