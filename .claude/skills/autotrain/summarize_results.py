@@ -163,11 +163,31 @@ def summarize(data):
     def pick(src, *keys):
         return {k: src.get(k) for k in keys if k in src} if src else {}
 
+    # Derived budget — hints for the proposer about per-iteration scale
+    # so it doesn't pick values incompatible with the 10-min training
+    # window (e.g. lr_warmup_steps=500 when only ~330 steps fit).
+    # Bounds are advisory; enforced in validate_params.py.
+    training_steps = data.get("training_steps")
+    total_secs = data.get("total_training_seconds")
+    if isinstance(training_steps, int) and training_steps > 0:
+        # Warmup longer than ~half the window means the configured lr is
+        # never reached. Cap the proposer's recommended warmup at 1/3 of
+        # steps so the post-warmup plateau is visibly exercised.
+        derived_budget = {
+            "training_steps_per_window": training_steps,
+            "recommended_lr_warmup_max": max(1, training_steps // 3),
+            "steps_per_sec": round(training_steps / total_secs, 3)
+                if isinstance(total_secs, (int, float)) and total_secs > 0 else None,
+        }
+    else:
+        derived_budget = None
+
     return {
         "session_id": data.get("session_id"),
         "build_number": build_info,
         "total_training_seconds": data.get("total_training_seconds"),
         "training_steps": data.get("training_steps"),
+        "derived_budget": derived_budget,
         "positions_trained": data.get("positions_trained"),
         "self_play_games_final": last_stat.get("self_play_games"),
         "buffer_count_final": last_stat.get("buffer_count"),

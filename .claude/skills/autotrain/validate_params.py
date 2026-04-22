@@ -3,13 +3,18 @@
 validate_params.py — sanity-bound check for an autotrain parameters.json.
 
 Usage:
-    python3 validate_params.py <path-to-parameters.json>
+    python3 validate_params.py <path-to-parameters.json> [--latest-result <path>]
 
 Exits 0 if every declared parameter is within wide-but-finite bounds.
 Exits 1 and prints violations on stderr otherwise. The point is not to
 gatekeep parameter tuning — it's to catch agent hallucinations (e.g.
 `learning_rate: 5.0`, `replay_buffer_capacity: 1e9`) before we waste a
 training run on them. Bounds are intentionally generous.
+
+When `--latest-result <path>` is passed, cross-checks parameters against
+the latest run's realized budget (e.g. `lr_warmup_steps` must be at most
+half of `training_steps` from the latest run, or the warmup consumes the
+entire training window and the post-warmup lr is never exercised).
 
 Unknown keys are accepted silently (new params can be added without
 editing this script). Missing known keys are accepted (if the app
@@ -51,7 +56,7 @@ BOUNDS = {
 }
 
 
-def validate(params):
+def validate(params, latest_result=None):
     violations = []
 
     if not isinstance(params, dict):
@@ -92,14 +97,56 @@ def validate(params):
             f"replay_buffer_min_positions_before_training ({floor}) > replay_buffer_capacity ({cap})"
         )
 
+    # Budget-aware cross-check against the latest run's realized step count.
+    # `lr_warmup_steps` larger than half the window's training_steps means
+    # the ramp-up never finishes, so the configured learning_rate is never
+    # actually exercised. Reject anything more aggressive than that.
+    if latest_result is not None:
+        latest_steps = latest_result.get("training_steps")
+        warmup = params.get("lr_warmup_steps")
+        if (
+            isinstance(latest_steps, int) and latest_steps > 0
+            and isinstance(warmup, int) and warmup > 0
+            and warmup > latest_steps // 2
+        ):
+            violations.append(
+                f"lr_warmup_steps ({warmup}) exceeds 50% of latest run's "
+                f"training_steps ({latest_steps}); the lr ramp would never finish "
+                f"within a run of that size. Use at most {latest_steps // 3} "
+                f"(advisory target; hard cap is {latest_steps // 2})."
+            )
+
     return violations
 
 
 def main(argv):
-    if len(argv) != 2:
-        print("usage: validate_params.py <path-to-parameters.json>", file=sys.stderr)
+    # Parse args: first positional is params path, optional --latest-result <path>.
+    params_path = None
+    latest_result_path = None
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--latest-result":
+            if i + 1 >= len(argv):
+                print("--latest-result requires a path argument", file=sys.stderr)
+                return 2
+            latest_result_path = argv[i + 1]
+            i += 2
+        elif params_path is None and not arg.startswith("-"):
+            params_path = arg
+            i += 1
+        else:
+            print(f"unknown argument: {arg}", file=sys.stderr)
+            return 2
+    if params_path is None:
+        print(
+            "usage: validate_params.py <path-to-parameters.json> "
+            "[--latest-result <path>]",
+            file=sys.stderr,
+        )
         return 2
-    path = Path(argv[1])
+
+    path = Path(params_path)
     try:
         params = json.loads(path.read_text())
     except FileNotFoundError:
@@ -109,7 +156,19 @@ def main(argv):
         print(f"validate_params.py: invalid JSON at {path}: {e}", file=sys.stderr)
         return 4
 
-    violations = validate(params)
+    latest_result = None
+    if latest_result_path is not None:
+        try:
+            latest_result = json.loads(Path(latest_result_path).read_text())
+        except FileNotFoundError:
+            # Missing latest-result is non-fatal — skip the cross-check,
+            # proposer shouldn't be blocked on a first/seed run.
+            latest_result = None
+        except json.JSONDecodeError:
+            # Malformed result file is also non-fatal for validation.
+            latest_result = None
+
+    violations = validate(params, latest_result=latest_result)
     if violations:
         print("validate_params.py: out-of-bounds proposal:", file=sys.stderr)
         for v in violations:
