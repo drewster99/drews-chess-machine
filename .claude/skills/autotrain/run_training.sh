@@ -78,9 +78,9 @@ case "$TIME_LIMIT" in
         exit 5 ;;
 esac
 
-if [ "$TIME_LIMIT" -gt 600 ]; then
-    echo "$PROG: clamping time limit from $TIME_LIMIT to 600 seconds (hard cap)" >&2
-    TIME_LIMIT=600
+if [ "$TIME_LIMIT" -gt 1800 ]; then
+    echo "$PROG: clamping time limit from $TIME_LIMIT to 1800 seconds (hard cap)" >&2
+    TIME_LIMIT=1800
 fi
 
 # Make sure the target dir exists and remove any stale output.

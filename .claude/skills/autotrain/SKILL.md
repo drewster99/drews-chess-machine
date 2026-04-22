@@ -126,7 +126,7 @@ Regardless of mode:
   }
   ```
 - Write `<folder>/proposal.md` with the `change_details` text.
-- Write `<folder>/training_time.txt` with `600` (use the full cap; a short replicate wouldn't be informative).
+- Write `<folder>/training_time.txt` with `600` (matches the baseline's training time; a short replicate wouldn't be informative, and going *longer* than baseline would confound reproducibility signal with extra training).
 - Run `validate_params.py` as a sanity check (should trivially pass since the baseline already validates). If it somehow fails, that's a real problem — stub-reject and halt the replicate cascade for user attention.
 - Run `regen_dashboard.py`.
 - Skip the rest of step 5 and go straight to step 6.
@@ -159,7 +159,8 @@ Then spawn a general-purpose subagent with this prompt (pass as a fenced JSON bl
   "current_best_results_summary": <current_best_summary>,
   "current_best_results_json_path": "<absolute path to $ROOT/results.json>",
   "recent_history": <recent_history>,
-  "training_time_seconds_max": 600,
+  "training_time_seconds_max": 1800,
+  "training_time_seconds_default": 600,
   "exploration_mode": <boolean>
 }
 ```
@@ -182,11 +183,11 @@ Instructions embedded in the prompt:
 - **Keep `change_details` brief**: 1-2 sentences, under 60 words. Don't re-explain the overall strategy or restate prior history — the reader has all of it. Just state the change and its expected mechanism.
 - Preserve every key in the input parameters object. Never drop or rename a key.
 - Respect physical bounds: `replay_ratio_target > 0`, integer worker counts, non-negative decay values, positive batch sizes, etc. A separate validator enforces wide bounds on the server side — stay well within them.
-- Only set `training_time_seconds` if you have a specific reason. If you do, include a brief `training_time_rationale`.
+- Only set `training_time_seconds` if you have a specific reason. The default (`training_time_seconds_default`, 600 s / 10 min) is what you get if you omit the field, and it's the right choice for typical incremental tuning. Request a longer run (up to `training_time_seconds_max`, 1800 s / 30 min) only when a change genuinely needs more training time to show signal — for example, a learning-rate decrease that slows convergence, a larger batch size that needs more steps per epoch, or a change whose effect is dominated by late-training dynamics (pEnt trajectory past 10 min, arena cadence, promotion behavior). Do not request a long run just to gather more data on a change that would already show signal at 600 s. If you do set it, include a brief `training_time_rationale` naming the specific reason.
 
 **After** the subagent returns:
 1. Parse the JSON. If parsing fails or required keys (`change_details`, `parameters`) are missing, retry once with a terser reminder of the schema. If the retry also fails, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "proposer returned invalid JSON twice — skipping iteration"}`, run `regen_dashboard.py`, and jump to step 8 (reject).
-2. If `training_time_seconds` is present, clamp to `[60, 600]`. If absent, use 600.
+2. If `training_time_seconds` is present, clamp to `[60, 1800]`. If absent, use 600 (the default).
 3. Save the full raw JSON response to `<folder>/proposal.json`.
 4. Write `change_details` to `<folder>/proposal.md`.
 5. Write the `parameters` object to `<folder>/parameters.json`.
@@ -199,7 +200,7 @@ Then run `regen_dashboard.py` so the dashboard shows this iteration as `IN_PROGR
 
 Read the training time from `<folder>/training_time.txt` (fall back to 600 if the file is missing, e.g. during the seed path).
 
-Invoke `run_training.sh <folder>/parameters.json <training_time> <folder>/result.json <folder>/run.log`. `run_training.sh` enforces its own hard cap at 600 s — anything larger gets clamped down.
+Invoke `run_training.sh <folder>/parameters.json <training_time> <folder>/result.json <folder>/run.log`. `run_training.sh` enforces its own hard cap at 1800 s — anything larger gets clamped down.
 
 If the script exits non-zero or `result.json` is missing/invalid, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "training run failed: <reason>"}`, run `regen_dashboard.py`, and jump to step 8 (reject). Exit status `10` from `run_training.sh` is not a failure — it means "skip iteration", handled in step 0.5.
 
@@ -311,6 +312,6 @@ Print a one-line summary: `autotrain <timestamp>: ACCEPTED|REJECTED — <change_
 - Never run `git reset`, `git stash`, or `git rebase`.
 - Never force-push.
 - Never skip commit hooks.
-- The per-iteration time limit is hard-capped at 600 seconds (10 min). If a subagent requests a longer run, clamp it.
+- The per-iteration time limit is hard-capped at 1800 seconds (30 min); the default when the proposer doesn't specify is 600 seconds (10 min). If a subagent requests a longer run, clamp it to 1800.
 - Only push to the branch the user confirmed in step 0 of the current session. If branch changed mid-loop, re-confirm.
 - If `git status` shows unexpected staged changes at iteration start, stop and surface them — don't sweep them into an autotrain commit.
