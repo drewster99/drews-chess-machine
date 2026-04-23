@@ -1,0 +1,1 @@
+Reduce arena_games_per_tournament 100 → 50. Shorter arenas reduce the production-drop window the replay-ratio controller must react to, attacking the arena-end ratio-spike pattern. Also disambiguates the prior hang: if this completes, lr=3e-5 caused the hang; if it also hangs, the recent controller formula change is the cause.

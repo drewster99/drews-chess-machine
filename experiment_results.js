@@ -3076,20 +3076,155 @@ window.EXPERIMENTS = [
     "analysis_commentary": "Regressed on learning. illegal_mass_min jumped 0.4944\u21920.9978 (policy allocates ~no mass to legal moves) and above_uniform_count fell from peak 5 to 0. max_prob stayed under the 0.90 goal threshold (0.44) so no hard collapse, but the run never found the learning basin. Throughput essentially identical (335 vs 339 steps) and arena score slightly higher at 0.525 (not a promotion). Warmup axis now bracketed on the low side: 75 regressed, 100 is optimal, 500 was too long. Classification: regressed.",
     "training_time_seconds": null,
     "folder": "experiments/20260422-202313"
+  },
+  {
+    "timestamp": "20260423-004610",
+    "start_time_iso": "2026-04-23T00:46:10",
+    "status": "FAILED",
+    "mode": "normal",
+    "change_details": "Exploring the learning_rate axis, which is untested at its direct base value (prior LR perturbations only touched sqrt_batch_scaling_lr and lr_warmup_steps). Current 5e-5 with 4096 batch + sqrt-scaling is producing policy-collapse symptoms (illegal_mass_sum as low as 0.49, max as low as 0.29, above_uniform_count maxing at 5). Lowering to 3e-5 reduces per-step update magnitude, which should let the policy head settle into sharper legal-move distributions rather than oscillating through under-confident states; it also gives the entropy bonus (0.0025) a more stable landscape to shape.",
+    "changed_params": [
+      {
+        "key": "learning_rate",
+        "old": 5e-05,
+        "new": 3e-05
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.0025,
+      "grad_clip_max_norm": 30,
+      "weight_decay": 0.0001,
+      "K": 5,
+      "learning_rate": 3e-05,
+      "sqrt_batch_scaling_lr": true,
+      "lr_warmup_steps": 100,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 32,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 250000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "training run failed: watchdog fired at 720s (600s cap + 120s grace) and SIGTERM'd the app without it writing result.json. Exit code 6 from run_training.sh. Likely related to the recent replay-ratio controller formula change \u2014 the app may have hung or failed cleanly on exit. No diagnostics available for this iteration.",
+    "training_time_seconds": null,
+    "folder": "experiments/20260423-004610"
+  },
+  {
+    "timestamp": "20260423-010112",
+    "start_time_iso": "2026-04-23T01:01:12",
+    "status": "FAILED",
+    "mode": "normal",
+    "change_details": "Reducing arena_games_per_tournament from 100 to 50. Shorter arenas mean less wall-clock pause for self-play, so when self-play resumes the replay-ratio controller has a smaller producer-deficit to recover from and should swing stepDelay less aggressively. Also serves as a disambiguation probe: if this run completes we can conclude lr=3e-5 caused the prior hang; if it also hangs the new replay-ratio controller formula is likely the culprit. Arena statistical power drops from 100\u219250 games (28/50 wins still required at 0.55 threshold) but this is acceptable for one diagnostic iteration.",
+    "changed_params": [
+      {
+        "key": "arena_games_per_tournament",
+        "old": 100,
+        "new": 50
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.0025,
+      "grad_clip_max_norm": 30,
+      "weight_decay": 0.0001,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": true,
+      "lr_warmup_steps": 100,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 32,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 250000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 50,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "training run failed: watchdog fired at 720s. Session log shows the app took ~11min53s between launch and the '[APP] --train: starting auto-train launch sequence' line (20:02:09 \u2192 20:14:02). Training literally just started when SIGTERM arrived. This is app-side (build 380), not parameter-driven. Likely something in the launch/resume path is blocking before the --train handler runs. Loop paused; no next iteration until build is fixed.",
+    "training_time_seconds": null,
+    "folder": "experiments/20260423-010112"
+  },
+  {
+    "timestamp": "20260423-011514",
+    "start_time_iso": "2026-04-23T01:15:14",
+    "status": "IN_PROGRESS",
+    "mode": "normal",
+    "change_details": "Lower learning_rate 5e-5 \u2192 3e-5. Most-desired-but-never-observed data point: the prior iteration queued it but hung at app launch before producing training signal. Collapse symptoms (illegal_mass=0.49, max=0.29) suggest the policy softmax is being pulled too aggressively; -40% LR attenuates each step's push without touching entropy/decay/clip so we can cleanly read the axis. sqrt_batch_scaling_lr=true and batch 4096 unchanged keep effective-LR scaling intact.",
+    "changed_params": [
+      {
+        "key": "learning_rate",
+        "old": 5e-05,
+        "new": 3e-05
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.0025,
+      "grad_clip_max_norm": 30,
+      "weight_decay": 0.0001,
+      "K": 5,
+      "learning_rate": 3e-05,
+      "sqrt_batch_scaling_lr": true,
+      "lr_warmup_steps": 100,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 32,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 250000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "",
+    "training_time_seconds": null,
+    "folder": "experiments/20260423-011514"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 67,
+  "total_iterations": 70,
   "counts": {
     "SEED": 1,
     "ACCEPTED": 7,
     "NEUTRAL": 7,
     "REJECTED": 52,
-    "FAILED": 1,
-    "IN_PROGRESS": 0
+    "FAILED": 3,
+    "IN_PROGRESS": 1
   },
-  "accept_rate": 0.1044776119402985,
-  "failure_streak": 15,
+  "accept_rate": 0.10144927536231885,
+  "failure_streak": 17,
   "trailing_replicates": 0,
   "arena_count": 50,
   "promotions": 1,

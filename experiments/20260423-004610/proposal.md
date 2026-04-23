@@ -1,0 +1,1 @@
+Lower learning_rate 5e-5 → 3e-5. Untested axis — prior LR probes only adjusted sqrt_batch_scaling_lr and lr_warmup_steps. Smaller steps may allow the policy head to settle into sharper legal-move distributions.

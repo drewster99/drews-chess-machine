@@ -1,0 +1,1 @@
+run_training.sh: launching DrewsChessMachine (limit=600s, params=experiments/20260423-011514/parameters.json, out=experiments/20260423-011514/result.json)
