@@ -115,6 +115,12 @@ def build_row(folder: Path):
     commentary = ""
     if isinstance(analysis, dict):
         commentary = analysis.get("analysis_commentary", "") or ""
+    # Training-time resolution. The skill is supposed to write
+    # `training_time.txt` on each proposal, but that step has
+    # historically been skipped in some runs. Fall back to the same
+    # value as recorded inside `proposal.json` (populated from the
+    # same clamp path) so the duration column still renders. Final
+    # fallback: nothing known, column shows em-dash.
     training_time = None
     tt_file = folder / "training_time.txt"
     if tt_file.is_file():
@@ -122,6 +128,10 @@ def build_row(folder: Path):
             training_time = int(tt_file.read_text().strip())
         except (ValueError, OSError):
             training_time = None
+    if training_time is None and isinstance(proposal, dict):
+        raw = proposal.get("training_time_seconds")
+        if isinstance(raw, (int, float)):
+            training_time = int(raw)
     return {
         "timestamp": folder.name,
         "start_time_iso": ts.strftime("%Y-%m-%dT%H:%M:%S"),

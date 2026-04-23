@@ -2939,7 +2939,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Neither run collapses \u2014 both goal thresholds (illegal_mass<0.99, max<0.90) easily met. But the learning-progress indicators regress: illegal_mass_min rose 0.4944\u21920.5603 (less legal mass captured, -12%), and above_uniform_count peak fell 5\u21922 and final 5\u21922 (fewer legal moves lifted above uniform). max_prob barely moved (0.29\u21920.28, not meaningful at this scale). Throughput also dropped 339\u2192276 steps as expected for the larger batch, but even the trajectory shape suggests the larger batch denoised gradients beyond what the current lr can exploit \u2014 effective updates became too conservative. Batch size optimum appears to be at or very near 4096 in both directions (3072 regressed, 5120 regressed). Classification: regressed on the learning-progress axis of the goal.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260422-194212"
   },
   {
@@ -2984,7 +2984,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Clear regression with actual collapse. max_prob hit 0.9409 \u2014 exceeds the 0.90 goal threshold, a real collapse signal, not just a fragile neighborhood. illegal_mass_min=0.9917 (vs baseline 0.4944) means policy never distributed mass to legal moves. above_uniform_count stuck at 0 the whole window. Only 266 training steps (vs baseline 339) because the 0.5 target throttled the trainer, and those steps landed in the collapse basin rather than the learning basin. The hypothesis that lower replay_ratio would give more diverse data was wrong in practice \u2014 with the trainer seeing positions half as often, gradient signal weakened enough that BN dynamics / policy head drift away from the uniform init and into a single-move attractor. Axis direction confirmed: lower is worse; if we revisit this axis, test > 1.0 instead.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260422-195609"
   },
   {
@@ -3029,7 +3029,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed on the learning axis: illegal_mass_min jumped 0.4944\u21920.9795 (policy allocates almost no mass to legal moves), above_uniform_count fell from max=5 to 0 (never identifies legal moves). max_prob actually slightly better (0.23 vs 0.29) but only because the policy stays nearly uniform \u2014 no sharpening in either direction. Throughput essentially identical (338 vs 339 steps). Both directions of replay_ratio_target now regress: DOWN (0.5) hard-collapses, UP (1.25) fails to learn. The axis has a narrow basin at 1.0 and is fragile. Arena 0.495 (flat, no signal).",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260422-201007"
   },
   {
@@ -3074,7 +3074,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed on learning. illegal_mass_min jumped 0.4944\u21920.9978 (policy allocates ~no mass to legal moves) and above_uniform_count fell from peak 5 to 0. max_prob stayed under the 0.90 goal threshold (0.44) so no hard collapse, but the run never found the learning basin. Throughput essentially identical (335 vs 339 steps) and arena score slightly higher at 0.525 (not a promotion). Warmup axis now bracketed on the low side: 75 regressed, 100 is optimal, 500 was too long. Classification: regressed.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260422-202313"
   },
   {
@@ -3119,7 +3119,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "training run failed: watchdog fired at 720s (600s cap + 120s grace) and SIGTERM'd the app without it writing result.json. Exit code 6 from run_training.sh. Likely related to the recent replay-ratio controller formula change \u2014 the app may have hung or failed cleanly on exit. No diagnostics available for this iteration.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-004610"
   },
   {
@@ -3164,7 +3164,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "training run failed: watchdog fired at 720s. Session log shows the app took ~11min53s between launch and the '[APP] --train: starting auto-train launch sequence' line (20:02:09 \u2192 20:14:02). Training literally just started when SIGTERM arrived. This is app-side (build 380), not parameter-driven. Likely something in the launch/resume path is blocking before the --train handler runs. Loop paused; no next iteration until build is fixed.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-010112"
   },
   {
@@ -3209,7 +3209,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse. max_prob hit 1.000 (final also 1.000) \u2014 classic single-move lock-in. illegal_mass_min=0.9994 stayed nearly saturated the entire run. above_uniform never rose above 0. 327 steps completed in the window (vs baseline 339), so throughput was fine; the lower LR simply failed to accumulate enough legal-move signal before one illegal logit ran away. LR axis now bracketed on the low side: 3e-5 collapses, 5e-5 optimal. Next untested direction on this axis is UP (7e-5), though warmup=100 with sqrt-scaling was specifically tuned at 5e-5.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-011514"
   },
   {
@@ -3254,7 +3254,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse. max_prob hit 1.000, locked at 1.000 at run end, illegal_mass 0.9985+ throughout, above_uniform never rose above 0. 335 steps (near baseline 339). LR axis now bracketed on BOTH sides: 3e-5 full collapse, 5e-5 optimal, 7e-5 full collapse. The 5e-5 basin is narrow on this axis.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-012808"
   },
   {
@@ -3299,7 +3299,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed: illegal_mass_min 0.49\u21920.9998 (no legal-mass allocation), above_uniform max 5\u21920. Not a hard collapse (max peaked at 0.54, final 0.40) but the policy failed to learn. 322 steps vs baseline 339 (slower self-play fill with 24 workers). Workers-down axis does not help; try workers-up next.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-013930"
   },
   {
@@ -3344,7 +3344,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse. max_prob hit 1.000, locked at 1.000 at run end, illegal_mass 0.9995+ throughout, above_uniform stayed at 0. 338 steps (near baseline 339) so no throughput problem. Worker axis now bracketed on both sides: 24 regressed (never collapsed but failed to learn), 32 optimal, 40 hard-collapsed.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-015054"
   },
   {
@@ -3389,7 +3389,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed on learning. No arena fired (as designed) but the uninterrupted window performed worse: illegal_mass_min 0.49\u21920.56, above_uniform 5\u21922. max_prob peaked at 0.71 (vs baseline 0.29) though settled back to 0.16 final \u2014 a near-collapse transient we don't see with arena firing. Counterintuitive result: the arena-end ratio-spike is apparently NOT the mechanism knocking seed variance into the collapse basin; if anything, the arena-induced ratio perturbation may help kick the network out of bad local attractors. 341 steps (identical throughput). Worth retesting with arena_auto_interval_sec=600 (1 arena inside the window, different timing) for a cleaner read.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-020223"
   },
   {
@@ -3434,7 +3434,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Mixed result. illegal_mass_min hit 0.3997 (better than baseline 0.4944 \u2014 a new low under this config) but final illegal_mass rose back to 0.6146 (worse than baseline 0.4953). above_uniform peak only 2 (vs baseline 5). max_prob peaked at 0.42 (vs 0.29) then settled 0.18. Arena duration halved as designed (96s vs 255s). Interpretation: the shorter arena lets the network reach a better transient state but the sustained learning signal is weaker \u2014 possibly because the ratio-spike perturbation is also briefer. Neutral: one axis improved, others regressed. Not adopting.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-021356"
   },
   {
@@ -3479,7 +3479,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse and no arena fired. max_prob locked at 1.0, illegal_mass 0.9961+, above_uniform 0 throughout. arena never triggered (window ended before t=600s interval elapsed). 342 steps (near baseline). arena_auto_interval_sec axis is now fully tested: 300=optimum, 600 collapses (no arena), 900 regresses (no arena).",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-022532"
   },
   {
@@ -3518,7 +3518,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "CRITICAL FINDING. Exact replicate of current-best parameters COLLAPSED. illegal_mass_min=0.9805 (vs 'best' 0.4944), max=0.9140 (crossed the 0.90 goal threshold vs 'best' 0.2899), above_uniform stuck at 0 (vs 'best' 5). All parameters were byte-identical to parameters.json \u2014 only the RNG seed differed. Current 'best' is a lucky-seed artifact. The local optimum we've been mapping is illusory: most of the 60+ 'regressions' in the streak are likely just other unlucky seeds, and some may have been genuinely-better parameters that got unlucky. Seed variance dominates the measurement; any apparent \u00b1one-run signal at this operating point is below the noise floor. This reframes the entire streak.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-023709"
   },
   {
@@ -3557,7 +3557,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "SECOND COLLAPSE CONFIRMED. Replicate 2: illegal_mass_min=0.9923, max=1.0000 (locked), above_uniform=0. Two consecutive replicates of the byte-identical current-best parameters BOTH collapsed. Summary of three runs with identical params: orig=healthy (im=0.49, max=0.29, au=5), rep1=near-collapse (im=0.98, max=0.91, au=0), rep2=full collapse (im=0.99, max=1.00, au=0). The 'current best' is definitively a 1-in-3 (or worse) lucky seed. The parameters are unstable. Our prior 'this axis is bracketed' conclusions are mostly seed noise. Pivot: widen the seed-stable basin by raising entropy_bonus (the historically-strongest collapse preventer). The 'entropy=0.002 regressed' finding was based on one unlucky seed and is suspect.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-024854"
   },
   {
@@ -3602,7 +3602,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "entropy_bonus=0.004 also fully collapsed (max=1.0, im=0.9996, au=0). Four consecutive runs at ~current-best params (3\u00d7 ent=0.0025 and 1\u00d7 ent=0.004): only 1/4 reached the healthy basin. Historical best (ent=0.004, au=7) was under an older build \u2014 current build 380 appears to have shifted the regime toward collapse. Next: jump further on entropy axis (0.008) or try the historical-best compound (ent=0.004 + min_positions=300k). Either way, single-knob single-run sampling is near-useless here; the real signal would be multi-replicate.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-030006"
   },
   {
@@ -3647,7 +3647,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "entropy=0.008 prevented collapse cleanly (max_prob peak 0.2419, final 0.0639) but also prevented learning (illegal_mass 0.999, above_uniform 0, pEnt flat at 6.83 \u2248 uniform). This is the opposite failure mode: entropy bonus too strong, policy stays near-uniform, never develops legal preferences. Confirms entropy axis DOES control collapse \u2014 0.008 is above the collapse-risk regime. Sweet spot is between 0.0025 (sometimes collapses) and 0.008 (never learns). Next: try 0.005 or 0.006 for the learning-stable sweet spot.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-031130"
   },
   {
@@ -3692,7 +3692,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse at entropy=0.005 (max=1.0, im=0.9943, au=0). Non-monotone entropy response: 0.0025 sometimes collapses, 0.005 collapsed, 0.008 prevented collapse but stayed uniform. Single-run samples at this operating point are dominated by seed variance (as the replicate study confirmed). Classification: regressed. Next: try min_positions=300k (historical-best value used in 20260422-002419; untested under build 380) as an untouched axis that might stabilize the seed distribution.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-032247"
   },
   {
@@ -3737,7 +3737,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.9981, au=0). 300k didn't stabilize \u2014 build-380 regime is collapse-dominant regardless of this knob. Seed variance continues to dominate single-run outcomes.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-033359"
   },
   {
@@ -3782,7 +3782,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse at entropy=0.006 (max=1.0, im=0.9626\u21921.0, au=0). pEnt 6.66\u21926.58 slight drop, so the entropy bonus is losing to the collapse gradient. Entropy axis summary: 0.0025 mostly collapses, 0.004/0.005/0.006 each collapsed in their single runs, 0.008 stayed non-collapsing but too-uniform. Sharp threshold between 0.006 and 0.008. Next: replicate entropy=0.008 to see if the non-collapsing 'uniform' behavior is reproducible (if yes, that's a seed-stable regime worth probing further).",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-034509"
   },
   {
@@ -3827,7 +3827,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "IMPROVED. entropy=0.008 replicate reached illegal_mass_min=0.4614 (vs prior best 0.4944), max_prob peak 0.2148 (vs 0.2899), above_uniform max 5 (ties). No collapse. Combined with the first 0.008 run (uniform but also no collapse), entropy=0.008 is 2/2 collapse-free \u2014 vs 1/4 at entropy=0.0025. Seed-stable collapse prevention AND a new learning-metric best. Accepting as new current best.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-035626"
   },
   {
@@ -3872,7 +3872,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed. K=6 under entropy=0.008 base: no collapse (max=0.68) but no learning (au=0, im=0.998, final 1.0). K=5 still looks right under the new regime.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-040800"
   },
   {
@@ -3917,7 +3917,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.9999) under lr=7e-5 + entropy=0.008. Higher LR still breaks stability even with stronger entropy. Axis limit: lr=5e-5 is the ceiling under this regime too.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-041909"
   },
   {
@@ -3956,7 +3956,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Third replicate: im_min=0.621, max=0.093, au=2. Three-run summary at entropy=0.008: 0/3 collapsed (seed-stable collapse prevention confirmed), but learning is seed-dependent \u2014 one fully learned (au=5), one partial (au=2), one stayed uniform (au=0). All three stayed below max=0.25. Current best (rep2) was a favorable seed; rep3 does not improve on it. Classification: regressed vs current best but confirms the 0.008 basin is real and the prior accept is legitimate.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-043012"
   },
   {
@@ -4001,7 +4001,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed vs current best: im_min=0.609, au=2, max=0.36 (vs 0.461/5/0.21). No collapse. Profile similar to rep3 of current best (au=2) \u2014 within seed noise of the new basin's typical behavior. warmup=50 doesn't obviously help escape the uniform-attractor. Given current best rep2 itself may be seed-lucky (1/3 runs learn to au=5), this single-run regression isn't conclusive but is not evidence of improvement.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-044124"
   },
   {
@@ -4046,7 +4046,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "No collapse (max=0.174) but no learning either (au=0, im=0.9798). entropy=0.007 sits in the same 'uniform attractor' regime as rep1 of 0.008; not an improvement over the current best (which caught a favorable seed at 0.008). Single run so inconclusive, but given seed variance in this basin, doesn't justify replacing the accepted 0.008 config.",
-    "training_time_seconds": null,
+    "training_time_seconds": 600,
     "folder": "experiments/20260423-045237"
   },
   {
@@ -4085,7 +4085,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "15-min run at current best landed in the 'uniform attractor' basin: im_min=0.972, max=0.088, au=0 across 500 steps. Extra training time did NOT help \u2014 the network stayed near uniform throughout. Another data point showing seed variance dominates within the entropy=0.008 basin (1/4 runs now learn to au=5 across all replicates). Classification: regressed vs current best (au=5). No promotion.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-050449"
   },
   {
@@ -4130,7 +4130,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Interesting transient \u2014 im_min=0.2836 (new low, vs best 0.4614), au peaked at 4 \u2014 but THEN max hit 1.0 (collapse event) and the policy partially recovered to au=2, im=0.77 final. The no-warmup run was more productive than any current-best replicate early, but crossed the 0.90 goal threshold transiently so it technically fails collapse-prevention. Classification: regressed on collapse signal (max=1.0 is a hard regression) even though transient learning was the best seen. Suggests warmup=0 + entropy=0.008 is too aggressive; warmup=50 might be the sweet spot.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-052115"
   },
   {
@@ -4175,7 +4175,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Uniform attractor again: im=0.9994, au=0, max=0.52 (no collapse, no learning). warmup=50 didn't unlock anything at 15 min. Seed variance keeps dominating single runs within the entropy=0.008 basin. Classification: regressed vs current best.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-053726"
   },
   {
@@ -4220,7 +4220,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.994\u21921.0, au=0). Removing weight_decay allowed collapse even under entropy=0.008 \u2014 weight_decay was doing real work as a second regularizer. Important finding: entropy alone isn't sufficient at this level; wd=1e-4 is load-bearing.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-055339"
   },
   {
@@ -4265,7 +4265,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "IMPROVED. illegal_mass_min=0.2297 (new all-time low, vs prior best 0.4614, matches historical record 0.235 from 20260422-002419). Sustained: im_fin=0.2464 didn't revert. max_prob=0.56 is higher than current best's 0.21 but well below the 0.90 goal threshold (no collapse). above_uniform 3 peak / 2 final (worse than current best's 5/5 but still positive). Primary goal metric (illegal_mass) moved substantially in the right direction and stayed there for 15 min. No promotion.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-060955"
   },
   {
@@ -4310,7 +4310,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "wd=3e-4 full-collapsed (max=1.0, im=0.9999, au=0). Axis is non-monotonic: 2e-4 is at or past the peak. Not a useful direction further.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-062632"
   },
   {
@@ -4355,7 +4355,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Mixed vs current best: im_min=0.56 (regressed from 0.23), max=0.22 (improved from 0.56), au 3/3 (peak same, final slightly better than 2). All three goal thresholds pass but primary metric (illegal_mass) regressed substantially. K=5 wins under the new wd=2e-4 regime.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-064256"
   },
   {
@@ -4400,7 +4400,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Near-collapse regression: max=0.9064 crosses the 0.90 goal threshold, im=0.9991\u21921.0, au=0. Looser clipping at 40 destabilizes even with wd=2e-4 buffer.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-065905"
   },
   {
@@ -4445,7 +4445,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.988\u21921.0, au=0). gc axis narrow: 25 collapse, 30 optimum, 40 near-collapse.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-071518"
   },
   {
@@ -4490,7 +4490,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.9998\u21921.0, au=0). Higher draw_penalty destabilizes under this regime.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-073133"
   },
   {
@@ -4535,7 +4535,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Mixed / neutral. im regressed (0.23\u21920.35), au improved substantially (3\u21925 peak, 2\u21924 final \u2014 best au under new regime), max improved (0.56\u21920.35). No collapse. All three goal thresholds pass. Trading primary illegal_mass metric for stronger above_uniform performance; not a clear win on either.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-074743"
   },
   {
@@ -4580,7 +4580,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "IMPROVED \u2014 big win. au_max=8 (NEW all-time best, surpasses historical record au=7 from 20260422-002419), au_fin=7 (vs current best's 2). max_prob=0.14 (vs 0.56, big reduction). im_min=0.29 roughly ties (slightly worse transient but im_fin=0.29 actually better-sustained than prior 0.25 at the end). All three goal thresholds pass comfortably. No promotion.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-080402"
   },
   {
@@ -4625,7 +4625,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse at w=56 (max=1.0, im=0.994\u21921.0, au=0). Axis has a peak near w=48. The monotonic trend 32\u219240\u219248 breaks sharply past 48.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-082029"
   },
   {
@@ -4670,7 +4670,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=1.0 throughout, au=0). rr=1.25 still breaks under new regime.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-083635"
   },
   {
@@ -4715,7 +4715,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed but not collapsed: im=0.9063 (no learning), max=0.16 (fine), au peak 1 / final 0 (vs baseline 8/7). Lower target_tau didn't help \u2014 sharper endgame sampling hurt learning progress without triggering collapse.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-085248"
   },
   {
@@ -4760,7 +4760,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.995\u21921.0, au=0). Both directions on target_tau regress under new base; 0.8 is the optimum.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-090859"
   },
   {
@@ -4805,7 +4805,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed but stable: im=0.47, max=0.21, au=6/6 (vs 0.29/0.14/8/7 baseline). 350k min_pos delays training onset and the run never reaches the same au peak. No collapse.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-092504"
   },
   {
@@ -4850,7 +4850,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Near-collapse (max=0.9279 crosses goal threshold), im=0.9995\u21921.0, au=0. Larger batch destabilized at this regime, possibly from sqrt-lr-scaling pushing the effective lr just past the stability boundary.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-094127"
   },
   {
@@ -4895,7 +4895,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.999\u21921.0, au=0). Longer warmup destabilized. lr_warmup_steps axis under new base bracketed: 0 collapse-transient, 50 uniform, 100 optimum, 150 collapse.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-095733"
   },
   {
@@ -4934,7 +4934,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Replicate regressed vs the accepted run: im=0.67/0.83 (vs 0.29), max=0.44 (vs 0.14), au=2/1 (vs 8/7). No collapse, but significantly less learning. Current best was a favorable seed; au=8 isn't reliably reproducible. Two runs now \u2014 one au=8, one au=2.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-101345"
   },
   {
@@ -4979,7 +4979,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed: im=0.78, au=2/1, max=0.18. No collapse but weak learning. Higher start_tau doesn't help.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-103002"
   },
   {
@@ -5024,7 +5024,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed vs current best but stable: im=0.44, max=0.17, au=5/5. No collapse. Slightly worse than the lucky au=8 run but notably better than the replicate's au=2. Possibly a seed-stabler point at the cost of peak performance \u2014 need more replicates to confirm. Single run: regressed on im.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-104604"
   },
   {
@@ -5069,7 +5069,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Near-collapse: max=0.899 (just under 0.90 goal threshold), im=0.9405, au=0. Worse than w=48 and also worse than w=40 (au=5). Combined with replicate variance at w=48 (au=8 vs 2), workers axis is highly seed-sensitive; apparent monotonic trend was spurious.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-110210"
   },
   {
@@ -5114,7 +5114,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Near-collapse: max=0.78, im=0.90, au=0. Slower tau decay destabilized even at the new regime.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-111824"
   },
   {
@@ -5159,7 +5159,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.999\u21921.0, au=0). Arena tau shouldn't affect training, so this looks like seed variance rather than a real effect of at=0.3.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-113430"
   },
   {
@@ -5204,7 +5204,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed vs lucky current best: im=0.46, au=5/5 (vs 0.29/8/7). Similar profile to ent=0.009, suggesting 0.009/0.01 give seed-stable au~5 while 0.008 is higher-variance.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-115032"
   },
   {
@@ -5249,7 +5249,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.974\u21921.0, au=0). Bigger buffer either destabilized or seed-unlucky.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-120646"
   },
   {
@@ -5294,7 +5294,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Close-to-tie on im (0.287 vs 0.289 best) but regressed on au (peak 6 vs 8, final 3 vs 7). No collapse. Within seed noise of current best.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-122253"
   },
   {
@@ -5339,7 +5339,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.994\u21921.0, au=0). warmup=120 destabilizes, possibly seed-noise given arena_target_tau change also collapsed without mechanistic reason. Narrow warmup basin at 100.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-123907"
   },
   {
@@ -5384,7 +5384,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed: im=0.31 (essentially ties 0.29), max=0.48 (worse than 0.14), au=5/2 (worse than 8/7). No collapse. Mid-point between 1e-4 and 2e-4 is worse than current best.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-125512"
   },
   {
@@ -5429,7 +5429,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "IMPROVED, major primary-metric win. illegal_mass_min=0.0850 \u2014 70% reduction from prior best 0.2886, and sustained through end of run (im_fin=0.0850). max_prob=0.8393 elevated but below 0.90 goal threshold, no collapse. above_uniform dropped 8\u21924 peak, 7\u21921 final. Trading broader above-uniform representation for a much tighter legal-mass concentration \u2014 primary goal metric improved dramatically. No promotion.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-131113"
   },
   {
@@ -5474,7 +5474,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "IMPROVED on the balanced goal. au_max=9 and au_fin=9 \u2014 NEW all-time record (previous 8). max_prob=0.235 \u2014 much safer margin below the 0.90 goal threshold (previous 0.84 was close). im=0.141 slightly worse than 0.085 but still vastly better than pre-regime 0.29. Net collapse-prevention is stronger (safer max) while learning diversity is broader (higher au). No promotion.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-132740"
   },
   {
@@ -5519,7 +5519,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.999\u21921.0, au=0). target_tau=0.5 breaks even under current regime. Peak on this axis is at 0.6.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-134402"
   },
   {
@@ -5564,7 +5564,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Regressed + near-collapse: max=0.9469 crosses the 0.90 goal threshold. im=0.50 (vs 0.14), au=4/4 (vs 9/9). Lower start_tau destabilized.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-140004"
   },
   {
@@ -5609,7 +5609,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Collapsed (max=1.0, im went from 0.35 low to 1.0 final, au 2\u21920). K=4 destabilized despite hitting a reasonable transient. K=5 is the optimum.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-141618"
   },
   {
@@ -5648,7 +5648,7 @@ window.EXPERIMENTS = [
       "training_time_limit": 3600
     },
     "analysis_commentary": "Replicate FULL COLLAPSED (max=1.0, im=1.0 throughout, au=0). The accepted tt=0.6 / au=9 result was a favorable seed, not a reliable regime. Seed variance dominates at current parameters \u2014 au=9 is the lucky draw from this distribution, with au=0-collapse as another draw from the same pool.",
-    "training_time_seconds": null,
+    "training_time_seconds": 900,
     "folder": "experiments/20260423-143233"
   }
 ];
