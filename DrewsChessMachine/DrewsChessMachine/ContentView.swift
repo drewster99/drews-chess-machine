@@ -3913,19 +3913,39 @@ struct ContentView: View {
         if divergenceCriticalStreak >= Self.divergenceAlarmConsecutiveCriticalSamples {
             raiseTrainingAlarm(
                 severity: .critical,
-                title: "Critical Training Divergence",
+                title: Self.divergenceCriticalAlarmTitle,
                 detail: alarmDetail(entropy: entropy, gradNorm: gradNorm)
             )
         } else if divergenceWarningStreak >= Self.divergenceAlarmConsecutiveWarningSamples {
             raiseTrainingAlarm(
                 severity: .warning,
-                title: "Training Divergence Warning",
+                title: Self.divergenceWarningAlarmTitle,
                 detail: alarmDetail(entropy: entropy, gradNorm: gradNorm)
             )
         } else if divergenceRecoveryStreak >= Self.divergenceAlarmRecoverySamples {
-            clearTrainingAlarm()
+            // Scope the auto-clear to alarms this evaluator actually
+            // raised. Without this check, a healthy entropy / gNorm
+            // reading would wipe OUT the banner from any other
+            // detector (e.g. the legal-mass collapse detector that
+            // runs on a separate 15 s cadence) — the user would see
+            // unrelated alarms appear and disappear as the heartbeat
+            // races the 15 s probe cycle. Titles are the de-facto
+            // ownership marker because every raise in this file uses
+            // a distinct title string.
+            let activeTitle = activeTrainingAlarm?.title
+            let isOurs = activeTitle == Self.divergenceCriticalAlarmTitle
+                || activeTitle == Self.divergenceWarningAlarmTitle
+            if isOurs {
+                clearTrainingAlarm()
+            }
         }
     }
+
+    /// Alarm titles owned by `evaluateTrainingAlarm`. Anchored as
+    /// named constants so the raise path and the ownership-scoped
+    /// auto-clear check can't drift apart.
+    nonisolated static let divergenceCriticalAlarmTitle = "Critical Training Divergence"
+    nonisolated static let divergenceWarningAlarmTitle = "Training Divergence Warning"
 
     private func alarmDetail(entropy: Double?, gradNorm: Double?) -> String {
         let entropyStr = entropy.map { String(format: "%.4f", $0) } ?? "--"
