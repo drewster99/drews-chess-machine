@@ -7928,6 +7928,18 @@ struct ContentView: View {
                 replayRatioController: ratioController
             )
 
+            // Pin the probe inference network into a local the child
+            // tasks can capture. It's a @State on this view, so
+            // reading it requires a MainActor hop that child tasks
+            // would otherwise repeat. Built lazily earlier in this
+            // function (lines ~7694-7703); should be non-nil here but
+            // we tolerate nil and skip probes in that case rather
+            // than fall back to the pollution-prone trainer-network
+            // probe path.
+            let probeInferenceForProbes: ChessMPSNetwork? = await MainActor.run {
+                probeInferenceNetwork
+            }
+
             await withTaskGroup(of: Void.self) { group in
                 // Self-play driver: manages N concurrent
                 // `ChessMachine` game loops against the shared
@@ -8080,7 +8092,7 @@ struct ContentView: View {
                 // driven.
                 group.addTask(priority: .utility) {
                     [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox, scheduleBox, recorder,
-                     sessionTrainingBatchSize, sessionTournamentGames, sessionPromoteThreshold] in
+                     sessionTrainingBatchSize, sessionTournamentGames, sessionPromoteThreshold, probeInferenceForProbes] in
                     let sessionStart = Date()
                     // Bootstrap-phase step threshold for the per-step
                     // emit. `Self.bootstrapStatsStepCount` is tunable
@@ -8454,11 +8466,12 @@ struct ContentView: View {
                             // back-to-back per-step emits share the
                             // most recent probe.
                             if steps == 1 || (steps - max(0, lastEmittedStep)) >= legalMassBootstrapStride {
-                                if buffer.count >= legalMassSampleSize {
+                                if buffer.count >= legalMassSampleSize, let probeNet = probeInferenceForProbes {
                                     do {
                                         lastLegalMass = try await trainer.legalMassSnapshot(
                                             replayBuffer: buffer,
-                                            sampleSize: legalMassSampleSize
+                                            sampleSize: legalMassSampleSize,
+                                            inferenceNetwork: probeNet
                                         )
                                     } catch {
                                         lastLegalMass = nil
@@ -8497,13 +8510,14 @@ struct ContentView: View {
                             return
                         }
                         if Task.isCancelled { return }
-                        if buffer.count >= legalMassSampleSize {
+                        if buffer.count >= legalMassSampleSize, let probeNet = probeInferenceForProbes {
                             let trainingSnap = box.snapshot()
                             let steps = trainingSnap.stats.steps
                             do {
                                 lastLegalMass = try await trainer.legalMassSnapshot(
                                     replayBuffer: buffer,
-                                    sampleSize: legalMassSampleSize
+                                    sampleSize: legalMassSampleSize,
+                                    inferenceNetwork: probeNet
                                 )
                             } catch {
                                 lastLegalMass = nil
@@ -8613,7 +8627,7 @@ struct ContentView: View {
                 let collapseRecorder: CliTrainingRecorder? = (isAutoTrainRun ? recorder : nil)
                 let collapseOutputURL: URL? = outputURL
                 group.addTask(priority: .utility) {
-                    [trainer, buffer] in
+                    [trainer, buffer, box, probeInferenceForProbes] in
                     let probeIntervalSec: UInt64 = 15
                     let gracePeriodSec: TimeInterval = 60.0
                     let illegalMassThreshold: Double = 0.99
@@ -8621,6 +8635,16 @@ struct ContentView: View {
                     let sampleSize = 128
                     var consecutive = 0
                     var aborted = false
+                    // Anchor for the grace countdown. Lazily set the
+                    // first time we observe at least one completed SGD
+                    // step. The replay buffer has to fill enough for
+                    // training to begin (minutes in practice), and
+                    // before that first step lands, every probe on the
+                    // fresh random-init network will naturally see
+                    // illegalMass ≈ 0.994 — firing the alarm during
+                    // that window is a false positive. Grace is 60 s
+                    // measured from TRAINING start, not session start.
+                    var trainingStartAt: Date? = nil
                     while !Task.isCancelled && !aborted {
                         do {
                             try await Task.sleep(for: .seconds(probeIntervalSec))
@@ -8628,15 +8652,42 @@ struct ContentView: View {
                             return
                         }
                         if Task.isCancelled { return }
+                        // Training-start gate. If no SGD steps have
+                        // landed yet, reset the anchor and skip — the
+                        // network is still at random init so no
+                        // learning-progress signal exists. Once steps
+                        // > 0, stamp the anchor on the first qualifying
+                        // iteration and measure grace from there.
+                        let trainingSteps = box.snapshot().stats.steps
+                        guard trainingSteps > 0 else {
+                            trainingStartAt = nil
+                            continue
+                        }
+                        if trainingStartAt == nil {
+                            trainingStartAt = Date()
+                        }
+                        guard let startAt = trainingStartAt else { continue }
+                        let trainingElapsed = Date().timeIntervalSince(startAt)
+                        if trainingElapsed < gracePeriodSec { continue }
+                        // Session-elapsed for snapshot-write / log
+                        // consistency with the timer task, which also
+                        // reports `totalTrainingSeconds` as
+                        // session-elapsed rather than training-elapsed.
                         let elapsed = Date().timeIntervalSince(collapseRunStart)
-                        if elapsed < gracePeriodSec { continue }
                         guard buffer.count >= sampleSize else { continue }
+                        // Skip the probe if the inference network isn't
+                        // available — the pollution-prone trainer-network
+                        // fallback would silently corrupt BN running stats
+                        // and defeat the reason we switched detectors off
+                        // the trainer network in the first place.
+                        guard let probeNet = probeInferenceForProbes else { continue }
 
                         let snap: ChessTrainer.LegalMassSnapshot?
                         do {
                             snap = try await trainer.legalMassSnapshot(
                                 replayBuffer: buffer,
-                                sampleSize: sampleSize
+                                sampleSize: sampleSize,
+                                inferenceNetwork: probeNet
                             )
                         } catch {
                             SessionLogger.shared.log(

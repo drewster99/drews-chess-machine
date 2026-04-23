@@ -2302,9 +2302,23 @@ final class ChessTrainer: @unchecked Sendable {
     ///
     /// Returns nil when the replay buffer hasn't accumulated
     /// `sampleSize` positions yet.
+    ///
+    /// **Pass `inferenceNetwork` in production.** When provided, the
+    /// probe copies the trainer's current weights into it and runs
+    /// the forward pass on the inference-mode network — this keeps
+    /// the probe from triggering the training-mode BN's running-mean /
+    /// running-variance assign ops, which would otherwise drift the
+    /// trainer's running statistics every time a probe fires. Callers
+    /// should hand in the app-level `probeInferenceNetwork` (the same
+    /// one used by candidate-test probes). The nil path runs the pass
+    /// directly against `self.network` and IS affected by BN-stat
+    /// pollution — retained only so the function remains callable in
+    /// contexts that haven't been migrated (tests, exploratory code).
+    /// Production call sites must always pass `inferenceNetwork`.
     func legalMassSnapshot(
         replayBuffer: ReplayBuffer,
-        sampleSize: Int
+        sampleSize: Int,
+        inferenceNetwork: ChessMPSNetwork? = nil
     ) async throws -> LegalMassSnapshot? {
         // Sample boards on the trainer queue so we reuse the same
         // replay-buffer concurrency guards as trainStep. We only
@@ -2341,12 +2355,37 @@ final class ChessTrainer: @unchecked Sendable {
         }
         guard let sampled else { return nil }
 
-        // Forward-only pass on the trainer's network. Returns raw
-        // logits (not softmaxed) in position-major layout.
-        let (policy, _) = try await network.evaluate(
-            batchBoards: sampled.boards,
-            count: sampled.count
-        )
+        // Forward-only pass. Returns raw logits (not softmaxed) in
+        // position-major layout.
+        //
+        // When an inference network is provided, mirror the trainer's
+        // current weights into it first (same pattern candidate-test
+        // probes use — see `fireCandidateProbeIfNeeded`). The forward
+        // pass then runs on the inference-mode network, which does
+        // NOT append running-stat assign ops. Without this redirect,
+        // every probe call would subtly mutate the trainer's own BN
+        // running statistics via the training-mode graph's assigns,
+        // and multiple probe callers firing at different cadences
+        // (STATS logger 60 s, collapse detector 15 s) compound into a
+        // stall where SGD batches see a BN distribution that has
+        // drifted away from the one they're trying to normalize —
+        // the policy head's legal-mass signal flatlines near 1.0.
+        let policy: [Float]
+        if let inferenceNetwork {
+            let weights = try await network.exportWeights()
+            try await inferenceNetwork.loadWeights(weights)
+            let (p, _) = try await inferenceNetwork.evaluate(
+                batchBoards: sampled.boards,
+                count: sampled.count
+            )
+            policy = p
+        } else {
+            let (p, _) = try await network.evaluate(
+                batchBoards: sampled.boards,
+                count: sampled.count
+            )
+            policy = p
+        }
 
         let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
         let policySize = ChessNetwork.policySize
