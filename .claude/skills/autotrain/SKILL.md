@@ -206,7 +206,11 @@ Read the training time from `<folder>/training_time.txt` (fall back to 600 if th
 
 Invoke `run_training.sh <folder>/parameters.json <training_time> <folder>/result.json <folder>/run.log`. `run_training.sh` enforces its own hard cap at 1800 s — anything larger gets clamped down.
 
-If the script exits non-zero or `result.json` is missing/invalid, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "training run failed: <reason>"}`, run `regen_dashboard.py`, and jump to step 8 (reject). Exit status `10` from `run_training.sh` is not a failure — it means "skip iteration", handled in step 0.5.
+Exit-code handling:
+- **`0`** — clean training run, ran to the timer. `result.json` will have `"termination_reason": "timer_expired"`. Continue to step 7.
+- **`10`** — skip iteration cleanly (GPU busy / lock conflict). Not a failure; just log and end. Handled in step 0.5.
+- **`11`** — early bail on legal-mass collapse. The app wrote a valid `result.json` with `"termination_reason": "legal_mass_collapse"` before exiting. Treat as a successfully-completed-but-collapsed run: continue to step 7 normally (do NOT write a failure stub). The analyzer will surface the termination reason and classify as `regressed`.
+- **Any other non-zero exit, OR `result.json` missing/invalid** — real failure. Write a stub `analysis.json` with `{"classification": "regressed", "analysis_commentary": "training run failed: <reason>"}`, run `regen_dashboard.py`, and jump to step 8 (reject).
 
 ### 7. Analyze (subagent)
 
@@ -230,6 +234,9 @@ Spawn a general-purpose subagent with this prompt:
 
 Instructions embedded in the prompt:
 - The summaries are digests of ~1 MB JSON files. For specific details not in the summaries, use `jq` or `python3` via Bash against the paths. **Do not Read the JSON files** — they'll blow your context.
+- **`termination_reason`** is in `new_summary.termination_reason` (and `previous_summary.termination_reason`). Two values exist:
+  - `"timer_expired"` — the training run ran to the requested time limit.
+  - `"legal_mass_collapse"` — the app early-bailed because `illegal_mass_sum` stayed at ≥ 0.99 for 2 consecutive 60 s probes (after a 60 s post-training-start grace period). This is a definitive collapse — the run did NOT complete the requested window. **Always classify the new run as `regressed` when `termination_reason == "legal_mass_collapse"`**, and lead the commentary with the bail (e.g. "early-bail at <elapsed>s on legal-mass collapse"). Never call this `improved` or `neutral` no matter what other metrics look like — the run did not run long enough to be a fair comparison.
 - Judge improvement strictly against `improvement_goal`. Do not invent a different goal. If the goal isn't moving but metrics unrelated to the goal look better, that's not an improvement.
 - If `training_elapsed_seconds` is unusually short (say < 180 s) and the results are inconclusive, prefer `is_result_improved: false` and say so in the commentary — shorter runs shouldn't ratchet progress.
 - If the two summaries have **different `build_number`** values, the app code was rebuilt between runs. Flag this prominently in the commentary and lean toward `is_result_improved: false` unless the goal metric moved by a clearly-larger margin than plausible build-drift noise.

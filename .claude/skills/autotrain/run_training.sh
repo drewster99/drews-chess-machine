@@ -127,7 +127,14 @@ APP_EXIT=$?
 kill "$WATCHDOG_PID" 2>/dev/null
 wait "$WATCHDOG_PID" 2>/dev/null
 
-if [ "$APP_EXIT" -ne 0 ]; then
+# Exit code 11 = early-bail on legal-mass collapse. The app writes a
+# valid result.json with termination_reason="legal_mass_collapse" before
+# exiting; treat as a successfully-completed (but cut-short) run that
+# still needs result.json verification. Skill step 7 will pick up the
+# termination_reason from the result and classify accordingly.
+if [ "$APP_EXIT" -eq 11 ]; then
+    echo "$PROG: app exited with status 11 (legal_mass_collapse — early bail)" | tee -a "$LOG_FILE"
+elif [ "$APP_EXIT" -ne 0 ]; then
     echo "$PROG: app exited with status $APP_EXIT" >&2
     exit 6
 fi
@@ -143,4 +150,4 @@ if ! /usr/bin/python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$OUTPU
 fi
 
 echo "$PROG: run complete, output at $OUTPUT" | tee -a "$LOG_FILE"
-exit 0
+exit "$APP_EXIT"

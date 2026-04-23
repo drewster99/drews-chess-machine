@@ -185,6 +185,7 @@ def summarize(data):
     return {
         "session_id": data.get("session_id"),
         "build_number": build_info,
+        "termination_reason": data.get("termination_reason"),
         "total_training_seconds": data.get("total_training_seconds"),
         "training_steps": data.get("training_steps"),
         "derived_budget": derived_budget,

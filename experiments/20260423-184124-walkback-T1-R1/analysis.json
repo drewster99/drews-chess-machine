@@ -1,0 +1,1 @@
+{"analysis_commentary":"Walkback T1 R1 — full collapse (max=1.0, im=1.0, au=0). Fails pass criterion (max<0.85 AND au>=1). Tier T1 (target_tau=0.6) falsified on first replicate — skipping R2/R3, moving to T2.","classification":"regressed"}
