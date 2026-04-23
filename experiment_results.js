@@ -5431,23 +5431,68 @@ window.EXPERIMENTS = [
     "analysis_commentary": "IMPROVED, major primary-metric win. illegal_mass_min=0.0850 \u2014 70% reduction from prior best 0.2886, and sustained through end of run (im_fin=0.0850). max_prob=0.8393 elevated but below 0.90 goal threshold, no collapse. above_uniform dropped 8\u21924 peak, 7\u21921 final. Trading broader above-uniform representation for a much tighter legal-mass concentration \u2014 primary goal metric improved dramatically. No promotion.",
     "training_time_seconds": null,
     "folder": "experiments/20260423-131113"
+  },
+  {
+    "timestamp": "20260423-132740",
+    "start_time_iso": "2026-04-23T13:27:40",
+    "status": "ACCEPTED",
+    "mode": "normal",
+    "change_details": "self_play_target_tau 0.7 \u2192 0.6. 0.8\u21920.7 was a major win (im 0.29\u21920.085). 0.5 regressed earlier. 0.6 tests whether the im drop continues.",
+    "changed_params": [
+      {
+        "key": "self_play_target_tau",
+        "old": 0.7,
+        "new": 0.6
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.008,
+      "grad_clip_max_norm": 30,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": true,
+      "lr_warmup_steps": 100,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 250000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "IMPROVED on the balanced goal. au_max=9 and au_fin=9 \u2014 NEW all-time record (previous 8). max_prob=0.235 \u2014 much safer margin below the 0.90 goal threshold (previous 0.84 was close). im=0.141 slightly worse than 0.085 but still vastly better than pre-regime 0.29. Net collapse-prevention is stronger (safer max) while learning diversity is broader (higher au). No promotion.",
+    "training_time_seconds": null,
+    "folder": "experiments/20260423-132740"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 120,
+  "total_iterations": 121,
   "counts": {
     "SEED": 1,
-    "ACCEPTED": 11,
+    "ACCEPTED": 12,
     "NEUTRAL": 9,
     "REJECTED": 97,
     "FAILED": 3,
     "IN_PROGRESS": 0
   },
-  "accept_rate": 0.09166666666666666,
+  "accept_rate": 0.09917355371900827,
   "failure_streak": 0,
   "trailing_replicates": 0,
-  "arena_count": 99,
-  "promotions": 3,
-  "best_arena_score": 0.555,
-  "best_arena_folder": "experiments/20260421-221834"
+  "arena_count": 100,
+  "promotions": 4,
+  "best_arena_score": 0.565,
+  "best_arena_folder": "experiments/20260423-132740"
 };
