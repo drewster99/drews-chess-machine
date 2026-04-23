@@ -1,0 +1,1 @@
+{"analysis_commentary":"Full collapse (max=1.0, im=0.994→1.0, au=0). Removing weight_decay allowed collapse even under entropy=0.008 — weight_decay was doing real work as a second regularizer. Important finding: entropy alone isn't sufficient at this level; wd=1e-4 is load-bearing.","classification":"regressed"}

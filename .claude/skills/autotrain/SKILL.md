@@ -160,7 +160,7 @@ Then spawn a general-purpose subagent with this prompt (pass as a fenced JSON bl
   "current_best_results_json_path": "<absolute path to $ROOT/results.json>",
   "recent_history": <recent_history>,
   "training_time_seconds_max": 1800,
-  "training_time_seconds_default": 600,
+  "training_time_seconds_default": 900,
   "exploration_mode": <boolean>
 }
 ```
@@ -187,11 +187,11 @@ Instructions embedded in the prompt:
   - `lr_warmup_steps` must be **≤ ⅓ of `training_steps`** from the latest run's summary (see `derived_budget.recommended_lr_warmup_max`). Above that the lr ramp never finishes in a 10-minute window, so the configured `learning_rate` is never actually exercised and the result looks like stalled learning even when the parameters are otherwise fine. The validator hard-caps at 50% of `training_steps`.
   - `replay_buffer_min_positions_before_training` eats wall-clock before any SGD step — larger values delay the first probe and reduce the number of training steps that fit in the window. Don't raise it unless you have a specific reason related to replay diversity.
   - `{training_batch_size, learning_rate, weight_decay}` are coupled through SGD noise and update magnitude. Scaling batch requires scaling lr in the same direction (linear for SGD, √-batch for Adam); `weight_decay` per-epoch also couples via the number of update steps per epoch. Don't change batch alone. The repo has `sqrt_batch_scaling_lr` which the app can apply automatically — keep that flag on unless you've thought hard about why not.
-- Only set `training_time_seconds` if you have a specific reason. The default (`training_time_seconds_default`, 600 s / 10 min) is what you get if you omit the field, and it's the right choice for typical incremental tuning. Request a longer run (up to `training_time_seconds_max`, 1800 s / 30 min) only when a change genuinely needs more training time to show signal — for example, a learning-rate decrease that slows convergence, a larger batch size that needs more steps per epoch, or a change whose effect is dominated by late-training dynamics (pEnt trajectory past 10 min, arena cadence, promotion behavior). Do not request a long run just to gather more data on a change that would already show signal at 600 s. If you do set it, include a brief `training_time_rationale` naming the specific reason.
+- Only set `training_time_seconds` if you have a specific reason. The default (`training_time_seconds_default`, 900 s / 15 min) is what you get if you omit the field, and it's the right choice for typical incremental tuning. Request a longer run (up to `training_time_seconds_max`, 1800 s / 30 min) only when a change genuinely needs more training time to show signal — for example, a learning-rate decrease that slows convergence, a larger batch size that needs more steps per epoch, or a change whose effect is dominated by late-training dynamics (pEnt trajectory past 15 min, arena cadence, promotion behavior). Do not request a long run just to gather more data on a change that would already show signal at 900 s. If you do set it, include a brief `training_time_rationale` naming the specific reason.
 
 **After** the subagent returns:
 1. Parse the JSON. If parsing fails or required keys (`change_details`, `parameters`) are missing, retry once with a terser reminder of the schema. If the retry also fails, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "proposer returned invalid JSON twice — skipping iteration"}`, run `regen_dashboard.py`, and jump to step 8 (reject).
-2. If `training_time_seconds` is present, clamp to `[60, 1800]`. If absent, use 600 (the default).
+2. If `training_time_seconds` is present, clamp to `[60, 1800]`. If absent, use 900 (the default).
 3. Save the full raw JSON response to `<folder>/proposal.json`.
 4. Write `change_details` to `<folder>/proposal.md`.
 5. Write the `parameters` object to `<folder>/parameters.json`.
@@ -318,6 +318,6 @@ Print a one-line summary: `autotrain <timestamp>: ACCEPTED|REJECTED — <change_
 - Never run `git reset`, `git stash`, or `git rebase`.
 - Never force-push.
 - Never skip commit hooks.
-- The per-iteration time limit is hard-capped at 1800 seconds (30 min); the default when the proposer doesn't specify is 600 seconds (10 min). If a subagent requests a longer run, clamp it to 1800.
+- The per-iteration time limit is hard-capped at 1800 seconds (30 min); the default when the proposer doesn't specify is 900 seconds (15 min). If a subagent requests a longer run, clamp it to 1800.
 - Only push to the branch the user confirmed in step 0 of the current session. If branch changed mid-loop, re-confirm.
 - If `git status` shows unexpected staged changes at iteration start, stop and surface them — don't sweep them into an autotrain commit.

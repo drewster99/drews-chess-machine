@@ -1,0 +1,1 @@
+{"analysis_commentary":"Full collapse (max=1.0, im=0.9999) under lr=7e-5 + entropy=0.008. Higher LR still breaks stability even with stronger entropy. Axis limit: lr=5e-5 is the ceiling under this regime too.","classification":"regressed"}

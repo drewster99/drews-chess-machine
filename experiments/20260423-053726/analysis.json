@@ -1,0 +1,1 @@
+{"analysis_commentary":"Uniform attractor again: im=0.9994, au=0, max=0.52 (no collapse, no learning). warmup=50 didn't unlock anything at 15 min. Seed variance keeps dominating single runs within the entropy=0.008 basin. Classification: regressed vs current best.","classification":"regressed"}

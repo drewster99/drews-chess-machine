@@ -1,7 +1,7 @@
 {
   "entropy_bonus": 0.008,
   "grad_clip_max_norm": 30,
-  "weight_decay": 0.0002,
+  "weight_decay": 0,
   "K": 5,
   "learning_rate": 0.00005,
   "sqrt_batch_scaling_lr": true,
