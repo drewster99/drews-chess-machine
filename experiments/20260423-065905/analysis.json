@@ -1,0 +1,1 @@
+{"analysis_commentary":"Near-collapse regression: max=0.9064 crosses the 0.90 goal threshold, im=0.9991→1.0, au=0. Looser clipping at 40 destabilizes even with wd=2e-4 buffer.","classification":"regressed"}
