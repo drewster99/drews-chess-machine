@@ -1,0 +1,1 @@
+{"analysis_commentary":"Regressed: illegal_mass_min 0.49→0.9998 (no legal-mass allocation), above_uniform max 5→0. Not a hard collapse (max peaked at 0.54, final 0.40) but the policy failed to learn. 322 steps vs baseline 339 (slower self-play fill with 24 workers). Workers-down axis does not help; try workers-up next.","classification":"regressed"}

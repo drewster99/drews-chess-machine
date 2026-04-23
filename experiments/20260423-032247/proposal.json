@@ -1,0 +1,17 @@
+{
+  "change_details": "Target the entropy sweet spot: raise entropy_bonus 0.0025 → 0.005. ent=0.008 prevented collapse decisively but kept pEnt flat at ~uniform (never learned), and ent=0.0025/0.004 frequently collapse. 0.005 is the midpoint — hypothesis is that it's high enough to resist the single-logit runaway mode seen at 0.0025 but low enough to permit gradients to push legal-move probabilities above uniform. This is the search direction implied by the entropy-axis data we now have.",
+  "parameters": {
+    "entropy_bonus": 0.005, "grad_clip_max_norm": 30, "weight_decay": 0.0001,
+    "K": 5, "learning_rate": 0.00005, "sqrt_batch_scaling_lr": true, "lr_warmup_steps": 100,
+    "draw_penalty": 0.1,
+    "self_play_start_tau": 2, "self_play_target_tau": 0.8, "self_play_tau_decay_per_ply": 0.03,
+    "arena_start_tau": 2, "arena_target_tau": 0.5, "arena_tau_decay_per_ply": 0.01,
+    "replay_ratio_target": 1, "replay_ratio_auto_adjust": true,
+    "self_play_workers": 32, "training_step_delay_ms": 0, "training_batch_size": 4096,
+    "replay_buffer_capacity": 500000, "replay_buffer_min_positions_before_training": 250000,
+    "arena_promote_threshold": 0.55, "arena_games_per_tournament": 100, "arena_auto_interval_sec": 300,
+    "candidate_probe_interval_sec": 15, "training_time_limit": 3600
+  },
+  "training_time_seconds": 600,
+  "training_time_rationale": "pin 10-min cap"
+}

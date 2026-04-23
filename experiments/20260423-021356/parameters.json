@@ -1,5 +1,5 @@
 {
-  "entropy_bonus": 0.008,
+  "entropy_bonus": 0.0025,
   "grad_clip_max_norm": 30,
   "weight_decay": 0.0001,
   "K": 5,
@@ -21,7 +21,7 @@
   "replay_buffer_capacity": 500000,
   "replay_buffer_min_positions_before_training": 250000,
   "arena_promote_threshold": 0.55,
-  "arena_games_per_tournament": 100,
+  "arena_games_per_tournament": 50,
   "arena_auto_interval_sec": 300,
   "candidate_probe_interval_sec": 15,
   "training_time_limit": 3600

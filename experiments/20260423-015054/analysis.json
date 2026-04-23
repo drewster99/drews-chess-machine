@@ -1,0 +1,1 @@
+{"analysis_commentary":"Full collapse. max_prob hit 1.000, locked at 1.000 at run end, illegal_mass 0.9995+ throughout, above_uniform stayed at 0. 338 steps (near baseline 339) so no throughput problem. Worker axis now bracketed on both sides: 24 regressed (never collapsed but failed to learn), 32 optimal, 40 hard-collapsed.","classification":"regressed"}

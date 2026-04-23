@@ -1,0 +1,17 @@
+{
+  "change_details": "PIVOT after two failed replicates confirmed current 'best' is a lucky seed. Raise entropy_bonus from 0.0025 to 0.004. Historical evidence: iteration 20260422-002419 (au=7, im=0.23) used entropy_bonus=0.004 + min_positions=300k under an older build and was the best learning-progress run on record. Entropy bonus is the known-strongest collapse preventer in this codebase. The 'entropy=0.002 regressed' finding we relied on was a single-run noise measurement at params now known to be seed-unstable, so the 0.0025 floor is invalidated. Moving to 0.004 widens the seed-stable basin at the cost of slightly softer policy peaking — acceptable given 2/3 recent runs at 0.0025 collapsed.",
+  "parameters": {
+    "entropy_bonus": 0.004, "grad_clip_max_norm": 30, "weight_decay": 0.0001,
+    "K": 5, "learning_rate": 0.00005, "sqrt_batch_scaling_lr": true, "lr_warmup_steps": 100,
+    "draw_penalty": 0.1,
+    "self_play_start_tau": 2, "self_play_target_tau": 0.8, "self_play_tau_decay_per_ply": 0.03,
+    "arena_start_tau": 2, "arena_target_tau": 0.5, "arena_tau_decay_per_ply": 0.01,
+    "replay_ratio_target": 1, "replay_ratio_auto_adjust": true,
+    "self_play_workers": 32, "training_step_delay_ms": 0, "training_batch_size": 4096,
+    "replay_buffer_capacity": 500000, "replay_buffer_min_positions_before_training": 250000,
+    "arena_promote_threshold": 0.55, "arena_games_per_tournament": 100, "arena_auto_interval_sec": 300,
+    "candidate_probe_interval_sec": 15, "training_time_limit": 3600
+  },
+  "training_time_seconds": 600,
+  "training_time_rationale": "pin 10-min cap"
+}

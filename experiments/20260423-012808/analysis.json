@@ -1,0 +1,1 @@
+{"analysis_commentary":"Full collapse. max_prob hit 1.000, locked at 1.000 at run end, illegal_mass 0.9985+ throughout, above_uniform never rose above 0. 335 steps (near baseline 339). LR axis now bracketed on BOTH sides: 3e-5 full collapse, 5e-5 optimal, 7e-5 full collapse. The 5e-5 basin is narrow on this axis.","classification":"regressed"}

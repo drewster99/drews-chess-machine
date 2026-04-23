@@ -1,0 +1,1 @@
+{"analysis_commentary":"Full collapse and no arena fired. max_prob locked at 1.0, illegal_mass 0.9961+, above_uniform 0 throughout. arena never triggered (window ended before t=600s interval elapsed). 342 steps (near baseline). arena_auto_interval_sec axis is now fully tested: 300=optimum, 600 collapses (no arena), 900 regresses (no arena).","classification":"regressed"}

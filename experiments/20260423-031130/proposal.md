@@ -1,0 +1,1 @@
+Jump entropy_bonus 0.0025 → 0.008 (3.2x). 0.004 also collapsed; small perturbations don't escape the current collapse basin. Diagnostic: if 0.008 also collapses, problem is upstream of entropy regularization.
