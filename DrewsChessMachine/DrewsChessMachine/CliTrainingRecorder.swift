@@ -26,11 +26,23 @@ final class CliTrainingRecorder: @unchecked Sendable {
     /// `currentSessionID` directly.
     private var sessionID: String?
 
+    /// Termination reason captured by the writing path (timer task
+    /// or collapse detector). Readers should call
+    /// `setTerminationReason(_:)` before `writeJSON(...)`.
+    private var terminationReason: TerminationReason?
+
     init() {}
 
     func setSessionID(_ id: String?) {
         lock.lock(); defer { lock.unlock() }
         sessionID = id
+    }
+
+    /// Record how the run ended. Safe to call from any thread — the
+    /// value is included in the next snapshot write.
+    func setTerminationReason(_ reason: TerminationReason) {
+        lock.lock(); defer { lock.unlock() }
+        terminationReason = reason
     }
 
     func appendArena(_ a: Arena) {
@@ -66,6 +78,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let snapshot = Snapshot(
             totalTrainingSeconds: totalTrainingSeconds,
             trainingElapsedSeconds: totalTrainingSeconds,
+            terminationReason: terminationReason,
             sessionID: sessionID,
             trainingSteps: stats.last?.steps,
             positionsTrained: stats.last?.positionsTrained,
@@ -113,6 +126,32 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
     // MARK: - Root snapshot
 
+    /// Reason the --train session ended. Written as a top-level
+    /// `termination_reason` string in the output JSON so autotrain
+    /// and offline analysis can distinguish a clean deadline expiry
+    /// from an aborted collapse without parsing the stats stream.
+    /// Snake-case raw values are what lands in the JSON.
+    enum TerminationReason: String, Encodable, Sendable {
+        /// The `training_time_limit` deadline fired and the snapshot
+        /// was written cleanly at its scheduled moment.
+        case timerExpired = "timer_expired"
+        /// The legal-mass collapse detector found `illegalMass`
+        /// above threshold for enough consecutive probes that the
+        /// run was aborted early; the snapshot is still written
+        /// with whatever telemetry had been captured up to that
+        /// point.
+        case legalMassCollapse = "legal_mass_collapse"
+        /// User-initiated stop (UI Stop button or equivalent)
+        /// reached the CLI snapshot writer. Placeholder for future
+        /// wiring — the current CLI path doesn't expose a manual-
+        /// stop hook, but the enum value is defined so downstream
+        /// readers can match on it once it does.
+        case manualStop = "manual_stop"
+        /// An unrecoverable error during training tripped the
+        /// snapshot-then-exit path. Placeholder for future wiring.
+        case error = "error"
+    }
+
     struct Snapshot: Encodable, Sendable {
         let totalTrainingSeconds: Double
         /// Duplicate of `totalTrainingSeconds` under a more
@@ -124,6 +163,11 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// glance ("how long did training actually run for," not
         /// "what was the training time budget").
         let trainingElapsedSeconds: Double
+        /// How the run ended. See `TerminationReason`. Nil only in
+        /// the (historical) case where the snapshot is written by
+        /// a path that didn't set a reason; callers are expected to
+        /// set it before `writeJSON`.
+        let terminationReason: TerminationReason?
         let sessionID: String?
         /// Trainer steps at the moment of the last [STATS] line.
         /// Nil when the run ended before any stats line fired
@@ -139,6 +183,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         enum CodingKeys: String, CodingKey {
             case totalTrainingSeconds = "total_training_seconds"
             case trainingElapsedSeconds = "training_elapsed_seconds"
+            case terminationReason = "termination_reason"
             case sessionID = "session_id"
             case trainingSteps = "training_steps"
             case positionsTrained = "positions_trained"

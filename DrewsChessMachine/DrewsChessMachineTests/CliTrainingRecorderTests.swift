@@ -45,9 +45,37 @@ final class CliTrainingRecorderTests: XCTestCase {
         XCTAssertEqual(json["session_id"] as? String, "20260421-1-ABCD")
         XCTAssertNil(json["training_steps"] as? Int)  // no stats line → nil
         XCTAssertNil(json["positions_trained"] as? Int)
+        // No termination reason set → field omitted entirely (not
+        // written as null). Encoded JSON should not contain the key.
+        XCTAssertFalse(json.keys.contains("termination_reason"))
         XCTAssertEqual((json["arena_results"] as? [Any])?.count, 0)
         XCTAssertEqual((json["stats"] as? [Any])?.count, 0)
         XCTAssertEqual((json["candidate_tests"] as? [Any])?.count, 0)
+    }
+
+    // MARK: - Termination reason
+
+    func testTerminationReasonTimerExpired() throws {
+        let r = CliTrainingRecorder()
+        r.setTerminationReason(.timerExpired)
+        let json = try writeAndDecode(r, totalTrainingSeconds: 600)
+        XCTAssertEqual(json["termination_reason"] as? String, "timer_expired")
+    }
+
+    func testTerminationReasonLegalMassCollapse() throws {
+        let r = CliTrainingRecorder()
+        r.setTerminationReason(.legalMassCollapse)
+        let json = try writeAndDecode(r, totalTrainingSeconds: 180)
+        XCTAssertEqual(json["termination_reason"] as? String, "legal_mass_collapse")
+    }
+
+    func testTerminationReasonEnumRawValues() {
+        // Lock the wire format — downstream autotrain keys on these
+        // exact strings, so a rename here must be a coordinated change.
+        XCTAssertEqual(CliTrainingRecorder.TerminationReason.timerExpired.rawValue, "timer_expired")
+        XCTAssertEqual(CliTrainingRecorder.TerminationReason.legalMassCollapse.rawValue, "legal_mass_collapse")
+        XCTAssertEqual(CliTrainingRecorder.TerminationReason.manualStop.rawValue, "manual_stop")
+        XCTAssertEqual(CliTrainingRecorder.TerminationReason.error.rawValue, "error")
     }
 
     // MARK: - Stats line

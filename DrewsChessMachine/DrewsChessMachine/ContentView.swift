@@ -8547,6 +8547,7 @@ struct ContentView: View {
                         SessionLogger.shared.log(
                             "[APP] --train: training_time_limit=\(deadlineSec)s reached at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
                         )
+                        recorder.setTerminationReason(.timerExpired)
                         let counts = recorder.countsSnapshot()
                         do {
                             if let outputURL {
@@ -8564,6 +8565,126 @@ struct ContentView: View {
                         }
                         SessionLogger.shared.log("[APP] --train: exiting process after snapshot")
                         Darwin._exit(0)
+                    }
+                }
+
+                // Legal-mass collapse detector. Runs in every session
+                // (interactive or --train), probes at 15 s cadence
+                // with a 60 s grace period after session start, flags
+                // the collapse banner once the network has shown
+                // `illegalMass > 0.99` for `collapseProbesToAbort`
+                // consecutive probes. In interactive mode we stop at
+                // the banner — the user sees it and decides what to
+                // do. In --train mode we ALSO write the snapshot with
+                // `termination_reason = legal_mass_collapse` and exit
+                // the process (status 0 — a clean early abort, not a
+                // crash; scripting distinguishes via the JSON field
+                // rather than exit code per the user's spec).
+                // Local "session start" for the collapse detector.
+                // The --train timer task uses its own `runStart`;
+                // both are set at roughly the same moment in the
+                // task-group setup (drift < 1 ms) and the two are
+                // only used for "elapsed since session start"
+                // display in logs/alarms, so a separate declaration
+                // is intentional — it keeps the detector
+                // self-contained and doesn't require plumbing the
+                // timer task's runStart into this closure.
+                let collapseRunStart = Date()
+                let collapseRecorder: CliTrainingRecorder? = (isAutoTrainRun ? recorder : nil)
+                let collapseOutputURL: URL? = outputURL
+                group.addTask(priority: .utility) {
+                    [trainer, buffer] in
+                    let probeIntervalSec: UInt64 = 15
+                    let gracePeriodSec: TimeInterval = 60.0
+                    let illegalMassThreshold: Double = 0.99
+                    let consecutiveAbortCount = 8
+                    let sampleSize = 128
+                    var consecutive = 0
+                    var aborted = false
+                    while !Task.isCancelled && !aborted {
+                        do {
+                            try await Task.sleep(for: .seconds(probeIntervalSec))
+                        } catch {
+                            return
+                        }
+                        if Task.isCancelled { return }
+                        let elapsed = Date().timeIntervalSince(collapseRunStart)
+                        if elapsed < gracePeriodSec { continue }
+                        guard buffer.count >= sampleSize else { continue }
+
+                        let snap: ChessTrainer.LegalMassSnapshot?
+                        do {
+                            snap = try await trainer.legalMassSnapshot(
+                                replayBuffer: buffer,
+                                sampleSize: sampleSize
+                            )
+                        } catch {
+                            SessionLogger.shared.log(
+                                "[STATS-ERR] collapse-detector legalMassSnapshot failed: \(error.localizedDescription)"
+                            )
+                            continue
+                        }
+                        guard let snap else { continue }
+                        let illegalMass = 1.0 - snap.legalMass
+                        if illegalMass > illegalMassThreshold {
+                            consecutive += 1
+                            SessionLogger.shared.log(
+                                String(format: "[ALARM] legal-mass collapse probe %d/%d: illegalMass=%.4f > %.2f (legalMass=%.4f)",
+                                    consecutive, consecutiveAbortCount, illegalMass, illegalMassThreshold, snap.legalMass)
+                            )
+                            await MainActor.run {
+                                self.raiseTrainingAlarm(
+                                    severity: .critical,
+                                    title: "Policy Collapse (legal mass)",
+                                    detail: String(format: "illegalMass=%.4f > %.2f for %d/%d consecutive probes",
+                                        illegalMass, illegalMassThreshold, consecutive, consecutiveAbortCount)
+                                )
+                            }
+                        } else {
+                            if consecutive > 0 {
+                                SessionLogger.shared.log(
+                                    String(format: "[ALARM] legal-mass collapse probe recovered: illegalMass=%.4f ≤ %.2f (streak was %d)",
+                                        illegalMass, illegalMassThreshold, consecutive)
+                                )
+                            }
+                            consecutive = 0
+                        }
+
+                        if consecutive >= consecutiveAbortCount {
+                            aborted = true
+                            SessionLogger.shared.log(
+                                String(format: "[ALARM] legal-mass collapse confirmed: %d consecutive probes illegalMass > %.2f — aborting",
+                                    consecutive, illegalMassThreshold)
+                            )
+                            if let rec = collapseRecorder {
+                                let destDescription = collapseOutputURL?.path ?? "<stdout>"
+                                SessionLogger.shared.log(
+                                    "[APP] --train: legal-mass collapse abort at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
+                                )
+                                rec.setTerminationReason(.legalMassCollapse)
+                                let counts = rec.countsSnapshot()
+                                do {
+                                    if let url = collapseOutputURL {
+                                        try rec.writeJSON(to: url, totalTrainingSeconds: elapsed)
+                                    } else {
+                                        try rec.writeJSONToStdout(totalTrainingSeconds: elapsed)
+                                    }
+                                    SessionLogger.shared.log(
+                                        "[APP] --train: wrote snapshot to \(destDescription) (arenas=\(counts.arenas), stats=\(counts.stats), probes=\(counts.probes))"
+                                    )
+                                } catch {
+                                    SessionLogger.shared.log(
+                                        "[APP] --train: snapshot write FAILED for \(destDescription): \(error.localizedDescription)"
+                                    )
+                                }
+                                SessionLogger.shared.log("[APP] --train: exiting process after collapse-abort snapshot")
+                                Darwin._exit(0)
+                            }
+                            // Interactive session: alarm already
+                            // raised, loop stays exited so we stop
+                            // probing (no value continuing once a
+                            // confirmed collapse has been flagged).
+                        }
                     }
                 }
 
