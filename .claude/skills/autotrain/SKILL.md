@@ -143,7 +143,7 @@ Regardless of mode:
        - `change_details` — the proposer's original rationale (from `proposal.json`). Continuity of prior reasoning.
        - `changed_params_diff` — the params-vs-previous diff.
        - `analysis_commentary` — the analyzer's rebuttal (from `analysis.json`).
-       - `training_time_seconds` — from `<folder>/training_time.txt` if present, else `null`.
+       - `training_elapsed_seconds` — from `<folder>/result.json` under the same-named key (actual wall-clock time the run lasted, written by the app). Null only for older runs that completed before this field was introduced; in that case fall back to `<folder>/training_time.txt` and then to the iteration's `proposal.json["training_time_seconds"]` budget.
        - `summary` — summarizer output on `<folder>/result.json` if valid, else `null`.
        - `result_json_path` — absolute path to `<folder>/result.json`.
        - `parameters_json_path` — absolute path to `<folder>/parameters.json`.
@@ -219,7 +219,7 @@ Spawn a general-purpose subagent with this prompt:
 ```json
 {
   "improvement_goal": "<contents of goal.txt>",
-  "training_time_seconds": <contents of <folder>/training_time.txt as an integer>,
+  "training_elapsed_seconds": <contents of <folder>/result.json's `training_elapsed_seconds` field as an integer; null if the run pre-dates the field>,
   "change_proposal": <contents of proposal.json>,
   "previous_results_summary": <previous_summary>,
   "previous_results_json_path": "<absolute path to <folder>/previous_result.json>",
@@ -231,7 +231,7 @@ Spawn a general-purpose subagent with this prompt:
 Instructions embedded in the prompt:
 - The summaries are digests of ~1 MB JSON files. For specific details not in the summaries, use `jq` or `python3` via Bash against the paths. **Do not Read the JSON files** — they'll blow your context.
 - Judge improvement strictly against `improvement_goal`. Do not invent a different goal. If the goal isn't moving but metrics unrelated to the goal look better, that's not an improvement.
-- If `training_time_seconds` is unusually short (say < 180 s) and the results are inconclusive, prefer `is_result_improved: false` and say so in the commentary — shorter runs shouldn't ratchet progress.
+- If `training_elapsed_seconds` is unusually short (say < 180 s) and the results are inconclusive, prefer `is_result_improved: false` and say so in the commentary — shorter runs shouldn't ratchet progress.
 - If the two summaries have **different `build_number`** values, the app code was rebuilt between runs. Flag this prominently in the commentary and lean toward `is_result_improved: false` unless the goal metric moved by a clearly-larger margin than plausible build-drift noise.
 - Classify the run into **one of three buckets** (this is how the skill decides whether to accept, do nothing, or count against the failure streak):
   - **`improved`** — the goal metric(s) moved in the right direction by clearly more than plausible noise. Ratcheted progress. This iteration will be promoted to root and committed.

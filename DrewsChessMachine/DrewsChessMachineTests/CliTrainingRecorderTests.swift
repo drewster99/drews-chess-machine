@@ -41,6 +41,7 @@ final class CliTrainingRecorderTests: XCTestCase {
         r.setSessionID("20260421-1-ABCD")
         let json = try writeAndDecode(r, totalTrainingSeconds: 3.25)
         XCTAssertEqual(json["total_training_seconds"] as? Double, 3.25)
+        XCTAssertEqual(json["training_elapsed_seconds"] as? Double, 3.25)
         XCTAssertEqual(json["session_id"] as? String, "20260421-1-ABCD")
         XCTAssertNil(json["training_steps"] as? Int)  // no stats line → nil
         XCTAssertNil(json["positions_trained"] as? Int)

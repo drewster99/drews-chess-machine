@@ -65,6 +65,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         lock.lock()
         let snapshot = Snapshot(
             totalTrainingSeconds: totalTrainingSeconds,
+            trainingElapsedSeconds: totalTrainingSeconds,
             sessionID: sessionID,
             trainingSteps: stats.last?.steps,
             positionsTrained: stats.last?.positionsTrained,
@@ -114,6 +115,15 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
     struct Snapshot: Encodable, Sendable {
         let totalTrainingSeconds: Double
+        /// Duplicate of `totalTrainingSeconds` under a more
+        /// self-explanatory key. `total_training_seconds` has
+        /// historically been emitted and is kept for backward
+        /// compatibility with existing analysis tools, but going
+        /// forward the dashboard / autotrain skill reads this
+        /// field, which is named to make its meaning obvious at a
+        /// glance ("how long did training actually run for," not
+        /// "what was the training time budget").
+        let trainingElapsedSeconds: Double
         let sessionID: String?
         /// Trainer steps at the moment of the last [STATS] line.
         /// Nil when the run ended before any stats line fired
@@ -128,6 +138,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
         enum CodingKeys: String, CodingKey {
             case totalTrainingSeconds = "total_training_seconds"
+            case trainingElapsedSeconds = "training_elapsed_seconds"
             case sessionID = "session_id"
             case trainingSteps = "training_steps"
             case positionsTrained = "positions_trained"

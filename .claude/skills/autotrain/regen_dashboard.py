@@ -115,19 +115,31 @@ def build_row(folder: Path):
     commentary = ""
     if isinstance(analysis, dict):
         commentary = analysis.get("analysis_commentary", "") or ""
-    # Training-time resolution. The skill is supposed to write
-    # `training_time.txt` on each proposal, but that step has
-    # historically been skipped in some runs. Fall back to the same
-    # value as recorded inside `proposal.json` (populated from the
-    # same clamp path) so the duration column still renders. Final
-    # fallback: nothing known, column shows em-dash.
+    # Training-time resolution. Authoritative source going forward
+    # is `result.json["training_elapsed_seconds"]` — actual wall
+    # clock the training loop ran for, written by the app. For runs
+    # that completed before that field existed, fall back to
+    # `training_time.txt` (a pre-run budget file the skill used to
+    # write) and then to `proposal.json["training_time_seconds"]`
+    # (the same budget, restated). No fallback is ever applied to a
+    # NEW run — if a run fires after this change and its result
+    # lacks the field, something is wrong and the duration column
+    # should stay empty so the gap is visible.
     training_time = None
-    tt_file = folder / "training_time.txt"
-    if tt_file.is_file():
-        try:
-            training_time = int(tt_file.read_text().strip())
-        except (ValueError, OSError):
-            training_time = None
+    result = load_json(folder / "result.json")
+    if isinstance(result, dict):
+        raw = result.get("training_elapsed_seconds")
+        if isinstance(raw, (int, float)):
+            training_time = int(raw)
+    # Fallbacks ONLY when result.json doesn't carry the new field
+    # (i.e. the run pre-dates the field's introduction).
+    if training_time is None:
+        tt_file = folder / "training_time.txt"
+        if tt_file.is_file():
+            try:
+                training_time = int(tt_file.read_text().strip())
+            except (ValueError, OSError):
+                training_time = None
     if training_time is None and isinstance(proposal, dict):
         raw = proposal.get("training_time_seconds")
         if isinstance(raw, (int, float)):
