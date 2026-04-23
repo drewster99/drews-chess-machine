@@ -265,6 +265,14 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             )
             diversityTracker.recordGame(moves: machine.moveHistory)
 
+            // Metadata-only feed to the controller: every completed
+            // game refreshes `positionsPerGame` (used only to convert
+            // the sp-slowdown signed delay into a per-worker per-game
+            // sleep). The rate measurement ITSELF comes from the
+            // batcher's per-barrier-tick hook — much finer
+            // granularity and uncontaminated by applied sleeps.
+            replayRatioController?.recordSelfPlayGameLength(positions)
+
             // Replay-ratio self-play throttle. Applied after a game
             // has fully flushed (recordCompletedGame + recordGame) and
             // *before* the next `beginNewGame`, so no partial-game

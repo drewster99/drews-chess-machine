@@ -61,6 +61,20 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// the batch until the count is raised back up.
     private var expectedSlotCount: Int = 0
 
+    /// Optional replay-ratio controller. When set, the batcher reports
+    /// a `recordSelfPlayBarrierTick` event after each successful
+    /// `graph.run` while in normal (non-drain) mode. The controller
+    /// computes aggregate self-play ms-per-move from the
+    /// (positions_produced, elapsed) pair — far finer-grained than
+    /// the previous once-per-game event cadence.
+    private var replayRatioController: ReplayRatioController? = nil
+
+    /// CFAbsoluteTime (seconds, monotonic-ish) of the previous barrier
+    /// fire, used to compute inter-tick elapsed for the ratio
+    /// controller. Nil before the first fire — skipped because there
+    /// is no prior to subtract from.
+    private var lastBarrierFireAt: CFAbsoluteTime? = nil
+
     /// Parked submissions awaiting the next batch fire.
     private var pending: [Pending] = []
     private var batchFireScheduled = false
@@ -127,9 +141,32 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     func setExpectedSlotCount(_ n: Int) {
         precondition(n >= 0, "expectedSlotCount must be >= 0")
         expectedSlotCount = n
+        // Entering drain mode means the steady-state production
+        // measurement series is interrupted — slots are being torn
+        // down, fires from here until re-engagement are either
+        // stragglers or nothing at all. Clear the last-fire timestamp
+        // so the first post-resume fire is SKIPPED (no spurious
+        // multi-minute elapsed across the pause window) rather than
+        // producing a garbage ms/move sample that would swing the
+        // controller hard.
+        if n == 0 {
+            lastBarrierFireAt = nil
+        }
         if !pending.isEmpty && (n == 0 || pending.count >= n) {
             scheduleBatchFireIfNeeded()
         }
+    }
+
+    /// Install the replay-ratio controller. Called once at session
+    /// start, after the controller is built. A nil assignment
+    /// disables tick reporting — the batcher otherwise has no
+    /// observable effect whether or not the controller is attached.
+    /// `lastBarrierFireAt` is cleared alongside so a re-attach after
+    /// a session break doesn't report an absurd multi-minute elapsed
+    /// on the first post-reattach tick.
+    func setReplayRatioController(_ controller: ReplayRatioController?) {
+        replayRatioController = controller
+        lastBarrierFireAt = nil
     }
 
     // MARK: - Inference
@@ -224,6 +261,30 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             #if DEBUG
             runBatchCorrectnessCheckIfNeeded(batch: batch, policy: policy, values: values)
             #endif
+
+            // Report this tick to the replay-ratio controller. One
+            // barrier fire = one "measurement event" on the self-play
+            // side; the (count, elapsed) pair is an aggregate
+            // ms-per-move sample by construction. Drain-mode fires
+            // (`expectedSlotCount == 0`) are skipped — those are
+            // shutdown / arena-pause stragglers, not representative
+            // of steady-state production rate. First fire after a
+            // reattach is also skipped because `lastBarrierFireAt`
+            // is nil and the elapsed would be meaningless.
+            if let controller = replayRatioController, expectedSlotCount > 0 {
+                let nowFire = CFAbsoluteTimeGetCurrent()
+                if let last = lastBarrierFireAt {
+                    let elapsedMs = (nowFire - last) * 1000.0
+                    if elapsedMs > 0 {
+                        controller.recordSelfPlayBarrierTick(
+                            positionsProduced: count,
+                            elapsedMs: elapsedMs,
+                            workerCount: expectedSlotCount
+                        )
+                    }
+                }
+                lastBarrierFireAt = nowFire
+            }
 
             for (i, item) in batch.enumerated() {
                 let start = i * Self.policySize

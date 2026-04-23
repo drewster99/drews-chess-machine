@@ -1814,7 +1814,7 @@ struct ContentView: View {
     /// already turns a ~60 steps/s training worker into roughly
     /// 2 steps/s, which is as slow as anyone reasonably wants to
     /// crawl the learning rate while still making progress.
-    nonisolated static let stepDelayMaxMs: Int = 2000
+    nonisolated static let stepDelayMaxMs: Int = 3000
     /// Upper bound on the self-play-side per-game delay the replay-
     /// ratio auto-adjuster may impose. This is the reverse lever
     /// that kicks in when GPU training overhead alone exceeds the
@@ -1824,7 +1824,7 @@ struct ContentView: View {
     /// aggregate production, which is usually more than enough to
     /// bring the ratio back. 2000 ms is the ceiling so a runaway
     /// auto-adjust can't stall the session outright.
-    nonisolated static let selfPlayDelayMaxMs: Int = 2000
+    nonisolated static let selfPlayDelayMaxMs: Int = 3000
     /// Discrete ladder of valid training-step delay values in
     /// milliseconds. Fine-grained 5 ms increments at the low end
     /// where small delays matter most, then 25 ms increments all
@@ -2734,6 +2734,19 @@ struct ContentView: View {
 
             cumulativeStatusBar
 
+            // Replay-ratio diagnostics strip. One fixed-width line
+            // right-aligned beneath the status bar, sitting directly
+            // above the Training column where the Trainer ID is
+            // displayed. Every field has a fixed character width via
+            // `.frame(width:)` so the row never reflows — no jitter
+            // as counts grow/shrink, no wrapping even when all values
+            // are at their widest 4-digit form. The whole row is
+            // hidden when the controller isn't running (before a
+            // session starts) so it doesn't reserve vertical space.
+            if realTraining, let snap = replayRatioSnapshot {
+                replayRatioDiagnosticsRow(snap: snap)
+            }
+
             // Status row — the action controls previously lived here
             // but have all moved to the File / Train / Debug menus at
             // the top of the screen. This row now just shows the busy
@@ -3356,6 +3369,7 @@ struct ContentView: View {
                     arenaEvents: arenaChartEvents,
                     activeArenaStartElapsed: activeArenaStartElapsed,
                     promoteThreshold: effectivePromoteThreshold,
+                    replayRatioTarget: replayRatioTarget,
                     appMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
                     gpuMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
                     visibleDomainSec: ChartZoom.stops[chartZoomIdx],
@@ -7534,7 +7548,7 @@ struct ContentView: View {
             initialDelayMs: replayRatioAutoAdjust
             ? lastAutoComputedDelayMs
             : trainingStepDelayMs,
-            maxDelayMs: Self.stepDelayMaxMs,
+            maxTrainingStepDelayMs: Self.stepDelayMaxMs,
             maxSelfPlayDelayMs: Self.selfPlayDelayMaxMs
         )
         replayRatioController = ratioController
@@ -7875,6 +7889,13 @@ struct ContentView: View {
             // when arena requests it (replacing the previous
             // per-worker gate array).
             let selfPlayBatcher = BatchedMoveEvaluationSource(network: network)
+            // Wire the ratio controller into the batcher so every
+            // barrier fire reports an aggregate (positions, elapsed)
+            // measurement. `setReplayRatioController` is actor-
+            // isolated, so it's dispatched via a `Task`.
+            Task { [ratioController] in
+                await selfPlayBatcher.setReplayRatioController(ratioController)
+            }
             let selfPlayDriver = BatchedSelfPlayDriver(
                 batcher: selfPlayBatcher,
                 buffer: buffer,
@@ -7979,15 +8000,15 @@ struct ContentView: View {
                         }
 
                         // Post-step pause. The replay-ratio controller
-                        // records the step, computes the 1-minute rolling
-                        // production/consumption ratio, and when auto-
-                        // adjust is enabled returns a computed delay that
-                        // brings the ratio toward the target. When auto-
-                        // adjust is off, the controller returns the manual
-                        // delay. Skip the sleep entirely at 0 ms.
-                        let stepDelayMs = ratioController.recordStepAndGetDelay(
-                            currentBufferTotal: buffer.totalPositionsAdded,
-                            stepTimeMs: timing.totalMs
+                        // records the SGD batch time, updates its
+                        // training ms-per-move estimate, and returns
+                        // the closed-form sleep that would bring
+                        // consumption/production toward the target
+                        // ratio. When auto-adjust is off, it returns
+                        // the manual delay instead. Skip the sleep
+                        // entirely at 0 ms.
+                        let stepDelayMs = ratioController.recordTrainingBatchAndGetDelay(
+                            elapsedMs: timing.totalMs
                         )
                         if stepDelayMs > 0 {
                             try? await Task.sleep(for: .milliseconds(stepDelayMs))
@@ -8157,11 +8178,24 @@ struct ContentView: View {
                         if warmupSteps > 0 && completedSteps < warmupSteps {
                             lrStr += "·warmup(\(completedSteps)/\(warmupSteps))"
                         }
-                        let ratioStr = String(format: "target=%.2f cur=%.2f prod=%.1f cons=%.1f auto=%@ delay=%dms spDelay=%dms",
+                        let spMsStr: String
+                        if let sp = ratioSnap.selfPlayMsPerMove {
+                            spMsStr = String(format: "%.2f", sp)
+                        } else {
+                            spMsStr = "--"
+                        }
+                        let trMsStr: String
+                        if let tr = ratioSnap.trainingMsPerMove {
+                            trMsStr = String(format: "%.2f", tr)
+                        } else {
+                            trMsStr = "--"
+                        }
+                        let ratioStr = String(format: "target=%.2f cur=%.2f prod=%.1f cons=%.1f auto=%@ delay=%dms spDelay=%dms spMs=%@ trMs=%@ workers=%d",
                                               ratioSnap.targetRatio, ratioSnap.currentRatio,
                                               ratioSnap.productionRate, ratioSnap.consumptionRate,
                                               ratioSnap.autoAdjust ? "on" : "off",
-                                              ratioSnap.computedDelayMs, ratioSnap.computedSelfPlayDelayMs)
+                                              ratioSnap.computedDelayMs, ratioSnap.computedSelfPlayDelayMs,
+                                              spMsStr, trMsStr, ratioSnap.workerCount)
                         let outcomeStr = String(format: "wMate=%d bMate=%d stale=%d 50mv=%d 3fold=%d insuf=%d",
                                                 parallelSnap.whiteCheckmates, parallelSnap.blackCheckmates,
                                                 parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
@@ -8746,6 +8780,99 @@ struct ContentView: View {
             .padding(.vertical, 6)
             .background(Color.secondary.opacity(0.10))
             .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    /// Replay-ratio diagnostics row. Fixed-width monospace fields so
+    /// nothing jitters or wraps — every cell is sized for its
+    /// widest-observable value. Right-aligned in the parent VStack so
+    /// it sits above the Training column (which is on the right of
+    /// the stats HStack below). Values all come from the single
+    /// `RatioSnapshot` instance — the same snapshot the `[STATS]`
+    /// log line uses, so on-screen and in-log numbers agree.
+    private func replayRatioDiagnosticsRow(snap: ReplayRatioController.RatioSnapshot) -> some View {
+        // Fixed-width cells. Digits are monospaced via `.monospacedDigit()`
+        // and the frame widths are sized for the widest realistic
+        // formatted string including label prefix and trailing unit.
+        // Ratio format `X.XX` (4 chars). Rates `XXXX.X/s` (8 chars).
+        // Delays `XXXXms` (6 chars). ms/move `XX.XX` (5 chars).
+        // Worker count up to `NN` (2 chars).
+        let targetStr = String(format: "%.2f", snap.targetRatio)
+        let currentStr = String(format: "%.2f", snap.currentRatio)
+        let prodStr: String
+        if snap.productionRate > 0 {
+            prodStr = String(format: "%7.1f/s", snap.productionRate)
+        } else {
+            prodStr = "   --./s"
+        }
+        let consStr: String
+        if snap.consumptionRate > 0 {
+            consStr = String(format: "%7.1f/s", snap.consumptionRate)
+        } else {
+            consStr = "   --./s"
+        }
+        let trDlyStr = String(format: "%4dms", snap.computedDelayMs)
+        let spDlyStr = String(format: "%4dms", snap.computedSelfPlayDelayMs)
+        let spMsStr: String
+        if let v = snap.selfPlayMsPerMove {
+            spMsStr = String(format: "%5.2f", v)
+        } else {
+            spMsStr = "  --."
+        }
+        let trMsStr: String
+        if let v = snap.trainingMsPerMove {
+            trMsStr = String(format: "%5.2f", v)
+        } else {
+            trMsStr = "  --."
+        }
+        let nStr = String(format: "%2d", snap.workerCount)
+        return HStack(spacing: 12) {
+            Spacer(minLength: 0)
+            diagCell(label: "tgt",   value: targetStr,  valueWidth: 40)
+            diagCell(
+                label: "cur",   value: currentStr, valueWidth: 40,
+                color: abs(snap.currentRatio - snap.targetRatio) < 0.10
+                    ? .primary : .red
+            )
+            diagCell(label: "prod",  value: prodStr,    valueWidth: 72)
+            diagCell(label: "cons",  value: consStr,    valueWidth: 72)
+            diagCell(
+                label: "trDly", value: trDlyStr,    valueWidth: 60,
+                color: snap.computedDelayMs > 0 ? .primary : .secondary
+            )
+            diagCell(
+                label: "spDly", value: spDlyStr,    valueWidth: 60,
+                color: snap.computedSelfPlayDelayMs > 0 ? .primary : .secondary
+            )
+            diagCell(label: "spMs",  value: spMsStr,    valueWidth: 46)
+            diagCell(label: "trMs",  value: trMsStr,    valueWidth: 46)
+            diagCell(label: "N",     value: nStr,       valueWidth: 22)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 2)
+        .font(.system(.caption, design: .monospaced))
+        .lineLimit(1)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Single `label=value` cell for the diagnostics row. Label is
+    /// dimmed secondary color, value uses `color` (defaults to
+    /// primary). Value is constrained to `valueWidth` points with
+    /// trailing alignment so fixed-width formatted strings stay in
+    /// a stable column regardless of content.
+    private func diagCell(
+        label: String,
+        value: String,
+        valueWidth: CGFloat,
+        color: Color = .primary
+    ) -> some View {
+        HStack(spacing: 2) {
+            Text("\(label)=")
+                .foregroundStyle(.secondary)
+            Text(value)
+                .foregroundStyle(color)
+                .monospacedDigit()
+                .frame(width: valueWidth, alignment: .trailing)
         }
     }
 

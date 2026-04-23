@@ -104,6 +104,11 @@ struct TrainingChartGridView: View {
     /// pulled through as a parameter so the grid stays decoupled
     /// from ContentView's compile unit.
     let promoteThreshold: Double
+    /// Target replay ratio (consumption / production). Drawn as a
+    /// dashed horizontal reference line on the Replay ratio tile so
+    /// the reader can see how far the auto-adjust controller is
+    /// missing at a glance.
+    let replayRatioTarget: Double
     /// Unified-memory total in GB (`ProcessInfo.physicalMemory`),
     /// plumbed through so the App memory and GPU memory tiles can
     /// render "used / total (pct%)" headers.
@@ -187,12 +192,7 @@ struct TrainingChartGridView: View {
                 color: .orange
             )
             nonNegChart
-            miniChart(
-                title: "Replay ratio",
-                yPath: \.replayRatio,
-                unit: "train/move",
-                color: .green
-            )
+            replayRatioChart
             miniChart(
                 title: "GPU",
                 yPath: \.gpuBusyPercent,
@@ -997,6 +997,90 @@ struct TrainingChartGridView: View {
         }
         let pct = usedGB / totalGB * 100
         return String(format: "%.1f GB / %.0f GB (%.0f%%)", usedGB, totalGB, pct)
+    }
+
+    // MARK: - Replay ratio chart (line + target reference)
+
+    /// Dedicated chart for the live replay ratio. Same shape as the
+    /// generic `miniChart` but draws a red dashed `RuleMark` at
+    /// `replayRatioTarget` so the reader can see target vs. actual
+    /// on the same tile — the auto-adjust controller's error signal
+    /// is the gap between the green line and the red dashes.
+    private var replayRatioChart: some View {
+        let readout = hoverReadout(path: \.replayRatio)
+        let headerText: String
+        switch readout {
+        case .notHovering:
+            if let v = trainingChartSamples.last?.replayRatio {
+                headerText = String(format: "%.2f (target %.2f)", v, replayRatioTarget)
+            } else {
+                headerText = String(format: "-- (target %.2f)", replayRatioTarget)
+            }
+        case .hoveringNoData(let t):
+            headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
+        case .hoveringWithData(let t, let v):
+            headerText = String(
+                format: "t=%@ %.2f (target %.2f)",
+                Self.formatElapsedAxis(t), v, replayRatioTarget
+            )
+        }
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("Replay ratio")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(headerText)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                Chart {
+                    RuleMark(y: .value("Target", replayRatioTarget))
+                        .foregroundStyle(Color.red.opacity(0.6))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    ForEach(trainingChartSamples) { sample in
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Replay ratio", sample.replayRatio ?? .nan)
+                        )
+                        .foregroundStyle(.green)
+                    }
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
+                    if case .hoveringWithData(let t, let v) = readout {
+                        PointMark(x: .value("Time", t), y: .value("Replay ratio", v))
+                            .foregroundStyle(.green)
+                            .symbolSize(40)
+                    }
+                }
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(Self.compactLabel(v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartXScale(domain: timeSeriesXDomain)
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
+            }
+            .frame(height: 75)
+        }
     }
 
     // MARK: - Generic single-series mini chart

@@ -3035,7 +3035,7 @@ window.EXPERIMENTS = [
   {
     "timestamp": "20260422-202313",
     "start_time_iso": "2026-04-22T20:23:13",
-    "status": "IN_PROGRESS",
+    "status": "REJECTED",
     "mode": "normal",
     "change_details": "lr_warmup_steps=100 was identified as a breakthrough value that unlocked learning, but its near-neighbors have never been tested. Moving to 75 (below 100) is maximally informative: if 75 regresses we've bracketed the warmup optimum on the low side (50 would then be redundant to test), and if 75 wins we've found a cheaper warmup that reaches full LR faster, leaving more steps at full LR within the 10-minute cap. 75 is well under the \u2264113 constraint and is a meaningful 25% reduction from the current value \u2014 large enough to be detectable but small enough to preserve the breakthrough regime.",
     "changed_params": [
@@ -3073,7 +3073,7 @@ window.EXPERIMENTS = [
       "candidate_probe_interval_sec": 15,
       "training_time_limit": 3600
     },
-    "analysis_commentary": "",
+    "analysis_commentary": "Regressed on learning. illegal_mass_min jumped 0.4944\u21920.9978 (policy allocates ~no mass to legal moves) and above_uniform_count fell from peak 5 to 0. max_prob stayed under the 0.90 goal threshold (0.44) so no hard collapse, but the run never found the learning basin. Throughput essentially identical (335 vs 339 steps) and arena score slightly higher at 0.525 (not a promotion). Warmup axis now bracketed on the low side: 75 regressed, 100 is optimal, 500 was too long. Classification: regressed.",
     "training_time_seconds": null,
     "folder": "experiments/20260422-202313"
   }
@@ -3084,14 +3084,14 @@ window.AGGREGATES = {
     "SEED": 1,
     "ACCEPTED": 7,
     "NEUTRAL": 7,
-    "REJECTED": 51,
+    "REJECTED": 52,
     "FAILED": 1,
-    "IN_PROGRESS": 1
+    "IN_PROGRESS": 0
   },
-  "accept_rate": 0.10606060606060606,
-  "failure_streak": 14,
+  "accept_rate": 0.1044776119402985,
+  "failure_streak": 15,
   "trailing_replicates": 0,
-  "arena_count": 49,
+  "arena_count": 50,
   "promotions": 1,
   "best_arena_score": 0.555,
   "best_arena_folder": "experiments/20260421-221834"
