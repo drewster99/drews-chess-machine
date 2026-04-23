@@ -1,0 +1,1 @@
+{"analysis_commentary":"Regressed but stable: im=0.47, max=0.21, au=6/6 (vs 0.29/0.14/8/7 baseline). 350k min_pos delays training onset and the run never reaches the same au peak. No collapse.","classification":"regressed"}

@@ -1,0 +1,1 @@
+{"analysis_commentary":"Full collapse (max=1.0, im=0.999→1.0, au=0). Arena tau shouldn't affect training, so this looks like seed variance rather than a real effect of at=0.3.","classification":"regressed"}

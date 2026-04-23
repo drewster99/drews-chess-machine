@@ -1,0 +1,17 @@
+{
+  "change_details": "lr_warmup_steps 100 → 150 under new best. Untested in any regime — under old 10-min cap the validator wouldn't allow values >113, but with 15-min runs producing ~500 training steps, the recommended max is now ~166. A slightly longer warmup may smooth early-step dynamics and might help the policy stay in the learning basin.",
+  "parameters": {
+    "entropy_bonus": 0.008, "grad_clip_max_norm": 30, "weight_decay": 0.0002,
+    "K": 5, "learning_rate": 0.00005, "sqrt_batch_scaling_lr": true, "lr_warmup_steps": 150,
+    "draw_penalty": 0.1,
+    "self_play_start_tau": 2, "self_play_target_tau": 0.8, "self_play_tau_decay_per_ply": 0.03,
+    "arena_start_tau": 2, "arena_target_tau": 0.5, "arena_tau_decay_per_ply": 0.01,
+    "replay_ratio_target": 1, "replay_ratio_auto_adjust": true,
+    "self_play_workers": 48, "training_step_delay_ms": 0, "training_batch_size": 4096,
+    "replay_buffer_capacity": 500000, "replay_buffer_min_positions_before_training": 250000,
+    "arena_promote_threshold": 0.55, "arena_games_per_tournament": 100, "arena_auto_interval_sec": 300,
+    "candidate_probe_interval_sec": 15, "training_time_limit": 3600
+  },
+  "training_time_seconds": 900,
+  "training_time_rationale": "15-min default"
+}

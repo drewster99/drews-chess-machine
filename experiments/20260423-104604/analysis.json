@@ -1,0 +1,1 @@
+{"analysis_commentary":"Regressed vs current best but stable: im=0.44, max=0.17, au=5/5. No collapse. Slightly worse than the lucky au=8 run but notably better than the replicate's au=2. Possibly a seed-stabler point at the cost of peak performance — need more replicates to confirm. Single run: regressed on im.","classification":"regressed"}

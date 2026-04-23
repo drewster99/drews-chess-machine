@@ -1,0 +1,1 @@
+{"analysis_commentary":"Full collapse (max=1.0, im=0.994→1.0, au=0). warmup=120 destabilizes, possibly seed-noise given arena_target_tau change also collapsed without mechanistic reason. Narrow warmup basin at 100.","classification":"regressed"}

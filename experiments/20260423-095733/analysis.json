@@ -1,0 +1,1 @@
+{"analysis_commentary":"Full collapse (max=1.0, im=0.999→1.0, au=0). Longer warmup destabilized. lr_warmup_steps axis under new base bracketed: 0 collapse-transient, 50 uniform, 100 optimum, 150 collapse.","classification":"regressed"}

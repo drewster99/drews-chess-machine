@@ -1,0 +1,1 @@
+{"analysis_commentary":"Regressed but not collapsed: im=0.9063 (no learning), max=0.16 (fine), au peak 1 / final 0 (vs baseline 8/7). Lower target_tau didn't help — sharper endgame sampling hurt learning progress without triggering collapse.","classification":"regressed"}

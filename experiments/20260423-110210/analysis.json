@@ -1,0 +1,1 @@
+{"analysis_commentary":"Near-collapse: max=0.899 (just under 0.90 goal threshold), im=0.9405, au=0. Worse than w=48 and also worse than w=40 (au=5). Combined with replicate variance at w=48 (au=8 vs 2), workers axis is highly seed-sensitive; apparent monotonic trend was spurious.","classification":"regressed"}

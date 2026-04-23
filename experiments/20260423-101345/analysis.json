@@ -1,0 +1,1 @@
+{"analysis_commentary":"Replicate regressed vs the accepted run: im=0.67/0.83 (vs 0.29), max=0.44 (vs 0.14), au=2/1 (vs 8/7). No collapse, but significantly less learning. Current best was a favorable seed; au=8 isn't reliably reproducible. Two runs now — one au=8, one au=2.","classification":"regressed"}
