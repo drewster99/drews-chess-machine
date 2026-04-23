@@ -1,0 +1,1 @@
+{"analysis_commentary":"verify-T3 R2 under build 388: same outcome. 171s bail, im=0.999, max=0.059 (uniform-stuck, not collapsed-onto-single-illegal), au=0. Probe fix in 388 didn't restore build 381 behavior.","classification":"regressed"}

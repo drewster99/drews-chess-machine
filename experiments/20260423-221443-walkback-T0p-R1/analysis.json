@@ -1,0 +1,1 @@
+{"analysis_commentary":"T0p R1 same collapse-bail at 171s. lr=5e-5 alone wasn't enough; warmup=300 + wd=3e-4 starves signal during the ramp. Trying shorter warmup next.","classification":"regressed"}

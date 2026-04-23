@@ -1,0 +1,1 @@
+{"analysis_commentary":"T0s R1 bail at 186s. Identical to T3 baseline except target_tau=0.65 (vs T3's 0.8). T3 was 2/3 stable; tt=0.65 plus user knobs collapsed. Trying wd=1e-4.","classification":"regressed"}

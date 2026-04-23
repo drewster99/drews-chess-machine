@@ -1,0 +1,1 @@
+{"analysis_commentary":"T0 R1b same outcome as R1: legal_mass_collapse at 171s/80 steps. im=0.999, max=0.56, au=0. Bug fix didn't change outcome — config is genuinely gradient-starved (lr=5e-6 + warmup=300 = effective ~1.3e-6 by bail).","classification":"regressed"}

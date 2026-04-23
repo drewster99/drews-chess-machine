@@ -1,0 +1,1 @@
+{"analysis_commentary":"verify-T3 R1 collapse-bail at 171s with the EXACT T3 config that was 2/3 stable in the original walkback (~3 hours ago). Same parameters, totally different outcome. Strong evidence that the new build changed training dynamics beyond just adding collapse-detection. Stopping.","classification":"regressed"}

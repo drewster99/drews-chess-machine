@@ -1,0 +1,1 @@
+{"analysis_commentary":"T0r R1 bail at 171s/77 steps. Even with wd=2e-4, ent=0.0025 is too weak — collapse pattern same as ent=0.0025 era. Bumping entropy back to 0.008 (the breakthrough value).","classification":"regressed"}

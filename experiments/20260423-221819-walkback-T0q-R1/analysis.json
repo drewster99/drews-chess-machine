@@ -1,0 +1,1 @@
+{"analysis_commentary":"T0q R1 bail at 171s. Even with warmup=100, wd=3e-4 + ent=0.0025 collapses fast. Trying lower wd next.","classification":"regressed"}

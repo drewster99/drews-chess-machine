@@ -1,0 +1,1 @@
+{"analysis_commentary":"T0 R1 early-bail (legal_mass_collapse) at 171s/82 steps. lr=5e-6 + warmup=300 starves gradient signal — by step 82 we're still deep in the warmup ramp at <1/3 peak lr. Policy stayed uniform-on-illegals (im=1.0, max=0.16, au=0). Tier T0 falsified on R1. Fail-fast.","classification":"regressed"}
