@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. replay_ratio_target 1.0->1.2 did not protect. No arenas, no promotions. Build 393.",
+  "classification": "regressed"
+}

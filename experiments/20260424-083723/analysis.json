@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Arena-only knob (arena_tau_decay_per_ply 0.01->0.015) cannot mechanistically affect training. Metrics: min_pEnt improved (6.32->6.58), legal_mass improved (0.863->0.999), arena tied (~0.50). However max_prob spiked 0.497->0.999 — a one-hot legal-move peak that violates Goal 1B's >90% single-move criterion. Since the knob is arena-only, this is build-393 run variance, not a causal regression. No promotions. Strict metric reading: regressed.",
+  "classification": "regressed"
+}

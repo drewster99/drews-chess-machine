@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. lr_warmup_steps 75->100 collapsed, failing to extend the wu=50->75 productive direction. Note: 100 was the pre-walkback baseline that also collapsed under build 393. No arenas, no promotions.",
+  "classification": "regressed"
+}

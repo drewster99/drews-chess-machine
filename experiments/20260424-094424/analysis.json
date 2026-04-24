@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Disabling sqrt_batch_scaling_lr cut last-probe max_prob from 0.497 to 0.291 (much better concentration per Goal 1B) and raised above_uniform from 3 to 5, while illegal_mass rose 0.137 to 0.263 (still safe). Arena went 0.500 to 0.525 with more decisive games (23/18/59 vs 12/12/76); 0 promotions either side. Net a mild improvement on concentration and arena signal.",
+  "classification": "improved"
+}

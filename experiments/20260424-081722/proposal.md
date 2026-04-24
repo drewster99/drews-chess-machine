@@ -1,0 +1,1 @@
+lr_warmup_steps 75 -> 100. Extends the productive direction that gave the last accept (50 -> 75 cut illegal_mass 44%). Orthogonal to recent collapse-prone axes (tau_decay, replay_ratio). Gentler early step-size schedule may help legal/illegal differentiation solidify before the collapse window.

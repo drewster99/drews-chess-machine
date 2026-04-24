@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Mid-run collapse at 663s on legal-mass collapse. max_prob=0.995, legal_mass=0.001 — classic Goal 1A illegal-move one-hot. Ran further than typical 301s bails and even fired 1 arena (0.505, no promotion) before collapsing. self_play_start_tau 2.0->1.5 slowed but did not prevent collapse. Build 393 stable-region fragility confirmed on yet another axis.",
+  "classification": "regressed"
+}

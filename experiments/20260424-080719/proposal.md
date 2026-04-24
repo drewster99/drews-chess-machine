@@ -1,0 +1,1 @@
+Raise replay_ratio_target 1.0 -> 1.2. Trainer consumes 20% more samples per self-play cycle, keeping the policy closer to the exploratory self-play distribution. Expected to broaden policy (lower max_prob) without touching collapse-prone knobs like tau_decay or entropy_bonus. Fresh, untested axis at wu=75 baseline.

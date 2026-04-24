@@ -1,0 +1,1 @@
+learning_rate 5e-5 -> 6e-5 (20% bump). Untested on wu=75 baseline. Warmup 75 steps ramps gently through the collapse-decision window, so early steps remain safe while steady-state lr rises. Aims to escape max_prob=0.497 local minimum by increasing step-size after warmup completes.

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=0.999, legal_mass=0.0. Slower self_play tau decay (0.03->0.025) did not help — in fact hit the collapse pattern. No arenas, no promotions. Build 393 consistent.",
+  "classification": "regressed"
+}

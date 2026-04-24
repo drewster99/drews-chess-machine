@@ -1,0 +1,1 @@
+Raise self_play_start_tau 2.0->2.5 to broaden opening exploration. Baseline max_prob=0.497 shows policy over-concentrating; higher opening temperature yields more varied openings and a more diverse replay buffer, keeping policy broader and resisting collapse to a dominant move.

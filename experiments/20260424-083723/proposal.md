@@ -1,0 +1,1 @@
+arena_tau_decay_per_ply 0.01 -> 0.015 (50% faster arena tau decay toward target 0.5). Arena-only knob, cannot affect training-side collapse. May sharpen mid-game arena play without touching self-play exploration.

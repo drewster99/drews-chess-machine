@@ -1,0 +1,1 @@
+Slow self-play tau decay from 0.03 to 0.025 per ply. Fresh axis: keeps exploration temperature higher longer in each game, diversifying replay buffer to counter the max_prob concentration trend (0.497) without disturbing the wu=75 step-size gains.

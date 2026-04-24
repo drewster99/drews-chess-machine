@@ -1,0 +1,1 @@
+Flip sqrt_batch_scaling_lr true -> false. Orthogonal axis untested at wu=75 baseline. Removes auto lr scaling by sqrt(batch/reference); raw configured lr=5e-5 is used directly, subtly lowering effective lr without touching lr, warmup, or collapse-prone step-size knobs after 9 rejections.

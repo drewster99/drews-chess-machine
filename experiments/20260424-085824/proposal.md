@@ -1,0 +1,1 @@
+self_play_start_tau 2.0 -> 1.5. Counter-concentration move on fresh, untested axis at wu=75 baseline. Lower opening tau sharpens early self-play, trading raw diversity for higher-quality opening positions in replay buffer. Avoids collapse-prone step-size knobs (lr, warmup) after 5 rejections.

@@ -1,0 +1,1 @@
+arena_start_tau 2.0 -> 1.5. Arena-only change: sharper opening distribution in arena games for better Goal-3 signal. Cannot affect training dynamics or cause collapse (self-play tau unchanged). Last untouched arena knob at wu=75 baseline after 6 consecutive training-side rejections.

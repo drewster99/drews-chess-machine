@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot illegal: max_prob=1.0, legal_mass=0.0. arena_start_tau change is arena-only and cannot cause training collapse — this is pure build 393 variance. No arenas, no promotions. Seventh consecutive rejection highlights build 393's high collapse rate even on effectively-unchanged training loops.",
+  "classification": "regressed"
+}

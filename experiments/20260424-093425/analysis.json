@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. lr 5e-5->6e-5 hit collapse, consistent with walkback's warning that higher-lr paths are fragile. Value output saturated at 1.0. No arenas, no promotions.",
+  "classification": "regressed"
+}

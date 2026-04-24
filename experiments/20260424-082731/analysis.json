@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse — classic false-positive pattern: max_prob=0.114, pEnt=6.76 (policy healthy), but legal_mass_sum=0.001 tripped the 0.99 illegal_mass detector for 2 probes. arena_target_tau change never got exercised (0 arenas fired before bail). Not a true collapse; just build 393's noise profile. Per skill rules, timer_expired was false so must classify regressed.",
+  "classification": "regressed"
+}

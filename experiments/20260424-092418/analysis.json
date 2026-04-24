@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse — but this is a FALSE-POSITIVE: max_prob=0.031 (nearly uniform, no collapse), pEnt=6.52 (healthy). The policy is still near-uniform/exploratory; the detector just tripped on illegal_mass=0.9998 during two probes. Mechanically similar to 045218. No arenas, no promotions. Per skill rule, classified regressed regardless.",
+  "classification": "regressed"
+}

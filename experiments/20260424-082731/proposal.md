@@ -1,0 +1,1 @@
+Arena-only knob: arena_target_tau 0.5 -> 0.35. Sharper endings in arena games make outcomes more decisive (fewer meandering draws), boosting Goal 3 promotion signal. Does not touch training loop, so cannot cause policy collapse. Self-play dynamics and all 25 other keys unchanged.
