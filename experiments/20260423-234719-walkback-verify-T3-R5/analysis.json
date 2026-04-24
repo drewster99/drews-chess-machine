@@ -1,0 +1,1 @@
+{"analysis_commentary":"verify-T3 R5 build 390: classic full collapse (max=0.993). Build 390 T3: 2/3 collapse + 1/3 learning-bailed. Not matching build 381's 2/3 pass. Next: try ent=0.01 for stronger anti-collapse.","classification":"regressed"}

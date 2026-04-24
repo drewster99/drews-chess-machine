@@ -1,0 +1,1 @@
+{"analysis_commentary":"verify-T3 R4 build 390: early-bail FALSE POSITIVE. Bail fired at 230s but im_min=0.7574, max=0.22, au=1 — network was learning when killed. The collapse detector's 60s grace + 2x60s probe threshold kills runs that recover just after 180s. Potential concern with the detector design.","classification":"regressed"}

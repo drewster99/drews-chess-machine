@@ -1,0 +1,1 @@
+{"analysis_commentary":"Tent10 R1: bail at 231s but im=0.948 at exit — another false-positive. Under build 390 network takes 2-3 min to start learning, right when bail fires. Trying faster warmup to accelerate.","classification":"regressed"}

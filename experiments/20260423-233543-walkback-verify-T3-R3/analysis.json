@@ -1,0 +1,1 @@
+{"analysis_commentary":"verify-T3 R3 build 390: pathology restored to build-381 pattern (max=0.997 = classic single-move collapse, not uniform-stuck). 116 steps before bail. Training dynamics appear back to normal. This one collapsed (~1/3 rate seen in build 381 walkback), but the fix seems to have landed. Ready to resume full T3 3-replicate study.","classification":"regressed"}
