@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse — run aborted before any arena fired, so the only proposed change (arena_target_tau 0.5→0.3) had zero opportunity to take effect. Build drifted 392→393, meaning app source differs from the just-accepted baseline; the collapse likely reflects that drift or run-to-run variance rather than the arena-only knob.",
+  "classification": "regressed"
+}

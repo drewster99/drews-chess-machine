@@ -5734,22 +5734,157 @@ window.EXPERIMENTS = [
     "analysis_commentary": "Build 392 run (baseline was 380) completed full 15 min without collapse: pEnt 6.91-6.95, legal_mass climbed from 0.005 to 0.48, above_uniform_count reached 5. Crucially, the prior verbatim-baseline run on build 392 collapsed at 301s, so warmup=50 materially recovered Goals 1A/1B/2. One arena, 0 promotions (score 0.495 vs baseline's promoted 0.565), but promotion is Goal 3 and gated on stability.",
     "training_time_seconds": 900,
     "folder": "experiments/20260424-042120"
+  },
+  {
+    "timestamp": "20260424-044233",
+    "start_time_iso": "2026-04-24T04:42:33",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Goal 3 frontier: baseline arena was 71/100 draws, score 0.495 \u2014 draws wash out the signal. Tightening arena_target_tau 0.5\u21920.3 sharpens decisive play in mid/endgame (where the candidate's incremental policy edge can express) without touching self-play exploration. Collapse risk unchanged (arena-only knob; self-play taus, lr, entropy_bonus all preserved).",
+    "changed_params": [
+      {
+        "key": "arena_target_tau",
+        "old": 0.5,
+        "new": 0.3
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.008,
+      "grad_clip_max_norm": 30,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": true,
+      "lr_warmup_steps": 50,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.3,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 250000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 301s on legal-mass collapse \u2014 run aborted before any arena fired, so the only proposed change (arena_target_tau 0.5\u21920.3) had zero opportunity to take effect. Build drifted 392\u2192393, meaning app source differs from the just-accepted baseline; the collapse likely reflects that drift or run-to-run variance rather than the arena-only knob.",
+    "training_time_seconds": 300,
+    "folder": "experiments/20260424-044233"
+  },
+  {
+    "timestamp": "20260424-045218",
+    "start_time_iso": "2026-04-24T04:52:18",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Goal 3: baseline arena scored 0.495 with 71/100 draws \u2014 CI width +/-0.053 straddles the 0.55 promote threshold, so genuine small edges get lost. Bump arena_games_per_tournament 100->150 to tighten CI (~+/-0.043). Arena-only change, orthogonal to collapse mechanism, safer than retrying arena_target_tau under noisy build drift.",
+    "changed_params": [
+      {
+        "key": "arena_games_per_tournament",
+        "old": 100,
+        "new": 150
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.008,
+      "grad_clip_max_norm": 30,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": true,
+      "lr_warmup_steps": 50,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 250000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 150,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Run bailed at 301s on legal_mass_collapse despite healthy policy (min_pEnt=7.03, max_prob=0.053) \u2014 classic false-positive matching the walkback-build390 pattern; illegal_mass pinned >=0.99 across two early probes. Proposal only touched arena_games 100->150 (arena-only knob), so no training-loop change could explain the abort. No arenas fired in 5 min, no promotions. Build drift confirmed: 392 baseline vs 393 new.",
+    "training_time_seconds": 300,
+    "folder": "experiments/20260424-045218"
+  },
+  {
+    "timestamp": "20260424-050216",
+    "start_time_iso": "2026-04-24T05:02:16",
+    "status": "ACCEPTED",
+    "mode": "normal",
+    "change_details": "Bump entropy_bonus 0.008 -> 0.012 to counter build 393's collapse tendency. Directly targets Goal 1A (reduces max_prob one-hot collapse) and also helps the illegal_mass_sum false-positive by spreading policy mass more uniformly across all 4864 cells, including legal ones.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.008,
+        "new": 0.012
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 30,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": true,
+      "lr_warmup_steps": 50,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 250000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Goal metrics moved correctly: illegal_mass dropped 0.520->0.251 (large, beyond noise), max_prob 0.130->0.113, above_uniform 5->7. Entropy similar (6.94 vs 6.91), arena score statistically tied (0.49 vs 0.495), zero promotions both runs. Build drift 392->393 is a caveat, but the illegal-mass reduction is large enough to credit the entropy_bonus bump (0.008->0.012) as a real improvement on Goal 1B.",
+    "training_time_seconds": 900,
+    "folder": "experiments/20260424-050216"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 127,
+  "total_iterations": 130,
   "counts": {
     "SEED": 1,
-    "ACCEPTED": 13,
+    "ACCEPTED": 14,
     "NEUTRAL": 9,
-    "REJECTED": 102,
+    "REJECTED": 104,
     "FAILED": 3,
     "IN_PROGRESS": 0
   },
-  "accept_rate": 0.10236220472440945,
+  "accept_rate": 0.1076923076923077,
   "failure_streak": 0,
   "trailing_replicates": 0,
-  "arena_count": 105,
+  "arena_count": 106,
   "promotions": 4,
   "best_arena_score": 0.565,
   "best_arena_folder": "experiments/20260423-132740"

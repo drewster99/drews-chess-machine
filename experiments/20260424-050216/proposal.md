@@ -1,0 +1,1 @@
+Bump entropy_bonus 0.008 -> 0.012 to counter build 393's collapse tendency. Directly targets Goal 1A (reduces max_prob one-hot collapse) and also helps the illegal_mass_sum false-positive by spreading policy mass more uniformly across all 4864 cells, including legal ones.

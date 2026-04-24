@@ -1,5 +1,5 @@
 {
-  "entropy_bonus": 0.012,
+  "entropy_bonus": 0.008,
   "grad_clip_max_norm": 30,
   "weight_decay": 0.0002,
   "K": 5,
@@ -11,7 +11,7 @@
   "self_play_target_tau": 0.6,
   "self_play_tau_decay_per_ply": 0.03,
   "arena_start_tau": 2,
-  "arena_target_tau": 0.5,
+  "arena_target_tau": 0.3,
   "arena_tau_decay_per_ply": 0.01,
   "replay_ratio_target": 1,
   "replay_ratio_auto_adjust": true,

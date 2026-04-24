@@ -1,0 +1,1 @@
+Goal 3: baseline arena scored 0.495 with 71/100 draws — CI width +/-0.053 straddles the 0.55 promote threshold, so genuine small edges get lost. Bump arena_games_per_tournament 100->150 to tighten CI (~+/-0.043). Arena-only change, orthogonal to collapse mechanism, safer than retrying arena_target_tau under noisy build drift.

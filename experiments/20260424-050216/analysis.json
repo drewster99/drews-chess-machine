@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Goal metrics moved correctly: illegal_mass dropped 0.520->0.251 (large, beyond noise), max_prob 0.130->0.113, above_uniform 5->7. Entropy similar (6.94 vs 6.91), arena score statistically tied (0.49 vs 0.495), zero promotions both runs. Build drift 392->393 is a caveat, but the illegal-mass reduction is large enough to credit the entropy_bonus bump (0.008->0.012) as a real improvement on Goal 1B.",
+  "classification": "improved"
+}

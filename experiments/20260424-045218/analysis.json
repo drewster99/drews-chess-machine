@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Run bailed at 301s on legal_mass_collapse despite healthy policy (min_pEnt=7.03, max_prob=0.053) — classic false-positive matching the walkback-build390 pattern; illegal_mass pinned >=0.99 across two early probes. Proposal only touched arena_games 100->150 (arena-only knob), so no training-loop change could explain the abort. No arenas fired in 5 min, no promotions. Build drift confirmed: 392 baseline vs 393 new.",
+  "classification": "regressed"
+}

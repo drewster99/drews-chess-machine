@@ -1,5 +1,5 @@
 {
-  "entropy_bonus": 0.012,
+  "entropy_bonus": 0.008,
   "grad_clip_max_norm": 30,
   "weight_decay": 0.0002,
   "K": 5,

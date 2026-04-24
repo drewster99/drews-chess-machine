@@ -1,0 +1,1 @@
+Goal 3 frontier: baseline arena was 71/100 draws, score 0.495 — draws wash out the signal. Tightening arena_target_tau 0.5→0.3 sharpens decisive play in mid/endgame (where the candidate's incremental policy edge can express) without touching self-play exploration. Collapse risk unchanged (arena-only knob; self-play taus, lr, entropy_bonus all preserved).
