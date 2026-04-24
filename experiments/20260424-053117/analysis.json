@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. max_grad=65.4 shows clipping at 20 did fire but didn't prevent collapse — gradient-side clipping alone insufficient. No arenas, no promotions. Build 393 same as baseline. Second consecutive rejection suggests the entropy_bonus=0.012 accept is reproducible only ~50% of the time, matching walkback pass-rate observations.",
+  "classification": "regressed"
+}

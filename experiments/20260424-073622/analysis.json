@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Goal 1B metric (illegal_mass_sum) improved strongly: 0.25->0.14, a 44% reduction toward the legal-mass target, and legal_mass rose 0.749->0.863. Goal 1A (max_prob) worsened 0.11->0.50 but stays well below the 0.9 collapse threshold; pEnt 6.32 is safely above the 5.0 alarm. Arena tied at 0.50 with 0 promotions in both runs. Net: primary stated goal metric moved right beyond noise.",
+  "classification": "improved"
+}

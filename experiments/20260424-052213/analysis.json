@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard Goal 1A collapse: max_prob=1.0, legal_mass=0.0, top100_sum=1.0 — one-hot onto an illegal move despite the higher entropy_bonus=0.015 (vs 0.012 baseline). min_pEnt=6.90 (similar). No arenas fired, no promotions. Build 393 same as baseline, so cause is either run-to-run variance (~50% pass rate documented in walkback) or the entropy bump hit an inflection point. Regressed vs the full-15-min baseline.",
+  "classification": "regressed"
+}

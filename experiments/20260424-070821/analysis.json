@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0, top100=1.0. entropy_bonus 0.012->0.010 hit the collapse band — going DOWN hurts just like going UP did. This strongly suggests 0.012 is at or very near the peak, and both sides are fragile under build 393's noise. No arenas, no promotions.",
+  "classification": "regressed"
+}

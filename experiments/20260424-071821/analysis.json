@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. draw_penalty 0.1->0.15 hit the collapse pattern despite being an 'untouched axis.' No arenas, no promotions. Build 393 is exhibiting very high collapse rate across essentially every incremental tweak on this baseline — the 050216 accept may itself have been noise-lucky.",
+  "classification": "regressed"
+}

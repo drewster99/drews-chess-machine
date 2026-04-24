@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0, top100=1.0. Third consecutive hard-collapse rejection in the post-accept window (052213/053117 also). weight_decay 0.0002->0.0005 didn't prevent collapse; the L2 axis looks as fragile as entropy/grad_clip/lr. min_pEnt=6.53 (ended low pre-collapse). No arenas, no promotions. Build 393 same as baseline.",
+  "classification": "regressed"
+}

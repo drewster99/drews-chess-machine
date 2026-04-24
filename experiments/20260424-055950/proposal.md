@@ -1,0 +1,1 @@
+Raise weight_decay 0.0002 -> 0.0005. L2 regularization caps logit magnitude from the scale axis, directly resisting the max_prob->1.0 runaway. Orthogonal to entropy_bonus (spread) and grad_clip (step size). Fresh axis after two collapses and one neutral on lr/grad_clip/entropy.

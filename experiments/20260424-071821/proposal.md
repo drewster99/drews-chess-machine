@@ -1,0 +1,1 @@
+draw_penalty 0.1 -> 0.15. Untouched axis in this campaign. Harsher draw signal pushes self-play games toward decisive outcomes, lengthening games and diversifying replay positions. Avoids fragile reg/lr/entropy axes that have all collapsed or regressed legal_mass.

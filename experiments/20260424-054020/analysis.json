@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Lr 5e-5 to 4e-5 produced mixed Goal 1 signals: min_pEnt rose 6.94 to 7.08 (less collapse risk) but last-probe max_prob worsened 0.113 to 0.203 and legal_mass_sum dropped 0.749 to 0.537, indicating slower legitimate convergence. Arena 0.49 to 0.525 is within CI noise; 0 promotions both runs. Net: safe but no clear win.",
+  "classification": "neutral"
+}

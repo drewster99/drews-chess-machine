@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "K 5->6 ran full 900s cleanly but regressed the primary Goal 1B metric hard: legal_mass 0.75->0.39 (illegal_mass 0.25->0.61), above_uniform 7->3. max_prob held (0.115 vs 0.113) and pEnt slightly lower (6.75 vs 6.94). Arena score 0.49->0.53 lies at the upper edge of the CI (0.50-0.56) but 0 promotions either run. Higher Q-target bootstrap weight slowed legitimate policy convergence substantially.",
+  "classification": "regressed"
+}

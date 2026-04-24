@@ -1,0 +1,1 @@
+lr_warmup_steps 50 -> 25. Steeper LR ramp in the critical first window gives the policy more update budget to differentiate legal from illegal before the two-probe collapse check. Fresh axis untouched in recent 6 iterations; orthogonal to failed ent/gc/lr/wd/tau tweaks.

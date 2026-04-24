@@ -1,0 +1,1 @@
+Reduce learning_rate 5e-5 -> 4e-5 (20% decrease). Two recent tweaks on entropy_bonus and grad_clip both collapsed at 301s; switching axis to a cleaner collapse-resistance lever. Prior walkback tested lr UP (7e-5 collapsed) but not DOWN. Slower steps lower the probability of a runaway update crossing the one-hot cliff.

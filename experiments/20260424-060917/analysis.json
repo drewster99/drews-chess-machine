@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "No collapse; full 900s held (Goal 2 OK). But Goal 1 metrics regressed clearly: legal_mass 0.75->0.33 (more than halved), max_prob 0.11->0.21, above_uniform 7->2. Higher self-play tau (0.6->0.8) injected too much exploration noise into the replay buffer, slowing legitimate learning on the probe position. Arena tied at 0.49, zero promotions both runs. Signal size well beyond noise floor for these probe metrics.",
+  "classification": "regressed"
+}

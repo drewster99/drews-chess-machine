@@ -1,0 +1,1 @@
+Extend lr warmup 50 -> 75 steps. Stretches the ramp through the critical 50-75 step collapse-decision window, lowering effective lr by ~33% at step 50 and delaying peak lr. Untested direction; 75 is well below validator's 166 cap. All other 25 params unchanged.

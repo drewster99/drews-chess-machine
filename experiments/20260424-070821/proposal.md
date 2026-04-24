@@ -1,0 +1,1 @@
+Lower entropy_bonus 0.012 -> 0.010, testing the left side of the local optimum. Prior accept moved 0.008 -> 0.012; 0.015 regressed. Peak likely sits between 0.008 and 0.015, so 0.010 probes whether the roof is actually below 0.012, potentially letting the policy concentrate more mass on legal moves.

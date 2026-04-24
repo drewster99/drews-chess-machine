@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. max_prob=0.98, legal_mass~0. replay_buffer_min 250k->150k earlier-start hypothesis didn't prevent collapse — still 170 steps at bail time (vs 159 baseline-seed), so the extra budget wasn't enough to escape the collapse basin. No arenas, no promotions. Build 393 remains highly collapse-prone on essentially every perturbation.",
+  "classification": "regressed"
+}

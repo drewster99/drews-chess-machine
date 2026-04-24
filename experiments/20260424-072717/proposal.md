@@ -1,0 +1,1 @@
+Lower replay_buffer_min_positions_before_training 250000 -> 150000. Starts SGD ~40% sooner so the network can move off the uniform-illegal init before the 60s+120s collapse detector fires, reducing false-positive 301s bails without touching fragile step-size/regularization axes.

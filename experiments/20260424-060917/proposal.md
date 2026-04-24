@@ -1,0 +1,1 @@
+Raise self_play_target_tau 0.6 -> 0.8. Late-game exploration adds position variety to the replay buffer, directly combating over-concentration and max_prob collapse. Pivots from reg/step-axis tweaks (which have been ~50% pass rate) to data-distribution; matches the walkback-build390 Twu50-R3 config known to pass 2/5.

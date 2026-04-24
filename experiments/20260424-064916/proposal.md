@@ -1,0 +1,1 @@
+Raise K from 5 to 6: increases Q-target bootstrap weight on the value head for a smoother value signal. Value-head stability hasn't been directly probed in recent attempts; pure value-mixing changes are unlikely to trigger policy one-hot collapse. Untouched axis in current campaign.

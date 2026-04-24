@@ -1,0 +1,1 @@
+Reduce grad_clip_max_norm 30 -> 20 to cap the magnitude of runaway gradients that drive one-hot collapse. Targets the same mechanism as entropy bonus but from the gradient side, without further perturbing the loss (entropy bump last iter already hard-collapsed at 301s).
