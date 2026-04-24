@@ -1,0 +1,1 @@
+Raise training_step_delay_ms 0 -> 25. Adds a small pause between training steps, lowering effective replay ratio and letting self-play generate fresher positions per step. Conceptually similar to reducing replay_ratio but via an untouched axis; mild mechanism on the baseline.

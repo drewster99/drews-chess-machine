@@ -1,0 +1,1 @@
+arena_games_per_tournament 100 -> 150. Arena-only mechanical change (cannot cause training collapse). Tighter CI around each arena score lets candidates with slight real edges cross the 0.55 promotion threshold more often, directly targeting Goal 3 (promotion rate) which has been 0/1 per accept.

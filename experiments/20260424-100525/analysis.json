@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse — FALSE-POSITIVE: max_prob=0.087 (nearly uniform, no concentration), pEnt=6.01 (healthy). Arena-only change (arena_games 100->150) cannot affect training dynamics. Pure build 393 variance trippping the detector during slow early learning. No arenas fired. Per skill rule, classify regressed.",
+  "classification": "regressed"
+}

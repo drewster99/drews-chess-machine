@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Policy concentrating (max_prob=0.60) with legal_mass~0. entropy_bonus 0.012->0.013 not enough to prevent illegal concentration under sqrt=false. No arenas, no promotions.",
+  "classification": "regressed"
+}

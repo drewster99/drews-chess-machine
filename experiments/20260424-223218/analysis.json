@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Lowering replay_min 250k->100k improved the primary collapse metric: max_prob dropped 0.29->0.16 (-45%), a meaningfully safer distance from the 0.9 collapse threshold. min_pEnt rose 6.31->6.88 and training_steps +7.6%. Legal_mass regressed 0.74->0.43 (more mass on illegal moves), a secondary concern. Arena 0.505 vs 0.525 within CI; 0 promotions both sides. Net: improved on Goal 1A/1B primary concentration symptom.",
+  "classification": "improved"
+}

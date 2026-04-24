@@ -1,0 +1,1 @@
+grad_clip_max_norm 30 -> 25. Tighter clip untested under sqrt_batch_scaling_lr=false baseline. With sqrt=false the effective lr is already lower, so tighter clipping should further restrict gradient spikes that drive early collapse without starving steady-state learning.

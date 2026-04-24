@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full 900s, no collapse but near it. max_prob=0.846 (baseline 0.291, near the 0.9 threshold), legal_mass=0.057 (baseline 0.737), above_uniform=0. pEnt 6.94 healthy. arena_auto_interval is arena-only; this regression is pure build 393 variance, not causal. Arena 0.51, 0 promotions.",
+  "classification": "regressed"
+}

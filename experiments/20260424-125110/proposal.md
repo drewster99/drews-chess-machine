@@ -1,0 +1,1 @@
+entropy_bonus 0.012 -> 0.011 (-8%). Tiny decrease on the most-productive axis (entropy-related tweaks drove the last two accepts). Fresh point not previously tested on wu=75 sqrt=false baseline; with Build 393's ~50% run variance, larger moves regress by luck.

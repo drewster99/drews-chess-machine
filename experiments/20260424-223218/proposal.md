@@ -1,0 +1,1 @@
+replay_buffer_min_positions_before_training 250000 -> 100000 (-60%). Drops the ~3-minute pre-training wait to ~1.2 min, so SGD starts BEFORE the 60-120s collapse-detector window rather than after. Targets the false-positive bail pattern at root: policy currently sits at uniform init through both detector probes. Large effect with clear causal theory; untested at 100k.

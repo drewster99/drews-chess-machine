@@ -1,0 +1,1 @@
+self_play_workers 48 -> 32. Fewer parallel games means fresher data and less stale replay relative to trainer. Untested on current baseline (wu=75, sqrt=false). Mild change on an unexplored axis after 4 rejections; direction unclear but it is a fresh knob to test.

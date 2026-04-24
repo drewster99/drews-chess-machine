@@ -1,0 +1,1 @@
+entropy_bonus 0.012 -> 0.013 (+8%). With sqrt_batch_scaling_lr=false now lowering effective lr, a small entropy-bonus bump can broaden the policy further without the collapse that 0.015 caused under sqrt=true. Tiny step in the productive direction that already moved 0.008->0.012 and cut illegal_mass.

@@ -1,0 +1,1 @@
+candidate_probe_interval_sec 15 -> 30. Monitoring-only knob: halves the frequency of probe forward passes used for diagnostics. Cannot affect training dynamics, self-play, arena, or replay. After 6 rejections on real axes, a pure no-op change tests whether build 393 shows variance on the policy-collapse metrics even when nothing actually changes.

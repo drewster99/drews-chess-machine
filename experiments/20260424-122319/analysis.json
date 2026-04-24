@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse — FALSE-POSITIVE: max_prob=0.067 (no concentration), pEnt=6.70 healthy, policy near-uniform. candidate_probe_interval is monitoring-only and literally cannot affect training. This is pure build 393 variance triggering the detector on a true no-op change. No arenas, no promotions.",
+  "classification": "regressed"
+}

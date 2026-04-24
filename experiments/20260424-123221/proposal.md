@@ -1,0 +1,1 @@
+Reduce arena_auto_interval_sec 300 -> 240. Arena-only knob; cannot cause training collapse. More frequent arenas give more chances to show a promotion (Goal 3). Fresh axis after 7 rejections on a ~50% variance-driven collapse baseline.

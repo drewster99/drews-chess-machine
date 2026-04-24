@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse — false-positive: max_prob=0.110, pEnt=6.74 (healthy). legal_mass<0.01 tripped detector. No arenas, no promotions.",
+  "classification": "regressed"
+}

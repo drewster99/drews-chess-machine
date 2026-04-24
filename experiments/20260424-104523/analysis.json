@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full 900s run, no collapse. All Goal 1 metrics regressed vs baseline: max_prob 0.291->0.400 (+38%, worse concentration), legal_mass 0.737->0.689, above_uniform 5->2. Arena 0.525->0.510 within noise, 0 promotions. self_play_workers 48->32 produced fewer/staler games overall, hurting learning progress across the primary goal metrics.",
+  "classification": "regressed"
+}

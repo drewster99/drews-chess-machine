@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=0.987, legal_mass=0.0. training_step_delay_ms 0->25 did not prevent collapse. No arenas, no promotions.",
+  "classification": "regressed"
+}

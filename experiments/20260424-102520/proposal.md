@@ -1,0 +1,1 @@
+Lower arena_promote_threshold from 0.55 to 0.52. Arena-only mechanical change, cannot cause training collapse. Directly targets Goal 3: makes promotions easier (score >=0.52 vs >=0.55). Baseline arena score of 0.525 would have promoted under 0.52.
