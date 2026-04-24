@@ -1,0 +1,1 @@
+Build 392 baseline collapses at 301s with lr_warmup_steps=100. The only 20min-stable build-392 run (Twu50-R3) used lr_warmup_steps=50. Reduce warmup to 50 (<=1/3 of collapsed-run's 160 steps) to match the one known-survivable config; keep other params at baseline.

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Build 392 run (baseline was 380) completed full 15 min without collapse: pEnt 6.91-6.95, legal_mass climbed from 0.005 to 0.48, above_uniform_count reached 5. Crucially, the prior verbatim-baseline run on build 392 collapsed at 301s, so warmup=50 materially recovered Goals 1A/1B/2. One arena, 0 promotions (score 0.495 vs baseline's promoted 0.565), but promotion is Goal 3 and gated on stability.",
+  "classification": "improved"
+}

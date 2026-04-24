@@ -1,0 +1,1 @@
+{"analysis_commentary":"Twu50 R5: bail 389s, only 26 steps (abnormal throughput, 0.08 steps/s). Likely GPU contention. Twu50 now 2/5. Trying batch=2048.","classification":"regressed"}

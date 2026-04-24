@@ -1,0 +1,1 @@
+{"analysis_commentary":"Twu25 R1: false-positive bail at 303s (im=0.73 au=1 — learning). Faster warmup doesn't beat the time-based bail window. Pinning Twu50 pass rate next.","classification":"regressed"}

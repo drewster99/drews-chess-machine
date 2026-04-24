@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Build jumped 380->392 between runs. Baseline ran full 900s with no collapse (min pEnt=6.99, final legal_mass=0.859, 1/1 promote 0.565); new run hit the collapse-detector after 160 steps with legal_mass probes stuck near 0.002-0.35 and 0 arenas. Clear regression against Goal #2's 15-minute stability target.",
+  "classification": "regressed"
+}
