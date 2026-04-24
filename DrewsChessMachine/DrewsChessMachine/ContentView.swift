@@ -8603,9 +8603,11 @@ struct ContentView: View {
                 }
 
                 // Legal-mass collapse detector. Runs in every session
-                // (interactive or --train), probes at 15 s cadence
-                // with a 60 s grace period after session start, flags
-                // the collapse banner once the network has shown
+                // (interactive or --train), probes at 60 s cadence
+                // with a 120 s grace period measured from the first
+                // observed SGD step (i.e. earliest possible detection
+                // is training_start + 120 s), flags the collapse
+                // banner once the network has shown
                 // `illegalMass > 0.99` for `collapseProbesToAbort`
                 // consecutive probes. In interactive mode we stop at
                 // the banner — the user sees it and decides what to
@@ -8628,10 +8630,10 @@ struct ContentView: View {
                 let collapseOutputURL: URL? = outputURL
                 group.addTask(priority: .utility) {
                     [trainer, buffer, box, probeInferenceForProbes] in
-                    let probeIntervalSec: UInt64 = 15
-                    let gracePeriodSec: TimeInterval = 60.0
+                    let probeIntervalSec: UInt64 = 60
+                    let gracePeriodSec: TimeInterval = 120.0
                     let illegalMassThreshold: Double = 0.99
-                    let consecutiveAbortCount = 8
+                    let consecutiveAbortCount = 3
                     let sampleSize = 128
                     var consecutive = 0
                     var aborted = false
@@ -8642,7 +8644,7 @@ struct ContentView: View {
                     // before that first step lands, every probe on the
                     // fresh random-init network will naturally see
                     // illegalMass ≈ 0.994 — firing the alarm during
-                    // that window is a false positive. Grace is 60 s
+                    // that window is a false positive. Grace is 120 s
                     // measured from TRAINING start, not session start.
                     var trainingStartAt: Date? = nil
                     while !Task.isCancelled && !aborted {
