@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Goal-1 metrics improved meaningfully: final top1_legal 0.0156→0.0547, final legal_mass 0.0105→0.0238, last candidate probe legal_mass_sum 0.4258→0.5708 with max_prob still controlled (0.21). pEnt stayed ~6.79 (no collapse), max gNorm 72.07→70.67 confirming clip is biting. Same build 393, full 900s; arena neutral (0.50 vs 0.505).",
+  "classification": "improved"
+}

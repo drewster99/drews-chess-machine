@@ -1,0 +1,1 @@
+Raise entropy_bonus 0.012→0.015 (+25%). Targets early single-mode policy collapse directly: a stronger entropy term penalizes the one-hot illegal-move attractor that two recent runs slid into within ~300s. Modest magnitude on an axis the recent history has only nudged downward; orthogonal to weight_decay and grad_clip which already failed.

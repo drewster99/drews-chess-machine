@@ -1,0 +1,1 @@
+Extend training horizon 900s -> 1200s (+5 min to 20 min) on current baseline (replay_min=100k). No parameter changes; pure training-time extension per user directive to grow the horizon when the axis is stable. Verifies Goal 2 stability at 20 min.

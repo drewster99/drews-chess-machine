@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 300s on legal-mass collapse: max_prob ramped 0.117→1.0 by 291s with legal_mass_sum=0.0 and top1_legal_fraction never positive (baseline reached 0.0156). No promotion (0 arenas vs baseline 1×, 0 promoted). Raising weight_decay 0.0002→0.0003 worsened collapse signals.",
+  "classification": "regressed"
+}

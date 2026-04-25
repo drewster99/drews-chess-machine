@@ -1,0 +1,1 @@
+lr_warmup_steps 75 -> 100 (+33%). Continues the directionally-proven axis from the last accept (50→75 cut illegal_mass 44%). Slower lr ramp gentles early updates during the 60-300s window where the three recent runs collapsed; well under validator cap (~179). Avoids weight_decay/entropy_bonus which both just regressed.

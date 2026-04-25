@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Different signature than prior collapses: max_prob stayed low (0.034 vs prior ~1.0) but illegal_mass_sum sat at ~0.998 — entropy_bonus 0.015 prevented one-hot spike but probability remained spread across illegal cells. No promotion (0 arenas vs baseline 1×). Run did not complete a fair 900s window.",
+  "classification": "regressed"
+}

@@ -1,0 +1,1 @@
+Tighten grad_clip_max_norm 30→25. Baseline gNorm peaks ~72 during the early-collapse window; clipping more aggressively caps the early gradient surge that mechanistically drives one-hot policy collapse, without touching axes that just regressed (weight_decay, entropy_bonus, lr_warmup_steps).

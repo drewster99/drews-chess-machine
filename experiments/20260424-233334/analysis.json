@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=0.994, legal_mass=0.0. Identical baseline (replay_min=100k) collapsed this time — pure build 393 run-to-run variance, same config that just accepted at 20 min target instead succumbed early. No arenas, no promotions. Time extension test inconclusive due to early termination.",
+  "classification": "regressed"
+}

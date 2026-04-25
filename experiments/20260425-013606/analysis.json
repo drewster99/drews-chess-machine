@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Goal-metric regression: final illegal_mass_sum 0.948 vs baseline 0.574 (+65%), final max prob 0.194 vs 0.161, and policy_entropy final 6.73 vs 6.94. Top1_legal also halved (0.0078 vs 0.0156). lr_warmup 75→100 worsened collapse signals across the board. No promotion (arena 0.49 vs 0.505 baseline).",
+  "classification": "regressed"
+}

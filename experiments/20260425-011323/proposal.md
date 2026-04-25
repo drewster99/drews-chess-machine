@@ -1,0 +1,1 @@
+Exploration: raise weight_decay 0.0002 → 0.0003 (+50%). Untouched axis in recent 10 iterations. Stronger L2 regularization should resist the network parking large logits on a single illegal move (the collapse mode), pushing weights toward a more entropic policy without altering effective lr or batch dynamics. Stay at 900s given prior 1200s legal_mass_collapse.
