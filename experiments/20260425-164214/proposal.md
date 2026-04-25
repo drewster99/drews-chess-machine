@@ -1,0 +1,1 @@
+Raise entropy_bonus 0.012→0.013 (+8%). Smaller step than the prior 0.012→0.015 attempt (which regressed on different baseline). Slight extra entropy regularization could resist the early one-hot collapse mode while not over-spreading mass to illegals. New replay_ratio=1.1 baseline may interact differently.

@@ -1,0 +1,1 @@
+Lower self_play_start_tau 2.0→1.8 (-10%). Untouched axis. Slightly less random opening play could improve early replay-buffer signal-to-noise without losing exploration. Keeps target_tau=0.6 unchanged so end-game decisiveness preserved. Single-axis micro-step.

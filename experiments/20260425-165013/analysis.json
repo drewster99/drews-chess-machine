@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 305s on legal-mass collapse. arena_promote_threshold change is training-orthogonal so collapse is run-to-run variance. Run never reached arena boundary so threshold change had no effect anyway. No promotion.",
+  "classification": "regressed"
+}

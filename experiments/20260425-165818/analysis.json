@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 307s on legal-mass collapse. Larger replay capacity didn't help against build-393 variance. Probably no effect since within 900s the buffer never approaches 500k anyway. No promotion.",
+  "classification": "regressed"
+}

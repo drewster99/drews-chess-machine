@@ -1,0 +1,1 @@
+Lower replay_buffer_min_positions_before_training 100k→80k. Continues the directionally-proven axis (250k→100k was previously accepted with 45% max_prob reduction). Earlier first SGD step means more training steps fit in the 900s window. Risk: less diverse initial buffer could amplify collapse, but the prior down-step worked so this small further reduction is plausible.

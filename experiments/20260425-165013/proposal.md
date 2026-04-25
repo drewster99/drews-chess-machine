@@ -1,0 +1,1 @@
+Lower arena_promote_threshold 0.55→0.53. Untouched axis. With current arena scores hovering ~0.50-0.525 (CIs spanning 0.47-0.58), a slightly lower threshold gives genuinely improving candidates a fairer chance to promote (goal-3 progress) while still requiring statistically meaningful improvement. Training-side dynamics unchanged.

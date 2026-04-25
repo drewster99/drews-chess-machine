@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Training-orthogonal change so collapse is run-to-run variance. Run never reached arena boundary so the games_per_tournament change had no effect. No promotion.",
+  "classification": "regressed"
+}

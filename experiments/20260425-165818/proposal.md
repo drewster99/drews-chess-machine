@@ -1,0 +1,1 @@
+Raise replay_buffer_capacity 500k→600k. Untouched axis. Larger capacity holds more historical positions, slightly broadens the position distribution sampled per minibatch, which mechanistically resists single-mode amplification during the early-collapse window.

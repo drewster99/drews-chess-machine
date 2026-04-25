@@ -1,0 +1,1 @@
+Raise candidate_probe_interval_sec 15→30. Untouched axis. Less frequent candidate probes reduce GPU contention from probe inference, freeing more GPU for self-play and training. Mostly orthogonal — same observability data, just less frequent samples.

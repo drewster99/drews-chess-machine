@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Standard early-collapse window. entropy_bonus increase did not protect against build-393 variance. No promotion (run never reached arena).",
+  "classification": "regressed"
+}

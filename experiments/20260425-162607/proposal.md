@@ -1,0 +1,1 @@
+Raise learning_rate 5e-5→6e-5 (+20%). Untested up direction (down to 4e-5 previously regressed). With the more stable replay_ratio=1.1 baseline, a small lr increase could accelerate convergence on legal moves while staying within the safe range. gNorm at 26 leaves headroom under clip=25 for slightly larger updates.

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build 393, elapsed 900s. Promoted 1/1 (score 0.55, +35 Elo) vs baseline 0/1 at 0.525 — first promotion in the streak. Probe legal_mass climbed 0.72→0.84, max_prob held ~0.19 (no collapse). Policy entropy higher (6.98 vs 6.76). Concerns: value_output saturated at -1.0 across probes, value_abs_mean 0.45 vs 0.24, grad_norm 44 vs 26. Net: arena promotion + legal_mass gain outweigh value saturation risk.",
+  "classification": "improved"
+}

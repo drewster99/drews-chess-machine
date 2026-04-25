@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Standard 301s collapse window. self_play_start_tau change did not stabilize against build-393 variance. No promotion (run never reached arena).",
+  "classification": "regressed"
+}

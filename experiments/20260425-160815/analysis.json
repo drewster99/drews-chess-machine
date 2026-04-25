@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both timer_expired 900s. Goal-1 metrics regressed: final legal_mass 0.243 vs baseline 0.720 (-66%), top1_legal 0.008 vs 0.055 (-86%). gNorm jumped 26→82. Arena worse (7W/11L vs 17W/12L, score 0.48 vs 0.525). Further bump 1.10→1.15 overshot. No promotion.",
+  "classification": "regressed"
+}

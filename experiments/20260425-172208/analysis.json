@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Training-orthogonal change so collapse is run-to-run variance. No promotion.",
+  "classification": "regressed"
+}

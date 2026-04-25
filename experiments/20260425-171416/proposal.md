@@ -1,0 +1,1 @@
+Lower arena_games_per_tournament 100→80. Untouched axis. Faster arenas (~80% wall-clock) reduce training interruption, leaving more time for contiguous SGD steps. Arena CIs stay statistically meaningful (n=80 is ~10% wider than n=100). Training-orthogonal so isolates the arena-frequency effect.

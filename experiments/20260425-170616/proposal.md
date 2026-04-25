@@ -1,0 +1,1 @@
+Raise arena_auto_interval_sec 300→360 (+20%). Untouched axis. Fewer arena interruptions during the 900s window means more contiguous training time, less BN running-stat disruption from arena pauses. Mostly orthogonal to early-collapse mode but slightly cleaner training dynamics.

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Higher lr did not stabilize; standard ~301s collapse window. No promotion (run never reached arena). Build-393 variance regime continues — 1.10 baseline is no more reproducible than prior baselines.",
+  "classification": "regressed"
+}

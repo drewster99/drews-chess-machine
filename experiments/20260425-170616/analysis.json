@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 304s on legal-mass collapse. arena_auto_interval change is training-orthogonal so collapse is run-to-run variance. No promotion (run never reached arena).",
+  "classification": "regressed"
+}
