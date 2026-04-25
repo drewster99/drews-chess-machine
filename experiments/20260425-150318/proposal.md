@@ -1,0 +1,1 @@
+Reduce learning_rate 5e-5→4e-5 (-20%). Untouched axis this streak. Smaller per-step updates reduce the gradient magnitude that drives early one-hot collapse onto illegal moves. With lr_warmup=75 and ~463 post-warmup steps in the 900s window, a 20% lr cut still permits substantial learning while damping the catastrophic-update mode.

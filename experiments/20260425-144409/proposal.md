@@ -1,0 +1,1 @@
+Raise replay_buffer_min_positions_before_training 100000→120000. Delays training start until the buffer holds more diverse self-play positions, reducing early policy collapse by giving the optimizer broader coverage before its first gradient step. Single-axis change targeting the build-393 high-variance early-collapse mode.

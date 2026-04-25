@@ -1,0 +1,1 @@
+Slow self_play_tau_decay_per_ply 0.030→0.025. Keeps self-play more exploratory (higher tau) for ~5 more plies before reaching target, diversifying early replay positions. Mechanistically reduces single-mode amplification risk during the 60-300s collapse window without sacrificing training-step count.

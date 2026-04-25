@@ -1,6 +1,6 @@
 {
   "entropy_bonus": 0.012,
-  "grad_clip_max_norm": 25,
+  "grad_clip_max_norm": 22,
   "weight_decay": 0.0002,
   "K": 5,
   "learning_rate": 5e-05,
@@ -13,7 +13,7 @@
   "arena_start_tau": 2,
   "arena_target_tau": 0.5,
   "arena_tau_decay_per_ply": 0.01,
-  "replay_ratio_target": 1.1,
+  "replay_ratio_target": 1,
   "replay_ratio_auto_adjust": true,
   "self_play_workers": 48,
   "training_step_delay_ms": 0,

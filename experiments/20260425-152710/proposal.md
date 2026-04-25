@@ -1,0 +1,1 @@
+Tighten arena_target_tau 0.50→0.40. Untouched axis. Sharper end-of-arena moves slightly increase decisive arena outcomes (currently 88% draws), addressing goal-3 promotion rate. Training-side dynamics unchanged so orthogonal to early-collapse mode.

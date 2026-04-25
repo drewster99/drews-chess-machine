@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Tighter grad_clip 25→22 cut max gNorm 70.7→27.6 as intended, but candidate probe metrics regressed: final legal_mass 0.571→0.266 and top100_sum 0.959→0.723. Both runs hit timer with no promotion (0.50 vs 0.49 arena). Goal-1 collapse signals (max_prob, illegal_mass) trended worse on the new run.",
+  "classification": "regressed"
+}

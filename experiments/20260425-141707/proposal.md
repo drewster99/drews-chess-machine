@@ -1,0 +1,1 @@
+Bump draw_penalty 0.10→0.12 (+20%). 88% draw rate keeps value head near 0; a small bump strengthens value-loss signal away from the all-zeros attractor without touching any policy-side knob (where Goal 1 lives). Orthogonal to recently-regressed axes (clip/wd/entropy/warmup) and leaves clip=25 untouched.

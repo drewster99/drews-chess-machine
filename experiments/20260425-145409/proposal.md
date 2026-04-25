@@ -1,0 +1,1 @@
+Reduce K (value loss coefficient) 5→4. Rebalances loss toward policy; lower value-head weight gives policy gradient more relative influence. Untested axis with mechanistic link to goal 1 (illegal-move policy collapse). value_abs_mean is 0.18 (not saturated) so reducing K shouldn't kill value learning.

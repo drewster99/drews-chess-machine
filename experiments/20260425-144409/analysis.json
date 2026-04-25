@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 300s on legal-mass collapse. One-hot illegal collapse: max_prob 0.70→1.0, legal_mass=0 throughout, top1_legal_ever_positive=false. Larger replay_min did not protect against early-collapse mode. value_abs_mean rose to 0.59 (mid-saturation). No promotion (0 arenas). Build-393 high-variance pattern continues.",
+  "classification": "regressed"
+}

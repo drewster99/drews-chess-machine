@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. arena_target_tau change is training-orthogonal so collapse is pure run-to-run variance. No promotion (run never reached arena boundary). Build-393 high-variance regime continues.",
+  "classification": "regressed"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. One-hot illegal collapse: max_prob 0.30→1.0, legal_mass_sum=0 throughout, top1_legal_ever_positive=false. value_output saturated to 1.0; value_abs_mean rose to 0.69. K=5→4 did not protect against early collapse. No promotion (0 arenas).",
+  "classification": "regressed"
+}

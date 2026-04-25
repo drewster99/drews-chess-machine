@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Late-bail at 664s on legal-mass collapse — first non-301s collapse in this streak. Made it through one arena (score 0.48, no promotion) and showed healthy mid-run metrics (legal_mass 0.16 at 343s) before deteriorating to one-hot collapse (max 0.79, legal=0). 404 steps vs baseline 538 (replay_ratio_target=1.2 yields fewer training steps as expected). Run-to-run variance still dominates, but axis is interesting.",
+  "classification": "regressed"
+}

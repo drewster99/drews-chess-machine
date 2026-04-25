@@ -1,0 +1,1 @@
+Raise self_play_target_tau 0.6→0.7 (+17%). Untouched axis. Keeps later self-play moves more exploratory, diversifying replay-buffer positions and reducing the single-mode replay distribution that the policy can fixate on during the early-collapse window. Single-axis micro-step.

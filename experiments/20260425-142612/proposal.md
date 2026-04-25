@@ -1,0 +1,1 @@
+Decrease entropy_bonus 0.012→0.011 (-8%). All recent entropy tweaks have been upward and one regressed; a small downward step is untried and mechanistically lets the policy concentrate more on legal moves once found, potentially lifting top1_legal/legal_mass without destabilizing exploration. Single-axis, low-risk, avoids recently-regressed directions.

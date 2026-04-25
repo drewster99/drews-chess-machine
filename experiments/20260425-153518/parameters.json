@@ -13,7 +13,7 @@
   "arena_start_tau": 2,
   "arena_target_tau": 0.5,
   "arena_tau_decay_per_ply": 0.01,
-  "replay_ratio_target": 1.1,
+  "replay_ratio_target": 1.2,
   "replay_ratio_auto_adjust": true,
   "self_play_workers": 48,
   "training_step_delay_ms": 0,

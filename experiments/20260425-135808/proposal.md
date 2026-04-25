@@ -1,0 +1,1 @@
+Continue the directionally-proven grad_clip axis from the just-accepted run (30→25). Tighten 25→22: baseline gNorm peaks at 70.7, well above 22, so the clip will bite harder and further suppress the rare large-update spikes that drive illegal_mass excursions. Single-axis micro-step; all other params unchanged.

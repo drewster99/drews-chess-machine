@@ -1,0 +1,1 @@
+Raise arena_tau_decay_per_ply 0.010→0.015. Untouched axis. Faster arena tau decay → sharper end-of-arena moves → more decisive arena play. Orthogonal to early-collapse mode (training-side dynamics unchanged), targets goal-3 promotion rate. Single-axis micro-step.

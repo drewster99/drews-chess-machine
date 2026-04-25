@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. legal_mass_sum stayed near zero across probes (final 0.005 vs baseline 0.571), top1_legal_ever_positive=false, max_prob spread (0.08) so probability landed on illegal cells. draw_penalty bump did not protect against the early-collapse mode. No promotion (0 arenas).",
+  "classification": "regressed"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Spread-illegal mode: max_prob stayed low (~0.05) but legal_mass_sum near zero (final 0.002). gNorm spiked to 136 (>100 threshold), suggesting the lower lr did not damp early instability. lr 5e-5→4e-5 did not protect against collapse. No promotion (0 arenas).",
+  "classification": "regressed"
+}

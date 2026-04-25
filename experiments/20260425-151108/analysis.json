@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Classic one-hot collapse: max_prob 0.14→1.0, legal_mass=0 throughout, top1_legal_ever_positive=false. Higher self_play_target_tau did not protect against early-collapse mode. No promotion (0 arenas). Streak continues — build-393 high-variance regime.",
+  "classification": "regressed"
+}

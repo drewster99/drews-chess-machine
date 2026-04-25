@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build 393, both timer_expired at 900s. New run shows higher probe max_prob (0.31 vs 0.21) and legal_mass (0.72 vs 0.57) — stronger learning signal — plus better arena score 0.525 vs 0.5 (Elo +17). Collapse signals stable: pEnt 6.76 (>5), grad norm lower (26 vs 71), no saturation. Promotion note: closer to threshold but not promoted.",
+  "classification": "improved"
+}

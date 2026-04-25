@@ -1,0 +1,1 @@
+Raise replay_ratio_target 1.0→1.2 (+20%). Untouched axis. Higher consumer/producer ratio means each self-play position gets more training updates before being supplanted; more update density per game might let the policy learn legal moves faster relative to the early-collapse window. replay_ratio_auto_adjust=true so step_delay self-tunes.
