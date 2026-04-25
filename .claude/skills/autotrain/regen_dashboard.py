@@ -146,7 +146,7 @@ def build_row(folder: Path):
             training_time = int(raw)
     return {
         "timestamp": folder.name,
-        "start_time_iso": ts.strftime("%Y-%m-%dT%H:%M:%S"),
+        "start_time_iso": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "status": status,
         "mode": folder_mode(folder.name),
         "change_details": change_details,
@@ -357,7 +357,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <table id="experiments">
   <thead>
     <tr>
-      <th>Start (UTC)</th>
+      <th>Start (local)</th>
       <th>Status</th>
       <th>Dur.</th>
       <th>Change</th>
@@ -392,6 +392,19 @@ function escHTML(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+function fmtLocal(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
 function fmtVal(v) {
   if (v === undefined) return '<em>absent</em>';
   if (v === null) return 'null';
@@ -423,7 +436,7 @@ function renderRow(exp) {
     ? `<span class="params-link" data-key="${escHTML(rowKey(exp))}">view</span>`
     : '<em>—</em>';
   tr.innerHTML = `
-    <td class="mono">${escHTML(exp.start_time_iso || '')}</td>
+    <td class="mono">${escHTML(fmtLocal(exp.start_time_iso))}</td>
     <td>${statusCell}</td>
     <td class="mono">${durCell}</td>
     <td class="details">${escHTML(exp.change_details || '')}</td>
@@ -617,7 +630,7 @@ def main():
     # revision — that way existing dashboards auto-upgrade to new features
     # (like the params modal) without the user having to delete the file, but
     # we don't churn mtime every regen when the template hasn't changed.
-    template_marker = "params-modal-backdrop"
+    template_marker = "Start (local)"
     if not OUT_HTML.is_file() or template_marker not in OUT_HTML.read_text():
         OUT_HTML.write_text(HTML_TEMPLATE)
     print(f"regen_dashboard: {len(rows)} runs -> {OUT_JS.relative_to(REPO_ROOT)}")
