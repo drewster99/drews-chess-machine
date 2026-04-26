@@ -1,7 +1,7 @@
 window.EXPERIMENTS = [
   {
     "timestamp": "20260421-180412",
-    "start_time_iso": "2026-04-21T18:04:12",
+    "start_time_iso": "2026-04-21T18:04:12Z",
     "status": "FAILED",
     "mode": "normal",
     "change_details": "Raise entropy_bonus from 0.001 to 0.02 (20x). The trajectory shows the policy was healthily improving through t=290s (illegal mass falling from 0.996 to 0.798, a legal move rising above uniform), then after an arena/promotion the self-play workers started seeding the replay buffer with positions drawn from an already-peaky champion, and gradient descent drove the logits one-hot onto a single illegal move. The core problem is insufficient counter-pressure against peaky distributions: with entropy_bonus=0.001 the entropy term contributes negligible gradient compared to the cross-entropy term reinforcing whatever move the (now collapsed) champion picked. Bumping to 0.02 adds a meaningful -H(p) penalty that resists one-hot collapse without preventing the network from eventually learning sharp distributions on well-understood positions \u2014 this is the standard AlphaZero-style knob for exactly this failure mode, and 0.02 is in the conventional range (lc0 uses ~0.008\u20130.03). Changing only this one parameter isolates the effect so the next iteration can judge whether more (raise further) or less (the fix was elsewhere) is needed.",
@@ -44,7 +44,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-182131",
-    "start_time_iso": "2026-04-21T18:21:31",
+    "start_time_iso": "2026-04-21T18:21:31Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Raise entropy_bonus from 0.001 to 0.01 (10x). The baseline trajectory shows the network monotonically concentrating probability mass onto a single illegal move, with entropy collapsing fast enough that arena promotion of a collapsed candidate locks in the failure. With entropy_bonus=0.001, the -beta*H(p) term in the loss is about two orders of magnitude too weak to resist the policy-gradient pressure toward one-hot logits on raw (unmasked) outputs \u2014 illegal_mass rose from 0.80 to 1.00 in minutes. Bumping to 0.01 keeps the counter-pressure on the same order as a typical per-sample policy CE contribution, which should hold entropy high enough that legal moves can continue to be distinguished and illegal_mass can keep falling, without being so large that it prevents any sharpening at all (0.01 is a common lc0/AlphaZero-style entropy-reg magnitude). This is a single-concept change and will produce observable signal within the 10-minute harness window via the illegal_mass_sum and max probes.",
@@ -87,7 +87,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-183711",
-    "start_time_iso": "2026-04-21T18:37:11",
+    "start_time_iso": "2026-04-21T18:37:11Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "The 0.001 baseline learned signal (illegal_mass fell to 0.798) but collapsed after arena promotion; the 0.01 setting is so strong it flattens the distribution and prevents any learning of legal-vs-illegal. The sweet spot is almost certainly in between. I'm setting entropy_bonus=0.004 \u2014 high enough to damp the peakiness collapse that killed the baseline, but low enough that the cross-entropy gradient can still push illegal-move mass down and let legal moves clear the uniform threshold. Changing only this one knob isolates the effect cleanly against both prior runs; other concerns (arena-promotion feedback loop, sampling taus) are deferred to the next iteration once we know whether a mid-range entropy bonus alone gives simultaneous progress on diagnostics 1 and 2 within the 10-minute window.",
@@ -130,7 +130,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-185738",
-    "start_time_iso": "2026-04-21T18:57:38",
+    "start_time_iso": "2026-04-21T18:57:38Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Current best run shows healthy non-collapsing dynamics (max in [0.048, 0.197], illegal_mass monotonically declining to 0.665) but learning is slow \u2014 only 362 steps in 600s and illegal_mass is still well above target. With entropy_bonus=0.004 providing a solid anti-collapse floor and max well below 0.20, there is ample headroom to double the learning rate from 5e-5 to 1e-4 for faster convergence toward legal-move concentration. This is a single-knob change that directly targets GOAL #1's residual slowness without re-introducing collapse risk: the entropy regularizer remains unchanged to keep the guardrail, and grad_clip_max_norm=30 will catch any occasional large step. A 2x lr bump is the conservative version of the hint's suggestion and should be visible within 10 min via faster illegal_mass decay.",
@@ -173,7 +173,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-194653",
-    "start_time_iso": "2026-04-21T19:46:53",
+    "start_time_iso": "2026-04-21T19:46:53Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Pair a modest LR bump with a matching entropy bump to accelerate learning while preserving the collapse margin. The previous lr=1e-4 experiment blew up at entropy_bonus=0.004, so instead try lr 5e-5 -> 7.5e-5 (1.5x, not 2x) coupled with entropy_bonus 0.004 -> 0.006 (1.5x) so the regularization pressure scales with the step size. This is a tightly-related pair: both knobs control the same collapse/learning tradeoff, and scaling them together tests whether the healthy dynamics of the current best run transfer to a faster learning rate. All other knobs (grad clip, arena cadence, batch size) are held fixed so the attribution is clean.",
@@ -221,7 +221,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-200314",
-    "start_time_iso": "2026-04-21T20:03:14",
+    "start_time_iso": "2026-04-21T20:03:14Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Two consecutive LR bumps collapsed the policy even when paired with more entropy, so the gradient-step magnitude is the limiting factor, not the exploration pressure. Tightening grad_clip_max_norm from 30.0 to 10.0 directly caps the per-step update size: at current best, gNorm values that previously passed through unclipped will now be rescaled, which should dampen the sudden policy-mass concentration that drove max>0.90 and illegal_mass_sum>0.99 in the rejected runs. This is a different axis from LR/entropy, is a single-concept change, and sets up a future iteration to reassess whether LR can be bumped once clipping is known to be active.",
@@ -264,7 +264,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-201708",
-    "start_time_iso": "2026-04-21T20:17:08",
+    "start_time_iso": "2026-04-21T20:17:08Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Avoiding the LR/grad-clip/entropy axis per the note. Lowering self_play_start_tau from 2.0 to 1.5 addresses a likely root cause of the slow-learning-but-narrow-stable basin: at tau=2.0 the early-game move distribution is nearly uniform over legal moves, so the replay buffer is dominated by essentially-random openings. That gives the policy head very weak gradient signal to sharpen against (any move is about as good as any other in the training target), which explains why the current best is 'learning slowly but reliably' and why small LR increases immediately collapse \u2014 the policy has nothing consistent to latch onto, so any optimizer push sends it into a degenerate mode. Tau=1.5 still preserves meaningful exploration (softmax is clearly non-uniform but still broad) while concentrating replay data on positions the net actually prefers, giving the policy head a coherent target to move toward. Target tau 0.8 and decay 0.03 are left alone so mid/endgame sharpening is unchanged. This is the single lever; no other parameters touched.",
@@ -307,7 +307,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-203113",
-    "start_time_iso": "2026-04-21T20:31:13",
+    "start_time_iso": "2026-04-21T20:31:13Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Four consecutive rejects all perturbed the LR/grad_clip/entropy axes and collapsed. The current-best basin is narrow, and seed variance dominates early probes, so the next lever should add regularization pressure orthogonal to entropy_bonus without changing SGD direction. Raising weight_decay from 1e-4 to 2e-4 (a modest 2x) applies explicit L2 pressure on weights \u2014 this shrinks logit magnitudes globally, which directly combats policy-softmax sharpening (the proximate cause of illegal_mass and max blow-ups) while leaving LR, grad_clip, entropy_bonus, and tau schedules untouched. 2x is intentionally conservative per the proposer note (10x risks a fast collapse via under-fitting the value head), and it's a pure optimizer-side knob so it composes cleanly with the known-good entropy=0.004 setting.",
@@ -350,7 +350,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-204510",
-    "start_time_iso": "2026-04-21T20:45:10",
+    "start_time_iso": "2026-04-21T20:45:10Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Five consecutive perturbations on training-dynamics axes (lr, entropy, grad_clip, start_tau, weight_decay) have all collapsed within 2-6 minutes, and the meta-analysis notes high seed variance suggesting we may be reading noise. Rather than touch another training-dynamics knob, try strategic option C: disable replay_ratio auto-adjust while holding replay_ratio_target=1.0 explicitly. The auto-adjuster varies training cadence (via stepDelay) based on observed cons/prod ratios, which will differ run-to-run due to self-play stochasticity \u2014 this could be a hidden source of the 20x variance in probe-1 max across identical setups. Pinning the cadence removes one stochastic control loop from the system, which should either (a) improve reproducibility so future perturbations yield cleaner signal, or (b) directly help if the auto-adjuster has been driving training faster than self-play can supply diverse data. This is conservative: it changes no learning hyperparameter, touches an axis never before tried, and is trivially reversible.",
@@ -393,7 +393,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-205914",
-    "start_time_iso": "2026-04-21T20:59:14",
+    "start_time_iso": "2026-04-21T20:59:14Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Six straight rejects from varied axes (lr, grad_clip, tau, weight_decay, replay-auto) all produced rapid collapse, and the replay-auto-off result proves the collapse is driven by SGD dynamics on the policy head itself rather than arena promotion feedback. The safest axis left untouched is the entropy bonus \u2014 it directly counteracts peakiness in the policy softmax, which is exactly what collapse metrics (illegal_mass_sum>0.99, max>0.90) measure. I'm taking option (a) from the guidance: a minimal 25% bump from 0.004 to 0.005. This is the lowest-variance step available \u2014 small enough that if the current-best is a genuine basin we won't fall out of it, but large enough on the one axis that most directly damps logit peakiness to plausibly show an observable reduction in max/illegal_mass_sum within the 10-minute harness window. Every other parameter is held exactly to isolate the entropy-bonus response.",
@@ -436,7 +436,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-211313",
-    "start_time_iso": "2026-04-21T21:13:13",
+    "start_time_iso": "2026-04-21T21:13:13Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Pushing entropy_bonus from 0.004 down to 0.003 to probe the lower edge of the stability basin. The basin is bounded below by 0.001 (collapsed) and above by ~0.01 (over-regularized); within the confirmed working region 0.004 beats 0.005 beats 0.01, suggesting that less entropy regularization yields better peakiness as long as we stay above the collapse edge. 0.003 is a single conservative step toward the edge \u2014 if it holds, we get sharper policy with still-bounded illegal mass; if it collapses, we've localized the lower bound of the basin to (0.001, 0.003]. All other knobs held fixed so the outcome is attributable to this one change.",
@@ -479,7 +479,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-214716",
-    "start_time_iso": "2026-04-21T21:47:16",
+    "start_time_iso": "2026-04-21T21:47:16Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Halve training_batch_size from 4096 to 2048. Current-best run managed only 366 training steps in 600s with healthy but slow illegal_mass growth (0 to 0.54). Smaller batches roughly double step count per wall-clock and add mild SGD noise \u2014 a fresh axis that preserves the entropy=0.003 stability basin.",
@@ -522,7 +522,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-220318",
-    "start_time_iso": "2026-04-21T22:03:18",
+    "start_time_iso": "2026-04-21T22:03:18Z",
     "status": "NEUTRAL",
     "mode": "normal",
     "change_details": "Probe the collapse edge by lowering entropy_bonus from 0.003 to 0.0025. This is the most incremental step along the only axis with a known stability basin, testing whether slightly less exploration pressure still holds.",
@@ -565,7 +565,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-221834",
-    "start_time_iso": "2026-04-21T22:18:34",
+    "start_time_iso": "2026-04-21T22:18:34Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Nudge entropy_bonus 0.003 \u2192 0.0035 (small step toward the upper edge of the working range [0.0025, 0.005]) to probe whether slightly stronger entropy regularization reduces illegal_mass further while keeping max low.",
@@ -608,7 +608,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-223230",
-    "start_time_iso": "2026-04-21T22:32:30",
+    "start_time_iso": "2026-04-21T22:32:30Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Probe a non-entropy axis: raise arena_auto_interval_sec from 300 to 600 so more training accumulates between arena interruptions, giving the candidate weights more time to diverge and producing a cleaner promotion signal while entropy stays at its sweet spot of 0.003.",
@@ -651,7 +651,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-224611",
-    "start_time_iso": "2026-04-21T22:46:11",
+    "start_time_iso": "2026-04-21T22:46:11Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise entropy_bonus 0.003\u21920.004 (known-working level) to widen the seed-space stability basin; seed-luck collapse evidence suggests more regularization is needed rather than further knob exploration.",
@@ -694,7 +694,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-230005",
-    "start_time_iso": "2026-04-21T23:00:05",
+    "start_time_iso": "2026-04-21T23:00:05Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Bistable basin is seed-dominated; small knob nudges have low signal. Bump entropy_bonus 0.003\u21920.008 (2.67x) \u2014 a large regularization step sitting between known-working 0.005 and over-regularized 0.01. Goal: make the uniform-policy basin attractive enough that most seeds cannot escape into the single-move collapse, even when grad_norm spikes early.",
@@ -737,7 +737,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-231411",
-    "start_time_iso": "2026-04-21T23:14:11",
+    "start_time_iso": "2026-04-21T23:14:11Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Halve learning_rate 5e-5 to 2.5e-5. Collapse is SGD-level bistability: large early steps push logits toward saturation before entropy regularization can act. Smaller steps give every seed more time in the linear regime before softmax saturates, attacking the mechanism itself rather than its regularization magnitude.",
@@ -780,7 +780,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-232810",
-    "start_time_iso": "2026-04-21T23:28:10",
+    "start_time_iso": "2026-04-21T23:28:10Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Triple the pre-training buffer fill from 100k to 300k positions. Lets self-play diversify the replay buffer before any SGD fires, reducing early correlated-gradient risk that may be driving the repeated collapses. Conservative, untried-in-isolation axis; all other knobs held at current best.",
@@ -823,7 +823,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-234211",
-    "start_time_iso": "2026-04-21T23:42:11",
+    "start_time_iso": "2026-04-21T23:42:11Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Set replay_buffer_min_positions_before_training 100000 \u2192 200000. Halfway between prior baseline (100k, collapse-prone) and last run's 300k (stable but too few training steps). Aims to preserve most seed-stability gain while recovering training throughput. Single-knob change; all other parameters held fixed.",
@@ -866,7 +866,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260421-235610",
-    "start_time_iso": "2026-04-21T23:56:10",
+    "start_time_iso": "2026-04-21T23:56:10Z",
     "status": "NEUTRAL",
     "mode": "normal",
     "change_details": "Set replay_buffer_min_positions_before_training to 300000 (up from 100k baseline, revisiting the value from 2 iterations ago). Last run at 200k collapsed (gNorm>100); 300k previously did not. Replicate the 300k run alone to test whether that earlier non-collapse was reproducible or seed luck before stacking another lever.",
@@ -909,7 +909,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-001010",
-    "start_time_iso": "2026-04-22T00:10:10",
+    "start_time_iso": "2026-04-22T00:10:10Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Stack the seed-stability win (min_positions 100k\u2192300k, confirmed non-collapsing across two runs) with a slightly more selective promotion gate (arena_promote_threshold 0.55\u21920.60) to recover learning signal lost at 300k. Both axes known-stable individually; neutrals don't ratchet so need improved metrics.",
@@ -957,7 +957,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-002419",
-    "start_time_iso": "2026-04-22T00:24:19",
+    "start_time_iso": "2026-04-22T00:24:19Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Pair min_positions=300k (proven seed-stable in 2/2 prior non-collapsing runs) with entropy_bonus=0.0025 (slight reduction from 0.003). Larger pre-training buffer should let the lower-entropy regularization produce faster peakiness progression than current best without tripping late collapse. One tightly-related regularization pair.",
@@ -1005,7 +1005,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-003910",
-    "start_time_iso": "2026-04-22T00:39:10",
+    "start_time_iso": "2026-04-22T00:39:10Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Halve training_batch_size 4096\u21922048 to roughly double training steps/wallclock, recovering throughput lost to the 300k buffer fill. Previously collapsed at 100k buffer with entropy 0.003; now at 300k buffer + 0.0025 entropy (the stable new baseline), the larger buffer should absorb the higher update frequency without driving policy collapse.",
@@ -1048,7 +1048,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-005312",
-    "start_time_iso": "2026-04-22T00:53:12",
+    "start_time_iso": "2026-04-22T00:53:12Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Nudge learning_rate 5e-5 \u2192 6e-5 (+20%). Small increase to recover training pace at batch=4096 without touching batch-coupled knobs. Avoids noise-scaling/BN drift concerns from batch changes. Keeps K, promote threshold, and step_delay at their current accepted values.",
@@ -1091,7 +1091,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-010712",
-    "start_time_iso": "2026-04-22T01:07:12",
+    "start_time_iso": "2026-04-22T01:07:12Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Tighten grad_clip_max_norm 30\u219220 to suppress the collapse-inducing gradient spikes (last regression peaked gNorm=217) without perturbing the coupled {lr,batch,wd} trio. 30\u219210 regressed previously, so 20 is the untested middle ground \u2014 a single, isolated change aimed directly at the spike mechanism.",
@@ -1134,7 +1134,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-011942",
-    "start_time_iso": "2026-04-22T01:19:42",
+    "start_time_iso": "2026-04-22T01:19:42Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Activate new training-stability parameters: lr_warmup_steps=500 (linear warmup covering the first-few-minutes collapse window at ~1.7 steps/s \u2248 5 min), sqrt_batch_scaling_lr=true, sqrt_batch_scaling_weight_decay=true. Scaling flags are no-ops at batch=4096 but plumb them active for future safe batch changes.",
@@ -1190,7 +1190,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-013316",
-    "start_time_iso": "2026-04-22T01:33:16",
+    "start_time_iso": "2026-04-22T01:33:16Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Triple lr_warmup_steps 500\u21921500. Previous iteration (warmup=500, sqrt scaling flags on) showed grad_norm peak dropped from 103-217 to 64, confirming warmup suppresses early spikes but not enough to prevent drift into collapse. Isolate warmup-length signal; keep all other knobs at accepted-best values.",
@@ -1246,7 +1246,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-014711",
-    "start_time_iso": "2026-04-22T01:47:11",
+    "start_time_iso": "2026-04-22T01:47:11Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Bisect between warmup=500 (collapsed) and warmup=1500 (stalled at illegal_mass~1.0). Set lr_warmup_steps=1000 as the midpoint for the most informative single data point. All other knobs held at current best. sqrt_batch_scaling flags kept true (no-op at batch=4096 but maintains plumbing).",
@@ -1302,7 +1302,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-020112",
-    "start_time_iso": "2026-04-22T02:01:12",
+    "start_time_iso": "2026-04-22T02:01:12Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Re-run lr_warmup_steps=1000 to get a clean data point. Prior warmup=1000 trial was anomalous (only 62 steps in 600s vs normal ~340), making it uninformative. warmup=500 remained collapse-prone; warmup=1500 over-regularized. Need clean midpoint reading before deciding direction. Also enabling sqrt_batch_scaling flags=true (no-op at batch=4096 but keeps plumbing live).",
@@ -1358,7 +1358,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-021610",
-    "start_time_iso": "2026-04-22T02:16:10",
+    "start_time_iso": "2026-04-22T02:16:10Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Bisect warmup between collapsed 500 and stalled 1500, skipping the anomalously slow 1000 zone. Set lr_warmup_steps=750 with sqrt_batch_scaling_lr and sqrt_batch_scaling_weight_decay enabled; all other params at accepted-best.",
@@ -1414,7 +1414,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-023010",
-    "start_time_iso": "2026-04-22T02:30:10",
+    "start_time_iso": "2026-04-22T02:30:10Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Step away from warmup tuning (warmup sweep inconclusive/anomalous). Try orthogonal axis: sharpen self-play endgame replay by lowering self_play_target_tau 0.8 -> 0.6. Keeps lr_warmup_steps=0. Clean data point on whether sharper endgame targets reduce policy collapse without touching entropy/lr.",
@@ -1460,7 +1460,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-024412",
-    "start_time_iso": "2026-04-22T02:44:12",
+    "start_time_iso": "2026-04-22T02:44:12Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Replicate current-best baseline to test post-rebuild reproducibility under persistent slow-start anomaly; no parameter changes.",
@@ -1500,7 +1500,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-025812",
-    "start_time_iso": "2026-04-22T02:58:12",
+    "start_time_iso": "2026-04-22T02:58:12Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Replicate baseline with zero parameter changes to test whether the observed ~126-step throughput is consistent or variance-driven under the build 352 regression. No knobs touched.",
@@ -1540,7 +1540,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-031211",
-    "start_time_iso": "2026-04-22T03:12:11",
+    "start_time_iso": "2026-04-22T03:12:11Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Re-enable lr_warmup_steps=500 with sqrt_batch_scaling_lr=true and sqrt_batch_scaling_weight_decay=true. Previous warmup attempt showed grad norm spikes dropped ~100\u2192~64 (warmup working) despite collapse. One more data point tests whether warmup helps on the slower build-352 throughput regime. All other params unchanged.",
@@ -1596,7 +1596,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-032610",
-    "start_time_iso": "2026-04-22T03:26:10",
+    "start_time_iso": "2026-04-22T03:26:10Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower replay_buffer_min_positions_before_training from 300000 to 150000. At regressed ~2.7x throughput, 300k pre-train fill eats most of the 600s window before SGD starts. Halving lets training begin ~2x earlier and accumulate more steps within the capped window. All other parameters (warmup=0, scaling flags false) held.",
@@ -1642,7 +1642,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-034013",
-    "start_time_iso": "2026-04-22T03:40:13",
+    "start_time_iso": "2026-04-22T03:40:13Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Halve replay_buffer_min_positions_before_training from 150000 to 75000. Last iteration's 300k\u2192150k drop clearly helped (first probe at t=48s, illegal_min 0.78 vs much higher on other build-352 runs). Push the same lever harder: earlier training start = more SGD steps within 600s cap. Keep warmup=0 for clean single-axis comparison.",
@@ -1688,7 +1688,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-035413",
-    "start_time_iso": "2026-04-22T03:54:13",
+    "start_time_iso": "2026-04-22T03:54:13Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Keep min_pos at 75k (proven non-collapsing under build 352) and bump entropy_bonus from 0.0025 to 0.003 for slight extra regularization. Both knobs are in regions known to work under build 352; two small moves aimed at beating prior non-collapsing run.",
@@ -1739,7 +1739,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-040815-replicate",
-    "start_time_iso": "2026-04-22T04:08:15",
+    "start_time_iso": "2026-04-22T04:08:15Z",
     "status": "REJECTED",
     "mode": "replicate",
     "change_details": "Replicate mode \u2014 re-running current best parameters verbatim to probe baseline reproducibility after a long non-accept streak.",
@@ -1779,7 +1779,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-042113-replicate",
-    "start_time_iso": "2026-04-22T04:21:13",
+    "start_time_iso": "2026-04-22T04:21:13Z",
     "status": "REJECTED",
     "mode": "replicate",
     "change_details": "Replicate mode \u2014 re-running current best parameters verbatim to probe baseline reproducibility after a long non-accept streak.",
@@ -1819,7 +1819,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-043418-replicate",
-    "start_time_iso": "2026-04-22T04:34:18",
+    "start_time_iso": "2026-04-22T04:34:18Z",
     "status": "REJECTED",
     "mode": "replicate",
     "change_details": "Replicate mode \u2014 re-running current best parameters verbatim to probe baseline reproducibility after a long non-accept streak.",
@@ -1859,7 +1859,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-135927-seed",
-    "start_time_iso": "2026-04-22T13:59:27",
+    "start_time_iso": "2026-04-22T13:59:27Z",
     "status": "SEED",
     "mode": "seed",
     "change_details": "(seed baseline)",
@@ -1899,7 +1899,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-142050",
-    "start_time_iso": "2026-04-22T14:20:50",
+    "start_time_iso": "2026-04-22T14:20:50Z",
     "status": "NEUTRAL",
     "mode": "normal",
     "change_details": "Bump lr_warmup_steps 100 \u2192 500 to prevent early collapse. Baseline was collapsed (max=1.0, illegal=1.0, aboveU=0); 100 warmup steps is too short to matter. 500 is the original target before the display bug was discovered. All other params unchanged.",
@@ -1944,7 +1944,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-143612",
-    "start_time_iso": "2026-04-22T14:36:12",
+    "start_time_iso": "2026-04-22T14:36:12Z",
     "status": "NEUTRAL",
     "mode": "normal",
     "change_details": "Raise entropy_bonus 0.0025 -> 0.003. Single-knob anti-collapse step in historically-stable region; warmup=500 alone was neutral last run, so pivot to the strongest known anti-collapse lever. All other keys preserved; sqrt_batch_scaling_lr kept true; sqrt_batch_scaling_weight_decay not reintroduced.",
@@ -1989,7 +1989,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-145114",
-    "start_time_iso": "2026-04-22T14:51:14",
+    "start_time_iso": "2026-04-22T14:51:14Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Stack both incremental anti-collapse levers: raise lr_warmup_steps 100->500 (slower lr ramp) AND entropy_bonus 0.0025->0.003 (stronger entropy regularizer). Each tried alone failed; pairing them is the next logical step to break the collapse trap on this tough seed. All other params preserved.",
@@ -2039,7 +2039,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-150732",
-    "start_time_iso": "2026-04-22T15:07:32",
+    "start_time_iso": "2026-04-22T15:07:32Z",
     "status": "NEUTRAL",
     "mode": "normal",
     "change_details": "Bump learning_rate 5e-5 to 7.5e-5. Collapse was prevented by warmup=500 + entropy=0.003, but illegal_mass is stuck ~1.0 (stalled learning). Warmup ramps lr gradually so peak only hits after 500 steps, mitigating prior collapse risk from lr bumps. Faster learning to actually drive policy toward legal moves.",
@@ -2084,7 +2084,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-152218",
-    "start_time_iso": "2026-04-22T15:22:18",
+    "start_time_iso": "2026-04-22T15:22:18Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Bump learning_rate 5e-5 -> 1e-4 (2x). Warmup=500 kept 1.5x safe last iter; test the natural 2x next step to drive more signal per step and attack pinned illegal_mass. All other keys held.",
@@ -2129,7 +2129,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-153617",
-    "start_time_iso": "2026-04-22T15:36:17",
+    "start_time_iso": "2026-04-22T15:36:17Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Lower entropy_bonus 0.003 \u2192 0.0025 (one click less regularization). Current regime over-regularized; illegal_mass stalled at 1.0 with no learning progress on lr/warmup axes. Warmup=500 still provides collapse protection. History shows 0.0025 worked when paired with stability.",
@@ -2174,7 +2174,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-155112",
-    "start_time_iso": "2026-04-22T15:51:12",
+    "start_time_iso": "2026-04-22T15:51:12Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise learning_rate from 5e-5 to 7.5e-5 (1.5x). Last test of 1.5x under warmup=500 was safe/neutral at entropy=0.003; revisit under the newly-accepted lower-entropy baseline (0.0025) to push illegal_mass down faster while staying below the 1e-4 collapse threshold.",
@@ -2219,7 +2219,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-160515",
-    "start_time_iso": "2026-04-22T16:05:15",
+    "start_time_iso": "2026-04-22T16:05:15Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise replay_buffer_min_positions_before_training from 250000 to 350000. More diverse buffer before first SGD step should reduce early-collapse risk without altering SGD dynamics; strictly more conservative than current best.",
@@ -2264,7 +2264,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-162138",
-    "start_time_iso": "2026-04-22T16:21:38",
+    "start_time_iso": "2026-04-22T16:21:38Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Reduce lr_warmup_steps from 500 to 100. With ~331 training steps per window, warmup=500 meant lr never reached its configured 5e-5. Now warmup completes by step 100, letting full lr run for ~230 steps. Well within the 110 recommended cap. Isolate warmup-reduction effect; no other changes.",
@@ -2309,7 +2309,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-163613",
-    "start_time_iso": "2026-04-22T16:36:13",
+    "start_time_iso": "2026-04-22T16:36:13Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Bump learning_rate 5e-5 \u2192 7.5e-5. With warmup now an effective 100 steps (not 500), full-lr window opens early and training is demonstrably productive. A modest 1.5x lr lift should accelerate illegal_mass reduction while entropy_bonus=0.0025 and warmup=100 retain their safety envelope.",
@@ -2354,7 +2354,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-165112",
-    "start_time_iso": "2026-04-22T16:51:12",
+    "start_time_iso": "2026-04-22T16:51:12Z",
     "status": "NEUTRAL",
     "mode": "normal",
     "change_details": "Pair lr bump with more entropy: lr 5e-5\u21927.5e-5 for faster learning (showed illegal=0.26 mid-run last try), entropy 0.0025\u21920.003 to dampen the instability that unlearned it. Two coupled knobs: speedup plus regularization.",
@@ -2404,7 +2404,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-170513",
-    "start_time_iso": "2026-04-22T17:05:13",
+    "start_time_iso": "2026-04-22T17:05:13Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower min_positions_before_training from 250k to 150k to start SGD earlier, yielding more gradient steps per 10-min window while keeping the stable entropy/lr/warmup baseline that is already learning monotonically.",
@@ -2449,7 +2449,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-171911",
-    "start_time_iso": "2026-04-22T17:19:11",
+    "start_time_iso": "2026-04-22T17:19:11Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower entropy_bonus 0.0025->0.002. Current best is stable local optimum; need a different axis. Entropy is the only axis that historically responded, and current warmup+scaling flags now act as a safety net that was absent the last time we tried 0.002. Less regularization, more learning signal.",
@@ -2494,7 +2494,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-173311",
-    "start_time_iso": "2026-04-22T17:33:11",
+    "start_time_iso": "2026-04-22T17:33:11Z",
     "status": "NEUTRAL",
     "mode": "normal",
     "change_details": "Explore untried value-loss axis: bump polarization exponent K from 5 to 6. Sharper value targets may improve value-head discrimination without perturbing the stable policy-entropy/lr/warmup/min_pos basin. All other parameters held at current best.",
@@ -2539,7 +2539,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-174714",
-    "start_time_iso": "2026-04-22T17:47:14",
+    "start_time_iso": "2026-04-22T17:47:14Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower self_play_target_tau from 0.8 to 0.6 for sharper self-play endgames, yielding cleaner training targets without altering SGD dynamics. Untried axis at current stable config (streak=3).",
@@ -2584,7 +2584,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-180117",
-    "start_time_iso": "2026-04-22T18:01:17",
+    "start_time_iso": "2026-04-22T18:01:17Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Increase self_play_start_tau from 2.0 to 2.5 for MORE early-ply exploration, boosting replay-buffer diversity. Opposite direction of failed target_tau=0.6 test \u2014 tests the hypothesis that MORE diversity (not less) helps prevent collapse at current config.",
@@ -2629,7 +2629,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-181518",
-    "start_time_iso": "2026-04-22T18:15:18",
+    "start_time_iso": "2026-04-22T18:15:18Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise draw_penalty 0.1 -> 0.15. Untouched axis, orthogonal to fragile policy-side params. Draws dominate 70-90% of arena games, so sharpening the value-target signal against draws may improve value-head learning without disturbing the current best entropy/lr/K/warmup regime.",
@@ -2674,7 +2674,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-182918",
-    "start_time_iso": "2026-04-22T18:29:18",
+    "start_time_iso": "2026-04-22T18:29:18Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Retry draw_penalty 0.10\u21920.15 to get clean data; last attempt was corrupted by the sporadic slow-start anomaly (only 97 steps in window). Cheapest way to resolve this axis before exploring new axes.",
@@ -2719,7 +2719,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-184338",
-    "start_time_iso": "2026-04-22T18:43:38",
+    "start_time_iso": "2026-04-22T18:43:38Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Halve weight_decay from 1e-4 to 5e-5. Opposite direction of previously-regressed 2e-4 bump; less weight-shrinkage pressure may let policy learn faster without triggering under-reg collapse seen at entropy 0.002. Orthogonal, small step on a genuinely-untried axis.",
@@ -2764,7 +2764,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-185813",
-    "start_time_iso": "2026-04-22T18:58:13",
+    "start_time_iso": "2026-04-22T18:58:13Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise self_play_tau_decay_per_ply from 0.03 to 0.05. Faster in-game tau ramp-down (start 2.0 \u2192 target 0.8) reaches focused play sooner, shifting replay distribution toward more decisive positions. Orthogonal to the mapped SGD axes (lr/K/warmup/wd/entropy/draw). All other params unchanged.",
@@ -2809,7 +2809,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-191217",
-    "start_time_iso": "2026-04-22T19:12:17",
+    "start_time_iso": "2026-04-22T19:12:17Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "grad_clip_max_norm 30 -> 40. Loosen clipping to allow larger gradient updates through. 30->20 regressed in a prior trial; testing the opposite direction as the final untried axis after 9 consecutive regressions on varied knobs.",
@@ -2854,7 +2854,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-192614",
-    "start_time_iso": "2026-04-22T19:26:14",
+    "start_time_iso": "2026-04-22T19:26:14Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Reduce training_batch_size from 4096 to 3072 (0.75x). With sqrt_batch_scaling_lr=true, effective lr auto-scales to ~4.33e-5. Single-knob move preserving scale coupling; yields slightly noisier gradients and more steps per window, potentially improving stability at the current local maximum.",
@@ -2899,7 +2899,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-194212",
-    "start_time_iso": "2026-04-22T19:42:12",
+    "start_time_iso": "2026-04-22T19:42:12Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Increase training_batch_size from 4096 to 5120. The downward perturbation to 3072 regressed, so the opposite direction is the untested neighbor on this axis. A larger batch reduces gradient-noise variance per step, which directly attacks policy collapse risk: noisy updates on a 4864-way softmax can spike a handful of logits and sharpen max probability. With sqrt_batch_scaling_lr=true, the effective LR scales as sqrt(5120/4096)=1.118x, a mild +12% LR bump that should not destabilize given the current 5e-5 base and 100-step warmup. Fewer, calmer steps per minute is a reasonable trade when the goal is stability of illegal_mass_min and max, not raw step count. All other axes have been exhausted or are reserved for later goals; this is the cleanest remaining single-knob probe.",
@@ -2944,7 +2944,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-195609",
-    "start_time_iso": "2026-04-22T19:56:09",
+    "start_time_iso": "2026-04-22T19:56:09Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Decrease replay_ratio_target from 1.0 to 0.5. We are stuck at a fragile local optimum with policy collapse symptoms (illegal_mass_min=0.49, max=0.29, above_uniform max=5) and every nearby single-axis perturbation on LR/batch/entropy/weight-decay/clip/tau has regressed. The replay-ratio axis is completely untested and is the most principled knob for the collapse mode: at ratio=1.0 each self-play position is consumed by a training step roughly once, meaning with 32 concurrent workers the trainer is chewing heavily on recent on-policy data, which is the classic recipe for the policy narrowing onto its own current preferences and losing mass on unexplored legal moves. Halving the target to 0.5 doubles the self-play-to-training throughput ratio, giving the replay buffer a much more diverse, less self-correlated distribution per gradient step without touching the gradient itself (LR/entropy/clip all preserved). If it regresses we learn the axis is monotone-up and can try 1.25/1.5 next.",
@@ -2989,7 +2989,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-201007",
-    "start_time_iso": "2026-04-22T20:10:07",
+    "start_time_iso": "2026-04-22T20:10:07Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "All small-magnitude hyperparameter nudges (batch size, entropy bonus, weight decay, grad clip, draw penalty, K, tau schedule, replay min) have regressed, and replay_ratio_target DOWN catastrophically collapsed. The remaining untested axes cluster into knobs that change the fundamental training throughput/staleness balance. Of those, raising replay_ratio_target is the most directly motivated: the symmetric DOWN-test (0.5) was the single worst collapse of the streak, which is strong evidence that the current-best is already near the lower edge of a stability region where the trainer is under-consuming fresh data relative to production. Pushing UP to 1.25 forces the trainer to consume positions slightly faster than they are produced, biasing toward fresher, less-correlated samples per step \u2014 the opposite failure mode from the one that collapsed. It's a conservative step (1.0 \u2192 1.25, not 1.5) so if this axis has a narrow basin we learn the gradient direction without betting the whole budget.",
@@ -3034,7 +3034,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260422-202313",
-    "start_time_iso": "2026-04-22T20:23:13",
+    "start_time_iso": "2026-04-22T20:23:13Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "lr_warmup_steps=100 was identified as a breakthrough value that unlocked learning, but its near-neighbors have never been tested. Moving to 75 (below 100) is maximally informative: if 75 regresses we've bracketed the warmup optimum on the low side (50 would then be redundant to test), and if 75 wins we've found a cheaper warmup that reaches full LR faster, leaving more steps at full LR within the 10-minute cap. 75 is well under the \u2264113 constraint and is a meaningful 25% reduction from the current value \u2014 large enough to be detectable but small enough to preserve the breakthrough regime.",
@@ -3079,7 +3079,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-004610",
-    "start_time_iso": "2026-04-23T00:46:10",
+    "start_time_iso": "2026-04-23T00:46:10Z",
     "status": "FAILED",
     "mode": "normal",
     "change_details": "Exploring the learning_rate axis, which is untested at its direct base value (prior LR perturbations only touched sqrt_batch_scaling_lr and lr_warmup_steps). Current 5e-5 with 4096 batch + sqrt-scaling is producing policy-collapse symptoms (illegal_mass_sum as low as 0.49, max as low as 0.29, above_uniform_count maxing at 5). Lowering to 3e-5 reduces per-step update magnitude, which should let the policy head settle into sharper legal-move distributions rather than oscillating through under-confident states; it also gives the entropy bonus (0.0025) a more stable landscape to shape.",
@@ -3124,7 +3124,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-010112",
-    "start_time_iso": "2026-04-23T01:01:12",
+    "start_time_iso": "2026-04-23T01:01:12Z",
     "status": "FAILED",
     "mode": "normal",
     "change_details": "Reducing arena_games_per_tournament from 100 to 50. Shorter arenas mean less wall-clock pause for self-play, so when self-play resumes the replay-ratio controller has a smaller producer-deficit to recover from and should swing stepDelay less aggressively. Also serves as a disambiguation probe: if this run completes we can conclude lr=3e-5 caused the prior hang; if it also hangs the new replay-ratio controller formula is likely the culprit. Arena statistical power drops from 100\u219250 games (28/50 wins still required at 0.55 threshold) but this is acceptable for one diagnostic iteration.",
@@ -3169,7 +3169,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-011514",
-    "start_time_iso": "2026-04-23T01:15:14",
+    "start_time_iso": "2026-04-23T01:15:14Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower learning_rate 5e-5 \u2192 3e-5. Most-desired-but-never-observed data point: the prior iteration queued it but hung at app launch before producing training signal. Collapse symptoms (illegal_mass=0.49, max=0.29) suggest the policy softmax is being pulled too aggressively; -40% LR attenuates each step's push without touching entropy/decay/clip so we can cleanly read the axis. sqrt_batch_scaling_lr=true and batch 4096 unchanged keep effective-LR scaling intact.",
@@ -3214,7 +3214,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-012808",
-    "start_time_iso": "2026-04-23T01:28:08",
+    "start_time_iso": "2026-04-23T01:28:08Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Increase learning_rate 5e-5 \u2192 7e-5. Only untested LR direction remaining \u2014 3e-5 just collapsed, so the opposite direction probes whether slightly more per-step signal helps the policy escape the near-uniform regime without tipping into instability. All other knobs held at current best.",
@@ -3259,7 +3259,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-013930",
-    "start_time_iso": "2026-04-23T01:39:30",
+    "start_time_iso": "2026-04-23T01:39:30Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower self_play_workers 32 \u2192 24. First test of the worker-count axis. Reducing workers decreases batched-eval coalescing (less-correlated positions in each forward pass) and slightly lowers producer rate under the auto-adjusted replay-ratio target, both of which may attenuate the collapse dynamics. Arena knobs are lower-value for collapse prevention in a 10-min window so deferred.",
@@ -3304,7 +3304,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-015054",
-    "start_time_iso": "2026-04-23T01:50:54",
+    "start_time_iso": "2026-04-23T01:50:54Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise self_play_workers 32 \u2192 40 (up-direction on worker-count axis; 24 regressed). More workers deepens the batched-eval coalescing width, increasing position production and letting the auto-adjusted replay controller hold stepDelay lower while still meeting ratio=1, so the trainer sees fresher/more-diverse batches. 40 is a conservative step, not 48, to limit GPU contention.",
@@ -3349,7 +3349,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-020223",
-    "start_time_iso": "2026-04-23T02:02:23",
+    "start_time_iso": "2026-04-23T02:02:23Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise arena_auto_interval_sec 300 \u2192 900. With a 600s training cap this pushes the first arena fully outside the measurement window, so there is no arena-end ratio-controller spike confounding this run. Any improvement in illegal_mass / max / above_uniform is attributable to uninterrupted self-play+train dynamics.",
@@ -3394,7 +3394,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-021356",
-    "start_time_iso": "2026-04-23T02:13:56",
+    "start_time_iso": "2026-04-23T02:13:56Z",
     "status": "NEUTRAL",
     "mode": "normal",
     "change_details": "Reduce arena_games_per_tournament 100 \u2192 50. Mid-window arena still fires (preserving the apparently-helpful ratio perturbation) but halves arena duration, giving the trainer more steps in the window. Isolates onset of the ratio-spike while reducing its duration.",
@@ -3439,7 +3439,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-022532",
-    "start_time_iso": "2026-04-23T02:25:32",
+    "start_time_iso": "2026-04-23T02:25:32Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "arena_auto_interval_sec 300 \u2192 600. Only untested mid-value on this axis; 900 (no arena) regressed. Doubles the self-play window between arenas; first arena fires ~at the 600s boundary so 0-1 arenas land inside the window depending on timing.",
@@ -3484,7 +3484,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-023709",
-    "start_time_iso": "2026-04-23T02:37:09",
+    "start_time_iso": "2026-04-23T02:37:09Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Replicate current-best verbatim to measure seed variance. The streak has been dominated by single-run perturbations treated as ground truth, but nearby perturbations regress inconsistently. Running the exact current-best parameters again is a crucial control: if it collapses the current 'best' is a lucky-seed artifact and the local optimum is illusory.",
@@ -3523,7 +3523,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-024854",
-    "start_time_iso": "2026-04-23T02:48:54",
+    "start_time_iso": "2026-04-23T02:48:54Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Second replicate of current-best verbatim. The first replicate just collapsed (illegal_mass=0.98, max=0.91) suggesting seed variance dominates; one more identical-params run will confirm whether that was a one-off unlucky draw or whether the current 'best' parameters are genuinely unstable across seeds. Two data points beat one; three (current best + this + replicate #1) gives a 2-of-3 read on collapse probability.",
@@ -3562,7 +3562,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-030006",
-    "start_time_iso": "2026-04-23T03:00:06",
+    "start_time_iso": "2026-04-23T03:00:06Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "PIVOT after two failed replicates confirmed current 'best' is a lucky seed. Raise entropy_bonus from 0.0025 to 0.004. Historical evidence: iteration 20260422-002419 (au=7, im=0.23) used entropy_bonus=0.004 + min_positions=300k under an older build and was the best learning-progress run on record. Entropy bonus is the known-strongest collapse preventer in this codebase. The 'entropy=0.002 regressed' finding we relied on was a single-run noise measurement at params now known to be seed-unstable, so the 0.0025 floor is invalidated. Moving to 0.004 widens the seed-stable basin at the cost of slightly softer policy peaking \u2014 acceptable given 2/3 recent runs at 0.0025 collapsed.",
@@ -3607,7 +3607,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-031130",
-    "start_time_iso": "2026-04-23T03:11:30",
+    "start_time_iso": "2026-04-23T03:11:30Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Jump entropy_bonus hard: 0.0025 \u2192 0.008 (3.2x). The 0.004 attempt also collapsed, suggesting build 380's regime is significantly more collapse-prone than the historical one where entropy=0.004 produced au=7. A larger jump is warranted because the collapse basin at this operating point is wide; small perturbations don't escape it. 0.008 is still within the 0-1.0 bound and should apply strong uniform-ish pressure on the policy softmax, acting as a regularizer against the single-logit runaway we've been seeing. If this ALSO collapses, we know the problem is upstream of entropy regularization entirely (likely the controller change or build 380's data flow) and need to revert the controller.",
@@ -3652,7 +3652,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-032247",
-    "start_time_iso": "2026-04-23T03:22:47",
+    "start_time_iso": "2026-04-23T03:22:47Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Target the entropy sweet spot: raise entropy_bonus 0.0025 \u2192 0.005. ent=0.008 prevented collapse decisively but kept pEnt flat at ~uniform (never learned), and ent=0.0025/0.004 frequently collapse. 0.005 is the midpoint \u2014 hypothesis is that it's high enough to resist the single-logit runaway mode seen at 0.0025 but low enough to permit gradients to push legal-move probabilities above uniform. This is the search direction implied by the entropy-axis data we now have.",
@@ -3697,7 +3697,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-033359",
-    "start_time_iso": "2026-04-23T03:33:59",
+    "start_time_iso": "2026-04-23T03:33:59Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise replay_buffer_min_positions_before_training 250k \u2192 300k. The historical-best run (20260422-002419, au=7) used min_positions=300k under an older build; current build 380 has only tested 250k and below. A larger buffer floor means more self-play diversity accumulated before the trainer starts, reducing early-step on-policy bias. This is the untested direction on this axis under the current build, and it directly targets the seed-variance dominance observed in replicates \u2014 more data before training means less sensitivity to early RNG outcomes.",
@@ -3742,7 +3742,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-034509",
-    "start_time_iso": "2026-04-23T03:45:09",
+    "start_time_iso": "2026-04-23T03:45:09Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "entropy_bonus 0.0025 \u2192 0.006. Fine-grained entropy sweep: 0.005 collapsed, 0.008 was over-regularized (no learning, pEnt stayed at uniform), so the boundary of the collapse-prevention regime is somewhere in (0.005, 0.008]. 0.006 is the midpoint and the most informative single probe \u2014 it should tell us whether the collapse-prevention threshold is closer to 0.005 (0.006 still collapses) or 0.008 (0.006 stays uniform but doesn't collapse).",
@@ -3787,7 +3787,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-035626",
-    "start_time_iso": "2026-04-23T03:56:26",
+    "start_time_iso": "2026-04-23T03:56:26Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "entropy_bonus 0.0025 \u2192 0.008 (second run at this setting). First run at 0.008 prevented collapse entirely (max=0.24, no runaway) but policy stayed near-uniform (pEnt=6.83). Need a second data point to confirm whether that behavior is seed-stable (reproducible seed-stable regime we can probe further) or a one-off. If reproducible, future iterations can scan lr and K inside the 0.008 basin to find a setting that permits learning without collapse.",
@@ -3832,7 +3832,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-040800",
-    "start_time_iso": "2026-04-23T04:08:00",
+    "start_time_iso": "2026-04-23T04:08:00Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise K from 5 to 6 under the new entropy=0.008 baseline. K (value-loss polarization exponent) was historically 'neutral' at 6 under the old regime, but with entropy=0.008 now preventing collapse seed-stably, K=6 may sharpen value targets enough to speed legal-move learning in the previously-uniform 0.008 basin. One of the two 0.008 runs so far learned (au=5, im=0.46), the other stayed uniform (au=0); higher K might push the uniform-stuck runs toward learning.",
@@ -3877,7 +3877,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-041909",
-    "start_time_iso": "2026-04-23T04:19:09",
+    "start_time_iso": "2026-04-23T04:19:09Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "learning_rate 5e-5 \u2192 7e-5 under the new entropy=0.008 baseline. Prior 7e-5 test collapsed under the old entropy=0.0025 base, but stronger entropy regularization may now stabilize higher LR and accelerate escape from the 'uniform' failure mode seen in one of the two 0.008 runs. This tests whether the LR\u00d7entropy interaction lets us recover learning speed we lost by raising entropy.",
@@ -3922,7 +3922,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-043012",
-    "start_time_iso": "2026-04-23T04:30:12",
+    "start_time_iso": "2026-04-23T04:30:12Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Replicate current-best (entropy=0.008 at lr=5e-5, K=5) a third time. Two runs so far: one learned well (im=0.46, au=5), one stayed uniform but didn't collapse (im=0.999, au=0). Need a 3rd data point to estimate how often 0.008 actually learns vs just prevents collapse. If 2/3 learn, the new current best is a reliable regime; if 1/3, we need another knob to promote learning inside this basin.",
@@ -3961,7 +3961,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-044124",
-    "start_time_iso": "2026-04-23T04:41:24",
+    "start_time_iso": "2026-04-23T04:41:24Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Shorten lr_warmup_steps 100 \u2192 50 under the new entropy=0.008 baseline. Three replicates at current-best show consistent no-collapse (0/3) but inconsistent learning (1/3 full, 1/3 partial, 1/3 uniform). Faster LR ramp lets the trainer reach peak learning signal earlier, possibly escaping the 'uniform' attractor before entropy+policy equilibrium locks in. Under the OLD base, 75 regressed \u2014 but that was seed-variance under a collapse-prone regime. At 0.008 with no collapse risk, shorter warmup is worth re-testing.",
@@ -4006,7 +4006,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-045237",
-    "start_time_iso": "2026-04-23T04:52:37",
+    "start_time_iso": "2026-04-23T04:52:37Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "entropy_bonus 0.008 \u2192 0.007. Fine-grained bisect: 0.006 collapsed, 0.008 prevents collapse but 1/3 learns to au=5. 0.007 tests whether slightly less entropy gives more learning signal while still preventing collapse. If it collapses, 0.008 is the floor of the stable basin. If it stays stable AND learns more consistently, we found a better point.",
@@ -4051,7 +4051,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-050449",
-    "start_time_iso": "2026-04-23T05:04:49",
+    "start_time_iso": "2026-04-23T05:04:49Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "First 15-min training run at the new current-best parameters (entropy=0.008). Three prior 10-min runs at these params were stable on collapse but inconsistent on learning (1/3 learned to au=5, 1/3 partial, 1/3 uniform). Extending to 900s tests whether the uniform-prone runs eventually escape into learning given more training steps. Also establishes a 15-min baseline for comparing future iterations against under the new default training time.",
@@ -4090,7 +4090,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-052115",
-    "start_time_iso": "2026-04-23T05:21:15",
+    "start_time_iso": "2026-04-23T05:21:15Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "lr_warmup_steps 100 \u2192 0 under entropy=0.008 base. Warmup was added under the weaker entropy=0.003 regime to prevent early collapse; with ent=0.008 now providing seed-stable collapse prevention, the 100-step warmup delay is pure learning-onset lag. Removing it lets the network hit peak learning signal from step 1, maybe escaping the 'uniform attractor' before it locks in.",
@@ -4135,7 +4135,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-053726",
-    "start_time_iso": "2026-04-23T05:37:26",
+    "start_time_iso": "2026-04-23T05:37:26Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "lr_warmup_steps 100 \u2192 50 under entropy=0.008, 15-min window. warmup=0 hit new best im_min=0.28 transiently but then collapsed; warmup=100 is too conservative (learning stuck uniform in 3/4 replicates). 50 is the midpoint test. The prior warmup=50 test was under a 10-min window and produced au=2 \u2014 a 15-min window gives more steps to build on any learning achieved post-warmup.",
@@ -4180,7 +4180,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-055339",
-    "start_time_iso": "2026-04-23T05:53:39",
+    "start_time_iso": "2026-04-23T05:53:39Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "weight_decay 0.0001 \u2192 0 under entropy=0.008. Zero weight decay removes the pull-to-zero regularizer that may be fighting specific weights trying to develop asymmetric softmax; combined with strong entropy pulling uniform, the two regularizers may be double-damping the learning signal. Removing weight_decay lets weights freely diverge where the gradient points, which might be what's needed to escape the 'uniform attractor' half of the entropy=0.008 runs fall into.",
@@ -4225,7 +4225,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-060955",
-    "start_time_iso": "2026-04-23T06:09:55",
+    "start_time_iso": "2026-04-23T06:09:55Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "weight_decay 1e-4 \u2192 2e-4 under entropy=0.008. Previous iteration showed weight_decay is load-bearing for collapse prevention \u2014 wd=0 collapsed, wd=1e-4 prevents collapse. Higher wd=2e-4 tests whether doubling it widens the collapse-stable basin enough to also push past the 'uniform attractor' into reliable learning. Previously tested at wd=2e-4 under the old entropy=0.0025 regime (regressed) but that was seed-noise; retest under the now-stronger entropy is warranted.",
@@ -4270,7 +4270,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-062632",
-    "start_time_iso": "2026-04-23T06:26:32",
+    "start_time_iso": "2026-04-23T06:26:32Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Continue along the weight_decay direction: 2e-4 \u2192 3e-4 under ent=0.008. The jump from 1e-4\u21922e-4 produced a clean improvement on the primary goal metric (im_min 0.46\u21920.23). Probing one step further on the same axis tests whether im continues to decrease monotonically or whether 2e-4 is already near the sweet spot. If 3e-4 improves further, we likely have monotonic win available on this axis; if it regresses, 2e-4 is near the peak and next move should be a different axis.",
@@ -4315,7 +4315,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-064256",
-    "start_time_iso": "2026-04-23T06:42:56",
+    "start_time_iso": "2026-04-23T06:42:56Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "K 5 \u2192 6 under new best (ent=0.008, wd=2e-4). New best has lower au than the prior best (3 vs 5) despite better im \u2014 the policy distributes mass to many legal moves but fewer stand clearly above uniform. Sharper value targets (K=6) may help individual legal moves develop higher probability. Under wd=1e-4 this regressed, but at wd=2e-4 the extra regularization should buffer against collapse risk from sharper gradients.",
@@ -4360,7 +4360,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-065905",
-    "start_time_iso": "2026-04-23T06:59:05",
+    "start_time_iso": "2026-04-23T06:59:05Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Test grad_clip_max_norm 30 \u2192 40 under new best (ent=0.008, wd=2e-4). grad_clip was previously 'bracketed' as regressing in both directions but that was under the seed-noisy old regime. The new wd=2e-4 regularizer may admit larger gradient updates without triggering the old collapse mode \u2014 looser clipping could let useful learning gradients propagate more fully and tighten the policy on legal moves (addressing the au=2-3 plateau).",
@@ -4405,7 +4405,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-071518",
-    "start_time_iso": "2026-04-23T07:15:18",
+    "start_time_iso": "2026-04-23T07:15:18Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "grad_clip_max_norm 30 \u2192 25 under new best. gc=40 just hit near-collapse (max=0.906); tighter clipping at 25 suppresses the outlier gradient spikes that destabilize the policy. Lower gc may trade off against learning speed but at wd=2e-4 + ent=0.008 the system has headroom for reduced gradient magnitude.",
@@ -4450,7 +4450,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-073133",
-    "start_time_iso": "2026-04-23T07:31:33",
+    "start_time_iso": "2026-04-23T07:31:33Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "draw_penalty 0.1 \u2192 0.15 under new best (ent=0.008, wd=2e-4). Untested under the new regime. Raising the penalty makes the value head distinguish more strongly between drawn and non-drawn positions, which may sharpen gradients on legal moves that break repetition and push above_uniform_count higher from its current 2-3 plateau.",
@@ -4495,7 +4495,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-074743",
-    "start_time_iso": "2026-04-23T07:47:43",
+    "start_time_iso": "2026-04-23T07:47:43Z",
     "status": "NEUTRAL",
     "mode": "normal",
     "change_details": "self_play_workers 32 \u2192 40 under new best (ent=0.008, wd=2e-4). Under old base 40 collapsed; the stronger regularization now should buffer it. More workers \u2192 more batched evaluations \u2192 more diverse replay buffer per gradient step, which might push au above the 2-3 plateau.",
@@ -4540,7 +4540,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-080402",
-    "start_time_iso": "2026-04-23T08:04:02",
+    "start_time_iso": "2026-04-23T08:04:02Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "self_play_workers 32 \u2192 48 under new best. w=40 was neutral \u2014 worse im (0.23\u21920.35) but better au (3\u21925 peak, 2\u21924 final). Probe whether going further up (48) continues improving au or brings back collapse risk. Batched-eval coalesces N workers per forward pass so increasing N gives more per-batch decorrelation. 48 is bolder than 40 but still within the app's absolute max worker cap.",
@@ -4585,7 +4585,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-082029",
-    "start_time_iso": "2026-04-23T08:20:29",
+    "start_time_iso": "2026-04-23T08:20:29Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "self_play_workers 48 \u2192 56 to continue the monotonic climb. Going 32\u219240\u219248 showed au peak 3\u21925\u21928 and max_prob 0.56\u21920.35\u21920.14. If the trend holds, 56 continues to improve both. If it tops out or collapses, we've found the peak.",
@@ -4630,7 +4630,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-083635",
-    "start_time_iso": "2026-04-23T08:36:35",
+    "start_time_iso": "2026-04-23T08:36:35Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "replay_ratio_target 1 \u2192 1.25 under new best (ent=0.008, wd=2e-4, workers=48). Under old regime 1.25 regressed but (a) the replay controller formula was subsequently improved and (b) the stronger regularization should admit more trainer staleness now. Higher target means trainer consumes positions slightly faster than production, biasing toward fresher batches per step.",
@@ -4675,7 +4675,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-085248",
-    "start_time_iso": "2026-04-23T08:52:48",
+    "start_time_iso": "2026-04-23T08:52:48Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "self_play_target_tau 0.8 \u2192 0.5 under new best. Sharper self-play endgames give cleaner training targets. Under old base 0.6 regressed but that was in the seed-noisy regime; with wd=2e-4 + ent=0.008 + workers=48 now stable, lower target_tau may sharpen the au=8 policy further.",
@@ -4720,7 +4720,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-090859",
-    "start_time_iso": "2026-04-23T09:08:59",
+    "start_time_iso": "2026-04-23T09:08:59Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "self_play_target_tau 0.8 \u2192 1.0 under new best. Sharper didn't work (tau=0.5 regressed); SOFTER is the untested direction. Higher target_tau = more exploration in endgame \u2192 more diverse training data \u2192 possibly unlock more au above current peak of 8.",
@@ -4765,7 +4765,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-092504",
-    "start_time_iso": "2026-04-23T09:25:04",
+    "start_time_iso": "2026-04-23T09:25:04Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "replay_buffer_min_positions_before_training 250k \u2192 350k under new best (ent=0.008, wd=2e-4, workers=48). More diversity before training starts \u2192 more diverse replay distribution \u2192 possibly a broader peak of legal-move probability. Under old base this regressed; worth re-checking under the more stable regime.",
@@ -4810,7 +4810,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-094127",
-    "start_time_iso": "2026-04-23T09:41:27",
+    "start_time_iso": "2026-04-23T09:41:27Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "training_batch_size 4096 \u2192 5120 under new best. Untested under current regime; sqrt_batch_scaling_lr will auto-bump effective lr by sqrt(5120/4096)\u22481.118x. Larger batches reduce per-step gradient noise; with 48 workers feeding the buffer the consumption side might benefit from less-noisy updates per step.",
@@ -4855,7 +4855,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-095733",
-    "start_time_iso": "2026-04-23T09:57:33",
+    "start_time_iso": "2026-04-23T09:57:33Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "lr_warmup_steps 100 \u2192 150 under new best. Untested in any regime \u2014 under old 10-min cap the validator wouldn't allow values >113, but with 15-min runs producing ~500 training steps, the recommended max is now ~166. A slightly longer warmup may smooth early-step dynamics and might help the policy stay in the learning basin.",
@@ -4900,7 +4900,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-101345",
-    "start_time_iso": "2026-04-23T10:13:45",
+    "start_time_iso": "2026-04-23T10:13:45Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Replicate current best verbatim. Only one run has hit au=8/im=0.29; need a second data point at this peak to confirm reproducibility before further single-knob probing builds on it.",
@@ -4939,7 +4939,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-103002",
-    "start_time_iso": "2026-04-23T10:30:02",
+    "start_time_iso": "2026-04-23T10:30:02Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "self_play_start_tau 2 \u2192 2.5 under new best. More exploration early in self-play games \u2192 more diverse openings in replay buffer \u2192 more robust early-step gradient signal. Under old base 2.5 regressed but that was pre-stable-regime. Untested under new base.",
@@ -4984,7 +4984,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-104604",
-    "start_time_iso": "2026-04-23T10:46:04",
+    "start_time_iso": "2026-04-23T10:46:04Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "entropy_bonus 0.008 \u2192 0.009 under new best. Replicate showed au=8 wasn't reliably reproducible (rep au=2). Slightly stronger entropy may widen the learning-stable seed basin at the cost of a slightly flatter policy peak. If im rises but au stays above ~4 consistently, this is a good trade.",
@@ -5029,7 +5029,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-110210",
-    "start_time_iso": "2026-04-23T11:02:10",
+    "start_time_iso": "2026-04-23T11:02:10Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "self_play_workers 48 \u2192 44 under new best. Probe just below the peak. Trend 32\u219240\u219248 gave au 3\u21925\u21928 then 56 collapsed \u2014 44 tests whether the peak region is narrow around 48 or broader.",
@@ -5074,7 +5074,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-111824",
-    "start_time_iso": "2026-04-23T11:18:24",
+    "start_time_iso": "2026-04-23T11:18:24Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "self_play_tau_decay_per_ply 0.03 \u2192 0.02 under new best. Slower tau ramp in self-play (more exploration sustained longer per game). Under old base 0.05 faster decay regressed; the untested slower direction may give more diverse positions for training.",
@@ -5119,7 +5119,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-113430",
-    "start_time_iso": "2026-04-23T11:34:30",
+    "start_time_iso": "2026-04-23T11:34:30Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "arena_target_tau 0.5 \u2192 0.3 under new best. Arena plays games candidate-vs-champion; lower tau = sharper play = cleaner arena signal. Untested under new base. Shouldn't affect training dynamics but may improve promotion likelihood.",
@@ -5164,7 +5164,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-115032",
-    "start_time_iso": "2026-04-23T11:50:32",
+    "start_time_iso": "2026-04-23T11:50:32Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "entropy_bonus 0.008 \u2192 0.01 under new best. ent=0.009 was stable at au=5, ent=0.008 swings au=2\u20138. Going 0.01 tests whether more entropy further stabilizes seed outcomes, trading peak au for reliability.",
@@ -5209,7 +5209,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-120646",
-    "start_time_iso": "2026-04-23T12:06:46",
+    "start_time_iso": "2026-04-23T12:06:46Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Increase replay_buffer_capacity 500k \u2192 1M under new best. Never tested. min_positions=250k is well below cap, so a bigger buffer means positions stay longer before being overwritten, giving trainer access to slightly older experiences for better gradient diversity.",
@@ -5254,7 +5254,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-122253",
-    "start_time_iso": "2026-04-23T12:22:53",
+    "start_time_iso": "2026-04-23T12:22:53Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "entropy_bonus 0.008 \u2192 0.0085 under new best. Fine-grained probe between current (0.008, high variance) and 0.009 (stable au=5). 0.0085 tests for the transition point \u2014 if it's seed-stable near au=6-7 that's a good compromise.",
@@ -5299,7 +5299,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-123907",
-    "start_time_iso": "2026-04-23T12:39:07",
+    "start_time_iso": "2026-04-23T12:39:07Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "lr_warmup_steps 100 \u2192 120 under new best. Under 15-min runs validator allows up to ~166; 150 collapsed, 100 optimum. 120 tests the narrow range between them.",
@@ -5344,7 +5344,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-125512",
-    "start_time_iso": "2026-04-23T12:55:12",
+    "start_time_iso": "2026-04-23T12:55:12Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "weight_decay 2e-4 \u2192 1.5e-4 under new best. Fine-grained between 1e-4 (previous working) and 2e-4 (current best). 3e-4 collapsed. Probe for gradient-monotonicity on this axis.",
@@ -5389,7 +5389,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-131113",
-    "start_time_iso": "2026-04-23T13:11:13",
+    "start_time_iso": "2026-04-23T13:11:13Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "self_play_target_tau 0.8 \u2192 0.7. Fine-grained probe between 0.5 (regressed) and 0.8 (current best).",
@@ -5434,7 +5434,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-132740",
-    "start_time_iso": "2026-04-23T13:27:40",
+    "start_time_iso": "2026-04-23T13:27:40Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "self_play_target_tau 0.7 \u2192 0.6. 0.8\u21920.7 was a major win (im 0.29\u21920.085). 0.5 regressed earlier. 0.6 tests whether the im drop continues.",
@@ -5479,7 +5479,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-134402",
-    "start_time_iso": "2026-04-23T13:44:02",
+    "start_time_iso": "2026-04-23T13:44:02Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "self_play_target_tau 0.6 \u2192 0.5 again. Earlier 0.5 regressed but was under old base; 0.6 was just accepted (au=9). Re-test 0.5 under current regime to see if the winning direction continues or 0.6 is the peak.",
@@ -5524,7 +5524,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-140004",
-    "start_time_iso": "2026-04-23T14:00:04",
+    "start_time_iso": "2026-04-23T14:00:04Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "self_play_start_tau 2.0 \u2192 1.5 under new best. Lower start_tau = less initial exploration. Untested direction. May make early training more stable by avoiding extreme random moves early.",
@@ -5569,7 +5569,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-141618",
-    "start_time_iso": "2026-04-23T14:16:18",
+    "start_time_iso": "2026-04-23T14:16:18Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "K 5 \u2192 4 under new best. K=6 regressed, 5 optimum. Lower K = softer value targets, potentially smoother policy learning.",
@@ -5614,7 +5614,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260423-143233",
-    "start_time_iso": "2026-04-23T14:32:33",
+    "start_time_iso": "2026-04-23T14:32:33Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Replicate current best verbatim (target_tau=0.6, au=9 accept). Given persistent seed variance, confirming the au=9 result is reproducible is the most informative single probe. If the replicate lands at au\u22655, the new best is seed-stable; if it drops to au=0-2, the accept was seed-lucky.",
@@ -5653,7 +5653,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-040930",
-    "start_time_iso": "2026-04-24T04:09:30",
+    "start_time_iso": "2026-04-24T04:09:30Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Goal 1 stable at 10min on baseline (min pEnt=6.99, no collapse, 1/1 promote 0.565). Moving to Goal #2: extend to 15min (900s) on baseline to verify stability at longer horizon before tuning further.",
@@ -5692,7 +5692,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-042120",
-    "start_time_iso": "2026-04-24T04:21:20",
+    "start_time_iso": "2026-04-24T04:21:20Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Build 392 baseline collapses at 301s with lr_warmup_steps=100. The only 20min-stable build-392 run (Twu50-R3) used lr_warmup_steps=50. Reduce warmup to 50 (<=1/3 of collapsed-run's 160 steps) to match the one known-survivable config; keep other params at baseline.",
@@ -5737,7 +5737,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-044233",
-    "start_time_iso": "2026-04-24T04:42:33",
+    "start_time_iso": "2026-04-24T04:42:33Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Goal 3 frontier: baseline arena was 71/100 draws, score 0.495 \u2014 draws wash out the signal. Tightening arena_target_tau 0.5\u21920.3 sharpens decisive play in mid/endgame (where the candidate's incremental policy edge can express) without touching self-play exploration. Collapse risk unchanged (arena-only knob; self-play taus, lr, entropy_bonus all preserved).",
@@ -5782,7 +5782,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-045218",
-    "start_time_iso": "2026-04-24T04:52:18",
+    "start_time_iso": "2026-04-24T04:52:18Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Goal 3: baseline arena scored 0.495 with 71/100 draws \u2014 CI width +/-0.053 straddles the 0.55 promote threshold, so genuine small edges get lost. Bump arena_games_per_tournament 100->150 to tighten CI (~+/-0.043). Arena-only change, orthogonal to collapse mechanism, safer than retrying arena_target_tau under noisy build drift.",
@@ -5827,7 +5827,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-050216",
-    "start_time_iso": "2026-04-24T05:02:16",
+    "start_time_iso": "2026-04-24T05:02:16Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Bump entropy_bonus 0.008 -> 0.012 to counter build 393's collapse tendency. Directly targets Goal 1A (reduces max_prob one-hot collapse) and also helps the illegal_mass_sum false-positive by spreading policy mass more uniformly across all 4864 cells, including legal ones.",
@@ -5872,7 +5872,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-052213",
-    "start_time_iso": "2026-04-24T05:22:13",
+    "start_time_iso": "2026-04-24T05:22:13Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Small entropy_bonus bump 0.012 -> 0.015 (+25%). Previous 0.008->0.012 cut illegal_mass in half; extending the same productive direction. All other params unchanged; 15-min run preserved.",
@@ -5917,7 +5917,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-053117",
-    "start_time_iso": "2026-04-24T05:31:17",
+    "start_time_iso": "2026-04-24T05:31:17Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Reduce grad_clip_max_norm 30 -> 20 to cap the magnitude of runaway gradients that drive one-hot collapse. Targets the same mechanism as entropy bonus but from the gradient side, without further perturbing the loss (entropy bump last iter already hard-collapsed at 301s).",
@@ -5962,7 +5962,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-054020",
-    "start_time_iso": "2026-04-24T05:40:20",
+    "start_time_iso": "2026-04-24T05:40:20Z",
     "status": "NEUTRAL",
     "mode": "normal",
     "change_details": "Reduce learning_rate 5e-5 -> 4e-5 (20% decrease). Two recent tweaks on entropy_bonus and grad_clip both collapsed at 301s; switching axis to a cleaner collapse-resistance lever. Prior walkback tested lr UP (7e-5 collapsed) but not DOWN. Slower steps lower the probability of a runaway update crossing the one-hot cliff.",
@@ -6007,7 +6007,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-055950",
-    "start_time_iso": "2026-04-24T05:59:50",
+    "start_time_iso": "2026-04-24T05:59:50Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise weight_decay 0.0002 -> 0.0005. L2 regularization caps logit magnitude from the scale axis, directly resisting the max_prob->1.0 runaway. Orthogonal to entropy_bonus (spread) and grad_clip (step size). Fresh axis after two collapses and one neutral on lr/grad_clip/entropy.",
@@ -6052,7 +6052,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-060917",
-    "start_time_iso": "2026-04-24T06:09:17",
+    "start_time_iso": "2026-04-24T06:09:17Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise self_play_target_tau 0.6 -> 0.8. Late-game exploration adds position variety to the replay buffer, directly combating over-concentration and max_prob collapse. Pivots from reg/step-axis tweaks (which have been ~50% pass rate) to data-distribution; matches the walkback-build390 Twu50-R3 config known to pass 2/5.",
@@ -6097,7 +6097,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-062919",
-    "start_time_iso": "2026-04-24T06:29:19",
+    "start_time_iso": "2026-04-24T06:29:19Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "lr_warmup_steps 50 -> 25. Steeper LR ramp in the critical first window gives the policy more update budget to differentiate legal from illegal before the two-probe collapse check. Fresh axis untouched in recent 6 iterations; orthogonal to failed ent/gc/lr/wd/tau tweaks.",
@@ -6142,7 +6142,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-064916",
-    "start_time_iso": "2026-04-24T06:49:16",
+    "start_time_iso": "2026-04-24T06:49:16Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise K from 5 to 6: increases Q-target bootstrap weight on the value head for a smoother value signal. Value-head stability hasn't been directly probed in recent attempts; pure value-mixing changes are unlikely to trigger policy one-hot collapse. Untouched axis in current campaign.",
@@ -6187,7 +6187,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-070821",
-    "start_time_iso": "2026-04-24T07:08:21",
+    "start_time_iso": "2026-04-24T07:08:21Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower entropy_bonus 0.012 -> 0.010, testing the left side of the local optimum. Prior accept moved 0.008 -> 0.012; 0.015 regressed. Peak likely sits between 0.008 and 0.015, so 0.010 probes whether the roof is actually below 0.012, potentially letting the policy concentrate more mass on legal moves.",
@@ -6232,7 +6232,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-071821",
-    "start_time_iso": "2026-04-24T07:18:21",
+    "start_time_iso": "2026-04-24T07:18:21Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "draw_penalty 0.1 -> 0.15. Untouched axis in this campaign. Harsher draw signal pushes self-play games toward decisive outcomes, lengthening games and diversifying replay positions. Avoids fragile reg/lr/entropy axes that have all collapsed or regressed legal_mass.",
@@ -6277,7 +6277,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-072717",
-    "start_time_iso": "2026-04-24T07:27:17",
+    "start_time_iso": "2026-04-24T07:27:17Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower replay_buffer_min_positions_before_training 250000 -> 150000. Starts SGD ~40% sooner so the network can move off the uniform-illegal init before the 60s+120s collapse detector fires, reducing false-positive 301s bails without touching fragile step-size/regularization axes.",
@@ -6322,7 +6322,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-073622",
-    "start_time_iso": "2026-04-24T07:36:22",
+    "start_time_iso": "2026-04-24T07:36:22Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Extend lr warmup 50 -> 75 steps. Stretches the ramp through the critical 50-75 step collapse-decision window, lowering effective lr by ~33% at step 50 and delaying peak lr. Untested direction; 75 is well below validator's 166 cap. All other 25 params unchanged.",
@@ -6367,7 +6367,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-075721",
-    "start_time_iso": "2026-04-24T07:57:21",
+    "start_time_iso": "2026-04-24T07:57:21Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Slow self-play tau decay from 0.03 to 0.025 per ply. Fresh axis: keeps exploration temperature higher longer in each game, diversifying replay buffer to counter the max_prob concentration trend (0.497) without disturbing the wu=75 step-size gains.",
@@ -6412,7 +6412,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-080719",
-    "start_time_iso": "2026-04-24T08:07:19",
+    "start_time_iso": "2026-04-24T08:07:19Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise replay_ratio_target 1.0 -> 1.2. Trainer consumes 20% more samples per self-play cycle, keeping the policy closer to the exploratory self-play distribution. Expected to broaden policy (lower max_prob) without touching collapse-prone knobs like tau_decay or entropy_bonus. Fresh, untested axis at wu=75 baseline.",
@@ -6457,7 +6457,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-081722",
-    "start_time_iso": "2026-04-24T08:17:22",
+    "start_time_iso": "2026-04-24T08:17:22Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "lr_warmup_steps 75 -> 100. Extends the productive direction that gave the last accept (50 -> 75 cut illegal_mass 44%). Orthogonal to recent collapse-prone axes (tau_decay, replay_ratio). Gentler early step-size schedule may help legal/illegal differentiation solidify before the collapse window.",
@@ -6502,7 +6502,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-082731",
-    "start_time_iso": "2026-04-24T08:27:31",
+    "start_time_iso": "2026-04-24T08:27:31Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Arena-only knob: arena_target_tau 0.5 -> 0.35. Sharper endings in arena games make outcomes more decisive (fewer meandering draws), boosting Goal 3 promotion signal. Does not touch training loop, so cannot cause policy collapse. Self-play dynamics and all 25 other keys unchanged.",
@@ -6547,7 +6547,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-083723",
-    "start_time_iso": "2026-04-24T08:37:23",
+    "start_time_iso": "2026-04-24T08:37:23Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "arena_tau_decay_per_ply 0.01 -> 0.015 (50% faster arena tau decay toward target 0.5). Arena-only knob, cannot affect training-side collapse. May sharpen mid-game arena play without touching self-play exploration.",
@@ -6592,7 +6592,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-085824",
-    "start_time_iso": "2026-04-24T08:58:24",
+    "start_time_iso": "2026-04-24T08:58:24Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "self_play_start_tau 2.0 -> 1.5. Counter-concentration move on fresh, untested axis at wu=75 baseline. Lower opening tau sharpens early self-play, trading raw diversity for higher-quality opening positions in replay buffer. Avoids collapse-prone step-size knobs (lr, warmup) after 5 rejections.",
@@ -6637,7 +6637,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-091424",
-    "start_time_iso": "2026-04-24T09:14:24",
+    "start_time_iso": "2026-04-24T09:14:24Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "arena_start_tau 2.0 -> 1.5. Arena-only change: sharper opening distribution in arena games for better Goal-3 signal. Cannot affect training dynamics or cause collapse (self-play tau unchanged). Last untouched arena knob at wu=75 baseline after 6 consecutive training-side rejections.",
@@ -6682,7 +6682,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-092418",
-    "start_time_iso": "2026-04-24T09:24:18",
+    "start_time_iso": "2026-04-24T09:24:18Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise self_play_start_tau 2.0->2.5 to broaden opening exploration. Baseline max_prob=0.497 shows policy over-concentrating; higher opening temperature yields more varied openings and a more diverse replay buffer, keeping policy broader and resisting collapse to a dominant move.",
@@ -6727,7 +6727,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-093425",
-    "start_time_iso": "2026-04-24T09:34:25",
+    "start_time_iso": "2026-04-24T09:34:25Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "learning_rate 5e-5 -> 6e-5 (20% bump). Untested on wu=75 baseline. Warmup 75 steps ramps gently through the collapse-decision window, so early steps remain safe while steady-state lr rises. Aims to escape max_prob=0.497 local minimum by increasing step-size after warmup completes.",
@@ -6772,7 +6772,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-094424",
-    "start_time_iso": "2026-04-24T09:44:24",
+    "start_time_iso": "2026-04-24T09:44:24Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Flip sqrt_batch_scaling_lr true -> false. Orthogonal axis untested at wu=75 baseline. Removes auto lr scaling by sqrt(batch/reference); raw configured lr=5e-5 is used directly, subtly lowering effective lr without touching lr, warmup, or collapse-prone step-size knobs after 9 rejections.",
@@ -6817,7 +6817,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-100525",
-    "start_time_iso": "2026-04-24T10:05:25",
+    "start_time_iso": "2026-04-24T10:05:25Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "arena_games_per_tournament 100 -> 150. Arena-only mechanical change (cannot cause training collapse). Tighter CI around each arena score lets candidates with slight real edges cross the 0.55 promotion threshold more often, directly targeting Goal 3 (promotion rate) which has been 0/1 per accept.",
@@ -6862,7 +6862,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-101520",
-    "start_time_iso": "2026-04-24T10:15:20",
+    "start_time_iso": "2026-04-24T10:15:20Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "entropy_bonus 0.012 -> 0.013 (+8%). With sqrt_batch_scaling_lr=false now lowering effective lr, a small entropy-bonus bump can broaden the policy further without the collapse that 0.015 caused under sqrt=true. Tiny step in the productive direction that already moved 0.008->0.012 and cut illegal_mass.",
@@ -6907,7 +6907,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-102520",
-    "start_time_iso": "2026-04-24T10:25:20",
+    "start_time_iso": "2026-04-24T10:25:20Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower arena_promote_threshold from 0.55 to 0.52. Arena-only mechanical change, cannot cause training collapse. Directly targets Goal 3: makes promotions easier (score >=0.52 vs >=0.55). Baseline arena score of 0.525 would have promoted under 0.52.",
@@ -6952,7 +6952,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-103532",
-    "start_time_iso": "2026-04-24T10:35:32",
+    "start_time_iso": "2026-04-24T10:35:32Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "grad_clip_max_norm 30 -> 25. Tighter clip untested under sqrt_batch_scaling_lr=false baseline. With sqrt=false the effective lr is already lower, so tighter clipping should further restrict gradient spikes that drive early collapse without starving steady-state learning.",
@@ -6997,7 +6997,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-104523",
-    "start_time_iso": "2026-04-24T10:45:23",
+    "start_time_iso": "2026-04-24T10:45:23Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "self_play_workers 48 -> 32. Fewer parallel games means fresher data and less stale replay relative to trainer. Untested on current baseline (wu=75, sqrt=false). Mild change on an unexplored axis after 4 rejections; direction unclear but it is a fresh knob to test.",
@@ -7042,7 +7042,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-121513",
-    "start_time_iso": "2026-04-24T12:15:13",
+    "start_time_iso": "2026-04-24T12:15:13Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise training_step_delay_ms 0 -> 25. Adds a small pause between training steps, lowering effective replay ratio and letting self-play generate fresher positions per step. Conceptually similar to reducing replay_ratio but via an untouched axis; mild mechanism on the baseline.",
@@ -7087,7 +7087,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-122319",
-    "start_time_iso": "2026-04-24T12:23:19",
+    "start_time_iso": "2026-04-24T12:23:19Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "candidate_probe_interval_sec 15 -> 30. Monitoring-only knob: halves the frequency of probe forward passes used for diagnostics. Cannot affect training dynamics, self-play, arena, or replay. After 6 rejections on real axes, a pure no-op change tests whether build 393 shows variance on the policy-collapse metrics even when nothing actually changes.",
@@ -7132,7 +7132,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-123221",
-    "start_time_iso": "2026-04-24T12:32:21",
+    "start_time_iso": "2026-04-24T12:32:21Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Reduce arena_auto_interval_sec 300 -> 240. Arena-only knob; cannot cause training collapse. More frequent arenas give more chances to show a promotion (Goal 3). Fresh axis after 7 rejections on a ~50% variance-driven collapse baseline.",
@@ -7177,7 +7177,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-125110",
-    "start_time_iso": "2026-04-24T12:51:10",
+    "start_time_iso": "2026-04-24T12:51:10Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "entropy_bonus 0.012 -> 0.011 (-8%). Tiny decrease on the most-productive axis (entropy-related tweaks drove the last two accepts). Fresh point not previously tested on wu=75 sqrt=false baseline; with Build 393's ~50% run variance, larger moves regress by luck.",
@@ -7222,7 +7222,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-223218",
-    "start_time_iso": "2026-04-24T22:32:18",
+    "start_time_iso": "2026-04-24T22:32:18Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "replay_buffer_min_positions_before_training 250000 -> 100000 (-60%). Drops the ~3-minute pre-training wait to ~1.2 min, so SGD starts BEFORE the 60-120s collapse-detector window rather than after. Targets the false-positive bail pattern at root: policy currently sits at uniform init through both detector probes. Large effect with clear causal theory; untested at 100k.",
@@ -7267,7 +7267,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260424-233334",
-    "start_time_iso": "2026-04-24T23:33:34",
+    "start_time_iso": "2026-04-24T23:33:34Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Extend training horizon 900s -> 1200s (+5 min to 20 min) on current baseline (replay_min=100k). No parameter changes; pure training-time extension per user directive to grow the horizon when the axis is stable. Verifies Goal 2 stability at 20 min.",
@@ -7306,7 +7306,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-011323",
-    "start_time_iso": "2026-04-25T01:13:23",
+    "start_time_iso": "2026-04-25T01:13:23Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Exploration: raise weight_decay 0.0002 \u2192 0.0003 (+50%). Untouched axis in recent 10 iterations. Stronger L2 regularization should resist the network parking large logits on a single illegal move (the collapse mode), pushing weights toward a more entropic policy without altering effective lr or batch dynamics. Stay at 900s given prior 1200s legal_mass_collapse.",
@@ -7351,7 +7351,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-012516",
-    "start_time_iso": "2026-04-25T01:25:16",
+    "start_time_iso": "2026-04-25T01:25:16Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise entropy_bonus 0.012\u21920.015 (+25%). Targets early single-mode policy collapse directly: a stronger entropy term penalizes the one-hot illegal-move attractor that two recent runs slid into within ~300s. Modest magnitude on an axis the recent history has only nudged downward; orthogonal to weight_decay and grad_clip which already failed.",
@@ -7396,7 +7396,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-013606",
-    "start_time_iso": "2026-04-25T01:36:06",
+    "start_time_iso": "2026-04-25T01:36:06Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "lr_warmup_steps 75 -> 100 (+33%). Continues the directionally-proven axis from the last accept (50\u219275 cut illegal_mass 44%). Slower lr ramp gentles early updates during the 60-300s window where the three recent runs collapsed; well under validator cap (~179). Avoids weight_decay/entropy_bonus which both just regressed.",
@@ -7441,7 +7441,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-133748",
-    "start_time_iso": "2026-04-25T13:37:48",
+    "start_time_iso": "2026-04-25T13:37:48Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Tighten grad_clip_max_norm 30\u219225. Baseline gNorm peaks ~72 during the early-collapse window; clipping more aggressively caps the early gradient surge that mechanistically drives one-hot policy collapse, without touching axes that just regressed (weight_decay, entropy_bonus, lr_warmup_steps).",
@@ -7486,7 +7486,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-135808",
-    "start_time_iso": "2026-04-25T13:58:08",
+    "start_time_iso": "2026-04-25T13:58:08Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Continue the directionally-proven grad_clip axis from the just-accepted run (30\u219225). Tighten 25\u219222: baseline gNorm peaks at 70.7, well above 22, so the clip will bite harder and further suppress the rare large-update spikes that drive illegal_mass excursions. Single-axis micro-step; all other params unchanged.",
@@ -7531,7 +7531,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-141707",
-    "start_time_iso": "2026-04-25T14:17:07",
+    "start_time_iso": "2026-04-25T14:17:07Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Bump draw_penalty 0.10\u21920.12 (+20%). 88% draw rate keeps value head near 0; a small bump strengthens value-loss signal away from the all-zeros attractor without touching any policy-side knob (where Goal 1 lives). Orthogonal to recently-regressed axes (clip/wd/entropy/warmup) and leaves clip=25 untouched.",
@@ -7576,7 +7576,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-142612",
-    "start_time_iso": "2026-04-25T14:26:12",
+    "start_time_iso": "2026-04-25T14:26:12Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Decrease entropy_bonus 0.012\u21920.011 (-8%). All recent entropy tweaks have been upward and one regressed; a small downward step is untried and mechanistically lets the policy concentrate more on legal moves once found, potentially lifting top1_legal/legal_mass without destabilizing exploration. Single-axis, low-risk, avoids recently-regressed directions.",
@@ -7621,7 +7621,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-143509",
-    "start_time_iso": "2026-04-25T14:35:09",
+    "start_time_iso": "2026-04-25T14:35:09Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Slow self_play_tau_decay_per_ply 0.030\u21920.025. Keeps self-play more exploratory (higher tau) for ~5 more plies before reaching target, diversifying early replay positions. Mechanistically reduces single-mode amplification risk during the 60-300s collapse window without sacrificing training-step count.",
@@ -7666,7 +7666,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-144409",
-    "start_time_iso": "2026-04-25T14:44:09",
+    "start_time_iso": "2026-04-25T14:44:09Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise replay_buffer_min_positions_before_training 100000\u2192120000. Delays training start until the buffer holds more diverse self-play positions, reducing early policy collapse by giving the optimizer broader coverage before its first gradient step. Single-axis change targeting the build-393 high-variance early-collapse mode.",
@@ -7711,7 +7711,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-145409",
-    "start_time_iso": "2026-04-25T14:54:09",
+    "start_time_iso": "2026-04-25T14:54:09Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Reduce K (value loss coefficient) 5\u21924. Rebalances loss toward policy; lower value-head weight gives policy gradient more relative influence. Untested axis with mechanistic link to goal 1 (illegal-move policy collapse). value_abs_mean is 0.18 (not saturated) so reducing K shouldn't kill value learning.",
@@ -7756,7 +7756,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-150318",
-    "start_time_iso": "2026-04-25T15:03:18",
+    "start_time_iso": "2026-04-25T15:03:18Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Reduce learning_rate 5e-5\u21924e-5 (-20%). Untouched axis this streak. Smaller per-step updates reduce the gradient magnitude that drives early one-hot collapse onto illegal moves. With lr_warmup=75 and ~463 post-warmup steps in the 900s window, a 20% lr cut still permits substantial learning while damping the catastrophic-update mode.",
@@ -7801,7 +7801,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-151108",
-    "start_time_iso": "2026-04-25T15:11:08",
+    "start_time_iso": "2026-04-25T15:11:08Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise self_play_target_tau 0.6\u21920.7 (+17%). Untouched axis. Keeps later self-play moves more exploratory, diversifying replay-buffer positions and reducing the single-mode replay distribution that the policy can fixate on during the early-collapse window. Single-axis micro-step.",
@@ -7846,7 +7846,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-151917",
-    "start_time_iso": "2026-04-25T15:19:17",
+    "start_time_iso": "2026-04-25T15:19:17Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise arena_tau_decay_per_ply 0.010\u21920.015. Untouched axis. Faster arena tau decay \u2192 sharper end-of-arena moves \u2192 more decisive arena play. Orthogonal to early-collapse mode (training-side dynamics unchanged), targets goal-3 promotion rate. Single-axis micro-step.",
@@ -7891,7 +7891,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-152710",
-    "start_time_iso": "2026-04-25T15:27:10",
+    "start_time_iso": "2026-04-25T15:27:10Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Tighten arena_target_tau 0.50\u21920.40. Untouched axis. Sharper end-of-arena moves slightly increase decisive arena outcomes (currently 88% draws), addressing goal-3 promotion rate. Training-side dynamics unchanged so orthogonal to early-collapse mode.",
@@ -7936,7 +7936,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-153518",
-    "start_time_iso": "2026-04-25T15:35:18",
+    "start_time_iso": "2026-04-25T15:35:18Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise replay_ratio_target 1.0\u21921.2 (+20%). Untouched axis. Higher consumer/producer ratio means each self-play position gets more training updates before being supplanted; more update density per game might let the policy learn legal moves faster relative to the early-collapse window. replay_ratio_auto_adjust=true so step_delay self-tunes.",
@@ -7981,7 +7981,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-154912",
-    "start_time_iso": "2026-04-25T15:49:12",
+    "start_time_iso": "2026-04-25T15:49:12Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Raise replay_ratio_target 1.0\u21921.1 (+10%). Last iteration with 1.2 made it through 664s and one arena before late-bail (longest non-baseline survival this streak). Test smaller bump: should preserve more training steps (~500 vs 404) while retaining whatever stabilization the higher ratio provided.",
@@ -8026,7 +8026,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-160815",
-    "start_time_iso": "2026-04-25T16:08:15",
+    "start_time_iso": "2026-04-25T16:08:15Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Continue the just-proven replay_ratio_target axis: 1.1\u21921.15 (+5%). The 1.0\u21921.1 accept lifted legal_mass 26%; a small further bump may continue to improve goal-1 metrics while preserving sufficient training-step volume. Single-axis micro-step on a directionally-proven axis.",
@@ -8071,7 +8071,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-162607",
-    "start_time_iso": "2026-04-25T16:26:07",
+    "start_time_iso": "2026-04-25T16:26:07Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise learning_rate 5e-5\u21926e-5 (+20%). Untested up direction (down to 4e-5 previously regressed). With the more stable replay_ratio=1.1 baseline, a small lr increase could accelerate convergence on legal moves while staying within the safe range. gNorm at 26 leaves headroom under clip=25 for slightly larger updates.",
@@ -8116,7 +8116,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-163406",
-    "start_time_iso": "2026-04-25T16:34:06",
+    "start_time_iso": "2026-04-25T16:34:06Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower self_play_start_tau 2.0\u21921.8 (-10%). Untouched axis. Slightly less random opening play could improve early replay-buffer signal-to-noise without losing exploration. Keeps target_tau=0.6 unchanged so end-game decisiveness preserved. Single-axis micro-step.",
@@ -8161,7 +8161,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-164214",
-    "start_time_iso": "2026-04-25T16:42:14",
+    "start_time_iso": "2026-04-25T16:42:14Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise entropy_bonus 0.012\u21920.013 (+8%). Smaller step than the prior 0.012\u21920.015 attempt (which regressed on different baseline). Slight extra entropy regularization could resist the early one-hot collapse mode while not over-spreading mass to illegals. New replay_ratio=1.1 baseline may interact differently.",
@@ -8206,7 +8206,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-165013",
-    "start_time_iso": "2026-04-25T16:50:13",
+    "start_time_iso": "2026-04-25T16:50:13Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower arena_promote_threshold 0.55\u21920.53. Untouched axis. With current arena scores hovering ~0.50-0.525 (CIs spanning 0.47-0.58), a slightly lower threshold gives genuinely improving candidates a fairer chance to promote (goal-3 progress) while still requiring statistically meaningful improvement. Training-side dynamics unchanged.",
@@ -8251,7 +8251,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-165818",
-    "start_time_iso": "2026-04-25T16:58:18",
+    "start_time_iso": "2026-04-25T16:58:18Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise replay_buffer_capacity 500k\u2192600k. Untouched axis. Larger capacity holds more historical positions, slightly broadens the position distribution sampled per minibatch, which mechanistically resists single-mode amplification during the early-collapse window.",
@@ -8296,7 +8296,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-170616",
-    "start_time_iso": "2026-04-25T17:06:16",
+    "start_time_iso": "2026-04-25T17:06:16Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise arena_auto_interval_sec 300\u2192360 (+20%). Untouched axis. Fewer arena interruptions during the 900s window means more contiguous training time, less BN running-stat disruption from arena pauses. Mostly orthogonal to early-collapse mode but slightly cleaner training dynamics.",
@@ -8341,7 +8341,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-171416",
-    "start_time_iso": "2026-04-25T17:14:16",
+    "start_time_iso": "2026-04-25T17:14:16Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Lower arena_games_per_tournament 100\u219280. Untouched axis. Faster arenas (~80% wall-clock) reduce training interruption, leaving more time for contiguous SGD steps. Arena CIs stay statistically meaningful (n=80 is ~10% wider than n=100). Training-orthogonal so isolates the arena-frequency effect.",
@@ -8386,7 +8386,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-172208",
-    "start_time_iso": "2026-04-25T17:22:08",
+    "start_time_iso": "2026-04-25T17:22:08Z",
     "status": "REJECTED",
     "mode": "normal",
     "change_details": "Raise candidate_probe_interval_sec 15\u219230. Untouched axis. Less frequent candidate probes reduce GPU contention from probe inference, freeing more GPU for self-play and training. Mostly orthogonal \u2014 same observability data, just less frequent samples.",
@@ -8431,7 +8431,7 @@ window.EXPERIMENTS = [
   },
   {
     "timestamp": "20260425-172914",
-    "start_time_iso": "2026-04-25T17:29:14",
+    "start_time_iso": "2026-04-25T17:29:14Z",
     "status": "ACCEPTED",
     "mode": "normal",
     "change_details": "Lower replay_buffer_min_positions_before_training 100k\u219280k. Continues the directionally-proven axis (250k\u2192100k was previously accepted with 45% max_prob reduction). Earlier first SGD step means more training steps fit in the 900s window. Risk: less diverse initial buffer could amplify collapse, but the prior down-step worked so this small further reduction is plausible.",
@@ -8473,23 +8473,818 @@ window.EXPERIMENTS = [
     "analysis_commentary": "Same build 393, elapsed 900s. Promoted 1/1 (score 0.55, +35 Elo) vs baseline 0/1 at 0.525 \u2014 first promotion in the streak. Probe legal_mass climbed 0.72\u21920.84, max_prob held ~0.19 (no collapse). Policy entropy higher (6.98 vs 6.76). Concerns: value_output saturated at -1.0 across probes, value_abs_mean 0.45 vs 0.24, grad_norm 44 vs 26. Net: arena promotion + legal_mass gain outweigh value saturation risk.",
     "training_time_seconds": 900,
     "folder": "experiments/20260425-172914"
+  },
+  {
+    "timestamp": "20260425-174812",
+    "start_time_iso": "2026-04-25T17:48:12Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Continue the proven replay_min axis: 80k\u219260k. The two successful step-downs on this axis (250k\u2192100k, 100k\u219280k) both improved goal-1 metrics; second one delivered first-promotion-of-streak. Earlier first SGD step keeps adding training-step volume in the 900s window. Single-axis micro-step.",
+    "changed_params": [
+      {
+        "key": "replay_buffer_min_positions_before_training",
+        "old": 80000,
+        "new": 60000
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 60000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard build-393 variance regime; replay_min 80k\u219260k did not trigger collapse on its own \u2014 same collapse rate as larger replay_min values. No promotion (run never reached arena).",
+    "training_time_seconds": 301,
+    "folder": "experiments/20260425-174812"
+  },
+  {
+    "timestamp": "20260425-175619",
+    "start_time_iso": "2026-04-25T17:56:19Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Raise self_play_workers 48\u219256 (+17%). Untouched axis. More parallel self-play games \u2192 more diverse position stream into the replay buffer per second \u2192 broader gradient signal. Doesn't change training-side dynamics directly; only how the buffer is populated. Single-axis micro-step.",
+    "changed_params": [
+      {
+        "key": "self_play_workers",
+        "old": 48,
+        "new": 56
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 56,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard build-393 variance regime. self_play_workers 48\u219256 did not protect against early collapse. No promotion (run never reached arena).",
+    "training_time_seconds": 301,
+    "folder": "experiments/20260425-175619"
+  },
+  {
+    "timestamp": "20260425-180410",
+    "start_time_iso": "2026-04-25T18:04:10Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Refine replay_ratio_target 1.10\u21921.12 (+2%). 1.0\u21921.1 was accepted (legal_mass +26%); 1.1\u21921.15 overshot (rejected). 1.12 is the midpoint test for whether incremental progress on this axis still pays off. Single-axis micro-step.",
+    "changed_params": [
+      {
+        "key": "replay_ratio_target",
+        "old": 1.1,
+        "new": 1.12
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.12,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Late-bail at 845s on legal-mass collapse. Made it through one arena (score 0.505, no promotion) and most of the 900s window before max_prob spiked to 0.997. Healthier mid-run than typical (mid legal_mass 0.04) but late-window collapse onto one-hot illegal. 1.12 still slips past variance.",
+    "training_time_seconds": 844,
+    "folder": "experiments/20260425-180410"
+  },
+  {
+    "timestamp": "20260425-182109",
+    "start_time_iso": "2026-04-25T18:21:09Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Raise K (value loss coefficient) 5\u21926 (+20%). Tests the untested up direction (K=4 down regressed earlier). Stronger value gradient may give the trainer better signal about which legal positions matter, indirectly stabilizing the policy. K=6 is also the default in the seed config. Single-axis micro-step.",
+    "changed_params": [
+      {
+        "key": "K",
+        "old": 5,
+        "new": 6
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 6,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard build-393 variance regime. K 5\u21926 did not stabilize. No promotion.",
+    "training_time_seconds": 300,
+    "folder": "experiments/20260425-182109"
+  },
+  {
+    "timestamp": "20260425-182910",
+    "start_time_iso": "2026-04-25T18:29:10Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Lower arena_start_tau 2.0\u21921.8 (-10%). Untouched axis. Slightly less random opening play in arena \u2192 tighter score signal-to-noise (the 88% draw rate suggests opening randomness isn't paying off). Training-orthogonal so doesn't affect collapse mode.",
+    "changed_params": [
+      {
+        "key": "arena_start_tau",
+        "old": 2,
+        "new": 1.8
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 1.8,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Same build, both 900s. Arena worse: 7W/14L vs baseline 16W/6L, score 0.465 vs 0.55 \u2014 and no promotion vs baseline 1\u00d7 promotion. legal_mass slipped 0.838\u21920.776 (-7%) and top1_legal collapsed to 0 vs 0.055. pEnt and max_prob slightly better but goal-1 (top1_legal) and goal-3 (promotion) both regressed. Lower arena_start_tau hurt arena signal.",
+    "training_time_seconds": 900,
+    "folder": "experiments/20260425-182910"
+  },
+  {
+    "timestamp": "20260425-184712",
+    "start_time_iso": "2026-04-25T18:47:12Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Lower lr_warmup_steps 75\u219260 (-20%). Earlier full-lr means more effective gradient steps in the 900s window. Prior accept was 50\u219275 (UP); 75\u2192100 regressed; 60 lies between proven endpoints. With current ~500 training_steps, warmup at 60 ramps lr fully by step ~12% (vs 15% at 75) \u2014 modest difference, well within validator caps.",
+    "changed_params": [
+      {
+        "key": "lr_warmup_steps",
+        "old": 75,
+        "new": 60
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 60,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Standard build-393 variance regime. lr_warmup_steps 75\u219260 did not help. No promotion.",
+    "training_time_seconds": 304,
+    "folder": "experiments/20260425-184712"
+  },
+  {
+    "timestamp": "20260425-185511",
+    "start_time_iso": "2026-04-25T18:55:11Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Lower self_play_workers 48\u219240 (-17%). Untouched down direction (48\u219256 already tried). Fewer concurrent self-play games means deeper per-game progress before next batch eval, potentially more coherent positions in replay. replay_ratio_auto_adjust=true compensates training side. Single-axis micro-step.",
+    "changed_params": [
+      {
+        "key": "self_play_workers",
+        "old": 48,
+        "new": 40
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 40,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Standard build-393 variance regime. self_play_workers 48\u219240 did not help. No promotion.",
+    "training_time_seconds": 303,
+    "folder": "experiments/20260425-185511"
+  },
+  {
+    "timestamp": "20260425-190307",
+    "start_time_iso": "2026-04-25T19:03:07Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Tighten arena_target_tau 0.50\u21920.45. Smaller step than the prior 0.50\u21920.40 attempt (rejected via collapse coincidence). Slightly sharper end-of-arena moves to address the 88% draw rate. Training-orthogonal so doesn't affect collapse mode itself.",
+    "changed_params": [
+      {
+        "key": "arena_target_tau",
+        "old": 0.5,
+        "new": 0.45
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.45,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Training-orthogonal change so collapse is run-to-run variance. No promotion (run never reached arena).",
+    "training_time_seconds": 304,
+    "folder": "experiments/20260425-190307"
+  },
+  {
+    "timestamp": "20260425-191111",
+    "start_time_iso": "2026-04-25T19:11:11Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Raise lr_warmup_steps 75\u219290 (+20%). Tests an untested mid-range up step; 75\u2192100 regressed but 90 gives a slightly slower lr ramp without being as aggressive as 100. Stays well under validator's recommended cap (179). Small change targeting early-step gradient stability.",
+    "changed_params": [
+      {
+        "key": "lr_warmup_steps",
+        "old": 75,
+        "new": 90
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 90,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Standard build-393 variance. lr_warmup 75\u219290 did not help. No promotion.",
+    "training_time_seconds": 304,
+    "folder": "experiments/20260425-191111"
+  },
+  {
+    "timestamp": "20260425-191909",
+    "start_time_iso": "2026-04-25T19:19:09Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Refine replay_ratio_target 1.10\u21921.05. Tests the down side of the proven axis: 1.0 was the prior baseline, 1.1 was accepted, 1.12/1.15 overshot. 1.05 between original accept and current. Could indicate optimum is below current value.",
+    "changed_params": [
+      {
+        "key": "replay_ratio_target",
+        "old": 1.1,
+        "new": 1.05
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.05,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Same build, both 900s. Goal-1 regressed sharply: final legal_mass 0.039 vs baseline 0.838 (-95%), top1_legal 0 vs 0.055. Max gNorm spiked to 146 (>100 threshold) vs baseline 44.5 \u2014 gradient explosion. Arena 0.51 vs 0.55, only 3W/1L/96D (extremely passive), no promotion vs baseline 1\u00d7. replay_ratio 1.05 hurt every goal-1 axis.",
+    "training_time_seconds": 900,
+    "folder": "experiments/20260425-191909"
+  },
+  {
+    "timestamp": "20260425-193713",
+    "start_time_iso": "2026-04-25T19:37:13Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Refine replay_buffer_min 80k\u219270k. Bracket between accepted 80k (promotion run) and rejected 60k (regressed). Probes whether 70k extracts more training-step volume while preserving the buffer-diversity benefit. Single-axis micro-step on the proven axis.",
+    "changed_params": [
+      {
+        "key": "replay_buffer_min_positions_before_training",
+        "old": 80000,
+        "new": 70000
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 70000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard build-393 variance. replay_min 80k\u219270k did not help. No promotion.",
+    "training_time_seconds": 300,
+    "folder": "experiments/20260425-193713"
+  },
+  {
+    "timestamp": "20260425-194508",
+    "start_time_iso": "2026-04-25T19:45:08Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Tighten grad_clip_max_norm 25\u219223 (-8%). Smaller step than the 25\u219222 attempt (rejected). Recent runs hit gNorm 86-145 in collapses; tighter clipping caps catastrophic-update spikes that drive the late one-hot collapse. Uses headroom under accept-baseline gNorm=44.",
+    "changed_params": [
+      {
+        "key": "grad_clip_max_norm",
+        "old": 25,
+        "new": 23
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 23,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Mid-bail at 482s on legal-mass collapse. Made it past the typical 301s window but eventually collapsed. grad_clip 25\u219223 modestly delayed but didn't prevent collapse. No promotion (run never reached arena).",
+    "training_time_seconds": 482,
+    "folder": "experiments/20260425-194508"
+  },
+  {
+    "timestamp": "20260425-195608",
+    "start_time_iso": "2026-04-25T19:56:08Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Lower weight_decay 2e-4\u21921.5e-4 (-25%). Untouched down direction (up to 3e-4 regressed earlier). Less L2 pressure could let the policy retain stronger signal on legal moves where it has learned them, while the proven replay_min/replay_ratio settings keep the policy diverse. Single-axis micro-step.",
+    "changed_params": [
+      {
+        "key": "weight_decay",
+        "old": 0.0002,
+        "new": 0.00015
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.00015,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Same build, both 900s. Goal-1 worse: legal_mass 0.596 vs 0.838 (-29%), top1_legal 0.031 vs 0.055 (-44%). Arena worse: 0.495 vs 0.55, no promotion vs 1\u00d7 (9W/10L vs 16W/6L). gNorm cleaner (30 vs 44) but learning slower. weight_decay 2e-4\u21921.5e-4 reduced learning signal without compensating gain.",
+    "training_time_seconds": 900,
+    "folder": "experiments/20260425-195608"
+  },
+  {
+    "timestamp": "20260425-201413",
+    "start_time_iso": "2026-04-25T20:14:13Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Raise weight_decay 2e-4\u21922.5e-4 (+25%). Smaller step than earlier 2e-4\u21923e-4 attempt (rejected). Slightly stronger L2 regularization may discourage the late one-hot collapse pattern (network parking large logits on illegal cells) seen in 482s and 845s collapses. Single-axis micro-step.",
+    "changed_params": [
+      {
+        "key": "weight_decay",
+        "old": 0.0002,
+        "new": 0.00025
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.00025,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard variance. weight_decay 2e-4\u21922.5e-4 did not help. No promotion.",
+    "training_time_seconds": 300,
+    "folder": "experiments/20260425-201413"
+  },
+  {
+    "timestamp": "20260425-202206",
+    "start_time_iso": "2026-04-25T20:22:06Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Lower draw_penalty 0.10\u21920.08 (-20%). Untouched down direction (UP to 0.12 was rejected). Slightly less penalty for draws may encourage the policy to play more naturally instead of forcing decisive (potentially illegal) moves. Single-axis micro-step.",
+    "changed_params": [
+      {
+        "key": "draw_penalty",
+        "old": 0.1,
+        "new": 0.08
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.08,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard variance. draw_penalty 0.10\u21920.08 did not help. No promotion.",
+    "training_time_seconds": 300,
+    "folder": "experiments/20260425-202206"
+  },
+  {
+    "timestamp": "20260425-202919-replicate",
+    "start_time_iso": "2026-04-25T20:29:19Z",
+    "status": "REJECTED",
+    "mode": "replicate",
+    "change_details": "Replicate mode \u2014 re-running current best parameters verbatim to probe baseline reproducibility after a long non-accept streak.",
+    "changed_params": [],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Replicate of current-best parameters: legal_mass 0.49 vs baseline 0.838 (-41%), arena 0.52 vs 0.55 \u2014 only 4W/0L/96D, no promotion vs baseline 1\u00d7 promotion. Same params, full 900s, no collapse, but goal-1 metrics regressed substantially. Confirms baseline was partly noise-lucky in build-393's high-variance regime.",
+    "training_time_seconds": 900,
+    "folder": "experiments/20260425-202919-replicate"
+  },
+  {
+    "timestamp": "20260425-204706-replicate",
+    "start_time_iso": "2026-04-25T20:47:06Z",
+    "status": "REJECTED",
+    "mode": "replicate",
+    "change_details": "Replicate mode (2/3) \u2014 re-running current best parameters verbatim to probe baseline reproducibility. First replicate showed legal_mass dropped 41% \u2014 trying again to confirm baseline noise-luckiness.",
+    "changed_params": [],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Replicate 2/3: completed 900s and PROMOTED 1\u00d7 (score 0.55, +35 Elo, 18W/8L/74D \u2014 matches baseline's promotion). But goal-1 collapse signals worsened: legal_mass_last 0.005 vs baseline 0.838 (-99%), max_prob_last 0.73 vs 0.185 \u2014 flirting with the 0.99 collapse trigger. Promotion reproduced; collapse-prevention metrics did not.",
+    "training_time_seconds": 900,
+    "folder": "experiments/20260425-204706-replicate"
+  },
+  {
+    "timestamp": "20260425-210506-replicate",
+    "start_time_iso": "2026-04-25T21:05:06Z",
+    "status": "REJECTED",
+    "mode": "replicate",
+    "change_details": "Replicate mode (3/3) \u2014 final reproducibility probe before HALT. R1 dropped legal_mass 41% no promotion; R2 promoted but legal_mass crashed to 0.005. Confirms baseline params produce variable outcomes.",
+    "changed_params": [],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 75,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.6,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 80000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Replicate 3/3: early-bail at 301s on legal-mass collapse. Three replicates of identical params produced: R1 timer-expired no promotion (legal_mass 0.49); R2 timer-expired PROMOTED (legal_mass 0.005); R3 collapsed at 301s. Confirms build-393 high run-to-run variance \u2014 baseline 172914 was partially noise-lucky.",
+    "training_time_seconds": 300,
+    "folder": "experiments/20260425-210506-replicate"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 188,
+  "total_iterations": 206,
   "counts": {
     "SEED": 1,
     "ACCEPTED": 20,
     "NEUTRAL": 10,
-    "REJECTED": 155,
+    "REJECTED": 173,
     "FAILED": 3,
     "IN_PROGRESS": 0
   },
-  "accept_rate": 0.10638297872340426,
-  "failure_streak": 0,
-  "trailing_replicates": 0,
-  "arena_count": 124,
-  "promotions": 5,
+  "accept_rate": 0.0970873786407767,
+  "failure_streak": 18,
+  "trailing_replicates": 3,
+  "iterations_since_codechange": 162,
+  "code_iteration_due": true,
+  "code_iteration_interval": 40,
+  "arena_count": 130,
+  "promotions": 6,
   "best_arena_score": 0.565,
   "best_arena_folder": "experiments/20260423-132740"
 };

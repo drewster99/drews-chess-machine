@@ -95,7 +95,7 @@
 <table id="experiments">
   <thead>
     <tr>
-      <th>Start (UTC)</th>
+      <th>Start (local)</th>
       <th>Status</th>
       <th>Dur.</th>
       <th>Change</th>
@@ -130,6 +130,19 @@ function escHTML(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+function fmtLocal(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+}
+
 function fmtVal(v) {
   if (v === undefined) return '<em>absent</em>';
   if (v === null) return 'null';
@@ -161,7 +174,7 @@ function renderRow(exp) {
     ? `<span class="params-link" data-key="${escHTML(rowKey(exp))}">view</span>`
     : '<em>—</em>';
   tr.innerHTML = `
-    <td class="mono">${escHTML(exp.start_time_iso || '')}</td>
+    <td class="mono">${escHTML(fmtLocal(exp.start_time_iso))}</td>
     <td>${statusCell}</td>
     <td class="mono">${durCell}</td>
     <td class="details">${escHTML(exp.change_details || '')}</td>
@@ -300,6 +313,11 @@ function renderAggregates(agg) {
       <span class="agg-value">${agg.trailing_replicates}/3</span>
       <span class="agg-sub">${agg.trailing_replicates >= 3 ? 'halted' : 'probing baseline'}</span>
     </div>` : ''}
+    <div class="agg-cell ${agg.code_iteration_due ? 'streak-hint' : ''}">
+      <span class="agg-label">Code iter</span>
+      <span class="agg-value">${agg.iterations_since_codechange || 0}/${agg.code_iteration_interval || 40}</span>
+      <span class="agg-sub">${agg.code_iteration_due ? 'due next' : ''}</span>
+    </div>
     <div class="agg-cell">
       <span class="agg-label">Arenas</span>
       <span class="agg-value">${agg.arena_count}</span>

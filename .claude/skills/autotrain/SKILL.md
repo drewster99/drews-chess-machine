@@ -35,6 +35,8 @@ The app is launched via `$ROOT/run_debug.sh` (a thin wrapper that locates the De
   Emits a compact (~1-5 KB) JSON digest of a results.json — arena scoreboards, per-metric trajectories (first/min/median/mean/max/final), collapse signals, candidate-probe first/mid/last, build-number stamp. Used to keep subagent prompts small; the raw file is ~1 MB / ~300k tokens and you should never paste it into a subagent directly.
 - `$ROOT/.claude/skills/autotrain/validate_params.py <path-to-parameters.json>`
   Sanity-bound check on a proposed parameters.json. Bounds are intentionally very wide — the point is to catch proposer hallucinations (`learning_rate: 5.0`, fractional worker counts, capacity > 1e8), not to gatekeep tuning. Exits 0 on valid, 1 on violations (printed to stderr). Invoked by the skill after step 5's proposal lands; a violation rejects the iteration before any training run happens.
+- `$ROOT/.claude/skills/autotrain/apply_code_proposal.py <folder>`
+  CODE-CHANGE mode only (step 5b). Reads `<folder>/code_proposal.json`, validates touched files against an allowlist (`ChessTrainer.swift`, `ContentView.swift`), overwrites them with the proposer's content, runs `xcrun xcodebuild` to verify, and reverts the working tree if the build fails. Writes `code_apply_status.json` and `build.log` next to the proposal. Exit codes: 0 = applied + built; 2 = schema/forbidden-file (tree unchanged); 3 = build failed (tree reverted); 4 = io error (manual intervention). Files explicitly forbidden from overwrite: `ChessNetwork.swift`, `BoardEncoder.swift`, `PolicyEncoding.swift`, anything under `DrewsChessMachineTests/`.
 
 ## Iteration procedure
 
@@ -79,6 +81,16 @@ Then decide mode for this iteration:
 - **`failure_streak` 5–9** → proceed normally but note it (`... (streak=7, watch)`).
 - **`failure_streak` < 5** → proceed silently.
 
+### 0.7. Code-iteration cadence (every 40 normal iterations)
+
+`regen_dashboard.py` exposes `window.AGGREGATES.code_iteration_due` and `iterations_since_codechange`. The cadence counts only `mode=normal` iterations since the last `-codechange` folder (replicates and seeds are transparent), so the proposer's tuning history isn't artificially shortened by replicate cascades.
+
+If `code_iteration_due` is `true` AND none of the higher-priority modes from step 0.6 fired (i.e. `trailing_replicates < 3` and `failure_streak < 15`), AND `failure_streak < 5`, route this iteration into **CODE-CHANGE mode** instead of normal. Set a local flag `code_change_mode = true` that step 4 and step 5b observe. Folder suffix becomes `-codechange`.
+
+**Why the `failure_streak < 5` gate:** code surgery on top of unstable parameter dynamics is a recipe for chaos — one variable at a time. If we're in a watch-zone streak, defer the code-change iteration until the next normal accept resets the streak; the cadence counter keeps ticking, so we'll just take the code-change shot a few iterations later.
+
+If we route into code-change mode, also REQUIRE that `git status --porcelain` shows no unstaged changes to the files in the code-proposal allowlist (`ChessTrainer.swift`, `ContentView.swift`). If the user is mid-edit on those files, defer code-change mode by one iteration (run a normal proposal instead) and log the deferral. The cadence counter doesn't advance from a deferred attempt — it'll trigger again next iteration.
+
 ### 1. Check working tree is clean enough to commit
 
 Run `git status --porcelain`. If there are staged changes unrelated to autotrain, stop and tell the user — we will commit on an accepted improvement and don't want to sweep unrelated work into the commit. Unstaged build-counter / BuildInfo.swift drift (from the pre-Compile script phase) is expected and fine to leave alone — don't stage them.
@@ -106,6 +118,7 @@ Timestamp = UTC `YYYYMMDD-HHMMSS`.
 
 - **Normal mode**: Folder = `$ROOT/experiments/<timestamp>/`.
 - **Replicate mode** (set in step 0.6): Folder = `$ROOT/experiments/<timestamp>-replicate/`. The suffix is how the dashboard, the streak counter, and the next iteration's trailing-replicate count identify replicate iterations.
+- **Code-change mode** (set in step 0.7): Folder = `$ROOT/experiments/<timestamp>-codechange/`. The suffix is how the dashboard and the `iterations_since_codechange` counter identify code-change iterations. Step 5b owns this folder.
 
 Regardless of mode:
 
@@ -130,6 +143,75 @@ Regardless of mode:
 - Run `validate_params.py` as a sanity check (should trivially pass since the baseline already validates). If it somehow fails, that's a real problem — stub-reject and halt the replicate cascade for user attention.
 - Run `regen_dashboard.py`.
 - Skip the rest of step 5 and go straight to step 6.
+
+### 5b. Code-change mode (if `code_change_mode = true` from step 0.7)
+
+This is a one-shot detour that runs IN PLACE OF the parameter-proposer subagent. It produces a Swift code change instead of a parameter delta. After it runs (whether the change applied or not), we proceed to step 6 (training) and step 7 (analyze) as usual — analysis judges the resulting training run against `improvement_goal` exactly like a normal iteration.
+
+**Setup** (matches step 5's normal-mode preamble):
+
+  a. `current_best_summary` = stdout of `summarize_results.py $ROOT/results.json`.
+  b. `recent_history` = last 10 iterations, same shape as step 5.
+  c. Copy `$ROOT/parameters.json` → `<folder>/parameters.json` verbatim. Code-change iterations don't change params.
+  d. Read the current full content of every file in the allowlist (`DrewsChessMachine/DrewsChessMachine/ChessTrainer.swift`, `DrewsChessMachine/DrewsChessMachine/ContentView.swift`) and assemble `current_files`: `{ <relpath>: <full content as string> }`.
+
+**Spawn a code-proposer subagent** with this prompt:
+```json
+{
+  "improvement_goal": "<contents of goal.txt>",
+  "current_best_parameters": <contents of $ROOT/parameters.json>,
+  "current_best_results_summary": <current_best_summary>,
+  "current_best_results_json_path": "<absolute path to $ROOT/results.json>",
+  "recent_history": <recent_history>,
+  "current_files": <current_files>,
+  "allowed_files": [
+    "DrewsChessMachine/DrewsChessMachine/ChessTrainer.swift",
+    "DrewsChessMachine/DrewsChessMachine/ContentView.swift"
+  ],
+  "forbidden_files": [
+    "DrewsChessMachine/DrewsChessMachine/ChessNetwork.swift",
+    "DrewsChessMachine/DrewsChessMachine/BoardEncoder.swift",
+    "DrewsChessMachine/DrewsChessMachine/PolicyEncoding.swift",
+    "DrewsChessMachine/DrewsChessMachineTests/"
+  ]
+}
+```
+
+Instructions embedded in the prompt:
+- This is a **CODE change**, not a parameter change. Touch Swift code in the allowlist files only. Do NOT propose a parameter change in the same iteration.
+- Do not change the network architecture, board encoding, or policy encoding (the forbidden files). Do not modify tests. Do not change file paths or module structure.
+- Prefer **small, targeted changes** with a clear mechanism: tweak a constant, change a threshold, adjust a smoothing factor, fix a subtle bug, change a heuristic. Multi-line surgery within one function is fine. Avoid sweeping refactors.
+- The change must be **orthogonal to the parameters in `current_best_parameters`** — if the same effect is achievable by tuning an existing parameter, don't bake it into code.
+- Architecture is immutable: same network shape, same input encoding, same policy head.
+- Return JSON of exactly this shape (no markdown, no surrounding prose):
+  ```json
+  {
+    "change_details": "<≤60 words rationale, like a commit subject>",
+    "rationale": "<longer mechanism explanation, ≤200 words>",
+    "files": {
+      "<relpath>": "<FULL new file content as a single string — every line, including imports and unchanged code>"
+    }
+  }
+  ```
+- The `files` map is **full-file replacement** — emit the complete new contents of every file you want to change. Do not emit a unified diff. The applier writes your strings verbatim to disk and runs the build, so any syntax error you emit will trip the build gate.
+- A code-change run is judged the same way a parameter run is: the resulting training run's metrics, against `improvement_goal`. So your change should plausibly affect training-run behavior, not just refactor for style.
+
+**After** the subagent returns:
+1. Parse the JSON. If parsing fails or required keys (`change_details`, `files`) are missing, retry once. If retry fails, write a stub `analysis.json` with `{"classification": "regressed", "analysis_commentary": "code proposer returned invalid JSON twice — skipping iteration"}`, run `regen_dashboard.py`, and jump to step 8 (reject).
+2. Write `<folder>/code_proposal.json` with the full subagent JSON.
+3. Write `<folder>/proposal.json` with `{"change_details": "<from code_proposal>", "parameters": <baseline params>, "mode": "codechange"}` so the dashboard and history-builder treat this row uniformly.
+4. Write `<folder>/proposal.md` with the `change_details` text.
+5. Write `<folder>/training_time.txt` with `900` (default).
+6. **Apply and verify**: run `python3 $ROOT/.claude/skills/autotrain/apply_code_proposal.py <folder>`. Read `<folder>/code_apply_status.json`:
+   - Exit 0 / verdict `applied`: build succeeded, working tree now contains the proposed change. Continue to step 6 (training).
+   - Exit 2 / verdict `schema_error` or `forbidden`: stub-reject — write `analysis.json` with `{"classification": "regressed", "analysis_commentary": "code proposal rejected by allowlist/schema: <detail>"}`, run `regen_dashboard.py`, jump to step 8.
+   - Exit 3 / verdict `build_failed`: stub-reject — write `analysis.json` with `{"classification": "regressed", "analysis_commentary": "code proposal failed build (tree reverted): <last lines>"}`, run `regen_dashboard.py`, jump to step 8.
+   - Exit 4 / verdict `io_error`: HALT. Print `autotrain: code-apply io error, manual intervention required` and end the iteration. Do NOT continue to training.
+7. Run `regen_dashboard.py`. The dashboard row will be marked `IN_PROGRESS` with mode=codechange.
+
+Then proceed to step 6 (run training) — the existing pre-build hook on the Xcode project will pick up the modified Swift files when `run_training.sh` launches the app, and `result.json`'s `build_number` will reflect the new build.
+
+**Step 8 handling for code-change iterations** is in step 8's "Code-change mode" subsection below.
 
 **Normal mode** (from here on):
 
@@ -282,6 +364,17 @@ Read `classification` from `<folder>/analysis.json` and branch:
 - **`FAILED`** (from step 5's bounds-violation stub or step 6's training-failure stub): treated like REGRESSED for the streak counter; no commit. The stub `analysis.json` will carry a failure-shaped commentary, not a real `classification`.
 
 Legacy back-compat: if `analysis.json` has the old `is_result_improved` field instead of `classification` (from pre-trichotomy iterations), treat `true` as `improved` and `false` as `regressed` — no neutrals in old data.
+
+#### Code-change mode (step 5b iterations only)
+
+The folder is `<timestamp>-codechange`. The working tree currently contains the proposer's Swift change (apply_code_proposal.py applied it before training). What happens at step 8 depends on classification, but with one critical extra step:
+
+- **`improved` (ACCEPTED)**: same as normal accept — copy `result.json` → root (params didn't change so root params.json stays as-is, but copy it through anyway as a no-op for symmetry). The Swift files were modified in place during step 5b, so they show up as ` M` in `git status`. Stage them ALONGSIDE the experiment folder, alongside `parameters.json`, `results.json`, `experiment_results.js`, and any uncommitted prior folders. Commit message: `autotrain: accept <timestamp>-codechange — <change_details first line>`. Push.
+- **`neutral` (NEUTRAL)**: **REVERT the Swift changes** (`git checkout HEAD -- <each allowlist file>`) so the working tree returns to the baseline build. Don't commit. The folder remains as evidence (with its `code_proposal.json` and `code_patch/` directory preserving the proposal). Log a brief line; the cadence counter resets next iteration's count to 0 since this row's `mode=codechange`.
+- **`regressed` (REJECTED)**: **REVERT the Swift changes** the same way. Don't commit. The folder remains as evidence. Counts against the failure streak.
+- **stub-reject from step 5b** (build failed, schema violation, or proposer JSON failure): the apply script already reverted the tree on build_failed; on schema_error nothing was written. Either way the tree is clean. Don't commit; folder remains.
+
+The revert is **non-negotiable** for non-accept code-change iterations — leaving a partially-broken Swift change in the tree contaminates every subsequent normal-mode iteration's training run.
 
 ### 9. End iteration
 

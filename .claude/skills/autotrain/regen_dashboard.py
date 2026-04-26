@@ -37,9 +37,10 @@ def load_json(path: Path):
 
 
 def parse_timestamp(folder_name: str):
-    # Expected "YYYYMMDD-HHMMSS" with optional "-seed" or "-replicate" suffix.
+    # Expected "YYYYMMDD-HHMMSS" with optional "-seed" / "-replicate" /
+    # "-codechange" suffix.
     base = folder_name
-    for suffix in ("-seed", "-replicate"):
+    for suffix in ("-seed", "-replicate", "-codechange"):
         if base.endswith(suffix):
             base = base[: -len(suffix)]
             break
@@ -54,6 +55,8 @@ def folder_mode(folder_name: str):
         return "seed"
     if folder_name.endswith("-replicate"):
         return "replicate"
+    if folder_name.endswith("-codechange"):
+        return "codechange"
     return "normal"
 
 
@@ -190,6 +193,10 @@ def compute_aggregates(rows, folder_arenas):
             "counts": {},
             "accept_rate": None,
             "failure_streak": 0,
+            "trailing_replicates": 0,
+            "iterations_since_codechange": 0,
+            "code_iteration_due": False,
+            "code_iteration_interval": 40,
             "arena_count": 0,
             "promotions": 0,
             "best_arena_score": None,
@@ -225,6 +232,30 @@ def compute_aggregates(rows, folder_arenas):
         else:
             break
 
+    # Code-iteration cadence: count "normal" iterations since the last
+    # codechange folder (or since the SEED if there's never been one).
+    # When this counter hits CODE_ITERATION_INTERVAL, the autotrain skill's
+    # step 0.6 routes the next iteration into CODE-CHANGE mode instead of
+    # normal/replicate.
+    #
+    # Why count only "normal" — replicates and codechange folders are not
+    # parameter-tuning iterations, so they shouldn't push the cadence
+    # forward. SEEDs do reset the count (a fresh start gets a fresh window
+    # before we attempt code surgery).
+    CODE_ITERATION_INTERVAL = 40
+    iterations_since_codechange = 0
+    for r in reversed(rows):
+        mode = r.get("mode")
+        if mode == "codechange" or r.get("status") == "SEED":
+            break
+        if mode == "normal":
+            iterations_since_codechange += 1
+        # replicate/seed/IN_PROGRESS don't add to the count, but also don't
+        # break — they're transparent.
+    code_iteration_due = (
+        iterations_since_codechange >= CODE_ITERATION_INTERVAL
+    )
+
     # Accept rate denominator includes NEUTRAL: neutrals are decisions, just
     # not promotions. A long streak of neutrals correctly shows 0% accept.
     decided = counts["ACCEPTED"] + counts["NEUTRAL"] + counts["REJECTED"] + counts["FAILED"]
@@ -253,6 +284,9 @@ def compute_aggregates(rows, folder_arenas):
         "accept_rate": accept_rate,
         "failure_streak": streak,
         "trailing_replicates": trailing_replicates,
+        "iterations_since_codechange": iterations_since_codechange,
+        "code_iteration_due": code_iteration_due,
+        "code_iteration_interval": CODE_ITERATION_INTERVAL,
         "arena_count": arena_count,
         "promotions": promotions,
         "best_arena_score": best_arena_score,
@@ -575,6 +609,11 @@ function renderAggregates(agg) {
       <span class="agg-value">${agg.trailing_replicates}/3</span>
       <span class="agg-sub">${agg.trailing_replicates >= 3 ? 'halted' : 'probing baseline'}</span>
     </div>` : ''}
+    <div class="agg-cell ${agg.code_iteration_due ? 'streak-hint' : ''}">
+      <span class="agg-label">Code iter</span>
+      <span class="agg-value">${agg.iterations_since_codechange || 0}/${agg.code_iteration_interval || 40}</span>
+      <span class="agg-sub">${agg.code_iteration_due ? 'due next' : ''}</span>
+    </div>
     <div class="agg-cell">
       <span class="agg-label">Arenas</span>
       <span class="agg-value">${agg.arena_count}</span>
@@ -630,7 +669,7 @@ def main():
     # revision — that way existing dashboards auto-upgrade to new features
     # (like the params modal) without the user having to delete the file, but
     # we don't churn mtime every regen when the template hasn't changed.
-    template_marker = "Start (local)"
+    template_marker = "Code iter"
     if not OUT_HTML.is_file() or template_marker not in OUT_HTML.read_text():
         OUT_HTML.write_text(HTML_TEMPLATE)
     print(f"regen_dashboard: {len(rows)} runs -> {OUT_JS.relative_to(REPO_ROOT)}")
