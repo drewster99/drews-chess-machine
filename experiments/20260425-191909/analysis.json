@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both 900s. Goal-1 regressed sharply: final legal_mass 0.039 vs baseline 0.838 (-95%), top1_legal 0 vs 0.055. Max gNorm spiked to 146 (>100 threshold) vs baseline 44.5 — gradient explosion. Arena 0.51 vs 0.55, only 3W/1L/96D (extremely passive), no promotion vs baseline 1×. replay_ratio 1.05 hurt every goal-1 axis.",
+  "classification": "regressed"
+}

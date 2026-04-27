@@ -67,6 +67,18 @@ struct CliTrainingConfig: Decodable, Sendable {
 
     var candidateProbeIntervalSec: Double? = nil
 
+    // MARK: - Legal-mass collapse detector
+
+    /// Illegal-mass threshold above which a probe counts as a "bad"
+    /// reading. Default 0.999 (i.e. legal mass ≤ 0.001).
+    var legalMassCollapseThreshold: Double? = nil
+    /// Grace period (seconds) measured from the first observed SGD
+    /// step before the detector starts firing. Default 300 s.
+    var legalMassCollapseGraceSeconds: Double? = nil
+    /// Number of consecutive probes (without legal-mass improvement)
+    /// required to trip the abort. Default 5.
+    var legalMassCollapseNoImprovementProbes: Int? = nil
+
     // MARK: - Time budget
 
     /// After this many wall-clock seconds inside the Play-and-Train
@@ -106,6 +118,10 @@ struct CliTrainingConfig: Decodable, Sendable {
         case arenaAutoIntervalSec = "arena_auto_interval_sec"
 
         case candidateProbeIntervalSec = "candidate_probe_interval_sec"
+
+        case legalMassCollapseThreshold = "legal_mass_collapse_threshold"
+        case legalMassCollapseGraceSeconds = "legal_mass_collapse_grace_seconds"
+        case legalMassCollapseNoImprovementProbes = "legal_mass_collapse_no_improvement_probes"
 
         case trainingTimeLimitSec = "training_time_limit"
     }
@@ -157,6 +173,9 @@ struct CliTrainingConfig: Decodable, Sendable {
         add("arena_games_per_tournament", arenaGamesPerTournament)
         add("arena_auto_interval_sec", arenaAutoIntervalSec)
         add("candidate_probe_interval_sec", candidateProbeIntervalSec)
+        add("legal_mass_collapse_threshold", legalMassCollapseThreshold)
+        add("legal_mass_collapse_grace_seconds", legalMassCollapseGraceSeconds)
+        add("legal_mass_collapse_no_improvement_probes", legalMassCollapseNoImprovementProbes)
         add("training_time_limit", trainingTimeLimitSec)
         return parts.isEmpty ? "(empty)" : parts.joined(separator: " ")
     }

@@ -1,0 +1,1 @@
+self_play_tau_decay_per_ply 0.030→0.035 (+17%). Faster decay = self-play moves transition to target_tau sooner. Untouched up direction (only down to 0.025 was tried, regressed). Sharper later self-play might give cleaner replay-buffer signal in mid-game positions.

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Replicate 3/3: early-bail at 301s on legal-mass collapse. Three replicates of identical params produced: R1 timer-expired no promotion (legal_mass 0.49); R2 timer-expired PROMOTED (legal_mass 0.005); R3 collapsed at 301s. Confirms build-393 high run-to-run variance — baseline 172914 was partially noise-lucky.",
+  "classification": "regressed"
+}

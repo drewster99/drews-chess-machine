@@ -1,0 +1,1 @@
+Raise lr_warmup_steps 75→90 (+20%). Tests an untested mid-range up step; 75→100 regressed but 90 gives a slightly slower lr ramp without being as aggressive as 100. Stays well under validator's recommended cap (179). Small change targeting early-step gradient stability.

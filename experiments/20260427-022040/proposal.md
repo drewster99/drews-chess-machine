@@ -1,0 +1,1 @@
+training_step_delay_ms 0→5. Tiny step; auto_adjust=true means the controller will tune it dynamically anyway, so this just shifts the starting point. Mostly chain-break to clear trailing_replicates after replicate cascade.

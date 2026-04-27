@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both 900s. Arena worse: 7W/14L vs baseline 16W/6L, score 0.465 vs 0.55 — and no promotion vs baseline 1× promotion. legal_mass slipped 0.838→0.776 (-7%) and top1_legal collapsed to 0 vs 0.055. pEnt and max_prob slightly better but goal-1 (top1_legal) and goal-3 (promotion) both regressed. Lower arena_start_tau hurt arena signal.",
+  "classification": "regressed"
+}

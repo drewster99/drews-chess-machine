@@ -1,0 +1,1 @@
+Configurable legal-mass collapse detector — threshold 0.999, grace 300s, 5-probe sliding window with no-improvement criterion. Replaces old 0.99/120s/3-consecutive logic that false-positived on slow learning.

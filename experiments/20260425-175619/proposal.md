@@ -1,0 +1,1 @@
+Raise self_play_workers 48→56 (+17%). Untouched axis. More parallel self-play games → more diverse position stream into the replay buffer per second → broader gradient signal. Doesn't change training-side dynamics directly; only how the buffer is populated. Single-axis micro-step.

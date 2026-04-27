@@ -1,0 +1,1 @@
+Extend training_time 900s→1200s (+5min, per user directive). Same params as accepted baseline (replay_min=80k, replay_ratio=1.1). Tests whether the just-promoted-once params hold stability when given more steps. lr_warmup at 75 still leaves plenty of post-warmup window.

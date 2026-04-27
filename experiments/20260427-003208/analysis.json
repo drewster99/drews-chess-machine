@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both 900s. Goal-1 regressed: legal_mass 0.393 vs baseline 0.838 (-53%), top1_legal 0.008 vs 0.055, max_prob 0.350 vs 0.185 (closer to collapse). Arena 0.515 (no promo, 10W/7L) vs baseline 0.55 (promoted, 16W/6L). gNorm cleaner (25 vs 44) but learning slower.",
+  "classification": "regressed"
+}

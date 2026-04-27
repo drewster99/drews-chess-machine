@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Late-bail at 845s on legal-mass collapse. Made it through one arena (score 0.505, no promotion) and most of the 900s window before max_prob spiked to 0.997. Healthier mid-run than typical (mid legal_mass 0.04) but late-window collapse onto one-hot illegal. 1.12 still slips past variance.",
+  "classification": "regressed"
+}

@@ -1,0 +1,1 @@
+Raise weight_decay 2e-4→2.5e-4 (+25%). Smaller step than earlier 2e-4→3e-4 attempt (rejected). Slightly stronger L2 regularization may discourage the late one-hot collapse pattern (network parking large logits on illegal cells) seen in 482s and 845s collapses. Single-axis micro-step.

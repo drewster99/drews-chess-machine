@@ -1,0 +1,1 @@
+entropy_bonus 0.012→0.014 (+17%). Smaller step than the 0.012→0.015 attempt that overshot. Slightly stronger entropy regularization to resist the early one-hot collapse that drives ~50% of runs to bail at 301s.

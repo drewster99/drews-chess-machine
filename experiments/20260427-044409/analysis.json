@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Variance hit; gNorm spiked to 104. K 5→5.5 didn't help.",
+  "classification": "regressed"
+}

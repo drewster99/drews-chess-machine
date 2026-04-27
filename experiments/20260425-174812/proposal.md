@@ -1,0 +1,1 @@
+Continue the proven replay_min axis: 80k→60k. The two successful step-downs on this axis (250k→100k, 100k→80k) both improved goal-1 metrics; second one delivered first-promotion-of-streak. Earlier first SGD step keeps adding training-step volume in the 900s window. Single-axis micro-step.

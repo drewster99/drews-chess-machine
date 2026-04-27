@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Build-394 variance. replay_buffer_capacity 500k→700k didn't help (within 900s the buffer never fills past ~150k anyway).",
+  "classification": "regressed"
+}

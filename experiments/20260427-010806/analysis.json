@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Build-394 variance. arena_tau_decay change is training-orthogonal so collapse is variance. No promotion (run never reached arena).",
+  "classification": "regressed"
+}

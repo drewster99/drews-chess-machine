@@ -1,0 +1,1 @@
+Lower draw_penalty 0.10→0.08 (-20%). Untouched down direction (UP to 0.12 was rejected). Slightly less penalty for draws may encourage the policy to play more naturally instead of forcing decisive (potentially illegal) moves. Single-axis micro-step.

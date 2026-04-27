@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Same params as accepted baseline; build-394 variance hit again. Training-time extension didn't even reach the extra 5min. No promotion.",
+  "classification": "regressed"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. One-hot collapse: max_prob 0.997, legal_mass=0. entropy_bonus 0.012→0.013 didn't prevent variance-driven collapse.",
+  "classification": "regressed"
+}

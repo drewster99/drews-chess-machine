@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard build-393 variance. replay_min 80k→70k did not help. No promotion.",
+  "classification": "regressed"
+}

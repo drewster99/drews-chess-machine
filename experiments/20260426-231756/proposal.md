@@ -1,0 +1,1 @@
+replay_min 80k→90k. Bracket between accepted 80k (1× promotion) and rejected 100k. Probes whether a slightly larger initial buffer trades a few SGD steps for less variance. Untested mid-point on the proven axis. Also breaks the trailing-replicate chain so the loop can resume.

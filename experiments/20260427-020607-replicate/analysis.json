@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Replicate 2/3: early-bail at 304s on legal-mass collapse. Variance hit. No promotion (run never reached arena).",
+  "classification": "regressed"
+}

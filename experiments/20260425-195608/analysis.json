@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both 900s. Goal-1 worse: legal_mass 0.596 vs 0.838 (-29%), top1_legal 0.031 vs 0.055 (-44%). Arena worse: 0.495 vs 0.55, no promotion vs 1× (9W/10L vs 16W/6L). gNorm cleaner (30 vs 44) but learning slower. weight_decay 2e-4→1.5e-4 reduced learning signal without compensating gain.",
+  "classification": "regressed"
+}

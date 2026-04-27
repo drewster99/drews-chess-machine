@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 306s on legal-mass collapse. Variance hit. Training-orthogonal change so collapse is run-to-run noise.",
+  "classification": "regressed"
+}

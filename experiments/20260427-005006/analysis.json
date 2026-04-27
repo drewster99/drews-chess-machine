@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both 900s. Goal-1 regressed: legal_mass 0.158 vs baseline 0.838 (-81%), top1_legal stuck at 0 (vs 0.055), max_prob 0.30 vs 0.185. Arena 0.505 (no promo, 12W/11L) vs 0.55 (promo, 16W/6L). lr 5e-5→5.5e-5 didn't speed convergence; just more variance.",
+  "classification": "regressed"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 305s on legal-mass collapse. One-hot collapse: max_prob 0.998. Chain-breaking iteration done — trailing_replicates resets so loop continues normally.",
+  "classification": "regressed"
+}

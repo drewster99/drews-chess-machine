@@ -1,0 +1,1 @@
+Lower self_play_workers 48→40 (-17%). Untouched down direction (48→56 already tried). Fewer concurrent self-play games means deeper per-game progress before next batch eval, potentially more coherent positions in replay. replay_ratio_auto_adjust=true compensates training side. Single-axis micro-step.

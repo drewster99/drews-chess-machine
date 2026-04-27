@@ -1,0 +1,1 @@
+arena_promote_threshold 0.55→0.54. Smaller step than 0.55→0.53 (rejected). Recent runs hit arena 0.515-0.535 range; lowering threshold by 0.01 catches stronger borderline candidates. Training-orthogonal.

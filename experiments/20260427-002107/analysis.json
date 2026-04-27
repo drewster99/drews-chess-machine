@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Mid-bail at 482s on legal-mass collapse. Made it past the typical 301s window but eventually collapsed (legal_mass→0, max_prob 0.31). self_play_target_tau 0.6→0.65 didn't prevent collapse. No promotion (run never reached arena).",
+  "classification": "regressed"
+}

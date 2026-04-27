@@ -1,0 +1,1 @@
+Refine replay_ratio_target 1.10→1.05. Tests the down side of the proven axis: 1.0 was the prior baseline, 1.1 was accepted, 1.12/1.15 overshot. 1.05 between original accept and current. Could indicate optimum is below current value.

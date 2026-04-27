@@ -1,0 +1,1 @@
+Refine replay_buffer_min 80k→70k. Bracket between accepted 80k (promotion run) and rejected 60k (regressed). Probes whether 70k extracts more training-step volume while preserving the buffer-diversity benefit. Single-axis micro-step on the proven axis.

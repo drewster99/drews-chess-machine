@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both 900s. Goal-1 worse: legal_mass 0.576 vs 0.838 (-31%), top1_legal 0.008 vs 0.055. Arena 0.48 (no promo, 4W/8L/88D) vs 0.55 (promo, 16W/6L). draw_penalty cut didn't help.",
+  "classification": "regressed"
+}

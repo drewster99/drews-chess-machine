@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both 900s. Goal-1 collapsed in slow motion: legal_mass 0.0002 vs baseline 0.838, max_prob 0.899 (near 0.99 threshold), top1_legal 0. Arena 0.515 (no promo, 15W/12L) vs 0.55 (promo, 16W/6L). self_play_target_tau bump made things much worse.",
+  "classification": "regressed"
+}

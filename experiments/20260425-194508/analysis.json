@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Mid-bail at 482s on legal-mass collapse. Made it past the typical 301s window but eventually collapsed. grad_clip 25→23 modestly delayed but didn't prevent collapse. No promotion (run never reached arena).",
+  "classification": "regressed"
+}

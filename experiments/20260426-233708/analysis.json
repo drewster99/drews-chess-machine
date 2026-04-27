@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both 900s. Goal-1 regressed: legal_mass 0.451 vs baseline 0.838 (-46%), top1_legal 0.039 vs 0.055 (-29%). Arena promising W/L (8-1) but score 0.535 below 0.55 threshold so no promotion (vs baseline 1×). gNorm 59 vs 44. Goal-1 priority dominates — regressed.",
+  "classification": "regressed"
+}

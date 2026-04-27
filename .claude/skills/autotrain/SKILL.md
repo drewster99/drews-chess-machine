@@ -408,7 +408,10 @@ Print a one-line summary: `autotrain <timestamp>: ACCEPTED|REJECTED — <change_
   "arena_promote_threshold": 0.58,
   "arena_games_per_tournament": 100,
   "arena_auto_interval_sec": 1200,
-  "candidate_probe_interval_sec": 20
+  "candidate_probe_interval_sec": 20,
+  "legal_mass_collapse_threshold": 0.999,
+  "legal_mass_collapse_grace_seconds": 300,
+  "legal_mass_collapse_no_improvement_probes": 5
 }
 ```
 

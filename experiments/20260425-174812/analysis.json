@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard build-393 variance regime; replay_min 80k→60k did not trigger collapse on its own — same collapse rate as larger replay_min values. No promotion (run never reached arena).",
+  "classification": "regressed"
+}

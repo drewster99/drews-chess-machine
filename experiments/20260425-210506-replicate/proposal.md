@@ -1,0 +1,1 @@
+Replicate mode (3/3) — final reproducibility probe before HALT. R1 dropped legal_mass 41% no promotion; R2 promoted but legal_mass crashed to 0.005. Confirms baseline params produce variable outcomes.

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both 900s. Goal-1 worse: legal_mass 0.451 vs 0.838 (-46%), max_prob 0.438 vs 0.185 (-2.4x). Only 182 training steps (vs 538 baseline) — replay_ratio=1.13 throttled the trainer hard. No arenas reached (vs 1 promo). replay_ratio overshot.",
+  "classification": "regressed"
+}

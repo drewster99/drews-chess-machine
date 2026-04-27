@@ -1,0 +1,1 @@
+Lower lr_warmup_steps 75→60 (-20%). Earlier full-lr means more effective gradient steps in the 900s window. Prior accept was 50→75 (UP); 75→100 regressed; 60 lies between proven endpoints. With current ~500 training_steps, warmup at 60 ramps lr fully by step ~12% (vs 15% at 75) — modest difference, well within validator caps.

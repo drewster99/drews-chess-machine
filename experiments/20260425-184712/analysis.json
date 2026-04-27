@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Standard build-393 variance regime. lr_warmup_steps 75→60 did not help. No promotion.",
+  "classification": "regressed"
+}

@@ -1,0 +1,1 @@
+grad_clip_max_norm 25→26 (+4%). Smaller step than 25→27. Recent runs show gNorm hitting 50-90 in healthy runs and 130+ in collapses; loosening from 25 to 26 is a tiny probe of the up direction (only 22, 23 down were tried).

@@ -1,0 +1,1 @@
+arena_games_per_tournament 100→120 (+20%). Untouched up direction (down to 80 was rejected). Tighter score CIs let promotions land more reliably when score is genuinely above threshold. Training-orthogonal.

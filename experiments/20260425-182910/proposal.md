@@ -1,0 +1,1 @@
+Lower arena_start_tau 2.0→1.8 (-10%). Untouched axis. Slightly less random opening play in arena → tighter score signal-to-noise (the 88% draw rate suggests opening randomness isn't paying off). Training-orthogonal so doesn't affect collapse mode.

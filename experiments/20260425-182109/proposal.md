@@ -1,0 +1,1 @@
+Raise K (value loss coefficient) 5→6 (+20%). Tests the untested up direction (K=4 down regressed earlier). Stronger value gradient may give the trainer better signal about which legal positions matter, indirectly stabilizing the policy. K=6 is also the default in the seed config. Single-axis micro-step.

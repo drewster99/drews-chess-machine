@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Same build, both 900s. Goal-1 dropped sharply: legal_mass 0.055 vs baseline 0.838 (-93%), top1_legal 0.008 vs 0.055. Arena 0.515 (no promotion) vs baseline 0.55 (promoted), 14W/11L/75D weaker than 16W/6L/78D. grad_clip 25→26 didn't break anything but goal-1 metrics regressed clearly.",
+  "classification": "regressed"
+}

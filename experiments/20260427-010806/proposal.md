@@ -1,0 +1,1 @@
+arena_tau_decay 0.015→0.020 (+33%). Faster arena tau decay → sharper end-of-arena play → potentially more decisive arena games. Untouched in this baseline (0.010→0.015 was tried). Training-orthogonal so doesn't affect collapse mode.

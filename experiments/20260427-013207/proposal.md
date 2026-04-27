@@ -1,0 +1,1 @@
+replay_buffer_capacity 500k→700k. Untested mid-up step (600k tried, regressed). Larger capacity holds older positions longer; minor effect within 900s but lets every minibatch see slightly broader history.

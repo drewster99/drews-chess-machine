@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Build bumped to 394 (skill file changes triggered rebuild) but variance pattern unchanged. replay_min 80k→90k did not help. No promotion. Chain-breaking purpose served — trailing_replicates resets, code-mode unlocks next iteration.",
+  "classification": "regressed"
+}

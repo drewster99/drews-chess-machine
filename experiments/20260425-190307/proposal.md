@@ -1,0 +1,1 @@
+Tighten arena_target_tau 0.50→0.45. Smaller step than the prior 0.50→0.40 attempt (rejected via collapse coincidence). Slightly sharper end-of-arena moves to address the 88% draw rate. Training-orthogonal so doesn't affect collapse mode itself.

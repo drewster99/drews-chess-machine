@@ -2281,6 +2281,28 @@ struct ContentView: View {
     @AppStorage("policyScaleK")
     private var policyScaleK: Double = Double(ChessTrainer.policyScaleKDefault)
 
+    /// Legal-mass collapse detector — illegal-mass threshold above
+    /// which a probe counts as a "bad" reading. Default 0.999. The
+    /// detector trips only when ALL probes in the no-improvement
+    /// window are above this AND legal mass hasn't improved over
+    /// that window (see `legalMassCollapseNoImprovementProbes`).
+    @AppStorage("legalMassCollapseThreshold")
+    private var legalMassCollapseThreshold: Double = 0.999
+    /// Legal-mass collapse detector — grace period (seconds) measured
+    /// from the first observed SGD step before the detector starts
+    /// firing. Default 300 s. Buffer warmup + lr warmup mean fresh
+    /// runs naturally show ~uniform legal mass for several minutes;
+    /// the grace prevents false positives on those.
+    @AppStorage("legalMassCollapseGraceSeconds")
+    private var legalMassCollapseGraceSeconds: Double = 300.0
+    /// Legal-mass collapse detector — number of consecutive probes
+    /// required to trip an abort. The detector tracks a sliding
+    /// window of this many legal-mass readings; abort fires only
+    /// when the window is full, every reading is past the threshold,
+    /// AND the newest reading is no better than the oldest. Default 5.
+    @AppStorage("legalMassCollapseNoImprovementProbes")
+    private var legalMassCollapseNoImprovementProbes: Int = 5
+
     // Self-play sampling schedule (live-tunable). Backed by
     // `SamplingSchedule.selfPlay` defaults. New schedules take effect
     // on each newly-constructed player at the next game start within
@@ -5519,6 +5541,18 @@ struct ContentView: View {
             record("candidate_probe_interval_sec", effectiveCandidateProbeIntervalSec, v)
             effectiveCandidateProbeIntervalSec = v
         }
+        if let v = cfg.legalMassCollapseThreshold, v > 0, v < 1 {
+            record("legal_mass_collapse_threshold", legalMassCollapseThreshold, v)
+            legalMassCollapseThreshold = v
+        }
+        if let v = cfg.legalMassCollapseGraceSeconds, v >= 0 {
+            record("legal_mass_collapse_grace_seconds", legalMassCollapseGraceSeconds, v)
+            legalMassCollapseGraceSeconds = v
+        }
+        if let v = cfg.legalMassCollapseNoImprovementProbes, v >= 1 {
+            record("legal_mass_collapse_no_improvement_probes", legalMassCollapseNoImprovementProbes, v)
+            legalMassCollapseNoImprovementProbes = v
+        }
         for (label, before, after) in changes {
             SessionLogger.shared.log("[APP] --parameters override: \(label): \(before) -> \(after)")
         }
@@ -8628,14 +8662,30 @@ struct ContentView: View {
                 let collapseRunStart = Date()
                 let collapseRecorder: CliTrainingRecorder? = (isAutoTrainRun ? recorder : nil)
                 let collapseOutputURL: URL? = outputURL
+                // Configuration snapshot taken at task start. All three
+                // are user-tunable via parameters JSON / @AppStorage; we
+                // capture once so the running detector has stable behavior
+                // even if the user edits the values mid-session (changes
+                // take effect on the next training run).
+                let collapseIllegalMassThreshold = legalMassCollapseThreshold
+                let collapseGracePeriodSec = legalMassCollapseGraceSeconds
+                let collapseNoImprovementProbeCount = max(1, legalMassCollapseNoImprovementProbes)
                 group.addTask(priority: .utility) {
                     [trainer, buffer, box, probeInferenceForProbes] in
                     let probeIntervalSec: UInt64 = 60
-                    let gracePeriodSec: TimeInterval = 120.0
-                    let illegalMassThreshold: Double = 0.99
-                    let consecutiveAbortCount = 3
                     let sampleSize = 128
-                    var consecutive = 0
+                    let gracePeriodSec: TimeInterval = collapseGracePeriodSec
+                    let illegalMassThreshold: Double = collapseIllegalMassThreshold
+                    let noImprovementProbeCount = collapseNoImprovementProbeCount
+                    // Sliding window of recent legal-mass readings,
+                    // newest at end. Trip condition: window is full,
+                    // every reading's illegalMass is above threshold,
+                    // AND the newest legal_mass is no better than the
+                    // oldest (no upward improvement across the window).
+                    // This catches *stuck* collapse — slow climbs out
+                    // of near-uniform won't fire even if absolute
+                    // legal mass is still below threshold for a while.
+                    var legalMassWindow: [Double] = []
                     var aborted = false
                     // Anchor for the grace countdown. Lazily set the
                     // first time we observe at least one completed SGD
@@ -8676,7 +8726,6 @@ struct ContentView: View {
                         // reports `totalTrainingSeconds` as
                         // session-elapsed rather than training-elapsed.
                         let elapsed = Date().timeIntervalSince(collapseRunStart)
-                        guard buffer.count >= sampleSize else { continue }
                         // Skip the probe if the inference network isn't
                         // available — the pollution-prone trainer-network
                         // fallback would silently corrupt BN running stats
@@ -8699,35 +8748,61 @@ struct ContentView: View {
                         }
                         guard let snap else { continue }
                         let illegalMass = 1.0 - snap.legalMass
-                        if illegalMass > illegalMassThreshold {
-                            consecutive += 1
+                        legalMassWindow.append(snap.legalMass)
+                        if legalMassWindow.count > noImprovementProbeCount {
+                            legalMassWindow.removeFirst()
+                        }
+                        // Window-full tripwire: we need
+                        // `noImprovementProbeCount` samples before
+                        // declaring "no improvement"; until then we
+                        // log the probe and continue.
+                        let windowFull = legalMassWindow.count >= noImprovementProbeCount
+                        let allAboveThreshold: Bool = {
+                            guard windowFull else { return false }
+                            for legalMass in legalMassWindow where (1.0 - legalMass) <= illegalMassThreshold {
+                                return false
+                            }
+                            return true
+                        }()
+                        let noImprovement: Bool = {
+                            guard windowFull,
+                                  let oldest = legalMassWindow.first,
+                                  let newest = legalMassWindow.last else {
+                                return false
+                            }
+                            return newest <= oldest
+                        }()
+                        let probeMatches = allAboveThreshold && noImprovement
+                        if probeMatches {
                             SessionLogger.shared.log(
-                                String(format: "[ALARM] legal-mass collapse probe %d/%d: illegalMass=%.4f > %.2f (legalMass=%.4f)",
-                                    consecutive, consecutiveAbortCount, illegalMass, illegalMassThreshold, snap.legalMass)
+                                String(format: "[ALARM] legal-mass collapse window: %d/%d probes illegalMass>%.4f, newest legalMass=%.5f ≤ oldest=%.5f",
+                                    legalMassWindow.count, noImprovementProbeCount,
+                                    illegalMassThreshold,
+                                    legalMassWindow.last ?? 0, legalMassWindow.first ?? 0)
                             )
                             await MainActor.run {
                                 self.raiseTrainingAlarm(
                                     severity: .critical,
                                     title: "Policy Collapse (legal mass)",
-                                    detail: String(format: "illegalMass=%.4f > %.2f for %d/%d consecutive probes",
-                                        illegalMass, illegalMassThreshold, consecutive, consecutiveAbortCount)
+                                    detail: String(format: "illegalMass>%.4f for %d probes with no improvement (legal_mass %.5f→%.5f)",
+                                        illegalMassThreshold, legalMassWindow.count,
+                                        legalMassWindow.first ?? 0, legalMassWindow.last ?? 0)
                                 )
                             }
                         } else {
-                            if consecutive > 0 {
-                                SessionLogger.shared.log(
-                                    String(format: "[ALARM] legal-mass collapse probe recovered: illegalMass=%.4f ≤ %.2f (streak was %d)",
-                                        illegalMass, illegalMassThreshold, consecutive)
-                                )
-                            }
-                            consecutive = 0
+                            SessionLogger.shared.log(
+                                String(format: "[ALARM] legal-mass probe ok: legalMass=%.5f illegalMass=%.4f window=%d/%d",
+                                    snap.legalMass, illegalMass,
+                                    legalMassWindow.count, noImprovementProbeCount)
+                            )
                         }
 
-                        if consecutive >= consecutiveAbortCount {
+                        if probeMatches {
                             aborted = true
                             SessionLogger.shared.log(
-                                String(format: "[ALARM] legal-mass collapse confirmed: %d consecutive probes illegalMass > %.2f — aborting",
-                                    consecutive, illegalMassThreshold)
+                                String(format: "[ALARM] legal-mass collapse confirmed: %d probes above %.4f with no improvement (legal_mass %.5f→%.5f) — aborting",
+                                    legalMassWindow.count, illegalMassThreshold,
+                                    legalMassWindow.first ?? 0, legalMassWindow.last ?? 0)
                             )
                             if let rec = collapseRecorder {
                                 let destDescription = collapseOutputURL?.path ?? "<stdout>"

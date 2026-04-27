@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 304s on legal-mass collapse. One-hot collapse: max_prob 1.0. Variance hit. grad_clip 25→24 didn't help.",
+  "classification": "regressed"
+}

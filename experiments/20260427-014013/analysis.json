@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. One-hot collapse: max_prob 1.0, legal_mass=0. Variance pattern continues. Streak hits 15 — replicate-mode triggers next iteration.",
+  "classification": "regressed"
+}

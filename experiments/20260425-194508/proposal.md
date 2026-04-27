@@ -1,0 +1,1 @@
+Tighten grad_clip_max_norm 25→23 (-8%). Smaller step than the 25→22 attempt (rejected). Recent runs hit gNorm 86-145 in collapses; tighter clipping caps catastrophic-update spikes that drive the late one-hot collapse. Uses headroom under accept-baseline gNorm=44.

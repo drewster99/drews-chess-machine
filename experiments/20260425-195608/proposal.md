@@ -1,0 +1,1 @@
+Lower weight_decay 2e-4→1.5e-4 (-25%). Untouched down direction (up to 3e-4 regressed earlier). Less L2 pressure could let the policy retain stronger signal on legal moves where it has learned them, while the proven replay_min/replay_ratio settings keep the policy diverse. Single-axis micro-step.

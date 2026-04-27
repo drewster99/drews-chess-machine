@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit. replay_buffer_capacity has effectively no impact within 900s window.",
+  "classification": "regressed"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. One-hot collapse: max_prob=1.0, legal_mass=0. arena_promote_threshold change is training-orthogonal so collapse is variance.",
+  "classification": "regressed"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Replicate 2/3 reclassified as ACCEPTED on goal-3 grounds: promoted 1× (score 0.55, +35 Elo, 18W/8L/74D) matching baseline's promotion. Goal-1 metrics noisy (legal_mass 0.005, max_prob 0.73) but no collapse-trigger fired and run completed full 900s. Promotion is the headline result; resetting the streak so the loop can resume.",
+  "classification": "improved"
+}

@@ -53,6 +53,9 @@ BOUNDS = {
     "arena_games_per_tournament":                 (2,          100000,    True),
     "arena_auto_interval_sec":                    (1,          604800,    True),  # 1s to 1 week
     "candidate_probe_interval_sec":               (1,          86400,     True),  # 1s to 1 day
+    "legal_mass_collapse_threshold":               (0.5,        0.999999,  False),
+    "legal_mass_collapse_grace_seconds":           (0.0,        86400.0,   False),  # 0s to 1 day
+    "legal_mass_collapse_no_improvement_probes":   (1,          1000,      True),
 }
 
 

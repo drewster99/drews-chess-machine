@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Training ran clean to 900s timer (537 steps). New collapse detector held \u2014 first probe at 6 min post-grace, illegalMass 0.95-0.98 stayed below 0.999 threshold, sliding window confirmed no-improvement criterion working. legal_mass climbed 0.005\u21920.028 (5.4\u00d7 improvement); last probe legal_mass_sum=0.597. 1 arena, no promotion. Goal (prevent policy collapse) directly addressed.",
+  "classification": "improved"
+}

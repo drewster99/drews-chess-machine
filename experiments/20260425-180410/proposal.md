@@ -1,0 +1,1 @@
+Refine replay_ratio_target 1.10→1.12 (+2%). 1.0→1.1 was accepted (legal_mass +26%); 1.1→1.15 overshot (rejected). 1.12 is the midpoint test for whether incremental progress on this axis still pays off. Single-axis micro-step.

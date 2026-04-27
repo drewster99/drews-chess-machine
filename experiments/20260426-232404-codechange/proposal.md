@@ -1,0 +1,1 @@
+Boost entropy regularization 3x at step 0, decaying linearly to 1x by warmup end. Targeted countermeasure to early-training policy collapse (illegal_mass collapse within 10min) without altering steady-state behavior.

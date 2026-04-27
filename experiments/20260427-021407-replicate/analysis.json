@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Replicate 3/3: early-bail at 305s on legal-mass collapse. Three-replicate cascade complete; all 3 rejected (R1 timer-expired no promo, R2 collapse, R3 collapse). Confirms baseline reproducibility is poor on build-394.",
+  "classification": "regressed"
+}

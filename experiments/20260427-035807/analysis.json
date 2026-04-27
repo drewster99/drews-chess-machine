@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit. lr 5e-5→4.5e-5 didn't help.",
+  "classification": "regressed"
+}

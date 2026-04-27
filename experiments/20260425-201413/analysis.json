@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard variance. weight_decay 2e-4→2.5e-4 did not help. No promotion.",
+  "classification": "regressed"
+}

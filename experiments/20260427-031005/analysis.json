@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit. entropy_bonus 0.012→0.0125 didn't help.",
+  "classification": "regressed"
+}
