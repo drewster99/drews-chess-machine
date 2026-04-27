@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full one-hot collapse on illegal: max_prob=1.0, legal_mass=0.0. Lower draw_penalty appears to have removed the corrective negative signal that kept the value head/policy from drifting into the illegal-move attractor. Streak=7 (watch). 1 arena, no promotion. Pattern continuing: any change to training-loss or value-side coefficients produces collapse. Only sampling-side (self_play_tau_decay) avoids collapse but doesnt improve goal.",
+  "classification": "regressed"
+}

@@ -1,0 +1,1 @@
+replay_buffer_min_positions_before_training 80k→75k (-6%) (streak=10, replicate at 15). Continues historical accept direction (250k→100k→80k). Smaller min lets training start ~6% earlier, gives a few extra training steps in the 900s window.

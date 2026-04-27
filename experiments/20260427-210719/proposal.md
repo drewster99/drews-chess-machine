@@ -1,0 +1,1 @@
+draw_penalty 0.10→0.08 (-20%) (streak=6, watch). Many self-play games end as 3-fold draws; lower draw_penalty reduces the negative signal pushed to the value head from those draws. Indirect path — could give value head a more balanced learning signal that doesn't pull the policy into degenerate modes.

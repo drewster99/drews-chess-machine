@@ -1,0 +1,1 @@
+grad_clip_max_norm 25→20 (-20%). Tighter gradient clipping directly reduces the magnitude of extreme update steps that drive run-to-run variance. Different mechanism than lower-lr (which slowed all updates uniformly).

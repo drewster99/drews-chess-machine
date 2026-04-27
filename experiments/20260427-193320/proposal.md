@@ -1,0 +1,1 @@
+entropy_bonus 0.012→0.018 (+50%). Larger jump than the prior 0.015 attempt (which was neutral). Direct countermeasure against GOAL-1B max_prob→1.0 mode just observed in grad_clip=20 run. Higher entropy bonus pushes policy distribution flatter.

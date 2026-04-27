@@ -1,0 +1,1 @@
+entropy_bonus 0.012→0.015 (+25%). Last 1200s extension exposed variance — identical params produced legal_mass last_probe 0.597 vs 0.004 across two runs. Higher entropy keeps policy less peaky, reducing run-to-run variance on GOAL-1A illegal_mass_sum.

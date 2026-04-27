@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Failed GOAL-1A at 10-min: legal_mass=0 (illegal_mass=1.0). max_prob climbing 0.55\u21920.95 by end (right at GOAL-1B boundary). pEnt 6.64 (policy spread across illegal moves with one dominant \u2014 zombie collapse). arena_games is purely arena-side; this is variance. 1 arena, no promotion. Streak=9 (watch).",
+  "classification": "regressed"
+}

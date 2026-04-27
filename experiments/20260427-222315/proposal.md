@@ -1,0 +1,1 @@
+arena_promote_threshold 0.55→0.52 (-5%) (streak=8, watch). Promotion-side only — doesnt touch training-loss or sampling dynamics. Lower bar lets stable-but-marginal candidates ratchet, building robustness through more frequent champion updates. Cant collapse the run.

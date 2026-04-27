@@ -1,0 +1,1 @@
+replay_ratio_target 1.1→1.2 (+9%) (streak=5, watch). More training cycles per self-play cycle = more updates per buffer-position. Pivots from dampening (lr/clip/decay/K — all rejected) to intensification axis (historically accepted: replay_ratio 1.0→1.1, lr_warmup 50→75, entropy 0.008→0.012).

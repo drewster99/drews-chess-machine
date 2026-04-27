@@ -1,0 +1,1 @@
+arena_target_tau 0.50→0.45 (-10%) (streak=7, watch). Sharper arena late-game sampling → sharper promotion signal, no impact on training-loss dynamics. Sampling-side only — the only axis class that doesnt collapse the current params.

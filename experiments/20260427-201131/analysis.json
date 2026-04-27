@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Severe regression: full one-hot collapse on illegal move, max_prob=1.0, legal_mass=0, top1_legal=0. Detector did not trip (same slow-climb pattern as grad_clip=20). pEnt elevated 6.91 throughout \u2014 high entropy with 100% on a single move shows the policy spread across illegal moves with one dominant. Lower K reduced the corrective gradient that prevents this. Pattern: every dampening direction (lower lr/clip/K, higher decay) breaks the equilibrium. 1 arena, no promotion.",
+  "classification": "regressed"
+}

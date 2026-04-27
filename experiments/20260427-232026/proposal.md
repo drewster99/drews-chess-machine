@@ -1,0 +1,1 @@
+lr_warmup_steps 75→65 (-13%) (streak=9, watch). Probing the OPPOSITE direction of the lr_warmup=90 attempt (which was neutral). Faster ramp to full lr could give quicker early learning out of bad attractors. Recent 50→75 was historically accepted, so probing whether 75 is at a local optimum.

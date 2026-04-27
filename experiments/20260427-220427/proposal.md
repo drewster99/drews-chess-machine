@@ -1,0 +1,1 @@
+self_play_start_tau 2.0→2.2 (+10%) (streak=7, watch). Higher initial exploration in self-play opening plies → more diverse training data covering the early-game state space → less chance of bad-attractor entrainment. Sampling-side, doesnt perturb training-loss dynamics.

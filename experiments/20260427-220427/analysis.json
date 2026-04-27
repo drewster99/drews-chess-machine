@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full collapse, max_prob=1.0 from before 10-min checkpoint (585s onward). legal_mass=0.0 throughout late phase. GOAL-1A and 1B both violated. Even at 10-min the run is collapsed. Higher start_tau apparently destabilized the value/policy interaction. Streak=8 (watch). 1 arena, no promotion.",
+  "classification": "regressed"
+}

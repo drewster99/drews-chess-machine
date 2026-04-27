@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Severe regression: full one-hot collapse on illegal move. last_probe max_prob=1.0 (vs baseline 0.14, far past GOAL-1B 0.90 threshold), legal_mass=0.0, top1_legal=0.0. Detector held since legal_mass trajectory climbed slightly (no-improvement criterion not met), but the candidate probe shows the policy died on illegal moves. Tighter grad_clip removed the noise that kept exploration alive. Revert direction. 1 arena, no promotion.",
+  "classification": "regressed"
+}

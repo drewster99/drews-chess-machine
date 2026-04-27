@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Regressed on GOAL-1A: last-probe legal_mass=0.065 vs baseline 0.597, max_prob=0.38 vs 0.14 (2.7\u00d7, getting close to GOAL-1B 0.90 threshold). pEnt held high (6.69-6.92) and ran to timer, so lower lr did dampen update magnitude \u2014 but it also dampened learning progress. Same 538 steps. 1 arena, no promotion.",
+  "classification": "regressed"
+}

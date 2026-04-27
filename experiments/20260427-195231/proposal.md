@@ -1,0 +1,1 @@
+weight_decay 0.0002→0.0003 (+50%). Stronger L2 regularization counters overfitting to recent batches — different variance-reduction mechanism than lr (slows all updates) or grad_clip (truncates outliers).

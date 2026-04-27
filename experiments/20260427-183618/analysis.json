@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Within-noise neutral. Last probe legal_mass=0.533 (baseline 0.597) and max_prob=0.21 (baseline 0.14) \u2014 both well under GOAL thresholds. pEnt sits at 6.87 (vs 6.45 baseline) giving more headroom against collapse, no value saturation, gNorm 73 max. Same 538 step count as baseline. 1 arena, no promotion. Higher pEnt is the predicted entropy-bonus effect; legal_mass within plausible variance of baseline (which itself was on the high end of run-to-run distribution).",
+  "classification": "neutral"
+}

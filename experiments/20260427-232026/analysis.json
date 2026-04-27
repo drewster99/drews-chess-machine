@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full one-hot collapse on illegal from before 10-min: max_prob=1.0, legal_mass=0 throughout late phase. Faster lr ramp pushed gradient updates harder during early training, locking in bad attractors. GOAL-1A and 1B both violated at 10-min checkpoint. 1 arena, no promotion. Streak=10 (replicate at 15).",
+  "classification": "regressed"
+}

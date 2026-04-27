@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full one-hot collapse: max_prob=1.0, legal_mass=0.0, top1_legal=0.0. Same failure pattern as grad_clip=20 and K=4 runs. More training per self-play cycle accelerated the collapse direction. pEnt held mid (6.43). 1 arena, no promotion. Both dampening AND intensification axes now show collapse \u2014 current params are at a knife-edge equilibrium. Next: try orthogonal sampling-side axis.",
+  "classification": "regressed"
+}

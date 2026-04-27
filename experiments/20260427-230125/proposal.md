@@ -1,0 +1,1 @@
+arena_games_per_tournament 100→120 (+20%) (streak=8, watch). More precise promotion signal — at 100 games the std error on a 50/50 result is ~5pp; at 120 it's ~4.5pp. Reduces false-promotion / false-non-promotion noise. Pure arena-side, no impact on training collapse dynamics.

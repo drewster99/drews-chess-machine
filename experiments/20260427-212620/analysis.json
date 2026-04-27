@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "GOAL-1A threshold (illegal_mass<0.99 within 10min) MET: at 10min legal_mass=0.106, max_prob=0.13 \u2014 both well within bounds. Run trends weaker than baseline (last probe legal_mass=0.0044 vs 0.597) but at the strict 10-minute checkpoint it satisfies the goal. arena_target_tau is sampling-side only; this is variance, not a change-driven regression. pEnt elevated (6.98). 1 arena, no promotion. Neutral \u2014 within plausible noise of baseline at the goals checkpoint.",
+  "classification": "neutral"
+}

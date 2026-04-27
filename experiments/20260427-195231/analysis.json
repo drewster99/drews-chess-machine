@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Regressed on GOAL-1A: last_probe legal_mass=0.031 vs baseline 0.597, max_prob=0.31 vs 0.14. pEnt elevated (6.78-6.84) and ran to timer, but learning progress dropped sharply \u2014 same step count, much lower legal_mass final (0.007 vs 0.028). Stronger L2 over-regularized, similar magnitude regression to lower-lr direction. 1 arena, no promotion.",
+  "classification": "regressed"
+}

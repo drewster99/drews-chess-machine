@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Stable healthy run. 10-min checkpoint clean: legal_mass=0.547, max=0.12 (well within GOAL-1A/1B). last_probe legal_mass=0.474 vs baseline 0.597, max_prob=0.22 vs 0.14 \u2014 within variance. pEnt 6.71-6.78. Only 1 arena despite 240s interval (presumably timing alignment with first probe trigger). No promotion. arena_auto_interval is purely cadence \u2014 variance dominates. Neutral.",
+  "classification": "neutral"
+}

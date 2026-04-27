@@ -1,0 +1,1 @@
+arena_auto_interval_sec 300→240 (-20%) (streak=8, watch). More frequent arena evaluations within the 900s training window — 3 arenas/window vs 2. More chances to ratchet the champion. Pure arena cadence change, no impact on training-loss/sampling dynamics.

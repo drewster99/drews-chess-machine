@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Mixed: 1 promotion (rare event!) and final max_prob=0.18, BUT at 10-min checkpoint illegal_mass=0.998 (borderline over GOAL-1A 0.99). Run briefly collapsed ~621s then recovered. arena_promote_threshold is promotion-only so the run-time variance dominates. Neutral \u2014 promotion is a positive but GOAL-1A boundary is too marginal to ratchet on; the change does not affect training collapse dynamics so we cant attribute the promotion to the change either.",
+  "classification": "neutral"
+}

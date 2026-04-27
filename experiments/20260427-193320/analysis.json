@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Within-noise neutral. Last probe legal_mass=0.567 vs baseline 0.597, max_prob=0.26 vs 0.14 (worse direction but well under GOAL-1B 0.90). Top1_legal halved 0.063\u21920.031. pEnt similar (6.59 vs 6.66). Same 538 steps. 1 arena, no promotion. Neither clearly improved nor regressed; the +50% entropy bump did not give the expected push on the goal metric.",
+  "classification": "neutral"
+}

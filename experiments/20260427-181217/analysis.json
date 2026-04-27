@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Regressed on GOAL-1A: last-probe illegal_mass_sum 0.9962 (baseline 0.403), legal_mass last 0.0038 vs baseline 0.597. pEnt fine (6.35-6.66) and max_prob ok (0.06), so collapse detector correctly held \u2014 but the goal-defined criterion got worse. 1200s extension exposes high run-to-run variance; baseline was noise-lucky. 2 arenas, no promotion.",
+  "classification": "regressed"
+}

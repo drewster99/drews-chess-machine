@@ -1,0 +1,1 @@
+self_play_tau_decay_per_ply 0.030→0.025 (-17%) (streak=6, watch). Slower decay keeps tau closer to start (2.0) for more plies, sustaining exploration in self-play data. Sampling-side axis — orthogonal to all training-loss axes (entropy/lr/clip/decay/K/replay-ratio) that have collapsed.

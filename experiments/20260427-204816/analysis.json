@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Stable but weaker. Last probe legal_mass=0.267 vs baseline 0.597; max_prob=0.258 vs 0.14. Both well within GOAL bounds (illegal_mass 0.73<0.99, max_prob 0.26<0.90). pEnt elevated (6.75-6.89 vs 6.45-6.66) confirming more exploration in self-play. No collapse (positive vs recent runs) but no goal-direction improvement either. 1 arena, no promotion. Sampling-side change is safer than training-loss perturbations but doesnt move the goal needle.",
+  "classification": "neutral"
+}

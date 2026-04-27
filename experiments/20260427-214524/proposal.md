@@ -1,0 +1,1 @@
+lr_warmup_steps 75→90 (+20%) (streak=7, watch). Slower lr ramp during initial training when policy is most prone to bad attractors. Continues historically-accepted UP direction (50→75 was accepted). Recommended_lr_warmup_max is 179 — well within bounds.

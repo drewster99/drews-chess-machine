@@ -1,0 +1,1 @@
+K (policy_scale_K) 5→4 (-20%). Reduces policy gradient relative to value gradient. With less aggressive policy push, distribution stays flatter, directly addressing GOAL-1B max_prob→1.0 mode. Different mechanism than entropy bonus (which adds explicit exploration term).

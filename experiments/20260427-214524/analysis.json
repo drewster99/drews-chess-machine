@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Mixed but within variance. last_probe legal_mass=0.632 vs baseline 0.597 (slight up), max_prob=0.294 vs 0.14 (2\u00d7 worse direction but still under 0.90). 10-min checkpoint clean: legal_mass~0.55, max~0.18. pEnt similar to baseline (6.45-6.52). 1 arena, no promotion. The legal_mass bump and max_prob bump partly cancel \u2014 calling neutral rather than improved.",
+  "classification": "neutral"
+}
