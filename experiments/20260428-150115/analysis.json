@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Both goal axes worse: legal_mass=0.398 vs 0.596 (-33%), max_prob=0.185 vs 0.147 (+26%). Both within bounds but regressed. 193 steps.",
+  "classification": "regressed"
+}

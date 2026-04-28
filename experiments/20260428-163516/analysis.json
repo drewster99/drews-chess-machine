@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full throughput recovered (538 steps) but full collapse: max_prob=1, legal_mass=0. Confirms hypothesis: more training under current params amplifies one-hot collapse mode.",
+  "classification": "regressed"
+}

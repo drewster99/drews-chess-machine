@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "538 steps. legal_mass=0.115 (vs 0.596, -81%), max_prob=0.109 (vs 0.147, -26% better). legal_mass dropped too far.",
+  "classification": "regressed"
+}

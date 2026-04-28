@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "IMPROVED on GOAL-1B: max_prob=0.117 vs baseline 0.147 (-20%). legal_mass=0.596 matches baseline. 538 steps (full throughput recovered). 1 arena no promo. Tiny lr_warmup 78->79 lifts max_prob meaningfully.",
+  "classification": "improved"
+}

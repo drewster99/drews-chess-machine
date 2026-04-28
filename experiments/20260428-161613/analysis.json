@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "485 steps (huge jump from ~200) but goal regressed: max_prob=0.335 (vs 0.147, +128%), legal_mass=0.483 (vs 0.596, -19%). Both still within bounds. Disk unchanged \u2014 variance in controller. More training under current params amplifies GOAL-1B concentration.",
+  "classification": "regressed"
+}
