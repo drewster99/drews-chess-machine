@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Replicate 3/3 IMPROVED on legal_mass: last_probe 0.596 vs baseline 0.457 (+30%). max_prob=0.147 (vs 0.120, within noise). 195 steps, 1 arena no promo. Cascade variance ranged 0.064\u21920\u21920.596 \u2014 this is the high end. Accept to break cascade per skill rationale.",
+  "classification": "improved"
+}

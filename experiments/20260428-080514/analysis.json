@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Mixed within noise: legal_mass=0.539 (+18% vs 0.457) but max_prob=0.167 (+39% vs 0.120). Both well under GOAL bounds. 197 steps, 1 arena no promo. Trade-off prevents clean ratchet.",
+  "classification": "neutral"
+}

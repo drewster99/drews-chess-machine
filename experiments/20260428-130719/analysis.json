@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "GOAL-1A fail: legal_mass=0.0005 (illegal=0.9995). max=0.147 ok. 198 steps.",
+  "classification": "regressed"
+}

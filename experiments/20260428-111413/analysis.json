@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "GOAL-1A fail: legal_mass=0.0003 (illegal=0.9997>0.99). max_prob=0.088 ok.",
+  "classification": "regressed"
+}

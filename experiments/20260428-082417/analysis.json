@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Regressed: last_probe legal_mass=0.169 vs baseline 0.457 (-63%). max_prob=0.115 close to 0.120. 196 steps, 1 arena. Goal axis worse on legal_mass dimension.",
+  "classification": "regressed"
+}

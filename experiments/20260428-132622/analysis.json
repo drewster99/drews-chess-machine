@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Slight throughput up (214 vs ~190 steps). last_probe legal_mass=0.491 (vs 0.457), max_prob=0.134 (vs 0.120). Mixed within noise. 1 arena.",
+  "classification": "neutral"
+}

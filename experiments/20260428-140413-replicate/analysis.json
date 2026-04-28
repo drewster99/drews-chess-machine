@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Replicate 1/3: 197 steps. last_probe legal_mass=0.064 vs baseline 0.457, max_prob=0.149 vs 0.120. GOAL bounds met but baseline metrics not reproduced.",
+  "classification": "regressed"
+}

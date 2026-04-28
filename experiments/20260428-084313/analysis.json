@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full collapse: max_prob=1, legal_mass=0. 204 steps, 0 arenas. Lower entropy reduced exploration enough to lock policy onto illegal mode.",
+  "classification": "regressed"
+}

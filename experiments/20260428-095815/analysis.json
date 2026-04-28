@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "GOAL-1A failed at last probe: legal_mass=0 (illegal=1.0). max_prob=0.114 \u2014 full illegal mass spread across many illegal moves rather than one-hot collapse. 198 steps, 1 arena.",
+  "classification": "regressed"
+}
