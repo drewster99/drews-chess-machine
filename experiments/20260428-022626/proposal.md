@@ -1,0 +1,1 @@
+self_play_workers 48→56 (+17%) under disk-pressure conditions. More parallel self-play workers compensate for slower per-worker throughput, producing positions faster — could pull controller out of throttled regime. Increases batch utilization in BatchedMoveEvaluationSource.

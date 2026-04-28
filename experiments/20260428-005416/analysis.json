@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Training throughput collapse: only 120 steps (vs 538 baseline, -78%). 0 arenas. max_prob=0.06 looks excellent but is misleading \u2014 the network barely trained. legal_mass=0.015 confirms near-random init. Per-step probes look fine because gradient updates were minimal. This is a system-level regression even though point-metrics technically pass goal thresholds. Tiny entropy bump shouldnt have caused this \u2014 controller dynamics likely shifted unfortunately. Reject.",
+  "classification": "regressed"
+}

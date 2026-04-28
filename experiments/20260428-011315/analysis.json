@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Training throughput collapse: only 90 steps (vs 538 baseline). 0 arenas. Pattern across last 4 runs: 538\u2192384\u2192120\u219290 steps. Investigation: ~/Library/Application Support/DrewsChessMachine/Sessions/ is 16.8GB across 7 promote-saves; disk is 99% full (12GB free). Session autosave writes are blocking training. This is a system issue not a parameter issue \u2014 change tagged regressed but the cause is environmental. User intervention needed to free disk space.",
+  "classification": "regressed"
+}

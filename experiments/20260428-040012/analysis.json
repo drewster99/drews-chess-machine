@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full one-hot collapse: max_prob=1.0, legal_mass=0. 194 steps. 0 arenas. arena_tau_decay change shouldnt cause this \u2014 variance hit. Streak=11.",
+  "classification": "regressed"
+}

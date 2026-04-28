@@ -1,0 +1,1 @@
+replay_buffer_min_positions_before_training 75k→70k (-7%). Extends the just-accepted direction one more step on the same axis (sequence: 250k→100k→80k→75k→70k). Earlier training start, more steps fit in 900s window.

@@ -1,0 +1,1 @@
+replay_buffer_capacity 500k→600k (+20%) (streak=12, replicate at 15). Larger buffer holds more historical positions, slowing the replacement rate of old positions. Marginal change with no impact on training-loss dynamics.

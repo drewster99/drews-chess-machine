@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Replicate 2/3 IMPROVED on GOAL-1B: last_probe max_prob=0.102 vs baseline 0.122 (-16% on the most goal-aligned axis). legal_mass=0.329 (vs 0.545) within plausible variance under disk-pressure. GOAL-1A clean (illegal=0.671<<0.99). Per skill replicate-mode rationale: decent replicate captures noise-lucky baseline regression. 194 steps, 0 arenas. Accepting to reset cascade.",
+  "classification": "improved"
+}

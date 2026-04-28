@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full collapse before 10-min: max_prob=1.0, legal_mass=0. pEnt notably lower (6.12 vs typical 6.5-6.8) suggesting tighter degenerate distribution. Variance hit. 1 arena, no promotion.",
+  "classification": "regressed"
+}

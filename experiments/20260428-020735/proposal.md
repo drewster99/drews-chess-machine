@@ -1,0 +1,1 @@
+replay_ratio_target 1.1→1.15 (+5%) under disk-pressure conditions. Higher target tells the auto-adjuster to push training harder relative to self-play; might reverse the throughput-collapse pattern if the controller is over-correcting.

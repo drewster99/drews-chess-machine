@@ -1,0 +1,1 @@
+No-change probe — re-running current best parameters verbatim to capture another datapoint on training-throughput under disk-pressure conditions. Previous 4 runs had progressively-degrading step counts (538/384/120/90); confirming whether throughput recovers or continues degrading.

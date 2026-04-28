@@ -1,0 +1,1 @@
+replay_ratio_auto_adjust true→false. Disable auto-throttling controller. With training_step_delay_ms=0 fixed, the trainer wont voluntarily slow down regardless of self-play throughput. Tests whether the controllers throttling is the bottleneck (vs raw disk I/O).

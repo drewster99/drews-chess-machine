@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Disk-bottlenecked: 96 steps (vs 538 baseline). 0 arenas. Same pattern as recent runs. arena_promote_threshold change is moot when no arenas fire. last_probe max_prob=0.08, legal_mass=0.004 \u2014 network effectively still at random init. Disk still 99% full / Sessions 17GB.",
+  "classification": "regressed"
+}

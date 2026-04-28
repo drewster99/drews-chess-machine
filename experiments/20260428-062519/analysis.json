@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "GOAL-1A failed: last_probe legal_mass=0.00077 (illegal_mass=0.999 > 0.99). max_prob=0.26 (under 0.90). 202 steps, 0 arenas. Streak=15 \u2014 replicate mode triggers on next iteration.",
+  "classification": "regressed"
+}

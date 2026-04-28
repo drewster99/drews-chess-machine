@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Mild throughput recovery: 163 steps (vs recent 90-96). Disk freed slightly (12\u219215GB). last_probe max_prob=0.136 (vs baseline 0.122), legal_mass=0.31 (vs 0.545). GOAL-1A/1B met. Cant attribute throughput recovery solely to replay_ratio bump vs disk freeing. 0 arenas.",
+  "classification": "neutral"
+}

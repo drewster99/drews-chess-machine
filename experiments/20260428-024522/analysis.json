@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Disk-bottlenecked: 156 steps (vs 538 baseline). 0 arenas \u2014 change moot when no arenas fire. last_probe legal_mass=0.007, max_prob=0.061. Disk dropped to 14GB free. Pattern persists.",
+  "classification": "regressed"
+}

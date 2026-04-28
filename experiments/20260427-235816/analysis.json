@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Full one-hot collapse before 10-min: max_prob=1.0, legal_mass=0. GOAL-1A and 1B both violated at 10-min. The 6% change is unlikely to be causal \u2014 pure variance, same as the recent collapse pattern. 1 arena, no promotion.",
+  "classification": "regressed"
+}

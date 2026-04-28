@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Replicate 1/3: 189 steps. last_probe legal_mass=0.036 vs baseline 0.545 (much weaker), max_prob=0.047 (clean under 0.90). GOAL-1A barely passes (illegal=0.964<0.99). 0 arenas. Confirms baseline does NOT reproduce under disk-pressure regime \u2014 every run is in degraded throughput territory.",
+  "classification": "regressed"
+}

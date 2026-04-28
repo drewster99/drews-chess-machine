@@ -1,0 +1,1 @@
+arena_promote_threshold 0.55→0.50 (-9%) under disk-bottleneck. Promotion-only change, cant break training. At 50% (random play), this is the lowest meaningful threshold — gives any equal-or-better candidate a chance to ratchet, important when arenas barely fire under degraded throughput.

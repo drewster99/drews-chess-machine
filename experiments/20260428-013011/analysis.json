@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "No-change probe confirmed disk-pressure hypothesis. Identical baseline params (zero changes) produced 93 training steps \u2014 same range as lr=5.25e-5 (90) and entropy=0.013 (120). 0 arenas. Disk still 99% full / Sessions still 17GB. The training-throughput degradation is environmental and will continue degrading every iteration until the user frees disk space. Tagging regressed for streak accounting but no parameter signal can be extracted under these conditions.",
+  "classification": "regressed"
+}

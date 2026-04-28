@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Slight regression: last_probe max_prob=0.153 vs baseline 0.122, legal_mass=0.483 vs 0.545. 10-min metrics within GOAL bounds (legal_mass=0.47, max=0.17). Only 384 training steps (-28% vs baseline 538) \u2014 controller shifted, less learning happened. pEnt elevated (6.89-7.11). 1 arena, no promotion. Less probing somehow reduced training throughput \u2014 counterintuitive but the data says so.",
+  "classification": "regressed"
+}

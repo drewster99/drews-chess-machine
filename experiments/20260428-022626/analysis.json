@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "143 training steps (vs 538 baseline) \u2014 throughput still disk-bottlenecked. More self-play workers did NOT compensate for I/O slowdown. 0 arenas. last_probe legal_mass=0.056, max_prob=0.031 \u2014 network barely trained. Disk still 15GB free, Sessions 17GB.",
+  "classification": "regressed"
+}

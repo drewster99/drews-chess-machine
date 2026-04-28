@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Diagnostic-rich neutral. Disabling auto-throttler took steps from ~150 to 341 (+125%), proving the ReplayRatioController was the bottleneck NOT raw disk I/O. last_probe legal_mass=0.529 (vs baseline 0.545, close), max_prob=0.375 (vs 0.122, regressed but under 0.90 GOAL-1B). 0 arenas. Major insight: the controller over-corrects when self-play slows from periodic-checkpoint I/O. Suggests a future code-change: clamp the controllers max delay or add hysteresis to prevent runaway throttle. Not ratcheting because max_prob worse, but throughput recovery is real signal.",
+  "classification": "neutral"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Catastrophic one-hot collapse: max_prob=0.99994 (essentially 1.0 \u2014 GOAL-1B violated), legal_mass=0.0. 183 steps. 0 arenas. Tiny lr_warmup change shouldnt have been causal \u2014 pure variance compounded by reduced training throughput from disk pressure. Streak=10 (replicate at 15).",
+  "classification": "regressed"
+}

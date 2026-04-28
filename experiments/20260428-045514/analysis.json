@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Disk-bottlenecked: 188 steps, 0 arenas. last_probe legal_mass=0.010 (illegal=0.99, right at GOAL-1A boundary), max_prob=0.107 (under 0.90). Network barely trained \u2014 neutral.",
+  "classification": "neutral"
+}
