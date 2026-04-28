@@ -1,0 +1,8 @@
+{
+  "verdict": "applied",
+  "files_changed": [
+    "DrewsChessMachine/DrewsChessMachine/ChessTrainer.swift",
+    "DrewsChessMachine/DrewsChessMachine/ContentView.swift"
+  ],
+  "note": "Applied directly via Edit tool then verified with xcrun xcodebuild (BUILD SUCCEEDED)."
+}

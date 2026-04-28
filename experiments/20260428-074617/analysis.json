@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Improved on legal_mass: last_probe 0.457 vs baseline 0.329 (+39%). max_prob=0.120 (vs 0.102 baseline, within noise \u2014 both well under GOAL-1B 0.90). pEnt healthy 6.96-7.04. 202 steps, 1 arena, no promotion. Disk still bottlenecked but signal recovered enough to ratchet.",
+  "classification": "improved"
+}

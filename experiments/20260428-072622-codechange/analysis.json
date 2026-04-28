@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Regressed at 10-min: legal_mass=0 / max=0.995 (GOAL-1A AND 1B fail). 186 steps. Code change builds (build 403, watchdog log lines emit maxProb=0.13 throughout) but the watchdog measures buffer-mean max_prob, NOT startpos max_prob. The actual GOAL-1B failure is concentrated on startpos (max_prob 0.99 at startpos) while buffer-mean stays low (network diversifies across non-startpos positions). Watchdog as designed is structurally insufficient. Reverting per skill rules; future code-change should evaluate startpos directly.",
+  "classification": "regressed"
+}

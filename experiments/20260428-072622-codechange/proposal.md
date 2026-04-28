@@ -1,0 +1,1 @@
+Code change: add max-prob watchdog to collapse detector. Catches the failure mode (seen in many recent runs) where legal_mass climbs slightly to dodge the legal_mass criterion while max_prob rockets to 1.0 on a single illegal move. Adds maxProbMean to LegalMassSnapshot and a parallel sliding window with hard threshold 0.5.
