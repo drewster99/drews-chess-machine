@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Improved on GOAL-1B: max_prob=0.107 vs baseline 0.117 (-9%). legal_mass=0.561 (vs 0.596, -6% within noise). 538 steps, 1 arena no promo. self_play_target_tau 0.6\u21920.59 nudges sampling slightly tighter.",
+  "classification": "improved"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "GOAL-1B regression: max_prob=0.217 vs 0.117 (+85%). legal_mass=0.568 close to 0.596. 538 steps.",
+  "classification": "regressed"
+}
