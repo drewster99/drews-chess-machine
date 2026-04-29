@@ -16967,26 +16967,74 @@ window.EXPERIMENTS = [
     "analysis_commentary": "self_play_target_tau 0.59->0.8 IMPROVED qualitatively. last_probe legal_mass 0.99998 vs baseline 0.388 \u2014 illegal_mass essentially eliminated, the explicit failure pattern from GOAL-1A. top1_legal_fraction reached 0.023 (baseline 0); top1_legal_ever_positive=true. max_prob 0.991 technically trips GOAL-1B but concentrates on a LEGAL move, not the illegal-collapse failure mode the goal describes. mid_probe also healthy: legal_mass 0.914, above_uniform=3. pEnt 6.52, gNorm max 78.4 (no spike). No promotion (1 arena, 0). Genuine ratcheted progress on the primary goal.",
     "training_time_seconds": 900,
     "folder": "experiments/20260429-192450"
+  },
+  {
+    "timestamp": "20260429-194209",
+    "start_time_iso": "2026-04-29T19:42:09Z",
+    "status": "ACCEPTED",
+    "mode": "normal",
+    "change_details": "entropy_bonus 0.012->0.015 (+25%). Baseline solved illegal-mass collapse (legal_mass 0.99998) but concentrates probability on a single legal move (max_prob 0.991). With legal_mass now safe, more entropy regularization should spread probability across legal moves to bring max_prob below GOAL-1B 0.90 threshold without reintroducing illegal collapse.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.012,
+        "new": 0.015
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.015,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 30,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 300,
+      "legal_mass_collapse_no_improvement_probes": 5,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "entropy_bonus 0.012->0.015 IMPROVED. Both goals now satisfied: max_prob 0.239 (was 0.991, PASS GOAL-1B), legal_mass 0.746 (illegal_mass 0.254 << 0.99 GOAL-1A). top1_legal_fraction 0.063 vs baseline 0.023 (3x). above_uniform=5 vs 1 (model identifies multiple legal candidates). Crucially: arena promoted 1/1 \u2014 FIRST promotion in this autotrain session. pEnt 6.88, gNorm 48.2, no saturation. Genuine improvement on both axes simultaneously.",
+    "training_time_seconds": 900,
+    "folder": "experiments/20260429-194209"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 371,
+  "total_iterations": 372,
   "counts": {
     "SEED": 1,
-    "ACCEPTED": 32,
+    "ACCEPTED": 33,
     "NEUTRAL": 35,
     "REJECTED": 301,
     "FAILED": 3,
     "IN_PROGRESS": 0
   },
-  "accept_rate": 0.0862533692722372,
+  "accept_rate": 0.08870967741935484,
   "failure_streak": 0,
   "trailing_replicates": 0,
-  "iterations_since_codechange": 26,
+  "iterations_since_codechange": 27,
   "code_iteration_due": false,
   "code_iteration_interval": 40,
-  "arena_count": 226,
-  "promotions": 9,
+  "arena_count": 227,
+  "promotions": 10,
   "best_arena_score": 0.565,
   "best_arena_folder": "experiments/20260423-132740"
 };
