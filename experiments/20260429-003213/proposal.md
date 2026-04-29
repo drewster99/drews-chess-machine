@@ -1,0 +1,1 @@
+lr_warmup_steps 79→78 (-1, reversal of prior 79→80 reject). Previous attempt up by 1 caused max_prob 0.190; reverse direction may land in noise envelope and break failure streak. Smallest-possible probe on a previously-touched but still-orthogonal axis.

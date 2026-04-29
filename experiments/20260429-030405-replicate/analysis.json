@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "REPLICATE 600s with baseline params verbatim: last_probe max_prob 0.980 (violates GOAL-1B 0.90 threshold) + legal_mass 1e-05 (violates GOAL-1A illegal_mass>0.99). Mid-run mass already eroding (0.283/0.001). The baseline did NOT reproduce — current 'best' was noise-lucky. Catastrophic policy collapse at the same parameters that produced the healthy baseline. No arena run completed. Counts as regressed.",
+  "classification": "regressed"
+}

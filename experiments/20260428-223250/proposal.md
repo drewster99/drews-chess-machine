@@ -1,0 +1,1 @@
+Probe weight_decay 0.0002→0.00025 (+25%). Untouched axis with gradual regularization effect; mild increase should slightly discourage large logits without destabilizing policy. Safer than re-probing recently-regressed axes (entropy_bonus, lr_warmup, tau).

@@ -1,0 +1,1 @@
+Manual HALT-break intervention: lr_warmup_steps 79->30. Replicate analyses identified 79 as a budget-rule violation (recommended_max=39 for 600s). Three baseline replicates collapsed/borderline-collapsed; the saved 900s baseline appears noise-lucky. Lowering warmup lets the configured lr engage earlier and stably across training windows.

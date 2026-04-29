@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "weight_decay 0.0002->0.00025: mixed. legal_mass last_probe 0.561->0.789 (+41%, much better illegal_mass) but max_prob last_probe 0.107->0.207 (+93%) on GOAL-1B. Promoted 1x at arena 1 (vs 0 baseline; arena 0.55). Under strict no-regressions, max_prob nearly doubling is a regression — same call as the lr_warmup 80 trade-off.",
+  "classification": "regressed"
+}

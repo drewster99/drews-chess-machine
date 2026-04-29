@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "REPLICATE 3/3 600s: last_probe max_prob 0.041 (-62% vs baseline 0.107, healthy), legal_mass 0.0026 (-99.5% vs 0.561, illegal_mass 0.997 just below 0.99 collapse threshold). Three baseline replicates: 1 catastrophic collapse, 2 with very low but non-zero legal_mass. Accepting this 600s replicate would also break lr_warmup_steps=79 budget constraint (recommended_max=39 with steps=119). No arena. Counts as regressed; triggers HALT.",
+  "classification": "regressed"
+}

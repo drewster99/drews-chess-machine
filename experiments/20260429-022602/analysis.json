@@ -1,0 +1,3 @@
+{"analysis_commentary": "max_prob 0.107→0.218 sits at the established noise floor (prior neutral probe showed +108%), and legal_mass improved 0.561→0.672 (+20%). But training_steps halved 538→286, gNorm max rose 56.6→98.0 (near 100), and top1_legal_ever_positive flipped True→False. Mixed picture at noise floor — conservative call is neutral. No promotion (arena 0.525).",
+  "classification": "neutral"
+}

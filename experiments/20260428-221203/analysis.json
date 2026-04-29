@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "entropy_bonus 0.012->0.013: hard regression on both goal metrics. max_prob last_probe 0.107->0.601 (+462%), legal_mass last_probe 0.561->0.077 (-86%). top1_legal_final 0.031->0.008. The +8% entropy bonus paradoxically caused max_prob runaway — likely the higher entropy term destabilized the existing fragile equilibrium. No promotion (arena 0.48).",
+  "classification": "regressed"
+}

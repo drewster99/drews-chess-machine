@@ -1,0 +1,1 @@
+self_play_tau_decay_per_ply 0.03→0.028 (-6.7%). Slower temperature decay during self-play means slightly more exploration deeper into games, broadening replay-buffer position diversity. Untouched axis recently; avoids the catastrophic-collapse list and the already-probed axes. Tiny enough to land in noise envelope.

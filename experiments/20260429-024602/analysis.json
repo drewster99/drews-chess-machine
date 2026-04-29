@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_tau_decay_per_ply 0.03→0.028: total collapse. mid_probe max_prob 0.9999 + legal_mass 0.0 (mid-run already gone), last_probe max_prob 1.0 + legal_mass 0.0 — directly violates BOTH GOAL-1B (>0.90) and GOAL-1A (illegal_mass>0.99). Slower self-play tau decay shifted replay distribution enough to destabilize policy head. No promotion (arena 0.490).",
+  "classification": "regressed"
+}

@@ -1,0 +1,1 @@
+EXPLORATION MODE: self_play_workers 48→64 (+33%). Untouched axis. More workers = wider batched evaluation per ply, faster replay buffer fill, more diverse positions. May stabilize early training by giving the trainer more diverse data sooner. Bolder than recent ±1-3% probes.

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_target_tau 0.5->0.49: catastrophic. legal_mass last_probe 0.561->0.0 (-100%), max_prob mid=1.0 (full collapse mid-run, partial recovery to 0.29 by end), value_output saturated to -1.0, gNorm spiked to 142. No promotion (arena 0.475). 8th straight noise-driven blowup confirms baseline is on a knife-edge.",
+  "classification": "regressed"
+}

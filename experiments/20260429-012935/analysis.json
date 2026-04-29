@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_promote_threshold 0.55->0.56: regressed. max_prob mid 0.996 (full collapse mid-run), last 0.686 (+541% vs baseline 0.107). legal_mass last 0.113 (-80%). Even an arena-only knob propagated through promotion gating to destabilize training. No promotion (arena 0.505).",
+  "classification": "regressed"
+}

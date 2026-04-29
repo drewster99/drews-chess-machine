@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_workers 48->64: catastrophic. max_prob last_probe 0.99985 (violates GOAL-1B 0.90 threshold), legal_mass 0.0, top1_legal_final 0.0, gNorm max 103. More workers = more rapid replay buffer churn = noisier early gradients destabilizing the policy. Exploration probe failed. No promotion (arena 0.545).",
+  "classification": "regressed"
+}

@@ -1,0 +1,1 @@
+Tighten grad_clip_max_norm 25→22 (-12%). Untouched axis; pure damper on outlier gradient steps that can drive single-step probability spikes. No-op on typical steps, so low risk of regression on legal_mass while potentially curbing max_prob runaway. Avoids all recently-failed axes (entropy_bonus, lr_warmup, tau, weight_decay).

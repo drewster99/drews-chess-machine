@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Manual HALT-break: lr_warmup_steps 79->30. Run completed cleanly (timer_expired, 463 steps, build 403). Last probe max_prob 0.255 and legal_mass 0.388 are well inside GOAL-1A/1B thresholds (0.99 / 0.90), with no early-bail. Strict numbers slightly trail the saved noise-lucky baseline (0.107 / 0.561), but three replicates of that baseline collapsed or borderline-collapsed (1e-05 / 0.002 / 0.0026 legal_mass). Promoting this as a reproducible anchor. No promotion in session.",
+  "classification": "improved"
+}

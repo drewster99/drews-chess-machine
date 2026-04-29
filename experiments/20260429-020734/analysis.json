@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_games_per_tournament 100->110: last_probe max_prob 0.731 (+583% vs baseline 0.107, violates GOAL-1B 0.90 threshold by margin), legal_mass 2e-05 (-100% vs 0.561, violates GOAL-1A). Mid-probe still healthy (0.110) so collapse arrived in the final stretch. Even an arena-only knob propagated through promotion-gating timing and destabilized late training. No promotion (arena 0.486).",
+  "classification": "regressed"
+}

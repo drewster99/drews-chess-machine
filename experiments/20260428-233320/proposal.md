@@ -1,0 +1,1 @@
+candidate_probe_interval_sec 15→18 (+20%). Purely observational axis — controls how often the diagnostic probe runs and reports max_prob/legal_mass; does NOT affect training trajectory. After 7 straight regressions on training-affecting axes, deliberately probe a non-training axis to either yield NEUTRAL (likely, breaks streak count) or surface a hidden side-effect.

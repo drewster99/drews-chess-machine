@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "draw_penalty 0.10->0.105: total collapse. max_prob last_probe = 1.0 (single illegal cell holds 100% mass), legal_mass = 0.0 (vs baseline 0.561). The exact GOAL-1A/1B failure mode. Mid probe also at 0.0 legal_mass; collapse evaded the early-bail detector but is unambiguous on the goal axes. No promotion (arena 0.505).",
+  "classification": "regressed"
+}

@@ -1,0 +1,1 @@
+Replicate mode (3/3) — final baseline-verbatim probe. Prior 2 replicates: 1 catastrophic collapse, 1 borderline. If this also fails, autotrain halts for manual intervention.

@@ -1,0 +1,1 @@
+Replicate mode (2/3) — re-running baseline verbatim again after first replicate showed collapse.

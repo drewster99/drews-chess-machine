@@ -1,0 +1,1 @@
+Tiny nudge to entropy_bonus 0.012→0.013 to add a touch more exploration pressure on the policy head. Keeps training_time_limit and all other axes unchanged; avoids recently-collapsed knobs and chooses a small step on a stable axis.

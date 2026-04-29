@@ -1,0 +1,1 @@
+arena_games_per_tournament 100→110 (+10%, untouched). More games → tighter arena score CI → less noise in promotion decisions. Pure arena measurement, no direct training effect. (streak=13, replicate at 15)

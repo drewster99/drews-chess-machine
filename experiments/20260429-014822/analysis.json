@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "training_step_delay_ms 0->5: max_prob improved (0.107->0.083, -22% on GOAL-1B) but legal_mass catastrophically collapsed (0.561->2e-05, ~100% illegal mass — directly violates GOAL-1A's 0.99 threshold). Mass simply spread thinly across many illegal cells. Net: regression on the more important goal. No promotion (arena 0.485).",
+  "classification": "regressed"
+}

@@ -1,0 +1,1 @@
+replay_ratio_target 1.1→1.05 (-5%, untouched DOWN direction). Lower target slows trainer relative to producer, giving each gradient step more diverse fresh self-play data. Prior UP probe (1.1→1.105) catastrophically collapsed; reverse direction may be safer. (streak=11, replicate at 15)

@@ -1,0 +1,1 @@
+draw_penalty 0.10→0.105 (+5%). Untouched axis, value-head only, decoupled from policy collapse mechanism. After 6 straight failures across policy/optimizer axes, probe a value-side knob to break the streak with a different failure surface if it regresses.

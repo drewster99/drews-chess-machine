@@ -1,0 +1,1 @@
+K 5→5.5 (+10%). K is an under-explored axis controlling MCTS-style move selection breadth in this engine's value-targeting. Small bump avoids touching the recently-volatile axes (entropy, grad_clip, draw_penalty, lr_warmup, tau, weight_decay). Conservative magnitude keeps probe within likely noise floor while testing a fresh axis.

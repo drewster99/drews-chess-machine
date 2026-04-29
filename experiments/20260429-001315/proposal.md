@@ -1,0 +1,1 @@
+arena_target_tau 0.5→0.49 (-2%, untouched axis). Affects only arena play sampling; tighter arena play ↔ slightly harder bar for candidates. Doesn't touch training trajectory directly. Avoids axes that recently caused catastrophic collapses (K, draw_penalty, grad_clip, entropy_bonus).

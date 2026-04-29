@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "candidate_probe_interval 15->18: probe-interval is purely observational (does not affect training). Metric movement (legal_mass 0.561->0.744 +33%, max_prob 0.107->0.223 +108%) reflects inherent run-to-run variance, not a parameter-induced regression. pEnt 6.68 stable. No promotion (arena 0.47). Classifying NEUTRAL — change had no training effect; this run quantifies the noise floor.",
+  "classification": "neutral"
+}

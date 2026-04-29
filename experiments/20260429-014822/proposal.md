@@ -1,0 +1,1 @@
+training_step_delay_ms 0→5 (untouched axis). Slight per-step delay slows trainer by ~3% (5ms over 1.6s/step). Gives self-play workers fractionally more time to refresh replay buffer between gradient updates. Tiny throughput tradeoff. (streak=12, replicate at 15)

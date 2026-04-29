@@ -1,0 +1,4 @@
+{
+  "classification": "regressed",
+  "analysis_commentary": "code proposal rejected by schema: subagent could not emit full-file replacement within output token cap; files map was empty. Proposed mechanism (lambda*mean(logits^2) dampener in buildTrainingOps) is sound but unworkable under current full-file-replacement protocol. Working tree unchanged."
+}

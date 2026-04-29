@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "lr_warmup 79->80: legal_mass last_probe improved 0.561->0.630 (+12%, better illegal_mass) but max_prob last_probe worsened 0.107->0.190 (+77%) on the GOAL-1B axis. Arena score 0.535->0.47. Under strict no-regressions mandate, max_prob nearly doubling on a goal-named metric is a regression. No promotion (arena score 0.47, no promote at threshold 0.55).",
+  "classification": "regressed"
+}

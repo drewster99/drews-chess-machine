@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "lr_warmup 79->78: total collapse. max_prob mid AND last both = 1.0 (single illegal cell), legal_mass = 0.0, top1_legal_final = 0.0, vAbs 0.717. Even reverse-direction 1-step probe destabilized. No promotion (arena 0.49). Confirms baseline is on knife-edge — every direction collapses.",
+  "classification": "regressed"
+}

@@ -1,0 +1,1 @@
+arena_promote_threshold 0.55→0.56 (+1.8%, untouched UP direction). Slightly stricter promotion bar — fewer noisy promotions, less divergence between champion-vs-trainer trajectories. Indirect training effect only via promotion gating. (streak=11, replicate at 15)

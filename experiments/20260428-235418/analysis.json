@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "K 5->5.5: catastrophic. max_prob last_probe 0.107->0.991 (violates GOAL-1B threshold of 0.90), legal_mass 0.561->0.003 (-99.5%). Mid probe similarly collapsed (max_prob 0.998). Single illegal cell holds nearly all mass. Promoted 1x at arena 1 (score 0.55) — but both networks are broken so arena outcome is noise.",
+  "classification": "regressed"
+}

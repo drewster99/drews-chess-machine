@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "REPLICATE 2/3 600s: last_probe max_prob 0.073 (-32%, healthy below GOAL-1B), legal_mass 0.002 (-99.6% vs baseline 0.561, illegal_mass 0.998 BARELY below 0.99 collapse threshold). Mid-run legal_mass was 2e-05 — essentially collapsed mid-run, partially recovered. Combined with Replicate 1 (full collapse), baseline is unreproducible — knife-edge unstable on legal_mass axis. No arena. Counts as regressed.",
+  "classification": "regressed"
+}

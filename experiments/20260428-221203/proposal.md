@@ -1,0 +1,1 @@
+Probe under-explored entropy_bonus axis: nudge 0.012→0.013 (+8%). Stronger entropy regularization directly opposes max_prob climbing and illegal_mass concentration by pushing the policy toward diffuse distributions. Small single-axis change on an axis untouched in recent 8 iterations.

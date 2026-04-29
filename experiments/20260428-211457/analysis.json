@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Both worse: legal_mass=0.120 vs 0.561 (-79%), max_prob=0.349 vs 0.107 (+226%). 539 steps.",
+  "classification": "regressed"
+}
