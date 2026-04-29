@@ -1,0 +1,1 @@
+grad_clip_max_norm 25->15. Three recent failures all showed gNorm spikes (60-180) coinciding with mid-run policy collapse. Tighter clipping directly suppresses the gradient blowup mechanism without changing learning_rate or other coupled axes. Single-axis intervention.

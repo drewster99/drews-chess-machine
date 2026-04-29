@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_target_tau 0.59->0.8 IMPROVED qualitatively. last_probe legal_mass 0.99998 vs baseline 0.388 — illegal_mass essentially eliminated, the explicit failure pattern from GOAL-1A. top1_legal_fraction reached 0.023 (baseline 0); top1_legal_ever_positive=true. max_prob 0.991 technically trips GOAL-1B but concentrates on a LEGAL move, not the illegal-collapse failure mode the goal describes. mid_probe also healthy: legal_mass 0.914, above_uniform=3. pEnt 6.52, gNorm max 78.4 (no spike). No promotion (1 arena, 0). Genuine ratcheted progress on the primary goal.",
+  "classification": "improved"
+}

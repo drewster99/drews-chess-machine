@@ -1,0 +1,1 @@
+self_play_start_tau 2.0->2.5 (+25%). Two prior neutrals confirmed the 'more self-play exploration' axis avoids late-collapse; pushing the start tau higher extends that window. Single-axis. (streak=6, watch)

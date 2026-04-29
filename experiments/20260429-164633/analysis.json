@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "20-min stability probe FAILED. mid_probe (611s) and last_probe (1194s) both collapsed: max_prob=1.0, legal_mass=0. Violates GOAL-1A (illegal_mass>0.99) and GOAL-1B (max_prob<0.90). gNorm spiked to 182 (>100 threshold). top1_legal briefly went positive (0.0156 final) then collapsed. 15-min baseline holds; 20-min reveals late-training instability. No promotion (arena 2 rounds, 0 promoted). Refinement needed before time extension.",
+  "classification": "regressed"
+}

@@ -1,0 +1,1 @@
+entropy_bonus 0.012->0.014. Last iteration showed late-training collapse at 20 min (max_prob 1.0 by 611s). Increase entropy regularization to fight peakedness while keeping all other axes constant. Tests at 900s first to confirm no regression at the established 15-min stable axis before re-attempting time extension.

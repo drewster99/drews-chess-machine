@@ -1,0 +1,1 @@
+weight_decay 0.0002->0.0004 (2x). Recent failures show the policy collapses to illegal-move probability mass even when gradients are well-behaved. More L2 regularization fights weight sharpening that drives single-cell probability to 1.0 and away from legal moves. Single-axis intervention.

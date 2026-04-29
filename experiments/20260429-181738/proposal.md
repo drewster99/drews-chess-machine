@@ -1,0 +1,1 @@
+replay_ratio_target 1.1->0.8 (-28%). Recent failures show late-training collapse even with stable gradients/weight-decay. Lower ratio means trainer consumes fewer positions per produced position — more self-play data accumulates between training steps, slowing trainer-side drift that appears to dominate late dynamics. Single-axis intervention. (streak=5, watch)

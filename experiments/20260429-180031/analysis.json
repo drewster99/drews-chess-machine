@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "weight_decay 0.0002->0.0004 REGRESSED. Mid_probe (469s) actually healthy: legal_mass 0.284, max_prob 0.064, above_uniform 2 — comparable to baseline. But last_probe (902s) collapsed: max_prob 0.807, legal_mass 9e-05 (illegal_mass=0.9999). Violates GOAL-1A; max_prob nearly violates GOAL-1B (0.81 vs 0.90). gNorm well-behaved (max 38.8). pEnt held at 6.78. Late-training collapse pattern persists across all interventions. No promotion. Classifying regressed.",
+  "classification": "regressed"
+}

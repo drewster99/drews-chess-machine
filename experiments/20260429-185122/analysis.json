@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_tau_decay_per_ply 0.03->0.025 NEUTRAL — second consecutive non-collapse on the 'more self-play exploration' axis. last_probe max_prob 0.137 (better than baseline 0.255), legal_mass 0.048 (above GOAL-1A 0.01 threshold; below baseline 0.388 outlier). pEnt 6.71, gNorm max 84.8 (no spike), both goals satisfied. Mid_probe was borderline (legal_mass 0.0023) but recovered. Fewer steps than baseline (394 vs 538) due to slower decay's compute effect. Within plausible noise envelope of baseline given baseline replicates yielded ~0. No promotion.",
+  "classification": "neutral"
+}

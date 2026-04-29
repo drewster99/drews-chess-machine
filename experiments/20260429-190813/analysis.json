@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_start_tau 2.0->2.5 REGRESSED catastrophically. mid_probe (467s) and last_probe (898s) both fully collapsed: max_prob=1.0, legal_mass=0, value saturated to 1.0. Violates BOTH GOAL-1A and GOAL-1B. gNorm spiked to 170 (>100 threshold). pEnt held at 6.89 (above 5.0). Distinct from the target_tau/decay axis that produced two neutrals — higher start_tau is a destabilizing lever, not part of the working family. No promotion. failure_streak=7.",
+  "classification": "regressed"
+}

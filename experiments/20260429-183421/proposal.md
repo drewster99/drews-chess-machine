@@ -1,0 +1,1 @@
+self_play_target_tau 0.59->0.7 (+18%). Six failures across other axes suggest the issue isn't in trainer dynamics but in data distribution. Warmer floor tau keeps late-game self-play more exploratory, broadening replay-buffer move diversity. (streak=6, watch)

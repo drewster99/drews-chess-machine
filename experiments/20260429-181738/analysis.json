@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "replay_ratio_target 1.1->0.8 REGRESSED catastrophically. mid_probe (460s) and last_probe (890s) both fully collapsed: max_prob=1.0, legal_mass=0. Violates BOTH GOAL-1A and GOAL-1B. Fewer training steps (500 vs 538 baseline) didn't help. gNorm well-behaved (max 29.9), pEnt held at 6.34 — the collapse is purely a policy-distribution failure mode, not a gradient/entropy one. No promotion. Saved baseline's legal_mass=0.388 increasingly looks like a single-run statistical fluke.",
+  "classification": "regressed"
+}

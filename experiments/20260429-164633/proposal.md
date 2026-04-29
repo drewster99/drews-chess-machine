@@ -1,0 +1,1 @@
+Hold parameters constant; extend training_time 900s->1200s as a stability probe at 20 min, per user standing instruction to extend training by 5 min once axis is stable. Tests whether the lr_warmup_steps=30 baseline holds GOAL-1A/1B margins under additional training.

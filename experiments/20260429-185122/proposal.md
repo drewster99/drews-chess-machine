@@ -1,0 +1,1 @@
+self_play_tau_decay_per_ply 0.03->0.025 (-17%). Last iteration with target_tau=0.7 was the only non-collapse in 7 attempts; both push more late-game exploration. Slower decay achieves similar effect via different lever. Single-axis. (streak=6, watch)

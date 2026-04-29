@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "learning_rate 5e-5->4e-5 REGRESSED catastrophically. mid_probe (461s) and last_probe (892s) both fully collapsed: max_prob=1.0, legal_mass=0, value_output saturated to ~1.0. Violates BOTH GOAL-1A (illegal_mass>0.99) and GOAL-1B (max_prob<0.90). gNorm spiked to 164 (>100 threshold). Hypothesis (smaller LR dampens noise) was wrong. pEnt held at 6.7 (above 5.0). No promotion (1 arena, 0 promoted). Three-iteration pattern: nearby params all collapse — saved baseline is on a knife-edge.",
+  "classification": "regressed"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "entropy_bonus 0.012->0.014 REGRESSED. last_probe legal_mass=0 (illegal_mass=1.0) directly violates GOAL-1A vs baseline 0.388. last_probe max_prob 0.368 also worse than baseline 0.255 though still under GOAL-1B 0.90. mid_probe legal_mass=0 already, so collapse is mid-run not late. pEnt held at 6.4 (above 5.0). gNorm max 60.7 (no spike). top1_legal briefly positive (0.0156 final). No promotion (1 arena, 0 promoted). Higher entropy_bonus did not help — possibly hurt by amplifying noise on the illegal-move side.",
+  "classification": "regressed"
+}

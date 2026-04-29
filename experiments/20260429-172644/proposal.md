@@ -1,0 +1,1 @@
+learning_rate 5e-5->4e-5 (-20%). Prior iteration's higher entropy_bonus regressed legal_mass to 0; suggests dynamics are noise-dominated. Smaller LR reduces per-step update magnitude, dampening late-training drift while keeping warmup ratio comfortable (lr_warmup_steps=30 vs steps~538 leaves headroom).

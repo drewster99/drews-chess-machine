@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "grad_clip_max_norm 25->15 split decision. WIN: gNorm max 25.8 (was 44 baseline, was 60-180 in failures), no spikes >100. WIN: max_prob 0.117 vs baseline 0.255 (more uniform, healthier on GOAL-1B). LOSS: legal_mass 0.0015 vs baseline 0.388 — illegal_mass=0.9985 crosses GOAL-1A 0.99 threshold; baseline did not. pEnt held at 6.65, value not saturated. No promotion (1 arena, 0 promoted). Per no-regressions directive, the legal_mass crossing of the explicit goal threshold dominates. Classifying regressed.",
+  "classification": "regressed"
+}

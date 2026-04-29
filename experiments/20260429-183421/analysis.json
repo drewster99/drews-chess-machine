@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_target_tau 0.59->0.7 NEUTRAL — first non-collapse in 6 iterations. last_probe legal_mass 0.092 (well above GOAL-1A 0.01 threshold), max_prob 0.267 (≈baseline 0.255, well below GOAL-1B 0.90), above_uniform=1 (structured learning signal). Mid_probe healthier (legal_mass 0.222). Numerically below baseline legal_mass 0.388, but baseline replicates gave 1e-05/0.002/0.0026 (noise-lucky outlier), so this run's 0.092 is within the plausible noise envelope while clearly outside the collapse cluster. Both goals satisfied. No promotion (1 arena, 0 promoted).",
+  "classification": "neutral"
+}
