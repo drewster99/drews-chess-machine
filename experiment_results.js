@@ -16445,25 +16445,73 @@ window.EXPERIMENTS = [
     "analysis_commentary": "REPLICATE 3/3 600s: last_probe max_prob 0.041 (-62% vs baseline 0.107, healthy), legal_mass 0.0026 (-99.5% vs 0.561, illegal_mass 0.997 just below 0.99 collapse threshold). Three baseline replicates: 1 catastrophic collapse, 2 with very low but non-zero legal_mass. Accepting this 600s replicate would also break lr_warmup_steps=79 budget constraint (recommended_max=39 with steps=119). No arena. Counts as regressed; triggers HALT.",
     "training_time_seconds": 600,
     "folder": "experiments/20260429-033304-replicate"
+  },
+  {
+    "timestamp": "20260429-162005",
+    "start_time_iso": "2026-04-29T16:20:05Z",
+    "status": "ACCEPTED",
+    "mode": "normal",
+    "change_details": "Manual HALT-break intervention: lr_warmup_steps 79->30. Replicate analyses identified 79 as a budget-rule violation (recommended_max=39 for 600s). Three baseline replicates collapsed/borderline-collapsed; the saved 900s baseline appears noise-lucky. Lowering warmup lets the configured lr engage earlier and stably across training windows.",
+    "changed_params": [
+      {
+        "key": "lr_warmup_steps",
+        "old": 79,
+        "new": 30
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.012,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 30,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.59,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 300,
+      "legal_mass_collapse_no_improvement_probes": 5,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "Manual HALT-break: lr_warmup_steps 79->30. Run completed cleanly (timer_expired, 463 steps, build 403). Last probe max_prob 0.255 and legal_mass 0.388 are well inside GOAL-1A/1B thresholds (0.99 / 0.90), with no early-bail. Strict numbers slightly trail the saved noise-lucky baseline (0.107 / 0.561), but three replicates of that baseline collapsed or borderline-collapsed (1e-05 / 0.002 / 0.0026 legal_mass). Promoting this as a reproducible anchor. No promotion in session.",
+    "training_time_seconds": 900,
+    "folder": "experiments/20260429-162005"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 360,
+  "total_iterations": 361,
   "counts": {
     "SEED": 1,
-    "ACCEPTED": 30,
+    "ACCEPTED": 31,
     "NEUTRAL": 33,
     "REJECTED": 294,
     "FAILED": 3,
     "IN_PROGRESS": 0
   },
-  "accept_rate": 0.08333333333333333,
-  "failure_streak": 18,
-  "trailing_replicates": 3,
-  "iterations_since_codechange": 15,
+  "accept_rate": 0.08587257617728532,
+  "failure_streak": 0,
+  "trailing_replicates": 0,
+  "iterations_since_codechange": 16,
   "code_iteration_due": false,
   "code_iteration_interval": 40,
-  "arena_count": 214,
+  "arena_count": 215,
   "promotions": 9,
   "best_arena_score": 0.565,
   "best_arena_folder": "experiments/20260423-132740"
