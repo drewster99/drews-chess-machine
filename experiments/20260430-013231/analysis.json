@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "900s extension IMPROVED across multiple axes. last_probe legal_mass 0.734 (vs baseline 0.334 — +120%), above_uniform 6 vs 3, top1_legal_fraction 0.094 vs 0 (top1_legal_ever_positive restored TRUE). max_prob 0.195 still well below GOAL-1B 0.90. pEnt 6.50, gNorm 43.2 (clean). 538 training_steps, 1 arena (0 promoted). Time-axis extension to 15 min holds with no collapse — first stable 15-min run on this baseline family.",
+  "classification": "improved"
+}
