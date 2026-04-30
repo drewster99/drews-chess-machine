@@ -347,6 +347,89 @@ Long-term goals, deferred work, and notes on decisions.
   table with the prediction and the reason they were skipped, so the
   sweep walks the full ladder and makes its limits visible.
 
+- **First decisive arena promotion under the autotrain loop
+  (2026-04-30, `experiments/20260430-170725/`, accepted as commit
+  `42c35c9`).** A 2400 s Play-and-Train run produced one promotion at
+  arena #3 of 4. Worth preserving in detail because it's the first
+  arena result during automated parameter tuning where the candidate
+  was clearly stronger than the champion rather than a coin-flip
+  hovering around 0.50. Build 403, champion `20260430-53-gNPD`,
+  candidate `20260430-53-gNPD-1` (promoted), trainer
+  `20260430-53-gNPD-2`.
+
+  Training/arena parameters in effect for this run:
+
+  | Parameter                                          | Value     |
+  |----------------------------------------------------|-----------|
+  | `learning_rate`                                    | 5e-05     |
+  | `lr_warmup_steps`                                  | 30        |
+  | `K` (policy loss scale)                            | 5         |
+  | `entropy_bonus`                                    | 0.016     |
+  | `weight_decay`                                     | 2e-04     |
+  | `grad_clip_max_norm`                               | 25        |
+  | `draw_penalty`                                     | 0.1       |
+  | `training_batch_size`                              | 4096      |
+  | `self_play_workers`                                | 48        |
+  | `replay_ratio_target` (auto-adjust on)             | 1.1       |
+  | `replay_buffer_capacity`                           | 500 000   |
+  | `replay_buffer_min_positions_before_training`      | 75 000    |
+  | `self_play_start_tau` → `target_tau` / decay/ply   | 2.0 → 0.8 / 0.03 |
+  | `arena_start_tau` → `target_tau` / decay/ply       | 2.0 → 0.5 / 0.01 |
+  | `arena_promote_threshold`                          | 0.55      |
+  | `arena_games_per_tournament`                       | 100       |
+  | `arena_auto_interval_sec`                          | 300       |
+  | `candidate_probe_interval_sec`                     | 15        |
+  | `legal_mass_collapse_threshold` / grace / probes   | 0.999 / 600 s / 8 |
+  | `training_time_limit` (this run window)            | 2400 s, 1427 trainer steps |
+
+  Per-arena results (each tournament = 100 games, 50 as White +
+  50 as Black; "W-D-L" is candidate-relative):
+
+  | # | Finished @ step | W-D-L (cand) | White (W-D-L) | Black (W-D-L) | Score | Score CI95     | Elo | Elo CI95     | Promoted |
+  |---|-----------------|--------------|---------------|---------------|-------|----------------|-----|--------------|----------|
+  | 1 | 179             | 7-85-8       | 5-39-6        | 2-46-2        | 0.495 | [0.457, 0.533] | −3  | [−30, +23]   |          |
+  | 2 | 528             | 10-83-7      | 6-38-6        | 4-45-1        | 0.515 | [0.475, 0.555] | +10 | [−18, +39]   |          |
+  | 3 | 866             | 19-76-5      | 8-40-2        | 11-36-3       | 0.570 | [0.524, 0.616] | +49 | [+17, +82]   | ✅       |
+  | 4 | 1175            | 6-85-9       | 3-43-4        | 3-42-5        | 0.485 | [0.447, 0.523] | −10 | [−37, +16]   |          |
+
+  Score / Elo confidence intervals are the Wald 95% CI computed in
+  `ArenaEloStats.summary` from per-game outcomes in {1, 0.5, 0}; Elo
+  CI is the score CI mapped through `400·log10(p/(1−p))`. Promotion is
+  gated on the point estimate vs `arena_promote_threshold`, not on the
+  CI.
+
+  Why arena #3 is decisive rather than borderline:
+
+  - 19 wins vs 5 losses (24 decisive games; candidate took 79 % of them).
+  - Score 0.570 with CI95 [0.524, 0.616] — the entire CI sits above
+    0.50; the lower bound dips just under the 0.55 promote line but the
+    point estimate clears it cleanly.
+  - Elo +49 with CI95 [+17, +82] — even the lower bound is +17 Elo, so
+    "candidate is genuinely stronger" is well-supported, not noise.
+  - Balanced across colors (8 wins as White, 11 as Black) rather than
+    one-sided color luck.
+
+  The surrounding arenas (#1, #2, #4) all sit inside [0.485, 0.515] with
+  CIs straddling 0.50 by a wide margin — typical noise-floor draws when
+  two near-equivalent networks face off (draw rates 76–85 %). Arena #3
+  is cleanly separated from that floor. Useful as a reference point for
+  what a real training-driven promotion looks like in this engine, vs
+  the borderline 0.50–0.53 promotions seen earlier in the project's
+  history (e.g. the 5-arena run at scores `[0.51, 0.525, 0.515, 0.52,
+  0.5075]` from the 2026-04-21 BN-warmup CHANGELOG entry, which the
+  team correctly diagnosed as a stuck network rather than real
+  progress).
+
+  Followup pure-window-extension run (2700 s,
+  `experiments/20260430-184042/`, accepted as commit `be9d2d3`)
+  produced 0 promotions across 5 arenas (scores 0.51 / 0.535 / 0.53 /
+  0.47 / 0.485) but dramatically healthier end-of-run policy state
+  (max prob 0.150 vs baseline 0.998, illegal_mass 0.678 vs 1.000,
+  pEnt 6.44 well above the 5.0 alarm threshold) — the autotrain goal
+  axis ("longer training without full collapse") favored the longer
+  window despite no promotion, on the principle that a healthy
+  policy-head distribution is a prerequisite for future promotions.
+
 ## Completed
 
 - **Engine-level legal-move validation (2026-04-20).** Previously
