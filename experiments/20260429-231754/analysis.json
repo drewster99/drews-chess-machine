@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_target_tau 0.5->0.45 REGRESSED. Despite being arena-only, training_steps dropped to 164 (vs 538 baseline) — suggests systemic training-rate degradation across recent iterations is independent of param changes. legal_mass 0.163 (vs 0.746), top1_legal_fraction 0.008 (vs 0.063), 0 arenas. max_prob 0.072 (better than 0.239). pEnt 6.99, gNorm 43.4. Both goals still pass. failure_streak=10, will trigger replicate mode at 15.",
+  "classification": "regressed"
+}

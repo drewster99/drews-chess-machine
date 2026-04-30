@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_auto_interval_sec 300->360 REGRESSED. top1_legal_fraction 0.0078 (vs baseline 0.063 — fell, explicit regression signal). max_prob 0.174 (better than 0.239), legal_mass 0.416 (vs 0.746). above_uniform 3 (vs 5). 204 steps, 0 arenas (expected for longer interval). pEnt 6.89, gNorm 32.3 (clean). Goals still pass. failure_streak=14 (replicate at 15 — next iteration triggers replicate mode).",
+  "classification": "regressed"
+}

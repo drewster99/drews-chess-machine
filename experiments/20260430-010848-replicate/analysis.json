@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "REPLICATE 2/3 at 600s: non-collapse. last_probe max_prob 0.146 (better than baseline 0.239), legal_mass 0.231 (worse than 0.746 outlier but well above GOAL-1A 0.01 threshold). pEnt 6.78, gNorm 21.3 (cleanest in 15+ iterations). 366 steps. above_uniform=2, top1_legal_ever_positive=false. Both goals satisfied. With Replicate 1 having confirmed the saved baseline is noise-unreproducible, this stable non-collapse run replaces the lucky outlier with a representative anchor — the skill-spec 'free accept'. No promotion (1 arena, 0).",
+  "classification": "improved"
+}

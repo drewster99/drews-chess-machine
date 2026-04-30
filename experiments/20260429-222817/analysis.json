@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_workers 48->56 REGRESSED on collapse signals despite goals satisfied. top1_legal_ever_positive: TRUE->FALSE (explicit regression). max_prob 0.107 (better than 0.239 baseline), legal_mass 0.250 (vs 0.746), above_uniform 1 (vs 5). training_steps dropped to 188 (vs 538) — more workers contended for GPU and starved the trainer. 0 arenas completed. pEnt 6.67, gNorm max 45.8 (clean). No promotion. failure_streak=7.",
+  "classification": "regressed"
+}

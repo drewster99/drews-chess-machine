@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_workers 48->40 REGRESSED. top1_legal_ever_positive: TRUE->FALSE. training_steps 158 (worse than baseline 538 AND worse than 56-workers 188). 0 arenas. max_prob 0.217 (≈baseline 0.239), legal_mass 0.385 (vs 0.746). Both goals still pass. Both directions of self_play_workers axis hurt — 48 is the sweet spot. failure_streak=8.",
+  "classification": "regressed"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "replay_ratio_target 1.1->1.3 at 1200s REGRESSED catastrophically. mid_probe (599s) and last_probe (1175s) both fully collapsed: max_prob=1.0, legal_mass=0, value_output saturated. Violates BOTH GOAL-1A and GOAL-1B. Ironically training_steps INCREASED to 728 (from 236 baseline 20min) — but more aggressive trainer broke stability. The previous run's lower step count was protective, not a problem. gNorm 95 (just under 100). pEnt held. No promotion (2 arenas, 0). Lesson: longer windows need slower, not faster, training.",
+  "classification": "regressed"
+}

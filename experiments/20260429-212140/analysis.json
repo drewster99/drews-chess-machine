@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "draw_penalty 0.1->0.05 REGRESSED catastrophically. mid_probe (464s) and last_probe (895s) both fully collapsed: max_prob=1.0, legal_mass=0, value saturated to 0.98. Violates BOTH GOAL-1A and GOAL-1B. gNorm spiked to 164 (>100 threshold). pEnt held at 6.18. No promotion (1 arena, 0). draw_penalty is a destabilizing axis on this baseline — likely shifts value-target distribution enough to amplify training noise. failure_streak=4.",
+  "classification": "regressed"
+}

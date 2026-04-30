@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "entropy_bonus 0.015->0.016 NEUTRAL. Both goals satisfied: max_prob 0.122 (vs baseline 0.239 — better), legal_mass 0.405 (above 0.01 threshold). gNorm max 27.2 (cleanest in recent runs). top1_legal_fraction 0.016 vs baseline 0.063 (worse), legal_mass 0.405 vs 0.746 (worse). pEnt 6.88, no spike. above_uniform 3 vs 5. Within plausible noise envelope on this knife-edge baseline. No promotion (1 arena, 0).",
+  "classification": "neutral"
+}

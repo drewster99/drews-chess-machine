@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "K 5->6 REGRESSED. last_probe max_prob 0.341 (worse than baseline 0.239), legal_mass 0.045 (vs 0.746), above_uniform=0 (vs 5), top1_legal_ever_positive: TRUE->FALSE (explicit regression signal). Only 192 training_steps, 0 arenas completed. pEnt 6.83, gNorm max 57.3 (no spike). Goals still pass barely. Higher K coefficient pushed value loss in a direction that depleted training throughput and policy quality. failure_streak=6.",
+  "classification": "regressed"
+}

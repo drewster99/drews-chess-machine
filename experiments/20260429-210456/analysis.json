@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_target_tau 0.8->0.85 NEUTRAL. Both goals still satisfied: max_prob 0.075 (vs baseline 0.239 — substantially MORE uniform), legal_mass 0.457 (vs 0.746 — still above 0.01 threshold). top1_legal_fraction 0.055 vs 0.063 (slight drop), above_uniform 2 vs 5 (worse), arena 0/1 promoted vs 1/1. Some collapse signals retreated (legal_mass, above_uniform) while max_prob improved sharply. Net: stable run within plausible noise envelope. No promotion this session.",
+  "classification": "neutral"
+}

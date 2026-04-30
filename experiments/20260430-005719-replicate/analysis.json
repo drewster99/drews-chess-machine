@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "REPLICATE 1 of saved baseline at 600s: catastrophic collapse. mid (319s) and last (591s) probes both max_prob=1.0, legal_mass=0. gNorm spiked to 148.6 (>100). 299 training_steps, 1 arena, 0 promoted. The saved baseline (max_prob 0.239, legal_mass 0.746, 538 steps at 900s) does NOT reproduce — it was noise-lucky. Confirms 15-iteration pattern: most runs from these params land in the collapse cluster. trailing_replicates=1.",
+  "classification": "regressed"
+}

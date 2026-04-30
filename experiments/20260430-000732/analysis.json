@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_games_per_tournament 100->80 REGRESSED. top1_legal_ever_positive: TRUE->FALSE. legal_mass 0.400 (vs 0.746 baseline), max_prob 0.371 (vs 0.239), above_uniform 1 (vs 5). Both goals still pass. 205 training_steps, 0 promotion. pEnt 6.65, gNorm 94.8 (just under 100). failure_streak=13 (replicate at 15, 2 away).",
+  "classification": "regressed"
+}

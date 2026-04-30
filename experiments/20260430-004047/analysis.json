@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "replay_buffer_min 75000->60000 REGRESSED catastrophically. mid (454s) and last (885s) probes both fully collapsed: max_prob=0.999, legal_mass=0. Violates BOTH GOAL-1A and GOAL-1B. 202 training_steps, 0 arenas. pEnt 6.65, gNorm 67.1 (no spike). failure_streak=15 — REPLICATE MODE TRIGGERS NEXT ITERATION (the key diagnostic for whether saved baseline is reproducible).",
+  "classification": "regressed"
+}

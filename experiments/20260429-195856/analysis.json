@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "20-min stability extension REGRESSED on collapse signals despite both goals still satisfied. top1_legal_fraction 0.063->0 and top1_legal_ever_positive true->false (explicit regression signals per analyzer spec). legal_mass 0.746->0.457 (still above 0.01 threshold). max_prob 0.239->0.220 (essentially tied). training_steps dropped 538->236 (slower training rate at longer window — buffer-fill dynamics). Arena 1/1 promoted -> 0/1. No collapse, no early-bail; goals satisfied. Refinement needed before time extension holds.",
+  "classification": "regressed"
+}

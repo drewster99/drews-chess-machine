@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_tau_decay_per_ply 0.01->0.012 REGRESSED catastrophically. mid (463s) and last (891s) probes both fully collapsed: max_prob=0.999, legal_mass=0. Violates GOAL-1B and GOAL-1A. 157 steps, 0 arenas. value head saturated to -0.91. Arena-only change collapsed training-side stability — confirms run variance is noise-driven on this knife-edge baseline, not param-driven. failure_streak=11 (replicate at 15).",
+  "classification": "regressed"
+}

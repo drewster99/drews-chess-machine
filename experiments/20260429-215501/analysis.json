@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "lr_warmup_steps 30->40 REGRESSED on collapse signals despite goals satisfied. top1_legal_ever_positive: TRUE->FALSE (explicit regression signal). gNorm max 110.6 (exceeded 100 threshold for first time on this baseline family). training_steps dropped 538->263. max_prob 0.086 (better than baseline 0.239), legal_mass 0.454 (still passes). pEnt 6.53. No promotion. Longer warmup pushed effective LR ramp into a regime that no longer protects the legal-move learning signal. failure_streak=5 (watch).",
+  "classification": "regressed"
+}

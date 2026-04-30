@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "learning_rate 5e-5->4e-5 at 1200s REGRESSED catastrophically. last_probe (243s) max_prob=0.99999, legal_mass=0 — full collapse. Only 15 probes recorded in a 1200s run (vs ~80 expected) — probe path apparently failed after collapse. Violates BOTH GOAL-1A and GOAL-1B. pEnt held at 6.83, gNorm 71.8 (no spike). third consecutive 20-min failure across orthogonal levers (same-params, ratio 1.3, lr 4e-5). 20-min axis is fundamentally fragile relative to 15-min. failure_streak=3.",
+  "classification": "regressed"
+}

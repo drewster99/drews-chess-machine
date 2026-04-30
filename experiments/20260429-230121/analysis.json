@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_tau_decay_per_ply 0.03->0.028 REGRESSED catastrophically. mid (472s) and last (902s) probes both fully collapsed: max_prob=1.0, legal_mass=0, value saturated to 0.997. Violates BOTH GOAL-1A and GOAL-1B. gNorm spiked to 146.6 (>100). Only 154 training_steps, 0 arenas. Earlier 0.025 was a non-collapse neutral; -7% from baseline tipped over here — pure noise variance on this knife-edge basin. failure_streak=9.",
+  "classification": "regressed"
+}

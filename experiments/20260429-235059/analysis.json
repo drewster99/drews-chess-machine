@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_promote_threshold 0.55->0.52 REGRESSED. last_probe legal_mass=0 (illegal_mass=1.0, violates GOAL-1A). max_prob 0.396 still passes GOAL-1B. mid_probe legal_mass already at 5e-05. 174 training_steps, 0 arenas. top1_legal_ever_positive=true (final 0.008). Arena-only change destabilized training side — confirms knife-edge variance. failure_streak=12 (replicate at 15).",
+  "classification": "regressed"
+}
