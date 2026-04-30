@@ -1,0 +1,6 @@
+
+--- stderr ---
+--- xcodebuild: WARNING: Using the first of multiple matching destinations:
+{ platform:macOS, arch:arm64, id:00006040-000661D13C7A801C, name:My Mac }
+{ platform:macOS, arch:x86_64, id:00006040-000661D13C7A801C, name:My Mac }
+{ platform:macOS, name:Any Mac }

@@ -1,0 +1,1 @@
+Pure window-extension test: hold all parameters identical to the accepted 2400s baseline and extend training_time_seconds to 2700s (+300s, +12.5%). Baseline was healthy with top1_legal_ever_positive=true and 1 promotion across 4 arenas; isolate window length as the only variable.
