@@ -145,6 +145,22 @@ struct SessionCheckpointState: Codable, Equatable {
     var stepDelayMs: Int?
     var lastAutoComputedDelayMs: Int?
 
+    // Training-loop parameters that previously lived only in
+    // @AppStorage and so silently drifted between session-save
+    // time and session-resume time. All Optional for back-compat
+    // with older session.json files that pre-date the schema
+    // expansion; on resume, an absent field falls through to the
+    // user's current @AppStorage value, while a present field
+    // overrides @AppStorage so reload is fully reproducible.
+    var lrWarmupSteps: Int?
+    var sqrtBatchScalingForLR: Bool?
+    var replayBufferMinPositionsBeforeTraining: Int?
+    var arenaAutoIntervalSec: Double?
+    var candidateProbeIntervalSec: Double?
+    var legalMassCollapseThreshold: Double?
+    var legalMassCollapseGraceSeconds: Double?
+    var legalMassCollapseNoImprovementProbes: Int?
+
     // Game-result breakdown (added v1.1 — Optional for compat)
     var whiteCheckmates: Int?
     var blackCheckmates: Int?

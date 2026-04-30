@@ -432,6 +432,117 @@ Long-term goals, deferred work, and notes on decisions.
 
 ## Completed
 
+- **Full parameter coverage in session save + Load/Save Parameters
+  menu items + slow-save watchdog (2026-04-30).** Three coupled
+  changes that close the parameter-reproducibility gap and add a
+  save observability backstop. Original design captured in this
+  ROADMAP under Future improvements, then implemented in the same
+  session.
+
+  **What landed:**
+  - Eight new Optional fields on `SessionCheckpointState`
+    (`SessionCheckpointFile.swift`): `lrWarmupSteps`,
+    `sqrtBatchScalingForLR`, `replayBufferMinPositionsBeforeTraining`,
+    `arenaAutoIntervalSec`, `candidateProbeIntervalSec`,
+    `legalMassCollapseThreshold`, `legalMassCollapseGraceSeconds`,
+    `legalMassCollapseNoImprovementProbes`. All Optional →
+    older `.dcmsession` files decode unchanged with new fields nil.
+    `buildCurrentSessionState` populates them; `startRealTraining`
+    resume code reads them with `if let v = rs.foo { … = v } else { … = currentAppStorageValue }`
+    fallback. Each restored field also writes back to its
+    `@AppStorage` mirror so the UI shows what the session was
+    actually running with, not what the user's current global
+    preference happens to be.
+  - `[RESUME-PARAM]` log lines added for every restored field
+    (both the eight new ones and the existing pre-expansion ones
+    `learning_rate`, `entropy_bonus`, `draw_penalty`,
+    `weight_decay`, `grad_clip_max_norm`, `K`). Lines fire only
+    when the saved value is present and valid — older sessions
+    falling through to `@AppStorage` stay silent. Format:
+    `[RESUME-PARAM] <field>: <before> -> <after> (from session)`.
+  - `CliTrainingConfig` promoted from `Decodable` to `Codable`
+    (`CliTrainingConfig.swift`) with a new `encodeJSON()` helper
+    using `.prettyPrinted, .sortedKeys` for stable, diffable output.
+    Optional fields with nil values omit cleanly via Swift's
+    synthesized `encodeIfPresent`.
+  - Two new File menu items wired through `AppCommandHub`:
+    `Load Parameters…` (file picker → decode `CliTrainingConfig`
+    → call `applyCliConfigOverridesFromMenu(cfg:)` which routes
+    through the same `applyCliConfigOverrides(cfg:)` the launch
+    `--parameters` flag uses) and `Save Parameters…` (file
+    exporter → build a fully-populated `CliTrainingConfig` via
+    `currentParametersConfig()` → encode JSON via `CliParametersDocument`
+    `FileDocument` adapter). Load Parameters is disabled during
+    realTraining / continuousPlay / continuousTraining / sweep /
+    game-in-progress / building / save-in-flight, matching Load
+    Session / Load Model. Save Parameters is always enabled (no
+    destructive effects).
+  - `applyCliConfigOverrides` refactored: no-arg overload reads
+    `cliConfig` (launch path); new `applyCliConfigOverrides(cfg:)`
+    parameterized variant takes a config directly; new
+    `applyCliConfigOverridesFromMenu` is the menu's named entry
+    point. All three return `[ParameterOverrideChange]` — a
+    typealias for `(label: String, before: String, after: String)`
+    — used by the menu handler to surface count and field labels
+    in the status row: `Loaded <file>: N parameters changed
+    (label1, label2, …)`. Per-field `[APP] --parameters override:`
+    log lines were already there.
+  - New `.slowProgress` case on `CheckpointStatusKind` (orange
+    text + `clock.badge.exclamationmark.fill` icon, 120-second
+    auto-clear). `slowSaveWatchdogSeconds = 10` constant.
+    `startSlowSaveWatchdog(label:)` and `cancelSlowSaveWatchdog()`
+    helpers. Wired into all four save sites: manual + periodic
+    (`saveSessionInternal` via the shared `clearInFlight` helper),
+    post-promotion (inline arena-coordinator task), and
+    `Save Champion as Model` (`handleSaveChampionAsModel`). Each
+    save's completion path (success, failure, timeout, export
+    error) cancels the watchdog so a fast save's body never runs.
+    A slow save logs `[CHECKPOINT-WARN] <label> still running
+    after 10s — disk busy or replay buffer large?` and updates
+    the status row to amber with a `(still running, 10s+)` suffix.
+    Fires exactly once per save — no progressive warnings —
+    because completion will eventually flip the row to
+    success/error and restore normal styling.
+  - Watchdog deadline tuned from 5 s (initial spec) to 10 s
+    (final shipped value) after considering that the
+    post-promotion save runs at `.utility` priority and could be
+    delayed under load. 10 s leaves headroom against
+    false-positive warnings while still surfacing genuinely stuck
+    saves promptly.
+
+  **Tests added:**
+  - `CliTrainingConfigTests.testEncodeDecodeRoundTripPreservesEveryField`:
+    every field round-trips through `encodeJSON()` → decode.
+  - `CliTrainingConfigTests.testEncodeJSONUsesSortedKeys`: pins
+    the sorted-keys output so the UI-saved file diffs cleanly
+    against an autotrain-saved file with the same values.
+  - `CliTrainingConfigTests.testEncodeJSONOmitsNilFields`: pins
+    `encodeIfPresent` semantics — partial configs produce
+    partial files.
+  - `SessionCheckpointSchemaExpansionTests.testRoundTripPreservesAllExpansionFields`:
+    8 new schema fields encode → decode cleanly.
+  - `SessionCheckpointSchemaExpansionTests.testLegacySessionWithoutExpansionFieldsDecodes`:
+    older `.dcmsession` files without the new keys still decode,
+    with new fields nil — back-compat pin.
+  - `SessionCheckpointSchemaExpansionTests.testCrossFormatKeysAreIndependent`:
+    snake_case in `parameters.json` and camelCase in
+    `session.json` decode independently.
+  - Existing `testAllFieldsDecode` and
+    `testPartialJsonLeavesMissingFieldsNil` extended to cover the
+    new fields.
+
+  **Cross-format invariant achieved:** an autotrain `parameters.json`
+  is directly loadable in the UI; a UI-saved parameters file is
+  directly usable as `--parameters` input to the CLI. Same Codable
+  shape, same field names, same units.
+
+  **Deviations from the original plan:** none of substance. The
+  watchdog deadline went from 5 → 10 s during implementation per
+  user direction. The `Save Parameters…` menu item is always
+  enabled (no `networkReady` gate) — minor concession noted in
+  review, since a defaults-dump can be useful as a starting
+  template even before any model is built.
+
 - **Engine-level legal-move validation (2026-04-20).** Previously
   `ChessGameEngine.applyMoveAndAdvance` trusted the caller to supply a
   legal move, and `MoveGenerator.applyMove` would trap on a force-unwrap

@@ -501,7 +501,17 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        let trainer = try ChessTrainer()
+        // Disable LR warmup for this test. With the default
+        // `lrWarmupSteps = 100`, the very first step has
+        // `warmupMul = _completedTrainSteps / lrWarmupSteps = 0/100 = 0`,
+        // which forces `lr = 0` in the SGD update
+        // (`v - lr * (clipped_grad + wd * v) = v`). Every trainable
+        // would then be exactly unchanged regardless of graph
+        // connectivity, defeating the whole point of this test.
+        // `lrWarmupSteps: 0` short-circuits the warmup branch in
+        // `buildFeeds` (ChessTrainer.swift:2591) to `warmupMul = 1.0`,
+        // so the first step uses the full base learning rate.
+        let trainer = try ChessTrainer(lrWarmupSteps: 0)
         let weightsBefore = try await trainer.network.exportWeights()
         // Run one step on synthetic random data via the public path.
         _ = try await trainer.trainStep(batchSize: 32)

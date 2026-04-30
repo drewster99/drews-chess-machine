@@ -295,6 +295,18 @@ struct DrewsChessMachineApp: App {
                         || commandHub.checkpointSaveInFlight
                     )
                 Divider()
+                Button("Load Parameters…") { commandHub.loadParameters() }
+                    .disabled(
+                        commandHub.realTraining
+                        || commandHub.continuousPlay
+                        || commandHub.continuousTraining
+                        || commandHub.sweepRunning
+                        || commandHub.gameIsPlaying
+                        || commandHub.isBuilding
+                        || commandHub.checkpointSaveInFlight
+                    )
+                Button("Save Parameters…") { commandHub.saveParameters() }
+                Divider()
                 Button("Resume Training from Autosave") {
                     commandHub.resumeFromAutosave()
                 }

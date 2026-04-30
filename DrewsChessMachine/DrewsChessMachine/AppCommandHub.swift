@@ -82,6 +82,16 @@ final class AppCommandHub {
     var saveChampion: () -> Void = {}
     var loadSession: () -> Void = {}
     var loadModel: () -> Void = {}
+    /// File menu > Load Parameters… — opens a JSON file picker, then
+    /// applies every field present in the file as an override on top
+    /// of the currently-effective values (same semantics as the CLI
+    /// `--parameters <file>` flag).
+    var loadParameters: () -> Void = {}
+    /// File menu > Save Parameters… — opens a JSON file save panel
+    /// and writes the current configuration as a fully-populated
+    /// parameters JSON file (same shape as the CLI `--parameters`
+    /// input format).
+    var saveParameters: () -> Void = {}
     /// File menu > Resume training from autosave. Auto-loads the
     /// most recently saved `.dcmsession` and immediately starts
     /// Play-and-Train on it. Same code path the launch-time

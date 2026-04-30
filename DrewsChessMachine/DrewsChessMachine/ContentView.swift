@@ -1,6 +1,35 @@
 import AppKit
 import Charts
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// `FileDocument` adapter for the `Save Parameters…` file exporter.
+/// Holds the already-encoded parameters JSON as raw `Data` so the
+/// callsite can build the JSON on the main actor (where it has access
+/// to all the `@AppStorage` / `@State` fields) and hand the bytes off
+/// to SwiftUI's exporter machinery without doing any further work.
+/// Read support is unused — the import path uses `.fileImporter`,
+/// which doesn't require a `FileDocument` — but we conform anyway
+/// since `FileDocument` requires both initializers.
+struct CliParametersDocument: FileDocument {
+    static let readableContentTypes: [UTType] = [.json]
+    static let writableContentTypes: [UTType] = [.json]
+
+    var data: Data
+
+    init(data: Data) { self.data = data }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let bytes = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = bytes
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
 
 // MARK: - Result Types
 
@@ -41,6 +70,12 @@ struct SweepProgress: Sendable {
 /// alert.
 enum CheckpointStatusKind: Sendable {
     case progress
+    /// Save has been running longer than the watchdog deadline.
+    /// Visually distinct from `.progress` (amber tint, clock icon)
+    /// so a stalled save catches the user's eye without being
+    /// promoted to an outright error — the save may still complete
+    /// successfully, it's just taking longer than expected.
+    case slowProgress
     case success
     case error
 }
@@ -2051,6 +2086,34 @@ struct ContentView: View {
     /// Drives the Load Session file importer sheet.
     @State private var showingLoadSessionImporter: Bool = false
 
+    /// Drives the Load Parameters file importer sheet (File menu →
+    /// Load Parameters…). Loads a parameters JSON file with the same
+    /// shape as the CLI `--parameters` flag and applies every named
+    /// field as an override on top of the currently-effective values.
+    @State private var showingLoadParametersImporter: Bool = false
+
+    /// Drives the Save Parameters file exporter sheet (File menu →
+    /// Save Parameters…). Set to `true` after `parametersDocumentForExport`
+    /// has been populated with a freshly-encoded snapshot of the
+    /// current configuration.
+    @State private var showingSaveParametersExporter: Bool = false
+
+    /// Pre-encoded JSON document handed to the Save Parameters file
+    /// exporter. Built on the main actor at the moment the user
+    /// invokes the menu item, so the encoded values reflect the
+    /// session's state at that instant rather than at file-save time
+    /// (which can be seconds later if the user takes a while to pick
+    /// a destination).
+    @State private var parametersDocumentForExport: CliParametersDocument?
+
+    /// Watchdog for in-flight checkpoint saves. Started when a save
+    /// begins; if the save hasn't completed within 5 s, the watchdog
+    /// promotes the status row to `.slowProgress` and emits a
+    /// `[CHECKPOINT-WARN]` log line. Every save-completion path
+    /// (success, error, timeout) cancels the task so a fast save's
+    /// watchdog never runs its body.
+    @State private var slowSaveWatchdogTask: Task<Void, Never>?
+
     /// Message text for the "can't do that right now" alert surfaced
     /// by in-function guards. Non-nil means show the alert. The same
     /// alert also covers the post-Stop three-way start dialog's
@@ -2801,6 +2864,23 @@ struct ContentView: View {
                 allowsMultipleSelection: false,
                 onCompletion: { result in
                     handleLoadSessionPickResult(result)
+                }
+            )
+            .fileImporter(
+                isPresented: $showingLoadParametersImporter,
+                allowedContentTypes: [.json],
+                allowsMultipleSelection: false,
+                onCompletion: { result in
+                    handleLoadParametersPickResult(result)
+                }
+            )
+            .fileExporter(
+                isPresented: $showingSaveParametersExporter,
+                document: parametersDocumentForExport,
+                contentType: .json,
+                defaultFilename: "parameters",
+                onCompletion: { result in
+                    handleSaveParametersExportResult(result)
                 }
             )
             .fileDialogDefaultDirectory(
@@ -4563,6 +4643,7 @@ struct ContentView: View {
     private var checkpointStatusColor: Color {
         switch checkpointStatusKind {
         case .progress: .secondary
+        case .slowProgress: .orange
         case .success: .green
         case .error: .red
         }
@@ -4578,6 +4659,7 @@ struct ContentView: View {
     private var checkpointStatusIconName: String? {
         switch checkpointStatusKind {
         case .progress: nil
+        case .slowProgress: "clock.badge.exclamationmark.fill"
         case .success: "checkmark.circle.fill"
         case .error: "exclamationmark.triangle.fill"
         }
@@ -4635,6 +4717,11 @@ struct ContentView: View {
         let lifetimeSeconds: Int
         switch kind {
         case .progress: lifetimeSeconds = 6
+        // Slow-save status persists noticeably longer than a normal
+        // progress line — the user is presumably waiting on it, and a
+        // 6-second auto-clear in the middle of a stuck save would just
+        // leave them confused about whether anything is still happening.
+        case .slowProgress: lifetimeSeconds = 120
         case .success: lifetimeSeconds = 20
         case .error: lifetimeSeconds = 12
         }
@@ -4645,6 +4732,226 @@ struct ContentView: View {
                 checkpointStatusKind = .progress
             }
         }
+    }
+
+    /// Slow-save watchdog deadline. If a save has not completed
+    /// within this many seconds of starting, the status row flips to
+    /// `.slowProgress` and a `[CHECKPOINT-WARN]` line is logged
+    /// exactly once per save (no progressive warnings — completion
+    /// will eventually flip the row to success/error and restore
+    /// normal styling). Calibrated to the typical save cost: a
+    /// healthy session save (two ~10 MB `.dcmmodel` files plus a 35
+    /// MB replay buffer at 500k positions) takes well under a second
+    /// on SSD; 10 s leaves headroom for the post-promotion path's
+    /// `.utility`-priority detached task to be scheduled under load
+    /// without firing false-positive warnings, while still surfacing
+    /// genuinely stuck saves promptly.
+    nonisolated static let slowSaveWatchdogSeconds: Int = 10
+
+    /// Start a watchdog that warns the user if the save tagged
+    /// `label` has not completed within `slowSaveWatchdogSeconds`.
+    /// The returned task is stored in `slowSaveWatchdogTask`; every
+    /// save path's completion branch must cancel it so a fast save's
+    /// watchdog body never runs. Calling this while a previous
+    /// watchdog is still pending cancels the previous one — only one
+    /// save can be in flight at a time, and the most recent label is
+    /// what should appear if it stalls.
+    @MainActor
+    private func startSlowSaveWatchdog(label: String) {
+        slowSaveWatchdogTask?.cancel()
+        let deadline = Self.slowSaveWatchdogSeconds
+        slowSaveWatchdogTask = Task { @MainActor in
+            do {
+                try await Task.sleep(for: .seconds(deadline))
+            } catch {
+                // The save completed before the deadline — its
+                // completion path called `cancelSlowSaveWatchdog()`,
+                // which cancelled this Task. The `Task.sleep` throws
+                // `CancellationError`. Exit silently; the fast-save
+                // case is the common one.
+                return
+            }
+            if Task.isCancelled { return }
+            // If the save already finished and emitted a final
+            // success/error status, don't clobber it. We only flip to
+            // .slowProgress if the row still shows the original
+            // "Saving…" line.
+            guard checkpointSaveInFlight else { return }
+            SessionLogger.shared.log(
+                "[CHECKPOINT-WARN] \(label) still running after \(deadline)s — disk busy or replay buffer large?"
+            )
+            setCheckpointStatus(
+                "Saving \(label)… (still running, \(deadline)s+)",
+                kind: .slowProgress
+            )
+        }
+    }
+
+    /// Cancel the slow-save watchdog if any. Safe to call on any
+    /// completion path — including success, error, and timeout
+    /// branches that don't involve `slowSaveWatchdogTask` directly.
+    @MainActor
+    private func cancelSlowSaveWatchdog() {
+        slowSaveWatchdogTask?.cancel()
+        slowSaveWatchdogTask = nil
+    }
+
+    /// File menu > Load Parameters… handler. Decodes the picked JSON
+    /// file as a `CliTrainingConfig` and applies every named field on
+    /// top of the currently-effective configuration. Mirrors the
+    /// launch-time `--parameters` flag's behavior exactly, so the
+    /// `[APP] --parameters override: …` log lines emitted by
+    /// `applyCliConfigOverrides` show up in the session log identically
+    /// whether the file was loaded at launch or via this menu item.
+    @MainActor
+    private func handleLoadParametersPickResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            setCheckpointStatus(
+                "Load Parameters cancelled: \(error.localizedDescription)",
+                kind: .error
+            )
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let needsAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if needsAccess { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let cfg = try CliTrainingConfig.load(from: url)
+                SessionLogger.shared.log(
+                    "[BUTTON] Load Parameters from \(url.lastPathComponent): \(cfg.summaryString())"
+                )
+                let changes = applyCliConfigOverridesFromMenu(cfg: cfg)
+                // Surface both the count and the field labels in the
+                // status row. `applyCliConfigOverrides` already logs
+                // a per-field `[APP] --parameters override: …` line
+                // for each entry plus a summary; this row is the
+                // user-visible mirror of that summary so they don't
+                // have to grep the session log to know what landed.
+                if changes.isEmpty {
+                    setCheckpointStatus(
+                        "Loaded \(url.lastPathComponent): no parameters changed",
+                        kind: .success
+                    )
+                } else {
+                    let labels = changes.map(\.label).joined(separator: ", ")
+                    setCheckpointStatus(
+                        "Loaded \(url.lastPathComponent): \(changes.count) parameter\(changes.count == 1 ? "" : "s") changed (\(labels))",
+                        kind: .success
+                    )
+                }
+            } catch {
+                setCheckpointStatus(
+                    "Load Parameters failed: \(error.localizedDescription)",
+                    kind: .error
+                )
+                SessionLogger.shared.log(
+                    "[CHECKPOINT-ERR] Load Parameters from \(url.lastPathComponent) failed: \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    /// File menu > Save Parameters… handler. Builds a fully-populated
+    /// `CliTrainingConfig` from the current `@AppStorage` / `@State`
+    /// values, encodes it to JSON, stashes the bytes in
+    /// `parametersDocumentForExport`, and triggers the file exporter.
+    /// The exporter UI handles destination selection; on completion,
+    /// `handleSaveParametersExportResult` logs success/failure.
+    @MainActor
+    private func handleSaveParametersMenuAction() {
+        let cfg = currentParametersConfig()
+        do {
+            let data = try cfg.encodeJSON()
+            parametersDocumentForExport = CliParametersDocument(data: data)
+            showingSaveParametersExporter = true
+            SessionLogger.shared.log("[BUTTON] Save Parameters")
+        } catch {
+            setCheckpointStatus(
+                "Save Parameters failed (encode): \(error.localizedDescription)",
+                kind: .error
+            )
+        }
+    }
+
+    /// Completion handler for the Save Parameters file exporter.
+    /// Logs success or failure to the session log; user-visible
+    /// status appears in the checkpoint status row.
+    @MainActor
+    private func handleSaveParametersExportResult(_ result: Result<URL, Error>) {
+        parametersDocumentForExport = nil
+        switch result {
+        case .success(let url):
+            setCheckpointStatus(
+                "Saved parameters to \(url.lastPathComponent)",
+                kind: .success
+            )
+            SessionLogger.shared.log(
+                "[CHECKPOINT] Saved parameters: \(url.lastPathComponent)"
+            )
+        case .failure(let error):
+            // SwiftUI's file exporter surfaces user-cancellation as
+            // a failure with `.userCancelled` — don't treat that as
+            // an error in the UI. Only real I/O failures get the
+            // red status.
+            if let cocoa = error as? CocoaError, cocoa.code == .userCancelled {
+                return
+            }
+            setCheckpointStatus(
+                "Save Parameters failed: \(error.localizedDescription)",
+                kind: .error
+            )
+            SessionLogger.shared.log(
+                "[CHECKPOINT-ERR] Save Parameters failed: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// Build a `CliTrainingConfig` populated with every parameter
+    /// the engine exposes, drawn from the current `@AppStorage` /
+    /// `@State` values. The result is fully populated (no nil
+    /// fields) so a UI-saved parameters file always emits the
+    /// complete set; an autotrain `parameters.json` produced with
+    /// `encodeJSON()` is byte-comparable against this output if the
+    /// values match.
+    @MainActor
+    private func currentParametersConfig() -> CliTrainingConfig {
+        var cfg = CliTrainingConfig()
+        cfg.entropyBonus = entropyRegularizationCoeff
+        cfg.gradClipMaxNorm = gradClipMaxNorm
+        cfg.weightDecay = weightDecayC
+        cfg.K = policyScaleK
+        cfg.learningRate = trainerLearningRate
+        cfg.drawPenalty = drawPenalty
+        cfg.sqrtBatchScalingForLR = sqrtBatchScalingForLR
+        cfg.lrWarmupSteps = lrWarmupSteps
+        cfg.selfPlayStartTau = spStartTau
+        cfg.selfPlayTargetTau = spFloorTau
+        cfg.selfPlayTauDecayPerPly = spDecayPerPly
+        cfg.arenaStartTau = arStartTau
+        cfg.arenaTargetTau = arFloorTau
+        cfg.arenaTauDecayPerPly = arDecayPerPly
+        cfg.replayRatioTarget = replayRatioTarget
+        cfg.replayRatioAutoAdjust = replayRatioAutoAdjust
+        cfg.selfPlayWorkers = selfPlayWorkerCount
+        cfg.trainingStepDelayMs = trainingStepDelayMs
+        cfg.trainingBatchSize = effectiveTrainingBatchSize
+        cfg.replayBufferCapacity = effectiveReplayBufferCapacity
+        cfg.replayBufferMinPositionsBeforeTraining = effectiveMinBufferBeforeTraining
+        cfg.arenaPromoteThreshold = effectivePromoteThreshold
+        cfg.arenaGamesPerTournament = effectiveTournamentGames
+        cfg.arenaAutoIntervalSec = effectiveAutoArenaIntervalSec
+        cfg.candidateProbeIntervalSec = effectiveCandidateProbeIntervalSec
+        cfg.legalMassCollapseThreshold = legalMassCollapseThreshold
+        cfg.legalMassCollapseGraceSeconds = legalMassCollapseGraceSeconds
+        cfg.legalMassCollapseNoImprovementProbes = legalMassCollapseNoImprovementProbes
+        // training_time_limit is a CLI-only knob (it only takes
+        // effect with --output, where it triggers an auto-snapshot
+        // on expiry). UI sessions don't use it, so saving the field
+        // out as a UI-side-effective value would be misleading.
+        cfg.trainingTimeLimitSec = nil
+        return cfg
     }
 
     /// Build the Codable snapshot of the current session state,
@@ -4731,6 +5038,20 @@ struct ContentView: View {
             replayRatioAutoAdjust: replayRatioAutoAdjust,
             stepDelayMs: trainingStepDelayMs,
             lastAutoComputedDelayMs: lastAutoComputedDelayMs,
+            // Schema-expansion fields (added to close the autotrain
+            // reproducibility gap — these previously lived only in
+            // @AppStorage / @State and so silently picked up the
+            // user's current global preference on resume rather than
+            // the session's saved value). All Optional in the schema
+            // for back-compat with older session.json files.
+            lrWarmupSteps: lrWarmupSteps,
+            sqrtBatchScalingForLR: sqrtBatchScalingForLR,
+            replayBufferMinPositionsBeforeTraining: effectiveMinBufferBeforeTraining,
+            arenaAutoIntervalSec: effectiveAutoArenaIntervalSec,
+            candidateProbeIntervalSec: effectiveCandidateProbeIntervalSec,
+            legalMassCollapseThreshold: legalMassCollapseThreshold,
+            legalMassCollapseGraceSeconds: legalMassCollapseGraceSeconds,
+            legalMassCollapseNoImprovementProbes: legalMassCollapseNoImprovementProbes,
             whiteCheckmates: snap?.whiteCheckmates,
             blackCheckmates: snap?.blackCheckmates,
             stalemates: snap?.stalemates,
@@ -4788,6 +5109,7 @@ struct ContentView: View {
         let gate = activeSelfPlayGate
         checkpointSaveInFlight = true
         setCheckpointStatus("Saving champion…", kind: .progress)
+        startSlowSaveWatchdog(label: "champion save")
 
         Task {
             // Pause worker 0 if a session is running. Bail with a
@@ -4797,6 +5119,7 @@ struct ContentView: View {
             if let gate {
                 let acquired = await gate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
                 if !acquired {
+                    cancelSlowSaveWatchdog()
                     checkpointSaveInFlight = false
                     setCheckpointStatus("Save aborted: could not pause self-play (timeout)", kind: .error)
                     return
@@ -4815,6 +5138,7 @@ struct ContentView: View {
             gate?.resume()
 
             if let exportError {
+                cancelSlowSaveWatchdog()
                 checkpointSaveInFlight = false
                 setCheckpointStatus("Save failed (export): \(exportError.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save champion export failed: \(exportError.localizedDescription)")
@@ -4843,6 +5167,7 @@ struct ContentView: View {
                     return .failure(error)
                 }
             }.value
+            cancelSlowSaveWatchdog()
             checkpointSaveInFlight = false
             switch outcome {
             case .success(let url):
@@ -4958,6 +5283,7 @@ struct ContentView: View {
         let uiSuffix = trigger.uiSuffix
         checkpointSaveInFlight = true
         setCheckpointStatus("Saving session\(uiSuffix)…", kind: .progress)
+        startSlowSaveWatchdog(label: "session save\(uiSuffix)")
 
         // Build the state snapshot on the main actor before
         // jumping to detached work. Capture the replay buffer handle
@@ -4978,8 +5304,11 @@ struct ContentView: View {
             // every early-return path below. The periodic flag is
             // only meaningful when `trigger == .periodic`, but it's
             // cheap to always clear so we don't have to repeat the
-            // branch on every error exit.
+            // branch on every error exit. Cancels the slow-save
+            // watchdog too so a fast-failure path doesn't leave a
+            // stale "Saving… (still running)" amber line behind.
             @MainActor func clearInFlight() {
+                cancelSlowSaveWatchdog()
                 checkpointSaveInFlight = false
                 periodicSaveInFlight = false
             }
@@ -5420,11 +5749,13 @@ struct ContentView: View {
         // Apply any `--parameters` overrides BEFORE buildNetwork /
         // startRealTraining so the trainer and sampling-schedule
         // constructors read the overridden values out of their
-        // normal @AppStorage / @State sources. Doing this here
-        // instead of inside startRealTraining keeps the apply
-        // logic out of the interactive-user start path — the
-        // CLI-only concerns stay co-located with the CLI-only
-        // sequence.
+        // normal @AppStorage / @State sources. The no-arg overload
+        // pulls from the launch-time `cliConfig` field; a no-op when
+        // `--parameters` was not supplied. The same underlying
+        // `applyCliConfigOverrides(cfg:)` is also reachable from the
+        // File menu's `Load Parameters…` item via
+        // `applyCliConfigOverridesFromMenu(cfg:)`, so the override
+        // logic is shared rather than CLI-only.
         applyCliConfigOverrides()
         buildNetwork()
         Task { @MainActor in
@@ -5466,9 +5797,42 @@ struct ContentView: View {
     /// `replayRatioAutoAdjust` is left alone because no CLI knob
     /// maps to it; a caller who wants a static training delay can
     /// just set `trainingStepDelayMs` to their desired value.
+    /// One row in the change list returned by
+    /// `applyCliConfigOverrides(cfg:)`. The label is the JSON key
+    /// (e.g. `"learning_rate"`); `before` and `after` are formatted
+    /// as strings so heterogeneous parameter types (Int, Double,
+    /// Bool) can share a single tuple shape for logging.
+    typealias ParameterOverrideChange = (label: String, before: String, after: String)
+
+    /// Apply CLI-style overrides from `cliConfig` (the `--parameters`
+    /// flag's payload) onto the live `@AppStorage` / `@State` values.
+    /// No-op when `cliConfig` is nil — i.e., the user did not supply
+    /// `--parameters` at launch. Returns the list of fields that
+    /// actually changed. Used at launch and indirectly by the File
+    /// menu's `Load Parameters…` item (which routes through
+    /// `applyCliConfigOverridesFromMenu`).
     @MainActor
-    private func applyCliConfigOverrides() {
-        guard let cfg = cliConfig else { return }
+    @discardableResult
+    private func applyCliConfigOverrides() -> [ParameterOverrideChange] {
+        guard let cfg = cliConfig else { return [] }
+        return applyCliConfigOverrides(cfg: cfg)
+    }
+
+    /// Variant that takes the config explicitly. Used by the
+    /// File menu's Load Parameters… handler, which loads a
+    /// `CliTrainingConfig` from disk at any time during the run
+    /// (not just at launch). Returns the list of changed fields
+    /// so the menu handler can surface a count and per-field
+    /// summary in the UI status row.
+    @MainActor
+    @discardableResult
+    private func applyCliConfigOverridesFromMenu(cfg: CliTrainingConfig) -> [ParameterOverrideChange] {
+        applyCliConfigOverrides(cfg: cfg)
+    }
+
+    @MainActor
+    @discardableResult
+    private func applyCliConfigOverrides(cfg: CliTrainingConfig) -> [ParameterOverrideChange] {
         // Capture "before" values so the log line proves the
         // override actually landed on top of whatever was
         // previously in @AppStorage — including any stale value
@@ -5561,6 +5925,7 @@ struct ContentView: View {
         } else {
             SessionLogger.shared.log("[APP] --parameters: applied \(changes.count) override(s) to live state")
         }
+        return changes
     }
 
     /// Trigger the actual resume: tear down the sheet, then chain
@@ -5761,6 +6126,13 @@ struct ContentView: View {
         commandHub.loadModel = {
             SessionLogger.shared.log("[BUTTON] Load Model")
             showingLoadModelImporter = true
+        }
+        commandHub.loadParameters = {
+            SessionLogger.shared.log("[BUTTON] Load Parameters")
+            showingLoadParametersImporter = true
+        }
+        commandHub.saveParameters = {
+            handleSaveParametersMenuAction()
         }
         commandHub.resumeFromAutosave = {
             resumeFromAutosaveMenuAction()
@@ -6576,6 +6948,7 @@ struct ContentView: View {
 
             setCheckpointStatus("Saving session (post-promotion)…", kind: .progress)
             checkpointSaveInFlight = true
+            startSlowSaveWatchdog(label: "session save (post-promotion)")
             // Fire-and-forget detached task. The closure captures
             // only Sendable value types (weight arrays, metadata
             // structs, the session state snapshot, and a few
@@ -6638,6 +7011,7 @@ struct ContentView: View {
                             "[CHECKPOINT] Saved session (post-promotion) failed: \(error.localizedDescription)"
                         )
                     }
+                    cancelSlowSaveWatchdog()
                     checkpointSaveInFlight = false
                 }
             }
@@ -7351,15 +7725,24 @@ struct ContentView: View {
         let resumeState = pendingLoadedSession?.state
         if !continueMode {
             if let rs = resumeState {
+                SessionLogger.shared.log(
+                    "[RESUME-PARAM] learning_rate: \(trainerLearningRate) -> \(rs.learningRate) (from session)"
+                )
                 trainer.learningRate = rs.learningRate
                 trainerLearningRate = Double(rs.learningRate)
                 if let entropyCoeff = rs.entropyRegularizationCoeff {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] entropy_bonus: \(entropyRegularizationCoeff) -> \(entropyCoeff) (from session)"
+                    )
                     trainer.entropyRegularizationCoeff = entropyCoeff
                     entropyRegularizationCoeff = Double(entropyCoeff)
                 } else {
                     trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
                 }
                 if let dp = rs.drawPenalty {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] draw_penalty: \(drawPenalty) -> \(dp) (from session)"
+                    )
                     trainer.drawPenalty = dp
                     drawPenalty = Double(dp)
                 } else {
@@ -7369,35 +7752,109 @@ struct ContentView: View {
                 // files: hydrate when present, otherwise leave the current
                 // @AppStorage-backed value alone.
                 if let wd = rs.weightDecayCoeff {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] weight_decay: \(weightDecayC) -> \(wd) (from session)"
+                    )
                     trainer.weightDecayC = wd
                     weightDecayC = Double(wd)
                 } else {
                     trainer.weightDecayC = Float(weightDecayC)
                 }
                 if let clip = rs.gradClipMaxNorm {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] grad_clip_max_norm: \(gradClipMaxNorm) -> \(clip) (from session)"
+                    )
                     trainer.gradClipMaxNorm = clip
                     gradClipMaxNorm = Double(clip)
                 } else {
                     trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
                 }
                 if let k = rs.policyScaleK {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] K: \(policyScaleK) -> \(k) (from session)"
+                    )
                     trainer.policyScaleK = k
                     policyScaleK = Double(k)
                 } else {
                     trainer.policyScaleK = Float(policyScaleK)
                 }
-                // Sqrt-batch LR scaling flag and LR warmup length
-                // aren't part of the session schema — they live in
-                // @AppStorage and persist across launches already, so
-                // we just push whatever the user had configured
-                // globally into the fresh trainer. The trainer's
-                // internal completed-step counter is seeded from the
-                // session's persisted `trainingSteps` so warmup
-                // scaling resumes mid-session instead of restarting
-                // from zero.
-                trainer.sqrtBatchScalingForLR = sqrtBatchScalingForLR
-                trainer.lrWarmupSteps = lrWarmupSteps
+                // LR warmup length and sqrt-batch LR scaling are now
+                // part of the session schema (Optional, for back-compat
+                // with older `.dcmsession` files that pre-date the
+                // expansion). When the saved value is present, we
+                // restore it onto both the trainer and the @AppStorage
+                // mirror so the UI shows what the session was running
+                // with — not whatever the user's current global
+                // preference happens to be. When absent (older session),
+                // we fall through to the @AppStorage value as before.
+                // The trainer's internal completed-step counter is
+                // seeded from `trainingSteps` so warmup scaling resumes
+                // mid-session instead of restarting from zero.
+                //
+                // Each restored field emits a `[RESUME-PARAM]` log
+                // line so the user can audit, after the fact, which
+                // parameters came from disk versus from `@AppStorage`
+                // fallback. Lines fire only when the saved value is
+                // present and valid — the fallback path is the
+                // common case for older session files and is silent
+                // to avoid log spam.
+                if let savedSqrt = rs.sqrtBatchScalingForLR {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] sqrt_batch_scaling_lr: \(sqrtBatchScalingForLR) -> \(savedSqrt) (from session)"
+                    )
+                    trainer.sqrtBatchScalingForLR = savedSqrt
+                    sqrtBatchScalingForLR = savedSqrt
+                } else {
+                    trainer.sqrtBatchScalingForLR = sqrtBatchScalingForLR
+                }
+                if let savedWarmup = rs.lrWarmupSteps, savedWarmup >= 0 {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] lr_warmup_steps: \(lrWarmupSteps) -> \(savedWarmup) (from session)"
+                    )
+                    trainer.lrWarmupSteps = savedWarmup
+                    lrWarmupSteps = savedWarmup
+                } else {
+                    trainer.lrWarmupSteps = lrWarmupSteps
+                }
                 trainer.completedTrainSteps = rs.trainingSteps
+                // Run-management knobs that previously lived only in
+                // @AppStorage. Same Optional-with-fallback pattern.
+                if let v = rs.replayBufferMinPositionsBeforeTraining, v >= 0 {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] replay_buffer_min_positions_before_training: \(effectiveMinBufferBeforeTraining) -> \(v) (from session)"
+                    )
+                    effectiveMinBufferBeforeTraining = v
+                }
+                if let v = rs.arenaAutoIntervalSec, v > 0 {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] arena_auto_interval_sec: \(effectiveAutoArenaIntervalSec) -> \(v) (from session)"
+                    )
+                    effectiveAutoArenaIntervalSec = v
+                }
+                if let v = rs.candidateProbeIntervalSec, v > 0 {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] candidate_probe_interval_sec: \(effectiveCandidateProbeIntervalSec) -> \(v) (from session)"
+                    )
+                    effectiveCandidateProbeIntervalSec = v
+                }
+                if let v = rs.legalMassCollapseThreshold, v > 0, v < 1 {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] legal_mass_collapse_threshold: \(legalMassCollapseThreshold) -> \(v) (from session)"
+                    )
+                    legalMassCollapseThreshold = v
+                }
+                if let v = rs.legalMassCollapseGraceSeconds, v >= 0 {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] legal_mass_collapse_grace_seconds: \(legalMassCollapseGraceSeconds) -> \(v) (from session)"
+                    )
+                    legalMassCollapseGraceSeconds = v
+                }
+                if let v = rs.legalMassCollapseNoImprovementProbes, v >= 1 {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: \(legalMassCollapseNoImprovementProbes) -> \(v) (from session)"
+                    )
+                    legalMassCollapseNoImprovementProbes = v
+                }
                 // Sampling schedule — TauConfigCodable is non-Optional on
                 // the session schema (added in v1), so no fallback branch.
                 // Writes to @AppStorage propagate through

@@ -15,7 +15,7 @@ import Foundation
 /// output destination would silently terminate the process without
 /// producing any artifact — which is worse than refusing to honor
 /// it.
-struct CliTrainingConfig: Decodable, Sendable {
+struct CliTrainingConfig: Codable, Sendable {
     // MARK: - Training loss / optimization
 
     var entropyBonus: Double? = nil
@@ -136,6 +136,20 @@ struct CliTrainingConfig: Decodable, Sendable {
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         return try decoder.decode(CliTrainingConfig.self, from: data)
+    }
+
+    /// Encode this config to JSON `Data`. Sorted keys so a UI-saved
+    /// file diffs cleanly against an autotrain-saved file with the
+    /// same values, and pretty-printed so a human can hand-edit it.
+    /// Optional fields with nil values are omitted from the output
+    /// (Swift's synthesized `encode(to:)` for Optional uses
+    /// `encodeIfPresent`), so a partial config produces a partial
+    /// file — matching the existing partial-override semantics on
+    /// the load side.
+    func encodeJSON() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(self)
     }
 
     /// Human-readable summary of the non-nil fields for the
