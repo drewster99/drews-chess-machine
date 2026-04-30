@@ -1,0 +1,1 @@
+Lower entropy_bonus 0.016→0.014 to give more concentrated learning at the same 2700s window. Higher (0.018) backfired with full collapse; trying the opposite direction at the proven-stable window before extending.

@@ -1,0 +1,58 @@
+run_training.sh: launching DrewsChessMachine (limit=2700s, params=experiments/20260430-211512/parameters.json, out=experiments/20260430-211512/result.json)
+[APP] session log: /Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20260430-161641.txt
+[ARENA] #1 Candidate vs Champion @ step 177
+[ARENA]     Games: 100/100
+[ARENA]     Result: 6W / 86D / 8L
+[ARENA]     Score: 49.0% [45.3%, 52.7%]
+[ARENA]     Elo diff: -7 [-32, +19]
+[ARENA]     Draw rate: 86.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 46.0%  (1W/44D/5L, n=50)
+[ARENA]       Candidate as black: 52.0%  (5W/42D/3L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.030 ar.tau=2.00/0.50/0.010 workers=48 build=404
+[ARENA]     candidate=20260430-63-oaTb-1  champion=20260430-63-oaTb  trainer=20260430-63-oaTb-1
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=1.4
+[ARENA]     Verdict: kept    dur=5:01
+[ARENA] #1 kv step=177 games=100 w=6 d=86 l=8 score=0.4900 elo=-7 elo_lo=-32 elo_hi=+19 draw_rate=0.8600 cand_white_w=1 cand_white_d=44 cand_white_l=5 cand_black_w=5 cand_black_d=42 cand_black_l=3 cand_white_score=0.4600 cand_black_score=0.5200 promoted=0 kind=none dur_sec=301.2 build=404 candidate=20260430-63-oaTb-1 champion=20260430-63-oaTb trainer=20260430-63-oaTb-1
+[ARENA] #2 Candidate vs Champion @ step 554
+[ARENA]     Games: 100/100
+[ARENA]     Result: 6W / 85D / 9L
+[ARENA]     Score: 48.5% [44.7%, 52.3%]
+[ARENA]     Elo diff: -10 [-37, +16]
+[ARENA]     Draw rate: 85.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 47.0%  (2W/43D/5L, n=50)
+[ARENA]       Candidate as black: 50.0%  (4W/42D/4L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.030 ar.tau=2.00/0.50/0.010 workers=48 build=404
+[ARENA]     candidate=20260430-63-oaTb-1  champion=20260430-63-oaTb  trainer=20260430-63-oaTb-1
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=1.5
+[ARENA]     Verdict: kept    dur=4:44
+[ARENA] #2 kv step=554 games=100 w=6 d=85 l=9 score=0.4850 elo=-10 elo_lo=-37 elo_hi=+16 draw_rate=0.8500 cand_white_w=2 cand_white_d=43 cand_white_l=5 cand_black_w=4 cand_black_d=42 cand_black_l=4 cand_white_score=0.4700 cand_black_score=0.5000 promoted=0 kind=none dur_sec=284.7 build=404 candidate=20260430-63-oaTb-1 champion=20260430-63-oaTb trainer=20260430-63-oaTb-1
+[ARENA] #3 Candidate vs Champion @ step 917
+[ARENA]     Games: 100/100
+[ARENA]     Result: 8W / 83D / 9L
+[ARENA]     Score: 49.5% [45.5%, 53.5%]
+[ARENA]     Elo diff: -3 [-32, +25]
+[ARENA]     Draw rate: 83.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 48.0%  (1W/46D/3L, n=50)
+[ARENA]       Candidate as black: 51.0%  (7W/37D/6L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.030 ar.tau=2.00/0.50/0.010 workers=48 build=404
+[ARENA]     candidate=20260430-63-oaTb-1  champion=20260430-63-oaTb  trainer=20260430-63-oaTb-1
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=1.3
+[ARENA]     Verdict: kept    dur=4:23
+[ARENA] #3 kv step=917 games=100 w=8 d=83 l=9 score=0.4950 elo=-3 elo_lo=-32 elo_hi=+25 draw_rate=0.8300 cand_white_w=1 cand_white_d=46 cand_white_l=3 cand_black_w=7 cand_black_d=37 cand_black_l=6 cand_white_score=0.4800 cand_black_score=0.5100 promoted=0 kind=none dur_sec=263.9 build=404 candidate=20260430-63-oaTb-1 champion=20260430-63-oaTb trainer=20260430-63-oaTb-1
+[ARENA] #4 Candidate vs Champion @ step 1261
+[ARENA]     Games: 100/100
+[ARENA]     Result: 8W / 85D / 7L
+[ARENA]     Score: 50.5% [46.7%, 54.3%]
+[ARENA]     Elo diff: +3 [-23, +30]
+[ARENA]     Draw rate: 85.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 49.0%  (1W/47D/2L, n=50)
+[ARENA]       Candidate as black: 52.0%  (7W/38D/5L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.030 ar.tau=2.00/0.50/0.010 workers=48 build=404
+[ARENA]     candidate=20260430-63-oaTb-1  champion=20260430-63-oaTb  trainer=20260430-63-oaTb-1
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=1.2
+[ARENA]     Verdict: kept    dur=4:05
+[ARENA] #4 kv step=1261 games=100 w=8 d=85 l=7 score=0.5050 elo=+3 elo_lo=-23 elo_hi=+30 draw_rate=0.8500 cand_white_w=1 cand_white_d=47 cand_white_l=2 cand_black_w=7 cand_black_d=38 cand_black_l=5 cand_white_scorrun_training.sh: run complete, output at experiments/20260430-211512/result.json

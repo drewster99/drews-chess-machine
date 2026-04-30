@@ -1,0 +1,1 @@
+Bump entropy_bonus 0.016→0.018 to keep policy diverse late in window, preventing the candidate-snapshot saturation that surfaced at the prior 3000s attempt while keeping all other levers identical.

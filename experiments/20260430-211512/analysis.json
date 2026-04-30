@@ -1,0 +1,1 @@
+{"analysis_commentary":"Same 2700s window, no early-bail, no full-collapse signals. End-of-run probe health is markedly better: max_prob 0.150→0.078 and legal_mass_sum 0.322→0.696, with top1_legal_ever_positive still true and pEnt min 6.21 safely above the 5.0 alarm. Promotion activity: 4 arenas, 0 promotions (baseline 5/0).","classification":"improved"}

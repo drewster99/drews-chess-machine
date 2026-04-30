@@ -1,0 +1,1 @@
+Pure window-extension: 2700s→3000s (+300s, +11%). Same params as 2700s baseline which showed dramatically healthier end-of-run state with longer training (max 0.150, illegal_mass 0.678). Continue extending while trajectory stays stable.
