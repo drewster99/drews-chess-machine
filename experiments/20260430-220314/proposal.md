@@ -1,0 +1,1 @@
+Extend training_time 2700s to 3000s with same params (entropy_bonus 0.014). The new baseline shows much healthier end-of-run state (max=0.078, legal_mass=0.696) at 2700s, so the previously-regressing 3000s extension should now succeed.
