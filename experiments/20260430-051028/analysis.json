@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "candidate_probe_interval_sec 15->18 (purely observability) REGRESSED on collapse signals. last_probe legal_mass_sum 0.734->0.00018 (illegal_mass=0.99982, violates GOAL-1A). top1_legal_ever_positive flipped TRUE->FALSE. training_steps 538->189. Notable: arena score 0.525 (best in 11 attempts, vs baseline 0.47, Elo +17.4) but no promotion. The pure-observability param regressing further confirms baseline is noise-lucky. failure_streak=11 (replicate at 15).",
+  "classification": "regressed"
+}

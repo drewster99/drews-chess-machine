@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "REPLICATE confirms baseline unreproducible: same params, very different result. last_probe max_prob 1.0 (vs baseline 0.195, violates GOAL-1B), legal_mass_sum 0 (violates GOAL-1A), value 0.99998 (saturated). gNorm max 140 (spiked >100). training_steps 200 (vs baseline 538). 1 arena, score 0.47 — same as baseline. The saved baseline was noise-lucky; replicate-mode worked as designed in revealing this. failure_streak=16, trailing_replicates=1.",
+  "classification": "regressed"
+}

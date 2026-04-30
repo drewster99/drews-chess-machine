@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "weight_decay 0.0002->0.0003 REGRESSED on collapse signals despite goals passing. top1_legal_ever_positive flipped TRUE->FALSE. last_probe legal_mass_sum 0.734->0.240 (-67%). above_uniform_count 6->2. training_steps 538->195 (consistent 60%+ drop across all 9 perturbations — strongly suggests baseline was noise-lucky). 0 arenas completed (vs 1 in baseline). pEnt 6.73 stable, gNorm 50 (no spike). No promotion. failure_streak=9 (watch).",
+  "classification": "regressed"
+}

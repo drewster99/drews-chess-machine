@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "weight_decay 0.0002->0.00025 REGRESSED. last_probe (895s) max_prob=0.902 (violates GOAL-1B 0.90), legal_mass=0 (violates GOAL-1A 0.99 illegal_mass). mid_probe already at 0.38/0 — late collapse. 520 training_steps. pEnt 6.53, gNorm 29.6 (clean — collapse was distribution-shape). Notable: 1× arena promotion in spite of late collapse. Both goals violated overrules promotion. failure_streak=2.",
+  "classification": "regressed"
+}

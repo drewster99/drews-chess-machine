@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "REPLICATE #3 (final before HALT): unreproducible again. last_probe max_prob=1.0, legal_mass_sum=0, top1_legal_ever_positive=FALSE — clear collapse pattern. training_steps 203 (vs baseline 538). 1 arena, score 0.47, no promotion. Of 3 replicates with identical params, none came close to baseline's max_prob 0.195 + legal_mass 0.734 simultaneously. Saved baseline is conclusively noise-lucky. trailing_replicates=3 — next iteration triggers HALT.",
+  "classification": "regressed"
+}

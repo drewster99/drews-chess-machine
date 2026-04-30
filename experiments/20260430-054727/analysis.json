@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "legal_mass_collapse_grace_seconds 300->330 (early-bail timing only) REGRESSED. last_probe collapsed: max_prob=1.0 (violates GOAL-1B), legal_mass_sum=0 (violates GOAL-1A), one-hot. training_steps 538->203. 1 arena, score 0.5, no promotion. Same noise pattern. failure_streak=13 (replicate at 15, 2 more iterations).",
+  "classification": "regressed"
+}

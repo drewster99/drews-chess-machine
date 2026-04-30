@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "grad_clip_max_norm 25->32 REGRESSED on collapse signals despite both goals passing. top1_legal_ever_positive flipped TRUE->FALSE (explicit regression marker). last_probe legal_mass_sum 0.734->0.268 (-63%) and above_uniform_count 6->2. training_steps dropped 538->200 (likely from larger updates eating more wall-clock per step). gNorm mean 25.5->43.2 (still <100). max_prob 0.195->0.106 (better) but the legal-move learning signal weakened. No promotion (1 arena, score 0.485). failure_streak=6 (watch).",
+  "classification": "regressed"
+}

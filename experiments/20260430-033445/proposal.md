@@ -1,0 +1,1 @@
+grad_clip_max_norm 25->32 (+28%). Untouched orthogonal axis. Baseline mean grad_norm=25.5 / max=43 shows clip is active >50% of steps but never exceeds 100; loosening lets more early-training signal through without destabilizing.

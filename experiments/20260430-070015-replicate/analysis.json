@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "REPLICATE #2 again unreproducible. last_probe max_prob 0.197 (close to baseline 0.195, GOAL-1B passes!) but legal_mass_sum 0 (GOAL-1A violated, illegal_mass=1.0). top1_legal_ever_positive held TRUE. training_steps 199 (vs baseline 538). 1 arena, score 0.5 (slightly better, no promotion). Even with same params and similar max_prob, the legal_mass behavior is wildly different from saved baseline. trailing_replicates=2. failure_streak=17. One more replicate triggers HALT.",
+  "classification": "regressed"
+}

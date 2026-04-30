@@ -1,0 +1,1 @@
+replay_ratio_target 1.1->1.2 (+9%). Slightly more aggressive trainer consumption relative to self-play production. Opposite direction from the failed 1.0 attempt; tests whether tighter buffer turnover at this baseline accelerates policy concentration without destabilizing legal mass.

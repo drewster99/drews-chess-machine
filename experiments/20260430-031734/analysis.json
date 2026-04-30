@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Catastrophic regression. legal_mass_sum collapsed 0.734->0.0 (GOAL-1A violated) and max_prob jumped 0.195->1.0 (GOAL-1B violated); above_uniform_count 6->0. Training also slowed dramatically (538->192 steps) and gNorm exceeded 100 (max 145). No promotion; 0 arenas vs baseline's 1. The +9% replay_ratio_target nudge produced runaway value-head saturation and total illegal-mass collapse.",
+  "classification": "regressed"
+}

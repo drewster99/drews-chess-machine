@@ -75,8 +75,7 @@ Walk `experiments/*/` newest → oldest and compute two numbers:
 
 Then decide mode for this iteration:
 
-- **`trailing_replicates ≥ 3`** → **HALT**. We've run the baseline verbatim three times in a row without an accept. Either the baseline is genuinely unreproducible or the analyzer's goal can't be satisfied by the current best. Print `autotrain: halted — 3 consecutive replicates did not promote, manual intervention recommended`, include pointers to those three folders, and end. Do NOT enter another replicate or a normal iteration.
-- **`failure_streak ≥ 15`** (and `trailing_replicates < 3`) → enter **REPLICATE mode**. The proposer has been failing to find improvements for 15 iterations; rather than ask it to try again, re-run the current-best parameters verbatim to probe whether the "best" result is actually reproducible. Set a local flag `replicate_mode = true` that step 4 and step 5 observe. Rationale: if the baseline reproduces, the proposer is the problem (analyzer confirms rejections are real); if the baseline does *not* reproduce, the "current best" was noise-lucky and we may get a free accept from a decent replicate.
+- **`failure_streak ≥ 15`** → enter **REPLICATE mode**. The proposer has been failing to find improvements for 15 iterations; rather than ask it to try again, re-run the current-best parameters verbatim to probe whether the "best" result is actually reproducible. Set a local flag `replicate_mode = true` that step 4 and step 5 observe. Rationale: if the baseline reproduces, the proposer is the problem (analyzer confirms rejections are real); if the baseline does *not* reproduce, the "current best" was noise-lucky and we may get a free accept from a decent replicate. There is no HALT — keep cycling through replicates and normal iterations indefinitely; if `trailing_replicates ≥ 3`, force the next iteration into **normal mode** (skip replicate even if `failure_streak ≥ 15`) so the proposer gets another shot.
 - **`failure_streak` 10–14** → proceed normally but note it in the iteration's summary line (`... (streak=12, replicate at 15)`).
 - **`failure_streak` 5–9** → proceed normally but note it (`... (streak=7, watch)`).
 - **`failure_streak` < 5** → proceed silently.
@@ -85,7 +84,7 @@ Then decide mode for this iteration:
 
 `regen_dashboard.py` exposes `window.AGGREGATES.code_iteration_due` and `iterations_since_codechange`. The cadence counts only `mode=normal` iterations since the last `-codechange` folder (replicates and seeds are transparent), so the proposer's tuning history isn't artificially shortened by replicate cascades.
 
-If `code_iteration_due` is `true` AND none of the higher-priority modes from step 0.6 fired (i.e. `trailing_replicates < 3` and `failure_streak < 15`), AND `failure_streak < 5`, route this iteration into **CODE-CHANGE mode** instead of normal. Set a local flag `code_change_mode = true` that step 4 and step 5b observe. Folder suffix becomes `-codechange`.
+If `code_iteration_due` is `true` AND `failure_streak < 15` (no replicate-mode trigger) AND `failure_streak < 5`, route this iteration into **CODE-CHANGE mode** instead of normal. Set a local flag `code_change_mode = true` that step 4 and step 5b observe. Folder suffix becomes `-codechange`.
 
 **Why the `failure_streak < 5` gate:** code surgery on top of unstable parameter dynamics is a recipe for chaos — one variable at a time. If we're in a watch-zone streak, defer the code-change iteration until the next normal accept resets the streak; the cadence counter keeps ticking, so we'll just take the code-change shot a few iterations later.
 
@@ -241,7 +240,7 @@ Then spawn a general-purpose subagent with this prompt (pass as a fenced JSON bl
   "current_best_results_summary": <current_best_summary>,
   "current_best_results_json_path": "<absolute path to $ROOT/results.json>",
   "recent_history": <recent_history>,
-  "training_time_seconds_max": 1800,
+  "training_time_seconds_max": null,
   "training_time_seconds_default": 900,
   "exploration_mode": <boolean>
 }
@@ -258,7 +257,7 @@ Instructions embedded in the prompt:
   {
     "change_details": "<BRIEF rationale, 1-2 sentences, <= 60 words>",
     "parameters": { ... full parameters object, every key from input preserved exactly ... },
-    "training_time_seconds": <integer in [60, training_time_seconds_max], OPTIONAL>,
+    "training_time_seconds": <integer ≥ 60, no upper bound, OPTIONAL>,
     "training_time_rationale": "<BRIEF, one short sentence, <= 20 words, OPTIONAL>"
   }
   ```
@@ -269,11 +268,11 @@ Instructions embedded in the prompt:
   - `lr_warmup_steps` must be **≤ ⅓ of `training_steps`** from the latest run's summary (see `derived_budget.recommended_lr_warmup_max`). Above that the lr ramp never finishes in a 10-minute window, so the configured `learning_rate` is never actually exercised and the result looks like stalled learning even when the parameters are otherwise fine. The validator hard-caps at 50% of `training_steps`.
   - `replay_buffer_min_positions_before_training` eats wall-clock before any SGD step — larger values delay the first probe and reduce the number of training steps that fit in the window. Don't raise it unless you have a specific reason related to replay diversity.
   - `{training_batch_size, learning_rate, weight_decay}` are coupled through SGD noise and update magnitude. Scaling batch requires scaling lr in the same direction (linear for SGD, √-batch for Adam); `weight_decay` per-epoch also couples via the number of update steps per epoch. Don't change batch alone. The repo has `sqrt_batch_scaling_lr` which the app can apply automatically — keep that flag on unless you've thought hard about why not.
-- Only set `training_time_seconds` if you have a specific reason. The default (`training_time_seconds_default`, 900 s / 15 min) is what you get if you omit the field, and it's the right choice for typical incremental tuning. Request a longer run (up to `training_time_seconds_max`, 1800 s / 30 min) only when a change genuinely needs more training time to show signal — for example, a learning-rate decrease that slows convergence, a larger batch size that needs more steps per epoch, or a change whose effect is dominated by late-training dynamics (pEnt trajectory past 15 min, arena cadence, promotion behavior). Do not request a long run just to gather more data on a change that would already show signal at 900 s. If you do set it, include a brief `training_time_rationale` naming the specific reason.
+- **There is no upper cap on `training_time_seconds`.** The goal is to perpetually extend training length without full collapse. Bias every proposal toward a window **at least 300 s longer** than the previous accepted run when that run was healthy at its full window — and feel free to jump aggressively (e.g. straight to 3600 s / 60 min, or longer) when the prior trajectory looks stable. The default of 900 s only applies when there is no prior accepted window or you have a specific reason to test something at short range. Include a brief `training_time_rationale` naming the reason.
 
 **After** the subagent returns:
 1. Parse the JSON. If parsing fails or required keys (`change_details`, `parameters`) are missing, retry once with a terser reminder of the schema. If the retry also fails, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "proposer returned invalid JSON twice — skipping iteration"}`, run `regen_dashboard.py`, and jump to step 8 (reject).
-2. If `training_time_seconds` is present, clamp to `[60, 1800]`. If absent, use 900 (the default).
+2. If `training_time_seconds` is present, clamp to a minimum of 60 (no upper bound). If absent, use 900 (the default).
 3. Save the full raw JSON response to `<folder>/proposal.json`.
 4. Write `change_details` to `<folder>/proposal.md`.
 5. Write the `parameters` object to `<folder>/parameters.json`.
@@ -286,7 +285,7 @@ Then run `regen_dashboard.py` so the dashboard shows this iteration as `IN_PROGR
 
 Read the training time from `<folder>/training_time.txt` (fall back to 600 if the file is missing, e.g. during the seed path).
 
-Invoke `run_training.sh <folder>/parameters.json <training_time> <folder>/result.json <folder>/run.log`. `run_training.sh` enforces its own hard cap at 1800 s — anything larger gets clamped down.
+Invoke `run_training.sh <folder>/parameters.json <training_time> <folder>/result.json <folder>/run.log`. There is **no upper cap** on training time — the wrapper passes whatever value you give it through to the app.
 
 Exit-code handling:
 - **`0`** — clean training run, ran to the timer. `result.json` will have `"termination_reason": "timer_expired"`. Continue to step 7.
@@ -421,6 +420,6 @@ Print a one-line summary: `autotrain <timestamp>: ACCEPTED|REJECTED — <change_
 - Never run `git reset`, `git stash`, or `git rebase`.
 - Never force-push.
 - Never skip commit hooks.
-- The per-iteration time limit is hard-capped at 1800 seconds (30 min); the default when the proposer doesn't specify is 900 seconds (15 min). If a subagent requests a longer run, clamp it to 1800.
+- There is **no upper cap** on per-iteration training time. The default when the proposer doesn't specify is 900 seconds, but the proposer is encouraged to extend perpetually (60-minute runs and beyond are fine).
 - Only push to the branch the user confirmed in step 0 of the current session. If branch changed mid-loop, re-confirm.
 - If `git status` shows unexpected staged changes at iteration start, stop and surface them — don't sweep them into an autotrain commit.

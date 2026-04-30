@@ -1,0 +1,1 @@
+Extend training_time_seconds 900→2400 (+25 min) and bump entropy_bonus 0.014→0.016 to keep policy diverse deeper into the longer window. Baseline trajectory is healthy and improving (legal_mass 0.007→0.734, gNorm 43→19), so aggressive extension is warranted.

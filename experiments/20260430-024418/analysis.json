@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "self_play_target_tau 0.80->0.82 REGRESSED. Both goals pass (max_prob 0.373, legal_mass 0.053) but collapse signals regressed: top1_legal_ever_positive TRUE->FALSE (explicit regression), above_uniform 0 vs 6, top1_legal_fraction 0 vs 0.094. Only 202 training_steps vs 538 baseline (huge throughput drop). pEnt 7.01, gNorm 42.97 (clean). 0 promoted. failure_streak=3.",
+  "classification": "regressed"
+}

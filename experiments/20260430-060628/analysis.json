@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_auto_interval_sec 300->270 (no training-dynamics impact) REGRESSED. last_probe collapsed: max_prob=1.0 (violates GOAL-1B), legal_mass_sum=0 (violates GOAL-1A). top1_legal_ever_positive held TRUE (max 0.0156). training_steps 538->193. 1 arena, score 0.48. Same noise pattern. failure_streak=14 (replicate at 15 — next iteration triggers REPLICATE mode).",
+  "classification": "regressed"
+}

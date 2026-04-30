@@ -1,0 +1,1 @@
+Increase weight_decay 0.0002 to 0.0003 (50% bump, tiny absolute amount). Adds slight regularization to dampen runaway weight updates and reduce collapse susceptibility. Smallest plausible behavioral impact on training dynamics; targets stability over metric chasing given failure_streak=8.

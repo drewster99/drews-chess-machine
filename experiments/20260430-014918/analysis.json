@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "20-min extension NEUTRAL. Both goals satisfied (max_prob 0.221, legal_mass 0.447). Crucially: 1/2 arena PROMOTION — the first ever in this baseline family — and clean termination (no collapse, gNorm 42.7, pEnt 6.90). Several metrics trail 15-min baseline though: legal_mass 0.447 vs 0.734, above_uniform 2 vs 6, top1_legal_fraction 0.047 vs 0.094. Time-axis extended successfully without collapse, but in-window concentration weaker. Within noise envelope. Baseline holds.",
+  "classification": "neutral"
+}

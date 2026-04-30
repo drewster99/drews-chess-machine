@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_promote_threshold 0.55->0.54 REGRESSED on collapse signals despite goals passing. This param ONLY affects promotion decision — never the SGD loop or self-play. Yet legal_mass_sum dropped 0.734->0.026 (-96%), top1_legal_ever_positive flipped TRUE->FALSE, training_steps 538->206. Strong evidence the saved baseline is genuinely unreproducible run-to-run noise. Arena score 0.505 (better than 0.47 but no promotion). failure_streak=10 (replicate at 15).",
+  "classification": "regressed"
+}

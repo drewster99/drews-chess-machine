@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "entropy_bonus 0.014->0.0135 REGRESSED catastrophically. last_probe max_prob 1.0 (vs baseline 0.195, violates GOAL-1B), legal_mass_sum 0.0 (illegal_mass=1.0, violates GOAL-1A), above_uniform_count=0. Mid_probe max_prob 0.867 — collapse mid-run, never recovers. training_steps 538->197. pEnt 6.77 (held), gNorm max 33 (no spike). top1_legal held positive at 0.78%. No promotion. Even 4% nudges around this baseline now collapse — strongly suggests the saved baseline was noise-lucky, not a robust optimum. failure_streak=8 (watch).",
+  "classification": "regressed"
+}

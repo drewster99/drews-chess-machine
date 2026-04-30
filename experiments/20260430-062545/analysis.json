@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_games_per_tournament 100->90 REGRESSED. last_probe near-one-hot collapse: max_prob=0.99999, legal_mass_sum=0, top1_legal_ever_positive=FALSE. training_steps 538->216. 1 arena, score 0.472, no promotion. failure_streak=15 — REPLICATE mode triggers next iteration.",
+  "classification": "regressed"
+}

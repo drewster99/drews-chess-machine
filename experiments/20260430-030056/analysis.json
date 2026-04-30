@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "replay_ratio_target 1.1->1.0 REGRESSED. last_probe legal_mass=0 (illegal_mass=1.0) violates GOAL-1A. max_prob 0.380 still passes GOAL-1B. mid_probe also at legal_mass 0. Only 198 training_steps. pEnt 6.73, gNorm 34.7 (clean). 0 promoted. failure_streak=4.",
+  "classification": "regressed"
+}

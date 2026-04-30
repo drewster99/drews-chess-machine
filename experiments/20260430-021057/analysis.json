@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "entropy_bonus 0.014->0.013 REGRESSED. last_probe (895s) max_prob=1.0, legal_mass=0 — full collapse. Mid_probe (463s) showed early peakedness (max_prob 0.77) then completed collapse by last. Violates BOTH goals. 538 training_steps (matches baseline). pEnt 6.78, gNorm 33.3 (clean — collapse was distribution-shape, not gradient). 0 promoted (1 arena). entropy_bonus is a sharp threshold; 0.013 is below the safe floor. failure_streak=1.",
+  "classification": "regressed"
+}

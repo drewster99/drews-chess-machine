@@ -1,0 +1,1 @@
+Lower arena_promote_threshold 0.55->0.54. Purely affects promotion decision logic, not the SGD/self-play training dynamics. Behaviorally orthogonal nudge to break failure streak without perturbing training trajectory.

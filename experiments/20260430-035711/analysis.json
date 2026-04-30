@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "arena_tau_decay 0.01->0.015 REGRESSED catastrophically on GOAL-1A. last_probe legal_mass_sum 0.734->0.00002 (illegal_mass ~0.99998, violates GOAL-1A). top1_legal_ever_positive flipped TRUE->FALSE. mid_probe max_prob 0.997 (transient collapse). max_prob 0.195->0.131 (slightly better). training_steps 538->219. No promotion (1 arena, score 0.49). Surprising: arena_tau is supposed to affect ONLY arena play, not training — likely just bad-seed noise on a fragile baseline. failure_streak=7 (watch).",
+  "classification": "regressed"
+}

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "legal_mass_collapse_no_improvement_probes 5->6 (early-bail-only param) REGRESSED on collapse signals. last_probe legal_mass_sum 0.734->0.00042 (illegal_mass=0.99958, violates GOAL-1A). top1_legal_ever_positive flipped TRUE->FALSE. arenas 1->0 (no arena completed). gNorm dropped to 19 (calmest run yet) but same legal_mass collapse. Confirms: even pure early-bail-control changes hit the same noise pattern. failure_streak=12 (replicate at 15).",
+  "classification": "regressed"
+}
