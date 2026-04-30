@@ -17909,22 +17909,70 @@ window.EXPERIMENTS = [
     "analysis_commentary": "REPLICATE 2/3 at 600s: non-collapse. last_probe max_prob 0.146 (better than baseline 0.239), legal_mass 0.231 (worse than 0.746 outlier but well above GOAL-1A 0.01 threshold). pEnt 6.78, gNorm 21.3 (cleanest in 15+ iterations). 366 steps. above_uniform=2, top1_legal_ever_positive=false. Both goals satisfied. With Replicate 1 having confirmed the saved baseline is noise-unreproducible, this stable non-collapse run replaces the lucky outlier with a representative anchor \u2014 the skill-spec 'free accept'. No promotion (1 arena, 0).",
     "training_time_seconds": 600,
     "folder": "experiments/20260430-010848-replicate"
+  },
+  {
+    "timestamp": "20260430-012034",
+    "start_time_iso": "2026-04-30T01:20:34Z",
+    "status": "ACCEPTED",
+    "mode": "normal",
+    "change_details": "entropy_bonus 0.015->0.014 (-7%). Tiny step on validated entropy axis at the new 600s baseline window. Probes whether slightly less entropy regularization improves legal_mass concentration without disrupting goal margins.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.015,
+        "new": 0.014
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.014,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 30,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 300,
+      "legal_mass_collapse_no_improvement_probes": 5,
+      "training_time_limit": 3600
+    },
+    "analysis_commentary": "entropy_bonus 0.015->0.014 IMPROVED. last_probe legal_mass 0.334 vs baseline 0.231 (+45%, well above GOAL-1A 0.01). max_prob 0.159 (\u2248baseline 0.146). above_uniform 3 vs 2 (more legal candidates with above-uniform mass). pEnt 6.88, gNorm 29.6 (clean). Both goals satisfied. 366 steps, 0 arenas (interval 300s but only one window). No promotion.",
+    "training_time_seconds": 600,
+    "folder": "experiments/20260430-012034"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 391,
+  "total_iterations": 392,
   "counts": {
     "SEED": 1,
-    "ACCEPTED": 34,
+    "ACCEPTED": 35,
     "NEUTRAL": 37,
     "REJECTED": 317,
     "FAILED": 3,
     "IN_PROGRESS": 0
   },
-  "accept_rate": 0.08695652173913043,
+  "accept_rate": 0.08928571428571429,
   "failure_streak": 0,
-  "trailing_replicates": 2,
-  "iterations_since_codechange": 44,
+  "trailing_replicates": 0,
+  "iterations_since_codechange": 45,
   "code_iteration_due": true,
   "code_iteration_interval": 40,
   "arena_count": 237,

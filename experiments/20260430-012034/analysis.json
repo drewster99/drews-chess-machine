@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "entropy_bonus 0.015->0.014 IMPROVED. last_probe legal_mass 0.334 vs baseline 0.231 (+45%, well above GOAL-1A 0.01). max_prob 0.159 (≈baseline 0.146). above_uniform 3 vs 2 (more legal candidates with above-uniform mass). pEnt 6.88, gNorm 29.6 (clean). Both goals satisfied. 366 steps, 0 arenas (interval 300s but only one window). No promotion.",
+  "classification": "improved"
+}
