@@ -28,6 +28,20 @@ The app terminal console only shows SwiftUI chart warnings and bring-up noise. A
 - `xcode-mcp-server`'s `get_runtime_output` only returns output after the app has terminated; while the session is running, read the session log file directly.
 - Every log line is timestamped. Tags to look for: `[APP]` (launch banner with build+git), `[BUTTON]` (user actions), `[STATS]` (periodic training snapshot, 15-minute cadence plus every arena boundary), `[ARENA]` (arena start/end, W/L/D, kept vs promoted), `[ALARM]` (e.g. policy entropy below threshold), `[CHECKPOINT]` (autosaves), `[BATCHER]` (batched-eval startup correctness probe).
 
+## Training parameters
+
+All 29 tunable training parameters live in a single `@MainActor @Observable` singleton: `TrainingParameters.shared` (`DrewsChessMachine/DrewsChessMachine/TrainingParameters.swift`). Each parameter is declared via the `@TrainingParameter` macro (in the local SwiftPM package `DrewsChessMachine/Packages/TrainingParametersMacro/`) which generates the id, definition (with range + category + liveTunable flag), and typed encode/decode. Adding a parameter: write a `@TrainingParameter(...) public enum FooBar: TrainingParameterKey {}` declaration plus a stored property + collectValues / applyOne entry in `TrainingParameters`; add the type to `allKeys`.
+
+Reading values:
+- **From SwiftUI views**: `@Bindable var trainingParams = TrainingParameters.shared`, then read `trainingParams.entropyBonus` or bind `$trainingParams.entropyBonus`. Re-renders fire automatically.
+- **From off-main / structured-concurrency code**: take a snapshot at session boundary — `let p = await TrainingParameters.shared.snapshot()` — then `p.entropyBonus`. The snapshot is `Sendable`, immutable, and lock-free; mid-iteration UI changes are picked up next snapshot. For the four currently-`liveTunable` params (`selfPlayWorkers`, `trainingStepDelayMs`, `replayRatioTarget`, `replayRatioAutoAdjust`), running consumers re-read from `TrainingParameters.shared` on a periodic reconcile loop instead of using a snapshot.
+
+Persistence is automatic: every property `didSet` writes to `UserDefaults` under the parameter's id, and the next `init` reads it back (validated). There is no `@AppStorage` for training parameters anywhere — the singleton owns all persistence.
+
+CLI flags for emitting defaults:
+- `DrewsChessMachine --show-default-parameters` — flat snake_case JSON to stdout, descriptions to stderr; sub-second exit, no GUI.
+- `DrewsChessMachine --create-parameters-file [path] [--force]` — writes both `parameters.json` and `parameters.md` (categorized doc).
+
 ## Saved model state
 
 `CheckpointManager` writes both single-model (`.dcmmodel`) and full-session (`.dcmsession`) checkpoints under `~/Library/Application Support/DrewsChessMachine/{Models,Sessions}/`. **Nothing is ever overwritten** — every save is a new file, naming scheme `<YYYYMMDD-HHMMSS>-<modelID>-<trigger>.<ext>`. See ROADMAP.md for the full design including the bit-exact forward-pass verification that runs on every save.

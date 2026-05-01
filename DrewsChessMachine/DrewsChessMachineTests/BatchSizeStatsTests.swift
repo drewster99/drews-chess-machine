@@ -31,7 +31,10 @@ final class BatchSizeStatsTests: XCTestCase {
             minBatch: 1,
             maxBatch: 8,
             mean: 22.0 / 6.0,
-            histogram: [8: 1, 1: 2, 4: 3]
+            histogram: [8: 1, 1: 2, 4: 3],
+            fireReasonCounts: [:],
+            expectedDriftCount: 0,
+            expectedDriftMaxDelta: 0
         )
         let line = stats.formatLogLine()
         XCTAssertTrue(line.contains("mean=3.67"), "got: \(line)")

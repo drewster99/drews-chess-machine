@@ -22,6 +22,7 @@ from pathlib import Path
 
 TRACKED_STAT_KEYS = [
     "policy_entropy",
+    "policy_logit_abs_max",
     "top1_legal_fraction",
     "legal_mass",
     "grad_global_norm",
@@ -53,24 +54,89 @@ def trajectory(series):
     }
 
 
-def collapse_signals(stats):
+def collapse_signals(stats, probes):
+    """Surface every binary collapse signal the analyzer keys off of.
+
+    Hard-reject criteria (any one is enough to classify a run as regressed)
+    and soft-reject criteria (multiple must trip) are documented in
+    SKILL.md step 7. This function exposes the raw booleans / extrema the
+    analyzer evaluates them against; it deliberately does NOT decide
+    classification — it only computes the inputs.
+    """
     if not stats:
         return {}
     def series(k):
         return [s.get(k) for s in stats if isinstance(s.get(k), (int, float))]
     pEnt = series("policy_entropy")
+    plogit = series("policy_logit_abs_max")
     top1legal = series("top1_legal_fraction")
+    legalmass = series("legal_mass")
     gnorm = series("grad_global_norm")
     vabs = series("value_abs_mean")
+    ploss = series("policy_loss")
+
+    # Late-window candidate-probe assessment: if the last few probes (the
+    # final ~5 minutes of training) all show max_prob ≥ 0.99, the model
+    # has crystallized on a single (illegal) move at end of run. This is
+    # the "Forward Pass shows 100% on illegals" signal, derived without
+    # needing the UI demo button.
+    late_probe_collapsed = False
+    late_probe_window = []
+    if probes:
+        tail = probes[-min(15, len(probes)):]  # ~last 5min at 20s probe interval
+        for p in tail:
+            ph = (p.get("policy_head") or {}).get("policy_stats") or {}
+            mp = ph.get("max")
+            lm = ph.get("legal_mass_sum")
+            if isinstance(mp, (int, float)) and isinstance(lm, (int, float)):
+                late_probe_window.append((mp, lm))
+        if late_probe_window:
+            # All probes in window show degenerate softmax + ~zero legal mass
+            late_probe_collapsed = all(mp >= 0.99 and lm < 0.01 for mp, lm in late_probe_window)
+
     return {
+        # pEnt: log(4864) ≈ 8.49 at uniform; alarm floor at 5.0
         "min_policy_entropy": round(min(pEnt), 4) if pEnt else None,
+        "final_policy_entropy": round(pEnt[-1], 4) if pEnt else None,
         "pEnt_ever_below_5": bool(pEnt and min(pEnt) < 5.0),
+        "pEnt_final_below_5": bool(pEnt and pEnt[-1] < 5.0),
+
+        # Single-logit blowup — softmax becomes a delta function above ~30
+        "max_policy_logit_abs_max": round(max(plogit), 3) if plogit else None,
+        "final_policy_logit_abs_max": round(plogit[-1], 3) if plogit else None,
+        "policy_logit_blowup": bool(plogit and max(plogit) > 30.0),
+        "policy_logit_severe_blowup": bool(plogit and max(plogit) > 50.0),
+
+        # Top-1 legal: did the network EVER put nontrivial mass on a legal move?
         "final_top1_legal_fraction": round(top1legal[-1], 4) if top1legal else None,
         "top1_legal_ever_positive": bool(top1legal and max(top1legal) > 0.0),
+
+        # Legal mass concentration over the run
+        "min_legal_mass": round(min(legalmass), 6) if legalmass else None,
+        "final_legal_mass": round(legalmass[-1], 6) if legalmass else None,
+        "legal_mass_below_pct1_at_end": bool(legalmass and legalmass[-1] < 0.01),
+
+        # Gradient norm — sustained explosion is bad even if no early-bail
         "max_grad_global_norm": round(max(gnorm), 3) if gnorm else None,
+        "final_grad_global_norm": round(gnorm[-1], 3) if gnorm else None,
         "grad_norm_ever_exceeded_100": bool(gnorm and max(gnorm) > 100.0),
+        "grad_norm_ever_exceeded_200": bool(gnorm and max(gnorm) > 200.0),
+
+        # Value head saturation (tanh dead zone)
         "final_value_abs_mean": round(vabs[-1], 4) if vabs else None,
         "value_head_saturated": bool(vabs and vabs[-1] >= 0.95),
+
+        # Reward-hacking watch: large negative pLoss without arena promotions
+        # is the network exploiting entropy bonus / advantage scaling rather
+        # than learning legal play
+        "final_policy_loss": round(ploss[-1], 3) if ploss else None,
+        "policy_loss_extreme_negative": bool(ploss and ploss[-1] < -10.0),
+
+        # Late-window candidate-probe collapse — equivalent to your UI
+        # Forward Pass showing 100% on illegals, computed from the last
+        # ~5min of probes
+        "late_probe_collapsed": late_probe_collapsed,
+        "late_probe_window_size": len(late_probe_window),
     }
 
 
@@ -205,7 +271,7 @@ def summarize(data):
             "white_checkmates", "black_checkmates",
         ) or None,
         "training_trajectory": trajectories,
-        "collapse_signals": collapse_signals(stats),
+        "collapse_signals": collapse_signals(stats, probes),
         "arenas": arena_summary(arenas),
         "candidate_probes": probe_summary(probes),
     }

@@ -63,6 +63,13 @@ struct DrewsChessMachineApp: App {
             ? []
             : Array(CommandLine.arguments.dropFirst())
 
+        // Pre-flight: handle the two defaults-emitter flags BEFORE any
+        // SwiftUI / AppKit / Metal initialization. They're sub-second
+        // exits and never touch the singleton; the only user-visible
+        // effect is bytes on stdout (and stderr, for the descriptions
+        // variant) followed by `_exit(0)`.
+        Self.handleDefaultsFlagsIfPresent(rawArgs: rawArgs)
+
         // Known flags.
         let booleanFlags: Set<String> = ["--train"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit"]
@@ -144,9 +151,10 @@ struct DrewsChessMachineApp: App {
         }
         if let override = trainingTimeLimitCliOverride {
             if parsedConfig == nil {
-                var cfg = CliTrainingConfig()
-                cfg.trainingTimeLimitSec = override
-                parsedConfig = cfg
+                parsedConfig = CliTrainingConfig(
+                    trainingParameters: [:],
+                    trainingTimeLimitSec: override
+                )
             } else {
                 parsedConfig?.trainingTimeLimitSec = override
             }
@@ -423,6 +431,145 @@ struct DrewsChessMachineApp: App {
                 }
                 .disabled(SessionLogger.shared.activeLogPath == nil)
             }
+        }
+    }
+
+    // MARK: - Defaults-emitter pre-flight (--show-default-parameters / --create-parameters-file)
+
+    /// Inspects `rawArgs` for the two defaults-emitter flags.
+    /// If either is present, validates the allowed flag combinations,
+    /// performs the action, and exits the process. Sub-second; never
+    /// touches the singleton (the registry is `nonisolated` and walks
+    /// definition defaults directly).
+    ///
+    /// Allowed combinations:
+    /// - `--show-default-parameters` alone (no other flags, including no `--force`)
+    /// - `--create-parameters-file` alone (default path is `./parameters.json`)
+    /// - `--create-parameters-file --force`
+    /// - `--create-parameters-file <path>` (positional path argument)
+    /// - `--create-parameters-file <path> --force`
+    ///
+    /// Anything else with these flags is a usage error → exit 2.
+    private static func handleDefaultsFlagsIfPresent(rawArgs: [String]) {
+        let showFlag = "--show-default-parameters"
+        let createFlag = "--create-parameters-file"
+        let forceFlag = "--force"
+
+        let hasShow = rawArgs.contains(showFlag)
+        let hasCreate = rawArgs.contains(createFlag)
+
+        if !hasShow && !hasCreate {
+            return
+        }
+
+        // Mutual exclusion.
+        if hasShow && hasCreate {
+            FileHandle.standardError.write(Data("error: \(showFlag) and \(createFlag) are mutually exclusive\n".utf8))
+            Darwin.exit(2)
+        }
+
+        if hasShow {
+            // --show-default-parameters: must appear alone.
+            let allowed: Set<String> = [showFlag]
+            if let bad = rawArgs.first(where: { !allowed.contains($0) }) {
+                FileHandle.standardError.write(Data("error: \(showFlag) does not accept '\(bad)' (must appear alone)\n".utf8))
+                Darwin.exit(2)
+            }
+            runShowDefaultParametersAndExit()
+        }
+
+        // --create-parameters-file: --force allowed; one positional path allowed.
+        // Any OTHER flag-shaped arg (anything starting with `--` that isn't
+        // --create-parameters-file or --force) is a hard error.
+        let force = rawArgs.contains(forceFlag)
+        let allowed: Set<String> = [createFlag, forceFlag]
+        if let badFlag = rawArgs.first(where: { $0.hasPrefix("--") && !allowed.contains($0) }) {
+            FileHandle.standardError.write(Data("error: \(createFlag) does not accept '\(badFlag)' (only --force is allowed alongside)\n".utf8))
+            Darwin.exit(2)
+        }
+        let positional = rawArgs.filter { !allowed.contains($0) }
+        if positional.count > 1 {
+            FileHandle.standardError.write(Data("error: \(createFlag) accepts at most one path argument; got \(positional.count)\n".utf8))
+            Darwin.exit(2)
+        }
+        let path = positional.first ?? "./parameters.json"
+        runCreateParametersFileAndExit(path: path, force: force)
+    }
+
+    private static func runShowDefaultParametersAndExit() -> Never {
+        do {
+            let json = try TrainingParameters.defaultsJSON()
+            FileHandle.standardOutput.write(json)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+            for line in TrainingParameters.defaultsDescriptionLines() {
+                FileHandle.standardError.write(Data("\(line)\n".utf8))
+            }
+            Darwin.exit(0)
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+            Darwin.exit(1)
+        }
+    }
+
+    private static func runCreateParametersFileAndExit(path: String, force: Bool) -> Never {
+        let expanded = (path as NSString).expandingTildeInPath
+        let jsonURL = URL(fileURLWithPath: expanded)
+        let mdURL = jsonURL.deletingPathExtension().appendingPathExtension("md")
+
+        let fm = FileManager.default
+        if fm.fileExists(atPath: jsonURL.path) && !force {
+            FileHandle.standardError.write(Data("error: \(jsonURL.path) already exists; pass --force to overwrite\n".utf8))
+            Darwin.exit(2)
+        }
+
+        do {
+            let jsonData = try TrainingParameters.defaultsJSON()
+            let mdData = Data(TrainingParameters.defaultsMarkdown().utf8)
+
+            // Atomic write via temp + rename.
+            let jsonTmp = jsonURL.appendingPathExtension("tmp")
+            let mdTmp = mdURL.appendingPathExtension("tmp")
+            do {
+                try jsonData.write(to: jsonTmp, options: [.atomic])
+                try mdData.write(to: mdTmp, options: [.atomic])
+            } catch {
+                try? fm.removeItem(at: jsonTmp)
+                try? fm.removeItem(at: mdTmp)
+                throw error
+            }
+            // Both temp files written successfully; promote both. If
+            // either rename fails, attempt to clean up the other so we
+            // don't leave a half-applied state on disk.
+            do {
+                if fm.fileExists(atPath: jsonURL.path) {
+                    try fm.removeItem(at: jsonURL)
+                }
+                try fm.moveItem(at: jsonTmp, to: jsonURL)
+            } catch {
+                try? fm.removeItem(at: jsonTmp)
+                try? fm.removeItem(at: mdTmp)
+                throw error
+            }
+            do {
+                if fm.fileExists(atPath: mdURL.path) {
+                    try fm.removeItem(at: mdURL)
+                }
+                try fm.moveItem(at: mdTmp, to: mdURL)
+            } catch {
+                try? fm.removeItem(at: mdTmp)
+                // jsonURL is already in place; per the plan, parameters.md
+                // is overwritten freely "only when parameters.json is also
+                // being written". The json write succeeded; surfacing the
+                // md failure as a non-zero exit is the conservative choice.
+                throw error
+            }
+
+            FileHandle.standardOutput.write(Data("wrote: \(jsonURL.path)\n".utf8))
+            FileHandle.standardOutput.write(Data("wrote: \(mdURL.path)\n".utf8))
+            Darwin.exit(0)
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+            Darwin.exit(1)
         }
     }
 }

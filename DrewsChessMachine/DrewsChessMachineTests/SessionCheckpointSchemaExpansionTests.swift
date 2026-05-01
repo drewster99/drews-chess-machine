@@ -166,13 +166,15 @@ final class SessionCheckpointSchemaExpansionTests: XCTestCase {
             "legal_mass_collapse_threshold": 0.999
         }
         """#
-        let cfg = try JSONDecoder().decode(
-            CliTrainingConfig.self,
-            from: Data(parametersJSON.utf8)
-        )
-        XCTAssertEqual(cfg.lrWarmupSteps, 30)
-        XCTAssertEqual(cfg.sqrtBatchScalingForLR, false)
-        XCTAssertEqual(cfg.legalMassCollapseThreshold, 0.999)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("json")
+        try parametersJSON.write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let cfg = try CliTrainingConfig.load(from: url)
+        XCTAssertEqual(cfg.trainingParameters["lr_warmup_steps"], .int(30))
+        XCTAssertEqual(cfg.trainingParameters["sqrt_batch_scaling_lr"], .bool(false))
+        XCTAssertEqual(cfg.trainingParameters["legal_mass_collapse_threshold"], .double(0.999))
 
         // session.json uses camelCase keys for the same logical
         // fields. Mixing snake_case here would silently fail.

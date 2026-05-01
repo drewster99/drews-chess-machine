@@ -36,7 +36,16 @@ The app is launched via `$ROOT/run_latest.sh` (a thin wrapper that picks the mos
 - `$ROOT/.claude/skills/autotrain/validate_params.py <path-to-parameters.json>`
   Sanity-bound check on a proposed parameters.json. Bounds are intentionally very wide — the point is to catch proposer hallucinations (`learning_rate: 5.0`, fractional worker counts, capacity > 1e8), not to gatekeep tuning. Exits 0 on valid, 1 on violations (printed to stderr). Invoked by the skill after step 5's proposal lands; a violation rejects the iteration before any training run happens.
 - `$ROOT/.claude/skills/autotrain/apply_code_proposal.py <folder>`
-  CODE-CHANGE mode only (step 5b). Reads `<folder>/code_proposal.json`, validates touched files against an allowlist (`ChessTrainer.swift`, `ContentView.swift`), overwrites them with the proposer's content, runs `xcrun xcodebuild` to verify, and reverts the working tree if the build fails. Writes `code_apply_status.json` and `build.log` next to the proposal. Exit codes: 0 = applied + built; 2 = schema/forbidden-file (tree unchanged); 3 = build failed (tree reverted); 4 = io error (manual intervention). Files explicitly forbidden from overwrite: `ChessNetwork.swift`, `BoardEncoder.swift`, `PolicyEncoding.swift`, anything under `DrewsChessMachineTests/`.
+  CODE-CHANGE mode only (step 5b). Reads `<folder>/code_proposal.json`, validates touched files against an allowlist (`ChessTrainer.swift`, `ContentView.swift`, `MPSChessPlayer.swift`, `ReplayBuffer.swift`), overwrites them with the proposer's content, runs `xcrun xcodebuild` to verify, and reverts the working tree if the build fails. Writes `code_apply_status.json` and `build.log` next to the proposal. Exit codes: 0 = applied + built; 2 = schema/forbidden-file (tree unchanged); 3 = build failed (tree reverted); 4 = io error (manual intervention). Files explicitly forbidden from overwrite: `ChessNetwork.swift`, `ChessMPSNetwork.swift`, `BoardEncoder.swift`, `PolicyEncoding.swift`, `ChessGameEngine.swift`, `MoveGenerator.swift`, `ChessMove.swift`, `ReplayRatioController.swift`, anything under `DrewsChessMachineTests/`.
+  ***** NOTE ON ABOVE - THIS SHOULD USE xcode-mcp-server INSTEAD OF XCODEBUILD 
+  ***** Running xcode build will by default create a local .build folder. this 
+  ***** is problematic but the runner scripts look in ~/Library/Developer/Xcode/DerivedData
+  ***** for the Debug and Release executables and never the local .build folder.
+  ***** Thus, a code change could be made but not really actually tested until the app
+  ***** is rebuilt with Xcode in the more normal way.
+  ***** TODO: Update this item above to clarify the build process and express the importance
+  ***** of using xcode-mcp-server rather than xcodebuidl (xcode-mcp-server instructs Xcode
+  ***** to do the build).
 
 ## Iteration procedure
 
@@ -47,11 +56,11 @@ Work through these steps in order. Do each step; don't skip.
 Run `git rev-parse --abbrev-ref HEAD` to read the current branch.
 
 - **If the branch is literally `experiments`**, proceed without asking — that branch is the designated autotrain scratch branch, confirmation would be pure friction. Log a one-liner like `autotrain: branch=experiments, proceeding without prompt` and continue.
-- **On any other branch** (including `main`), show the branch name and ask: "autotrain will commit and push accepted iterations to **<branch>** — proceed?" Wait for confirmation before continuing. If the user says switch branches, let them do that and re-invoke.
+- **On ANY other branch** (including `main`), show the branch name and ask: "autotrain will commit and push accepted iterations to **<branch>** — proceed?" Wait for confirmation before continuing. If the user says switch branches, let them do that and re-invoke.
 
 Once the user has confirmed a non-`experiments` branch once in a given session, you may skip this prompt for subsequent `/loop` iterations **in that same session**, but resume asking if the branch ever changes under you.
 
-### 0.5. Bail if the GPU is busy
+### 0.5. Bail if DrewsChessMachine is already running
 
 Before doing any work, check for conflicts so a `/loop` tick doesn't step on a manual run:
 
@@ -75,18 +84,18 @@ Walk `experiments/*/` newest → oldest and compute two numbers:
 
 Then decide mode for this iteration:
 
-- **`failure_streak ≥ 15`** → enter **REPLICATE mode**. The proposer has been failing to find improvements for 15 iterations; rather than ask it to try again, re-run the current-best parameters verbatim to probe whether the "best" result is actually reproducible. Set a local flag `replicate_mode = true` that step 4 and step 5 observe. Rationale: if the baseline reproduces, the proposer is the problem (analyzer confirms rejections are real); if the baseline does *not* reproduce, the "current best" was noise-lucky and we may get a free accept from a decent replicate. There is no HALT — keep cycling through replicates and normal iterations indefinitely; if `trailing_replicates ≥ 3`, force the next iteration into **normal mode** (skip replicate even if `failure_streak ≥ 15`) so the proposer gets another shot.
-- **`failure_streak` 10–14** → proceed normally but note it in the iteration's summary line (`... (streak=12, replicate at 15)`).
-- **`failure_streak` 5–9** → proceed normally but note it (`... (streak=7, watch)`).
-- **`failure_streak` < 5** → proceed silently.
+- **`failure_streak ≥ 25`** → enter **REPLICATE mode**. The proposer has been failing to find improvements for 25 iterations; rather than ask it to try again, re-run the current-best parameters verbatim to probe whether the "best" result is actually reproducible. Set a local flag `replicate_mode = true` that step 4 and step 5 observe. Rationale: if the baseline reproduces, the proposer is the problem (analyzer confirms rejections are real); if the baseline does *not* reproduce, the "current best" was noise-lucky and we may get a free accept from a decent replicate. There is no HALT — keep cycling through replicates and normal iterations indefinitely; if `trailing_replicates ≥ 3`, force the next iteration into **normal mode** (skip replicate even if `failure_streak ≥ 25`) so the proposer gets another shot.
+- **`failure_streak` 15–24** → proceed normally but note it in the iteration's summary line (`... (streak=22, replicate at 2)`).
+- **`failure_streak` 9–14** → proceed normally but note it (`... (streak=10, watch)`).
+- **`failure_streak` < 9** → proceed silently.
 
-### 0.7. Code-iteration cadence (every 40 normal iterations)
+### 0.7. Code-iteration cadence (every 200 normal iterations)
 
 `regen_dashboard.py` exposes `window.AGGREGATES.code_iteration_due` and `iterations_since_codechange`. The cadence counts only `mode=normal` iterations since the last `-codechange` folder (replicates and seeds are transparent), so the proposer's tuning history isn't artificially shortened by replicate cascades.
 
-If `code_iteration_due` is `true` AND `failure_streak < 15` (no replicate-mode trigger) AND `failure_streak < 5`, route this iteration into **CODE-CHANGE mode** instead of normal. Set a local flag `code_change_mode = true` that step 4 and step 5b observe. Folder suffix becomes `-codechange`.
+If `code_iteration_due` is `true` AND `failure_streak < 9`, route this iteration into **CODE-CHANGE mode** instead of normal. Set a local flag `code_change_mode = true` that step 4 and step 5b observe. Folder suffix becomes `-codechange`.
 
-**Why the `failure_streak < 5` gate:** code surgery on top of unstable parameter dynamics is a recipe for chaos — one variable at a time. If we're in a watch-zone streak, defer the code-change iteration until the next normal accept resets the streak; the cadence counter keeps ticking, so we'll just take the code-change shot a few iterations later.
+**Why the `failure_streak < 9` gate:** code surgery on top of unstable parameter dynamics is a recipe for chaos — one variable at a time. If we're in a watch-zone streak, defer the code-change iteration until the next normal accept resets the streak; the cadence counter keeps ticking, so we'll just take the code-change shot a few iterations later.
 
 If we route into code-change mode, also REQUIRE that `git status --porcelain` shows no unstaged changes to the files in the code-proposal allowlist (`ChessTrainer.swift`, `ContentView.swift`). If the user is mid-edit on those files, defer code-change mode by one iteration (run a normal proposal instead) and log the deferral. The cadence counter doesn't advance from a deferred attempt — it'll trigger again next iteration.
 
@@ -102,7 +111,7 @@ If `$ROOT/experiments/goal.txt` doesn't exist, ask the user: "What's the improve
 
 A seed run is needed whenever `$ROOT/results.json` is missing (either first-ever run, or results got deleted). Handle `parameters.json` carefully:
 
-  a. **If `$ROOT/parameters.json` does not exist**, write the default parameters block (reproduced at the bottom of this file) to `$ROOT/parameters.json`. **If it already exists, leave it alone** — the user may have hand-tuned values they don't want clobbered with defaults.
+  a. **If `$ROOT/parameters.json` does not exist**, run `"$ROOT/run_latest.sh" --show-default-parameters > "$ROOT/parameters.json"` to seed it from the app's canonical defaults. (`--show-default-parameters` is sub-second, never opens the GUI, and writes a flat snake_case JSON object to stdout matching the format the autotrain proposer + `validate_params.py` expect.) **If `parameters.json` already exists, leave it alone** — the user may have hand-tuned values they don't want clobbered with defaults.
   b. Create a test folder `experiments/<timestamp>-seed/` and copy the current `$ROOT/parameters.json` in there.
   c. Run `run_training.sh` with **300 seconds** (5-minute seeding run) outputting to the test folder's `result.json`.
   d. Copy the seed's `result.json` to `$ROOT/results.json`. Do **not** re-copy parameters back to root — they're already there.
@@ -138,7 +147,7 @@ Regardless of mode:
   }
   ```
 - Write `<folder>/proposal.md` with the `change_details` text.
-- Write `<folder>/training_time.txt` with `600` (matches the baseline's training time; a short replicate wouldn't be informative, and going *longer* than baseline would confound reproducibility signal with extra training).
+- Write `<folder>/training_time.txt` with `600` (match the baseline's training time; a short replicate wouldn't be informative, and going *longer* than baseline would confound reproducibility signal with extra training).
 - Run `validate_params.py` as a sanity check (should trivially pass since the baseline already validates). If it somehow fails, that's a real problem — stub-reject and halt the replicate cascade for user attention.
 - Run `regen_dashboard.py`.
 - Skip the rest of step 5 and go straight to step 6.
@@ -152,7 +161,7 @@ This is a one-shot detour that runs IN PLACE OF the parameter-proposer subagent.
   a. `current_best_summary` = stdout of `summarize_results.py $ROOT/results.json`.
   b. `recent_history` = last 10 iterations, same shape as step 5.
   c. Copy `$ROOT/parameters.json` → `<folder>/parameters.json` verbatim. Code-change iterations don't change params.
-  d. Read the current full content of every file in the allowlist (`DrewsChessMachine/DrewsChessMachine/ChessTrainer.swift`, `DrewsChessMachine/DrewsChessMachine/ContentView.swift`) and assemble `current_files`: `{ <relpath>: <full content as string> }`.
+  d. Read the current full content of every file in the allowlist (`DrewsChessMachine/DrewsChessMachine/ChessTrainer.swift`, `DrewsChessMachine/DrewsChessMachine/ContentView.swift`, `DrewsChessMachine/DrewsChessMachine/MPSChessPlayer.swift`, `DrewsChessMachine/DrewsChessMachine/ReplayBuffer.swift`) and assemble `current_files`: `{ <relpath>: <full content as string> }`.
 
 **Spawn a code-proposer subagent** with this prompt:
 ```json
@@ -287,6 +296,49 @@ Read the training time from `<folder>/training_time.txt` (fall back to 600 if th
 
 Invoke `run_training.sh <folder>/parameters.json <training_time> <folder>/result.json <folder>/run.log`. There is **no upper cap** on training time — the wrapper passes whatever value you give it through to the app.
 
+#### 6a. In-flight monitoring (every wakeup while the run is in flight)
+
+While the training run is in flight, every cron / wakeup tick must do **both** of these — `pgrep` alone is insufficient. The 5850s run on 2026-05-01 wasted ~35 minutes of GPU because polling only checked liveness, not health.
+
+1. **Health check.** Read the most recent `[STATS]` line from the active session log:
+   ```bash
+   ls -t ~/Library/Logs/DrewsChessMachine/dcm_log_*.txt | head -1 | xargs grep "[STATS] elapsed=" | tail -1
+   ```
+   Parse and report all six health metrics in one line: `pEnt`, `gNorm`, `pLogitAbsMax`, `legalMass`, `top1Legal`, `vAbs`. Don't skim — these are the same fields the analyzer keys off in step 7, so you should be able to predict the eventual classification from them.
+
+   **Positive-health bands** — when reporting metrics, label each as `in-band` / `watch` / `out-of-band` so trends are visible across ticks rather than a vague "healthy". For a network training from random init through self-play (no MCTS, no opening book, no human data):
+
+   | Metric | In-band | Watch | Out-of-band |
+   |---|---|---|---|
+   | `pEnt` | 5.5–8.5 (random init = log(4864) ≈ 8.49) | 5.0–5.5 trending down | < 5.0 (alarm floor) |
+   | `gNorm` median | 20–60 | 60–100 | sustained > 100, OR trajectory monotone-rising over ≥3 ticks |
+   | `pLogitAbsMax` | 5–25 | 25–40 | > 40 (>50 = severe blowup, hard kill) |
+   | `legalMass` | rising over time, ≥0.05 by 30min | flat at 0.002–0.005 | < 0.002 with `top1Legal=0` past 30min |
+   | `top1Legal` | rising, ≥0.05 by mid-run | 0 still at mid-run | 0 throughout late run AND legalMass < 0.005 |
+   | `vAbs` | 0.15–0.50 | 0.50–0.85 | > 0.85 (tanh saturated) OR < 0.05 throughout |
+
+   Also surface (when present in the line):
+   - **diversity** — `unique=200/200(100%)` and `diverge ≥ 1.5` is in-band; <100 unique or diverge=1.0 means self-play exploration is collapsing.
+   - **avgLen** — 200–500 ply in-band; <100 means games end too quickly to learn from, >800 means networks are shuffling.
+   - **ratio cur vs target** — within ±0.10 of target is in-band; persistent low ratio means trainer is starving.
+
+   Across ticks, the **shape of progress** matters more than any single value: pEnt should drift down monotonically without cliffs, gNorm should trend down (not up) as the loss landscape smooths, legalMass should rise.
+
+2. **Early-kill if any hard-reject signal trips mid-run.** Compute these from the `[STATS]` line; kill the run with `kill <pid>` (the run wrapper will then write `result.json` cleanly via the app's shutdown handler) if **any** of:
+
+   - `pLogitAbsMax > 50` — softmax has crystallized; nothing recoverable.
+   - `pEnt < 5.0` AND elapsed > 30 min — past warmup, policy is below alarm floor.
+   - `legalMass < 0.005` AND `top1Legal == 0` AND elapsed > 30 min — equivalent of the Forward Pass demo showing 100% mass on illegals.
+   - `gNorm > 300` for two consecutive checks — gradient norm is in runaway, not transient.
+
+   These mirror H2/H3/H4/H6 in the analyzer's hard-reject criteria. Killing early saves ~10–90 minutes of wasted GPU per bad iteration; the iteration will still go through the analyzer normally and be classified `regressed` from the partial `result.json`.
+
+   Before killing, log a one-line summary to the conversation: `autotrain: early-kill on H<N> at <elapsed>s — <metric>=<value>`. Then proceed to step 7 with the partial result.
+
+3. **Report briefly.** Even when nothing is wrong, surface the six metrics on every wakeup so trends are visible across ticks. Don't reduce these to a vague "healthy" — the user reads the line.
+
+#### 6b. Exit-code handling
+
 Exit-code handling:
 - **`0`** — clean training run, ran to the timer. `result.json` will have `"termination_reason": "timer_expired"`. Continue to step 7.
 - **`10`** — skip iteration cleanly (GPU busy / lock conflict). Not a failure; just log and end. Handled in step 0.5.
@@ -323,8 +375,76 @@ Instructions embedded in the prompt:
 - If the two summaries have **different `build_number`** values, the app code was rebuilt between runs. Flag this prominently in the commentary and lean toward `is_result_improved: false` unless the goal metric moved by a clearly-larger margin than plausible build-drift noise.
 - Classify the run into **one of three buckets** (this is how the skill decides whether to accept, do nothing, or count against the failure streak):
   - **`improved`** — the goal metric(s) moved in the right direction by clearly more than plausible noise. Ratcheted progress. This iteration will be promoted to root and committed.
-  - **`neutral`** — the run was stable and within plausible noise of the baseline: didn't clearly help, didn't regress, collapse signals are no worse than before. The baseline holds; no changes are ratcheted. A neutral is NOT a failure.
-  - **`regressed`** — the goal metric(s) moved in the wrong direction, OR collapse signals got worse (pEnt fell below 5.0 when it previously held, top1_legal_fraction fell, vAbs saturated toward 1.0, gNorm exploded, etc.). This counts against the failure streak.
+  - **`neutral`** — the run was stable and within plausible noise of the baseline: didn't clearly help, didn't regress, no hard-reject criteria tripped. The baseline holds; no changes are ratcheted. A neutral is NOT a failure.
+  - **`regressed`** — any hard-reject criterion below is tripped, OR ≥2 soft-reject criteria are tripped, OR the goal metric(s) moved in the wrong direction by clearly more than plausible noise. This counts against the failure streak.
+
+**HARD-REJECT CRITERIA (any single one ⇒ classify `regressed`):**
+
+Read these directly off `new_summary.collapse_signals` and `new_summary.arenas`. Each exposes a bool you key off; you don't need to recompute from the trajectory.
+
+  H1. `termination_reason == "legal_mass_collapse"` — early-bail.
+  H2. `pEnt_final_below_5 == true` — final policy entropy below the 5.0 alarm floor (≈ 60% of uniform `log(4864)=8.49`). Crossing this floor at end of run means the policy is collapsing.
+  H3. `policy_logit_severe_blowup == true` (i.e. `max_policy_logit_abs_max > 50`) — softmax has become a delta function. One logit dwarfs the rest by ≥e^50 ratio. Gradients through other classes are dead.
+  H4. `late_probe_collapsed == true` — every candidate probe in the last ~5 minutes shows `max_prob ≥ 0.99` AND `legal_mass_sum < 0.01`. This is the equivalent of the UI Forward Pass demo showing 100% of mass on illegal moves.
+  H5. `value_head_saturated == true` — `final_value_abs_mean ≥ 0.95`. The tanh has saturated, value gradients vanish.
+  H6. `grad_norm_ever_exceeded_200 == true` AND `final_grad_global_norm > 1.5 × baseline.final_grad_global_norm` — sustained gradient explosion, not a transient spike. Compare against `previous_summary.collapse_signals.final_grad_global_norm`.
+  H7. `policy_loss_extreme_negative == true` (`final_policy_loss < -10`) AND `arenas.promoted == 0` AND baseline had `arenas.promoted ≥ 1` — large negative pLoss with no actual chess-strength gain means the network is exploiting the entropy bonus / advantage scaling rather than learning legal play.
+
+**SOFT-REJECT CRITERIA (≥2 must trip ⇒ classify `regressed`):**
+
+  S1. `pEnt_ever_below_5 == true` (touched the floor mid-run, even if recovered) AND baseline had `pEnt_ever_below_5 == false`.
+  S2. `policy_logit_blowup == true` (`max_policy_logit_abs_max > 30`) AND baseline had it `false` OR baseline `max_policy_logit_abs_max < 0.7 × new max`.
+  S3. `legal_mass_below_pct1_at_end == true` AND baseline had `final_legal_mass > 0.05` — running away from legal moves rather than toward them.
+  S4. `arenas.promoted == 0` AND baseline had `arenas.promoted ≥ 1` AND `training_elapsed_seconds ≥ 0.9 × baseline.total_training_seconds` — backsliding on the only "actual chess strength" signal at equal or longer elapsed time.
+  S5. `grad_norm_ever_exceeded_100 == true` AND baseline `max_grad_global_norm < 100` — first time gradient norm crossed 100 on this baseline family.
+
+**POSITIVE-HEALTH BANDS (the shape of a good run):**
+
+A healthy run isn't defined by a single metric — it's a coherent multi-axis trajectory where four feedback loops (distribution shape, optimization stability, value sanity, self-play quality) are all moving the same way. Use these bands when reading `new_summary` to assess whether a clean run is meaningfully better than baseline, not just non-collapsing.
+
+  *A. Distribution-shape axis (policy head learning the legal-move manifold)*
+  - `min_policy_entropy` 5.0–7.5 (final 30% of run); monotone-decreasing trajectory without cliffs.
+  - `final_legal_mass` ≥ 0.10 (strong: ≥ 0.30); rising vs `first` value in trajectory.
+  - `final_top1_legal_fraction` ≥ 0.05 (strong: ≥ 0.10).
+  - `max_policy_logit_abs_max` in 5–25 (decisive but not blown out).
+  - `late_probe_collapsed == false` AND last candidate probe `max_prob` in 0.05–0.50 with `legal_mass_sum > 0.10`.
+
+  *B. Optimization-stability axis*
+  - `max_grad_global_norm` < 100 (strong: < 60); `final_grad_global_norm < first_grad_global_norm` (trajectory trends down as loss landscape smooths).
+  - `final_policy_loss` in [-3, +1] band (large negatives without arena promotions = reward hacking, not learning).
+  - `final_value_loss` ≤ baseline AND in 0.10–0.45 band.
+
+  *C. Value-head sanity axis*
+  - `final_value_abs_mean` 0.15–0.50 (saturated > 0.85; not learning < 0.05).
+  - `final_value_mean` near 0 (chess is roughly drawn at the average position).
+
+  *D. Self-play quality axis*
+  - `diversity_unique_percent == 100` AND `diversity_avg_divergence_ply ≥ 1.5`.
+  - `avg_game_length_final` 200–500 ply.
+  - Replay ratio `ratio_current.final` within 0.10 of target.
+
+  *E. Learning-validation axis (the only "is it stronger?" signal)*
+  - `arenas.promoted ≥ 1` per ~30–45 min of training.
+  - Arena scores trending in 0.50–0.55 band (a promotion is imminent) is acceptable; stuck at exactly 0.50 with > 90% draws across many rounds means learning has plateaued.
+
+**IMPROVEMENT REQUIRES (all):**
+  - `termination_reason == "timer_expired"`.
+  - All hard-reject criteria clear.
+  - At most 1 soft-reject criterion tripped.
+  - **At least 2 positive signals fire from different axes** (e.g. one from A *and* one from E). Each signal:
+    - A1. `final_legal_mass > baseline.final_legal_mass × 1.2`
+    - A2. `final_top1_legal_fraction > baseline.final_top1_legal_fraction + 0.02`
+    - A3. `min_policy_entropy` is in the 5.5–7.5 in-band AND ≥ 0.95 × baseline (didn't lose entropy headroom)
+    - B1. `max_grad_global_norm < 0.7 × baseline.max_grad_global_norm` (clearly more stable training)
+    - B2. `policy_logit_blowup == false` AND baseline had it `true` (recovered from blowup regime)
+    - E1. `arenas.promoted > baseline.arenas.promoted`
+    - E2. `arenas.mean_score > baseline.arenas.mean_score + 0.01` AND `arenas.count ≥ baseline.arenas.count`
+  - `min_policy_entropy >= 0.85 × baseline.min_policy_entropy` (entropy-headroom guardrail; this is a separate floor, not one of the positive signals).
+  - Trajectory metrics — pEnt min, gNorm max, pLogitAbsMax max — within 2× of baseline (no axis silently dragged out-of-band even if a positive signal fires elsewhere).
+
+If only 0–1 positive signals fire, classify `neutral`, not `improved` — even a clean run that adds no progress shouldn't ratchet the baseline. Coincidental single-axis wins (e.g. one accidental arena promotion while gNorm exploded) are noise; requiring two-axis alignment guards against that.
+
+When citing metrics in `analysis_commentary`, prefer the explicit collapse-signal / arena field names (e.g. "policy_logit_severe_blowup tripped: max=65", "arenas.promoted=2 vs baseline.promoted=1") over reconstructed numbers, so the analyzer's reasoning is auditable.
 - Return JSON of exactly this shape and nothing else:
   ```json
   {
@@ -379,40 +499,17 @@ The revert is **non-negotiable** for non-accept code-change iterations — leavi
 
 Print a one-line summary: `autotrain <timestamp>: ACCEPTED|REJECTED — <change_details first line>`. That's it — `/loop` will re-invoke.
 
-## Default parameters (for seeding)
+## Default parameters
 
-```json
-{
-  "entropy_bonus": 2.5e-3,
-  "grad_clip_max_norm": 25.0,
-  "weight_decay": 5.0e-4,
-  "K": 6.0,
-  "learning_rate": 7.5e-5,
-  "sqrt_batch_scaling_lr": false,
-  "lr_warmup_steps": 0,
-  "draw_penalty": 0.15,
-  "self_play_start_tau": 1.2,
-  "self_play_target_tau": 0.35,
-  "self_play_tau_decay_per_ply": 0.045,
-  "arena_start_tau": 0.95,
-  "arena_target_tau": 0.22,
-  "arena_tau_decay_per_ply": 0.038,
-  "replay_ratio_target": 1.25,
-  "replay_ratio_auto_adjust": true,
-  "self_play_workers": 6,
-  "training_step_delay_ms": 75,
-  "training_batch_size": 2048,
-  "replay_buffer_capacity": 500000,
-  "replay_buffer_min_positions_before_training": 10000,
-  "arena_promote_threshold": 0.58,
-  "arena_games_per_tournament": 100,
-  "arena_auto_interval_sec": 1200,
-  "candidate_probe_interval_sec": 20,
-  "legal_mass_collapse_threshold": 0.999,
-  "legal_mass_collapse_grace_seconds": 300,
-  "legal_mass_collapse_no_improvement_probes": 5
-}
+The canonical defaults live in code, not in this file. To produce a fresh `parameters.json` with current defaults, run:
+
+```sh
+"$ROOT/run_latest.sh" --show-default-parameters > "$ROOT/parameters.json"
 ```
+
+`--show-default-parameters` is sub-second and never opens the GUI. Per-parameter descriptions go to stderr; redirect with `2>` if you want them. The companion flag `--create-parameters-file [path]` writes both `parameters.json` (defaults) and `parameters.md` (descriptions, grouped by category) at `path` (default `./parameters.json`); refuses to overwrite an existing `parameters.json` unless `--force` is also passed.
+
+The source-of-truth for the parameter schema is `DrewsChessMachine/DrewsChessMachine/TrainingParameters.swift` (the registry + per-key `@TrainingParameter` declarations).
 
 ## Invariants
 
@@ -420,6 +517,6 @@ Print a one-line summary: `autotrain <timestamp>: ACCEPTED|REJECTED — <change_
 - Never run `git reset`, `git stash`, or `git rebase`.
 - Never force-push.
 - Never skip commit hooks.
-- There is **no upper cap** on per-iteration training time. The default when the proposer doesn't specify is 900 seconds, but the proposer is encouraged to extend perpetually (60-minute runs and beyond are fine).
+- There is **no upper cap** on per-iteration training time. The default when the proposer doesn't specify is 5400 seconds, but the proposer is encouraged to extend perpetually (60-minute runs and beyond are fine).
 - Only push to the branch the user confirmed in step 0 of the current session. If branch changed mid-loop, re-confirm.
 - If `git status` shows unexpected staged changes at iteration start, stop and surface them — don't sweep them into an autotrain commit.

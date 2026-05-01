@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4922A9CE2FA522AF007FF7B8 /* TrainingParametersMacroSupport in Frameworks */ = {isa = PBXBuildFile; productRef = 4922A9CD2FA522AF007FF7B8 /* TrainingParametersMacroSupport */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		49B1100F2F95D9DB00FC2EA5 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -46,6 +50,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4922A9CE2FA522AF007FF7B8 /* TrainingParametersMacroSupport in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -114,6 +119,7 @@
 			);
 			name = DrewsChessMachine;
 			packageProductDependencies = (
+				4922A9CD2FA522AF007FF7B8 /* TrainingParametersMacroSupport */,
 			);
 			productName = DrewsChessMachine;
 			productReference = 618032EAEFC34DC58F82443A /* DrewsChessMachine.app */;
@@ -147,6 +153,9 @@
 			);
 			mainGroup = 0C370FF953A54473AE046DA0;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				4922A9CC2FA522AF007FF7B8 /* XCLocalSwiftPackageReference "Packages/TrainingParametersMacro" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A68BA0E5513B4019B1A9EDF9 /* Products */;
 			projectDirPath = "";
@@ -465,6 +474,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		4922A9CC2FA522AF007FF7B8 /* XCLocalSwiftPackageReference "Packages/TrainingParametersMacro" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/TrainingParametersMacro;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4922A9CD2FA522AF007FF7B8 /* TrainingParametersMacroSupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = TrainingParametersMacroSupport;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 94BC0F86D32F45EEAA506B7A /* Project object */;
 }

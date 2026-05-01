@@ -898,7 +898,7 @@ final class SamplingScheduleBox: @unchecked Sendable {
 /// concurrent self-play worker tasks (which poll it between games).
 /// Workers above the current count idle in their pause loop until
 /// either the count grows enough to include them or the session
-/// stops. Decoupling the box from `@State selfPlayWorkerCount` is
+/// stops. Decoupling the box from `trainingParams.selfPlayWorkers` is
 /// what lets the value cross the actor boundary without forcing
 /// every worker to hop back to the main actor on each game.
 final class WorkerCountBox: @unchecked Sendable {
@@ -928,7 +928,7 @@ final class WorkerCountBox: @unchecked Sendable {
 /// every step to decide how long to pause before looping; the
 /// Stepper in the Play and Train row writes through it whenever
 /// the user nudges the value. Decoupled from `@State
-/// trainingStepDelayMs` so the worker task doesn't have to hop back
+/// `trainingParams.trainingStepDelayMs` so the worker task doesn't have to hop back
 /// to the main actor to read a single Int per step. Clamped at the
 /// bottom to 0 — negative delays are meaningless.
 final class TrainingStepDelayBox: @unchecked Sendable {
@@ -1497,25 +1497,10 @@ struct ContentView: View {
     // have a `ContentView` instance in scope (e.g. type-level
     // code, tests), while a live session reads the effective
     // value.
-    @State private var effectiveTournamentGames: Int = 200
-    // `@AppStorage` (not plain `@State`) so the user's stepper
-    // choice survives across app launches — same pattern as
-    // `selfPlayWorkerCount` below. The Stepper writes through the
-    // binding directly, so a UI change persists immediately; on a
-    // subsequent launch, this property hydrates from UserDefaults
-    // before any session is loaded. Session resume / parameters.json
-    // overwrites still take effect on top of the stored value
-    // (their assignments propagate through @AppStorage to
-    // UserDefaults), so the most-recently-acted-on value wins.
-    // Default falls back to `arenaConcurrencyDefault` for first
-    // launch. Bounded at runtime by `absoluteMaxArenaConcurrency`.
-    @AppStorage("effectiveArenaConcurrency") private var effectiveArenaConcurrency: Int = Self.arenaConcurrencyDefault
-    @State private var effectivePromoteThreshold: Double = 0.55
-    @State private var effectiveAutoArenaIntervalSec: Double = 30 * 60
-    @State private var effectiveTrainingBatchSize: Int = 4096
-    @State private var effectiveReplayBufferCapacity: Int = 1_000_000
-    @State private var effectiveMinBufferBeforeTraining: Int = 200_000
-    @State private var effectiveCandidateProbeIntervalSec: Double = 15
+    // Migrated to TrainingParameters.shared (see below). Properties
+    // formerly stored here as @State / @AppStorage are now accessed
+    // via `trainingParams.<name>`. Defaults and persistence are
+    // centralized in TrainingParameters.swift.
 
     // Network
     @State private var network: ChessMPSNetwork?
@@ -1753,10 +1738,10 @@ struct ContentView: View {
     /// — the per-network barrier fires K=32 batches in the early game,
     /// and the 5 ms coalescing window catches the desynchronized
     /// steady-state at ~K/2. The value is user-overridable via the
-    /// `effectiveArenaConcurrency` runtime setting (UI Stepper /
+    /// `trainingParams.arenaConcurrency` runtime setting (UI Stepper /
     /// session save+load / parameters.json key `arena_concurrency`).
     nonisolated static let arenaConcurrencyDefault = 200
-    /// Hard ceiling on `effectiveArenaConcurrency`. Mirrors the
+    /// Hard ceiling on `trainingParams.arenaConcurrency`. Mirrors the
     /// self-play `absoluteMaxSelfPlayWorkers` pattern: bounds the
     /// UI Stepper AND clamps values loaded from `parameters.json` /
     /// `session.json` so a stale or hand-edited file can't push K
@@ -1907,7 +1892,7 @@ struct ContentView: View {
     nonisolated static let minBufferBeforeTraining = max(25_000, replayBufferCapacity / 5)
     /// Default number of active self-play workers when a new
     /// Play and Train session starts. The Stepper and
-    /// `@State selfPlayWorkerCount` below both default to this
+    /// `trainingParams.selfPlayWorkers` (formerly `@State`) defaults to this
     /// value — it's the *initial* setting, **not** an upper
     /// bound. The user can raise or lower the live count at any
     /// time via the Stepper, and changes take effect at each
@@ -1930,7 +1915,7 @@ struct ContentView: View {
     /// wait state. Persisted to UserDefaults via `@AppStorage` so
     /// the user's last chosen concurrency level survives app
     /// restart. Bounded at runtime by `absoluteMaxSelfPlayWorkers`.
-    @AppStorage("selfPlayWorkerCount") private var selfPlayWorkerCount: Int = Self.initialSelfPlayWorkerCount
+    // selfPlayWorkerCount migrated to `trainingParams.selfPlayWorkers`.
     /// Upper bound on the adjustable training-step delay. 500 ms
     /// already turns a ~60 steps/s training worker into roughly
     /// 2 steps/s, which is as slow as anyone reasonably wants to
@@ -1964,15 +1949,15 @@ struct ContentView: View {
     /// steps/s ceiling so it doesn't starve the N self-play workers
     /// of GPU time on a fresh session start; the user can drop it
     /// to 0 ms once the self-play throughput has stabilized.
-    @AppStorage("trainingStepDelayMs") private var trainingStepDelayMs: Int = 50
-    /// Shared lock-protected mirror of `trainingStepDelayMs` that
+    // trainingStepDelayMs migrated to `trainingParams.trainingStepDelayMs`.
+    /// Shared lock-protected mirror of `trainingParams.trainingStepDelayMs` that
     /// the training worker task reads at the bottom of each step
     /// to decide how long to sleep before looping. Allocated at
     /// session start, cleared on session end.
     @State private var trainingStepDelayBox: TrainingStepDelayBox?
-    /// Shared lock-protected mirror of `selfPlayWorkerCount` that
+    /// Shared lock-protected mirror of `trainingParams.selfPlayWorkers` that
     /// the self-play worker tasks read between games. The Stepper
-    /// updates `selfPlayWorkerCount` AND this box atomically (via
+    /// updates `trainingParams.selfPlayWorkers` AND this box atomically (via
     /// the binding side-effect); workers poll the box at the top
     /// of each iteration to decide whether to play another game
     /// or stay in their idle wait state. Allocated at session
@@ -2389,103 +2374,27 @@ struct ContentView: View {
     /// Latest snapshot from `replayRatioController`, mirrored by
     /// the heartbeat for UI display.
     @State private var replayRatioSnapshot: ReplayRatioController.RatioSnapshot?
-    /// User-adjustable target consumption/production ratio.
-    /// Default 1.0 = balanced. Values >1 let training outpace
-    /// self-play (higher replay ratio); <1 the opposite. Persisted
-    /// in session checkpoints.
-    @AppStorage("replayRatioTarget") private var replayRatioTarget: Double = 1.0
-    @AppStorage("trainerLearningRate") private var trainerLearningRate: Double = Double(trainerLearningRateDefault)
-    /// When on, the optimizer feeds `learningRate * sqrt(batchSize / 4096)`
-    /// each step. The stored `trainerLearningRate` remains the base
-    /// value at the 4096 pivot. Persisted so the user's preference
-    /// survives restarts. See `ChessTrainer.sqrtBatchScalingForLR`.
-    /// Weight decay is intentionally not batch-scaled (standard
-    /// AdamW convention is to keep wd fixed across batch sizes).
-    @AppStorage("sqrtBatchScalingForLR")
-    private var sqrtBatchScalingForLR: Bool = true
-    /// Linear LR warmup length, in SGD steps. 0 disables warmup.
-    /// See `ChessTrainer.lrWarmupSteps` for the precise per-step
-    /// multiplier; the trainer composes this multiplicatively with
-    /// any sqrt-batch scaling.
-    @AppStorage("lrWarmupSteps")
-    private var lrWarmupSteps: Int = 100
-    @AppStorage("entropyRegularizationCoeff")
-    private var entropyRegularizationCoeff: Double = Double(entropyRegularizationCoeffDefault)
-    /// Bootstrap-phase draw penalty. Drawn games normally contribute
-    /// z=0 to the REINFORCE policy loss, which gives no gradient —
-    /// when 82 %+ of self-play games are threefold-repetition draws,
-    /// that's most of the replay buffer contributing nothing. With
-    /// this set to a small positive value, draws enter training as
-    /// `z = -drawPenalty`, giving a mild negative signal so the
-    /// policy has a reason to avoid shuffling sequences during the
-    /// bootstrap phase. See `ChessTrainer.drawPenalty`.
-    @AppStorage("drawPenalty")
-    private var drawPenalty: Double = Double(drawPenaltyDefault)
-    /// L2 weight-decay coefficient (decoupled / AdamW-style). Default
-    /// matches `ChessTrainer.weightDecayCDefault` (1e-4); live edits
-    /// flow through `ensureTrainer()` into the trainer's per-step feed
-    /// so new values take effect on the next SGD step without graph
-    /// rebuild.
-    @AppStorage("weightDecayC")
-    private var weightDecayC: Double = Double(ChessTrainer.weightDecayCDefault)
-    /// Global L2-norm gradient clip. Default matches
-    /// `ChessTrainer.gradClipMaxNormDefault` (30.0); edits are
-    /// hot-applied per step.
-    @AppStorage("gradClipMaxNorm")
-    private var gradClipMaxNorm: Double = Double(ChessTrainer.gradClipMaxNormDefault)
-    /// Policy-loss coefficient K. Scales the policy term in the
-    /// total loss so its gradient is comparable to the value term's.
-    /// Default matches `ChessTrainer.policyScaleKDefault` (5).
-    @AppStorage("policyScaleK")
-    private var policyScaleK: Double = Double(ChessTrainer.policyScaleKDefault)
+    // The training-parameter properties formerly stored here as
+    // @AppStorage / @State are now exposed by `TrainingParameters.shared`
+    // and accessed via `trainingParams.<name>`. See TrainingParameters.swift
+    // for the canonical definitions, defaults, and persistence.
 
-    /// Legal-mass collapse detector — illegal-mass threshold above
-    /// which a probe counts as a "bad" reading. Default 0.999. The
-    /// detector trips only when ALL probes in the no-improvement
-    /// window are above this AND legal mass hasn't improved over
-    /// that window (see `legalMassCollapseNoImprovementProbes`).
-    @AppStorage("legalMassCollapseThreshold")
-    private var legalMassCollapseThreshold: Double = 0.999
-    /// Legal-mass collapse detector — grace period (seconds) measured
-    /// from the first observed SGD step before the detector starts
-    /// firing. Default 300 s. Buffer warmup + lr warmup mean fresh
-    /// runs naturally show ~uniform legal mass for several minutes;
-    /// the grace prevents false positives on those.
-    @AppStorage("legalMassCollapseGraceSeconds")
-    private var legalMassCollapseGraceSeconds: Double = 300.0
-    /// Legal-mass collapse detector — number of consecutive probes
-    /// required to trip an abort. The detector tracks a sliding
-    /// window of this many legal-mass readings; abort fires only
-    /// when the window is full, every reading is past the threshold,
-    /// AND the newest reading is no better than the oldest. Default 5.
-    @AppStorage("legalMassCollapseNoImprovementProbes")
-    private var legalMassCollapseNoImprovementProbes: Int = 5
-
-    // Self-play sampling schedule (live-tunable). Backed by
-    // `SamplingSchedule.selfPlay` defaults. New schedules take effect
-    // on each newly-constructed player at the next game start within
-    // a slot; currently-playing games keep their schedule to avoid
-    // per-ply reads of shared mutable state.
-    @AppStorage("spStartTau")
-    private var spStartTau: Double = Double(SamplingSchedule.selfPlay.startTau)
-    @AppStorage("spFloorTau")
-    private var spFloorTau: Double = Double(SamplingSchedule.selfPlay.floorTau)
-    @AppStorage("spDecayPerPly")
-    private var spDecayPerPly: Double = Double(SamplingSchedule.selfPlay.decayPerPly)
-    @AppStorage("arStartTau")
-    private var arStartTau: Double = Double(SamplingSchedule.arena.startTau)
-    @AppStorage("arFloorTau")
-    private var arFloorTau: Double = Double(SamplingSchedule.arena.floorTau)
-    @AppStorage("arDecayPerPly")
-    private var arDecayPerPly: Double = Double(SamplingSchedule.arena.decayPerPly)
     /// Last auto-computed step delay, persisted so the next session
     /// starts from where the auto-adjuster left off instead of
-    /// falling back to the manual default.
+    /// falling back to the manual default. Note: this is auto-controller
+    /// state, not a training parameter — it is intentionally NOT migrated
+    /// to TrainingParameters.shared.
     @AppStorage("lastAutoComputedDelayMs") private var lastAutoComputedDelayMs: Int = 50
-    /// Whether the ratio controller auto-adjusts the training step
-    /// delay. When off, the manual Stepper controls the delay
-    /// directly. Persisted in session checkpoints.
-    @State private var replayRatioAutoAdjust: Bool = true
+
+    /// Singleton container for all training parameters that were
+    /// previously stored as @AppStorage / @State on this view.
+    /// Reads (`trainingParams.<name>`) participate in the view's
+    /// dependency tracking via `@Observable`. The body shadows this
+    /// with `@Bindable var trainingParams = trainingParams` so
+    /// `$trainingParams.<name>` projects a real `Binding` for
+    /// Steppers/Toggles inside the body. Helper methods use
+    /// the bare reference for reads/writes.
+    private let trainingParams = TrainingParameters.shared
 
     /// 100 ms heartbeat that pulls the latest snapshot from `gameWatcher`
     /// into `gameSnapshot`. Standard SwiftUI Combine timer pattern — the
@@ -2636,7 +2545,7 @@ struct ContentView: View {
                 // results.
                 candidateProbeDirty = true
             }
-            .onChange(of: selfPlayWorkerCount) { oldValue, newValue in
+            .onChange(of: trainingParams.selfPlayWorkers) { oldValue, newValue in
                 // Stepper's `in:` range clamps; `.onChange` only fires
                 // on real change, so log + box update happen only when
                 // N actually shifts. `workerCountBox` is nil between
@@ -2645,17 +2554,17 @@ struct ContentView: View {
                 SessionLogger.shared.log("[PARAM] selfPlayWorkers: \(oldValue) -> \(newValue)")
                 workerCountBox?.set(newValue)
             }
-            .onChange(of: replayRatioTarget) { oldValue, newValue in
+            .onChange(of: trainingParams.replayRatioTarget) { oldValue, newValue in
                 SessionLogger.shared.log(
                     String(format: "[PARAM] replayRatioTarget: %.2f -> %.2f", oldValue, newValue)
                 )
                 replayRatioController?.targetRatio = newValue
             }
-            .onChange(of: sqrtBatchScalingForLR) { oldValue, newValue in
+            .onChange(of: trainingParams.sqrtBatchScalingLR) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] sqrtBatchScalingForLR: \(oldValue) -> \(newValue)")
                 trainer?.sqrtBatchScalingForLR = newValue
             }
-            .onChange(of: lrWarmupSteps) { oldValue, newValue in
+            .onChange(of: trainingParams.lrWarmupSteps) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] lrWarmupSteps: \(oldValue) -> \(newValue)")
                 trainer?.lrWarmupSteps = newValue
                 // Re-sync the TextField's mirror state so the UI
@@ -2666,22 +2575,22 @@ struct ContentView: View {
                 // correct value but the field shows the stale one.
                 lrWarmupStepsEditText = String(newValue)
             }
-            .onChange(of: replayRatioAutoAdjust) { oldValue, newValue in
+            .onChange(of: trainingParams.replayRatioAutoAdjust) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] replayRatioAutoAdjust: \(oldValue) -> \(newValue)")
                 replayRatioController?.autoAdjust = newValue
                 if newValue {
                     // Auto ON: seed the computed delay from the current
                     // manual delay so the display doesn't jump.
-                    replayRatioController?.computedDelayMs = trainingStepDelayMs
+                    replayRatioController?.computedDelayMs = trainingParams.trainingStepDelayMs
                 } else {
                     // Auto OFF: inherit the last auto-computed delay
                     // as the new manual value, snapped to the nearest
                     // ladder rung so the Stepper binding doesn't crash
                     // on an off-ladder value.
-                    let lastAuto = replayRatioController?.computedDelayMs ?? trainingStepDelayMs
+                    let lastAuto = replayRatioController?.computedDelayMs ?? trainingParams.trainingStepDelayMs
                     let ladder = Self.stepDelayLadder
                     let snapped = ladder.min(by: { abs($0 - lastAuto) < abs($1 - lastAuto) }) ?? lastAuto
-                    trainingStepDelayMs = snapped
+                    trainingParams.trainingStepDelayMs = snapped
                     replayRatioController?.manualDelayMs = snapped
                 }
             }
@@ -2693,7 +2602,7 @@ struct ContentView: View {
     /// `stepDelayLadder`. This binding translates a raw Stepper
     /// delta (current ± 1) into "advance/retreat one ladder rung",
     /// snapping the displayed value to the nearest rung and writing
-    /// through to both `@State trainingStepDelayMs` (so the row
+    /// through to both `trainingParams.trainingStepDelayMs` (so the row
     /// re-renders immediately) and `trainingStepDelayBox` (so the
     /// training worker task sees the new delay on its next step).
     /// The box is nil between sessions, so writes outside Play and
@@ -2701,10 +2610,10 @@ struct ContentView: View {
     /// session starts.
     private var trainingStepDelayBinding: Binding<Int> {
         Binding(
-            get: { trainingStepDelayMs },
+            get: { trainingParams.trainingStepDelayMs },
             set: { newValue in
                 let ladder = Self.stepDelayLadder
-                let current = trainingStepDelayMs
+                let current = trainingParams.trainingStepDelayMs
                 // Find the current value in the ladder. If it's not
                 // an exact rung (e.g. inherited from the auto-adjuster
                 // which computes arbitrary ms values), snap to the
@@ -2729,7 +2638,7 @@ struct ContentView: View {
                 if snapped != current {
                     SessionLogger.shared.log("[PARAM] stepDelayMs (manual): \(current) -> \(snapped)")
                 }
-                trainingStepDelayMs = snapped
+                trainingParams.trainingStepDelayMs = snapped
                 trainingStepDelayBox?.set(snapped)
                 replayRatioController?.manualDelayMs = snapped
             }
@@ -2813,7 +2722,11 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        // Body-local @Bindable shadow of the TrainingParameters singleton
+        // so `$trainingParams.<name>` projects a real `Binding<T>` for
+        // Steppers/Toggles inside the body.
+        @Bindable var trainingParams = self.trainingParams
+        return VStack(alignment: .leading, spacing: 8) {
             // Title bar
             HStack(spacing: 8) {
                 Text("Drew's Chess Machine")
@@ -3119,8 +3032,8 @@ struct ContentView: View {
                                     // mode so the probe board stays clean.
                                     if realTraining
                                         && !isCandidateTestActive
-                                        && selfPlayWorkerCount > 1 {
-                                        Text("N = \(selfPlayWorkerCount) concurrent games\nLive board hidden")
+                                        && trainingParams.selfPlayWorkers > 1 {
+                                        Text("N = \(trainingParams.selfPlayWorkers) concurrent games\nLive board hidden")
                                             .font(.system(.body, design: .monospaced))
                                             .multilineTextAlignment(.center)
                                             .foregroundStyle(.white)
@@ -3200,12 +3113,12 @@ struct ContentView: View {
                                         Text(column.header)
                                         HStack(spacing: 6) {
                                             Text("  Concurrency:")
-                                            Text("\(selfPlayWorkerCount)")
+                                            Text("\(trainingParams.selfPlayWorkers)")
                                                 .monospacedDigit()
                                                 .frame(minWidth: 24, alignment: .trailing)
                                             Stepper(
                                                 "Concurrency",
-                                                value: $selfPlayWorkerCount,
+                                                value: $trainingParams.selfPlayWorkers,
                                                 in: 1...Self.absoluteMaxSelfPlayWorkers
                                             )
                                             .labelsHidden()
@@ -3247,7 +3160,7 @@ struct ContentView: View {
                                                 Text("ms (auto)")
                                                     .foregroundStyle(.secondary)
                                             } else {
-                                                Text("\(trainingStepDelayMs)")
+                                                Text("\(trainingParams.trainingStepDelayMs)")
                                                     .monospacedDigit()
                                                     .frame(minWidth: 32, alignment: .trailing)
                                                 Text("ms")
@@ -3258,7 +3171,7 @@ struct ContentView: View {
                                                 in: 0...Self.stepDelayMaxMs
                                             )
                                             .labelsHidden()
-                                            .disabled(replayRatioAutoAdjust)
+                                            .disabled(trainingParams.replayRatioAutoAdjust)
                                         }
                                         HStack(spacing: 6) {
                                             Text("  Replay Ratio:")
@@ -3277,17 +3190,17 @@ struct ContentView: View {
                                             }
                                             Text("target:")
                                                 .foregroundStyle(.secondary)
-                                            Text(String(format: "%.1f", replayRatioTarget))
+                                            Text(String(format: "%.1f", trainingParams.replayRatioTarget))
                                                 .monospacedDigit()
                                                 .frame(minWidth: 24, alignment: .trailing)
                                             Stepper(
                                                 "Target Ratio",
-                                                value: $replayRatioTarget,
+                                                value: $trainingParams.replayRatioTarget,
                                                 in: 0.1...5.0,
                                                 step: 0.1
                                             )
                                             .labelsHidden()
-                                            Toggle("Auto", isOn: $replayRatioAutoAdjust)
+                                            Toggle("Auto", isOn: $trainingParams.replayRatioAutoAdjust)
                                                 .toggleStyle(.checkbox)
                                         }
                                         HStack(spacing: 6) {
@@ -3306,14 +3219,14 @@ struct ContentView: View {
                                                             )
                                                         }
                                                         trainer?.learningRate = parsed
-                                                        trainerLearningRate = Double(parsed)
+                                                        trainingParams.learningRate = Double(parsed)
                                                     }
                                                     learningRateEditText = String(
                                                         format: "%.1e",
                                                         trainer?.learningRate ?? Self.trainerLearningRateDefault
                                                     )
                                                 }
-                                            Toggle("√batch", isOn: $sqrtBatchScalingForLR)
+                                            Toggle("√batch", isOn: $trainingParams.sqrtBatchScalingLR)
                                                 .toggleStyle(.checkbox)
                                                 .help("Adam-style LR scaling: feed learning_rate × sqrt(batch_size / 4096) each step. At batch=4096 the multiplier is 1.0 (no-op); at batch=1024 it's 0.5, at batch=8192 it's √2. The typed LR above is always the base value at the 4096 pivot — scaling is applied when writing into the optimizer feed.")
                                             Text("warmup")
@@ -3324,17 +3237,17 @@ struct ContentView: View {
                                                 .textFieldStyle(.roundedBorder)
                                                 .onSubmit {
                                                     if let parsed = Int(lrWarmupStepsEditText), parsed >= 0 {
-                                                        let prior = trainer?.lrWarmupSteps ?? lrWarmupSteps
+                                                        let prior = trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
                                                         if parsed != prior {
                                                             SessionLogger.shared.log(
                                                                 "[PARAM] lrWarmupSteps: \(prior) -> \(parsed)"
                                                             )
                                                         }
                                                         trainer?.lrWarmupSteps = parsed
-                                                        lrWarmupSteps = parsed
+                                                        trainingParams.lrWarmupSteps = parsed
                                                     }
                                                     lrWarmupStepsEditText = String(
-                                                        trainer?.lrWarmupSteps ?? lrWarmupSteps
+                                                        trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
                                                     )
                                                 }
                                                 .help("Linear LR warmup: for the first N SGD steps, multiply LR by min(1, completedSteps / N). 0 disables. Composes multiplicatively with √batch scaling.")
@@ -3348,18 +3261,18 @@ struct ContentView: View {
                                             .onSubmit {
                                                 if let parsed = Double(entropyRegularizationEditText),
                                                    parsed >= 0, parsed.isFinite {
-                                                    let prior = entropyRegularizationCoeff
+                                                    let prior = trainingParams.entropyBonus
                                                     if abs(parsed - prior) > Double.ulpOfOne {
                                                         SessionLogger.shared.log(
                                                             String(format: "[PARAM] entropyReg: %.2e -> %.2e", prior, parsed)
                                                         )
                                                     }
-                                                    entropyRegularizationCoeff = parsed
+                                                    trainingParams.entropyBonus = parsed
                                                     trainer?.entropyRegularizationCoeff = Float(parsed)
                                                 }
                                                 entropyRegularizationEditText = String(
                                                     format: "%.2e",
-                                                    entropyRegularizationCoeff
+                                                    trainingParams.entropyBonus
                                                 )
                                             }
                                             Text("clip")
@@ -3371,18 +3284,18 @@ struct ContentView: View {
                                                 .onSubmit {
                                                     if let parsed = Double(gradClipMaxNormEditText),
                                                        parsed > 0, parsed.isFinite {
-                                                        let prior = gradClipMaxNorm
+                                                        let prior = trainingParams.gradClipMaxNorm
                                                         if abs(parsed - prior) > Double.ulpOfOne {
                                                             SessionLogger.shared.log(
                                                                 String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", prior, parsed)
                                                             )
                                                         }
-                                                        gradClipMaxNorm = parsed
+                                                        trainingParams.gradClipMaxNorm = parsed
                                                         trainer?.gradClipMaxNorm = Float(parsed)
                                                     }
                                                     gradClipMaxNormEditText = String(
                                                         format: "%.2f",
-                                                        gradClipMaxNorm
+                                                        trainingParams.gradClipMaxNorm
                                                     )
                                                 }
                                             Text("decay")
@@ -3394,18 +3307,18 @@ struct ContentView: View {
                                                 .onSubmit {
                                                     if let parsed = Double(weightDecayEditText),
                                                        parsed >= 0, parsed.isFinite {
-                                                        let prior = weightDecayC
+                                                        let prior = trainingParams.weightDecay
                                                         if abs(parsed - prior) > Double.ulpOfOne {
                                                             SessionLogger.shared.log(
                                                                 String(format: "[PARAM] weightDecayC: %.2e -> %.2e", prior, parsed)
                                                             )
                                                         }
-                                                        weightDecayC = parsed
+                                                        trainingParams.weightDecay = parsed
                                                         trainer?.weightDecayC = Float(parsed)
                                                     }
                                                     weightDecayEditText = String(
                                                         format: "%.2e",
-                                                        weightDecayC
+                                                        trainingParams.weightDecay
                                                     )
                                                 }
                                             Text("K")
@@ -3417,18 +3330,18 @@ struct ContentView: View {
                                                 .onSubmit {
                                                     if let parsed = Double(policyScaleKEditText),
                                                        parsed > 0, parsed.isFinite {
-                                                        let prior = policyScaleK
+                                                        let prior = trainingParams.policyScaleK
                                                         if abs(parsed - prior) > Double.ulpOfOne {
                                                             SessionLogger.shared.log(
                                                                 String(format: "[PARAM] policyScaleK: %.2f -> %.2f", prior, parsed)
                                                             )
                                                         }
-                                                        policyScaleK = parsed
+                                                        trainingParams.policyScaleK = parsed
                                                         trainer?.policyScaleK = Float(parsed)
                                                     }
                                                     policyScaleKEditText = String(
                                                         format: "%.2f",
-                                                        policyScaleK
+                                                        trainingParams.policyScaleK
                                                     )
                                                 }
                                         }
@@ -3489,18 +3402,18 @@ struct ContentView: View {
                                             .onSubmit {
                                                 if let parsed = Double(drawPenaltyEditText),
                                                    parsed >= 0, parsed.isFinite {
-                                                    let prior = drawPenalty
+                                                    let prior = trainingParams.drawPenalty
                                                     if abs(parsed - prior) > Double.ulpOfOne {
                                                         SessionLogger.shared.log(
                                                             String(format: "[PARAM] drawPenalty: %.3f -> %.3f", prior, parsed)
                                                         )
                                                     }
-                                                    drawPenalty = parsed
+                                                    trainingParams.drawPenalty = parsed
                                                     trainer?.drawPenalty = Float(parsed)
                                                 }
                                                 drawPenaltyEditText = String(
                                                     format: "%.3f",
-                                                    drawPenalty
+                                                    trainingParams.drawPenalty
                                                 )
                                             }
                                             Text("(draws → z = −penalty; 0 disables)")
@@ -3565,8 +3478,8 @@ struct ContentView: View {
                     diversityHistogram: currentDiversityHistogramBars,
                     arenaEvents: arenaChartEvents,
                     activeArenaStartElapsed: activeArenaStartElapsed,
-                    promoteThreshold: effectivePromoteThreshold,
-                    replayRatioTarget: replayRatioTarget,
+                    promoteThreshold: trainingParams.arenaPromoteThreshold,
+                    replayRatioTarget: trainingParams.replayRatioTarget,
                     appMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
                     gpuMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
                     visibleDomainSec: ChartZoom.stops[chartZoomIdx],
@@ -3585,43 +3498,43 @@ struct ContentView: View {
             wireMenuCommandHub()
             syncMenuCommandHubState()
             if learningRateEditText.isEmpty {
-                learningRateEditText = String(format: "%.1e", trainerLearningRate)
+                learningRateEditText = String(format: "%.1e", trainingParams.learningRate)
             }
             if lrWarmupStepsEditText.isEmpty {
-                lrWarmupStepsEditText = String(lrWarmupSteps)
+                lrWarmupStepsEditText = String(trainingParams.lrWarmupSteps)
             }
             if entropyRegularizationEditText.isEmpty {
-                entropyRegularizationEditText = String(format: "%.2e", entropyRegularizationCoeff)
+                entropyRegularizationEditText = String(format: "%.2e", trainingParams.entropyBonus)
             }
             if drawPenaltyEditText.isEmpty {
-                drawPenaltyEditText = String(format: "%.3f", drawPenalty)
+                drawPenaltyEditText = String(format: "%.3f", trainingParams.drawPenalty)
             }
             if weightDecayEditText.isEmpty {
-                weightDecayEditText = String(format: "%.2e", weightDecayC)
+                weightDecayEditText = String(format: "%.2e", trainingParams.weightDecay)
             }
             if gradClipMaxNormEditText.isEmpty {
-                gradClipMaxNormEditText = String(format: "%.2f", gradClipMaxNorm)
+                gradClipMaxNormEditText = String(format: "%.2f", trainingParams.gradClipMaxNorm)
             }
             if policyScaleKEditText.isEmpty {
-                policyScaleKEditText = String(format: "%.2f", policyScaleK)
+                policyScaleKEditText = String(format: "%.2f", trainingParams.policyScaleK)
             }
             if spStartTauEditText.isEmpty {
-                spStartTauEditText = String(format: "%.2f", spStartTau)
+                spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
             }
             if spFloorTauEditText.isEmpty {
-                spFloorTauEditText = String(format: "%.2f", spFloorTau)
+                spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
             }
             if spDecayPerPlyEditText.isEmpty {
-                spDecayPerPlyEditText = String(format: "%.3f", spDecayPerPly)
+                spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
             }
             if arStartTauEditText.isEmpty {
-                arStartTauEditText = String(format: "%.2f", arStartTau)
+                arStartTauEditText = String(format: "%.2f", trainingParams.arenaStartTau)
             }
             if arFloorTauEditText.isEmpty {
-                arFloorTauEditText = String(format: "%.2f", arFloorTau)
+                arFloorTauEditText = String(format: "%.2f", trainingParams.arenaTargetTau)
             }
             if arDecayPerPlyEditText.isEmpty {
-                arDecayPerPlyEditText = String(format: "%.3f", arDecayPerPly)
+                arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
             }
             // Launch-time auto-resume prompt. Deferred until after
             // the other field seeding above so any sheet presentation
@@ -3652,22 +3565,7 @@ struct ContentView: View {
             autoResumeSheetContentView()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
-            // Teardown on actual main-window close only — NOT on minimize
-            // (which fires .onDisappear but not willClose), and NOT on
-            // auxiliary windows (Log Analysis, NSOpenPanel/NSSavePanel,
-            // etc.) which all post the same notification. Users who
-            // deliberately minimize a training session still expect it
-            // to keep running; and raising a Save panel must not abort
-            // the run mid-save. The object check narrows us to exactly
-            // this view's hosting NSWindow, captured above by
-            // WindowAccessor.
-            guard let closing = note.object as? NSWindow,
-                  let ours = contentWindow,
-                  closing === ours else {
-                return
-            }
-            stopAnyContinuous()
-            clearTrainingAlarm()
+            handleWindowWillClose(note: note)
         }
         .onChange(of: isBuilding) { _, _ in syncMenuCommandHubState() }
         .onChange(of: continuousPlay) { _, _ in syncMenuCommandHubState() }
@@ -4253,7 +4151,7 @@ struct ContentView: View {
         guard let session = parallelStats else { return }
         let elapsed = max(0, now.timeIntervalSince(session.sessionStart))
         let curSp = session.selfPlayPositions
-        let curTr = (trainingStats?.steps ?? 0) * effectiveTrainingBatchSize
+        let curTr = (trainingStats?.steps ?? 0) * trainingParams.trainingBatchSize
 
         // Walk newest → oldest, recording the last sample we see
         // that still falls inside the 3-minute window. Breaks out
@@ -4591,14 +4489,14 @@ struct ContentView: View {
     /// the promotion threshold) or red (below). All non-arena states
     /// fall through to `busyLabel` rendered in the usual secondary
     /// color. The promotion threshold is read from
-    /// `effectivePromoteThreshold` (the CLI-overridable mirror of
+    /// `trainingParams.arenaPromoteThreshold` (the CLI-overridable mirror of
     /// `Self.tournamentPromoteThreshold`) so flipping it in one
     /// place re-colors the UI automatically.
     private var busyLabelView: Text {
         if let tp = tournamentProgress {
             let elapsed = Date().timeIntervalSince(tp.startTime)
             let scorePercent = tp.candidateScore * 100
-            let thresholdPercent = effectivePromoteThreshold * 100
+            let thresholdPercent = trainingParams.arenaPromoteThreshold * 100
             let scoreColor: Color = scorePercent >= thresholdPercent ? .green : .red
 
             let head = Text(String(
@@ -4964,9 +4862,20 @@ struct ContentView: View {
     /// `handleSaveParametersExportResult` logs success/failure.
     @MainActor
     private func handleSaveParametersMenuAction() {
-        let cfg = currentParametersConfig()
         do {
-            let data = try cfg.encodeJSON()
+            let snap = trainingParams.snapshot().rawValueMap()
+            var dict: [String: Any] = [:]
+            for (id, raw) in snap {
+                switch raw {
+                case .bool(let x): dict[id] = x
+                case .int(let x): dict[id] = x
+                case .double(let x): dict[id] = x
+                }
+            }
+            let data = try JSONSerialization.data(
+                withJSONObject: dict,
+                options: [.prettyPrinted, .sortedKeys]
+            )
             parametersDocumentForExport = CliParametersDocument(data: data)
             showingSaveParametersExporter = true
             SessionLogger.shared.log("[BUTTON] Save Parameters")
@@ -5011,52 +4920,9 @@ struct ContentView: View {
         }
     }
 
-    /// Build a `CliTrainingConfig` populated with every parameter
-    /// the engine exposes, drawn from the current `@AppStorage` /
-    /// `@State` values. The result is fully populated (no nil
-    /// fields) so a UI-saved parameters file always emits the
-    /// complete set; an autotrain `parameters.json` produced with
-    /// `encodeJSON()` is byte-comparable against this output if the
-    /// values match.
-    @MainActor
-    private func currentParametersConfig() -> CliTrainingConfig {
-        var cfg = CliTrainingConfig()
-        cfg.entropyBonus = entropyRegularizationCoeff
-        cfg.gradClipMaxNorm = gradClipMaxNorm
-        cfg.weightDecay = weightDecayC
-        cfg.K = policyScaleK
-        cfg.learningRate = trainerLearningRate
-        cfg.drawPenalty = drawPenalty
-        cfg.sqrtBatchScalingForLR = sqrtBatchScalingForLR
-        cfg.lrWarmupSteps = lrWarmupSteps
-        cfg.selfPlayStartTau = spStartTau
-        cfg.selfPlayTargetTau = spFloorTau
-        cfg.selfPlayTauDecayPerPly = spDecayPerPly
-        cfg.arenaStartTau = arStartTau
-        cfg.arenaTargetTau = arFloorTau
-        cfg.arenaTauDecayPerPly = arDecayPerPly
-        cfg.replayRatioTarget = replayRatioTarget
-        cfg.replayRatioAutoAdjust = replayRatioAutoAdjust
-        cfg.selfPlayWorkers = selfPlayWorkerCount
-        cfg.trainingStepDelayMs = trainingStepDelayMs
-        cfg.trainingBatchSize = effectiveTrainingBatchSize
-        cfg.replayBufferCapacity = effectiveReplayBufferCapacity
-        cfg.replayBufferMinPositionsBeforeTraining = effectiveMinBufferBeforeTraining
-        cfg.arenaPromoteThreshold = effectivePromoteThreshold
-        cfg.arenaGamesPerTournament = effectiveTournamentGames
-        cfg.arenaConcurrency = effectiveArenaConcurrency
-        cfg.arenaAutoIntervalSec = effectiveAutoArenaIntervalSec
-        cfg.candidateProbeIntervalSec = effectiveCandidateProbeIntervalSec
-        cfg.legalMassCollapseThreshold = legalMassCollapseThreshold
-        cfg.legalMassCollapseGraceSeconds = legalMassCollapseGraceSeconds
-        cfg.legalMassCollapseNoImprovementProbes = legalMassCollapseNoImprovementProbes
-        // training_time_limit is a CLI-only knob (it only takes
-        // effect with --output, where it triggers an auto-snapshot
-        // on expiry). UI sessions don't use it, so saving the field
-        // out as a UI-side-effective value would be misleading.
-        cfg.trainingTimeLimitSec = nil
-        return cfg
-    }
+    // currentParametersConfig() removed in the TrainingParameters rewrite —
+    // handleSaveParametersMenuAction now serializes directly from
+    // `trainingParams.snapshot().rawValueMap()`.
 
     /// Build the Codable snapshot of the current session state,
     /// including counters, hyperparameters, and arena history.
@@ -5111,7 +4977,7 @@ struct ContentView: View {
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
         let entropyCoeff = trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault
-        let drawPen = trainer?.drawPenalty ?? Float(drawPenalty)
+        let drawPen = trainer?.drawPenalty ?? Float(trainingParams.drawPenalty)
         let bufferSnap = replayBuffer?.stateSnapshot()
         let segments: [SessionCheckpointState.TrainingSegment]? = completedTrainingSegments.isEmpty
             ? nil
@@ -5125,23 +4991,23 @@ struct ContentView: View {
             trainingSteps: trainingSnap?.steps ?? 0,
             selfPlayGames: snap?.selfPlayGames ?? 0,
             selfPlayMoves: snap?.selfPlayPositions ?? 0,
-            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * effectiveTrainingBatchSize,
-            batchSize: effectiveTrainingBatchSize,
+            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * trainingParams.trainingBatchSize,
+            batchSize: trainingParams.trainingBatchSize,
             learningRate: lr,
             entropyRegularizationCoeff: entropyCoeff,
             drawPenalty: drawPen,
-            promoteThreshold: effectivePromoteThreshold,
-            arenaGames: effectiveTournamentGames,
-            arenaConcurrency: effectiveArenaConcurrency,
+            promoteThreshold: trainingParams.arenaPromoteThreshold,
+            arenaGames: trainingParams.arenaGamesPerTournament,
+            arenaConcurrency: trainingParams.arenaConcurrency,
             selfPlayTau: TauConfigCodable(samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()),
             arenaTau: TauConfigCodable(samplingScheduleBox?.arena ?? buildArenaSchedule()),
-            selfPlayWorkerCount: selfPlayWorkerCount,
-            gradClipMaxNorm: Float(gradClipMaxNorm),
-            weightDecayCoeff: Float(weightDecayC),
-            policyScaleK: Float(policyScaleK),
-            replayRatioTarget: replayRatioTarget,
-            replayRatioAutoAdjust: replayRatioAutoAdjust,
-            stepDelayMs: trainingStepDelayMs,
+            selfPlayWorkerCount: trainingParams.selfPlayWorkers,
+            gradClipMaxNorm: Float(trainingParams.gradClipMaxNorm),
+            weightDecayCoeff: Float(trainingParams.weightDecay),
+            policyScaleK: Float(trainingParams.policyScaleK),
+            replayRatioTarget: trainingParams.replayRatioTarget,
+            replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust,
+            stepDelayMs: trainingParams.trainingStepDelayMs,
             lastAutoComputedDelayMs: lastAutoComputedDelayMs,
             // Schema-expansion fields (added to close the autotrain
             // reproducibility gap — these previously lived only in
@@ -5149,14 +5015,14 @@ struct ContentView: View {
             // user's current global preference on resume rather than
             // the session's saved value). All Optional in the schema
             // for back-compat with older session.json files.
-            lrWarmupSteps: lrWarmupSteps,
-            sqrtBatchScalingForLR: sqrtBatchScalingForLR,
-            replayBufferMinPositionsBeforeTraining: effectiveMinBufferBeforeTraining,
-            arenaAutoIntervalSec: effectiveAutoArenaIntervalSec,
-            candidateProbeIntervalSec: effectiveCandidateProbeIntervalSec,
-            legalMassCollapseThreshold: legalMassCollapseThreshold,
-            legalMassCollapseGraceSeconds: legalMassCollapseGraceSeconds,
-            legalMassCollapseNoImprovementProbes: legalMassCollapseNoImprovementProbes,
+            lrWarmupSteps: trainingParams.lrWarmupSteps,
+            sqrtBatchScalingForLR: trainingParams.sqrtBatchScalingLR,
+            replayBufferMinPositionsBeforeTraining: trainingParams.replayBufferMinPositionsBeforeTraining,
+            arenaAutoIntervalSec: trainingParams.arenaAutoIntervalSec,
+            candidateProbeIntervalSec: trainingParams.candidateProbeIntervalSec,
+            legalMassCollapseThreshold: trainingParams.legalMassCollapseThreshold,
+            legalMassCollapseGraceSeconds: trainingParams.legalMassCollapseGraceSeconds,
+            legalMassCollapseNoImprovementProbes: trainingParams.legalMassCollapseNoImprovementProbes,
             whiteCheckmates: snap?.whiteCheckmates,
             blackCheckmates: snap?.blackCheckmates,
             stalemates: snap?.stalemates,
@@ -5927,9 +5793,9 @@ struct ContentView: View {
     /// / arena schedules through `ensureTrainer`, `buildSelfPlaySchedule`,
     /// and `buildArenaSchedule` — the same paths an interactive
     /// user triggers when they edit the same fields in the UI.
-    /// `replayRatioAutoAdjust` is left alone because no CLI knob
+    /// `trainingParams.replayRatioAutoAdjust` is left alone because no CLI knob
     /// maps to it; a caller who wants a static training delay can
-    /// just set `trainingStepDelayMs` to their desired value.
+    /// just set `trainingParams.trainingStepDelayMs` to their desired value.
     /// One row in the change list returned by
     /// `applyCliConfigOverrides(cfg:)`. The label is the JSON key
     /// (e.g. `"learning_rate"`); `before` and `after` are formatted
@@ -5966,94 +5832,50 @@ struct ContentView: View {
     @MainActor
     @discardableResult
     private func applyCliConfigOverrides(cfg: CliTrainingConfig) -> [ParameterOverrideChange] {
-        // Capture "before" values so the log line proves the
-        // override actually landed on top of whatever was
-        // previously in @AppStorage — including any stale value
-        // persisted from an earlier launch. Each write below
-        // goes through the @AppStorage projected setter, which
-        // synchronously flushes to UserDefaults; the subsequent
-        // @AppStorage read in `ensureTrainer` / schedule builders
-        // returns the written value.
-        var changes: [(String, String, String)] = []
-        func record<T: CustomStringConvertible>(_ label: String, _ before: T, _ after: T) {
-            changes.append((label, "\(before)", "\(after)"))
-        }
-        if let v = cfg.entropyBonus { record("entropy_bonus", entropyRegularizationCoeff, v); entropyRegularizationCoeff = v }
-        if let v = cfg.gradClipMaxNorm { record("grad_clip_max_norm", gradClipMaxNorm, v); gradClipMaxNorm = v }
-        if let v = cfg.weightDecay { record("weight_decay", weightDecayC, v); weightDecayC = v }
-        if let v = cfg.K { record("K", policyScaleK, v); policyScaleK = v }
-        if let v = cfg.learningRate { record("learning_rate", trainerLearningRate, v); trainerLearningRate = v }
-        if let v = cfg.sqrtBatchScalingForLR { record("sqrt_batch_scaling_lr", sqrtBatchScalingForLR, v); sqrtBatchScalingForLR = v }
-        if let v = cfg.lrWarmupSteps, v >= 0 { record("lr_warmup_steps", lrWarmupSteps, v); lrWarmupSteps = v }
-        if let v = cfg.drawPenalty { record("draw_penalty", drawPenalty, v); drawPenalty = v }
-        if let v = cfg.selfPlayStartTau { record("self_play_start_tau", spStartTau, v); spStartTau = v }
-        if let v = cfg.selfPlayTargetTau { record("self_play_target_tau", spFloorTau, v); spFloorTau = v }
-        if let v = cfg.selfPlayTauDecayPerPly { record("self_play_tau_decay_per_ply", spDecayPerPly, v); spDecayPerPly = v }
-        if let v = cfg.arenaStartTau { record("arena_start_tau", arStartTau, v); arStartTau = v }
-        if let v = cfg.arenaTargetTau { record("arena_target_tau", arFloorTau, v); arFloorTau = v }
-        if let v = cfg.arenaTauDecayPerPly { record("arena_tau_decay_per_ply", arDecayPerPly, v); arDecayPerPly = v }
-        if let v = cfg.replayRatioTarget { record("replay_ratio_target", replayRatioTarget, v); replayRatioTarget = v }
-        if let v = cfg.replayRatioAutoAdjust { record("replay_ratio_auto_adjust", replayRatioAutoAdjust, v); replayRatioAutoAdjust = v }
-        if let v = cfg.selfPlayWorkers {
+        // Pre-process the value map: apply UI-specific clamps that the
+        // macro's range alone can't express (e.g. snapping
+        // training_step_delay_ms onto the Stepper's ladder, or
+        // narrowing self_play_workers to a per-build absolute cap that
+        // is tighter than the macro's permissive 1...256).
+        var values = cfg.trainingParameters
+        if case .int(let v) = values[SelfPlayWorkers.id] {
             let clamped = max(1, min(Self.absoluteMaxSelfPlayWorkers, v))
-            record("self_play_workers", selfPlayWorkerCount, clamped)
-            selfPlayWorkerCount = clamped
+            values[SelfPlayWorkers.id] = .int(clamped)
         }
-        if let v = cfg.trainingStepDelayMs {
-            // Snap onto the stepDelayLadder so the Stepper's UI
-            // invariants ("the displayed value is always a ladder
-            // member") hold after the override lands — pick the
-            // nearest ladder rung to the requested value.
+        if case .int(let v) = values[TrainingStepDelayMs.id] {
             let clamped = max(0, min(Self.stepDelayMaxMs, v))
             let ladder = Self.stepDelayLadder
             let nearest = ladder.min(by: { abs($0 - clamped) < abs($1 - clamped) }) ?? clamped
-            record("training_step_delay_ms", trainingStepDelayMs, nearest)
-            trainingStepDelayMs = nearest
+            values[TrainingStepDelayMs.id] = .int(nearest)
         }
-        if let v = cfg.trainingBatchSize, v > 0 {
-            record("training_batch_size", effectiveTrainingBatchSize, v)
-            effectiveTrainingBatchSize = v
+        if case .int(let v) = values[ArenaConcurrency.id] {
+            let clamped = max(1, min(Self.absoluteMaxArenaConcurrency, v))
+            values[ArenaConcurrency.id] = .int(clamped)
         }
-        if let v = cfg.replayBufferCapacity, v > 0 {
-            record("replay_buffer_capacity", effectiveReplayBufferCapacity, v)
-            effectiveReplayBufferCapacity = v
+
+        // Capture before-snapshot for diffing.
+        let beforeSnap = trainingParams.snapshot().rawValueMap()
+
+        // Apply through TrainingParameters — definition.validate runs on each
+        // typed setter; out-of-range values throw and are surfaced via the
+        // catch below rather than silently dropped.
+        do {
+            try trainingParams.apply(values)
+        } catch {
+            SessionLogger.shared.log("[APP] --parameters: apply failed: \(error)")
+            return []
         }
-        if let v = cfg.replayBufferMinPositionsBeforeTraining, v >= 0 {
-            record("replay_buffer_min_positions_before_training", effectiveMinBufferBeforeTraining, v)
-            effectiveMinBufferBeforeTraining = v
-        }
-        if let v = cfg.arenaPromoteThreshold, v > 0, v <= 1 {
-            record("arena_promote_threshold", effectivePromoteThreshold, v)
-            effectivePromoteThreshold = v
-        }
-        if let v = cfg.arenaGamesPerTournament, v > 0 {
-            record("arena_games_per_tournament", effectiveTournamentGames, v)
-            effectiveTournamentGames = v
-        }
-        if let v = cfg.arenaConcurrency, v >= 1 {
-            let clamped = min(Self.absoluteMaxArenaConcurrency, v)
-            record("arena_concurrency", effectiveArenaConcurrency, clamped)
-            effectiveArenaConcurrency = clamped
-        }
-        if let v = cfg.arenaAutoIntervalSec, v > 0 {
-            record("arena_auto_interval_sec", effectiveAutoArenaIntervalSec, v)
-            effectiveAutoArenaIntervalSec = v
-        }
-        if let v = cfg.candidateProbeIntervalSec, v > 0 {
-            record("candidate_probe_interval_sec", effectiveCandidateProbeIntervalSec, v)
-            effectiveCandidateProbeIntervalSec = v
-        }
-        if let v = cfg.legalMassCollapseThreshold, v > 0, v < 1 {
-            record("legal_mass_collapse_threshold", legalMassCollapseThreshold, v)
-            legalMassCollapseThreshold = v
-        }
-        if let v = cfg.legalMassCollapseGraceSeconds, v >= 0 {
-            record("legal_mass_collapse_grace_seconds", legalMassCollapseGraceSeconds, v)
-            legalMassCollapseGraceSeconds = v
-        }
-        if let v = cfg.legalMassCollapseNoImprovementProbes, v >= 1 {
-            record("legal_mass_collapse_no_improvement_probes", legalMassCollapseNoImprovementProbes, v)
-            legalMassCollapseNoImprovementProbes = v
+
+        // Build the per-field change log by comparing before vs. after on
+        // every id present in the input map.
+        let afterSnap = trainingParams.snapshot().rawValueMap()
+        var changes: [(String, String, String)] = []
+        for id in values.keys.sorted() {
+            let before = beforeSnap[id].map(formatParameterValue) ?? "?"
+            let after = afterSnap[id].map(formatParameterValue) ?? "?"
+            if before != after {
+                changes.append((id, before, after))
+            }
         }
         for (label, before, after) in changes {
             SessionLogger.shared.log("[APP] --parameters override: \(label): \(before) -> \(after)")
@@ -6063,7 +5885,15 @@ struct ContentView: View {
         } else {
             SessionLogger.shared.log("[APP] --parameters: applied \(changes.count) override(s) to live state")
         }
-        return changes
+        return changes.map { (label: $0.0, before: $0.1, after: $0.2) }
+    }
+
+    private func formatParameterValue(_ v: ParameterValue) -> String {
+        switch v {
+        case .bool(let x): "\(x)"
+        case .int(let x): "\(x)"
+        case .double(let x): "\(x)"
+        }
     }
 
     /// Trigger the actual resume: tear down the sheet, then chain
@@ -6677,7 +6507,7 @@ struct ContentView: View {
         let now = Date()
         let dirty = candidateProbeDirty
         let intervalElapsed = now.timeIntervalSince(lastCandidateProbeTime)
-        >= effectiveCandidateProbeIntervalSec
+        >= trainingParams.candidateProbeIntervalSec
         guard dirty || intervalElapsed else { return }
 
         let state = editableState
@@ -6902,7 +6732,7 @@ struct ContentView: View {
             let vmStr = snap.rollingValueMean.map { String(format: "%+.4f", $0) } ?? "--"
             let vaStr = snap.rollingValueAbsMean.map { String(format: "%.4f", $0) } ?? "--"
             let bufCount = replayBuffer?.count ?? 0
-            let bufCap = replayBuffer?.capacity ?? effectiveReplayBufferCapacity
+            let bufCap = replayBuffer?.capacity ?? trainingParams.replayBufferCapacity
             SessionLogger.shared.log(
                 "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) gNorm=\(gStr) vMean=\(vmStr) vAbs=\(vaStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
             )
@@ -6935,7 +6765,7 @@ struct ContentView: View {
             activeArenaStartElapsed = max(0, Date().timeIntervalSince(sessionStart))
         }
 
-        let totalGames = effectiveTournamentGames
+        let totalGames = trainingParams.arenaGamesPerTournament
         let startTime = Date()
         tBox.update(TournamentProgress(
             currentGame: 0,
@@ -7057,7 +6887,7 @@ struct ContentView: View {
         // every completion (the prior approach) drove the count to
         // 0 partway through the tournament and forced the rest of
         // the run through drain mode = single-position batches.
-        let liveK = max(1, min(effectiveArenaConcurrency, totalGames))
+        let liveK = max(1, min(trainingParams.arenaConcurrency, totalGames))
         // Joint GPU-busy-wall accumulator shared across both batchers.
         // Each fire reports start/end around its `network.evaluate`
         // await; the timer accumulates wall time during which AT
@@ -7237,7 +7067,7 @@ struct ContentView: View {
             shouldPromote = true
             promotionKind = .manual
         case .none:
-            shouldPromote = playedGames >= totalGames && score >= effectivePromoteThreshold
+            shouldPromote = playedGames >= totalGames && score >= trainingParams.arenaPromoteThreshold
             promotionKind = shouldPromote ? .automatic : nil
         }
         // Holds the new champion weights if promotion succeeds,
@@ -7519,17 +7349,17 @@ struct ContentView: View {
         let trainerIDStr = trainer.identifier?.description ?? "?"
 
         let parameters = ArenaLogFormatter.Parameters(
-            batchSize: effectiveTrainingBatchSize,
+            batchSize: trainingParams.trainingBatchSize,
             learningRate: trainer.learningRate,
-            promoteThreshold: effectivePromoteThreshold,
-            tournamentGames: effectiveTournamentGames,
+            promoteThreshold: trainingParams.arenaPromoteThreshold,
+            tournamentGames: trainingParams.arenaGamesPerTournament,
             spStartTau: sp.startTau,
             spFloorTau: sp.floorTau,
             spDecayPerPly: sp.decayPerPly,
             arStartTau: ar.startTau,
             arFloorTau: ar.floorTau,
             arDecayPerPly: ar.decayPerPly,
-            workerCount: selfPlayWorkerCount,
+            workerCount: trainingParams.selfPlayWorkers,
             buildNumber: BuildInfo.buildNumber
         )
         let diversityCtx = ArenaLogFormatter.Diversity(
@@ -7576,7 +7406,7 @@ struct ContentView: View {
                 index: index,
                 finishedAtStep: record.finishedAtStep,
                 gamesPlayed: record.gamesPlayed,
-                tournamentGames: effectiveTournamentGames,
+                tournamentGames: trainingParams.arenaGamesPerTournament,
                 candidateWins: record.candidateWins,
                 championWins: record.championWins,
                 draws: record.draws,
@@ -7603,9 +7433,9 @@ struct ContentView: View {
                 championID: championIDStr,
                 trainerID: trainerIDStr,
                 learningRate: Double(trainer.learningRate),
-                promoteThreshold: effectivePromoteThreshold,
-                batchSize: effectiveTrainingBatchSize,
-                workerCount: selfPlayWorkerCount,
+                promoteThreshold: trainingParams.arenaPromoteThreshold,
+                batchSize: trainingParams.trainingBatchSize,
+                workerCount: trainingParams.selfPlayWorkers,
                 spStartTau: Double(sp.startTau),
                 spFloorTau: Double(sp.floorTau),
                 spDecayPerPly: Double(sp.decayPerPly),
@@ -7975,26 +7805,26 @@ struct ContentView: View {
     /// measures realistic training-step costs through batch-stats BN.
     private func ensureTrainer() -> ChessTrainer? {
         if let trainer {
-            trainer.learningRate = Float(trainerLearningRate)
-            trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
-            trainer.drawPenalty = Float(drawPenalty)
-            trainer.weightDecayC = Float(weightDecayC)
-            trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
-            trainer.policyScaleK = Float(policyScaleK)
-            trainer.sqrtBatchScalingForLR = sqrtBatchScalingForLR
-            trainer.lrWarmupSteps = lrWarmupSteps
+            trainer.learningRate = Float(trainingParams.learningRate)
+            trainer.entropyRegularizationCoeff = Float(trainingParams.entropyBonus)
+            trainer.drawPenalty = Float(trainingParams.drawPenalty)
+            trainer.weightDecayC = Float(trainingParams.weightDecay)
+            trainer.gradClipMaxNorm = Float(trainingParams.gradClipMaxNorm)
+            trainer.policyScaleK = Float(trainingParams.policyScaleK)
+            trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
+            trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
             return trainer
         }
         do {
             let t = try ChessTrainer(
-                learningRate: Float(trainerLearningRate),
-                entropyRegularizationCoeff: Float(entropyRegularizationCoeff),
-                drawPenalty: Float(drawPenalty),
-                weightDecayC: Float(weightDecayC),
-                gradClipMaxNorm: Float(gradClipMaxNorm),
-                policyScaleK: Float(policyScaleK),
-                sqrtBatchScalingForLR: sqrtBatchScalingForLR,
-                lrWarmupSteps: lrWarmupSteps
+                learningRate: Float(trainingParams.learningRate),
+                entropyRegularizationCoeff: Float(trainingParams.entropyBonus),
+                drawPenalty: Float(trainingParams.drawPenalty),
+                weightDecayC: Float(trainingParams.weightDecay),
+                gradClipMaxNorm: Float(trainingParams.gradClipMaxNorm),
+                policyScaleK: Float(trainingParams.policyScaleK),
+                sqrtBatchScalingForLR: trainingParams.sqrtBatchScalingLR,
+                lrWarmupSteps: trainingParams.lrWarmupSteps
             )
             trainer = t
             return t
@@ -8010,9 +7840,9 @@ struct ContentView: View {
     /// only the temperature schedule is editable.
     private func buildSelfPlaySchedule() -> SamplingSchedule {
         SamplingSchedule(
-            startTau: Float(max(0.01, spStartTau)),
-            decayPerPly: Float(max(0.0, spDecayPerPly)),
-            floorTau: Float(max(0.01, spFloorTau)),
+            startTau: Float(max(0.01, trainingParams.selfPlayStartTau)),
+            decayPerPly: Float(max(0.0, trainingParams.selfPlayTauDecayPerPly)),
+            floorTau: Float(max(0.01, trainingParams.selfPlayTargetTau)),
             dirichletNoise: SamplingSchedule.selfPlay.dirichletNoise
         )
     }
@@ -8022,9 +7852,9 @@ struct ContentView: View {
     /// (pure strength measurement).
     private func buildArenaSchedule() -> SamplingSchedule {
         SamplingSchedule(
-            startTau: Float(max(0.01, arStartTau)),
-            decayPerPly: Float(max(0.0, arDecayPerPly)),
-            floorTau: Float(max(0.01, arFloorTau))
+            startTau: Float(max(0.01, trainingParams.arenaStartTau)),
+            decayPerPly: Float(max(0.0, trainingParams.arenaTauDecayPerPly)),
+            floorTau: Float(max(0.01, trainingParams.arenaTargetTau))
         )
     }
 
@@ -8036,29 +7866,29 @@ struct ContentView: View {
     private func applySpTauEdit() {
         var changed = false
         if let v = Double(spStartTauEditText), v > 0, v.isFinite, v <= 10 {
-            if abs(v - spStartTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] sp.startTau: %.3f -> %.3f", spStartTau, v))
-                spStartTau = v
+            if abs(v - trainingParams.selfPlayStartTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] sp.startTau: %.3f -> %.3f", trainingParams.selfPlayStartTau, v))
+                trainingParams.selfPlayStartTau = v
                 changed = true
             }
         }
         if let v = Double(spFloorTauEditText), v > 0, v.isFinite, v <= 10 {
-            if abs(v - spFloorTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] sp.floorTau: %.3f -> %.3f", spFloorTau, v))
-                spFloorTau = v
+            if abs(v - trainingParams.selfPlayTargetTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] sp.floorTau: %.3f -> %.3f", trainingParams.selfPlayTargetTau, v))
+                trainingParams.selfPlayTargetTau = v
                 changed = true
             }
         }
         if let v = Double(spDecayPerPlyEditText), v >= 0, v.isFinite, v <= 1 {
-            if abs(v - spDecayPerPly) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] sp.decayPerPly: %.4f -> %.4f", spDecayPerPly, v))
-                spDecayPerPly = v
+            if abs(v - trainingParams.selfPlayTauDecayPerPly) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] sp.decayPerPly: %.4f -> %.4f", trainingParams.selfPlayTauDecayPerPly, v))
+                trainingParams.selfPlayTauDecayPerPly = v
                 changed = true
             }
         }
-        spStartTauEditText = String(format: "%.2f", spStartTau)
-        spFloorTauEditText = String(format: "%.2f", spFloorTau)
-        spDecayPerPlyEditText = String(format: "%.3f", spDecayPerPly)
+        spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
+        spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
+        spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
         if changed {
             samplingScheduleBox?.setSelfPlay(buildSelfPlaySchedule())
         }
@@ -8071,29 +7901,29 @@ struct ContentView: View {
     private func applyArTauEdit() {
         var changed = false
         if let v = Double(arStartTauEditText), v > 0, v.isFinite, v <= 10 {
-            if abs(v - arStartTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] ar.startTau: %.3f -> %.3f", arStartTau, v))
-                arStartTau = v
+            if abs(v - trainingParams.arenaStartTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] ar.startTau: %.3f -> %.3f", trainingParams.arenaStartTau, v))
+                trainingParams.arenaStartTau = v
                 changed = true
             }
         }
         if let v = Double(arFloorTauEditText), v > 0, v.isFinite, v <= 10 {
-            if abs(v - arFloorTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] ar.floorTau: %.3f -> %.3f", arFloorTau, v))
-                arFloorTau = v
+            if abs(v - trainingParams.arenaTargetTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] ar.floorTau: %.3f -> %.3f", trainingParams.arenaTargetTau, v))
+                trainingParams.arenaTargetTau = v
                 changed = true
             }
         }
         if let v = Double(arDecayPerPlyEditText), v >= 0, v.isFinite, v <= 1 {
-            if abs(v - arDecayPerPly) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] ar.decayPerPly: %.4f -> %.4f", arDecayPerPly, v))
-                arDecayPerPly = v
+            if abs(v - trainingParams.arenaTauDecayPerPly) > Double.ulpOfOne {
+                SessionLogger.shared.log(String(format: "[PARAM] ar.decayPerPly: %.4f -> %.4f", trainingParams.arenaTauDecayPerPly, v))
+                trainingParams.arenaTauDecayPerPly = v
                 changed = true
             }
         }
-        arStartTauEditText = String(format: "%.2f", arStartTau)
-        arFloorTauEditText = String(format: "%.2f", arFloorTau)
-        arDecayPerPlyEditText = String(format: "%.3f", arDecayPerPly)
+        arStartTauEditText = String(format: "%.2f", trainingParams.arenaStartTau)
+        arFloorTauEditText = String(format: "%.2f", trainingParams.arenaTargetTau)
+        arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
         if changed {
             samplingScheduleBox?.setArena(buildArenaSchedule())
         }
@@ -8288,11 +8118,11 @@ struct ContentView: View {
         )
         // Snap the live N into the [1, absoluteMaxSelfPlayWorkers] range
         // before doing anything else. The Stepper enforces this
-        // for user input but `selfPlayWorkerCount` is plain @State
+        // for user input but `trainingParams.selfPlayWorkers` is centrally managed
         // so the value could in principle be edited elsewhere.
-        let initialWorkerCount = max(1, min(Self.absoluteMaxSelfPlayWorkers, selfPlayWorkerCount))
-        if initialWorkerCount != selfPlayWorkerCount {
-            selfPlayWorkerCount = initialWorkerCount
+        let initialWorkerCount = max(1, min(Self.absoluteMaxSelfPlayWorkers, trainingParams.selfPlayWorkers))
+        if initialWorkerCount != trainingParams.selfPlayWorkers {
+            trainingParams.selfPlayWorkers = initialWorkerCount
         }
         guard let trainer = ensureTrainer(), let network else { return }
         inferenceResult = nil
@@ -8318,7 +8148,7 @@ struct ContentView: View {
         if continueMode, let existing = replayBuffer {
             buffer = existing
         } else {
-            buffer = ReplayBuffer(capacity: effectiveReplayBufferCapacity)
+            buffer = ReplayBuffer(capacity: trainingParams.replayBufferCapacity)
             replayBuffer = buffer
         }
         let box: TrainingLiveStatsBox
@@ -8346,32 +8176,32 @@ struct ContentView: View {
         if !continueMode {
             if let rs = resumeState {
                 SessionLogger.shared.log(
-                    "[RESUME-PARAM] learning_rate: \(trainerLearningRate) -> \(rs.learningRate) (from session)"
+                    "[RESUME-PARAM] learning_rate: \(trainingParams.learningRate) -> \(rs.learningRate) (from session)"
                 )
                 trainer.learningRate = rs.learningRate
-                trainerLearningRate = Double(rs.learningRate)
+                trainingParams.learningRate = Double(rs.learningRate)
                 if let entropyCoeff = rs.entropyRegularizationCoeff {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] entropy_bonus: \(entropyRegularizationCoeff) -> \(entropyCoeff) (from session)"
+                        "[RESUME-PARAM] entropy_bonus: \(trainingParams.entropyBonus) -> \(entropyCoeff) (from session)"
                     )
                     trainer.entropyRegularizationCoeff = entropyCoeff
-                    entropyRegularizationCoeff = Double(entropyCoeff)
+                    trainingParams.entropyBonus = Double(entropyCoeff)
                 } else {
-                    trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
+                    trainer.entropyRegularizationCoeff = Float(trainingParams.entropyBonus)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] entropy_bonus: saved=nil applied=\(entropyRegularizationCoeff) (defaulted)"
+                        "[RESUME-PARAM] entropy_bonus: saved=nil applied=\(trainingParams.entropyBonus) (defaulted)"
                     )
                 }
                 if let dp = rs.drawPenalty {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] draw_penalty: \(drawPenalty) -> \(dp) (from session)"
+                        "[RESUME-PARAM] draw_penalty: \(trainingParams.drawPenalty) -> \(dp) (from session)"
                     )
                     trainer.drawPenalty = dp
-                    drawPenalty = Double(dp)
+                    trainingParams.drawPenalty = Double(dp)
                 } else {
-                    trainer.drawPenalty = Float(drawPenalty)
+                    trainer.drawPenalty = Float(trainingParams.drawPenalty)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] draw_penalty: saved=nil applied=\(drawPenalty) (defaulted)"
+                        "[RESUME-PARAM] draw_penalty: saved=nil applied=\(trainingParams.drawPenalty) (defaulted)"
                     )
                 }
                 // Regularization knobs that became editable post-v1 session
@@ -8381,38 +8211,38 @@ struct ContentView: View {
                 // resumes silently under different defaults.
                 if let wd = rs.weightDecayCoeff {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] weight_decay: \(weightDecayC) -> \(wd) (from session)"
+                        "[RESUME-PARAM] weight_decay: \(trainingParams.weightDecay) -> \(wd) (from session)"
                     )
                     trainer.weightDecayC = wd
-                    weightDecayC = Double(wd)
+                    trainingParams.weightDecay = Double(wd)
                 } else {
-                    trainer.weightDecayC = Float(weightDecayC)
+                    trainer.weightDecayC = Float(trainingParams.weightDecay)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] weight_decay: saved=nil applied=\(weightDecayC) (defaulted)"
+                        "[RESUME-PARAM] weight_decay: saved=nil applied=\(trainingParams.weightDecay) (defaulted)"
                     )
                 }
                 if let clip = rs.gradClipMaxNorm {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] grad_clip_max_norm: \(gradClipMaxNorm) -> \(clip) (from session)"
+                        "[RESUME-PARAM] grad_clip_max_norm: \(trainingParams.gradClipMaxNorm) -> \(clip) (from session)"
                     )
                     trainer.gradClipMaxNorm = clip
-                    gradClipMaxNorm = Double(clip)
+                    trainingParams.gradClipMaxNorm = Double(clip)
                 } else {
-                    trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
+                    trainer.gradClipMaxNorm = Float(trainingParams.gradClipMaxNorm)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] grad_clip_max_norm: saved=nil applied=\(gradClipMaxNorm) (defaulted)"
+                        "[RESUME-PARAM] grad_clip_max_norm: saved=nil applied=\(trainingParams.gradClipMaxNorm) (defaulted)"
                     )
                 }
                 if let k = rs.policyScaleK {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] K: \(policyScaleK) -> \(k) (from session)"
+                        "[RESUME-PARAM] K: \(trainingParams.policyScaleK) -> \(k) (from session)"
                     )
                     trainer.policyScaleK = k
-                    policyScaleK = Double(k)
+                    trainingParams.policyScaleK = Double(k)
                 } else {
-                    trainer.policyScaleK = Float(policyScaleK)
+                    trainer.policyScaleK = Float(trainingParams.policyScaleK)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] K: saved=nil applied=\(policyScaleK) (defaulted)"
+                        "[RESUME-PARAM] K: saved=nil applied=\(trainingParams.policyScaleK) (defaulted)"
                     )
                 }
                 // LR warmup length and sqrt-batch LR scaling are now
@@ -8437,26 +8267,26 @@ struct ContentView: View {
                 // trained under.
                 if let savedSqrt = rs.sqrtBatchScalingForLR {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] sqrt_batch_scaling_lr: \(sqrtBatchScalingForLR) -> \(savedSqrt) (from session)"
+                        "[RESUME-PARAM] sqrt_batch_scaling_lr: \(trainingParams.sqrtBatchScalingLR) -> \(savedSqrt) (from session)"
                     )
                     trainer.sqrtBatchScalingForLR = savedSqrt
-                    sqrtBatchScalingForLR = savedSqrt
+                    trainingParams.sqrtBatchScalingLR = savedSqrt
                 } else {
-                    trainer.sqrtBatchScalingForLR = sqrtBatchScalingForLR
+                    trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] sqrt_batch_scaling_lr: saved=nil applied=\(sqrtBatchScalingForLR) (defaulted)"
+                        "[RESUME-PARAM] sqrt_batch_scaling_lr: saved=nil applied=\(trainingParams.sqrtBatchScalingLR) (defaulted)"
                     )
                 }
                 if let savedWarmup = rs.lrWarmupSteps, savedWarmup >= 0 {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] lr_warmup_steps: \(lrWarmupSteps) -> \(savedWarmup) (from session)"
+                        "[RESUME-PARAM] lr_warmup_steps: \(trainingParams.lrWarmupSteps) -> \(savedWarmup) (from session)"
                     )
                     trainer.lrWarmupSteps = savedWarmup
-                    lrWarmupSteps = savedWarmup
+                    trainingParams.lrWarmupSteps = savedWarmup
                 } else {
-                    trainer.lrWarmupSteps = lrWarmupSteps
+                    trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] lr_warmup_steps: saved=nil applied=\(lrWarmupSteps) (defaulted)"
+                        "[RESUME-PARAM] lr_warmup_steps: saved=nil applied=\(trainingParams.lrWarmupSteps) (defaulted)"
                     )
                 }
                 trainer.completedTrainSteps = rs.trainingSteps
@@ -8468,73 +8298,73 @@ struct ContentView: View {
                 // motivated this audit impossible.
                 if let v = rs.replayBufferMinPositionsBeforeTraining, v >= 0 {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] replay_buffer_min_positions_before_training: \(effectiveMinBufferBeforeTraining) -> \(v) (from session)"
+                        "[RESUME-PARAM] replay_buffer_min_positions_before_training: \(trainingParams.replayBufferMinPositionsBeforeTraining) -> \(v) (from session)"
                     )
-                    effectiveMinBufferBeforeTraining = v
+                    trainingParams.replayBufferMinPositionsBeforeTraining = v
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] replay_buffer_min_positions_before_training: saved=nil applied=\(effectiveMinBufferBeforeTraining) (defaulted)"
+                        "[RESUME-PARAM] replay_buffer_min_positions_before_training: saved=nil applied=\(trainingParams.replayBufferMinPositionsBeforeTraining) (defaulted)"
                     )
                 }
                 if let v = rs.arenaAutoIntervalSec, v > 0 {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] arena_auto_interval_sec: \(effectiveAutoArenaIntervalSec) -> \(v) (from session)"
+                        "[RESUME-PARAM] arena_auto_interval_sec: \(trainingParams.arenaAutoIntervalSec) -> \(v) (from session)"
                     )
-                    effectiveAutoArenaIntervalSec = v
+                    trainingParams.arenaAutoIntervalSec = v
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] arena_auto_interval_sec: saved=nil applied=\(effectiveAutoArenaIntervalSec) (defaulted)"
+                        "[RESUME-PARAM] arena_auto_interval_sec: saved=nil applied=\(trainingParams.arenaAutoIntervalSec) (defaulted)"
                     )
                 }
                 if let v = rs.arenaConcurrency, v >= 1 {
                     let clamped = min(Self.absoluteMaxArenaConcurrency, v)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] arena_concurrency: \(effectiveArenaConcurrency) -> \(clamped) (from session)"
+                        "[RESUME-PARAM] arena_concurrency: \(trainingParams.arenaConcurrency) -> \(clamped) (from session)"
                     )
-                    effectiveArenaConcurrency = clamped
+                    trainingParams.arenaConcurrency = clamped
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] arena_concurrency: saved=nil applied=\(effectiveArenaConcurrency) (defaulted)"
+                        "[RESUME-PARAM] arena_concurrency: saved=nil applied=\(trainingParams.arenaConcurrency) (defaulted)"
                     )
                 }
                 if let v = rs.candidateProbeIntervalSec, v > 0 {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] candidate_probe_interval_sec: \(effectiveCandidateProbeIntervalSec) -> \(v) (from session)"
+                        "[RESUME-PARAM] candidate_probe_interval_sec: \(trainingParams.candidateProbeIntervalSec) -> \(v) (from session)"
                     )
-                    effectiveCandidateProbeIntervalSec = v
+                    trainingParams.candidateProbeIntervalSec = v
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] candidate_probe_interval_sec: saved=nil applied=\(effectiveCandidateProbeIntervalSec) (defaulted)"
+                        "[RESUME-PARAM] candidate_probe_interval_sec: saved=nil applied=\(trainingParams.candidateProbeIntervalSec) (defaulted)"
                     )
                 }
                 if let v = rs.legalMassCollapseThreshold, v > 0, v < 1 {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_threshold: \(legalMassCollapseThreshold) -> \(v) (from session)"
+                        "[RESUME-PARAM] legal_mass_collapse_threshold: \(trainingParams.legalMassCollapseThreshold) -> \(v) (from session)"
                     )
-                    legalMassCollapseThreshold = v
+                    trainingParams.legalMassCollapseThreshold = v
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_threshold: saved=nil applied=\(legalMassCollapseThreshold) (defaulted)"
+                        "[RESUME-PARAM] legal_mass_collapse_threshold: saved=nil applied=\(trainingParams.legalMassCollapseThreshold) (defaulted)"
                     )
                 }
                 if let v = rs.legalMassCollapseGraceSeconds, v >= 0 {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_grace_seconds: \(legalMassCollapseGraceSeconds) -> \(v) (from session)"
+                        "[RESUME-PARAM] legal_mass_collapse_grace_seconds: \(trainingParams.legalMassCollapseGraceSeconds) -> \(v) (from session)"
                     )
-                    legalMassCollapseGraceSeconds = v
+                    trainingParams.legalMassCollapseGraceSeconds = v
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_grace_seconds: saved=nil applied=\(legalMassCollapseGraceSeconds) (defaulted)"
+                        "[RESUME-PARAM] legal_mass_collapse_grace_seconds: saved=nil applied=\(trainingParams.legalMassCollapseGraceSeconds) (defaulted)"
                     )
                 }
                 if let v = rs.legalMassCollapseNoImprovementProbes, v >= 1 {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: \(legalMassCollapseNoImprovementProbes) -> \(v) (from session)"
+                        "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: \(trainingParams.legalMassCollapseNoImprovementProbes) -> \(v) (from session)"
                     )
-                    legalMassCollapseNoImprovementProbes = v
+                    trainingParams.legalMassCollapseNoImprovementProbes = v
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: saved=nil applied=\(legalMassCollapseNoImprovementProbes) (defaulted)"
+                        "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: saved=nil applied=\(trainingParams.legalMassCollapseNoImprovementProbes) (defaulted)"
                     )
                 }
                 // Sampling schedule — TauConfigCodable is non-Optional on
@@ -8542,21 +8372,21 @@ struct ContentView: View {
                 // Writes to @AppStorage propagate through
                 // `buildSelfPlaySchedule` / `buildArenaSchedule` the next
                 // time the schedule box is built below.
-                spStartTau = Double(rs.selfPlayTau.startTau)
-                spFloorTau = Double(rs.selfPlayTau.floorTau)
-                spDecayPerPly = Double(rs.selfPlayTau.decayPerPly)
-                arStartTau = Double(rs.arenaTau.startTau)
-                arFloorTau = Double(rs.arenaTau.floorTau)
-                arDecayPerPly = Double(rs.arenaTau.decayPerPly)
+                trainingParams.selfPlayStartTau = Double(rs.selfPlayTau.startTau)
+                trainingParams.selfPlayTargetTau = Double(rs.selfPlayTau.floorTau)
+                trainingParams.selfPlayTauDecayPerPly = Double(rs.selfPlayTau.decayPerPly)
+                trainingParams.arenaStartTau = Double(rs.arenaTau.startTau)
+                trainingParams.arenaTargetTau = Double(rs.arenaTau.floorTau)
+                trainingParams.arenaTauDecayPerPly = Double(rs.arenaTau.decayPerPly)
             } else {
-                trainer.learningRate = Float(trainerLearningRate)
-                trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
-                trainer.drawPenalty = Float(drawPenalty)
-                trainer.weightDecayC = Float(weightDecayC)
-                trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
-                trainer.policyScaleK = Float(policyScaleK)
-                trainer.sqrtBatchScalingForLR = sqrtBatchScalingForLR
-                trainer.lrWarmupSteps = lrWarmupSteps
+                trainer.learningRate = Float(trainingParams.learningRate)
+                trainer.entropyRegularizationCoeff = Float(trainingParams.entropyBonus)
+                trainer.drawPenalty = Float(trainingParams.drawPenalty)
+                trainer.weightDecayC = Float(trainingParams.weightDecay)
+                trainer.gradClipMaxNorm = Float(trainingParams.gradClipMaxNorm)
+                trainer.policyScaleK = Float(trainingParams.policyScaleK)
+                trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
+                trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
             }
             var initialTrainingStats = TrainingRunStats()
             if let rs = resumeState {
@@ -8575,12 +8405,12 @@ struct ContentView: View {
         weightDecayEditText = String(format: "%.2e", trainer.weightDecayC)
         gradClipMaxNormEditText = String(format: "%.2f", trainer.gradClipMaxNorm)
         policyScaleKEditText = String(format: "%.2f", trainer.policyScaleK)
-        spStartTauEditText = String(format: "%.2f", spStartTau)
-        spFloorTauEditText = String(format: "%.2f", spFloorTau)
-        spDecayPerPlyEditText = String(format: "%.3f", spDecayPerPly)
-        arStartTauEditText = String(format: "%.2f", arStartTau)
-        arFloorTauEditText = String(format: "%.2f", arFloorTau)
-        arDecayPerPlyEditText = String(format: "%.3f", arDecayPerPly)
+        spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
+        spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
+        spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
+        arStartTauEditText = String(format: "%.2f", trainingParams.arenaStartTau)
+        arFloorTauEditText = String(format: "%.2f", trainingParams.arenaTargetTau)
+        arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
         if continueMode {
             // Preserve `completedTrainingSegments` and
             // `tournamentHistory` as they stood at Stop. The new
@@ -8665,10 +8495,10 @@ struct ContentView: View {
                 trainingSteps: rs.trainingSteps
             )
             if let workerCount = resumeState?.selfPlayWorkerCount {
-                selfPlayWorkerCount = max(1, min(Self.absoluteMaxSelfPlayWorkers, workerCount))
+                trainingParams.selfPlayWorkers = max(1, min(Self.absoluteMaxSelfPlayWorkers, workerCount))
             }
             if let delay = rs.stepDelayMs {
-                trainingStepDelayMs = delay
+                trainingParams.trainingStepDelayMs = delay
             }
             if let autoDelay = rs.lastAutoComputedDelayMs {
                 lastAutoComputedDelayMs = autoDelay
@@ -8711,7 +8541,7 @@ struct ContentView: View {
         // Shared current-N holder. Workers poll this to decide
         // whether to play another game or sit in their idle wait.
         // The Stepper writes through it (and to `@State
-        // selfPlayWorkerCount` simultaneously). Exposed via @State
+        // trainingParams.selfPlayWorkers simultaneously). Exposed via
         // so the UI can disable the buttons when the box is gone
         // (between sessions).
         let countBox = WorkerCountBox(initial: initialWorkerCount)
@@ -8729,18 +8559,18 @@ struct ContentView: View {
         )
         samplingScheduleBox = scheduleBox
         // Shared live delay holder. The Stepper writes through to
-        // both `@State trainingStepDelayMs` and this box; the
+        // both `trainingParams.trainingStepDelayMs` and this box; the
         // training worker reads from the box at the bottom of each
         // step to decide how long to pause.
-        let stepDelayBox = TrainingStepDelayBox(initial: trainingStepDelayMs)
+        let stepDelayBox = TrainingStepDelayBox(initial: trainingParams.trainingStepDelayMs)
         trainingStepDelayBox = stepDelayBox
         let ratioController = ReplayRatioController(
-            batchSize: effectiveTrainingBatchSize,
-            targetRatio: replayRatioTarget,
-            autoAdjust: replayRatioAutoAdjust,
-            initialDelayMs: replayRatioAutoAdjust
+            batchSize: trainingParams.trainingBatchSize,
+            targetRatio: trainingParams.replayRatioTarget,
+            autoAdjust: trainingParams.replayRatioAutoAdjust,
+            initialDelayMs: trainingParams.replayRatioAutoAdjust
             ? lastAutoComputedDelayMs
-            : trainingStepDelayMs,
+            : trainingParams.trainingStepDelayMs,
             maxTrainingStepDelayMs: Self.stepDelayMaxMs,
             maxSelfPlayDelayMs: Self.selfPlayDelayMaxMs
         )
@@ -8789,11 +8619,11 @@ struct ContentView: View {
         } else if let resumed = pendingLoadedSession {
             currentSessionID = resumed.state.sessionID
             currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
-            replayRatioTarget = resumed.state.replayRatioTarget ?? 1.0
-            replayRatioAutoAdjust = resumed.state.replayRatioAutoAdjust ?? true
-            trainerLearningRate = Double(resumed.state.learningRate)
+            trainingParams.replayRatioTarget = resumed.state.replayRatioTarget ?? 1.0
+            trainingParams.replayRatioAutoAdjust = resumed.state.replayRatioAutoAdjust ?? true
+            trainingParams.learningRate = Double(resumed.state.learningRate)
             if let entropyCoeff = resumed.state.entropyRegularizationCoeff {
-                entropyRegularizationCoeff = Double(entropyCoeff)
+                trainingParams.entropyBonus = Double(entropyCoeff)
             }
         } else {
             currentSessionID = ModelIDMinter.mint().value
@@ -8829,11 +8659,11 @@ struct ContentView: View {
         // without a MainActor hop. These values don't change after
         // session start in the current model, so a one-time capture
         // is safe and keeps the Task-side code MainActor-free.
-        let sessionTrainingBatchSize = effectiveTrainingBatchSize
-        let sessionMinBufferBeforeTraining = effectiveMinBufferBeforeTraining
-        let sessionAutoArenaIntervalSec = effectiveAutoArenaIntervalSec
-        let sessionTournamentGames = effectiveTournamentGames
-        let sessionPromoteThreshold = effectivePromoteThreshold
+        let sessionTrainingBatchSize = trainingParams.trainingBatchSize
+        let sessionMinBufferBeforeTraining = trainingParams.replayBufferMinPositionsBeforeTraining
+        let sessionAutoArenaIntervalSec = trainingParams.arenaAutoIntervalSec
+        let sessionTournamentGames = trainingParams.arenaGamesPerTournament
+        let sessionPromoteThreshold = trainingParams.arenaPromoteThreshold
 
         realTrainingTask = Task(priority: .userInitiated) {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
@@ -9806,9 +9636,9 @@ struct ContentView: View {
                 // capture once so the running detector has stable behavior
                 // even if the user edits the values mid-session (changes
                 // take effect on the next training run).
-                let collapseIllegalMassThreshold = legalMassCollapseThreshold
-                let collapseGracePeriodSec = legalMassCollapseGraceSeconds
-                let collapseNoImprovementProbeCount = max(1, legalMassCollapseNoImprovementProbes)
+                let collapseIllegalMassThreshold = trainingParams.legalMassCollapseThreshold
+                let collapseGracePeriodSec = trainingParams.legalMassCollapseGraceSeconds
+                let collapseNoImprovementProbeCount = max(1, trainingParams.legalMassCollapseNoImprovementProbes)
                 group.addTask(priority: .utility) {
                     [trainer, buffer, box, probeInferenceForProbes] in
                     let probeIntervalSec: UInt64 = 60
@@ -10129,13 +9959,30 @@ struct ContentView: View {
     ///
     /// Pulled out into its own computed view to keep the main `body`
     /// under SwiftUI's type-checker complexity threshold.
+    /// Teardown on actual main-window close only — NOT on minimize
+    /// (which fires .onDisappear but not willClose), and NOT on
+    /// auxiliary windows (Log Analysis, NSOpenPanel/NSSavePanel,
+    /// etc.) which all post the same notification. The object check
+    /// narrows us to exactly this view's hosting NSWindow, captured
+    /// by `WindowAccessor`.
+    private func handleWindowWillClose(note: Notification) {
+        guard let closing = note.object as? NSWindow,
+              let ours = contentWindow,
+              closing === ours else {
+            return
+        }
+        stopAnyContinuous()
+        clearTrainingAlarm()
+    }
+
     @ViewBuilder
     private var cumulativeStatusBar: some View {
+        @Bindable var trainingParams = self.trainingParams
         let totalSteps = trainingStats?.steps ?? 0
         let hasHistory = cumulativeRunCount > 0 || totalSteps > 0
         let canRunArena = !isArenaRunning && network != nil && trainer != nil
         if hasHistory || canRunArena {
-            let totalPositions = totalSteps * effectiveTrainingBatchSize
+            let totalPositions = totalSteps * trainingParams.trainingBatchSize
             let activeSec = cumulativeActiveTrainingSec
             HStack(spacing: 16) {
                 if hasHistory {
@@ -10179,13 +10026,13 @@ struct ContentView: View {
                     Text("Arena ×")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Text("\(effectiveArenaConcurrency)")
+                    Text("\(trainingParams.arenaConcurrency)")
                         .font(.callout)
                         .monospacedDigit()
                         .frame(minWidth: 32, alignment: .trailing)
                     Stepper(
                         "Arena concurrency",
-                        value: $effectiveArenaConcurrency,
+                        value: $trainingParams.arenaConcurrency,
                         in: 1...Self.absoluteMaxArenaConcurrency
                     )
                     .labelsHidden()
@@ -10355,7 +10202,7 @@ struct ContentView: View {
     private func colorizedPanelBody(_ body: String) -> AttributedString {
         let thresholds = AttributedMetricColor.Thresholds.default(
             entropyCollapseBelow: Self.policyEntropyAlarmThreshold,
-            gradClipMaxNorm: gradClipMaxNorm
+            gradClipMaxNorm: trainingParams.gradClipMaxNorm
         )
         return AttributedMetricColor.colorize(body: body, thresholds: thresholds)
     }
@@ -10736,7 +10583,7 @@ struct ContentView: View {
         // header.
         let trainerIDStr = trainer?.identifier?.description ?? dash
         let header = "Training [\(trainerIDStr)]"
-        lines.append("  Batch size:  \(effectiveTrainingBatchSize)")
+        lines.append("  Batch size:  \(trainingParams.trainingBatchSize)")
         // SP tau / Arena tau / clip / decay are now surfaced as editable
         // text fields above the body, so they are not duplicated here.
         // Learning rate likewise lives in the interactive text field.
@@ -10749,7 +10596,7 @@ struct ContentView: View {
         // last-step loss shown below.
         if isSelfPlay {
             let bufCount = replayBuffer?.count ?? 0
-            let bufCap = replayBuffer?.capacity ?? effectiveReplayBufferCapacity
+            let bufCap = replayBuffer?.capacity ?? trainingParams.replayBufferCapacity
             let bufRamMB = Double(bufCap * ReplayBuffer.bytesPerPosition) / (1024.0 * 1024.0)
             let bufStr = String(format: "%6d / %d  (%.0f MB)", bufCount, bufCap, bufRamMB)
             lines.append("  Buffer:     \(bufStr)")
@@ -10934,7 +10781,7 @@ struct ContentView: View {
             ? Double(stats.steps) / rateDenomSec
             : 0
             let movesPerSec: Double = stats.steps > 0
-            ? Double(stats.steps * effectiveTrainingBatchSize) / rateDenomSec
+            ? Double(stats.steps * trainingParams.trainingBatchSize) / rateDenomSec
             : 0
 
             let rateStr = stats.steps > 0 ? String(format: "%.2f", stepsPerSec) : dash
@@ -10999,7 +10846,7 @@ struct ContentView: View {
                 let durStr = Self.formatElapsed(record.durationSec)
                 // Games played vs configured total — e.g. "12/200"
                 // when the user aborted at game 12.
-                let gamesStr = "\(record.gamesPlayed)/\(effectiveTournamentGames)"
+                let gamesStr = "\(record.gamesPlayed)/\(trainingParams.arenaGamesPerTournament)"
                 lines.append(String(
                     format: "  #%@ @ %@ steps  games %@  %d-%d-%d  score %@  %@  (%@)",
                     number, stepStr, gamesStr,
@@ -11015,7 +10862,7 @@ struct ContentView: View {
     /// Play and Train self-play stats text. Built from the aggregate
     /// `ParallelWorkerStatsBox` snapshot so all N workers contribute
     /// identically, plus the live `GameWatcher` snapshot used only
-    /// when `selfPlayWorkerCount == 1` to render the current-game
+    /// when `trainingParams.selfPlayWorkers == 1` to render the current-game
     /// Status line. Session rates are computed against wall clock
     /// since `sessionStart` (not the old `GameWatcher` stopwatch,
     /// which was worker-0-only and had an async-dispatch race); a
@@ -11033,7 +10880,7 @@ struct ContentView: View {
         // the live board can re-appear instantly when the user
         // drops back to N=1) but the Status line is hidden because
         // it would only describe one of N concurrent games.
-        if selfPlayWorkerCount == 1 {
+        if trainingParams.selfPlayWorkers == 1 {
             let status: String
             if game.isPlaying {
                 let turn = game.state.currentPlayer == .white ? "White" : "Black"
