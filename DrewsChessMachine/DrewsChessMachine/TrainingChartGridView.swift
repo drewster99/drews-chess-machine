@@ -650,102 +650,113 @@ struct TrainingChartGridView: View {
     // MARK: - Progress rate chart (3 series)
 
     private var progressRateChart: some View {
-        // Three-way header logic mirroring the single-series charts.
-        // "Hovering-no-data" applies when the cursor is over a chart
-        // but the nearest progress sample is outside tolerance —
-        // e.g. the user scrubbed to a time before the session
-        // actually started sampling.
-        let headerText: String
-        if let t = hoveredSec {
-            if let nearest = Self.nearestProgressSample(at: t, samples: progressRateSamples) {
-                let combined = Self.compactLabel(nearest.combinedMovesPerHour)
-                let selfPlay = Self.compactLabel(nearest.selfPlayMovesPerHour)
-                let training = Self.compactLabel(nearest.trainingMovesPerHour)
-                headerText = "t=\(Self.formatElapsedAxis(nearest.elapsedSec)) comb=\(combined) sp=\(selfPlay) tr=\(training)"
-            } else {
-                headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
-            }
-        } else if let last = progressRateSamples.last {
-            headerText = "\(Self.compactLabel(last.combinedMovesPerHour)) moves/hour"
-        } else {
-            headerText = "-- moves/hour"
-        }
-        return chartCard {
+        chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text("Progress rate (self play + train)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text(headerText)
+                    Text(progressRateHeaderText)
                         .font(.caption2)
                         .monospacedDigit()
                         .foregroundStyle(.primary)
                 }
-                Chart {
-                    // One ForEach per series — SwiftUI Charts only
-                    // connects LineMarks that share a single
-                    // enclosing ForEach. Packing all three series
-                    // into one ForEach produced spurious flat lines
-                    // at y=0 because Charts couldn't disambiguate
-                    // series within the shared iteration.
-                    ForEach(progressRateSamples) { sample in
-                        LineMark(
-                            x: .value("Time", sample.elapsedSec),
-                            y: .value("Moves/hr", sample.combinedMovesPerHour)
-                        )
-                        .foregroundStyle(by: .value("Series", "Combined"))
-                    }
-                    ForEach(progressRateSamples) { sample in
-                        LineMark(
-                            x: .value("Time", sample.elapsedSec),
-                            y: .value("Moves/hr", sample.selfPlayMovesPerHour)
-                        )
-                        .foregroundStyle(by: .value("Series", "Self-play"))
-                    }
-                    ForEach(progressRateSamples) { sample in
-                        LineMark(
-                            x: .value("Time", sample.elapsedSec),
-                            y: .value("Moves/hr", sample.trainingMovesPerHour)
-                        )
-                        .foregroundStyle(by: .value("Series", "Training"))
-                    }
-                    // Crosshair: vertical line at the hovered time,
-                    // only rendered when a hover is active.
-                    if let t = hoveredSec {
-                        RuleMark(x: .value("Time", t))
-                            .foregroundStyle(Color.gray.opacity(0.5))
-                            .lineStyle(StrokeStyle(lineWidth: 1))
-                    }
-                }
-                .chartForegroundStyleScale([
-                    "Self-play": Color.blue,
-                    "Training": Color.orange,
-                    "Combined": Color.green
-                ])
-                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
-                .chartYAxis {
-                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
-                        AxisGridLine()
-                        AxisValueLabel {
-                            if let v = value.as(Double.self) {
-                                Text(Self.compactLabel(v))
-                                    .font(.system(size: 7))
-                                    .monospacedDigit()
-                            }
-                        }
-                    }
-                }
-                .chartLegend(.hidden)
-                .chartXScale(domain: timeSeriesXDomain)
-                .chartScrollableAxes(.horizontal)
-                .chartXVisibleDomain(length: visibleDomainSec)
-                .chartScrollPosition(x: $scrollX)
-                .chartOverlay { proxy in
-                    hoverOverlay(proxy: proxy)
-                }
+                progressRateChartBody
+                    .frame(height: 60)
             }
             .frame(height: 75)
+        }
+    }
+
+    // Three-way header logic mirroring the single-series charts.
+    // "Hovering-no-data" applies when the cursor is over a chart but
+    // the nearest progress sample is outside tolerance — e.g. the
+    // user scrubbed to a time before the session actually started
+    // sampling. Extracted to its own computed property so
+    // `progressRateChart` doesn't have to type-check the if/else
+    // alongside the Chart's deep generic stack.
+    private var progressRateHeaderText: String {
+        if let t = hoveredSec {
+            if let nearest = Self.nearestProgressSample(at: t, samples: progressRateSamples) {
+                let combined = Self.compactLabel(nearest.combinedMovesPerHour)
+                let selfPlay = Self.compactLabel(nearest.selfPlayMovesPerHour)
+                let training = Self.compactLabel(nearest.trainingMovesPerHour)
+                return "t=\(Self.formatElapsedAxis(nearest.elapsedSec)) comb=\(combined) sp=\(selfPlay) tr=\(training)"
+            } else {
+                return "t=\(Self.formatElapsedAxis(t)) — no data"
+            }
+        } else if let last = progressRateSamples.last {
+            return "\(Self.compactLabel(last.combinedMovesPerHour)) moves/hour"
+        } else {
+            return "-- moves/hour"
+        }
+    }
+
+    // The Chart and its modifier chain. Pulled out so it type-checks
+    // independently of `progressRateChart`'s outer scaffolding —
+    // before this split, the combined getter was 223 ms.
+    private var progressRateChartBody: some View {
+        Chart {
+            // One ForEach per series — SwiftUI Charts only connects
+            // LineMarks that share a single enclosing ForEach. Packing
+            // all three series into one ForEach produced spurious flat
+            // lines at y=0 because Charts couldn't disambiguate series
+            // within the shared iteration.
+            ForEach(progressRateSamples) { sample in
+                LineMark(
+                    x: .value("Time", sample.elapsedSec),
+                    y: .value("Moves/hr", sample.combinedMovesPerHour)
+                )
+                .foregroundStyle(by: .value("Series", "Combined"))
+            }
+            ForEach(progressRateSamples) { sample in
+                LineMark(
+                    x: .value("Time", sample.elapsedSec),
+                    y: .value("Moves/hr", sample.selfPlayMovesPerHour)
+                )
+                .foregroundStyle(by: .value("Series", "Self-play"))
+            }
+            ForEach(progressRateSamples) { sample in
+                LineMark(
+                    x: .value("Time", sample.elapsedSec),
+                    y: .value("Moves/hr", sample.trainingMovesPerHour)
+                )
+                .foregroundStyle(by: .value("Series", "Training"))
+            }
+            // Crosshair: vertical line at the hovered time, only
+            // rendered when a hover is active.
+            if let t = hoveredSec {
+                RuleMark(x: .value("Time", t))
+                    .foregroundStyle(Color.gray.opacity(0.5))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+            }
+        }
+        .chartForegroundStyleScale([
+            "Self-play": Color.blue,
+            "Training": Color.orange,
+            "Combined": Color.green
+        ])
+        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let v = value.as(Double.self) {
+                        Text(Self.compactLabel(v))
+                            .font(.system(size: 7))
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .chartLegend(.hidden)
+        .chartXScale(domain: timeSeriesXDomain)
+        .chartScrollableAxes(.horizontal)
+        .chartXVisibleDomain(length: visibleDomainSec)
+        .chartScrollPosition(x: $scrollX)
+        .chartOverlay { proxy in
+            hoverOverlay(proxy: proxy)
         }
     }
 

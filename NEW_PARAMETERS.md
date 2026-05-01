@@ -41,6 +41,27 @@ triples for `arena_champion_*` and `arena_candidate_*` instead of
 `arena_*`. Breaks symmetry of the arena signal — only do this if there
 is a specific reason to want asymmetric noise.
 
+### Entropy-bonus adjustment (TBD)
+
+Today: `entropy_bonus` is a single scalar applied uniformly across training.
+We want some way to *adjust* it during a run — design open. Possibilities
+to explore:
+
+- **Time/step schedule** (analogue of the tau schedule): start at one
+  value, decay to another over N training steps. E.g.
+  `entropy_bonus_start`, `entropy_bonus_end`, `entropy_bonus_decay_steps`.
+- **Entropy-targeting controller**: closed-loop adjust `entropy_bonus`
+  to keep observed `pEnt` (from `[STATS]`) near a target band. Knobs
+  would be `entropy_bonus_target_pEnt`, `entropy_bonus_min`, `_max`,
+  and a gain. Same shape as `ReplayRatioController`.
+- **Per-promotion step**: bump down on each arena promotion (champion
+  is stronger ⇒ less exploration needed); bump up on a no-promote
+  streak.
+
+Not sure which is right. Filed as a reminder that the single static scalar
+isn't enough — sign of life from `pEnt` over a long run usually wants a
+schedule, not a constant.
+
 ### Replay buffer sampling distribution
 
 Today: uniform-with-replacement over all stored positions

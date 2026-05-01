@@ -2596,6 +2596,58 @@ struct ContentView: View {
             }
     }
 
+    /// Aggregate signature of every signal that should re-fire
+    /// `syncMenuCommandHubState()`. Originally each signal had its
+    /// own `.onChange` modifier; that produced a 13-deep generic
+    /// chain that the Swift type-checker spent ~1.2 s solving.
+    /// Packing them into one Equatable struct collapses the chain
+    /// to a single `.onChange(of: menuHubSignature)` and preserves
+    /// the same observation semantics — any field changing is a
+    /// `!=` on the whole struct, which fires the same handler.
+    fileprivate struct MenuHubSignature: Equatable {
+        var isBuilding: Bool
+        var continuousPlay: Bool
+        var continuousTraining: Bool
+        var sweepRunning: Bool
+        var realTraining: Bool
+        var isArenaRunning: Bool
+        var checkpointSaveInFlight: Bool
+        var isTrainingOnce: Bool
+        var isEvaluating: Bool
+        var gameIsPlaying: Bool
+        var hasNetwork: Bool
+        var hasPendingLoadedSession: Bool
+        var autoResumeStateVersion: Int
+    }
+
+    private var menuHubSignature: MenuHubSignature {
+        MenuHubSignature(
+            isBuilding: isBuilding,
+            continuousPlay: continuousPlay,
+            continuousTraining: continuousTraining,
+            sweepRunning: sweepRunning,
+            realTraining: realTraining,
+            isArenaRunning: isArenaRunning,
+            checkpointSaveInFlight: checkpointSaveInFlight,
+            isTrainingOnce: isTrainingOnce,
+            isEvaluating: isEvaluating,
+            gameIsPlaying: gameSnapshot.isPlaying,
+            hasNetwork: network != nil,
+            hasPendingLoadedSession: pendingLoadedSession != nil,
+            autoResumeStateVersion: autoResumeStateVersion
+        )
+    }
+
+    /// Hidden zero-sized view that drives `syncMenuCommandHubState()`
+    /// off a single Equatable signature, replacing what used to be a
+    /// 13-deep `.onChange` chain on `body`'s tail.
+    @ViewBuilder
+    private var menuHubSyncProbe: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .onChange(of: menuHubSignature) { _, _ in syncMenuCommandHubState() }
+    }
+
     /// Binding for the training-step delay Stepper. The Stepper is
     /// configured with `step: 1` over the full 0...stepDelayMaxMs
     /// range, but the valid values are the discrete rungs in
@@ -2744,25 +2796,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .popover(isPresented: $showingInfoPopover) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("About Drew's Chess Machine")
-                            .font(.headline)
-                        Text("Forward pass through a ~2.4M parameter convolutional network using MPSGraph on the GPU. Weights are randomly initialized (He initialization) — no training has occurred.")
-                            .font(.callout)
-                        Divider()
-                        Text("Architecture: 20×8×8 input → stem(128) → 8 res+SE blocks → policy(4864) + value(1)")
-                            .font(.system(.callout, design: .monospaced))
-                        Text("Parameters: ~2,400,000 (~2.4M)")
-                            .font(.system(.callout, design: .monospaced))
-                        if let net = network {
-                            Text("Network ID: \(net.identifier?.description ?? "–")")
-                                .font(.system(.callout, design: .monospaced))
-                            Text("Build time: \(String(format: "%.1f ms", net.buildTimeMs))")
-                                .font(.system(.callout, design: .monospaced))
-                        }
-                    }
-                    .padding(16)
-                    .frame(width: 500)
+                    aboutPopoverContent
                 }
                 Spacer()
                 // Right-side ID + network status — bumped from .caption to
@@ -2779,51 +2813,7 @@ struct ContentView: View {
                     .lineLimit(1)
             }
 
-            if let alarm = activeTrainingAlarm {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        // Title forced black against the yellow background
-                        // for legibility — default `.headline` color in
-                        // dark-mode SwiftUI is white, which washes out
-                        // against `.yellow.opacity(0.8)`.
-                        Text(alarm.title)
-                            .font(.headline)
-                            .foregroundStyle(Color.black)
-                        // Detail text uses a darker red + medium weight so
-                        // numeric values in the alarm (entropy, gNorm) read
-                        // clearly against the yellow background instead of
-                        // washing out as default `.red`.
-                        Text(alarm.detail)
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(Color(red: 0.55, green: 0.0, blue: 0.0))
-                    }
-                    Spacer()
-                    HStack(spacing: 8) {
-                        if trainingAlarmSilenced {
-                            Text("Silenced")
-                                .font(.caption)
-                                .foregroundStyle(Color.black)
-                        } else {
-                            Button("Silence") {
-                                silenceTrainingAlarm()
-                            }
-                        }
-                        // Dismiss clears the banner AND resets the
-                        // streak counters, so an alarm only re-raises
-                        // if the condition deteriorates fresh from a
-                        // healthy baseline. Silence keeps visibility
-                        // (banner stays) but quiets the sound; Dismiss
-                        // is "I've seen it, start over."
-                        Button("Dismiss") {
-                            dismissTrainingAlarm()
-                        }
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.yellow.opacity(0.8))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
+            trainingAlarmBanner
 
             cumulativeStatusBar
 
@@ -2934,509 +2924,9 @@ struct ContentView: View {
 
             // Board + text side by side
             HStack(alignment: .top, spacing: 24) {
-                VStack(spacing: 6) {
-                    if realTraining {
-                        Picker("Board", selection: $playAndTrainBoardMode) {
-                            Text("Game run").tag(PlayAndTrainBoardMode.gameRun)
-                            Text("Candidate test").tag(PlayAndTrainBoardMode.candidateTest)
-                            Text("Progress rate").tag(PlayAndTrainBoardMode.progressRate)
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: 360)
-                    }
+                boardSideView
 
-                    if inferenceResult != nil, showForwardPassUI {
-                        Text(overlayLabel)
-                            .font(.system(.subheadline, design: .monospaced))
-                    }
-
-                    if forwardPassEditable {
-                        Picker("To move", selection: sideToMoveBinding) {
-                            Text("White").tag(PieceColor.white)
-                            Text("Black").tag(PieceColor.black)
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: 160)
-                    }
-
-                    if isCandidateTestActive {
-                        Picker("Probe", selection: $probeNetworkTarget) {
-                            Text("Candidate").tag(ProbeNetworkTarget.candidate)
-                            Text("Champion").tag(ProbeNetworkTarget.champion)
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: 220)
-                    }
-
-                    if isProgressRateActive {
-                        progressRateChartView
-                    } else {
-                        HStack(spacing: 8) {
-                            let leftDisabled = inferenceResult == nil || selectedOverlay == 0 || !showForwardPassUI
-                            Button(
-                                action: { navigateOverlay(-1) },
-                                label: {
-                                    Image(systemName: "chevron.left").font(.title3).frame(width: 24)
-                                }
-                            )
-                            .buttonStyle(.plain)
-                            .disabled(leftDisabled)
-                            .opacity(leftDisabled ? 0.2 : 0.6)
-
-                            ChessBoardView(pieces: displayedPieces, overlay: currentOverlay)
-                                .overlay {
-                                    // Transparent hit layer that converts drag
-                                    // coordinates to squares and routes edits
-                                    // through `applyFreePlacementDrag`. Sized to
-                                    // match the board's square frame via the
-                                    // overlay modifier, so local coordinates map
-                                    // 1:1 onto board squares. Disabled outside
-                                    // forward-pass mode so game/training views
-                                    // aren't hijacked.
-                                    GeometryReader { geo in
-                                        let boardSize = min(geo.size.width, geo.size.height)
-                                        Color.clear
-                                            .contentShape(Rectangle())
-                                            .gesture(
-                                                DragGesture(minimumDistance: 0)
-                                                    .onEnded { value in
-                                                        let fromSq = Self.squareIndex(
-                                                            at: value.startLocation,
-                                                            boardSize: boardSize
-                                                        )
-                                                        let toSq = Self.squareIndex(
-                                                            at: value.location,
-                                                            boardSize: boardSize
-                                                        )
-                                                        applyFreePlacementDrag(from: fromSq, to: toSq)
-                                                    }
-                                            )
-                                            .allowsHitTesting(forwardPassEditable)
-                                    }
-                                }
-                                .overlay {
-                                    // Multi-worker placeholder — the live
-                                    // animated game board only works with
-                                    // one driving worker (N=1), because a
-                                    // single `GameWatcher` can't track
-                                    // multiple concurrent games without
-                                    // flicker. When N>1 we still show the
-                                    // board slot (so the Candidate test
-                                    // picker remains usable and the layout
-                                    // doesn't shift) but overlay a centered
-                                    // label indicating how many workers
-                                    // are running. Hidden in candidate-test
-                                    // mode so the probe board stays clean.
-                                    if realTraining
-                                        && !isCandidateTestActive
-                                        && trainingParams.selfPlayWorkers > 1 {
-                                        Text("N = \(trainingParams.selfPlayWorkers) concurrent games\nLive board hidden")
-                                            .font(.system(.body, design: .monospaced))
-                                            .multilineTextAlignment(.center)
-                                            .foregroundStyle(.white)
-                                            .padding(14)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 10)
-                                                    .fill(Color.black.opacity(0.7))
-                                            )
-                                    }
-                                }
-
-                            let rightDisabled = inferenceResult == nil || selectedOverlay == ChessNetwork.inputPlanes || !showForwardPassUI
-                            Button(
-                                action: { navigateOverlay(1) },
-                                label: {
-                                    Image(systemName: "chevron.right").font(.title3).frame(width: 24)
-                                }
-                            )
-                            .buttonStyle(.plain)
-                            .disabled(rightDisabled)
-                            .opacity(rightDisabled ? 0.2 : 0.6)
-                        }
-                    }
-                }
-                .frame(minWidth: 320, maxWidth: 420)
-
-                // Text panel — two fixed-width columns (game stats + training
-                // stats) so a mode that shows one never changes size when a
-                // mode that shows both (real-training) is active. Each column
-                // is gated independently: whichever is relevant for the
-                // current mode is rendered, the other is simply omitted. In
-                // real-training mode both are shown side-by-side.
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        // Fixed-width columns so the panel never reflows
-                        // between modes OR between game results. The game
-                        // column has to be wide enough for the longest
-                        // Status line the formatter can produce ("Status:
-                        // Draw by insufficient material" ≈ 37 chars at
-                        // ~8pt/char in monospaced body) — otherwise a draw
-                        // by insufficient material or threefold repetition
-                        // swells the left column at game end and pushes the
-                        // training column rightward.
-                        HStack(alignment: .top, spacing: 16) {
-                            // Candidate test mode replaces the game-stats
-                            // column with the inference-result column so
-                            // the user sees what the network thinks of the
-                            // probe position alongside the running training
-                            // stats. Same min-width as the game column so
-                            // the overall text panel doesn't reflow when
-                            // toggling between Game run and Candidate test.
-                            if isGameMode && !isCandidateTestActive {
-                                // Play and Train uses the aggregate
-                                // stats text — all N workers feed
-                                // into `parallelStats`, and the text
-                                // builder shows a Status line only
-                                // when N=1. Non-realTraining modes
-                                // (Play Game / Play Continuous) still
-                                // use `gameSnapshot.statsText`, which
-                                // is their single source of truth.
-                                if realTraining, let session = parallelStats {
-                                    let column = playAndTrainStatsText(
-                                        game: gameSnapshot,
-                                        session: session
-                                    )
-                                    // Split layout: header Text, then the
-                                    // Concurrency control row with the live
-                                    // N Stepper, then the body Text. Zero
-                                    // spacing so the three pieces read as a
-                                    // single continuous block. The HStack's
-                                    // leading "  " mirrors the body's two-
-                                    // space label indent, and the minWidth
-                                    // on the value Text keeps the Stepper
-                                    // from jittering horizontally when the
-                                    // count changes width (1 ↔ 16).
-                                    VStack(alignment: .leading, spacing: 0) {
-                                        Text(column.header)
-                                        HStack(spacing: 6) {
-                                            Text("  Concurrency:")
-                                            Text("\(trainingParams.selfPlayWorkers)")
-                                                .monospacedDigit()
-                                                .frame(minWidth: 24, alignment: .trailing)
-                                            Stepper(
-                                                "Concurrency",
-                                                value: $trainingParams.selfPlayWorkers,
-                                                in: 1...Self.absoluteMaxSelfPlayWorkers
-                                            )
-                                            .labelsHidden()
-                                        }
-                                        Text(colorizedPanelBody(column.body))
-                                    }
-                                    .frame(minWidth: 330, alignment: .topLeading)
-                                } else {
-                                    Text(gameSnapshot.statsText(
-                                        continuousPlay: continuousPlay || realTraining
-                                    ))
-                                    .frame(minWidth: 330, alignment: .topLeading)
-                                }
-                            }
-                            if isCandidateTestActive, let result = inferenceResult {
-                                Text(result.textOutput)
-                                    .frame(minWidth: 330, alignment: .topLeading)
-                            }
-                            if isTrainingMode {
-                                let column = trainingStatsText()
-                                // Split layout mirroring the Self Play
-                                // column: header, then the Step Delay row
-                                // (only during Play and Train — the delay
-                                // only affects the live training worker),
-                                // then the body. Sweep mode still runs
-                                // through this branch but `realTraining`
-                                // is false there, so the control row is
-                                // omitted and the sweep table renders
-                                // exactly as before.
-                                VStack(alignment: .leading, spacing: 0) {
-                                    Text(column.header)
-                                    if realTraining {
-                                        HStack(spacing: 6) {
-                                            Text("  Step Delay:")
-                                            if let snap = replayRatioSnapshot, snap.autoAdjust {
-                                                Text("\(snap.computedDelayMs)")
-                                                    .monospacedDigit()
-                                                    .frame(minWidth: 32, alignment: .trailing)
-                                                Text("ms (auto)")
-                                                    .foregroundStyle(.secondary)
-                                            } else {
-                                                Text("\(trainingParams.trainingStepDelayMs)")
-                                                    .monospacedDigit()
-                                                    .frame(minWidth: 32, alignment: .trailing)
-                                                Text("ms")
-                                            }
-                                            Stepper(
-                                                "Step Delay",
-                                                value: trainingStepDelayBinding,
-                                                in: 0...Self.stepDelayMaxMs
-                                            )
-                                            .labelsHidden()
-                                            .disabled(trainingParams.replayRatioAutoAdjust)
-                                        }
-                                        HStack(spacing: 6) {
-                                            Text("  Replay Ratio:")
-                                            if let snap = replayRatioSnapshot {
-                                                Text(String(format: "%.2f", snap.currentRatio))
-                                                    .monospacedDigit()
-                                                    .frame(minWidth: 40, alignment: .trailing)
-                                                    .foregroundStyle(
-                                                        abs(snap.currentRatio - snap.targetRatio) < 0.3
-                                                        ? Color.primary : Color.red
-                                                    )
-                                            } else {
-                                                Text("--")
-                                                    .monospacedDigit()
-                                                    .frame(minWidth: 40, alignment: .trailing)
-                                            }
-                                            Text("target:")
-                                                .foregroundStyle(.secondary)
-                                            Text(String(format: "%.1f", trainingParams.replayRatioTarget))
-                                                .monospacedDigit()
-                                                .frame(minWidth: 24, alignment: .trailing)
-                                            Stepper(
-                                                "Target Ratio",
-                                                value: $trainingParams.replayRatioTarget,
-                                                in: 0.1...5.0,
-                                                step: 0.1
-                                            )
-                                            .labelsHidden()
-                                            Toggle("Auto", isOn: $trainingParams.replayRatioAutoAdjust)
-                                                .toggleStyle(.checkbox)
-                                        }
-                                        HStack(spacing: 6) {
-                                            Text("  Learn Rate:")
-                                            TextField("LR", text: $learningRateEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 80)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit {
-                                                    if let parsed = Float(learningRateEditText),
-                                                       parsed > 0, parsed.isFinite {
-                                                        let prior = trainer?.learningRate ?? Float(Self.trainerLearningRateDefault)
-                                                        if abs(parsed - prior) > Float.ulpOfOne {
-                                                            SessionLogger.shared.log(
-                                                                String(format: "[PARAM] learningRate: %.1e -> %.1e", prior, parsed)
-                                                            )
-                                                        }
-                                                        trainer?.learningRate = parsed
-                                                        trainingParams.learningRate = Double(parsed)
-                                                    }
-                                                    learningRateEditText = String(
-                                                        format: "%.1e",
-                                                        trainer?.learningRate ?? Self.trainerLearningRateDefault
-                                                    )
-                                                }
-                                            Toggle("√batch", isOn: $trainingParams.sqrtBatchScalingLR)
-                                                .toggleStyle(.checkbox)
-                                                .help("Adam-style LR scaling: feed learning_rate × sqrt(batch_size / 4096) each step. At batch=4096 the multiplier is 1.0 (no-op); at batch=1024 it's 0.5, at batch=8192 it's √2. The typed LR above is always the base value at the 4096 pivot — scaling is applied when writing into the optimizer feed.")
-                                            Text("warmup")
-                                                .foregroundStyle(.secondary)
-                                            TextField("Warmup", text: $lrWarmupStepsEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 60)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit {
-                                                    if let parsed = Int(lrWarmupStepsEditText), parsed >= 0 {
-                                                        let prior = trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
-                                                        if parsed != prior {
-                                                            SessionLogger.shared.log(
-                                                                "[PARAM] lrWarmupSteps: \(prior) -> \(parsed)"
-                                                            )
-                                                        }
-                                                        trainer?.lrWarmupSteps = parsed
-                                                        trainingParams.lrWarmupSteps = parsed
-                                                    }
-                                                    lrWarmupStepsEditText = String(
-                                                        trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
-                                                    )
-                                                }
-                                                .help("Linear LR warmup: for the first N SGD steps, multiply LR by min(1, completedSteps / N). 0 disables. Composes multiplicatively with √batch scaling.")
-                                        }
-                                        HStack(spacing: 6) {
-                                            Text("  Entropy Reg:")
-                                            TextField("Entropy Reg", text: $entropyRegularizationEditText)
-                                            .monospacedDigit()
-                                            .frame(width: 80)
-                                            .textFieldStyle(.roundedBorder)
-                                            .onSubmit {
-                                                if let parsed = Double(entropyRegularizationEditText),
-                                                   parsed >= 0, parsed.isFinite {
-                                                    let prior = trainingParams.entropyBonus
-                                                    if abs(parsed - prior) > Double.ulpOfOne {
-                                                        SessionLogger.shared.log(
-                                                            String(format: "[PARAM] entropyReg: %.2e -> %.2e", prior, parsed)
-                                                        )
-                                                    }
-                                                    trainingParams.entropyBonus = parsed
-                                                    trainer?.entropyRegularizationCoeff = Float(parsed)
-                                                }
-                                                entropyRegularizationEditText = String(
-                                                    format: "%.2e",
-                                                    trainingParams.entropyBonus
-                                                )
-                                            }
-                                            Text("clip")
-                                                .foregroundStyle(.secondary)
-                                            TextField("Clip", text: $gradClipMaxNormEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 70)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit {
-                                                    if let parsed = Double(gradClipMaxNormEditText),
-                                                       parsed > 0, parsed.isFinite {
-                                                        let prior = trainingParams.gradClipMaxNorm
-                                                        if abs(parsed - prior) > Double.ulpOfOne {
-                                                            SessionLogger.shared.log(
-                                                                String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", prior, parsed)
-                                                            )
-                                                        }
-                                                        trainingParams.gradClipMaxNorm = parsed
-                                                        trainer?.gradClipMaxNorm = Float(parsed)
-                                                    }
-                                                    gradClipMaxNormEditText = String(
-                                                        format: "%.2f",
-                                                        trainingParams.gradClipMaxNorm
-                                                    )
-                                                }
-                                            Text("decay")
-                                                .foregroundStyle(.secondary)
-                                            TextField("Decay", text: $weightDecayEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 80)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit {
-                                                    if let parsed = Double(weightDecayEditText),
-                                                       parsed >= 0, parsed.isFinite {
-                                                        let prior = trainingParams.weightDecay
-                                                        if abs(parsed - prior) > Double.ulpOfOne {
-                                                            SessionLogger.shared.log(
-                                                                String(format: "[PARAM] weightDecayC: %.2e -> %.2e", prior, parsed)
-                                                            )
-                                                        }
-                                                        trainingParams.weightDecay = parsed
-                                                        trainer?.weightDecayC = Float(parsed)
-                                                    }
-                                                    weightDecayEditText = String(
-                                                        format: "%.2e",
-                                                        trainingParams.weightDecay
-                                                    )
-                                                }
-                                            Text("K")
-                                                .foregroundStyle(.secondary)
-                                            TextField("K", text: $policyScaleKEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 60)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit {
-                                                    if let parsed = Double(policyScaleKEditText),
-                                                       parsed > 0, parsed.isFinite {
-                                                        let prior = trainingParams.policyScaleK
-                                                        if abs(parsed - prior) > Double.ulpOfOne {
-                                                            SessionLogger.shared.log(
-                                                                String(format: "[PARAM] policyScaleK: %.2f -> %.2f", prior, parsed)
-                                                            )
-                                                        }
-                                                        trainingParams.policyScaleK = parsed
-                                                        trainer?.policyScaleK = Float(parsed)
-                                                    }
-                                                    policyScaleKEditText = String(
-                                                        format: "%.2f",
-                                                        trainingParams.policyScaleK
-                                                    )
-                                                }
-                                        }
-                                        HStack(spacing: 6) {
-                                            Text("  SP tau:")
-                                            TextField("SP start", text: $spStartTauEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 60)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit { applySpTauEdit() }
-                                            Text("→")
-                                                .foregroundStyle(.secondary)
-                                            TextField("SP floor", text: $spFloorTauEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 60)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit { applySpTauEdit() }
-                                            Text("decay")
-                                                .foregroundStyle(.secondary)
-                                            TextField("SP decay", text: $spDecayPerPlyEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 70)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit { applySpTauEdit() }
-                                            Text("/ply")
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        HStack(spacing: 6) {
-                                            Text("  Arena tau:")
-                                            TextField("Ar start", text: $arStartTauEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 60)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit { applyArTauEdit() }
-                                            Text("→")
-                                                .foregroundStyle(.secondary)
-                                            TextField("Ar floor", text: $arFloorTauEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 60)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit { applyArTauEdit() }
-                                            Text("decay")
-                                                .foregroundStyle(.secondary)
-                                            TextField("Ar decay", text: $arDecayPerPlyEditText)
-                                                .monospacedDigit()
-                                                .frame(width: 70)
-                                                .textFieldStyle(.roundedBorder)
-                                                .onSubmit { applyArTauEdit() }
-                                            Text("/ply")
-                                                .foregroundStyle(.secondary)
-                                        }
-                                        HStack(spacing: 6) {
-                                            Text("  Draw Penalty:")
-                                            TextField("Draw Penalty", text: $drawPenaltyEditText)
-                                            .monospacedDigit()
-                                            .frame(width: 80)
-                                            .textFieldStyle(.roundedBorder)
-                                            .onSubmit {
-                                                if let parsed = Double(drawPenaltyEditText),
-                                                   parsed >= 0, parsed.isFinite {
-                                                    let prior = trainingParams.drawPenalty
-                                                    if abs(parsed - prior) > Double.ulpOfOne {
-                                                        SessionLogger.shared.log(
-                                                            String(format: "[PARAM] drawPenalty: %.3f -> %.3f", prior, parsed)
-                                                        )
-                                                    }
-                                                    trainingParams.drawPenalty = parsed
-                                                    trainer?.drawPenalty = Float(parsed)
-                                                }
-                                                drawPenaltyEditText = String(
-                                                    format: "%.3f",
-                                                    trainingParams.drawPenalty
-                                                )
-                                            }
-                                            Text("(draws → z = −penalty; 0 disables)")
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                    Text(colorizedPanelBody(column.body))
-                                }
-                                .frame(minWidth: 260, alignment: .topLeading)
-                            }
-                            if !isGameMode, !isTrainingMode, let result = inferenceResult {
-                                Text(result.textOutput)
-                            }
-                        }
-
-                        if let trainingError {
-                            Text(trainingError).foregroundStyle(.red)
-                        }
-                    }
-                    .font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                mainTextPanel
             }
             .layoutPriority(1)
 
@@ -3567,19 +3057,7 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
             handleWindowWillClose(note: note)
         }
-        .onChange(of: isBuilding) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: continuousPlay) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: continuousTraining) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: sweepRunning) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: realTraining) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: isArenaRunning) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: checkpointSaveInFlight) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: isTrainingOnce) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: isEvaluating) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: gameSnapshot.isPlaying) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: network != nil) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: pendingLoadedSession != nil) { _, _ in syncMenuCommandHubState() }
-        .onChange(of: autoResumeStateVersion) { _, _ in syncMenuCommandHubState() }
+        .background(menuHubSyncProbe)
         .background(controlSideEffectsProbe)
         .onChange(of: progressRateScrollX) { _, newValue in
             // Flip off follow-latest when the user scrolls backward.
@@ -3614,133 +3092,146 @@ struct ContentView: View {
             // measurable hangs) when onReceive synchronously pushes
             // several dozen state-change notifications inline. A
             // `Task { @MainActor in }` wrap coalesces the work into a
-            // single render pass.
+            // single render pass. The body of the tick is hoisted
+            // into `processSnapshotTimerTick()` so this closure stays
+            // small enough for the type-checker not to choke.
             Task { @MainActor in
-                // Pull the latest game state into @State at most every 100ms.
-                // Cheap (single locked struct copy) and bounds UI work even
-                // when the game loop is doing hundreds of moves per second.
-                gameSnapshot = gameWatcher.snapshot()
-                // Same heartbeat pulls the sweep's worker-thread progress and
-                // any newly-completed rows into @State so the table grows live.
-                if sweepRunning, let box = sweepCancelBox {
-                    sweepProgress = box.latestProgress
-                    // Sample process resident memory and feed it into the
-                    // sweep's per-row peak. The trainer also samples at row
-                    // boundaries — we just contribute extra samples while a
-                    // row is in flight so we don't miss mid-step spikes.
-                    box.recordPeakSample(ChessTrainer.currentPhysFootprintBytes())
-                    let rows = box.completedRows
-                    if rows.count != sweepResults.count {
-                        sweepResults = rows
-                    }
-                }
-                // Same heartbeat pulls live training stats out of the
-                // lock-protected box the background training task is writing
-                // into. Guarded on step count so a mid-run session that
-                // hasn't advanced since the last tick doesn't trigger a
-                // useless redraw — and an idle box (after Stop or before
-                // first step) stays silent.
-                if let box = trainingBox {
-                    let snap = box.snapshot()
-                    if snap.stats.steps != (trainingStats?.steps ?? -1) {
-                        trainingStats = snap.stats
-                        lastTrainStep = snap.lastTiming
-                        realRollingPolicyLoss = snap.rollingPolicyLoss
-                        realRollingValueLoss = snap.rollingValueLoss
-                    }
-                    if let err = snap.error, trainingError == nil {
-                        trainingError = err
-                    }
-                }
-                // Arena progress mirror — cheap lock read, only updates the
-                // @State when the game index has advanced (or transitioned
-                // between non-running and running), so no redundant view
-                // invalidations between tournament games.
-                if let tBox = tournamentBox {
-                    let snap = tBox.snapshot()
-                    if snap?.currentGame != tournamentProgress?.currentGame
-                        || (snap == nil) != (tournamentProgress == nil) {
-                        tournamentProgress = snap
-                    }
-                }
-                // Parallel worker counters mirror — only updates @State
-                // when totals have actually advanced so the body isn't
-                // re-evaluated when nothing's changed. The sessionStart
-                // timestamp is embedded in the snapshot so the Session
-                // panel and busy label can compute wall-clock rates on
-                // every render. Dirty check compares the fields that
-                // advance on self-play and training events; if either
-                // has changed (or the rolling-window count has shifted
-                // because an entry aged out), push a new snapshot.
-                if let pBox = parallelWorkerStatsBox {
-                    let snap = pBox.snapshot()
-                    let prev = parallelStats
-                    // `sessionStart` is included in the dirty check so
-                    // the one-time shift performed by
-                    // `markWorkersStarted()` (right before the worker
-                    // group spawns) lands in @State immediately, even
-                    // if no game or training step has recorded yet.
-                    let changed = snap.selfPlayGames != (prev?.selfPlayGames ?? -1)
-                    || snap.trainingSteps != (prev?.trainingSteps ?? -1)
-                    || snap.recentGames != (prev?.recentGames ?? -1)
-                    || snap.sessionStart != prev?.sessionStart
-                    if changed {
-                        parallelStats = snap
-                    }
-                }
-                // Memory stats refresh. Throttled internally to
-                // `memoryStatsRefreshSec` so this is a cheap timestamp
-                // compare on most heartbeats.
-                refreshMemoryStatsIfNeeded()
-                // Process %CPU / %GPU refresh — separate (5 s) cadence
-                // from memory stats (10 s) so the utilisation line
-                // updates twice as often without dragging the heavier
-                // Metal property reads along with it.
-                refreshUsagePercentsIfNeeded()
-                // Progress-rate chart sampler. 1 Hz during Play and
-                // Train; each sample carries the moves/hr averaged
-                // over the last 3 minutes of work. No-op outside of
-                // realTraining.
-                refreshProgressRateIfNeeded()
-                // Replay-ratio snapshot for the UI. Persist the auto-
-                // computed delay so the next session starts from where
-                // the adjuster left off.
-                if let rc = replayRatioController {
-                    let snap = rc.snapshot()
-                    replayRatioSnapshot = snap
-                    if snap.autoAdjust {
-                        lastAutoComputedDelayMs = snap.computedDelayMs
-                    }
-                }
-                // Diversity-histogram mirror. Read once per heartbeat off
-                // the tracker's thread-safe snapshot. Only push into
-                // @State when the bucket totals actually change (or the
-                // bar array is currently empty) so SwiftUI doesn't
-                // invalidate the chart every tick for a stable reading.
-                if let tracker = selfPlayDiversityTracker {
-                    let divSnap = tracker.snapshot()
-                    let labels = GameDiversityTracker.histogramLabels
-                    var newBars: [DiversityHistogramBar] = []
-                    newBars.reserveCapacity(divSnap.divergenceHistogram.count)
-                    for (idx, count) in divSnap.divergenceHistogram.enumerated()
-                    where idx < labels.count {
-                        newBars.append(DiversityHistogramBar(
-                            id: idx,
-                            label: labels[idx],
-                            count: count
-                        ))
-                    }
-                    let changed = newBars.count != currentDiversityHistogramBars.count
-                    || zip(newBars, currentDiversityHistogramBars)
-                        .contains { $0.0.count != $0.1.count }
-                    if changed {
-                        currentDiversityHistogramBars = newBars
-                    }
-                }
-                refreshChartZoomTick()
-                periodicSaveTick()
-            }  // Task @MainActor
+                processSnapshotTimerTick()
+            }
         }
+    }
+
+    /// Body of the 100 ms heartbeat. Pulls every cross-thread state
+    /// box (game, sweep, training, arena, parallel-worker counters,
+    /// replay-ratio controller, diversity tracker) into the matching
+    /// `@State`, throttled internally where each consumer cares about
+    /// avoiding redundant invalidations. Extracted out of the inline
+    /// `.onReceive(snapshotTimer)` closure so `body`'s expression
+    /// type-check stays cheap — the closure used to be ~140 lines and
+    /// dragged the whole modifier chain past the
+    /// `-warn-long-expression-type-checking` budget.
+    @MainActor
+    private func processSnapshotTimerTick() {
+        // Pull the latest game state into @State at most every 100ms.
+        // Cheap (single locked struct copy) and bounds UI work even
+        // when the game loop is doing hundreds of moves per second.
+        gameSnapshot = gameWatcher.snapshot()
+        // Same heartbeat pulls the sweep's worker-thread progress and
+        // any newly-completed rows into @State so the table grows live.
+        if sweepRunning, let box = sweepCancelBox {
+            sweepProgress = box.latestProgress
+            // Sample process resident memory and feed it into the
+            // sweep's per-row peak. The trainer also samples at row
+            // boundaries — we just contribute extra samples while a
+            // row is in flight so we don't miss mid-step spikes.
+            box.recordPeakSample(ChessTrainer.currentPhysFootprintBytes())
+            let rows = box.completedRows
+            if rows.count != sweepResults.count {
+                sweepResults = rows
+            }
+        }
+        // Same heartbeat pulls live training stats out of the
+        // lock-protected box the background training task is writing
+        // into. Guarded on step count so a mid-run session that
+        // hasn't advanced since the last tick doesn't trigger a
+        // useless redraw — and an idle box (after Stop or before
+        // first step) stays silent.
+        if let box = trainingBox {
+            let snap = box.snapshot()
+            if snap.stats.steps != (trainingStats?.steps ?? -1) {
+                trainingStats = snap.stats
+                lastTrainStep = snap.lastTiming
+                realRollingPolicyLoss = snap.rollingPolicyLoss
+                realRollingValueLoss = snap.rollingValueLoss
+            }
+            if let err = snap.error, trainingError == nil {
+                trainingError = err
+            }
+        }
+        // Arena progress mirror — cheap lock read, only updates the
+        // @State when the game index has advanced (or transitioned
+        // between non-running and running), so no redundant view
+        // invalidations between tournament games.
+        if let tBox = tournamentBox {
+            let snap = tBox.snapshot()
+            if snap?.currentGame != tournamentProgress?.currentGame
+                || (snap == nil) != (tournamentProgress == nil) {
+                tournamentProgress = snap
+            }
+        }
+        // Parallel worker counters mirror — only updates @State when
+        // totals have actually advanced so the body isn't re-evaluated
+        // when nothing's changed. The sessionStart timestamp is
+        // embedded in the snapshot so the Session panel and busy label
+        // can compute wall-clock rates on every render. Dirty check
+        // compares the fields that advance on self-play and training
+        // events; if either has changed (or the rolling-window count
+        // has shifted because an entry aged out), push a new snapshot.
+        if let pBox = parallelWorkerStatsBox {
+            let snap = pBox.snapshot()
+            let prev = parallelStats
+            // `sessionStart` is included in the dirty check so the
+            // one-time shift performed by `markWorkersStarted()` lands
+            // in @State immediately, even if no game or training step
+            // has recorded yet.
+            let changed = snap.selfPlayGames != (prev?.selfPlayGames ?? -1)
+            || snap.trainingSteps != (prev?.trainingSteps ?? -1)
+            || snap.recentGames != (prev?.recentGames ?? -1)
+            || snap.sessionStart != prev?.sessionStart
+            if changed {
+                parallelStats = snap
+            }
+        }
+        // Memory stats refresh. Throttled internally to
+        // `memoryStatsRefreshSec` so this is a cheap timestamp compare
+        // on most heartbeats.
+        refreshMemoryStatsIfNeeded()
+        // Process %CPU / %GPU refresh — separate (5 s) cadence from
+        // memory stats (10 s) so the utilisation line updates twice as
+        // often without dragging the heavier Metal property reads
+        // along with it.
+        refreshUsagePercentsIfNeeded()
+        // Progress-rate chart sampler. 1 Hz during Play and Train;
+        // each sample carries the moves/hr averaged over the last 3
+        // minutes of work. No-op outside of realTraining.
+        refreshProgressRateIfNeeded()
+        // Replay-ratio snapshot for the UI. Persist the auto-computed
+        // delay so the next session starts from where the adjuster
+        // left off.
+        if let rc = replayRatioController {
+            let snap = rc.snapshot()
+            replayRatioSnapshot = snap
+            if snap.autoAdjust {
+                lastAutoComputedDelayMs = snap.computedDelayMs
+            }
+        }
+        // Diversity-histogram mirror. Read once per heartbeat off the
+        // tracker's thread-safe snapshot. Only push into @State when
+        // the bucket totals actually change (or the bar array is
+        // currently empty) so SwiftUI doesn't invalidate the chart
+        // every tick for a stable reading.
+        if let tracker = selfPlayDiversityTracker {
+            let divSnap = tracker.snapshot()
+            let labels = GameDiversityTracker.histogramLabels
+            var newBars: [DiversityHistogramBar] = []
+            newBars.reserveCapacity(divSnap.divergenceHistogram.count)
+            for (idx, count) in divSnap.divergenceHistogram.enumerated()
+            where idx < labels.count {
+                newBars.append(DiversityHistogramBar(
+                    id: idx,
+                    label: labels[idx],
+                    count: count
+                ))
+            }
+            let changed = newBars.count != currentDiversityHistogramBars.count
+            || zip(newBars, currentDiversityHistogramBars)
+                .contains { $0.0.count != $0.1.count }
+            if changed {
+                currentDiversityHistogramBars = newBars
+            }
+        }
+        refreshChartZoomTick()
+        periodicSaveTick()
     }
 
     /// Per-heartbeat tick that asks the periodic-save scheduler
@@ -4252,49 +3743,65 @@ struct ContentView: View {
     /// bound to `progressRateScrollX`; the binding's setter is
     /// where we detect a manual scroll and pause auto-follow so
     /// reading history doesn't fight the 1 Hz sampler tick.
-    private var progressRateChartView: some View {
-        // Hover readout: when the user moves the cursor over the
-        // chart, display the elapsed-time + all three series values
-        // at that time in an overlaid label. Nearest-sample lookup
-        // is gated by TrainingChartGridView.hoverMatchToleranceSec
-        // so a hover past the last sample (or before the first one)
-        // is reported as "no data" rather than silently snapping to
-        // the nearest boundary sample and misleading the reader.
-        enum BigProgressReadout {
-            case hoveringNoData(hoveredTime: Double)
-            case hoveringWithData(time: Double, combined: Double, selfPlay: Double, training: Double)
-        }
-        let hoverReadout: BigProgressReadout? = {
-            guard let t = bigProgressChartHoveredSec else { return nil }
-            guard !progressRateSamples.isEmpty else {
-                return .hoveringNoData(hoveredTime: t)
-            }
-            var best = progressRateSamples[0]
-            var bestDist = Swift.abs(best.elapsedSec - t)
-            for s in progressRateSamples.dropFirst() {
-                let d = Swift.abs(s.elapsedSec - t)
-                if d < bestDist { best = s; bestDist = d }
-            }
-            if bestDist > TrainingChartGridView.hoverMatchToleranceSec {
-                return .hoveringNoData(hoveredTime: t)
-            }
-            return .hoveringWithData(
-                time: best.elapsedSec,
-                combined: best.combinedMovesPerHour,
-                selfPlay: best.selfPlayMovesPerHour,
-                training: best.trainingMovesPerHour
-            )
-        }()
+    /// Hover readout state for `progressRateChartView`. Lifted out of
+    /// the original inline closure so the chart's hover overlay can
+    /// be its own type-check unit.
+    fileprivate enum BigProgressReadout {
+        case hoveringNoData(hoveredTime: Double)
+        case hoveringWithData(time: Double, combined: Double, selfPlay: Double, training: Double)
+    }
 
+    /// Compute the current hover readout for the big progress chart.
+    /// Nearest-sample lookup is gated by
+    /// `TrainingChartGridView.hoverMatchToleranceSec` so a hover past
+    /// the last sample (or before the first one) is reported as "no
+    /// data" rather than silently snapping to the nearest boundary
+    /// sample and misleading the reader.
+    private var bigProgressHoverReadout: BigProgressReadout? {
+        guard let t = bigProgressChartHoveredSec else { return nil }
+        guard !progressRateSamples.isEmpty else {
+            return .hoveringNoData(hoveredTime: t)
+        }
+        var best = progressRateSamples[0]
+        var bestDist = Swift.abs(best.elapsedSec - t)
+        for s in progressRateSamples.dropFirst() {
+            let d = Swift.abs(s.elapsedSec - t)
+            if d < bestDist { best = s; bestDist = d }
+        }
+        if bestDist > TrainingChartGridView.hoverMatchToleranceSec {
+            return .hoveringNoData(hoveredTime: t)
+        }
+        return .hoveringWithData(
+            time: best.elapsedSec,
+            combined: best.combinedMovesPerHour,
+            selfPlay: best.selfPlayMovesPerHour,
+            training: best.trainingMovesPerHour
+        )
+    }
+
+    private var progressRateChartView: some View {
+        bigProgressChartCore
+            .chartScrollableAxes(.horizontal)
+            .chartXVisibleDomain(length: ChartZoom.stops[chartZoomIdx])
+            .chartScrollPosition(x: $progressRateScrollX)
+            .chartOverlay { proxy in
+                bigProgressChartHoverOverlay(proxy: proxy)
+            }
+            .frame(height: 320)
+    }
+
+    /// The Chart's marks + axis/legend/scale modifiers. Split off
+    /// from `progressRateChartView` so each half type-checks
+    /// independently — the combined getter was 1052 ms before.
+    private var bigProgressChartCore: some View {
         // One ForEach per series — SwiftUI Charts only connects
         // LineMarks that share a single enclosing ForEach AND a
-        // single Y value. Packing all three series into ONE
-        // ForEach made Charts emit spurious thin lines near y=0
-        // because it couldn't disambiguate which LineMarks
-        // belonged to which logical series within the shared
-        // iteration. Splitting per series restores the canonical
-        // multi-line rendering.
-        return Chart {
+        // single Y value. Packing all three series into ONE ForEach
+        // made Charts emit spurious thin lines near y=0 because it
+        // couldn't disambiguate which LineMarks belonged to which
+        // logical series within the shared iteration. Splitting per
+        // series restores the canonical multi-line rendering.
+        Chart {
             ForEach(progressRateSamples) { sample in
                 LineMark(
                     x: .value("Elapsed", sample.elapsedSec),
@@ -4360,72 +3867,42 @@ struct ContentView: View {
                 ChartZoom.stops[chartZoomIdx]
             )
         )
-        .chartScrollableAxes(.horizontal)
-        .chartXVisibleDomain(length: ChartZoom.stops[chartZoomIdx])
-        .chartScrollPosition(x: $progressRateScrollX)
-        .chartOverlay { proxy in
-            // Transparent hover-capture rectangle over the plot
-            // area — same pattern as `TrainingChartGridView`'s
-            // `hoverOverlay` helper but inline here because this
-            // chart lives in ContentView's body.
-            GeometryReader { geo in
-                ZStack(alignment: .topLeading) {
-                    Rectangle()
-                        .fill(Color.clear)
-                        .contentShape(Rectangle())
-                        .onContinuousHover { phase in
-                            switch phase {
-                            case .active(let point):
-                                let origin = (proxy.plotFrame.map { geo[$0].origin } ?? .zero)
-                                let xInPlot = point.x - origin.x
-                                if let sec: Double = proxy.value(atX: xInPlot) {
-                                    if sec < 0 {
-                                        if bigProgressChartHoveredSec != nil {
-                                            bigProgressChartHoveredSec = nil
-                                        }
-                                        return
+    }
+
+    /// Transparent hover-capture rectangle over the plot area, with a
+    /// floating readout label in the corner. Same pattern as
+    /// `TrainingChartGridView`'s `hoverOverlay` helper but lives here
+    /// because this chart is rendered in ContentView's body.
+    @ViewBuilder
+    private func bigProgressChartHoverOverlay(proxy: ChartProxy) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                Rectangle()
+                    .fill(Color.clear)
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let point):
+                            let origin = (proxy.plotFrame.map { geo[$0].origin } ?? .zero)
+                            let xInPlot = point.x - origin.x
+                            if let sec: Double = proxy.value(atX: xInPlot) {
+                                if sec < 0 {
+                                    if bigProgressChartHoveredSec != nil {
+                                        bigProgressChartHoveredSec = nil
                                     }
-                                    if bigProgressChartHoveredSec != sec {
-                                        bigProgressChartHoveredSec = sec
-                                    }
+                                    return
                                 }
-                            case .ended:
-                                if bigProgressChartHoveredSec != nil {
-                                    bigProgressChartHoveredSec = nil
+                                if bigProgressChartHoveredSec != sec {
+                                    bigProgressChartHoveredSec = sec
                                 }
                             }
-                        }
-                    Group {
-                        switch hoverReadout ?? .hoveringNoData(hoveredTime: 0) {
-                        case .hoveringWithData(let time, let combined, let selfPlay, let training):
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("t=\(Self.formatElapsedAxis(time))")
-                                    .font(.caption2)
-                                    .monospacedDigit()
-                                Text("Combined: \(Int(combined))/hr")
-                                    .font(.caption2)
-                                    .monospacedDigit()
-                                    .foregroundStyle(Color.green)
-                                Text("Self-play: \(Int(selfPlay))/hr")
-                                    .font(.caption2)
-                                    .monospacedDigit()
-                                    .foregroundStyle(Color.blue)
-                                Text("Training:  \(Int(training))/hr")
-                                    .font(.caption2)
-                                    .monospacedDigit()
-                                    .foregroundStyle(Color.orange)
-                            }
-                        case .hoveringNoData(let t):
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("t=\(Self.formatElapsedAxis(t))")
-                                    .font(.caption2)
-                                    .monospacedDigit()
-                                Text("no data")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                        case .ended:
+                            if bigProgressChartHoveredSec != nil {
+                                bigProgressChartHoveredSec = nil
                             }
                         }
                     }
+                bigProgressChartHoverLabel
                     .padding(6)
                     .background(
                         RoundedRectangle(cornerRadius: 4)
@@ -4437,11 +3914,45 @@ struct ContentView: View {
                     )
                     .padding(8)
                     .allowsHitTesting(false)
-                    .opacity(hoverReadout == nil ? 0 : 1)
-                }
+                    .opacity(bigProgressHoverReadout == nil ? 0 : 1)
             }
         }
-        .frame(height: 320)
+    }
+
+    /// Floating label inside the hover overlay showing either the
+    /// hovered sample's three series values or "no data" when the
+    /// cursor is outside the sampled time range.
+    @ViewBuilder
+    private var bigProgressChartHoverLabel: some View {
+        switch bigProgressHoverReadout ?? .hoveringNoData(hoveredTime: 0) {
+        case .hoveringWithData(let time, let combined, let selfPlay, let training):
+            VStack(alignment: .leading, spacing: 2) {
+                Text("t=\(Self.formatElapsedAxis(time))")
+                    .font(.caption2)
+                    .monospacedDigit()
+                Text("Combined: \(Int(combined))/hr")
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.green)
+                Text("Self-play: \(Int(selfPlay))/hr")
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.blue)
+                Text("Training:  \(Int(training))/hr")
+                    .font(.caption2)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.orange)
+            }
+        case .hoveringNoData(let t):
+            VStack(alignment: .leading, spacing: 2) {
+                Text("t=\(Self.formatElapsedAxis(t))")
+                    .font(.caption2)
+                    .monospacedDigit()
+                Text("no data")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 
     /// Sample process CPU + GPU time at most every
@@ -4521,7 +4032,7 @@ struct ContentView: View {
             let tail = Text("  " + Self.formatElapsed(elapsed))
                 .foregroundStyle(Color.blue)
 
-            return head + score + concurrencyTail + tail
+            return (head + score + concurrencyTail + tail).monospacedDigit()
         }
         // Tabular figures so the elapsed timer and memory sizes
         // don't jitter as digits roll. `monospacedDigit()` keeps
@@ -8653,6 +8164,41 @@ struct ContentView: View {
         let outputURL = cliOutputURL
         let cliTrainingTimeLimitSec = cliConfig?.trainingTimeLimitSec
         let isAutoTrainRun = autoTrainOnLaunch
+        let runStart = Date()
+
+        // Register the early-stop flush handler so SIGUSR1 / SIGHUP /
+        // applicationShouldTerminate can write `result.json` cleanly
+        // before exiting. Cleared in the teardown block. The closure
+        // captures the recorder, outputURL, and runStart so the
+        // coordinator doesn't need to know about ContentView's state
+        // shape — it just calls the closure with the termination reason.
+        if let recorder {
+            EarlyStopCoordinator.shared.earlyStopHandler = { reason in
+                let elapsed = Date().timeIntervalSince(runStart)
+                let destDescription = outputURL?.path ?? "<stdout>"
+                SessionLogger.shared.log(
+                    "[APP] --train: early-stop on \(reason.rawValue) at elapsed=\(String(format: "%.1f", elapsed))s; writing snapshot to \(destDescription)"
+                )
+                recorder.setTerminationReason(reason)
+                let counts = recorder.countsSnapshot()
+                do {
+                    if let url = outputURL {
+                        try recorder.writeJSON(to: url, totalTrainingSeconds: elapsed)
+                    } else {
+                        try recorder.writeJSONToStdout(totalTrainingSeconds: elapsed)
+                    }
+                    SessionLogger.shared.log(
+                        "[APP] --train: wrote snapshot to \(destDescription) (arenas=\(counts.arenas), stats=\(counts.stats), probes=\(counts.probes))"
+                    )
+                } catch {
+                    SessionLogger.shared.log(
+                        "[APP] --train: early-stop snapshot write FAILED for \(destDescription): \(error.localizedDescription)"
+                    )
+                }
+                SessionLogger.shared.log("[APP] --train: exiting process after early-stop snapshot")
+                Darwin._exit(0)
+            }
+        }
 
         // Snapshot the CLI-overridable effective values into plain
         // `let`s so the detached Task bodies below can read them
@@ -9569,7 +9115,6 @@ struct ContentView: View {
                 //   - session log writes have already been
                 //     flushed by SessionLogger before this point.
                 if isAutoTrainRun, let recorder, let deadlineSec = cliTrainingTimeLimitSec, deadlineSec > 0 {
-                    let runStart = Date()
                     group.addTask(priority: .userInitiated) {
                         do {
                             try await Task.sleep(for: .seconds(deadlineSec))
@@ -9833,6 +9378,7 @@ struct ContentView: View {
                 replayRatioController = nil
                 replayRatioSnapshot = nil
                 cliRecorder = nil
+                EarlyStopCoordinator.shared.earlyStopHandler = nil
             }
         }
     }
@@ -11245,6 +10791,610 @@ struct ContentView: View {
             inputTensor: board,
             rawInference: rawInference
         )
+    }
+}
+
+// MARK: - Body subviews
+//
+// Extracted out of `body` so each chunk type-checks independently. Before
+// these existed, `body` was ~1020 lines of nested generics and clocked in
+// at ~16 seconds in the type-checker (`-warn-long-function-bodies=100`
+// flagged it on every clean build). Each extracted property is its own
+// type-check unit, so the compiler solves them independently and `body`
+// shrinks to a flat composition of named pieces.
+//
+// Properties that need `$trainingParams.<name>` projections take a local
+// `@Bindable` shadow; everything else stays a plain `@ViewBuilder`. None
+// of these accept parameters — they read directly from the surrounding
+// `ContentView`'s state, mirroring how the original inline code worked.
+extension ContentView {
+    @ViewBuilder
+    var aboutPopoverContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("About Drew's Chess Machine")
+                .font(.headline)
+            Text("Forward pass through a ~2.4M parameter convolutional network using MPSGraph on the GPU. Weights are randomly initialized (He initialization) — no training has occurred.")
+                .font(.callout)
+            Divider()
+            Text("Architecture: 20×8×8 input → stem(128) → 8 res+SE blocks → policy(4864) + value(1)")
+                .font(.system(.callout, design: .monospaced))
+            Text("Parameters: ~2,400,000 (~2.4M)")
+                .font(.system(.callout, design: .monospaced))
+            if let net = network {
+                Text("Network ID: \(net.identifier?.description ?? "–")")
+                    .font(.system(.callout, design: .monospaced))
+                Text("Build time: \(String(format: "%.1f ms", net.buildTimeMs))")
+                    .font(.system(.callout, design: .monospaced))
+            }
+        }
+        .padding(16)
+        .frame(width: 500)
+    }
+
+    @ViewBuilder
+    var trainingAlarmBanner: some View {
+        if let alarm = activeTrainingAlarm {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    // Title forced black against the yellow background
+                    // for legibility — default `.headline` color in
+                    // dark-mode SwiftUI is white, which washes out
+                    // against `.yellow.opacity(0.8)`.
+                    Text(alarm.title)
+                        .font(.headline)
+                        .foregroundStyle(Color.black)
+                    // Detail text uses a darker red + medium weight so
+                    // numeric values in the alarm (entropy, gNorm) read
+                    // clearly against the yellow background instead of
+                    // washing out as default `.red`.
+                    Text(alarm.detail)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(Color(red: 0.55, green: 0.0, blue: 0.0))
+                }
+                Spacer()
+                HStack(spacing: 8) {
+                    if trainingAlarmSilenced {
+                        Text("Silenced")
+                            .font(.caption)
+                            .foregroundStyle(Color.black)
+                    } else {
+                        Button("Silence") {
+                            silenceTrainingAlarm()
+                        }
+                    }
+                    // Dismiss clears the banner AND resets the streak
+                    // counters, so an alarm only re-raises if the
+                    // condition deteriorates fresh from a healthy
+                    // baseline. Silence keeps visibility (banner stays)
+                    // but quiets the sound; Dismiss is "I've seen it,
+                    // start over."
+                    Button("Dismiss") {
+                        dismissTrainingAlarm()
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color.yellow.opacity(0.8))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    @ViewBuilder
+    var liveBoardWithNavigationView: some View {
+        HStack(spacing: 8) {
+            let leftDisabled = inferenceResult == nil || selectedOverlay == 0 || !showForwardPassUI
+            Button(
+                action: { navigateOverlay(-1) },
+                label: {
+                    Image(systemName: "chevron.left").font(.title3).frame(width: 24)
+                }
+            )
+            .buttonStyle(.plain)
+            .disabled(leftDisabled)
+            .opacity(leftDisabled ? 0.2 : 0.6)
+
+            ChessBoardView(pieces: displayedPieces, overlay: currentOverlay)
+                .overlay {
+                    // Transparent hit layer that converts drag
+                    // coordinates to squares and routes edits through
+                    // `applyFreePlacementDrag`. Sized to match the
+                    // board's square frame via the overlay modifier,
+                    // so local coordinates map 1:1 onto board squares.
+                    // Disabled outside forward-pass mode so
+                    // game/training views aren't hijacked.
+                    GeometryReader { geo in
+                        let boardSize = min(geo.size.width, geo.size.height)
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture(minimumDistance: 0)
+                                    .onEnded { value in
+                                        let fromSq = Self.squareIndex(
+                                            at: value.startLocation,
+                                            boardSize: boardSize
+                                        )
+                                        let toSq = Self.squareIndex(
+                                            at: value.location,
+                                            boardSize: boardSize
+                                        )
+                                        applyFreePlacementDrag(from: fromSq, to: toSq)
+                                    }
+                            )
+                            .allowsHitTesting(forwardPassEditable)
+                    }
+                }
+                .overlay {
+                    // Multi-worker placeholder — the live animated
+                    // game board only works with one driving worker
+                    // (N=1), because a single `GameWatcher` can't
+                    // track multiple concurrent games without
+                    // flicker. When N>1 we still show the board slot
+                    // (so the Candidate test picker remains usable
+                    // and the layout doesn't shift) but overlay a
+                    // centered label indicating how many workers are
+                    // running. Hidden in candidate-test mode so the
+                    // probe board stays clean.
+                    if realTraining
+                        && !isCandidateTestActive
+                        && trainingParams.selfPlayWorkers > 1 {
+                        Text("N = \(trainingParams.selfPlayWorkers) concurrent games\nLive board hidden")
+                            .font(.system(.body, design: .monospaced))
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.white)
+                            .padding(14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(Color.black.opacity(0.7))
+                            )
+                    }
+                }
+
+            let rightDisabled = inferenceResult == nil || selectedOverlay == ChessNetwork.inputPlanes || !showForwardPassUI
+            Button(
+                action: { navigateOverlay(1) },
+                label: {
+                    Image(systemName: "chevron.right").font(.title3).frame(width: 24)
+                }
+            )
+            .buttonStyle(.plain)
+            .disabled(rightDisabled)
+            .opacity(rightDisabled ? 0.2 : 0.6)
+        }
+    }
+
+    @ViewBuilder
+    var boardSideView: some View {
+        VStack(spacing: 6) {
+            if realTraining {
+                Picker("Board", selection: $playAndTrainBoardMode) {
+                    Text("Game run").tag(PlayAndTrainBoardMode.gameRun)
+                    Text("Candidate test").tag(PlayAndTrainBoardMode.candidateTest)
+                    Text("Progress rate").tag(PlayAndTrainBoardMode.progressRate)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 360)
+            }
+
+            if inferenceResult != nil, showForwardPassUI {
+                Text(overlayLabel)
+                    .font(.system(.subheadline, design: .monospaced))
+            }
+
+            if forwardPassEditable {
+                Picker("To move", selection: sideToMoveBinding) {
+                    Text("White").tag(PieceColor.white)
+                    Text("Black").tag(PieceColor.black)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 160)
+            }
+
+            if isCandidateTestActive {
+                Picker("Probe", selection: $probeNetworkTarget) {
+                    Text("Candidate").tag(ProbeNetworkTarget.candidate)
+                    Text("Champion").tag(ProbeNetworkTarget.champion)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 220)
+            }
+
+            if isProgressRateActive {
+                progressRateChartView
+            } else {
+                liveBoardWithNavigationView
+            }
+        }
+        .frame(minWidth: 320, maxWidth: 420)
+    }
+
+    var selfPlayStatsColumn: some View {
+        @Bindable var trainingParams = self.trainingParams
+        return Group {
+            // Play and Train uses the aggregate stats text — all N
+            // workers feed into `parallelStats`, and the text builder
+            // shows a Status line only when N=1. Non-realTraining
+            // modes (Play Game / Play Continuous) still use
+            // `gameSnapshot.statsText`, which is their single source
+            // of truth.
+            if realTraining, let session = parallelStats {
+                let column = playAndTrainStatsText(
+                    game: gameSnapshot,
+                    session: session
+                )
+                // Split layout: header Text, then the Concurrency
+                // control row with the live N Stepper, then the body
+                // Text. Zero spacing so the three pieces read as a
+                // single continuous block. The HStack's leading "  "
+                // mirrors the body's two-space label indent, and the
+                // minWidth on the value Text keeps the Stepper from
+                // jittering horizontally when the count changes width
+                // (1 ↔ 16).
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(column.header)
+                    HStack(spacing: 6) {
+                        Text("  Concurrency:")
+                        Text("\(trainingParams.selfPlayWorkers)")
+                            .monospacedDigit()
+                            .frame(minWidth: 24, alignment: .trailing)
+                        Stepper(
+                            "Concurrency",
+                            value: $trainingParams.selfPlayWorkers,
+                            in: 1...Self.absoluteMaxSelfPlayWorkers
+                        )
+                        .labelsHidden()
+                    }
+                    Text(colorizedPanelBody(column.body))
+                }
+                .frame(minWidth: 330, alignment: .topLeading)
+            } else {
+                Text(gameSnapshot.statsText(
+                    continuousPlay: continuousPlay || realTraining
+                ))
+                .frame(minWidth: 330, alignment: .topLeading)
+            }
+        }
+    }
+
+    var trainingStatsColumn: some View {
+        @Bindable var trainingParams = self.trainingParams
+        let column = trainingStatsText()
+        // Split layout mirroring the Self Play column: header, then
+        // the Step Delay row (only during Play and Train — the delay
+        // only affects the live training worker), then the body.
+        // Sweep mode still runs through this branch but `realTraining`
+        // is false there, so the control row is omitted and the sweep
+        // table renders exactly as before.
+        return VStack(alignment: .leading, spacing: 0) {
+            Text(column.header)
+            if realTraining {
+                HStack(spacing: 6) {
+                    Text("  Step Delay:")
+                    if let snap = replayRatioSnapshot, snap.autoAdjust {
+                        Text("\(snap.computedDelayMs)")
+                            .monospacedDigit()
+                            .frame(minWidth: 32, alignment: .trailing)
+                        Text("ms (auto)")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("\(trainingParams.trainingStepDelayMs)")
+                            .monospacedDigit()
+                            .frame(minWidth: 32, alignment: .trailing)
+                        Text("ms")
+                    }
+                    Stepper(
+                        "Step Delay",
+                        value: trainingStepDelayBinding,
+                        in: 0...Self.stepDelayMaxMs
+                    )
+                    .labelsHidden()
+                    .disabled(trainingParams.replayRatioAutoAdjust)
+                }
+                HStack(spacing: 6) {
+                    Text("  Replay Ratio:")
+                    if let snap = replayRatioSnapshot {
+                        Text(String(format: "%.2f", snap.currentRatio))
+                            .monospacedDigit()
+                            .frame(minWidth: 40, alignment: .trailing)
+                            .foregroundStyle(
+                                abs(snap.currentRatio - snap.targetRatio) < 0.3
+                                ? Color.primary : Color.red
+                            )
+                    } else {
+                        Text("--")
+                            .monospacedDigit()
+                            .frame(minWidth: 40, alignment: .trailing)
+                    }
+                    Text("target:")
+                        .foregroundStyle(.secondary)
+                    Text(String(format: "%.1f", trainingParams.replayRatioTarget))
+                        .monospacedDigit()
+                        .frame(minWidth: 24, alignment: .trailing)
+                    Stepper(
+                        "Target Ratio",
+                        value: $trainingParams.replayRatioTarget,
+                        in: 0.1...5.0,
+                        step: 0.1
+                    )
+                    .labelsHidden()
+                    Toggle("Auto", isOn: $trainingParams.replayRatioAutoAdjust)
+                        .toggleStyle(.checkbox)
+                }
+                HStack(spacing: 6) {
+                    Text("  Learn Rate:")
+                    TextField("LR", text: $learningRateEditText)
+                        .monospacedDigit()
+                        .frame(width: 80)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            if let parsed = Float(learningRateEditText),
+                               parsed > 0, parsed.isFinite {
+                                let prior = trainer?.learningRate ?? Float(Self.trainerLearningRateDefault)
+                                if abs(parsed - prior) > Float.ulpOfOne {
+                                    SessionLogger.shared.log(
+                                        String(format: "[PARAM] learningRate: %.1e -> %.1e", prior, parsed)
+                                    )
+                                }
+                                trainer?.learningRate = parsed
+                                trainingParams.learningRate = Double(parsed)
+                            }
+                            learningRateEditText = String(
+                                format: "%.1e",
+                                trainer?.learningRate ?? Self.trainerLearningRateDefault
+                            )
+                        }
+                    Toggle("√batch", isOn: $trainingParams.sqrtBatchScalingLR)
+                        .toggleStyle(.checkbox)
+                        .help("Adam-style LR scaling: feed learning_rate × sqrt(batch_size / 4096) each step. At batch=4096 the multiplier is 1.0 (no-op); at batch=1024 it's 0.5, at batch=8192 it's √2. The typed LR above is always the base value at the 4096 pivot — scaling is applied when writing into the optimizer feed.")
+                    Text("warmup")
+                        .foregroundStyle(.secondary)
+                    TextField("Warmup", text: $lrWarmupStepsEditText)
+                        .monospacedDigit()
+                        .frame(width: 60)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            if let parsed = Int(lrWarmupStepsEditText), parsed >= 0 {
+                                let prior = trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
+                                if parsed != prior {
+                                    SessionLogger.shared.log(
+                                        "[PARAM] lrWarmupSteps: \(prior) -> \(parsed)"
+                                    )
+                                }
+                                trainer?.lrWarmupSteps = parsed
+                                trainingParams.lrWarmupSteps = parsed
+                            }
+                            lrWarmupStepsEditText = String(
+                                trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
+                            )
+                        }
+                        .help("Linear LR warmup: for the first N SGD steps, multiply LR by min(1, completedSteps / N). 0 disables. Composes multiplicatively with √batch scaling.")
+                }
+                HStack(spacing: 6) {
+                    Text("  Entropy Reg:")
+                    TextField("Entropy Reg", text: $entropyRegularizationEditText)
+                    .monospacedDigit()
+                    .frame(width: 80)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        if let parsed = Double(entropyRegularizationEditText),
+                           parsed >= 0, parsed.isFinite {
+                            let prior = trainingParams.entropyBonus
+                            if abs(parsed - prior) > Double.ulpOfOne {
+                                SessionLogger.shared.log(
+                                    String(format: "[PARAM] entropyReg: %.2e -> %.2e", prior, parsed)
+                                )
+                            }
+                            trainingParams.entropyBonus = parsed
+                            trainer?.entropyRegularizationCoeff = Float(parsed)
+                        }
+                        entropyRegularizationEditText = String(
+                            format: "%.2e",
+                            trainingParams.entropyBonus
+                        )
+                    }
+                    Text("clip")
+                        .foregroundStyle(.secondary)
+                    TextField("Clip", text: $gradClipMaxNormEditText)
+                        .monospacedDigit()
+                        .frame(width: 70)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            if let parsed = Double(gradClipMaxNormEditText),
+                               parsed > 0, parsed.isFinite {
+                                let prior = trainingParams.gradClipMaxNorm
+                                if abs(parsed - prior) > Double.ulpOfOne {
+                                    SessionLogger.shared.log(
+                                        String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", prior, parsed)
+                                    )
+                                }
+                                trainingParams.gradClipMaxNorm = parsed
+                                trainer?.gradClipMaxNorm = Float(parsed)
+                            }
+                            gradClipMaxNormEditText = String(
+                                format: "%.2f",
+                                trainingParams.gradClipMaxNorm
+                            )
+                        }
+                    Text("decay")
+                        .foregroundStyle(.secondary)
+                    TextField("Decay", text: $weightDecayEditText)
+                        .monospacedDigit()
+                        .frame(width: 80)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            if let parsed = Double(weightDecayEditText),
+                               parsed >= 0, parsed.isFinite {
+                                let prior = trainingParams.weightDecay
+                                if abs(parsed - prior) > Double.ulpOfOne {
+                                    SessionLogger.shared.log(
+                                        String(format: "[PARAM] weightDecayC: %.2e -> %.2e", prior, parsed)
+                                    )
+                                }
+                                trainingParams.weightDecay = parsed
+                                trainer?.weightDecayC = Float(parsed)
+                            }
+                            weightDecayEditText = String(
+                                format: "%.2e",
+                                trainingParams.weightDecay
+                            )
+                        }
+                    Text("K")
+                        .foregroundStyle(.secondary)
+                    TextField("K", text: $policyScaleKEditText)
+                        .monospacedDigit()
+                        .frame(width: 60)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit {
+                            if let parsed = Double(policyScaleKEditText),
+                               parsed > 0, parsed.isFinite {
+                                let prior = trainingParams.policyScaleK
+                                if abs(parsed - prior) > Double.ulpOfOne {
+                                    SessionLogger.shared.log(
+                                        String(format: "[PARAM] policyScaleK: %.2f -> %.2f", prior, parsed)
+                                    )
+                                }
+                                trainingParams.policyScaleK = parsed
+                                trainer?.policyScaleK = Float(parsed)
+                            }
+                            policyScaleKEditText = String(
+                                format: "%.2f",
+                                trainingParams.policyScaleK
+                            )
+                        }
+                }
+                HStack(spacing: 6) {
+                    Text("  SP tau:")
+                    TextField("SP start", text: $spStartTauEditText)
+                        .monospacedDigit()
+                        .frame(width: 60)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { applySpTauEdit() }
+                    Text("→")
+                        .foregroundStyle(.secondary)
+                    TextField("SP floor", text: $spFloorTauEditText)
+                        .monospacedDigit()
+                        .frame(width: 60)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { applySpTauEdit() }
+                    Text("decay")
+                        .foregroundStyle(.secondary)
+                    TextField("SP decay", text: $spDecayPerPlyEditText)
+                        .monospacedDigit()
+                        .frame(width: 70)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { applySpTauEdit() }
+                    Text("/ply")
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 6) {
+                    Text("  Arena tau:")
+                    TextField("Ar start", text: $arStartTauEditText)
+                        .monospacedDigit()
+                        .frame(width: 60)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { applyArTauEdit() }
+                    Text("→")
+                        .foregroundStyle(.secondary)
+                    TextField("Ar floor", text: $arFloorTauEditText)
+                        .monospacedDigit()
+                        .frame(width: 60)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { applyArTauEdit() }
+                    Text("decay")
+                        .foregroundStyle(.secondary)
+                    TextField("Ar decay", text: $arDecayPerPlyEditText)
+                        .monospacedDigit()
+                        .frame(width: 70)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { applyArTauEdit() }
+                    Text("/ply")
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 6) {
+                    Text("  Draw Penalty:")
+                    TextField("Draw Penalty", text: $drawPenaltyEditText)
+                    .monospacedDigit()
+                    .frame(width: 80)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        if let parsed = Double(drawPenaltyEditText),
+                           parsed >= 0, parsed.isFinite {
+                            let prior = trainingParams.drawPenalty
+                            if abs(parsed - prior) > Double.ulpOfOne {
+                                SessionLogger.shared.log(
+                                    String(format: "[PARAM] drawPenalty: %.3f -> %.3f", prior, parsed)
+                                )
+                            }
+                            trainingParams.drawPenalty = parsed
+                            trainer?.drawPenalty = Float(parsed)
+                        }
+                        drawPenaltyEditText = String(
+                            format: "%.3f",
+                            trainingParams.drawPenalty
+                        )
+                    }
+                    Text("(draws → z = −penalty; 0 disables)")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(colorizedPanelBody(column.body))
+        }
+        .frame(minWidth: 260, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    var mainTextPanel: some View {
+        // Text panel — two fixed-width columns (game stats + training
+        // stats) so a mode that shows one never changes size when a
+        // mode that shows both (real-training) is active. Each column
+        // is gated independently: whichever is relevant for the
+        // current mode is rendered, the other is simply omitted. In
+        // real-training mode both are shown side-by-side.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                // Fixed-width columns so the panel never reflows
+                // between modes OR between game results. The game
+                // column has to be wide enough for the longest
+                // Status line the formatter can produce ("Status:
+                // Draw by insufficient material" ≈ 37 chars at
+                // ~8pt/char in monospaced body) — otherwise a draw
+                // by insufficient material or threefold repetition
+                // swells the left column at game end and pushes the
+                // training column rightward.
+                HStack(alignment: .top, spacing: 16) {
+                    // Candidate test mode replaces the game-stats
+                    // column with the inference-result column so
+                    // the user sees what the network thinks of the
+                    // probe position alongside the running training
+                    // stats. Same min-width as the game column so
+                    // the overall text panel doesn't reflow when
+                    // toggling between Game run and Candidate test.
+                    if isGameMode && !isCandidateTestActive {
+                        selfPlayStatsColumn
+                    }
+                    if isCandidateTestActive, let result = inferenceResult {
+                        Text(result.textOutput)
+                            .frame(minWidth: 330, alignment: .topLeading)
+                    }
+                    if isTrainingMode {
+                        trainingStatsColumn
+                    }
+                    if !isGameMode, !isTrainingMode, let result = inferenceResult {
+                        Text(result.textOutput)
+                    }
+                }
+
+                if let trainingError {
+                    Text(trainingError).foregroundStyle(.red)
+                }
+            }
+            .font(.system(.body, design: .monospaced))
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 
