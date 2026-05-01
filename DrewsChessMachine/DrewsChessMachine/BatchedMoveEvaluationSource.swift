@@ -161,6 +161,15 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// `[ARENA-BATCH]` line carrying batch size, this-batch wait/run
     /// ms, and running averages. False for self-play (the line cadence
     /// would dominate the log file at 8+ workers × ~ms-per-ply).
+    ///
+    /// Layered with the `DCM_LOG_PER_BATCH_TIMINGS` compile-time flag:
+    /// the runtime gate selects WHICH batchers should log when the
+    /// feature is enabled, but the compile flag determines whether
+    /// the emission code is even present in the binary. With the flag
+    /// undefined (the default), per-batch emission is fully elided
+    /// regardless of this value — only the end-of-arena summary
+    /// remains. To turn on, add `-D DCM_LOG_PER_BATCH_TIMINGS` to the
+    /// project's `OTHER_SWIFT_FLAGS` and rebuild.
     let logBatchTimings: Bool
 
     /// Number of live slots the driver expects to submit per barrier
@@ -618,10 +627,17 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             if count < batchSizeMin { batchSizeMin = count }
             if count > batchSizeMax { batchSizeMax = count }
 
-            // Per-batch debug line for arena (gated). Emitting every
-            // fire would flood self-play logs (8+ workers × ~ms-per-
-            // ply × hours), so this is opt-in via the `logBatchTimings`
-            // flag set by the arena callsite.
+            // Per-batch debug line for arena (double-gated). Compile-
+            // time `DCM_LOG_PER_BATCH_TIMINGS` elides this entire
+            // block from the binary by default — the per-arena log
+            // volume isn't worth carrying day-to-day. To turn on,
+            // add `-D DCM_LOG_PER_BATCH_TIMINGS` to OTHER_SWIFT_FLAGS
+            // and rebuild. The runtime `logBatchTimings` gate then
+            // selects WHICH batchers emit (arena yes, self-play no)
+            // when the compile flag is on. The wait/run accumulators
+            // above ALWAYS update so the end-of-arena summary line
+            // (`[ARENA] timing ...`) keeps working with the flag off.
+            #if DCM_LOG_PER_BATCH_TIMINGS
             if logBatchTimings {
                 let thisRunMs = Double(thisRunNanos) / 1_000_000.0
                 let thisWaitMs = Double(thisWaitNanos) / 1_000_000.0
@@ -643,6 +659,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
                     avgRunMs
                 ))
             }
+            #endif
 
             #if DEBUG
             runBatchCorrectnessCheckIfNeeded(batch: batch, policy: policy, values: values)

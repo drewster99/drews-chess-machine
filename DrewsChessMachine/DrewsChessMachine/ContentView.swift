@@ -1498,13 +1498,18 @@ struct ContentView: View {
     // code, tests), while a live session reads the effective
     // value.
     @State private var effectiveTournamentGames: Int = 200
-    // Initialized here as a literal to keep the @State default
-    // independent of the static SSOT (which is fine since they're
-    // by definition the same value at this moment in time and any
-    // future change to the SSOT would also be a deliberate change
-    // here). Matches the convention used by `effectiveTournamentGames`
-    // and the rest of the `effective…` block above.
-    @State private var effectiveArenaConcurrency: Int = 32
+    // `@AppStorage` (not plain `@State`) so the user's stepper
+    // choice survives across app launches — same pattern as
+    // `selfPlayWorkerCount` below. The Stepper writes through the
+    // binding directly, so a UI change persists immediately; on a
+    // subsequent launch, this property hydrates from UserDefaults
+    // before any session is loaded. Session resume / parameters.json
+    // overwrites still take effect on top of the stored value
+    // (their assignments propagate through @AppStorage to
+    // UserDefaults), so the most-recently-acted-on value wins.
+    // Default falls back to `arenaConcurrencyDefault` for first
+    // launch. Bounded at runtime by `absoluteMaxArenaConcurrency`.
+    @AppStorage("effectiveArenaConcurrency") private var effectiveArenaConcurrency: Int = Self.arenaConcurrencyDefault
     @State private var effectivePromoteThreshold: Double = 0.55
     @State private var effectiveAutoArenaIntervalSec: Double = 30 * 60
     @State private var effectiveTrainingBatchSize: Int = 4096
@@ -1750,7 +1755,7 @@ struct ContentView: View {
     /// steady-state at ~K/2. The value is user-overridable via the
     /// `effectiveArenaConcurrency` runtime setting (UI Stepper /
     /// session save+load / parameters.json key `arena_concurrency`).
-    nonisolated static let arenaConcurrencyDefault = 32
+    nonisolated static let arenaConcurrencyDefault = 200
     /// Hard ceiling on `effectiveArenaConcurrency`. Mirrors the
     /// self-play `absoluteMaxSelfPlayWorkers` pattern: bounds the
     /// UI Stepper AND clamps values loaded from `parameters.json` /
@@ -1760,17 +1765,17 @@ struct ContentView: View {
     /// Silicon for this network — raising it further wouldn't help
     /// arena throughput because batches that large stall on memory
     /// bandwidth before they finish.
-    nonisolated static let absoluteMaxArenaConcurrency: Int = 256
+    nonisolated static let absoluteMaxArenaConcurrency: Int = 1024
     /// Coalescing-window upper bound (ms) for the arena's per-network
     /// batchers. The barrier fires on either count-met OR window-
     /// elapsed, whichever happens first; the window only kicks in when
     /// games desynchronize and the count barrier alone wouldn't fire.
-    /// 15 ms gives close-to-K-sized batches more room to assemble in
+    /// 30 ms gives close-to-K-sized batches more room to assemble in
     /// the desynchronized steady-state without making any single slot
     /// pay too much wall-clock for the coalesce. Hardcoded for now;
     /// promote to a UI / persisted setting only if profiling motivates
     /// it.
-    nonisolated static let arenaBatchWaitMs: Double = 15.0
+    nonisolated static let arenaBatchWaitMs: Double = 100.0
     /// Candidate-score threshold for promotion. The AlphaZero paper's
     /// default. Demands the candidate score at least 110/200 points,
     /// which in a draw-heavy regime translates to winning the large
@@ -6281,19 +6286,19 @@ struct ContentView: View {
             if let savedNum = summary.buildNumber {
                 let savedHash = summary.buildGitHash ?? "?"
                 let dirtyTag = (summary.buildGitDirty == true) ? " (dirty)" : ""
-                let savedLine = "Build #\(savedNum) (\(savedHash))\(dirtyTag)"
+                let savedLine = "Trained under app build #\(savedNum) (\(savedHash))\(dirtyTag)"
                 Text(savedLine)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 let mismatch = (savedNum != BuildInfo.buildNumber)
                     || (summary.buildGitHash != nil && summary.buildGitHash != BuildInfo.gitHash)
                 if mismatch {
-                    Text("⚠ Current build is #\(BuildInfo.buildNumber) (\(BuildInfo.gitHash)) — last save used a different version.")
+                    Text("⚠ Current app build is #\(BuildInfo.buildNumber) (\(BuildInfo.gitHash)) — last save used a different version.")
                         .font(.callout)
                         .foregroundStyle(Color.yellow)
                 }
             } else {
-                Text("Build: unknown (saved by an older version)")
+                Text("Trained under app build: unknown (saved by an older version)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -7647,31 +7652,16 @@ struct ContentView: View {
         )
 
         // Wall-clock timing breakdown: per-batcher wait/run vs the
-        // total arena duration. `idle` is the residual that's neither
-        // wait nor run — time the batcher had nothing to do (the
-        // OTHER batcher was busy, or slots were doing CPU-side work
-        // between submissions). Each batcher is independent so the
-        // two `idle` numbers don't sum to anything meaningful;
+        // total arena duration. `other` is the residual that's
+        // neither wait nor run — time the batcher had nothing to do
+        // (the OTHER batcher was busy, or slots were doing CPU-side
+        // work between submissions). Each batcher is independent so
+        // the two `other` numbers don't sum to anything meaningful;
         // they're each "how much of arena wall time was this batcher
         // idle".
-        let arenaWallSec = max(0, Date().timeIntervalSince(arenaStartTime))
-        let arenaWallMs = arenaWallSec * 1000.0
-        emitArenaTimingLine(label: "candidate", suffix: suffix, wallMs: arenaWallMs, stats: candidateTimingStats)
-        emitArenaTimingLine(label: "champion ", suffix: suffix, wallMs: arenaWallMs, stats: championTimingStats)
-
-        // Per-game audit dump. One line per record so the in-memory
-        // bucket totals (whose split-by-side numbers we can't always
-        // verify by eye) can be re-bucketed from raw data after the
-        // fact. Same suffix as the other lines so a non-success
-        // run's records are clearly tagged.
-        for record in recordsBox.snapshot() {
-            SessionLogger.shared.log(
-                "[ARENA-GAMES]\(suffix) gameIndex=\(record.gameIndex) "
-                + "aIsWhite=\(record.aIsWhite) "
-                + "plies=\(record.moveHistory.count) "
-                + "result=\(formatGameResultForLog(record.result))"
-            )
-        }
+        let arenaTotalSec = max(0, Date().timeIntervalSince(arenaStartTime))
+        emitArenaTimingLine(label: "candidate", suffix: suffix, totalSec: arenaTotalSec, stats: candidateTimingStats)
+        emitArenaTimingLine(label: "champion ", suffix: suffix, totalSec: arenaTotalSec, stats: championTimingStats)
 
         if wasCancelled {
             // Partial records under cancellation can be
@@ -7698,49 +7688,32 @@ struct ContentView: View {
         }
     }
 
-    /// Emit one `[ARENA] timing` line for a single batcher. Uses
-    /// `format`-printf style for the float fields so the alignment
-    /// columns line up across candidate / champion lines on a fixed-
-    /// width log reader.
+    /// Emit one `[ARENA] timing` line for a single batcher. Wall /
+    /// wait / run / other render in seconds for readability (arenas
+    /// are typically tens of seconds, ms-formatting buries the
+    /// signal under trailing zeros). Per-batch means stay in ms
+    /// because they're sub-second by nature.
     private func emitArenaTimingLine(
         label: String,
         suffix: String,
-        wallMs: Double,
+        totalSec: Double,
         stats: BatchTimingStats
     ) {
-        let waitMs = stats.totalWaitMs
-        let runMs = stats.totalRunMs
-        let idleMs = max(0, wallMs - waitMs - runMs)
+        let waitSec = stats.totalWaitMs / 1000.0
+        let runSec = stats.totalRunMs / 1000.0
+        let otherSec = max(0, totalSec - waitSec - runSec)
         SessionLogger.shared.log(String(
-            format: "[ARENA] timing       %@%@: wall=%.1fms wait=%.1fms run=%.1fms idle=%.1fms (batches=%d meanWait=%.2fms meanRun=%.2fms)",
+            format: "[ARENA] timing %@%@: total=%.1fs wait=%.1fs run=%.1fs other=%.1fs (batches=%d meanWait=%.2fms meanRun=%.2fms)",
             label,
             suffix,
-            wallMs,
-            waitMs,
-            runMs,
-            idleMs,
+            totalSec,
+            waitSec,
+            runSec,
+            otherSec,
             stats.totalBatches,
             stats.meanWaitMs,
             stats.meanRunMs
         ))
-    }
-
-    /// Compact human-readable form of a `GameResult` for the
-    /// `[ARENA-GAMES]` log lines. Keeps each line short while still
-    /// disambiguating the win-by-side vs the four draw subtypes.
-    private func formatGameResultForLog(_ result: GameResult) -> String {
-        switch result {
-        case .checkmate(let winner):
-            return winner == .white ? "mate(w)" : "mate(b)"
-        case .stalemate:
-            return "stale"
-        case .drawByFiftyMoveRule:
-            return "50mv"
-        case .drawByInsufficientMaterial:
-            return "insuf"
-        case .drawByThreefoldRepetition:
-            return "3fold"
-        }
     }
 
     /// Release arena-active state on an early return from
@@ -10072,6 +10045,10 @@ struct ContentView: View {
                     StatusBarCell(
                         label: "Arenas",
                         value: "\(tournamentHistory.count)"
+                    )
+                    StatusBarCell(
+                        label: "Promotions",
+                        value: "\(tournamentHistory.lazy.filter { $0.promoted }.count)"
                     )
                     scoreStatusBarCell
                 }
