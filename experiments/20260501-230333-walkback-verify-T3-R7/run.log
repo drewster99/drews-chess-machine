@@ -1,0 +1,3 @@
+run_training.sh: launching DrewsChessMachine (limit=1200s, params=experiments/20260501-230333-walkback-verify-T3-R7/parameters.json, out=experiments/20260501-230333-walkback-verify-T3-R7/result.json)
+run_latest.sh: launching /Users/andrew/Library/Developer/Xcode/DerivedData/DrewsChessMachine-eyigcdvyyrcsakaqcybzcfgsurbr/Build/Products/Debug/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine
+run_training.sh: watchdog firing after 1320s, sending SIGTERM

@@ -144,6 +144,103 @@ final class TrainingParameterMacroTests: XCTestCase {
         )
     }
 
+    /// Acronyms (consecutive uppercase letters) must be preserved as a
+    /// single word in the generated snake_case id, not split per-letter.
+    /// `lrWarmupSteps` → `lr_warmup_steps`, NOT `l_r_warmup_steps`.
+    func test_acronymSnakeCasing_leadingAcronym() {
+        assertMacroExpansion(
+            """
+            @TrainingParameter(
+                name: "LR Warmup Steps",
+                description: "Warmup steps.",
+                default: 100,
+                range: 0...100000,
+                category: "Optimizer"
+            )
+            public enum LRWarmupSteps: TrainingParameterKey {}
+            """,
+            expandedSource: """
+            public enum LRWarmupSteps: TrainingParameterKey {
+
+                public static let id: String = "lr_warmup_steps"
+
+                public static let definition: TrainingParameterDefinition = TrainingParameterDefinition(
+                    id: id,
+                    name: "LR Warmup Steps",
+                    description: "Warmup steps.",
+                    type: .int,
+                    defaultValue: .int(100),
+                    intRange: NumericRange(min: 0, max: 100000),
+                    category: "Optimizer",
+                    liveTunable: false
+                )
+
+                public static func encode(_ value: Int) -> ParameterValue {
+                    .int(value)
+                }
+
+                public static func decode(_ value: ParameterValue) throws -> Int {
+                    switch value {
+                    case .int(let x):
+                        return x
+                    case .double(let x):
+                        return Int(x)
+                    default:
+                        throw TrainingConfigError.wrongType(id: id)
+                    }
+                }
+            }
+            """,
+            macros: macros
+        )
+    }
+
+    /// Acronym at the END of the name. `sqrtBatchScalingLR` →
+    /// `sqrt_batch_scaling_lr`, NOT `sqrt_batch_scaling_l_r`.
+    func test_acronymSnakeCasing_trailingAcronym() {
+        assertMacroExpansion(
+            """
+            @TrainingParameter(
+                name: "Sqrt Batch Scaling LR",
+                description: "Scale lr by sqrt(batch).",
+                default: true,
+                category: "Optimizer"
+            )
+            public enum SqrtBatchScalingLR: TrainingParameterKey {}
+            """,
+            expandedSource: """
+            public enum SqrtBatchScalingLR: TrainingParameterKey {
+
+                public static let id: String = "sqrt_batch_scaling_lr"
+
+                public static let definition: TrainingParameterDefinition = TrainingParameterDefinition(
+                    id: id,
+                    name: "Sqrt Batch Scaling LR",
+                    description: "Scale lr by sqrt(batch).",
+                    type: .bool,
+                    defaultValue: .bool(true),
+                    category: "Optimizer",
+                    liveTunable: false
+                )
+
+                public static func encode(_ value: Bool) -> ParameterValue {
+                    .bool(value)
+                }
+
+                public static func decode(_ value: ParameterValue) throws -> Bool {
+                    switch value {
+                    case .bool(let x):
+                        return x
+                    default:
+                        throw TrainingConfigError.wrongType(id: id)
+                    }
+                }
+            }
+            """,
+            macros: macros
+        )
+    }
+
     func test_idOverride() {
         assertMacroExpansion(
             """

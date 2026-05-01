@@ -1413,12 +1413,25 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
 /// `makeNSView` because the view hasn't been inserted into a
 /// window yet. Deferring by one runloop tick lets the parent
 /// finish attaching and gives us a valid window reference.
+///
+/// `onAttached` (optional): fires on the same runloop tick as the
+/// window-pointer assignment. Unlike `.onAppear`, this hook is NOT
+/// gated on the window becoming key / front / visible — it runs as
+/// soon as the SwiftUI view tree is materialized into AppKit. That
+/// makes it the right place to trigger startup work (e.g. the
+/// `--train` headless launch sequence) that doesn't actually need
+/// the window to be visible. Used together with `onAppear` for
+/// concerns that DO need the window to be visible / focused, this
+/// gives us two distinct lifecycle gates: "view tree is ready" vs
+/// "user-visible window is up."
 private struct WindowAccessor: NSViewRepresentable {
     @Binding var window: NSWindow?
+    var onAttached: (() -> Void)? = nil
     func makeNSView(context: Context) -> NSView {
         let v = NSView()
         DispatchQueue.main.async {
             self.window = v.window
+            self.onAttached?()
         }
         return v
     }
@@ -2983,7 +2996,7 @@ struct ContentView: View {
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) { navigateOverlay(-1); return .handled }
         .onKeyPress(.rightArrow) { navigateOverlay(1); return .handled }
-        .background(WindowAccessor(window: $contentWindow))
+        .background(WindowAccessor(window: $contentWindow, onAttached: handleWindowAttached))
         .onAppear { handleBodyOnAppear() }
         .sheet(isPresented: $autoResumeSheetShowing) {
             autoResumeSheetContentView()
@@ -3013,12 +3026,52 @@ struct ContentView: View {
         }
     }
 
-    /// Initial setup that fires once on body's `.onAppear`. Wires the
-    /// menu command hub and seeds every TextField mirror state from
-    /// `trainingParams` so the inputs read the live values rather than
-    /// staying empty until the user touches them. Extracted out of the
-    /// inline `.onAppear` closure so body's modifier chain stays small
-    /// for the type-checker.
+    /// Fires when the SwiftUI view tree is first materialized into
+    /// AppKit (via `WindowAccessor`'s `onAttached`), regardless of
+    /// whether the window has become key / front / visible. This is
+    /// the right hook for headless-mode startup work that doesn't
+    /// require a visible window: under `--train`, `exec`-launched
+    /// processes don't get auto-foregrounded by macOS, so the
+    /// formerly-used `.onAppear` hook can stall indefinitely
+    /// waiting for a user click on the dock icon. Driving from
+    /// `WindowAccessor` decouples headless-mode startup from
+    /// window visibility.
+    ///
+    /// Wires the menu command hub and syncs its mirrored state
+    /// here too so `runAutoTrainLaunchSequence`'s prerequisites
+    /// (e.g. `buildNetwork`'s enable-check state, which depends on
+    /// the hub being live) are met. `handleBodyOnAppear` re-runs
+    /// these calls when the window eventually appears; both are
+    /// idempotent.
+    @MainActor
+    private func handleWindowAttached() {
+        wireMenuCommandHub()
+        syncMenuCommandHubState()
+        // `--train` headless launch sequence. Fired here rather
+        // than from `.onAppear` so it doesn't wait for the window
+        // to become visible. Manual launches without `--train`
+        // never enter this branch — their resume-sheet UX still
+        // runs from `.onAppear` because that's correctly gated on
+        // the window being visible to the user.
+        if autoTrainOnLaunch && !autoTrainFired {
+            autoTrainFired = true
+            runAutoTrainLaunchSequence()
+        }
+    }
+
+    /// Initial setup that fires once on body's `.onAppear` (so it
+    /// is gated on the main window becoming visible/key). Seeds
+    /// every TextField mirror state from `trainingParams` so the
+    /// inputs read the live values rather than staying empty until
+    /// the user touches them, and presents the launch-time
+    /// auto-resume sheet for non-headless launches.
+    ///
+    /// Re-runs `wireMenuCommandHub` / `syncMenuCommandHubState`
+    /// (idempotent) in case `WindowAccessor`'s `onAttached` did
+    /// not fire before this hook for any reason. The headless
+    /// `--train` trigger lives in `handleWindowAttached`, not
+    /// here, because `.onAppear` is window-visibility-gated and
+    /// would stall a backgrounded `exec`-launched process.
     @MainActor
     private func handleBodyOnAppear() {
         wireMenuCommandHub()
@@ -3062,26 +3115,13 @@ struct ContentView: View {
         if arDecayPerPlyEditText.isEmpty {
             arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
         }
-        // Launch-time auto-resume prompt. Deferred until after the
-        // other field seeding above so any sheet presentation doesn't
-        // race with the text-field default population.
-        // `maybePresentAutoResumeSheet` is itself a no-op when no
-        // pointer exists or the target has been deleted — a first-
-        // launch of the app does not surface the sheet at all.
-        //
-        // The `--train` CLI flag short-circuits this entirely: the
-        // user has explicitly asked for a headless-style fresh build
-        // + train + jump-to-candidate-test flow, so we skip the sheet
-        // (requirement #1) and run the automated sequence instead.
-        // The File menu's "Resume Training from Autosave" remains
-        // available if the user changes their mind before training
-        // actually starts.
-        if autoTrainOnLaunch {
-            if !autoTrainFired {
-                autoTrainFired = true
-                runAutoTrainLaunchSequence()
-            }
-        } else {
+        // Resume-sheet UX is correctly gated on the window being
+        // visible — surfacing a sheet on a hidden window would do
+        // nothing useful. Skipped under `--train` because the
+        // headless launch path (`handleWindowAttached`) has
+        // already kicked off training and the sheet would be
+        // confusing on top of an active session.
+        if !autoTrainOnLaunch {
             maybePresentAutoResumeSheet()
         }
     }

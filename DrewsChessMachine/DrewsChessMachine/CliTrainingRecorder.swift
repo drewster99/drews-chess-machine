@@ -150,6 +150,21 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// An unrecoverable error during training tripped the
         /// snapshot-then-exit path. Placeholder for future wiring.
         case error = "error"
+        /// SIGUSR1 received — autotrain's mid-run hard-reject early-stop
+        /// signal. Snapshot is written at the moment the signal lands;
+        /// the run did NOT complete its requested window. Treat as a
+        /// truncated-window run for analysis (full H1–H7 / S1–S5 /
+        /// positive-bands evaluation runs as normal — the data is real).
+        case sigusr1Requested = "SIGUSR1-user-requested"
+        /// SIGHUP received — typically the controlling-tty disconnect
+        /// path on macOS, or `pkill -HUP`. Same truncated-window
+        /// semantics as `sigusr1Requested`.
+        case sighupReceived = "SIGHUP-received"
+        /// AppKit-driven termination (Quit menu, `NSApp.terminate(_:)`,
+        /// AppleScript `quit`, logout/shutdown). Routes through the
+        /// AppDelegate's applicationShouldTerminate/applicationWillTerminate
+        /// flush hooks. Same truncated-window semantics.
+        case appWillTerminate = "app-will-terminate"
     }
 
     struct Snapshot: Encodable, Sendable {

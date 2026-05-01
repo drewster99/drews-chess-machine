@@ -249,14 +249,26 @@ private func stringLiteralValue(_ expr: ExprSyntax) -> String? {
 }
 
 private func snakeCase(from camel: String) -> String {
+    // Snake-case conversion that preserves acronyms as single words.
+    // Insert `_` before an uppercase character only at:
+    //   1) a lower→upper boundary (end of a previous word), OR
+    //   2) an upper→upper→lower boundary (last upper of an acronym
+    //      that introduces a new lowercase-starting word).
+    // Examples: `learningRate`→`learning_rate`, `lrWarmupSteps`→
+    // `lr_warmup_steps`, `sqrtBatchScalingLR`→`sqrt_batch_scaling_lr`,
+    // `parseXMLFile`→`parse_xml_file`, `XMLParser`→`xml_parser`.
+    let chars = Array(camel)
     var result = ""
-    for (i, ch) in camel.enumerated() {
-        if ch.isUppercase {
-            if i > 0 { result.append("_") }
-            result.append(Character(ch.lowercased()))
-        } else {
-            result.append(ch)
+    for i in 0..<chars.count {
+        let ch = chars[i]
+        if ch.isUppercase && i > 0 {
+            let prev = chars[i - 1]
+            let nextIsLower = (i + 1) < chars.count && chars[i + 1].isLowercase
+            if prev.isLowercase || (prev.isUppercase && nextIsLower) {
+                result.append("_")
+            }
         }
+        result.append(Character(ch.lowercased()))
     }
     return result
 }
