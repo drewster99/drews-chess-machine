@@ -1504,7 +1504,7 @@ struct ContentView: View {
     // future change to the SSOT would also be a deliberate change
     // here). Matches the convention used by `effectiveTournamentGames`
     // and the rest of the `effective…` block above.
-    @State private var effectiveArenaConcurrency: Int = 8
+    @State private var effectiveArenaConcurrency: Int = 32
     @State private var effectivePromoteThreshold: Double = 0.55
     @State private var effectiveAutoArenaIntervalSec: Double = 30 * 60
     @State private var effectiveTrainingBatchSize: Int = 4096
@@ -1743,21 +1743,34 @@ struct ContentView: View {
     /// Default number of arena games run concurrently per tournament.
     /// Each game uses two shared `BatchedMoveEvaluationSource` batchers
     /// (one per network) so the GPU sees K-position batches instead of
-    /// K serial single-position calls. 8 is a reasonable compromise
-    /// between keeping the GPU saturated and leaving headroom for the
-    /// concurrent training worker; the value is user-overridable via
-    /// the `effectiveArenaConcurrency` runtime setting (UI Stepper /
+    /// K serial single-position calls. 32 keeps the GPU well-saturated
+    /// without monopolizing it against the concurrent training worker
+    /// — the per-network barrier fires K=32 batches in the early game,
+    /// and the 5 ms coalescing window catches the desynchronized
+    /// steady-state at ~K/2. The value is user-overridable via the
+    /// `effectiveArenaConcurrency` runtime setting (UI Stepper /
     /// session save+load / parameters.json key `arena_concurrency`).
-    nonisolated static let arenaConcurrencyDefault = 8
+    nonisolated static let arenaConcurrencyDefault = 32
+    /// Hard ceiling on `effectiveArenaConcurrency`. Mirrors the
+    /// self-play `absoluteMaxSelfPlayWorkers` pattern: bounds the
+    /// UI Stepper AND clamps values loaded from `parameters.json` /
+    /// `session.json` so a stale or hand-edited file can't push K
+    /// past what the GPU can usefully batch in one fire. 256 is
+    /// well past the per-batch GPU throughput knee on Apple
+    /// Silicon for this network — raising it further wouldn't help
+    /// arena throughput because batches that large stall on memory
+    /// bandwidth before they finish.
+    nonisolated static let absoluteMaxArenaConcurrency: Int = 256
     /// Coalescing-window upper bound (ms) for the arena's per-network
     /// batchers. The barrier fires on either count-met OR window-
     /// elapsed, whichever happens first; the window only kicks in when
     /// games desynchronize and the count barrier alone wouldn't fire.
-    /// 5 ms is small relative to per-ply CPU + GPU time so the
-    /// throughput hit is minor while still allowing partial batches to
-    /// coalesce. Hardcoded for the first iteration; promote to a UI /
-    /// persisted setting only if profiling motivates it.
-    nonisolated static let arenaBatchWaitMs: Double = 5.0
+    /// 15 ms gives close-to-K-sized batches more room to assemble in
+    /// the desynchronized steady-state without making any single slot
+    /// pay too much wall-clock for the coalesce. Hardcoded for now;
+    /// promote to a UI / persisted setting only if profiling motivates
+    /// it.
+    nonisolated static let arenaBatchWaitMs: Double = 15.0
     /// Candidate-score threshold for promotion. The AlphaZero paper's
     /// default. Demands the candidate score at least 110/200 points,
     /// which in a draw-heavy regime translates to winning the large
@@ -2280,6 +2293,15 @@ struct ContentView: View {
     /// pointer the user saw (not whatever the UserDefaults key
     /// might hold if the next save raced in between).
     @State private var autoResumePointer: LastSessionPointer?
+
+    /// Lightweight peek of the target session's `session.json`,
+    /// loaded synchronously when the sheet is presented. Powers
+    /// the rich body lines (started-when, training counters, build
+    /// version mismatch). `nil` either when the sheet isn't up or
+    /// when the peek failed — in the latter case the sheet falls
+    /// back to a minimal pointer-only layout so a corrupt session
+    /// still gets the resume prompt rendered.
+    @State private var autoResumeSummary: SessionResumeSummary?
 
     /// Seconds remaining on the countdown. Ticks down once per
     /// second from `autoResumeCountdownStartSec` while the sheet
@@ -5722,6 +5744,17 @@ struct ContentView: View {
     /// is cheap and keeps this callable from anywhere).
     @MainActor
     private func maybePresentAutoResumeSheet() {
+        // Suppress auto-resume entirely when running under XCTest.
+        // Same env-var signal `DrewsChessMachineApp` already uses to
+        // bypass CLI-flag parsing — set unconditionally by the
+        // xctest runner. Without this guard, a future test that
+        // instantiates `ContentView` would either auto-fire a real
+        // training run 30 s into the test or race the countdown
+        // Task against test teardown.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            SessionLogger.shared.log("[RESUME] Skipping auto-resume sheet — running under XCTest")
+            return
+        }
         guard !realTraining, !autoResumeSheetShowing else { return }
         guard let pointer = LastSessionPointer.read() else {
             SessionLogger.shared.log("[RESUME] No last-session pointer found — skipping auto-resume prompt")
@@ -5735,6 +5768,22 @@ struct ContentView: View {
             return
         }
         autoResumePointer = pointer
+        // Best-effort peek of the session's metadata file so the
+        // sheet can render counters / build info up front. A peek
+        // failure leaves `autoResumeSummary` nil and the sheet
+        // gracefully falls back to the minimal layout — we never
+        // suppress the prompt over a peek failure, since the
+        // primary purpose (offering Resume) is independent of the
+        // metadata.
+        do {
+            autoResumeSummary = try CheckpointManager.peekSessionMetadata(at: pointer.directoryURL)
+        } catch {
+            autoResumeSummary = nil
+            SessionLogger.shared.log(
+                "[RESUME] session.json peek failed for \(pointer.sessionID): "
+                + "\(error.localizedDescription) — sheet will use minimal layout"
+            )
+        }
         autoResumeCountdownRemaining = Self.autoResumeCountdownStartSec
         autoResumeSheetShowing = true
         let savedAgo = max(0, Int(Date().timeIntervalSince1970) - Int(pointer.savedAtUnix))
@@ -5779,6 +5828,7 @@ struct ContentView: View {
         autoResumeCountdownTask?.cancel()
         autoResumeCountdownTask = nil
         autoResumeSheetShowing = false
+        autoResumeSummary = nil
         SessionLogger.shared.log("[RESUME] User dismissed auto-resume sheet")
     }
 
@@ -5976,8 +6026,9 @@ struct ContentView: View {
             effectiveTournamentGames = v
         }
         if let v = cfg.arenaConcurrency, v >= 1 {
-            record("arena_concurrency", effectiveArenaConcurrency, v)
-            effectiveArenaConcurrency = v
+            let clamped = min(Self.absoluteMaxArenaConcurrency, v)
+            record("arena_concurrency", effectiveArenaConcurrency, clamped)
+            effectiveArenaConcurrency = clamped
         }
         if let v = cfg.arenaAutoIntervalSec, v > 0 {
             record("arena_auto_interval_sec", effectiveAutoArenaIntervalSec, v)
@@ -6027,6 +6078,7 @@ struct ContentView: View {
         autoResumeCountdownTask?.cancel()
         autoResumeCountdownTask = nil
         autoResumeSheetShowing = false
+        autoResumeSummary = nil
         autoResumeInFlight = true
         SessionLogger.shared.log(
             "[RESUME] Starting auto-resume of \(pointer.sessionID) from \(pointer.directoryURL.lastPathComponent)"
@@ -6053,25 +6105,47 @@ struct ContentView: View {
         let remaining = autoResumeCountdownRemaining
         let plural = (remaining == 1 ? "" : "s")
         let sessionLine = "Session: \(pointer.sessionID)"
-        let savedLine = "Saved \(agoString) (\(savedAtString)) — trigger: \(pointer.trigger)"
+        let savedLine = "Saved \(agoString) (\(savedAtString))"
         let folderLine = pointer.directoryURL.lastPathComponent
         let countdownLine = "Training will automatically resume in \(remaining) second\(plural)."
         let resumeLabel = "Resume Training (\(remaining))"
-        let content = VStack(alignment: .leading, spacing: 12) {
-            Text("Resume last training session?")
-                .font(.title2)
-                .fontWeight(.semibold)
+
+        let content = VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Resume last training session?")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Spacer()
+                autoResumeTriggerBadge(trigger: pointer.trigger)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 Text(sessionLine)
+                if let summary = autoResumeSummary {
+                    Text(autoResumeStartedLine(sessionStartUnix: summary.sessionStartUnix))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
                 Text(savedLine)
                     .font(.callout)
                     .foregroundStyle(.secondary)
+            }
+            if let summary = autoResumeSummary {
+                autoResumeProgressBlock(summary: summary)
+                autoResumeBuildBlock(summary: summary)
+            }
+            Button(action: {
+                CheckpointManager.revealInFinder(pointer.directoryURL)
+            }) {
                 Text(folderLine)
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
+                    .underline()
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            .buttonStyle(.plain)
+            .pointerStyle(.link)
+            .help("Reveal in Finder")
             Text(countdownLine)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -6088,8 +6162,190 @@ struct ContentView: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 460)
+        .frame(minWidth: 520)
         return AnyView(content)
+    }
+
+    /// Trigger badge — capsule background so `post-promotion` reads
+    /// at a glance instead of getting buried in a comma-separated
+    /// metadata line. The post-promotion case is the load-bearing
+    /// one (it's the trigger that almost always means "the model
+    /// just got better"); manual / periodic still get a badge for
+    /// visual consistency but in muted colors.
+    private func autoResumeTriggerBadge(trigger: String) -> some View {
+        let label: String
+        let bgColor: Color
+        let fgColor: Color
+        switch trigger {
+        case "post-promotion":
+            label = "POST-PROMOTION"
+            bgColor = Color.accentColor
+            fgColor = Color.white
+        case "manual":
+            label = "MANUAL SAVE"
+            bgColor = Color.secondary.opacity(0.18)
+            fgColor = Color.primary
+        case "periodic":
+            label = "PERIODIC AUTOSAVE"
+            bgColor = Color.secondary.opacity(0.18)
+            fgColor = Color.primary
+        default:
+            label = trigger.uppercased()
+            bgColor = Color.secondary.opacity(0.18)
+            fgColor = Color.primary
+        }
+        return Text(label)
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(
+                Capsule().fill(bgColor)
+            )
+            .foregroundStyle(fgColor)
+    }
+
+    /// "Started Apr 30, 2026 at 8:00 AM (10h ago)" line. Rendered
+    /// only when the session.json peek succeeded — without the
+    /// session-start timestamp the line would be empty noise.
+    private func autoResumeStartedLine(sessionStartUnix: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(sessionStartUnix))
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        let absolute = f.string(from: date)
+        let ago = autoResumeRelativeAgoString(savedAtUnix: sessionStartUnix)
+        return "Started \(absolute) (\(ago))"
+    }
+
+    /// Training-progress block — steps, positions, self-play game
+    /// count, arena/promotion counts, and active wall-clock time.
+    /// All numbers grouped (12,345) and the rare-but-useful column
+    /// alignment is achieved via `monospacedDigit()` on the values
+    /// so the user can scan vertically. Two columns: label / value.
+    @ViewBuilder
+    private func autoResumeProgressBlock(summary: SessionResumeSummary) -> some View {
+        let stepsStr = autoResumeFormatCount(summary.trainingSteps)
+        let positionsStr = autoResumeFormatCount(summary.trainingPositionsSeen)
+        let gamesStr = autoResumeFormatCount(summary.selfPlayGames)
+        let movesStr = autoResumeFormatCount(summary.selfPlayMoves)
+        let promoPct: String = {
+            guard summary.arenaCount > 0 else { return "—" }
+            let pct = Double(summary.promotionCount) / Double(summary.arenaCount) * 100.0
+            return String(format: "%.0f%%", pct)
+        }()
+        let arenasStr = autoResumeFormatCount(summary.arenaCount)
+        let promotionsStr = "\(autoResumeFormatCount(summary.promotionCount)) (\(promoPct))"
+        let activeStr = autoResumeFormatActiveDuration(summary.elapsedTrainingSec)
+
+        VStack(alignment: .leading, spacing: 2) {
+            autoResumeStatRow(label: "Training", value: "\(stepsStr) steps · \(positionsStr) positions")
+            autoResumeStatRow(label: "Self-play", value: "\(gamesStr) games · \(movesStr) moves")
+            autoResumeStatRow(label: "Arenas", value: arenasStr)
+            autoResumeStatRow(label: "Promotions", value: promotionsStr)
+            autoResumeStatRow(label: "Active", value: activeStr)
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.secondary.opacity(0.08))
+        )
+    }
+
+    @ViewBuilder
+    private func autoResumeStatRow(label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(width: 76, alignment: .leading)
+            Text(value)
+                .font(.callout)
+                .monospacedDigit()
+        }
+    }
+
+    /// Build line + version-mismatch callout. Compares the
+    /// persisted `buildNumber` and `buildGitHash` against the
+    /// current `BuildInfo` constants; on mismatch (either field)
+    /// surfaces a yellow warning with the current build's number
+    /// and short hash, so the user knows resume is straddling a
+    /// code-version boundary. `buildGitDirty == true` on the saved
+    /// build appends a `(dirty)` marker. A session predating the
+    /// build-info schema (`buildNumber == nil`) renders as
+    /// "Build: unknown" with no warning.
+    @ViewBuilder
+    private func autoResumeBuildBlock(summary: SessionResumeSummary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let savedNum = summary.buildNumber {
+                let savedHash = summary.buildGitHash ?? "?"
+                let dirtyTag = (summary.buildGitDirty == true) ? " (dirty)" : ""
+                let savedLine = "Build #\(savedNum) (\(savedHash))\(dirtyTag)"
+                Text(savedLine)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                let mismatch = (savedNum != BuildInfo.buildNumber)
+                    || (summary.buildGitHash != nil && summary.buildGitHash != BuildInfo.gitHash)
+                if mismatch {
+                    Text("⚠ Current build is #\(BuildInfo.buildNumber) (\(BuildInfo.gitHash)) — last save used a different version.")
+                        .font(.callout)
+                        .foregroundStyle(Color.yellow)
+                }
+            } else {
+                Text("Build: unknown (saved by an older version)")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Group-3 thousands separator using a cached static formatter.
+    /// Unlike a one-off `NumberFormatter()` per call this avoids the
+    /// non-trivial allocation cost on every sheet re-render while
+    /// the countdown ticks.
+    private static let groupedNumberFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.groupingSeparator = ","
+        return f
+    }()
+
+    /// Compact-count formatter for the resume sheet. Below 1M the
+    /// number renders with thousands separators (`12,926`); 1M
+    /// and up abbreviates with one decimal place so close values
+    /// rendering identically (e.g. two ~4.1M counters from the
+    /// replay-ratio controller doing its job) is the user's signal
+    /// to look at the underlying log for exact figures.
+    private func autoResumeFormatCount(_ value: Int) -> String {
+        let absVal = abs(value)
+        if absVal >= 1_000_000_000 {
+            let scaled = Double(value) / 1_000_000_000.0
+            return String(format: "%.1fB", scaled)
+        }
+        if absVal >= 1_000_000 {
+            let scaled = Double(value) / 1_000_000.0
+            return String(format: "%.1fM", scaled)
+        }
+        return Self.groupedNumberFormatter.string(from: NSNumber(value: value))
+            ?? String(value)
+    }
+
+    /// Active-training duration as `Hh Mm` (or `Mm Ss` for short
+    /// runs). Uses `elapsedTrainingSec` from the session, which
+    /// already excludes idle stretches per the field's doc-comment.
+    private func autoResumeFormatActiveDuration(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 {
+            return "\(hours)h \(minutes)m"
+        }
+        if minutes > 0 {
+            return "\(minutes)m \(secs)s"
+        }
+        return "\(secs)s"
     }
 
     /// Human-friendly "N minutes ago" string for the sheet body.
@@ -6799,11 +7055,15 @@ struct ContentView: View {
         let liveK = max(1, min(effectiveArenaConcurrency, totalGames))
         let candidateBatcher = BatchedMoveEvaluationSource(
             network: candidateInference,
-            maxBatchWaitMs: Self.arenaBatchWaitMs
+            maxBatchWaitMs: Self.arenaBatchWaitMs,
+            name: "candidate",
+            logBatchTimings: true
         )
         let championBatcher = BatchedMoveEvaluationSource(
             network: arenaChampion,
-            maxBatchWaitMs: Self.arenaBatchWaitMs
+            maxBatchWaitMs: Self.arenaBatchWaitMs,
+            name: "champion",
+            logBatchTimings: true
         )
         await candidateBatcher.setExpectedSlotCount(liveK)
         await championBatcher.setExpectedSlotCount(liveK)
@@ -6904,6 +7164,7 @@ struct ContentView: View {
                 recordsBox: recordsBox,
                 wasCancelled: cancelBox.isCancelled || overrideBox.isActive,
                 context: "after error",
+                arenaStartTime: startTime,
                 trainingBox: trainingBox
             )
             trainingBox?.recordError("Arena tournament failed: \(error.localizedDescription)")
@@ -6924,6 +7185,7 @@ struct ContentView: View {
             recordsBox: recordsBox,
             wasCancelled: cancelBox.isCancelled || overrideBox.isActive,
             context: nil,
+            arenaStartTime: startTime,
             trainingBox: trainingBox
         )
 
@@ -7369,17 +7631,47 @@ struct ContentView: View {
         recordsBox: TournamentRecordsBox,
         wasCancelled: Bool,
         context: String?,
+        arenaStartTime: Date,
         trainingBox: TrainingLiveStatsBox?
     ) async {
         let suffix = context.map { " (\($0))" } ?? ""
         let candidateBatchStats = await candidateBatcher.snapshotBatchSizeStats()
         let championBatchStats = await championBatcher.snapshotBatchSizeStats()
+        let candidateTimingStats = await candidateBatcher.snapshotBatchTimingStats()
+        let championTimingStats = await championBatcher.snapshotBatchTimingStats()
         SessionLogger.shared.log(
             "[ARENA] batch sizes  candidate\(suffix): \(candidateBatchStats.formatLogLine())"
         )
         SessionLogger.shared.log(
             "[ARENA] batch sizes  champion \(suffix): \(championBatchStats.formatLogLine())"
         )
+
+        // Wall-clock timing breakdown: per-batcher wait/run vs the
+        // total arena duration. `idle` is the residual that's neither
+        // wait nor run — time the batcher had nothing to do (the
+        // OTHER batcher was busy, or slots were doing CPU-side work
+        // between submissions). Each batcher is independent so the
+        // two `idle` numbers don't sum to anything meaningful;
+        // they're each "how much of arena wall time was this batcher
+        // idle".
+        let arenaWallSec = max(0, Date().timeIntervalSince(arenaStartTime))
+        let arenaWallMs = arenaWallSec * 1000.0
+        emitArenaTimingLine(label: "candidate", suffix: suffix, wallMs: arenaWallMs, stats: candidateTimingStats)
+        emitArenaTimingLine(label: "champion ", suffix: suffix, wallMs: arenaWallMs, stats: championTimingStats)
+
+        // Per-game audit dump. One line per record so the in-memory
+        // bucket totals (whose split-by-side numbers we can't always
+        // verify by eye) can be re-bucketed from raw data after the
+        // fact. Same suffix as the other lines so a non-success
+        // run's records are clearly tagged.
+        for record in recordsBox.snapshot() {
+            SessionLogger.shared.log(
+                "[ARENA-GAMES]\(suffix) gameIndex=\(record.gameIndex) "
+                + "aIsWhite=\(record.aIsWhite) "
+                + "plies=\(record.moveHistory.count) "
+                + "result=\(formatGameResultForLog(record.result))"
+            )
+        }
 
         if wasCancelled {
             // Partial records under cancellation can be
@@ -7403,6 +7695,51 @@ struct ContentView: View {
                 "[ARENA] validation FAILED\(suffix): \(detail)"
             )
             trainingBox?.recordError("Arena validation failed: \(detail)")
+        }
+    }
+
+    /// Emit one `[ARENA] timing` line for a single batcher. Uses
+    /// `format`-printf style for the float fields so the alignment
+    /// columns line up across candidate / champion lines on a fixed-
+    /// width log reader.
+    private func emitArenaTimingLine(
+        label: String,
+        suffix: String,
+        wallMs: Double,
+        stats: BatchTimingStats
+    ) {
+        let waitMs = stats.totalWaitMs
+        let runMs = stats.totalRunMs
+        let idleMs = max(0, wallMs - waitMs - runMs)
+        SessionLogger.shared.log(String(
+            format: "[ARENA] timing       %@%@: wall=%.1fms wait=%.1fms run=%.1fms idle=%.1fms (batches=%d meanWait=%.2fms meanRun=%.2fms)",
+            label,
+            suffix,
+            wallMs,
+            waitMs,
+            runMs,
+            idleMs,
+            stats.totalBatches,
+            stats.meanWaitMs,
+            stats.meanRunMs
+        ))
+    }
+
+    /// Compact human-readable form of a `GameResult` for the
+    /// `[ARENA-GAMES]` log lines. Keeps each line short while still
+    /// disambiguating the win-by-side vs the four draw subtypes.
+    private func formatGameResultForLog(_ result: GameResult) -> String {
+        switch result {
+        case .checkmate(let winner):
+            return winner == .white ? "mate(w)" : "mate(b)"
+        case .stalemate:
+            return "stale"
+        case .drawByFiftyMoveRule:
+            return "50mv"
+        case .drawByInsufficientMaterial:
+            return "insuf"
+        case .drawByThreefoldRepetition:
+            return "3fold"
         }
     }
 
@@ -8080,10 +8417,11 @@ struct ContentView: View {
                     effectiveAutoArenaIntervalSec = v
                 }
                 if let v = rs.arenaConcurrency, v >= 1 {
+                    let clamped = min(Self.absoluteMaxArenaConcurrency, v)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] arena_concurrency: \(effectiveArenaConcurrency) -> \(v) (from session)"
+                        "[RESUME-PARAM] arena_concurrency: \(effectiveArenaConcurrency) -> \(clamped) (from session)"
                     )
-                    effectiveArenaConcurrency = v
+                    effectiveArenaConcurrency = clamped
                 }
                 if let v = rs.candidateProbeIntervalSec, v > 0 {
                     SessionLogger.shared.log(
@@ -9750,11 +10088,11 @@ struct ContentView: View {
                     Text("\(effectiveArenaConcurrency)")
                         .font(.callout)
                         .monospacedDigit()
-                        .frame(minWidth: 18, alignment: .trailing)
+                        .frame(minWidth: 32, alignment: .trailing)
                     Stepper(
                         "Arena concurrency",
                         value: $effectiveArenaConcurrency,
-                        in: 1...16
+                        in: 1...Self.absoluteMaxArenaConcurrency
                     )
                     .labelsHidden()
                     .controlSize(.small)

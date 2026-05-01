@@ -52,6 +52,38 @@ struct BatchSizeStats: Sendable {
     }
 }
 
+/// Wall-clock timing accumulators for one `BatchedMoveEvaluationSource`,
+/// snapshotted at end-of-arena. `wait` is the cumulative time the batcher
+/// spent in coalescing windows — measured from the moment `pending` first
+/// became non-empty in a cycle to the moment `fireBatch` actually started
+/// processing it. `run` is the cumulative time inside the underlying
+/// `network.evaluate(batchBoards:count:)` call. Anything outside those
+/// two windows but inside the arena's wall time is "idle" — the batcher
+/// had nothing pending (e.g. the OTHER batcher was running, or slots
+/// were doing CPU-side legality + sampling work).
+///
+/// The arena callsite computes `idle = max(0, wallNs - waitNs - runNs)`
+/// when emitting the end-of-arena timing summary; it isn't stored here
+/// because the wall-time anchor is owned by the caller, not the batcher.
+struct BatchTimingStats: Sendable {
+    let totalBatches: Int
+    let totalWaitNanos: UInt64
+    let totalRunNanos: UInt64
+
+    static let empty = BatchTimingStats(
+        totalBatches: 0, totalWaitNanos: 0, totalRunNanos: 0
+    )
+
+    var totalWaitMs: Double { Double(totalWaitNanos) / 1_000_000.0 }
+    var totalRunMs: Double { Double(totalRunNanos) / 1_000_000.0 }
+    var meanWaitMs: Double {
+        totalBatches > 0 ? totalWaitMs / Double(totalBatches) : 0
+    }
+    var meanRunMs: Double {
+        totalBatches > 0 ? totalRunMs / Double(totalBatches) : 0
+    }
+}
+
 /// Barrier-style batcher for chess inference.
 ///
 /// **Self-play mode** (the original use): N `ChessMachine.runGameLoop`
@@ -119,6 +151,18 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// self-play does not.
     let maxBatchWaitMs: Double
 
+    /// Human-readable label used in per-batch debug log lines (e.g.
+    /// "candidate" / "champion" so the arena's log stream can be
+    /// disambiguated by network). Empty string suppresses the name
+    /// from the log; ignored entirely when `logBatchTimings` is false.
+    let name: String
+
+    /// When `true`, every successful `fireBatch` emits a single
+    /// `[ARENA-BATCH]` line carrying batch size, this-batch wait/run
+    /// ms, and running averages. False for self-play (the line cadence
+    /// would dominate the log file at 8+ workers × ~ms-per-ply).
+    let logBatchTimings: Bool
+
     /// Number of live slots the driver expects to submit per barrier
     /// cycle. The barrier fires as soon as `pending.count` reaches this
     /// value. Set to 0 while the driver has no active slots (during
@@ -147,6 +191,20 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     private var batchSizeTotalBatches: Int = 0
     private var batchSizeMin: Int = .max
     private var batchSizeMax: Int = 0
+
+    /// Wall-clock timing accumulators, paired with the size histogram
+    /// above. `batchPendingStartedNanos` records the `DispatchTime`
+    /// at which `pending` last transitioned 0 → 1 in the current
+    /// cycle; `fireBatch` reads it on entry to compute that cycle's
+    /// wait window, then resets it. 0 means "no current cycle" (the
+    /// pending queue is empty or a fire just consumed it). The wait
+    /// window includes both the deliberate coalescing wait (if any)
+    /// AND the small async-hop latency between `scheduleBatchFireIfNeeded`
+    /// returning and the dispatched `Task` actually entering `fireBatch`,
+    /// which is the right thing to measure from a slot's perspective.
+    private var batchTotalWaitNanos: UInt64 = 0
+    private var batchTotalRunNanos: UInt64 = 0
+    private var batchPendingStartedNanos: UInt64 = 0
 
     /// Optional replay-ratio controller. When set, the batcher reports
     /// a `recordSelfPlayBarrierTick` event after each successful
@@ -212,9 +270,16 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
 
     // MARK: - Init
 
-    init(network: ChessMPSNetwork, maxBatchWaitMs: Double = 0) {
+    init(
+        network: ChessMPSNetwork,
+        maxBatchWaitMs: Double = 0,
+        name: String = "",
+        logBatchTimings: Bool = false
+    ) {
         self.network = network
         self.maxBatchWaitMs = max(0, maxBatchWaitMs)
+        self.name = name
+        self.logBatchTimings = logBatchTimings
     }
 
     // MARK: - Slot-Count Coordination
@@ -281,6 +346,17 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         )
     }
 
+    /// Snapshot the cumulative wait/run timing accumulators. Companion
+    /// to `snapshotBatchSizeStats`; arena code reads both at end-of-
+    /// run to log batch-size distribution AND wall-clock attribution.
+    func snapshotBatchTimingStats() -> BatchTimingStats {
+        return BatchTimingStats(
+            totalBatches: batchSizeTotalBatches,
+            totalWaitNanos: batchTotalWaitNanos,
+            totalRunNanos: batchTotalRunNanos
+        )
+    }
+
     /// Install the replay-ratio controller. Called once at session
     /// start, after the controller is built. A nil assignment
     /// disables tick reporting — the batcher otherwise has no
@@ -319,6 +395,16 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
                     boardCopy: encodedBoard,
                     continuation: continuation
                 ))
+                // Mark the start of a wait window on the 0→1 pending
+                // transition. `fireBatch` reads this and computes
+                // `now - startedNanos` as the cycle's wait time. Set
+                // even when count-only fires (no timer arm) — we
+                // still want to attribute the small async-hop latency
+                // between `scheduleBatchFireIfNeeded` returning and
+                // the dispatched `Task` actually entering `fireBatch`.
+                if wasEmpty {
+                    batchPendingStartedNanos = DispatchTime.now().uptimeNanoseconds
+                }
                 // Fire when:
                 // - Normal barrier mode (`expectedSlotCount > 0`)
                 //   and the barrier threshold is met.
@@ -363,12 +449,26 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// Called from the cancellation handler in `evaluate`. A no-op if
     /// the entry is not found — that just means `fireBatch` already
     /// claimed and resumed it before this handler reached the actor.
+    ///
+    /// If this cancellation empties the pending queue, bump the
+    /// coalescing-timer generation and clear the wait-window stamp
+    /// so the now-defunct cycle's state can't pollute the next one:
+    /// a sleeping timer for the prior generation will no-op on wake,
+    /// and the next 0→1 transition records a fresh wait start. This
+    /// also prevents a `fireBatch` Task that was already dispatched
+    /// (count-met or timer-met just before the cancel) from spending
+    /// the cycle's accumulated wait on what will be an empty batch.
     private func cancelPending(token: UUID) {
         guard let idx = pending.firstIndex(where: { $0.token == token }) else {
             return
         }
         let item = pending.remove(at: idx)
         item.continuation.resume(throwing: CancellationError())
+
+        if pending.isEmpty {
+            batchWaitGeneration &+= 1
+            batchPendingStartedNanos = 0
+        }
     }
 
     private func scheduleBatchFireIfNeeded() {
@@ -420,11 +520,36 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         let batch = pending
         pending.removeAll(keepingCapacity: true)
         batchFireScheduled = false
-        // fireBatch is only invoked from paths that have already
-        // checked `pending.count >= expectedSlotCount > 0`, so an
-        // empty batch here would indicate a bookkeeping bug rather
-        // than a condition to silently tolerate.
-        precondition(!batch.isEmpty, "BatchedMoveEvaluationSource.fireBatch invoked with empty pending queue")
+
+        // Cancellation race: between `scheduleBatchFireIfNeeded`
+        // setting `batchFireScheduled = true` (and dispatching this
+        // Task) and this Task actually entering the actor,
+        // `cancelPending` may have removed the only pending entry.
+        // We land here with an empty batch — not a bug, just a race
+        // we have to tolerate. The cancelled slot has already been
+        // resumed-with-error by `cancelPending`, and `cancelPending`
+        // also bumped `batchWaitGeneration` and cleared
+        // `batchPendingStartedNanos`, so there's nothing to do here:
+        // no continuations to resume, no telemetry to record (we
+        // shouldn't attribute wait time to a cycle that produced no
+        // batch), no fire to schedule. Just return.
+        guard !batch.isEmpty else {
+            return
+        }
+
+        // Close the wait window and accumulate. We measure wait at
+        // fireBatch entry rather than after the await so the wait
+        // window terminates the moment the batcher starts owning the
+        // batch — even before the GPU call begins. Done after the
+        // empty-batch guard so we never attribute wait time to a
+        // cycle that didn't produce a batch.
+        let fireStartedNanos = DispatchTime.now().uptimeNanoseconds
+        var thisWaitNanos: UInt64 = 0
+        if batchPendingStartedNanos > 0, fireStartedNanos > batchPendingStartedNanos {
+            thisWaitNanos = fireStartedNanos - batchPendingStartedNanos
+            batchTotalWaitNanos &+= thisWaitNanos
+        }
+        batchPendingStartedNanos = 0
 
         let count = batch.count
         let totalFloats = count * Self.boardFloats
@@ -461,10 +586,17 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             // stored property — the first mutating access there would
             // uniquify a fresh buffer, leaving the one captured by the
             // in-flight `network.evaluate` call untouched.
+            let runStartedNanos = DispatchTime.now().uptimeNanoseconds
             let (policy, values) = try await network.evaluate(
                 batchBoards: packBuffer,
                 count: count
             )
+            let runFinishedNanos = DispatchTime.now().uptimeNanoseconds
+            let thisRunNanos: UInt64 = runFinishedNanos > runStartedNanos
+                ? runFinishedNanos - runStartedNanos
+                : 0
+            batchTotalRunNanos &+= thisRunNanos
+
             guard policy.count == count * Self.policySize else {
                 throw BatchedMoveEvaluationSourceError.batchResultShapeMismatch(
                     expected: count * Self.policySize, got: policy.count
@@ -485,6 +617,32 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             batchSizeTotalPositions += count
             if count < batchSizeMin { batchSizeMin = count }
             if count > batchSizeMax { batchSizeMax = count }
+
+            // Per-batch debug line for arena (gated). Emitting every
+            // fire would flood self-play logs (8+ workers × ~ms-per-
+            // ply × hours), so this is opt-in via the `logBatchTimings`
+            // flag set by the arena callsite.
+            if logBatchTimings {
+                let thisRunMs = Double(thisRunNanos) / 1_000_000.0
+                let thisWaitMs = Double(thisWaitNanos) / 1_000_000.0
+                let avgRunMs = batchSizeTotalBatches > 0
+                    ? Double(batchTotalRunNanos) / 1_000_000.0 / Double(batchSizeTotalBatches)
+                    : 0
+                let avgWaitMs = batchSizeTotalBatches > 0
+                    ? Double(batchTotalWaitNanos) / 1_000_000.0 / Double(batchSizeTotalBatches)
+                    : 0
+                let label = name.isEmpty ? "" : " \(name)"
+                SessionLogger.shared.log(String(
+                    format: "[ARENA-BATCH]%@ #%d size=%d wait=%.1fms run=%.1fms avgWait=%.1fms avgRun=%.1fms",
+                    label,
+                    batchSizeTotalBatches,
+                    count,
+                    thisWaitMs,
+                    thisRunMs,
+                    avgWaitMs,
+                    avgRunMs
+                ))
+            }
 
             #if DEBUG
             runBatchCorrectnessCheckIfNeeded(batch: batch, policy: policy, values: values)

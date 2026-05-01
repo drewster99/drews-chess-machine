@@ -204,6 +204,53 @@ struct LoadedSession {
     let replayBufferURL: URL?
 }
 
+/// Lightweight, weights-free projection of a `SessionCheckpointState`
+/// — exactly the fields the auto-resume sheet wants to surface up
+/// front: when training started, what was saved, how much progress
+/// has accumulated, and which build produced the save. Built from
+/// the session's `session.json` alone so the resume prompt can
+/// render rich context without paying the cost of loading either
+/// `.dcmmodel` or the replay buffer.
+///
+/// `arenaCount` and `promotionCount` are derived from
+/// `state.arenaHistory` so the sheet doesn't need to redo the same
+/// reduction at every render.
+struct SessionResumeSummary: Sendable, Equatable {
+    let sessionID: String
+    let sessionStartUnix: Int64
+    let savedAtUnix: Int64
+    let elapsedTrainingSec: Double
+    let trainingSteps: Int
+    let trainingPositionsSeen: Int
+    let selfPlayGames: Int
+    let selfPlayMoves: Int
+    let replayBufferTotalPositionsAdded: Int?
+    let arenaCount: Int
+    let promotionCount: Int
+    let buildNumber: Int?
+    let buildGitHash: String?
+    let buildGitDirty: Bool?
+    let buildTimestamp: String?
+
+    init(state: SessionCheckpointState) {
+        self.sessionID = state.sessionID
+        self.sessionStartUnix = state.sessionStartUnix
+        self.savedAtUnix = state.savedAtUnix
+        self.elapsedTrainingSec = state.elapsedTrainingSec
+        self.trainingSteps = state.trainingSteps
+        self.trainingPositionsSeen = state.trainingPositionsSeen
+        self.selfPlayGames = state.selfPlayGames
+        self.selfPlayMoves = state.selfPlayMoves
+        self.replayBufferTotalPositionsAdded = state.replayBufferTotalPositionsAdded
+        self.arenaCount = state.arenaHistory.count
+        self.promotionCount = state.arenaHistory.lazy.filter { $0.promoted }.count
+        self.buildNumber = state.buildNumber
+        self.buildGitHash = state.buildGitHash
+        self.buildGitDirty = state.buildGitDirty
+        self.buildTimestamp = state.buildTimestamp
+    }
+}
+
 // MARK: - Save / Load / Verify
 
 /// Top-level save and load orchestration. Every save runs the full
@@ -627,6 +674,31 @@ enum CheckpointManager {
             throw CheckpointManagerError.readFailed(url, error)
         }
         return try ModelCheckpointFile.decode(data)
+    }
+
+    /// Read just `session.json` from a `.dcmsession` directory and
+    /// return a lightweight `SessionResumeSummary`. Skips the two
+    /// `.dcmmodel` weight files entirely — this is the fast path
+    /// the auto-resume sheet uses to populate the prompt with live
+    /// counters and build info before the user has decided whether
+    /// to actually resume. A few KB of JSON, no Metal allocation,
+    /// no replay-buffer rehydration.
+    ///
+    /// Throws `SessionCheckpointError.missingSessionJSON` if the
+    /// state file is absent (callers fall back to a minimal sheet
+    /// in that case rather than blocking the prompt). Other
+    /// decode failures bubble through with their underlying
+    /// `SessionCheckpointError.invalidJSON` payload so a corrupted
+    /// pointer-target gets a useful log line.
+    static func peekSessionMetadata(at directoryURL: URL) throws -> SessionResumeSummary {
+        let normalizedDir = URL(fileURLWithPath: directoryURL.path, isDirectory: true)
+        let stateURL = SessionCheckpointLayout.stateURL(in: normalizedDir)
+        guard FileManager.default.fileExists(atPath: stateURL.path) else {
+            throw SessionCheckpointError.missingSessionJSON
+        }
+        let stateData = try Data(contentsOf: stateURL)
+        let state = try SessionCheckpointState.decode(stateData)
+        return SessionResumeSummary(state: state)
     }
 
     /// Parse a `.dcmsession` directory from disk. Reads all three
