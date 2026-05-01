@@ -65,10 +65,90 @@ struct TournamentStats: Sendable {
     }
 }
 
+/// One completed game's worth of data harvested by a slot task and
+/// merged by the parent task. Includes the captured `moveHistory`
+/// so the post-arena validity sweep can replay every game through
+/// a fresh engine.
+struct TournamentGameRecord: Sendable {
+    let gameIndex: Int
+    let aIsWhite: Bool
+    let result: GameResult
+    let moveHistory: [ChessMove]
+}
+
+/// Outcome of a post-tournament validity sweep — replays every
+/// captured game through a fresh `ChessGameEngine` and verifies
+/// that each move was legal in the position that preceded it.
+///
+/// This is a belt-and-suspenders check intended specifically to
+/// catch the hypothetical "batched evaluation handed game A's
+/// policy to game B" failure mode under concurrent arena play.
+/// Each `ChessMachine.applyMove` already validates legality at
+/// apply time, so a successful sweep is mostly confirmation that
+/// the captured `moveHistory` is internally consistent. A failure
+/// here would point at either the batcher cross-talk hypothesis
+/// or a regression in `ChessMachine`'s legality plumbing.
+struct TournamentValidityReport: Sendable {
+    let gamesChecked: Int
+    let totalMovesChecked: Int
+    /// Index into the source records array of the first game that
+    /// failed validation (if any). Nil = all games passed.
+    let firstFailingRecordIndex: Int?
+    let failureDescription: String?
+
+    var passed: Bool { firstFailingRecordIndex == nil }
+}
+
+/// Replay every record's `moveHistory` through a fresh engine.
+/// Cheap (a few legal-move generations per move) and catches the
+/// "batching cross-talk" failure mode by surfacing any move that
+/// isn't legal in its preceding position. Stops at the first
+/// failing game so the report can carry diagnostic detail without
+/// running the entire batch on a known-broken run.
+func validateTournamentRecords(_ records: [TournamentGameRecord]) -> TournamentValidityReport {
+    var totalMoves = 0
+    for (idx, record) in records.enumerated() {
+        let engine = ChessGameEngine()
+        for (ply, move) in record.moveHistory.enumerated() {
+            do {
+                _ = try engine.applyMoveAndAdvance(move)
+                totalMoves += 1
+            } catch {
+                let detail = "game gameIndex=\(record.gameIndex) ply=\(ply) move=\(move): \(error)"
+                return TournamentValidityReport(
+                    gamesChecked: idx + 1,
+                    totalMovesChecked: totalMoves,
+                    firstFailingRecordIndex: idx,
+                    failureDescription: detail
+                )
+            }
+        }
+    }
+    return TournamentValidityReport(
+        gamesChecked: records.count,
+        totalMovesChecked: totalMoves,
+        firstFailingRecordIndex: nil,
+        failureDescription: nil
+    )
+}
+
 // MARK: - Tournament Driver
 
 /// Plays a series of games between two player factories, alternating colors,
 /// and collects statistics and training data.
+///
+/// `concurrency` controls how many games run in parallel. K=1 runs
+/// games sequentially (one slot task at a time). K>1 runs K games
+/// concurrently using `withThrowingTaskGroup`; each slot task pulls
+/// the next gameIndex from the parent's serial counter, runs one
+/// `ChessMachine.beginNewGame`, and returns a `TournamentGameRecord`.
+/// The parent task tallies serially as records arrive — there is no
+/// shared mutable state across slot tasks, no lock anywhere.
+///
+/// Color alternation by `gameIndex % 2` is preserved across all K:
+/// the parent assigns the index at spawn time before adding the slot
+/// task, so even with K games completing out of order the full set
+/// of N games still produces an even white/black split for player A.
 ///
 /// Usage:
 /// ```
@@ -77,12 +157,12 @@ struct TournamentStats: Sendable {
 /// let stats = try await driver.run(
 ///     playerA: { MPSChessPlayer(name: "Net", source: DirectMoveEvaluationSource(network: network)) },
 ///     playerB: { RandomPlayer() },
-///     games: 100
+///     games: 100,
+///     concurrency: 1
 /// )
 /// print("Net wins: \(stats.playerAWins), Random wins: \(stats.playerBWins)")
 /// ```
 final class TournamentDriver {
-    weak var delegate: (any ChessMachineDelegate)?
 
     /// Run a tournament of N games between two player factories.
     ///
@@ -99,93 +179,166 @@ final class TournamentDriver {
     ///   - playerA: Factory creating player A for each game.
     ///   - playerB: Factory creating player B for each game.
     ///   - games: Total number of games to play.
-    ///   - onGameCompleted: Optional callback invoked after each finished
-    ///     game with the running totals `(gameIndex, aWins, bWins,
-    ///     draws)` (gameIndex is 1-based — "games completed so far").
-    ///     Used by the arena-evaluation caller to push live progress
-    ///     into a lock-protected box the UI heartbeat polls.
-    /// - Returns: Aggregated win/loss/draw statistics.
+    ///   - concurrency: Number of slot tasks running games in parallel.
+    ///     Clamped to `[1, games]`.
+    ///   - diversityTracker: Optional rolling-window tracker; each
+    ///     completed game's move list is fed in serially from the
+    ///     parent task as records arrive.
+    ///   - isCancelled: Optional flag the driver checks between record
+    ///     harvests; on a positive return the driver stops spawning
+    ///     new games and the loop exits as in-flight slots return.
+    ///   - onGameCompleted: Optional callback invoked from the parent
+    ///     task after each finished game with `(completedSoFar, aWins,
+    ///     bWins, draws)`. The first argument is the count of games
+    ///     completed up to and including this one (1-based).
+    ///   - onSlotExited: Optional async callback invoked from inside
+    ///     each slot task right before it returns its game record.
+    ///     Used by the parallel-arena callsite to decrement each
+    ///     batcher's `expectedSlotCount` as games finish so the
+    ///     count barrier remains achievable.
+    /// - Returns: Aggregated win/loss/draw statistics. Per-game
+    ///   records (used by callers that want to run post-tournament
+    ///   checks) flow out via the `onGameRecorded` callback, fired
+    ///   serially from the parent harvest loop as each slot returns.
     /// - Throws: Any non-cancellation error raised while running a game.
     func run(
-        playerA: @Sendable () -> any ChessPlayer,
-        playerB: @Sendable () -> any ChessPlayer,
+        playerA: @escaping @Sendable () -> any ChessPlayer,
+        playerB: @escaping @Sendable () -> any ChessPlayer,
         games: Int,
+        concurrency: Int = 1,
         diversityTracker: GameDiversityTracker? = nil,
         isCancelled: (@Sendable () -> Bool)? = nil,
-        onGameCompleted: (@Sendable (Int, Int, Int, Int) -> Void)? = nil
+        onGameCompleted: (@Sendable (Int, Int, Int, Int) -> Void)? = nil,
+        onSlotExited: (@Sendable () async -> Void)? = nil,
+        onGameRecorded: (@Sendable (TournamentGameRecord) -> Void)? = nil
     ) async throws -> TournamentStats {
+        let effectiveConcurrency = max(1, min(concurrency, games))
+
+        // Parent-task accumulators. None of these are shared across
+        // slot tasks — slot tasks return values, the parent merges
+        // them serially as each `group.next()` resolves. No lock,
+        // no actor, no DispatchQueue.
         var aWins = 0
         var bWins = 0
         var draws = 0
-        // Per-side tallies — see the comment on `TournamentStats`
-        // for why these matter in arena analysis.
         var aWinsAsWhite = 0
         var aWinsAsBlack = 0
         var aLossesAsWhite = 0
         var aLossesAsBlack = 0
         var aDrawsAsWhite = 0
         var aDrawsAsBlack = 0
+        var completed = 0
+        var nextGameIndex = 0
 
-        for gameIndex in 0..<games {
-            // Two cancellation checks: the caller's own task (if this
-            // run() is called from a non-detached context) AND an
-            // externally-provided flag (used by arena callers that run
-            // inside a detached task and therefore can't rely on
-            // Task.isCancelled propagating from the outer driver).
-            guard !Task.isCancelled else { break }
-            if isCancelled?() == true { break }
+        try await withThrowingTaskGroup(
+            of: TournamentGameRecord?.self
+        ) { group in
+            // Slot-task closure shared between the initial fan-out
+            // and each per-completion replenishment.
+            //
+            // Returns `nil` on cancellation so the parent's tally
+            // loop can simply `continue` past it; a non-nil return
+            // is an authoritative completed game.
+            func spawnTask(forGameIndex gameIndex: Int) {
+                let aIsWhite = gameIndex % 2 == 0
+                group.addTask {
+                    if Task.isCancelled { return nil }
+                    if isCancelled?() == true { return nil }
 
-            let aIsWhite = gameIndex % 2 == 0
-            let a = playerA()
-            let b = playerB()
+                    let a = playerA()
+                    let b = playerB()
+                    let machine = ChessMachine()
+                    // Tournament games run without a delegate — live
+                    // animation only makes sense for single-game UI
+                    // paths, not for K parallel slots.
 
-            let machine = ChessMachine()
-            machine.delegate = delegate
+                    let white: any ChessPlayer = aIsWhite ? a : b
+                    let black: any ChessPlayer = aIsWhite ? b : a
 
-            let white: any ChessPlayer = aIsWhite ? a : b
-            let black: any ChessPlayer = aIsWhite ? b : a
+                    let result: GameResult
+                    do {
+                        result = try await machine.beginNewGame(
+                            white: white, black: black
+                        )
+                    } catch is CancellationError {
+                        await onSlotExited?()
+                        return nil
+                    } catch {
+                        await onSlotExited?()
+                        throw error
+                    }
 
-            // `beginNewGame` can throw `alreadyPlaying` (impossible here
-            // — this machine was just constructed) or `CancellationError`
-            // if the caller's Task is cancelled mid-game. On cancellation
-            // we bail out of the tournament with whatever results we've
-            // tallied so far rather than counting the partial game as a
-            // draw — the outer loop's `Task.isCancelled` / `isCancelled`
-            // guards would break on the next iteration anyway.
-            let result: GameResult
-            do {
-                result = try await machine.beginNewGame(white: white, black: black)
-            } catch is CancellationError {
-                break
-            } catch {
-                throw error
-            }
+                    await onSlotExited?()
 
-            diversityTracker?.recordGame(moves: machine.moveHistory)
-
-            // Tally result
-            switch result {
-            case .checkmate(let winner):
-                let aWon = (winner == .white && aIsWhite) || (winner == .black && !aIsWhite)
-                if aWon {
-                    aWins += 1
-                    if aIsWhite { aWinsAsWhite += 1 } else { aWinsAsBlack += 1 }
-                } else {
-                    bWins += 1
-                    if aIsWhite { aLossesAsWhite += 1 } else { aLossesAsBlack += 1 }
+                    return TournamentGameRecord(
+                        gameIndex: gameIndex,
+                        aIsWhite: aIsWhite,
+                        result: result,
+                        moveHistory: machine.moveHistory
+                    )
                 }
-            case .stalemate,
-                 .drawByFiftyMoveRule,
-                 .drawByInsufficientMaterial,
-                 .drawByThreefoldRepetition:
-                draws += 1
-                if aIsWhite { aDrawsAsWhite += 1 } else { aDrawsAsBlack += 1 }
             }
 
-            onGameCompleted?(gameIndex + 1, aWins, bWins, draws)
+            // Prime the first wave of K concurrent slots.
+            let initialSpawn = min(effectiveConcurrency, games)
+            for _ in 0..<initialSpawn {
+                spawnTask(forGameIndex: nextGameIndex)
+                nextGameIndex += 1
+            }
+
+            while let maybeRecord = try await group.next() {
+                if Task.isCancelled || isCancelled?() == true {
+                    // Stop fanning out; let in-flight slots drain.
+                    continue
+                }
+
+                guard let record = maybeRecord else {
+                    // Slot was cancelled. Spawn a replacement only
+                    // if we still have games to play AND we haven't
+                    // been asked to stop.
+                    if nextGameIndex < games,
+                       !Task.isCancelled,
+                       isCancelled?() != true {
+                        spawnTask(forGameIndex: nextGameIndex)
+                        nextGameIndex += 1
+                    }
+                    continue
+                }
+
+                completed += 1
+                let aIsWhite = record.aIsWhite
+                switch record.result {
+                case .checkmate(let winner):
+                    let aWon = (winner == .white && aIsWhite)
+                        || (winner == .black && !aIsWhite)
+                    if aWon {
+                        aWins += 1
+                        if aIsWhite { aWinsAsWhite += 1 } else { aWinsAsBlack += 1 }
+                    } else {
+                        bWins += 1
+                        if aIsWhite { aLossesAsWhite += 1 } else { aLossesAsBlack += 1 }
+                    }
+                case .stalemate,
+                     .drawByFiftyMoveRule,
+                     .drawByInsufficientMaterial,
+                     .drawByThreefoldRepetition:
+                    draws += 1
+                    if aIsWhite { aDrawsAsWhite += 1 } else { aDrawsAsBlack += 1 }
+                }
+
+                diversityTracker?.recordGame(moves: record.moveHistory)
+                onGameRecorded?(record)
+                onGameCompleted?(completed, aWins, bWins, draws)
+
+                // Refill the slot pool with the next game.
+                if nextGameIndex < games {
+                    spawnTask(forGameIndex: nextGameIndex)
+                    nextGameIndex += 1
+                }
+            }
         }
 
-        return TournamentStats(
+        let stats = TournamentStats(
             gamesPlayed: aWins + bWins + draws,
             playerAWins: aWins,
             playerBWins: bWins,
@@ -197,5 +350,6 @@ final class TournamentDriver {
             playerADrawsAsWhite: aDrawsAsWhite,
             playerADrawsAsBlack: aDrawsAsBlack
         )
+        return stats
     }
 }

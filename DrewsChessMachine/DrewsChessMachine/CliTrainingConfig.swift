@@ -62,6 +62,11 @@ struct CliTrainingConfig: Codable, Sendable {
     var arenaPromoteThreshold: Double? = nil
     var arenaGamesPerTournament: Int? = nil
     var arenaAutoIntervalSec: Double? = nil
+    /// Number of arena games run concurrently per tournament. K>1
+    /// enables batched inference on the per-network batchers; K=1 is
+    /// the legacy serial behavior. Optional for back-compat with
+    /// older parameters.json files.
+    var arenaConcurrency: Int? = nil
 
     // MARK: - Probe
 
@@ -116,6 +121,7 @@ struct CliTrainingConfig: Codable, Sendable {
         case arenaPromoteThreshold = "arena_promote_threshold"
         case arenaGamesPerTournament = "arena_games_per_tournament"
         case arenaAutoIntervalSec = "arena_auto_interval_sec"
+        case arenaConcurrency = "arena_concurrency"
 
         case candidateProbeIntervalSec = "candidate_probe_interval_sec"
 
@@ -186,6 +192,7 @@ struct CliTrainingConfig: Codable, Sendable {
         add("arena_promote_threshold", arenaPromoteThreshold)
         add("arena_games_per_tournament", arenaGamesPerTournament)
         add("arena_auto_interval_sec", arenaAutoIntervalSec)
+        add("arena_concurrency", arenaConcurrency)
         add("candidate_probe_interval_sec", candidateProbeIntervalSec)
         add("legal_mass_collapse_threshold", legalMassCollapseThreshold)
         add("legal_mass_collapse_grace_seconds", legalMassCollapseGraceSeconds)

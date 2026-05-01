@@ -15,12 +15,50 @@ enum BatchedMoveEvaluationSourceError: LocalizedError {
 
 // MARK: - Barrier Batcher
 
-/// Barrier-style batcher for self-play inference.
+/// Snapshot of batch-size telemetry collected by a
+/// `BatchedMoveEvaluationSource` since it was constructed. Used by the
+/// arena callsite to log, on tournament end, how much GPU batching the
+/// run actually achieved across both the candidate and the champion
+/// networks. The histogram is keyed by per-fire batch size and counts
+/// how many fires landed at each size — a quick way to see whether the
+/// coalescing-window timer was actually finding multi-slot batches or
+/// the run was effectively serial.
+struct BatchSizeStats: Sendable {
+    let totalBatches: Int
+    let totalPositions: Int
+    let minBatch: Int
+    let maxBatch: Int
+    let mean: Double
+    let histogram: [Int: Int]
+
+    static let empty = BatchSizeStats(
+        totalBatches: 0, totalPositions: 0,
+        minBatch: 0, maxBatch: 0, mean: 0, histogram: [:]
+    )
+
+    /// Render the histogram + summary into a single human-readable line
+    /// suitable for direct emission to the session log.
+    func formatLogLine() -> String {
+        guard totalBatches > 0 else {
+            return "no batches fired"
+        }
+        let histStr = histogram.keys.sorted()
+            .map { "\($0):\(histogram[$0] ?? 0)" }
+            .joined(separator: ",")
+        return String(
+            format: "mean=%.2f min=%d max=%d batches=%d positions=%d hist={%@}",
+            mean, minBatch, maxBatch, totalBatches, totalPositions, histStr
+        )
+    }
+}
+
+/// Barrier-style batcher for chess inference.
 ///
-/// N `ChessMachine.runGameLoop` tasks (one per self-play slot) all call
-/// `evaluate(encodedBoard:)` exactly once per ply. Each call parks in a
-/// `CheckedContinuation`; when the N-th submission arrives (where N =
-/// `expectedSlotCount`), the barrier fires a single batched
+/// **Self-play mode** (the original use): N `ChessMachine.runGameLoop`
+/// tasks (one per self-play slot) all call `evaluate(encodedBoard:)`
+/// exactly once per ply. Each call parks in a `CheckedContinuation`;
+/// when the N-th submission arrives (where N = `expectedSlotCount`),
+/// the barrier fires a single batched
 /// `network.evaluate(batchBoards:count:)`, slices the N policy vectors
 /// and N value scalars out of the returned buffers, and resumes all N
 /// continuations with their own `(policy, value)`. The cycle repeats
@@ -28,7 +66,23 @@ enum BatchedMoveEvaluationSourceError: LocalizedError {
 ///
 /// Because each live slot submits exactly once per barrier cycle, the
 /// invariant `pending.count == expectedSlotCount on fire` holds by
-/// construction — no deadline, no timeout, no stragglers.
+/// construction — no deadline, no timeout, no stragglers. This is the
+/// happy case and the construction parameter `maxBatchWaitMs` defaults
+/// to 0 so self-play behavior is unchanged.
+///
+/// **Arena mode** (added for concurrent arena games): two batchers are
+/// constructed — one wrapping the candidate inference network, the
+/// other wrapping the arena champion. Each arena game alternates
+/// candidate and champion moves, so at any instant only ~K/2 of the K
+/// concurrent games are on a given side. The strict count barrier
+/// would never fire either batcher in steady state. To handle this,
+/// when `maxBatchWaitMs > 0` the batcher schedules a coalescing
+/// timer that fires the next batch after that many ms have elapsed
+/// since `pending` last went from empty to non-empty. The barrier
+/// fires on whichever happens first (count-met OR timer-expired), so
+/// in the early game when all K games are synchronized the count
+/// barrier still fires immediately, while the desynchronized
+/// steady-state fires partial batches at the end of the wait window.
 ///
 /// Slot lifecycle coordination is handled by the driver:
 /// - Grow: call `setExpectedSlotCount(newN)` *before* spawning the new
@@ -39,6 +93,9 @@ enum BatchedMoveEvaluationSourceError: LocalizedError {
 /// - Pause (arena): cancel all slot tasks, await their exit, call
 ///   `setExpectedSlotCount(0)`. On resume, call
 ///   `setExpectedSlotCount(liveCount)` before re-spawning.
+/// - Arena game-ends: as games finish during a parallel arena run,
+///   `decrementExpectedSlotCount()` is called per-exit so the count
+///   barrier keeps tracking live game count rather than initial K.
 ///
 /// All state — pending queue, expected count, network access, weight
 /// load/export — is actor-isolated, so barrier bookkeeping and the
@@ -53,6 +110,15 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
 
     let network: ChessMPSNetwork
 
+    /// Coalescing-window upper bound. When > 0 and the count barrier
+    /// has not been met, the batcher fires whatever is pending after
+    /// this many ms have elapsed since `pending` first became
+    /// non-empty in the current cycle. 0 disables the timer and
+    /// preserves the strict count-only barrier (the self-play mode).
+    /// See the class doc comment for why arena needs this and
+    /// self-play does not.
+    let maxBatchWaitMs: Double
+
     /// Number of live slots the driver expects to submit per barrier
     /// cycle. The barrier fires as soon as `pending.count` reaches this
     /// value. Set to 0 while the driver has no active slots (during
@@ -60,6 +126,27 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// submission under those conditions still parks but won't fire
     /// the batch until the count is raised back up.
     private var expectedSlotCount: Int = 0
+
+    /// Generation counter incremented each time a fire is scheduled or
+    /// completed. Coalescing-timer tasks capture the generation they
+    /// were scheduled for and no-op on wake-up if the generation has
+    /// moved on (because the count barrier or an earlier timer task
+    /// already fired the queue). Without this, a late timer expiry
+    /// after a count-fire would attempt to fire an already-empty queue
+    /// or, worse, fire prematurely and cut a fresh window short.
+    private var batchWaitGeneration: Int = 0
+
+    /// Per-batch-size histogram. Keyed by `count` at fire time;
+    /// values are how many fires landed at that count. Read out via
+    /// `snapshotBatchSizeStats` at tournament end. Reset is not
+    /// supported — each batcher is short-lived (one arena's worth of
+    /// games) so accumulating monotonically through the run is the
+    /// natural model.
+    private var batchSizeCounts: [Int: Int] = [:]
+    private var batchSizeTotalPositions: Int = 0
+    private var batchSizeTotalBatches: Int = 0
+    private var batchSizeMin: Int = .max
+    private var batchSizeMax: Int = 0
 
     /// Optional replay-ratio controller. When set, the batcher reports
     /// a `recordSelfPlayBarrierTick` event after each successful
@@ -80,6 +167,12 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     private var batchFireScheduled = false
 
     private struct Pending {
+        /// Per-call identifier so the cancellation handler can find
+        /// and remove this specific entry without disturbing other
+        /// pending submissions. UUID is overkill on coverage but
+        /// trivial in cost (16 bytes + a single allocation per call,
+        /// negligible against the ~1 ms ply we're already paying).
+        let token: UUID
         /// Copy of the caller's encoded board — the caller's
         /// `UnsafeBufferPointer` is only valid for the duration of
         /// `evaluate(encodedBoard:)`, so we snapshot into owned storage
@@ -119,8 +212,9 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
 
     // MARK: - Init
 
-    init(network: ChessMPSNetwork) {
+    init(network: ChessMPSNetwork, maxBatchWaitMs: Double = 0) {
         self.network = network
+        self.maxBatchWaitMs = max(0, maxBatchWaitMs)
     }
 
     // MARK: - Slot-Count Coordination
@@ -157,6 +251,36 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         }
     }
 
+    /// Decrement `expectedSlotCount` by one, clamped at 0. Used by
+    /// the parallel-arena driver to track live game count as games
+    /// finish, so the count barrier remains achievable rather than
+    /// pegged at the initial K. Calling this is functionally
+    /// equivalent to `setExpectedSlotCount(currentCount - 1)`; we
+    /// expose it as a one-shot to avoid the read-then-write race
+    /// callers would otherwise have to coordinate themselves.
+    func decrementExpectedSlotCount() {
+        setExpectedSlotCount(max(0, expectedSlotCount - 1))
+    }
+
+    /// Snapshot the cumulative batch-size telemetry. Safe to call at
+    /// any time; arena code reads it once after the tournament has
+    /// completed (and the batchers have drained) to log how much
+    /// concurrent batching the run actually achieved.
+    func snapshotBatchSizeStats() -> BatchSizeStats {
+        guard batchSizeTotalBatches > 0 else {
+            return .empty
+        }
+        let mean = Double(batchSizeTotalPositions) / Double(batchSizeTotalBatches)
+        return BatchSizeStats(
+            totalBatches: batchSizeTotalBatches,
+            totalPositions: batchSizeTotalPositions,
+            minBatch: batchSizeMin == .max ? 0 : batchSizeMin,
+            maxBatch: batchSizeMax,
+            mean: mean,
+            histogram: batchSizeCounts
+        )
+    }
+
     /// Install the replay-ratio controller. Called once at session
     /// start, after the controller is built. A nil assignment
     /// disables tick reporting — the batcher otherwise has no
@@ -174,28 +298,112 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     func evaluate(
         encodedBoard: [Float]
     ) async throws -> (policy: [Float], value: Float) {
-        return try await withCheckedThrowingContinuation { continuation in
-            pending.append(Pending(boardCopy: encodedBoard, continuation: continuation))
-            // Fire when:
-            // - Normal barrier mode (`expectedSlotCount > 0`) and the
-            //   barrier threshold is met.
-            // - Drain mode (`expectedSlotCount == 0`) — the driver has
-            //   asked every slot to wind down, so we can't wait for a
-            //   larger group to assemble. Process each submission as
-            //   its own micro-batch so in-flight slots can finish
-            //   their current games and exit.
-            if expectedSlotCount == 0 || pending.count >= expectedSlotCount {
-                scheduleBatchFireIfNeeded()
+        // Per-call token used by the cancellation handler below to
+        // find and remove this specific parked submission so a
+        // cancelled awaiter unblocks instead of leaking forever.
+        // Without this, the concurrent arena's `withThrowingTaskGroup`
+        // auto-cancel-on-throw deadlocks: when one slot throws the
+        // group cancels its siblings, but Swift does NOT auto-resume
+        // continuations parked in `withCheckedThrowingContinuation`,
+        // so the siblings hang and the group's auto-await-on-exit
+        // blocks the parent forever. The cancellation handler is
+        // also a no-op for self-play because that driver drains
+        // *before* cancelling slots — by the time `task.cancel()`
+        // arrives, no slot is parked at the batcher.
+        let token = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let wasEmpty = pending.isEmpty
+                pending.append(Pending(
+                    token: token,
+                    boardCopy: encodedBoard,
+                    continuation: continuation
+                ))
+                // Fire when:
+                // - Normal barrier mode (`expectedSlotCount > 0`)
+                //   and the barrier threshold is met.
+                // - Drain mode (`expectedSlotCount == 0`) — the
+                //   driver has asked every slot to wind down, so we
+                //   can't wait for a larger group to assemble.
+                //   Process each submission as its own micro-batch
+                //   so in-flight slots can finish their current
+                //   games and exit.
+                if expectedSlotCount == 0 || pending.count >= expectedSlotCount {
+                    scheduleBatchFireIfNeeded()
+                } else if wasEmpty && maxBatchWaitMs > 0 && expectedSlotCount > 0 {
+                    // Coalescing-window timer (arena mode). Schedule
+                    // a backstop fire for the current generation;
+                    // whichever path (count-met above OR timer below)
+                    // wins the race bumps the generation, so the
+                    // loser is a no-op. Only armed on the 0→1
+                    // transition so we don't stack multiple sleeping
+                    // tasks per cycle.
+                    scheduleBatchWaitTimer(forGeneration: batchWaitGeneration)
+                }
+            }
+        } onCancel: {
+            // Runs synchronously when the awaiting task is cancelled.
+            // We can't touch actor state from here directly, so hop
+            // back to the actor to remove this submission's pending
+            // entry and resume its continuation with `CancellationError`.
+            // Race-safe vs. `fireBatch`: both `cancelPending` and
+            // `fireBatch` are actor-isolated, so they serialize. If
+            // `fireBatch` resumed the continuation first, our
+            // cancelPending finds nothing and no-ops; if cancelPending
+            // ran first, fireBatch's snapshot of `pending` won't
+            // include this entry. No double-resume in either order.
+            Task {
+                await self.cancelPending(token: token)
             }
         }
+    }
+
+    /// Remove the pending submission identified by `token` (if still
+    /// queued) and resume its continuation with `CancellationError`.
+    /// Called from the cancellation handler in `evaluate`. A no-op if
+    /// the entry is not found — that just means `fireBatch` already
+    /// claimed and resumed it before this handler reached the actor.
+    private func cancelPending(token: UUID) {
+        guard let idx = pending.firstIndex(where: { $0.token == token }) else {
+            return
+        }
+        let item = pending.remove(at: idx)
+        item.continuation.resume(throwing: CancellationError())
     }
 
     private func scheduleBatchFireIfNeeded() {
         guard !batchFireScheduled else { return }
         batchFireScheduled = true
+        // Bump the generation here as well so any in-flight timer
+        // task for this cycle wakes up and sees its generation is
+        // stale. Without the bump, the count path firing would still
+        // leave a sleeping timer that, on wake-up, would try to fire
+        // an empty (or freshly partial) queue.
+        batchWaitGeneration &+= 1
         Task {
             await self.fireBatch()
         }
+    }
+
+    /// Arm a coalescing-window timer for the given generation. After
+    /// `maxBatchWaitMs` the timer task wakes up; if `pending` is still
+    /// non-empty AND the generation hasn't moved on (i.e. neither the
+    /// count barrier nor an earlier timer fire has consumed the
+    /// queue), the timer schedules the fire itself. Called only when
+    /// `maxBatchWaitMs > 0` and only on the 0→1 pending transition.
+    private func scheduleBatchWaitTimer(forGeneration generation: Int) {
+        let waitNs = UInt64((maxBatchWaitMs * 1_000_000.0).rounded())
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: waitNs)
+            guard let self else { return }
+            await self.fireIfStillCurrent(generation: generation)
+        }
+    }
+
+    private func fireIfStillCurrent(generation: Int) {
+        guard generation == batchWaitGeneration else { return }
+        guard !pending.isEmpty else { return }
+        scheduleBatchFireIfNeeded()
     }
 
     private func fireBatch() async {
@@ -257,6 +465,16 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
                     expected: count, got: values.count
                 )
             }
+
+            // Record this fire into the batch-size histogram. Done
+            // after the network call succeeds so failed fires (which
+            // resume continuations with `error`) aren't counted as
+            // measured throughput.
+            batchSizeCounts[count, default: 0] += 1
+            batchSizeTotalBatches += 1
+            batchSizeTotalPositions += count
+            if count < batchSizeMin { batchSizeMin = count }
+            if count > batchSizeMax { batchSizeMax = count }
 
             #if DEBUG
             runBatchCorrectnessCheckIfNeeded(batch: batch, policy: policy, values: values)

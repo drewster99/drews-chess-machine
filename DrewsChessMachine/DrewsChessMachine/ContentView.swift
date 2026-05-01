@@ -603,6 +603,29 @@ struct TournamentProgress: Sendable {
     /// elapsed time via `Date().timeIntervalSince(startTime)` on each
     /// render without needing a separate ticking timer.
     let startTime: Date
+    /// Number of arena games running concurrently for this tournament.
+    /// 1 = sequential (the historical default). > 1 enables the
+    /// busy-label suffix "(×K concurrent)" so the user can see why
+    /// the tournament is finishing faster than before.
+    let concurrency: Int
+
+    init(
+        currentGame: Int,
+        totalGames: Int,
+        candidateWins: Int,
+        championWins: Int,
+        draws: Int,
+        startTime: Date,
+        concurrency: Int = 1
+    ) {
+        self.currentGame = currentGame
+        self.totalGames = totalGames
+        self.candidateWins = candidateWins
+        self.championWins = championWins
+        self.draws = draws
+        self.startTime = startTime
+        self.concurrency = concurrency
+    }
 
     /// AlphaZero-style score: (wins + 0.5 * draws) / games_played.
     /// Pure draws → 0.5. Candidate sweeping every decisive game with
@@ -714,6 +737,26 @@ final class TournamentLiveBox: @unchecked Sendable {
 
     func clear() {
         queue.async { [weak self] in self?._progress = nil }
+    }
+}
+
+/// Sink the arena callsite uses to gather per-game `TournamentGameRecord`
+/// values fired by `TournamentDriver.run`'s `onGameRecorded` callback.
+/// The driver fires that callback serially from its parent harvest
+/// loop, so in practice there is no concurrent access — the serial
+/// queue is a defensive belt for the `@Sendable` callback contract,
+/// not for actual contention. Read once via `snapshot()` after the
+/// tournament has returned for the post-arena validity sweep.
+final class TournamentRecordsBox: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "drewschess.tournamentrecords.serial")
+    private var _records: [TournamentGameRecord] = []
+
+    func append(_ record: TournamentGameRecord) {
+        queue.async { [weak self] in self?._records.append(record) }
+    }
+
+    func snapshot() -> [TournamentGameRecord] {
+        queue.sync { _records }
     }
 }
 
@@ -1455,6 +1498,13 @@ struct ContentView: View {
     // code, tests), while a live session reads the effective
     // value.
     @State private var effectiveTournamentGames: Int = 200
+    // Initialized here as a literal to keep the @State default
+    // independent of the static SSOT (which is fine since they're
+    // by definition the same value at this moment in time and any
+    // future change to the SSOT would also be a deliberate change
+    // here). Matches the convention used by `effectiveTournamentGames`
+    // and the rest of the `effective…` block above.
+    @State private var effectiveArenaConcurrency: Int = 8
     @State private var effectivePromoteThreshold: Double = 0.55
     @State private var effectiveAutoArenaIntervalSec: Double = 30 * 60
     @State private var effectiveTrainingBatchSize: Int = 4096
@@ -1690,6 +1740,24 @@ struct ContentView: View {
     /// Colors alternate every game, so candidate and champion each get
     /// 100 games as white and 100 as black.
     nonisolated static let tournamentGames = 200
+    /// Default number of arena games run concurrently per tournament.
+    /// Each game uses two shared `BatchedMoveEvaluationSource` batchers
+    /// (one per network) so the GPU sees K-position batches instead of
+    /// K serial single-position calls. 8 is a reasonable compromise
+    /// between keeping the GPU saturated and leaving headroom for the
+    /// concurrent training worker; the value is user-overridable via
+    /// the `effectiveArenaConcurrency` runtime setting (UI Stepper /
+    /// session save+load / parameters.json key `arena_concurrency`).
+    nonisolated static let arenaConcurrencyDefault = 8
+    /// Coalescing-window upper bound (ms) for the arena's per-network
+    /// batchers. The barrier fires on either count-met OR window-
+    /// elapsed, whichever happens first; the window only kicks in when
+    /// games desynchronize and the count barrier alone wouldn't fire.
+    /// 5 ms is small relative to per-ply CPU + GPU time so the
+    /// throughput hit is minor while still allowing partial batches to
+    /// coalesce. Hardcoded for the first iteration; promote to a UI /
+    /// persisted setting only if profiling motivates it.
+    nonisolated static let arenaBatchWaitMs: Double = 5.0
     /// Candidate-score threshold for promotion. The AlphaZero paper's
     /// default. Demands the candidate score at least 110/200 points,
     /// which in a draw-heavy regime translates to winning the large
@@ -4517,10 +4585,18 @@ struct ContentView: View {
                 .foregroundStyle(scoreColor)
                 .bold()
 
+            let concurrencyTail: Text
+            if tp.concurrency > 1 {
+                concurrencyTail = Text("  (×\(tp.concurrency) concurrent)")
+                    .foregroundStyle(Color.blue)
+            } else {
+                concurrencyTail = Text("")
+            }
+
             let tail = Text("  " + Self.formatElapsed(elapsed))
                 .foregroundStyle(Color.blue)
 
-            return head + score + tail
+            return head + score + concurrencyTail + tail
         }
         // Tabular figures so the elapsed timer and memory sizes
         // don't jitter as digits roll. `monospacedDigit()` keeps
@@ -4941,6 +5017,7 @@ struct ContentView: View {
         cfg.replayBufferMinPositionsBeforeTraining = effectiveMinBufferBeforeTraining
         cfg.arenaPromoteThreshold = effectivePromoteThreshold
         cfg.arenaGamesPerTournament = effectiveTournamentGames
+        cfg.arenaConcurrency = effectiveArenaConcurrency
         cfg.arenaAutoIntervalSec = effectiveAutoArenaIntervalSec
         cfg.candidateProbeIntervalSec = effectiveCandidateProbeIntervalSec
         cfg.legalMassCollapseThreshold = legalMassCollapseThreshold
@@ -5028,6 +5105,7 @@ struct ContentView: View {
             drawPenalty: drawPen,
             promoteThreshold: effectivePromoteThreshold,
             arenaGames: effectiveTournamentGames,
+            arenaConcurrency: effectiveArenaConcurrency,
             selfPlayTau: TauConfigCodable(samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()),
             arenaTau: TauConfigCodable(samplingScheduleBox?.arena ?? buildArenaSchedule()),
             selfPlayWorkerCount: selfPlayWorkerCount,
@@ -5897,6 +5975,10 @@ struct ContentView: View {
             record("arena_games_per_tournament", effectiveTournamentGames, v)
             effectiveTournamentGames = v
         }
+        if let v = cfg.arenaConcurrency, v >= 1 {
+            record("arena_concurrency", effectiveArenaConcurrency, v)
+            effectiveArenaConcurrency = v
+        }
         if let v = cfg.arenaAutoIntervalSec, v > 0 {
             record("arena_auto_interval_sec", effectiveAutoArenaIntervalSec, v)
             effectiveAutoArenaIntervalSec = v
@@ -6690,29 +6772,81 @@ struct ContentView: View {
         // so every game in this arena uses the same tau settings, even
         // if the user edits the fields mid-tournament.
         let arenaScheduleSnapshot = samplingScheduleBox?.arena ?? buildArenaSchedule()
+
+        // --- Concurrent arena: build per-network batchers ---
+        //
+        // K parallel arena games share two `BatchedMoveEvaluationSource`
+        // batchers, one per network. Each game alternates candidate ↔
+        // champion moves, so at any instant ~K/2 are pending on each
+        // side; a strict count-only barrier (the self-play model) would
+        // never fire either batcher in steady state. The coalescing-
+        // window timer (`maxBatchWaitMs`) makes the barrier fire on
+        // whichever happens first — count met OR window expired —
+        // which captures the early-game synchronized phase as a full
+        // K-batch and the desynchronized steady state as ~K/2 partial
+        // batches.
+        //
+        // Live count tracking: `expectedSlotCount` starts at `liveK`
+        // (clamped to game count). As each slot finishes a game the
+        // `onSlotExited` callback below decrements both batchers'
+        // expected counts so the count barrier remains achievable
+        // during the tail when fewer than K games are still live.
+        let liveK = max(1, min(effectiveArenaConcurrency, totalGames))
+        let candidateBatcher = BatchedMoveEvaluationSource(
+            network: candidateInference,
+            maxBatchWaitMs: Self.arenaBatchWaitMs
+        )
+        let championBatcher = BatchedMoveEvaluationSource(
+            network: arenaChampion,
+            maxBatchWaitMs: Self.arenaBatchWaitMs
+        )
+        await candidateBatcher.setExpectedSlotCount(liveK)
+        await championBatcher.setExpectedSlotCount(liveK)
+
+        // Update the live progress box with the chosen concurrency so
+        // the arena's busy-label suffix can render "(×K concurrent)"
+        // for the duration of this run.
+        tBox.update(TournamentProgress(
+            currentGame: 0,
+            totalGames: totalGames,
+            candidateWins: 0,
+            championWins: 0,
+            draws: 0,
+            startTime: startTime,
+            concurrency: liveK
+        ))
+        tournamentProgress = tBox.snapshot()
+
+        // Records collector. The driver fires `onGameRecorded` from
+        // its parent harvest loop — already serial in that task — so
+        // this Box's append happens on a single task and needs no
+        // synchronization. We lift it to a `final class` only because
+        // the closure must be `@Sendable`; the lock is a defensive
+        // belt for that contract, not for actual contention.
+        let recordsBox = TournamentRecordsBox()
         let stats: TournamentStats
         do {
             stats = try await withTaskCancellationHandler {
                 try await Task.detached(priority: .userInitiated) {
-                    [arenaChampion, candidateInference, tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot] in
+                    [candidateBatcher, championBatcher, tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot, liveK, recordsBox] in
                     let driver = TournamentDriver()
-                    driver.delegate = nil
                     return try await driver.run(
                         playerA: {
                             MPSChessPlayer(
                                 name: "Candidate",
-                                source: DirectMoveEvaluationSource(network: candidateInference),
+                                source: candidateBatcher,
                                 schedule: arenaScheduleSnapshot
                             )
                         },
                         playerB: {
                             MPSChessPlayer(
                                 name: "Champion",
-                                source: DirectMoveEvaluationSource(network: arenaChampion),
+                                source: championBatcher,
                                 schedule: arenaScheduleSnapshot
                             )
                         },
                         games: totalGames,
+                        concurrency: liveK,
                         diversityTracker: arenaDiversity,
                         // The driver checks this between games. Either a
                         // task-cancel (session Stop) or a user Abort /
@@ -6727,8 +6861,19 @@ struct ContentView: View {
                                 candidateWins: aWins,
                                 championWins: bWins,
                                 draws: draws,
-                                startTime: startTime
+                                startTime: startTime,
+                                concurrency: liveK
                             ))
+                        },
+                        onSlotExited: {
+                            // Track live game count on both batchers
+                            // so the count barrier stays achievable
+                            // as games finish during the tail.
+                            await candidateBatcher.decrementExpectedSlotCount()
+                            await championBatcher.decrementExpectedSlotCount()
+                        },
+                        onGameRecorded: { record in
+                            recordsBox.append(record)
                         }
                     )
                 }.value
@@ -6736,10 +6881,44 @@ struct ContentView: View {
                 cancelBox.cancel()
             }
         } catch {
+            // Error path. Drain both batchers so any parked
+            // continuations resume, then emit whatever telemetry we
+            // can over the partial records captured before the throw
+            // (so the user can still see how much concurrency we got
+            // up to the failure and confirm whether the captured
+            // games were internally consistent before bailing).
+            // After that, surface the error and tear down arena
+            // state.
+            await candidateBatcher.setExpectedSlotCount(0)
+            await championBatcher.setExpectedSlotCount(0)
+            await emitArenaPostRunTelemetry(
+                candidateBatcher: candidateBatcher,
+                championBatcher: championBatcher,
+                recordsBox: recordsBox,
+                wasCancelled: cancelBox.isCancelled || overrideBox.isActive,
+                context: "after error",
+                trainingBox: trainingBox
+            )
             trainingBox?.recordError("Arena tournament failed: \(error.localizedDescription)")
             cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
             return
         }
+
+        // Drain the batchers explicitly. Drain mode fires any
+        // straggler pendings immediately so no continuation is left
+        // parked, even on cancellation paths where the driver may
+        // have stopped harvesting before all in-flight slots returned.
+        await candidateBatcher.setExpectedSlotCount(0)
+        await championBatcher.setExpectedSlotCount(0)
+
+        await emitArenaPostRunTelemetry(
+            candidateBatcher: candidateBatcher,
+            championBatcher: championBatcher,
+            recordsBox: recordsBox,
+            wasCancelled: cancelBox.isCancelled || overrideBox.isActive,
+            context: nil,
+            trainingBox: trainingBox
+        )
 
         // --- Score and promotion ---
         //
@@ -7155,6 +7334,68 @@ struct ContentView: View {
                 buildNumber: BuildInfo.buildNumber
             )
             recorder.appendArena(entry)
+        }
+    }
+
+    /// Drain the per-batcher batch-size histograms and run the
+    /// post-arena game-validity sweep, emitting one log line per
+    /// batcher and one for the validation outcome. Called on every
+    /// `runArenaParallel` exit leg — success, cancellation, AND
+    /// thrown errors — so a mid-tournament throw still surfaces
+    /// "how much concurrency did we get before it died" and
+    /// "were the captured games internally consistent" rather
+    /// than silently losing that diagnostic.
+    ///
+    /// The validity sweep is skipped under cancellation because
+    /// partial records may be incomplete (a slot mid-game when
+    /// cancelled didn't append a final move record); under errors
+    /// we still run it because partial-but-completed games are
+    /// well-formed and worth checking — if a slot threw mid-game,
+    /// only its own record is missing, not the others'.
+    ///
+    /// `context` annotates the log line for non-success paths
+    /// (e.g. "after error") so a log reader can tell at a glance
+    /// the run didn't complete normally.
+    private func emitArenaPostRunTelemetry(
+        candidateBatcher: BatchedMoveEvaluationSource,
+        championBatcher: BatchedMoveEvaluationSource,
+        recordsBox: TournamentRecordsBox,
+        wasCancelled: Bool,
+        context: String?,
+        trainingBox: TrainingLiveStatsBox?
+    ) async {
+        let suffix = context.map { " (\($0))" } ?? ""
+        let candidateBatchStats = await candidateBatcher.snapshotBatchSizeStats()
+        let championBatchStats = await championBatcher.snapshotBatchSizeStats()
+        SessionLogger.shared.log(
+            "[ARENA] batch sizes  candidate\(suffix): \(candidateBatchStats.formatLogLine())"
+        )
+        SessionLogger.shared.log(
+            "[ARENA] batch sizes  champion \(suffix): \(championBatchStats.formatLogLine())"
+        )
+
+        if wasCancelled {
+            // Partial records under cancellation can be
+            // structurally incomplete — skip rather than emit
+            // misleading "validation FAILED" lines.
+            SessionLogger.shared.log(
+                "[ARENA] validation skipped\(suffix): tournament was cancelled mid-run"
+            )
+            return
+        }
+
+        let report = validateTournamentRecords(recordsBox.snapshot())
+        if report.passed {
+            SessionLogger.shared.log(
+                "[ARENA] validation passed\(suffix): \(report.gamesChecked) games, "
+                + "\(report.totalMovesChecked) moves all legal in their position contexts"
+            )
+        } else {
+            let detail = report.failureDescription ?? "(no detail)"
+            SessionLogger.shared.log(
+                "[ARENA] validation FAILED\(suffix): \(detail)"
+            )
+            trainingBox?.recordError("Arena validation failed: \(detail)")
         }
     }
 
@@ -7830,6 +8071,12 @@ struct ContentView: View {
                         "[RESUME-PARAM] arena_auto_interval_sec: \(effectiveAutoArenaIntervalSec) -> \(v) (from session)"
                     )
                     effectiveAutoArenaIntervalSec = v
+                }
+                if let v = rs.arenaConcurrency, v >= 1 {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] arena_concurrency: \(effectiveArenaConcurrency) -> \(v) (from session)"
+                    )
+                    effectiveArenaConcurrency = v
                 }
                 if let v = rs.candidateProbeIntervalSec, v > 0 {
                     SessionLogger.shared.log(
@@ -9484,6 +9731,28 @@ struct ContentView: View {
                     scoreStatusBarCell
                 }
                 Spacer()
+                // Arena concurrency Stepper. Always visible (so the
+                // user can see and adjust the value even between
+                // arenas), but disabled while an arena is running so
+                // the value can't shift mid-tournament. Same disable
+                // convention as the existing tournament-games settings.
+                HStack(spacing: 4) {
+                    Text("Arena ×")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("\(effectiveArenaConcurrency)")
+                        .font(.callout)
+                        .monospacedDigit()
+                        .frame(minWidth: 18, alignment: .trailing)
+                    Stepper(
+                        "Arena concurrency",
+                        value: $effectiveArenaConcurrency,
+                        in: 1...16
+                    )
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .disabled(isArenaRunning)
+                }
                 if canRunArena {
                     Button {
                         // Defensive guard mirroring the menu's runArena

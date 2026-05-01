@@ -128,6 +128,11 @@ struct SessionCheckpointState: Codable, Equatable {
     var drawPenalty: Float?
     let promoteThreshold: Double
     let arenaGames: Int
+    /// Number of arena games run concurrently per tournament.
+    /// Optional for back-compat with session.json files written
+    /// before parallel arena existed; absent → load-side hydrates
+    /// to the user's current `effectiveArenaConcurrency`.
+    var arenaConcurrency: Int?
     let selfPlayTau: TauConfigCodable
     let arenaTau: TauConfigCodable
     let selfPlayWorkerCount: Int
