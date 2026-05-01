@@ -2984,73 +2984,7 @@ struct ContentView: View {
         .onKeyPress(.leftArrow) { navigateOverlay(-1); return .handled }
         .onKeyPress(.rightArrow) { navigateOverlay(1); return .handled }
         .background(WindowAccessor(window: $contentWindow))
-        .onAppear {
-            wireMenuCommandHub()
-            syncMenuCommandHubState()
-            if learningRateEditText.isEmpty {
-                learningRateEditText = String(format: "%.1e", trainingParams.learningRate)
-            }
-            if lrWarmupStepsEditText.isEmpty {
-                lrWarmupStepsEditText = String(trainingParams.lrWarmupSteps)
-            }
-            if entropyRegularizationEditText.isEmpty {
-                entropyRegularizationEditText = String(format: "%.2e", trainingParams.entropyBonus)
-            }
-            if drawPenaltyEditText.isEmpty {
-                drawPenaltyEditText = String(format: "%.3f", trainingParams.drawPenalty)
-            }
-            if weightDecayEditText.isEmpty {
-                weightDecayEditText = String(format: "%.2e", trainingParams.weightDecay)
-            }
-            if gradClipMaxNormEditText.isEmpty {
-                gradClipMaxNormEditText = String(format: "%.2f", trainingParams.gradClipMaxNorm)
-            }
-            if policyScaleKEditText.isEmpty {
-                policyScaleKEditText = String(format: "%.2f", trainingParams.policyScaleK)
-            }
-            if spStartTauEditText.isEmpty {
-                spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
-            }
-            if spFloorTauEditText.isEmpty {
-                spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
-            }
-            if spDecayPerPlyEditText.isEmpty {
-                spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
-            }
-            if arStartTauEditText.isEmpty {
-                arStartTauEditText = String(format: "%.2f", trainingParams.arenaStartTau)
-            }
-            if arFloorTauEditText.isEmpty {
-                arFloorTauEditText = String(format: "%.2f", trainingParams.arenaTargetTau)
-            }
-            if arDecayPerPlyEditText.isEmpty {
-                arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
-            }
-            // Launch-time auto-resume prompt. Deferred until after
-            // the other field seeding above so any sheet presentation
-            // doesn't race with the text-field default population.
-            // `maybePresentAutoResumeSheet` is itself a no-op when
-            // no pointer exists or the target has been deleted —
-            // a first-launch of the app does not surface the sheet
-            // at all.
-            //
-            // The `--train` CLI flag short-circuits this entirely:
-            // the user has explicitly asked for a headless-style
-            // fresh build + train + jump-to-candidate-test flow,
-            // so we skip the sheet (requirement #1) and run the
-            // automated sequence instead. The File menu's
-            // "Resume Training from Autosave" remains available
-            // if the user changes their mind before training
-            // actually starts.
-            if autoTrainOnLaunch {
-                if !autoTrainFired {
-                    autoTrainFired = true
-                    runAutoTrainLaunchSequence()
-                }
-            } else {
-                maybePresentAutoResumeSheet()
-            }
-        }
+        .onAppear { handleBodyOnAppear() }
         .sheet(isPresented: $autoResumeSheetShowing) {
             autoResumeSheetContentView()
         }
@@ -3060,29 +2994,7 @@ struct ContentView: View {
         .background(menuHubSyncProbe)
         .background(controlSideEffectsProbe)
         .onChange(of: progressRateScrollX) { _, newValue in
-            // Flip off follow-latest when the user scrolls backward.
-            // Auto-follow writes `progressRateScrollX` to
-            // `latestScrollX`, leaving follow on. A user-initiated
-            // backward scroll lands far from latestScrollX and turns
-            // follow off so the 1 Hz sampler stops dragging the chart
-            // back to the right edge.
-            //
-            // Lives here (on a persistent view parent) instead of a
-            // custom `Binding(get:set:)` because that binding was
-            // getting recreated on every body render, handing Swift
-            // Charts a fresh scroll-config each time and tripping
-            // `onChange(of: ChartScrollPositionConfiguration) action
-            // tried to update multiple times per frame` warnings as
-            // the histogram state churned.
-            Task { @MainActor in
-                let latest = progressRateSamples.last?.elapsedSec ?? 0
-                let windowSec = ChartZoom.stops[chartZoomIdx]
-                let latestScrollX = max(0, latest - windowSec)
-                let shouldFollow = abs(newValue - latestScrollX) < 1.0
-                if progressRateFollowLatest != shouldFollow {
-                    progressRateFollowLatest = shouldFollow
-                }
-            }
+            handleProgressRateScrollChange(newValue: newValue)
         }
         .onReceive(snapshotTimer) { _ in
             // Defer every @State mutation driven by the 100 ms
@@ -3097,6 +3009,105 @@ struct ContentView: View {
             // small enough for the type-checker not to choke.
             Task { @MainActor in
                 processSnapshotTimerTick()
+            }
+        }
+    }
+
+    /// Initial setup that fires once on body's `.onAppear`. Wires the
+    /// menu command hub and seeds every TextField mirror state from
+    /// `trainingParams` so the inputs read the live values rather than
+    /// staying empty until the user touches them. Extracted out of the
+    /// inline `.onAppear` closure so body's modifier chain stays small
+    /// for the type-checker.
+    @MainActor
+    private func handleBodyOnAppear() {
+        wireMenuCommandHub()
+        syncMenuCommandHubState()
+        if learningRateEditText.isEmpty {
+            learningRateEditText = String(format: "%.1e", trainingParams.learningRate)
+        }
+        if lrWarmupStepsEditText.isEmpty {
+            lrWarmupStepsEditText = String(trainingParams.lrWarmupSteps)
+        }
+        if entropyRegularizationEditText.isEmpty {
+            entropyRegularizationEditText = String(format: "%.2e", trainingParams.entropyBonus)
+        }
+        if drawPenaltyEditText.isEmpty {
+            drawPenaltyEditText = String(format: "%.3f", trainingParams.drawPenalty)
+        }
+        if weightDecayEditText.isEmpty {
+            weightDecayEditText = String(format: "%.2e", trainingParams.weightDecay)
+        }
+        if gradClipMaxNormEditText.isEmpty {
+            gradClipMaxNormEditText = String(format: "%.2f", trainingParams.gradClipMaxNorm)
+        }
+        if policyScaleKEditText.isEmpty {
+            policyScaleKEditText = String(format: "%.2f", trainingParams.policyScaleK)
+        }
+        if spStartTauEditText.isEmpty {
+            spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
+        }
+        if spFloorTauEditText.isEmpty {
+            spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
+        }
+        if spDecayPerPlyEditText.isEmpty {
+            spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
+        }
+        if arStartTauEditText.isEmpty {
+            arStartTauEditText = String(format: "%.2f", trainingParams.arenaStartTau)
+        }
+        if arFloorTauEditText.isEmpty {
+            arFloorTauEditText = String(format: "%.2f", trainingParams.arenaTargetTau)
+        }
+        if arDecayPerPlyEditText.isEmpty {
+            arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
+        }
+        // Launch-time auto-resume prompt. Deferred until after the
+        // other field seeding above so any sheet presentation doesn't
+        // race with the text-field default population.
+        // `maybePresentAutoResumeSheet` is itself a no-op when no
+        // pointer exists or the target has been deleted — a first-
+        // launch of the app does not surface the sheet at all.
+        //
+        // The `--train` CLI flag short-circuits this entirely: the
+        // user has explicitly asked for a headless-style fresh build
+        // + train + jump-to-candidate-test flow, so we skip the sheet
+        // (requirement #1) and run the automated sequence instead.
+        // The File menu's "Resume Training from Autosave" remains
+        // available if the user changes their mind before training
+        // actually starts.
+        if autoTrainOnLaunch {
+            if !autoTrainFired {
+                autoTrainFired = true
+                runAutoTrainLaunchSequence()
+            }
+        } else {
+            maybePresentAutoResumeSheet()
+        }
+    }
+
+    /// Flip off follow-latest when the user scrolls backward.
+    /// Auto-follow writes `progressRateScrollX` to `latestScrollX`,
+    /// leaving follow on. A user-initiated backward scroll lands far
+    /// from latestScrollX and turns follow off so the 1 Hz sampler
+    /// stops dragging the chart back to the right edge.
+    ///
+    /// Driven by body's `.onChange(of: progressRateScrollX)`. Lives
+    /// on a persistent view parent rather than a custom
+    /// `Binding(get:set:)` because that binding was getting recreated
+    /// on every body render, handing Swift Charts a fresh scroll-
+    /// config each time and tripping `onChange(of:
+    /// ChartScrollPositionConfiguration) action tried to update
+    /// multiple times per frame` warnings as the histogram state
+    /// churned.
+    private func handleProgressRateScrollChange(newValue: Double) {
+        Task { @MainActor in
+            let latest = progressRateSamples.last?.elapsedSec ?? 0
+            let windowSec = ChartZoom.stops[chartZoomIdx]
+            let latestScrollX = max(0, latest - windowSec)
+            let shouldFollow = abs(newValue - latestScrollX) < 1.0
+            if progressRateFollowLatest != shouldFollow {
+                progressRateFollowLatest = shouldFollow
             }
         }
     }
@@ -3790,83 +3801,91 @@ struct ContentView: View {
             .frame(height: 320)
     }
 
-    /// The Chart's marks + axis/legend/scale modifiers. Split off
-    /// from `progressRateChartView` so each half type-checks
-    /// independently — the combined getter was 1052 ms before.
-    private var bigProgressChartCore: some View {
-        // One ForEach per series — SwiftUI Charts only connects
-        // LineMarks that share a single enclosing ForEach AND a
-        // single Y value. Packing all three series into ONE ForEach
-        // made Charts emit spurious thin lines near y=0 because it
-        // couldn't disambiguate which LineMarks belonged to which
-        // logical series within the shared iteration. Splitting per
-        // series restores the canonical multi-line rendering.
-        Chart {
-            ForEach(progressRateSamples) { sample in
-                LineMark(
-                    x: .value("Elapsed", sample.elapsedSec),
-                    y: .value("Moves/hr", sample.combinedMovesPerHour)
-                )
-                .foregroundStyle(by: .value("Series", "Combined"))
-            }
-            ForEach(progressRateSamples) { sample in
-                LineMark(
-                    x: .value("Elapsed", sample.elapsedSec),
-                    y: .value("Moves/hr", sample.selfPlayMovesPerHour)
-                )
-                .foregroundStyle(by: .value("Series", "Self-play"))
-            }
-            ForEach(progressRateSamples) { sample in
-                LineMark(
-                    x: .value("Elapsed", sample.elapsedSec),
-                    y: .value("Moves/hr", sample.trainingMovesPerHour)
-                )
-                .foregroundStyle(by: .value("Series", "Training"))
-            }
-            if let t = bigProgressChartHoveredSec {
-                RuleMark(x: .value("Elapsed", t))
-                    .foregroundStyle(Color.gray.opacity(0.5))
-                    .lineStyle(StrokeStyle(lineWidth: 1))
-            }
-        }
-        .chartForegroundStyleScale([
-            "Self-play": Color.blue,
-            "Training": Color.orange,
-            "Combined": Color.green
-        ])
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 6)) { value in
-                AxisGridLine()
-                AxisTick()
-                AxisValueLabel {
-                    if let secs = value.as(Double.self) {
-                        Text(Self.formatElapsedAxis(secs))
-                            .monospacedDigit()
-                    }
-                }
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 6)) { value in
-                AxisGridLine()
-                AxisTick()
-                AxisValueLabel {
-                    if let v = value.as(Double.self) {
-                        Text(v.formatted(.number.notation(.compactName)))
-                            .monospacedDigit()
-                    }
-                }
-            }
-        }
-        .chartXAxisLabel("Session time", position: .bottom, alignment: .center)
-        .chartYAxisLabel("Moves / hour", position: .leading, alignment: .center)
-        .chartLegend(position: .bottom, alignment: .center, spacing: 10)
-        .chartXScale(
-            domain: 0...max(
-                progressRateSamples.last?.elapsedSec ?? 0,
-                ChartZoom.stops[chartZoomIdx]
+    /// The Chart's marks. Pulled out as a `@ChartContentBuilder`
+    /// helper so the marks type-check separately from the chain of
+    /// `.chart*` modifiers in `bigProgressChartCore`.
+    ///
+    /// One ForEach per series — SwiftUI Charts only connects
+    /// LineMarks that share a single enclosing ForEach AND a single
+    /// Y value. Packing all three series into ONE ForEach made
+    /// Charts emit spurious thin lines near y=0 because it couldn't
+    /// disambiguate which LineMarks belonged to which logical series
+    /// within the shared iteration. Splitting per series restores
+    /// the canonical multi-line rendering.
+    @ChartContentBuilder
+    private var bigProgressChartMarks: some ChartContent {
+        ForEach(progressRateSamples) { sample in
+            LineMark(
+                x: .value("Elapsed", sample.elapsedSec),
+                y: .value("Moves/hr", sample.combinedMovesPerHour)
             )
-        )
+            .foregroundStyle(by: .value("Series", "Combined"))
+        }
+        ForEach(progressRateSamples) { sample in
+            LineMark(
+                x: .value("Elapsed", sample.elapsedSec),
+                y: .value("Moves/hr", sample.selfPlayMovesPerHour)
+            )
+            .foregroundStyle(by: .value("Series", "Self-play"))
+        }
+        ForEach(progressRateSamples) { sample in
+            LineMark(
+                x: .value("Elapsed", sample.elapsedSec),
+                y: .value("Moves/hr", sample.trainingMovesPerHour)
+            )
+            .foregroundStyle(by: .value("Series", "Training"))
+        }
+        if let t = bigProgressChartHoveredSec {
+            RuleMark(x: .value("Elapsed", t))
+                .foregroundStyle(Color.gray.opacity(0.5))
+                .lineStyle(StrokeStyle(lineWidth: 1))
+        }
+    }
+
+    /// Chart + axis/legend/scale modifier chain. The marks live in
+    /// `bigProgressChartMarks` so the two pieces type-check
+    /// independently — the combined getter was 1052 ms before any
+    /// split, and 183 ms with marks inlined.
+    private var bigProgressChartCore: some View {
+        Chart { bigProgressChartMarks }
+            .chartForegroundStyleScale([
+                "Self-play": Color.blue,
+                "Training": Color.orange,
+                "Combined": Color.green
+            ])
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 6)) { value in
+                    AxisGridLine()
+                    AxisTick()
+                    AxisValueLabel {
+                        if let secs = value.as(Double.self) {
+                            Text(Self.formatElapsedAxis(secs))
+                                .monospacedDigit()
+                        }
+                    }
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .leading, values: .automatic(desiredCount: 6)) { value in
+                    AxisGridLine()
+                    AxisTick()
+                    AxisValueLabel {
+                        if let v = value.as(Double.self) {
+                            Text(v.formatted(.number.notation(.compactName)))
+                                .monospacedDigit()
+                        }
+                    }
+                }
+            }
+            .chartXAxisLabel("Session time", position: .bottom, alignment: .center)
+            .chartYAxisLabel("Moves / hour", position: .leading, alignment: .center)
+            .chartLegend(position: .bottom, alignment: .center, spacing: 10)
+            .chartXScale(
+                domain: 0...max(
+                    progressRateSamples.last?.elapsedSec ?? 0,
+                    ChartZoom.stops[chartZoomIdx]
+                )
+            )
     }
 
     /// Transparent hover-capture rectangle over the plot area, with a

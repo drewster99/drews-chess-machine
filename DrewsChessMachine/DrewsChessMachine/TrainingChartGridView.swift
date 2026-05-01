@@ -233,144 +233,161 @@ struct TrainingChartGridView: View {
     /// time (rather than nearest-sample logic, which would snap to
     /// the closest boundary instead of the containing band).
     private var arenaActivityChart: some View {
-        let events = arenaEvents
-        let hoverArenaID: Int? = {
-            guard let t = hoveredSec else { return nil }
-            for e in events where t >= e.startElapsedSec && t <= e.endElapsedSec {
-                return e.id
-            }
-            return nil
-        }()
-        // Latest sample's elapsed time gives us the "now" X coordinate
-        // to draw the live band out to. Falls back to the active
-        // start itself if no samples have landed yet (so the band
-        // still appears as a thin slice rather than being omitted).
-        let liveNow: Double? = {
-            guard let start = activeArenaStartElapsed else { return nil }
-            return max(start, trainingChartSamples.last?.elapsedSec ?? start)
-        }()
-        let headerText: String
-        // Header logic: live arena wins if one is running (so the
-        // reader knows arena play is active). Otherwise the hovered
-        // arena's stats if the cursor is over one; then the latest
-        // completed arena's summary; finally a running count.
-        if let start = activeArenaStartElapsed, let now = liveNow {
-            let elapsed = max(0, now - start)
-            let durMin = Int(elapsed) / 60
-            let durSec = Int(elapsed) % 60
-            headerText = String(format: "ARENA RUNNING  %d:%02d", durMin, durSec)
-        } else if let hoverArenaID,
-           let e = events.first(where: { $0.id == hoverArenaID }) {
-            let verdict = e.promoted ? "PROMOTED" : "kept"
-            let durMin = Int(e.endElapsedSec - e.startElapsedSec) / 60
-            let durSec = Int(e.endElapsedSec - e.startElapsedSec) % 60
-            headerText = String(
-                format: "#%d  %@  %.2f  %d:%02d",
-                e.id + 1, verdict, e.score, durMin, durSec
-            )
-        } else if let last = events.last {
-            let verdict = last.promoted ? "PROMOTED" : "kept"
-            headerText = String(format: "%d ran · last %@ %.2f", events.count, verdict, last.score)
-        } else {
-            headerText = "no arenas yet"
-        }
-        return chartCard {
+        chartCard {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 4) {
                     Text("Arena activity")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text(headerText)
+                    Text(arenaActivityHeaderText)
                         .font(.caption2)
                         .monospacedDigit()
                         .foregroundStyle(.primary)
                 }
-                Chart {
-                    // Two marks per arena:
-                    // 1. Faint full-height band showing the
-                    //    DURATION (always visible, even if the
-                    //    candidate scored 0 — a RectangleMark with
-                    //    yEnd=0 would otherwise collapse to
-                    //    invisible height and hide the arena
-                    //    entirely from the chart).
-                    // 2. Score bar from y=0 to y=score colored by
-                    //    promotion outcome (green promoted / gray
-                    //    kept). Score bar on top of the band so
-                    //    the "outcome" mark is the loud part, and
-                    //    the band just marks "arena ran here".
-                    ForEach(events) { e in
-                        RectangleMark(
-                            xStart: .value("Start", e.startElapsedSec),
-                            xEnd: .value("End", e.endElapsedSec),
-                            yStart: .value("Floor", 0.0),
-                            yEnd: .value("Top", 1.0)
-                        )
-                        .foregroundStyle(Color.secondary.opacity(hoverArenaID == e.id ? 0.25 : 0.12))
-                    }
-                    ForEach(events) { e in
-                        RectangleMark(
-                            xStart: .value("Start", e.startElapsedSec),
-                            xEnd: .value("End", e.endElapsedSec),
-                            yStart: .value("Floor", 0.0),
-                            yEnd: .value("Score", e.score)
-                        )
-                        .foregroundStyle(
-                            e.promoted
-                                ? Color.green.opacity(hoverArenaID == e.id ? 1.0 : 0.7)
-                                : Color.gray.opacity(hoverArenaID == e.id ? 1.0 : 0.5)
-                        )
-                    }
-                    // Live band for the in-progress arena: a
-                    // full-height blue rectangle from the arena's
-                    // start up to "now" (the latest chart sample).
-                    // Drawn BEFORE the threshold / crosshair so those
-                    // remain visible on top. Distinct color from the
-                    // gray/green completed-arena bars so the "arena
-                    // is actively running" state is unambiguous.
-                    if let start = activeArenaStartElapsed, let now = liveNow {
-                        RectangleMark(
-                            xStart: .value("Start", start),
-                            xEnd: .value("Now", now),
-                            yStart: .value("Floor", 0.0),
-                            yEnd: .value("Top", 1.0)
-                        )
-                        .foregroundStyle(Color.blue.opacity(0.35))
-                    }
-                    // Promotion threshold line.
-                    RuleMark(y: .value("Threshold", promoteThreshold))
-                        .foregroundStyle(Color.orange.opacity(0.6))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                    // Shared hover crosshair.
-                    if let t = hoveredSec {
-                        RuleMark(x: .value("Time", t))
-                            .foregroundStyle(Color.gray.opacity(0.5))
-                            .lineStyle(StrokeStyle(lineWidth: 1))
-                    }
-                }
-                .chartYScale(domain: 0...1.05)
-                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
-                .chartYAxis {
-                    AxisMarks(position: .leading, values: [0, 0.25, 0.5, 0.75, 1.0]) { value in
-                        AxisGridLine()
-                        AxisValueLabel {
-                            if let v = value.as(Double.self) {
-                                Text(String(format: "%.2f", v))
-                                    .font(.system(size: 7))
-                                    .monospacedDigit()
-                            }
-                        }
-                    }
-                }
-                .chartXScale(domain: timeSeriesXDomain)
-                .chartScrollableAxes(.horizontal)
-                .chartXVisibleDomain(length: visibleDomainSec)
-                .chartScrollPosition(x: $scrollX)
-                .chartOverlay { proxy in
-                    hoverOverlay(proxy: proxy)
-                }
+                arenaActivityChartBody
+                    .frame(height: 60)
             }
             .frame(height: 75)
+        }
+    }
+
+    /// Latest sample's elapsed time gives the "now" X coordinate to
+    /// draw the live band out to. Falls back to the active start itself
+    /// if no samples have landed yet (so the band still appears as a
+    /// thin slice rather than being omitted). Pulled out of
+    /// `arenaActivityChart` so the chart's getter type-checks faster.
+    private var arenaActivityLiveNow: Double? {
+        guard let start = activeArenaStartElapsed else { return nil }
+        return max(start, trainingChartSamples.last?.elapsedSec ?? start)
+    }
+
+    /// `id` of the arena event currently under the cursor (if any).
+    /// Used both for color-emphasis on the chart and as the hovered-
+    /// arena header text branch.
+    private var arenaActivityHoverArenaID: Int? {
+        guard let t = hoveredSec else { return nil }
+        for e in arenaEvents where t >= e.startElapsedSec && t <= e.endElapsedSec {
+            return e.id
+        }
+        return nil
+    }
+
+    /// Header logic: live arena wins if one is running (so the reader
+    /// knows arena play is active). Otherwise the hovered arena's
+    /// stats if the cursor is over one; then the latest completed
+    /// arena's summary; finally a running count.
+    private var arenaActivityHeaderText: String {
+        let events = arenaEvents
+        if let start = activeArenaStartElapsed, let now = arenaActivityLiveNow {
+            let elapsed = max(0, now - start)
+            let durMin = Int(elapsed) / 60
+            let durSec = Int(elapsed) % 60
+            return String(format: "ARENA RUNNING  %d:%02d", durMin, durSec)
+        } else if let hoverArenaID = arenaActivityHoverArenaID,
+                  let e = events.first(where: { $0.id == hoverArenaID }) {
+            let verdict = e.promoted ? "PROMOTED" : "kept"
+            let durMin = Int(e.endElapsedSec - e.startElapsedSec) / 60
+            let durSec = Int(e.endElapsedSec - e.startElapsedSec) % 60
+            return String(
+                format: "#%d  %@  %.2f  %d:%02d",
+                e.id + 1, verdict, e.score, durMin, durSec
+            )
+        } else if let last = events.last {
+            let verdict = last.promoted ? "PROMOTED" : "kept"
+            return String(format: "%d ran · last %@ %.2f", events.count, verdict, last.score)
+        } else {
+            return "no arenas yet"
+        }
+    }
+
+    /// The Chart and its modifier chain. Pulled out of
+    /// `arenaActivityChart` so the if/else header logic and the chart
+    /// generic stack type-check independently — before this split the
+    /// combined getter was 117 ms.
+    private var arenaActivityChartBody: some View {
+        let events = arenaEvents
+        let hoverArenaID = arenaActivityHoverArenaID
+        let liveNow = arenaActivityLiveNow
+        return Chart {
+            // Two marks per arena:
+            // 1. Faint full-height band showing the DURATION (always
+            //    visible, even if the candidate scored 0 — a
+            //    RectangleMark with yEnd=0 would otherwise collapse to
+            //    invisible height and hide the arena entirely from
+            //    the chart).
+            // 2. Score bar from y=0 to y=score colored by promotion
+            //    outcome (green promoted / gray kept). Score bar on
+            //    top of the band so the "outcome" mark is the loud
+            //    part, and the band just marks "arena ran here".
+            ForEach(events) { e in
+                RectangleMark(
+                    xStart: .value("Start", e.startElapsedSec),
+                    xEnd: .value("End", e.endElapsedSec),
+                    yStart: .value("Floor", 0.0),
+                    yEnd: .value("Top", 1.0)
+                )
+                .foregroundStyle(Color.secondary.opacity(hoverArenaID == e.id ? 0.25 : 0.12))
+            }
+            ForEach(events) { e in
+                RectangleMark(
+                    xStart: .value("Start", e.startElapsedSec),
+                    xEnd: .value("End", e.endElapsedSec),
+                    yStart: .value("Floor", 0.0),
+                    yEnd: .value("Score", e.score)
+                )
+                .foregroundStyle(
+                    e.promoted
+                        ? Color.green.opacity(hoverArenaID == e.id ? 1.0 : 0.7)
+                        : Color.gray.opacity(hoverArenaID == e.id ? 1.0 : 0.5)
+                )
+            }
+            // Live band for the in-progress arena: a full-height blue
+            // rectangle from the arena's start up to "now" (the latest
+            // chart sample). Drawn BEFORE the threshold / crosshair
+            // so those remain visible on top. Distinct color from the
+            // gray/green completed-arena bars so the "arena is
+            // actively running" state is unambiguous.
+            if let start = activeArenaStartElapsed, let now = liveNow {
+                RectangleMark(
+                    xStart: .value("Start", start),
+                    xEnd: .value("Now", now),
+                    yStart: .value("Floor", 0.0),
+                    yEnd: .value("Top", 1.0)
+                )
+                .foregroundStyle(Color.blue.opacity(0.35))
+            }
+            // Promotion threshold line.
+            RuleMark(y: .value("Threshold", promoteThreshold))
+                .foregroundStyle(Color.orange.opacity(0.6))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            // Shared hover crosshair.
+            if let t = hoveredSec {
+                RuleMark(x: .value("Time", t))
+                    .foregroundStyle(Color.gray.opacity(0.5))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+            }
+        }
+        .chartYScale(domain: 0...1.05)
+        .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: [0, 0.25, 0.5, 0.75, 1.0]) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let v = value.as(Double.self) {
+                        Text(String(format: "%.2f", v))
+                            .font(.system(size: 7))
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .chartXScale(domain: timeSeriesXDomain)
+        .chartScrollableAxes(.horizontal)
+        .chartXVisibleDomain(length: visibleDomainSec)
+        .chartScrollPosition(x: $scrollX)
+        .chartOverlay { proxy in
+            hoverOverlay(proxy: proxy)
         }
     }
 
@@ -693,45 +710,53 @@ struct TrainingChartGridView: View {
         }
     }
 
+    /// Chart marks for the small progress-rate sparkline. Pulled out
+    /// as a `@ChartContentBuilder` helper so it type-checks
+    /// separately from the modifier chain on `progressRateChartBody`.
+    ///
+    /// One ForEach per series — SwiftUI Charts only connects
+    /// LineMarks that share a single enclosing ForEach. Packing all
+    /// three series into one ForEach produced spurious flat lines at
+    /// y=0 because Charts couldn't disambiguate series within the
+    /// shared iteration.
+    @ChartContentBuilder
+    private var progressRateChartMarks: some ChartContent {
+        ForEach(progressRateSamples) { sample in
+            LineMark(
+                x: .value("Time", sample.elapsedSec),
+                y: .value("Moves/hr", sample.combinedMovesPerHour)
+            )
+            .foregroundStyle(by: .value("Series", "Combined"))
+        }
+        ForEach(progressRateSamples) { sample in
+            LineMark(
+                x: .value("Time", sample.elapsedSec),
+                y: .value("Moves/hr", sample.selfPlayMovesPerHour)
+            )
+            .foregroundStyle(by: .value("Series", "Self-play"))
+        }
+        ForEach(progressRateSamples) { sample in
+            LineMark(
+                x: .value("Time", sample.elapsedSec),
+                y: .value("Moves/hr", sample.trainingMovesPerHour)
+            )
+            .foregroundStyle(by: .value("Series", "Training"))
+        }
+        // Crosshair: vertical line at the hovered time, only rendered
+        // when a hover is active.
+        if let t = hoveredSec {
+            RuleMark(x: .value("Time", t))
+                .foregroundStyle(Color.gray.opacity(0.5))
+                .lineStyle(StrokeStyle(lineWidth: 1))
+        }
+    }
+
     // The Chart and its modifier chain. Pulled out so it type-checks
     // independently of `progressRateChart`'s outer scaffolding —
-    // before this split, the combined getter was 223 ms.
+    // before this split, the combined getter was 223 ms; with marks
+    // inlined, body alone was 147 ms.
     private var progressRateChartBody: some View {
-        Chart {
-            // One ForEach per series — SwiftUI Charts only connects
-            // LineMarks that share a single enclosing ForEach. Packing
-            // all three series into one ForEach produced spurious flat
-            // lines at y=0 because Charts couldn't disambiguate series
-            // within the shared iteration.
-            ForEach(progressRateSamples) { sample in
-                LineMark(
-                    x: .value("Time", sample.elapsedSec),
-                    y: .value("Moves/hr", sample.combinedMovesPerHour)
-                )
-                .foregroundStyle(by: .value("Series", "Combined"))
-            }
-            ForEach(progressRateSamples) { sample in
-                LineMark(
-                    x: .value("Time", sample.elapsedSec),
-                    y: .value("Moves/hr", sample.selfPlayMovesPerHour)
-                )
-                .foregroundStyle(by: .value("Series", "Self-play"))
-            }
-            ForEach(progressRateSamples) { sample in
-                LineMark(
-                    x: .value("Time", sample.elapsedSec),
-                    y: .value("Moves/hr", sample.trainingMovesPerHour)
-                )
-                .foregroundStyle(by: .value("Series", "Training"))
-            }
-            // Crosshair: vertical line at the hovered time, only
-            // rendered when a hover is active.
-            if let t = hoveredSec {
-                RuleMark(x: .value("Time", t))
-                    .foregroundStyle(Color.gray.opacity(0.5))
-                    .lineStyle(StrokeStyle(lineWidth: 1))
-            }
-        }
+        Chart { progressRateChartMarks }
         .chartForegroundStyleScale([
             "Self-play": Color.blue,
             "Training": Color.orange,
