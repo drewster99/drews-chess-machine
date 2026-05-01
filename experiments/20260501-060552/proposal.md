@@ -1,0 +1,1 @@
+Extend training window 3300s→3600s with identical parameters. The 3300s baseline (build 411) finished healthy: end-of-run illegal_mass 0.211, max_prob 0.286, pEnt min 6.64, top1_legal positive throughout. Continuing the +300s cadence on a stable axis.

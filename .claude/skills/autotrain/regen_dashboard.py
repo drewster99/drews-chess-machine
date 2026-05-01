@@ -326,6 +326,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .new { color: #111; font-weight: 600; }
   .commentary { max-width: 520px; white-space: pre-wrap; }
   .details { max-width: 360px; white-space: pre-wrap; }
+  /* Column sizing — start column wider so the local timestamp stays on
+     a single line; param-deltas narrower since the diff is short. */
+  th.col-start, td.col-start { width: 180px; min-width: 180px; white-space: nowrap; }
+  th.col-deltas, td.col-deltas { width: 240px; max-width: 240px; }
+  td.col-deltas .diff { white-space: normal; word-break: break-word; }
   tr.flash { animation: flash 1.6s ease-out; }
   @keyframes flash {
     from { background-color: #fff59d; }
@@ -391,11 +396,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <table id="experiments">
   <thead>
     <tr>
-      <th>Start (local)</th>
+      <th class="col-start">Start (local)</th>
       <th>Status</th>
       <th>Dur.</th>
       <th>Change</th>
-      <th>Param deltas</th>
+      <th class="col-deltas">Param deltas</th>
       <th>Params</th>
       <th>Analysis</th>
       <th>Folder</th>
@@ -426,6 +431,16 @@ function escHTML(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// Cache the local TZ abbreviation (e.g. "CDT") once per page load.
+const LOCAL_TZ_ABBR = (() => {
+  try {
+    const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+      .formatToParts(new Date());
+    const tz = parts.find(p => p.type === 'timeZoneName');
+    return tz ? tz.value : '';
+  } catch (e) { return ''; }
+})();
+
 function fmtLocal(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -436,7 +451,8 @@ function fmtLocal(iso) {
   const hh = String(d.getHours()).padStart(2, '0');
   const mi = String(d.getMinutes()).padStart(2, '0');
   const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+  const tz = LOCAL_TZ_ABBR ? ` ${LOCAL_TZ_ABBR}` : '';
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}${tz}`;
 }
 
 function fmtVal(v) {
@@ -470,11 +486,11 @@ function renderRow(exp) {
     ? `<span class="params-link" data-key="${escHTML(rowKey(exp))}">view</span>`
     : '<em>—</em>';
   tr.innerHTML = `
-    <td class="mono">${escHTML(fmtLocal(exp.start_time_iso))}</td>
+    <td class="mono col-start">${escHTML(fmtLocal(exp.start_time_iso))}</td>
     <td>${statusCell}</td>
     <td class="mono">${durCell}</td>
     <td class="details">${escHTML(exp.change_details || '')}</td>
-    <td>${deltas}</td>
+    <td class="col-deltas">${deltas}</td>
     <td>${paramsCell}</td>
     <td class="commentary">${escHTML(exp.analysis_commentary || '')}</td>
     <td><a href="${escHTML(exp.folder || '')}/"><code>${escHTML(exp.folder || '')}</code></a></td>
@@ -669,7 +685,7 @@ def main():
     # revision — that way existing dashboards auto-upgrade to new features
     # (like the params modal) without the user having to delete the file, but
     # we don't churn mtime every regen when the template hasn't changed.
-    template_marker = "Code iter"
+    template_marker = "col-start"
     if not OUT_HTML.is_file() or template_marker not in OUT_HTML.read_text():
         OUT_HTML.write_text(HTML_TEMPLATE)
     print(f"regen_dashboard: {len(rows)} runs -> {OUT_JS.relative_to(REPO_ROOT)}")
