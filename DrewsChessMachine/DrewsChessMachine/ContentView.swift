@@ -1770,11 +1770,11 @@ struct ContentView: View {
     /// batchers. The barrier fires on either count-met OR window-
     /// elapsed, whichever happens first; the window only kicks in when
     /// games desynchronize and the count barrier alone wouldn't fire.
-    /// 30 ms gives close-to-K-sized batches more room to assemble in
-    /// the desynchronized steady-state without making any single slot
-    /// pay too much wall-clock for the coalesce. Hardcoded for now;
-    /// promote to a UI / persisted setting only if profiling motivates
-    /// it.
+    /// 100 ms gives close-to-K-sized batches plenty of room to
+    /// assemble in the desynchronized steady-state without making any
+    /// single slot pay too much wall-clock for the coalesce.
+    /// Hardcoded for now; promote to a UI / persisted setting only
+    /// if profiling motivates it.
     nonisolated static let arenaBatchWaitMs: Double = 100.0
     /// Candidate-score threshold for promotion. The AlphaZero paper's
     /// default. Demands the candidate score at least 110/200 points,
