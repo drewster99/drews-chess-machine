@@ -11,7 +11,8 @@
 #   DCM_TIME_FLAG     (default: --training-time-limit)
 #   DCM_OUT_FLAG      (default: --results-output)
 #
-# Delegates binary discovery to ../../../run_debug.sh at the repo root.
+# Delegates binary discovery to ../../../run_latest.sh at the repo root,
+# which picks whichever of the Debug/Release builds was built most recently.
 
 set -u
 
@@ -33,10 +34,10 @@ OUT_FLAG="${DCM_OUT_FLAG:---output}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-RUN_DEBUG="$REPO_ROOT/run_debug.sh"
+RUN_LATEST="$REPO_ROOT/run_latest.sh"
 
-if [ ! -x "$RUN_DEBUG" ]; then
-    echo "$PROG: expected $RUN_DEBUG to exist and be executable" >&2
+if [ ! -x "$RUN_LATEST" ]; then
+    echo "$PROG: expected $RUN_LATEST to exist and be executable" >&2
     exit 3
 fi
 
@@ -95,7 +96,7 @@ WATCHDOG=$((TIME_LIMIT + 120))
 # If it's already past the internal limit by $WATCHDOG seconds, something is
 # wrong — send SIGTERM, and escalate to SIGKILL if still running.
 (
-    "$RUN_DEBUG" \
+    "$RUN_LATEST" \
         --train \
         "$PARAMS_FLAG" "$PARAMS" \
         "$TIME_FLAG" "$TIME_LIMIT" \

@@ -9,7 +9,7 @@ This skill runs **one** iteration of a propose → run → analyze → accept/re
 
 Repo root (referred to below as `$ROOT`): `/Users/andrew/cursor/drews-chess-machine`.
 
-The app is launched via `$ROOT/run_debug.sh` (a thin wrapper that locates the Debug `.app` under DerivedData and execs it with any extra args).
+The app is launched via `$ROOT/run_latest.sh` (a thin wrapper that picks the most recently built Debug or Release `.app` under DerivedData and execs it with any extra args).
 
 ## State layout
 
@@ -28,7 +28,7 @@ The app is launched via `$ROOT/run_debug.sh` (a thin wrapper that locates the De
 ## Tools
 
 - `$ROOT/.claude/skills/autotrain/run_training.sh <params-json> <time-limit-seconds> <output-json> [log-file]`
-  Thin wrapper around `$ROOT/run_debug.sh` that passes the right CLI flags, waits for exit, and verifies the output file. Flag names are configurable via env vars `DCM_PARAMS_FLAG`, `DCM_TIME_FLAG`, `DCM_OUT_FLAG` if they ever change.
+  Thin wrapper around `$ROOT/run_latest.sh` that passes the right CLI flags, waits for exit, and verifies the output file. Flag names are configurable via env vars `DCM_PARAMS_FLAG`, `DCM_TIME_FLAG`, `DCM_OUT_FLAG` if they ever change.
 - `$ROOT/.claude/skills/autotrain/regen_dashboard.py`
   Scans `experiments/*/` and rewrites `$ROOT/experiment_results.js` (and creates `$ROOT/experiment_results.html` the first time). The HTML page auto-polls the `.js` sidecar every 15 s via a cache-busted `<script>` reinjection — new rows are appended in place without reloading, so scroll position is preserved. Invoke as `python3 $ROOT/.claude/skills/autotrain/regen_dashboard.py`.
 - `$ROOT/.claude/skills/autotrain/summarize_results.py <path-to-results.json>`
