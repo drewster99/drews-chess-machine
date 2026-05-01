@@ -7058,17 +7058,26 @@ struct ContentView: View {
         // 0 partway through the tournament and forced the rest of
         // the run through drain mode = single-position batches.
         let liveK = max(1, min(effectiveArenaConcurrency, totalGames))
+        // Joint GPU-busy-wall accumulator shared across both batchers.
+        // Each fire reports start/end around its `network.evaluate`
+        // await; the timer accumulates wall time during which AT
+        // LEAST ONE side was on the GPU. Read once at the end of
+        // arena to emit a single `[ARENA] timing joint` line that's
+        // directly comparable to arena wall.
+        let arenaGpuTimer = ArenaGpuTimer()
         let candidateBatcher = BatchedMoveEvaluationSource(
             network: candidateInference,
             maxBatchWaitMs: Self.arenaBatchWaitMs,
             name: "candidate",
-            logBatchTimings: true
+            logBatchTimings: true,
+            gpuTimer: arenaGpuTimer
         )
         let championBatcher = BatchedMoveEvaluationSource(
             network: arenaChampion,
             maxBatchWaitMs: Self.arenaBatchWaitMs,
             name: "champion",
-            logBatchTimings: true
+            logBatchTimings: true,
+            gpuTimer: arenaGpuTimer
         )
         await candidateBatcher.setExpectedSlotCount(liveK)
         await championBatcher.setExpectedSlotCount(liveK)
@@ -7166,6 +7175,7 @@ struct ContentView: View {
             await emitArenaPostRunTelemetry(
                 candidateBatcher: candidateBatcher,
                 championBatcher: championBatcher,
+                gpuTimer: arenaGpuTimer,
                 recordsBox: recordsBox,
                 wasCancelled: cancelBox.isCancelled || overrideBox.isActive,
                 context: "after error",
@@ -7187,6 +7197,7 @@ struct ContentView: View {
         await emitArenaPostRunTelemetry(
             candidateBatcher: candidateBatcher,
             championBatcher: championBatcher,
+            gpuTimer: arenaGpuTimer,
             recordsBox: recordsBox,
             wasCancelled: cancelBox.isCancelled || overrideBox.isActive,
             context: nil,
@@ -7633,6 +7644,7 @@ struct ContentView: View {
     private func emitArenaPostRunTelemetry(
         candidateBatcher: BatchedMoveEvaluationSource,
         championBatcher: BatchedMoveEvaluationSource,
+        gpuTimer: ArenaGpuTimer,
         recordsBox: TournamentRecordsBox,
         wasCancelled: Bool,
         context: String?,
@@ -7651,17 +7663,67 @@ struct ContentView: View {
             "[ARENA] batch sizes  champion \(suffix): \(championBatchStats.formatLogLine())"
         )
 
-        // Wall-clock timing breakdown: per-batcher wait/run vs the
-        // total arena duration. `other` is the residual that's
-        // neither wait nor run — time the batcher had nothing to do
-        // (the OTHER batcher was busy, or slots were doing CPU-side
-        // work between submissions). Each batcher is independent so
-        // the two `other` numbers don't sum to anything meaningful;
-        // they're each "how much of arena wall time was this batcher
-        // idle".
+        // Joint GPU-wall timing: a single number for "wall time during
+        // which AT LEAST one side was on the GPU." Emitted before the
+        // per-side timing lines because it's the easier-to-read summary
+        // — `nonGpu = wall - gpu` is exactly the time the GPU was idle
+        // (CPU per-ply work, scheduler gaps, continuation-resume
+        // backpressure), with no per-side double-counting. The
+        // per-side lines that follow remain useful for spotting
+        // candidate-vs-champion balance (run-time difference, wait
+        // asymmetry).
         let arenaTotalSec = max(0, Date().timeIntervalSince(arenaStartTime))
+        let gpuBusySec = gpuTimer.totalBusyMs() / 1000.0
+        let nonGpuSec = max(0, arenaTotalSec - gpuBusySec)
+        let gpuUtilPct = arenaTotalSec > 0 ? (gpuBusySec / arenaTotalSec) * 100.0 : 0.0
+        SessionLogger.shared.log(String(
+            format: "[ARENA] timing joint%@: wall=%.1fs gpu=%.1fs nonGpu=%.1fs (gpu_util=%.1f%%)",
+            suffix,
+            arenaTotalSec,
+            gpuBusySec,
+            nonGpuSec,
+            gpuUtilPct
+        ))
+
+        // Per-side wall-clock breakdown: wait/run vs the total arena
+        // duration. `other` is the residual that's neither wait nor
+        // run — time this batcher had nothing to do (the OTHER batcher
+        // was busy, or slots were doing CPU-side work between
+        // submissions). Each batcher is independent so the two `other`
+        // numbers don't sum to anything meaningful; they're each "how
+        // much of arena wall time was this batcher idle". Use the
+        // joint line above for true GPU saturation.
         emitArenaTimingLine(label: "candidate", suffix: suffix, totalSec: arenaTotalSec, stats: candidateTimingStats)
         emitArenaTimingLine(label: "champion ", suffix: suffix, totalSec: arenaTotalSec, stats: championTimingStats)
+
+        // Fire-reason histogram: answers "is the coalescing-window
+        // timer actually firing the barrier, or are we just hitting
+        // count-met every time?" without forcing a reader to infer
+        // it from the size histogram. Always emits all five reasons
+        // so the cand/champ lines line up visually for asymmetry
+        // checks. Healthy steady-state: `full` dominates, `timer`
+        // small, `drain` small (only on tournament drain), `threshold`
+        // and `refill` small or zero.
+        SessionLogger.shared.log(
+            "[ARENA] fire reasons candidate\(suffix): \(candidateBatchStats.formatFireReasonsLine())"
+        )
+        SessionLogger.shared.log(
+            "[ARENA] fire reasons champion \(suffix): \(championBatchStats.formatFireReasonsLine())"
+        )
+
+        // Pre/post `expectedSlotCount` drift counters: how many fires
+        // saw the slot-count change during the GPU await, plus the
+        // largest such delta. Steady-state non-zero is healthy (games
+        // ending mid-fire is the dominant cause). Asymmetry across
+        // sides or a sustained `maxDelta > ~5` would point at the
+        // coordination paths between the harvest loop and the batcher
+        // actor.
+        SessionLogger.shared.log(
+            "[ARENA] expected-drift candidate\(suffix): \(candidateBatchStats.formatExpectedDriftLine())"
+        )
+        SessionLogger.shared.log(
+            "[ARENA] expected-drift champion \(suffix): \(championBatchStats.formatExpectedDriftLine())"
+        )
 
         if wasCancelled {
             // Partial records under cancellation can be
@@ -8296,6 +8358,9 @@ struct ContentView: View {
                     entropyRegularizationCoeff = Double(entropyCoeff)
                 } else {
                     trainer.entropyRegularizationCoeff = Float(entropyRegularizationCoeff)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] entropy_bonus: saved=nil applied=\(entropyRegularizationCoeff) (defaulted)"
+                    )
                 }
                 if let dp = rs.drawPenalty {
                     SessionLogger.shared.log(
@@ -8305,10 +8370,15 @@ struct ContentView: View {
                     drawPenalty = Double(dp)
                 } else {
                     trainer.drawPenalty = Float(drawPenalty)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] draw_penalty: saved=nil applied=\(drawPenalty) (defaulted)"
+                    )
                 }
                 // Regularization knobs that became editable post-v1 session
                 // files: hydrate when present, otherwise leave the current
-                // @AppStorage-backed value alone.
+                // @AppStorage-backed value alone but log the fallthrough
+                // so a session saved before this field existed never
+                // resumes silently under different defaults.
                 if let wd = rs.weightDecayCoeff {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] weight_decay: \(weightDecayC) -> \(wd) (from session)"
@@ -8317,6 +8387,9 @@ struct ContentView: View {
                     weightDecayC = Double(wd)
                 } else {
                     trainer.weightDecayC = Float(weightDecayC)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] weight_decay: saved=nil applied=\(weightDecayC) (defaulted)"
+                    )
                 }
                 if let clip = rs.gradClipMaxNorm {
                     SessionLogger.shared.log(
@@ -8326,6 +8399,9 @@ struct ContentView: View {
                     gradClipMaxNorm = Double(clip)
                 } else {
                     trainer.gradClipMaxNorm = Float(gradClipMaxNorm)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] grad_clip_max_norm: saved=nil applied=\(gradClipMaxNorm) (defaulted)"
+                    )
                 }
                 if let k = rs.policyScaleK {
                     SessionLogger.shared.log(
@@ -8335,6 +8411,9 @@ struct ContentView: View {
                     policyScaleK = Double(k)
                 } else {
                     trainer.policyScaleK = Float(policyScaleK)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] K: saved=nil applied=\(policyScaleK) (defaulted)"
+                    )
                 }
                 // LR warmup length and sqrt-batch LR scaling are now
                 // part of the session schema (Optional, for back-compat
@@ -8349,13 +8428,13 @@ struct ContentView: View {
                 // seeded from `trainingSteps` so warmup scaling resumes
                 // mid-session instead of restarting from zero.
                 //
-                // Each restored field emits a `[RESUME-PARAM]` log
-                // line so the user can audit, after the fact, which
-                // parameters came from disk versus from `@AppStorage`
-                // fallback. Lines fire only when the saved value is
-                // present and valid — the fallback path is the
-                // common case for older session files and is silent
-                // to avoid log spam.
+                // Every applied parameter emits a `[RESUME-PARAM]`
+                // log line — both the "from session" and the
+                // "saved=nil applied=… (defaulted)" branches — so
+                // resuming an older session under post-schema-
+                // expansion defaults can never silently drift the
+                // applied value away from what the session was
+                // trained under.
                 if let savedSqrt = rs.sqrtBatchScalingForLR {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] sqrt_batch_scaling_lr: \(sqrtBatchScalingForLR) -> \(savedSqrt) (from session)"
@@ -8364,6 +8443,9 @@ struct ContentView: View {
                     sqrtBatchScalingForLR = savedSqrt
                 } else {
                     trainer.sqrtBatchScalingForLR = sqrtBatchScalingForLR
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] sqrt_batch_scaling_lr: saved=nil applied=\(sqrtBatchScalingForLR) (defaulted)"
+                    )
                 }
                 if let savedWarmup = rs.lrWarmupSteps, savedWarmup >= 0 {
                     SessionLogger.shared.log(
@@ -8373,21 +8455,36 @@ struct ContentView: View {
                     lrWarmupSteps = savedWarmup
                 } else {
                     trainer.lrWarmupSteps = lrWarmupSteps
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] lr_warmup_steps: saved=nil applied=\(lrWarmupSteps) (defaulted)"
+                    )
                 }
                 trainer.completedTrainSteps = rs.trainingSteps
                 // Run-management knobs that previously lived only in
-                // @AppStorage. Same Optional-with-fallback pattern.
+                // @AppStorage. Same Optional-with-fallback pattern but
+                // logged on both branches: a saved=nil line when an
+                // older session is resumed under post-`74839ee`
+                // defaults makes the silent-fallback regression that
+                // motivated this audit impossible.
                 if let v = rs.replayBufferMinPositionsBeforeTraining, v >= 0 {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] replay_buffer_min_positions_before_training: \(effectiveMinBufferBeforeTraining) -> \(v) (from session)"
                     )
                     effectiveMinBufferBeforeTraining = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] replay_buffer_min_positions_before_training: saved=nil applied=\(effectiveMinBufferBeforeTraining) (defaulted)"
+                    )
                 }
                 if let v = rs.arenaAutoIntervalSec, v > 0 {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] arena_auto_interval_sec: \(effectiveAutoArenaIntervalSec) -> \(v) (from session)"
                     )
                     effectiveAutoArenaIntervalSec = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] arena_auto_interval_sec: saved=nil applied=\(effectiveAutoArenaIntervalSec) (defaulted)"
+                    )
                 }
                 if let v = rs.arenaConcurrency, v >= 1 {
                     let clamped = min(Self.absoluteMaxArenaConcurrency, v)
@@ -8395,30 +8492,50 @@ struct ContentView: View {
                         "[RESUME-PARAM] arena_concurrency: \(effectiveArenaConcurrency) -> \(clamped) (from session)"
                     )
                     effectiveArenaConcurrency = clamped
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] arena_concurrency: saved=nil applied=\(effectiveArenaConcurrency) (defaulted)"
+                    )
                 }
                 if let v = rs.candidateProbeIntervalSec, v > 0 {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] candidate_probe_interval_sec: \(effectiveCandidateProbeIntervalSec) -> \(v) (from session)"
                     )
                     effectiveCandidateProbeIntervalSec = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] candidate_probe_interval_sec: saved=nil applied=\(effectiveCandidateProbeIntervalSec) (defaulted)"
+                    )
                 }
                 if let v = rs.legalMassCollapseThreshold, v > 0, v < 1 {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] legal_mass_collapse_threshold: \(legalMassCollapseThreshold) -> \(v) (from session)"
                     )
                     legalMassCollapseThreshold = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] legal_mass_collapse_threshold: saved=nil applied=\(legalMassCollapseThreshold) (defaulted)"
+                    )
                 }
                 if let v = rs.legalMassCollapseGraceSeconds, v >= 0 {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] legal_mass_collapse_grace_seconds: \(legalMassCollapseGraceSeconds) -> \(v) (from session)"
                     )
                     legalMassCollapseGraceSeconds = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] legal_mass_collapse_grace_seconds: saved=nil applied=\(legalMassCollapseGraceSeconds) (defaulted)"
+                    )
                 }
                 if let v = rs.legalMassCollapseNoImprovementProbes, v >= 1 {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: \(legalMassCollapseNoImprovementProbes) -> \(v) (from session)"
                     )
                     legalMassCollapseNoImprovementProbes = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] legal_mass_collapse_no_improvement_probes: saved=nil applied=\(legalMassCollapseNoImprovementProbes) (defaulted)"
+                    )
                 }
                 // Sampling schedule — TauConfigCodable is non-Optional on
                 // the session schema (added in v1), so no fallback branch.

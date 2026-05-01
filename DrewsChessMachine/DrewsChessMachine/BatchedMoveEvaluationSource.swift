@@ -15,6 +15,35 @@ enum BatchedMoveEvaluationSourceError: LocalizedError {
 
 // MARK: - Barrier Batcher
 
+/// Why a barrier fire was scheduled. Tagged at every
+/// `scheduleBatchFireIfNeeded` call site so the end-of-arena summary
+/// can answer "is the coalescing-window timer actually in play?"
+/// directly, rather than having to infer it from the size histogram.
+///
+/// - `full`: a submission landed and pushed `pending.count` to or above
+///   `expectedSlotCount`. The healthy steady-state case at sane wait
+///   configurations.
+/// - `timer`: the coalescing-window timer expired with `pending` still
+///   non-empty and the count barrier not met. Indicates the wait knob
+///   is actually doing something — or that one or more slots have
+///   stalled in their per-ply CPU work and aren't keeping up.
+/// - `drain`: `expectedSlotCount == 0` (drain mode). Used during arena
+///   pauses and session shutdown so parked callers always make
+///   progress.
+/// - `threshold`: `setExpectedSlotCount` lowered the bar below the
+///   currently-pending count. Same effect as `full`, different cause —
+///   tracking separately makes "we shrank the pool mid-arena" visible.
+/// - `refill`: at the end of `fireBatch`, `pending` was non-empty and
+///   met the (possibly-lowered) threshold, so we scheduled the next
+///   fire immediately. Indicates back-to-back fires with no idle gap.
+enum FireReason: String, Sendable, CaseIterable {
+    case full
+    case timer
+    case drain
+    case threshold
+    case refill
+}
+
 /// Snapshot of batch-size telemetry collected by a
 /// `BatchedMoveEvaluationSource` since it was constructed. Used by the
 /// arena callsite to log, on tournament end, how much GPU batching the
@@ -30,10 +59,25 @@ struct BatchSizeStats: Sendable {
     let maxBatch: Int
     let mean: Double
     let histogram: [Int: Int]
+    /// Per-fire-reason counters. Total across keys equals the number
+    /// of *scheduled* fires (which is `>= totalBatches` because a
+    /// scheduled fire can land in `fireBatch` with an empty batch when
+    /// the only pending submission was cancelled — see the
+    /// "Cancellation race" guard in `fireBatch`).
+    let fireReasonCounts: [FireReason: Int]
+    /// Number of fires where `expectedSlotCount` changed during the
+    /// `await network.evaluate(...)` GPU window. Non-zero is normal —
+    /// games end during fires — but asymmetry across cand/champ or a
+    /// large `expectedDriftMaxDelta` would point at coordination
+    /// problems between the harvest loop and the slot-count actor.
+    let expectedDriftCount: Int
+    let expectedDriftMaxDelta: Int
 
     static let empty = BatchSizeStats(
         totalBatches: 0, totalPositions: 0,
-        minBatch: 0, maxBatch: 0, mean: 0, histogram: [:]
+        minBatch: 0, maxBatch: 0, mean: 0, histogram: [:],
+        fireReasonCounts: [:],
+        expectedDriftCount: 0, expectedDriftMaxDelta: 0
     )
 
     /// Render the histogram + summary into a single human-readable line
@@ -49,6 +93,29 @@ struct BatchSizeStats: Sendable {
             format: "mean=%.2f min=%d max=%d batches=%d positions=%d hist={%@}",
             mean, minBatch, maxBatch, totalBatches, totalPositions, histStr
         )
+    }
+
+    /// Render the fire-reason counters into a single human-readable
+    /// line. Always emits all five reasons in a fixed order so two
+    /// lines (cand vs champ) can be eyeballed for asymmetry without
+    /// having to mentally line up the keys. Missing reasons render
+    /// as `=0` for the same reason.
+    func formatFireReasonsLine() -> String {
+        let order: [FireReason] = [.full, .timer, .drain, .threshold, .refill]
+        let parts = order.map { r in
+            "\(r.rawValue)=\(fireReasonCounts[r] ?? 0)"
+        }
+        return parts.joined(separator: " ")
+    }
+
+    /// Render the `expectedSlotCount`-drift counters. `drifts` is
+    /// the number of fires whose GPU-await window saw a change in
+    /// `expectedSlotCount`; `maxDelta` is the largest absolute change
+    /// seen across all drifting fires. Steady-state non-zero `drifts`
+    /// is healthy (slot retirement during a fire is expected); cross-
+    /// side asymmetry or `maxDelta > ~5` is the interesting signal.
+    func formatExpectedDriftLine() -> String {
+        return "drifts=\(expectedDriftCount) maxDelta=\(expectedDriftMaxDelta) (out of batches=\(totalBatches))"
     }
 }
 
@@ -201,6 +268,25 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     private var batchSizeMin: Int = .max
     private var batchSizeMax: Int = 0
 
+    /// Per-fire-reason counter. Incremented at every successful
+    /// `scheduleBatchFireIfNeeded` call (i.e. ones that pass the
+    /// `batchFireScheduled` guard). A scheduled fire that ultimately
+    /// lands in `fireBatch` with an empty batch (cancellation race)
+    /// still counts here — the count is "scheduled fires" not
+    /// "successful evaluates" — because the scheduling intent is
+    /// itself the diagnostic signal.
+    private var fireReasonCounts: [FireReason: Int] = [:]
+
+    /// Drift detection: number of fires whose `await network.evaluate`
+    /// window observed a change in `expectedSlotCount` between entry
+    /// and resume, plus the max absolute change seen. Mirrors the
+    /// `expected-drift` log line emitted at end of arena. The shape
+    /// of the signal we're watching for is asymmetry across cand/
+    /// champ or sustained `maxDelta > ~5`; small drift counts are
+    /// the norm because games end during fires.
+    private var expectedDriftCount: Int = 0
+    private var expectedDriftMaxDelta: Int = 0
+
     /// Wall-clock timing accumulators, paired with the size histogram
     /// above. `batchPendingStartedNanos` records the `DispatchTime`
     /// at which `pending` last transitioned 0 → 1 in the current
@@ -222,6 +308,15 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// (positions_produced, elapsed) pair — far finer-grained than
     /// the previous once-per-game event cadence.
     private var replayRatioController: ReplayRatioController? = nil
+
+    /// Optional joint-GPU timer shared across the two arena batchers.
+    /// Each barrier fire reports `fireStarted` / `fireEnded` around
+    /// the `await network.evaluate(...)` call so the arena callsite
+    /// can emit a single `[ARENA] timing joint` line covering wall-
+    /// clock during which AT LEAST ONE side was on the GPU. nil for
+    /// self-play (only one batcher exists) and for any path that
+    /// doesn't care about cross-batcher GPU saturation.
+    private let gpuTimer: ArenaGpuTimer?
 
     /// CFAbsoluteTime (seconds, monotonic-ish) of the previous barrier
     /// fire, used to compute inter-tick elapsed for the ratio
@@ -283,12 +378,14 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         network: ChessMPSNetwork,
         maxBatchWaitMs: Double = 0,
         name: String = "",
-        logBatchTimings: Bool = false
+        logBatchTimings: Bool = false,
+        gpuTimer: ArenaGpuTimer? = nil
     ) {
         self.network = network
         self.maxBatchWaitMs = max(0, maxBatchWaitMs)
         self.name = name
         self.logBatchTimings = logBatchTimings
+        self.gpuTimer = gpuTimer
     }
 
     // MARK: - Slot-Count Coordination
@@ -321,7 +418,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             lastBarrierFireAt = nil
         }
         if !pending.isEmpty && (n == 0 || pending.count >= n) {
-            scheduleBatchFireIfNeeded()
+            scheduleBatchFireIfNeeded(reason: n == 0 ? .drain : .threshold)
         }
     }
 
@@ -342,7 +439,21 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// concurrent batching the run actually achieved.
     func snapshotBatchSizeStats() -> BatchSizeStats {
         guard batchSizeTotalBatches > 0 else {
-            return .empty
+            // Even on a no-batches path we still want fire-reason
+            // counters preserved — `.empty` zeros them, but if a
+            // tournament was cancelled before any batch completed
+            // there could still be schedule attempts worth surfacing.
+            return BatchSizeStats(
+                totalBatches: 0,
+                totalPositions: 0,
+                minBatch: 0,
+                maxBatch: 0,
+                mean: 0,
+                histogram: [:],
+                fireReasonCounts: fireReasonCounts,
+                expectedDriftCount: expectedDriftCount,
+                expectedDriftMaxDelta: expectedDriftMaxDelta
+            )
         }
         let mean = Double(batchSizeTotalPositions) / Double(batchSizeTotalBatches)
         return BatchSizeStats(
@@ -351,7 +462,10 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             minBatch: batchSizeMin == .max ? 0 : batchSizeMin,
             maxBatch: batchSizeMax,
             mean: mean,
-            histogram: batchSizeCounts
+            histogram: batchSizeCounts,
+            fireReasonCounts: fireReasonCounts,
+            expectedDriftCount: expectedDriftCount,
+            expectedDriftMaxDelta: expectedDriftMaxDelta
         )
     }
 
@@ -424,7 +538,9 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
                 //   so in-flight slots can finish their current
                 //   games and exit.
                 if expectedSlotCount == 0 || pending.count >= expectedSlotCount {
-                    scheduleBatchFireIfNeeded()
+                    scheduleBatchFireIfNeeded(
+                        reason: expectedSlotCount == 0 ? .drain : .full
+                    )
                 } else if wasEmpty && maxBatchWaitMs > 0 && expectedSlotCount > 0 {
                     // Coalescing-window timer (arena mode). Schedule
                     // a backstop fire for the current generation;
@@ -480,7 +596,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         }
     }
 
-    private func scheduleBatchFireIfNeeded() {
+    private func scheduleBatchFireIfNeeded(reason: FireReason) {
         guard !batchFireScheduled else { return }
         batchFireScheduled = true
         // Bump the generation here as well so any in-flight timer
@@ -489,6 +605,13 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         // leave a sleeping timer that, on wake-up, would try to fire
         // an empty (or freshly partial) queue.
         batchWaitGeneration &+= 1
+        // Tag this scheduled fire with the reason that originated it.
+        // We count at the schedule site rather than at fire time so
+        // the `batchFireScheduled` guard above is the natural
+        // deduplicator — `fireBatch` itself runs once per scheduled
+        // fire (modulo the cancellation race that lands an empty
+        // batch, which we still want to count as a schedule).
+        fireReasonCounts[reason, default: 0] += 1
         Task {
             await self.fireBatch()
         }
@@ -522,7 +645,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     private func fireIfStillCurrent(generation: Int) {
         guard generation == batchWaitGeneration else { return }
         guard !pending.isEmpty else { return }
-        scheduleBatchFireIfNeeded()
+        scheduleBatchFireIfNeeded(reason: .timer)
     }
 
     private func fireBatch() async {
@@ -586,6 +709,25 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             }
         }
 
+        // Snapshot `expectedSlotCount` before the await so we can
+        // detect drift across the GPU window. Any change here is
+        // typically driven by `decrementExpectedSlotCount` calls from
+        // the harvest loop as games end during the fire. Symmetric
+        // drift across cand/champ is benign; a large `maxDelta` or
+        // asymmetric drift would point at the coordination paths
+        // between the harvest loop and the batcher actor (cf. the
+        // 991282b "expectedSlotCount drift" commit).
+        let expectedBeforeRun = expectedSlotCount
+        // `gpuTimerEnded` lets us guarantee `fireEnded()` is called
+        // exactly once whether `network.evaluate` returns normally OR
+        // throws. Declared outside the do-block so the catch path can
+        // observe it. The shape-mismatch `throw`s further down also
+        // route through the same catch but happen *after*
+        // `fireEnded()` has already run, so the catch path no-ops in
+        // that case.
+        gpuTimer?.fireStarted()
+        var gpuTimerEnded = false
+
         do {
             // Pass `packBuffer` (an owned Swift `[Float]`) directly
             // across the `await`. Swift's COW guarantees the buffer
@@ -601,10 +743,19 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
                 count: count
             )
             let runFinishedNanos = DispatchTime.now().uptimeNanoseconds
+            gpuTimer?.fireEnded()
+            gpuTimerEnded = true
             let thisRunNanos: UInt64 = runFinishedNanos > runStartedNanos
                 ? runFinishedNanos - runStartedNanos
                 : 0
             batchTotalRunNanos &+= thisRunNanos
+            if expectedSlotCount != expectedBeforeRun {
+                expectedDriftCount &+= 1
+                let delta = abs(expectedSlotCount - expectedBeforeRun)
+                if delta > expectedDriftMaxDelta {
+                    expectedDriftMaxDelta = delta
+                }
+            }
 
             guard policy.count == count * Self.policySize else {
                 throw BatchedMoveEvaluationSourceError.batchResultShapeMismatch(
@@ -697,13 +848,23 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
                 item.continuation.resume(returning: (policy: policySlice, value: value))
             }
         } catch {
+            // Two error sources route here: (a) `network.evaluate`
+            // itself threw — `fireEnded()` was NOT called yet — and
+            // (b) the post-evaluate shape-mismatch `throw`s above —
+            // `fireEnded()` already ran. The flag disambiguates so the
+            // joint timer's `inFlight` count never gets stuck.
+            if !gpuTimerEnded {
+                gpuTimer?.fireEnded()
+            }
             for item in batch {
                 item.continuation.resume(throwing: error)
             }
         }
 
         if !pending.isEmpty && (expectedSlotCount == 0 || pending.count >= expectedSlotCount) {
-            scheduleBatchFireIfNeeded()
+            scheduleBatchFireIfNeeded(
+                reason: expectedSlotCount == 0 ? .drain : .refill
+            )
         }
     }
 
