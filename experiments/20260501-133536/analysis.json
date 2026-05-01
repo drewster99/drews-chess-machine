@@ -1,0 +1,1 @@
+{"analysis_commentary":"Run was interrupted by user pause before completion — no result.json was ever written. Folder preserved as evidence of the in-flight binary-search probe (5625s window between last-good 5400s and last-failed 5850s) but treated as FAILED for streak/dashboard purposes since the run did not produce a result.","classification":"regressed"}

@@ -1,0 +1,1 @@
+Hold training_time at 5400s and refine entropy_bonus 0.014→0.016 to push end-of-run probes healthier (lower max_prob, raise legal_mass_sum). Same axis the goal calls out for late-training diversity; small step to avoid the pEnt-floor regression seen at 6300s.

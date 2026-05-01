@@ -1,0 +1,498 @@
+[
+  {
+    "timestamp": "20260430-202230",
+    "status": "REJECTED",
+    "analysis_commentary": "REGRESSED: full collapse on all three signals \u2014 pEnt min 4.834 (crossed 5.0 alarm; baseline 6.56), top1_legal_ever_positive=FALSE (vs TRUE in 2700s baseline and prior 3000s rejection), gNorm max 140 (exceeded 100 threshold). last_probe max=0.998, legal_mass=0. Entropy_bonus 0.016\u21920.018 backfired \u2014 higher entropy bonus destabilized rather than diversified. 5 arenas, 0 promotions.",
+    "goal": "GOAL: Increase training length perpetually without full collapse.\n\nEach iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy",
+    "change_details": "Bump entropy_bonus 0.016\u21920.018 to keep policy diverse late in window, preventing the candidate-snapshot saturation that surfaced at the prior 3000s attempt while keeping all other levers identical.",
+    "proposed_training_time": 3000,
+    "changed_params_diff": {
+      "entropy_bonus": {
+        "prev": 0.016,
+        "new": 0.018
+      }
+    },
+    "training_elapsed_seconds": 3000.0328489542007,
+    "termination_reason": "timer_expired",
+    "summary": {
+      "termination_reason": "timer_expired",
+      "total_training_seconds": 3000.0328489542007,
+      "training_steps": 1790,
+      "collapse_signals": {
+        "min_policy_entropy": 4.834,
+        "final_policy_entropy": 4.834,
+        "pEnt_ever_below_5": true,
+        "pEnt_final_below_5": true,
+        "max_policy_logit_abs_max": 36.354,
+        "final_policy_logit_abs_max": 36.354,
+        "policy_logit_blowup": true,
+        "policy_logit_severe_blowup": false,
+        "final_top1_legal_fraction": 0,
+        "top1_legal_ever_positive": false,
+        "min_legal_mass": 0.00068,
+        "final_legal_mass": 0.000702,
+        "legal_mass_below_pct1_at_end": true,
+        "max_grad_global_norm": 140.556,
+        "final_grad_global_norm": 136.234,
+        "grad_norm_ever_exceeded_100": true,
+        "grad_norm_ever_exceeded_200": false,
+        "final_value_abs_mean": 0.1494,
+        "value_head_saturated": false,
+        "final_policy_loss": -21.961,
+        "policy_loss_extreme_negative": true,
+        "late_probe_collapsed": true,
+        "late_probe_window_size": 15
+      },
+      "arenas": {
+        "count": 5,
+        "promoted": 0
+      },
+      "candidate_probes_last": {
+        "elapsed_sec": 3000.8,
+        "max_prob": 0.9978,
+        "above_uniform_count": 0,
+        "legal_mass_sum": 0.0,
+        "top100_sum": 1,
+        "value_output": 0.01667
+      }
+    },
+    "result_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260430-202230/result.json",
+    "parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260430-202230/parameters.json",
+    "previous_parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260430-202230/previous_parameters.json"
+  },
+  {
+    "timestamp": "20260430-211512",
+    "status": "ACCEPTED",
+    "analysis_commentary": "Same 2700s window, no early-bail, no full-collapse signals. End-of-run probe health is markedly better: max_prob 0.150\u21920.078 and legal_mass_sum 0.322\u21920.696, with top1_legal_ever_positive still true and pEnt min 6.21 safely above the 5.0 alarm. Promotion activity: 4 arenas, 0 promotions (baseline 5/0).",
+    "goal": "GOAL: Increase training length perpetually without full collapse.\n\nEach iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy",
+    "change_details": "Lower entropy_bonus 0.016\u21920.014 to give more concentrated learning at the same 2700s window. Higher (0.018) backfired with full collapse; trying the opposite direction at the proven-stable window before extending.",
+    "proposed_training_time": 2700,
+    "changed_params_diff": {
+      "entropy_bonus": {
+        "prev": 0.016,
+        "new": 0.014
+      }
+    },
+    "training_elapsed_seconds": 2700.015280008316,
+    "termination_reason": "timer_expired",
+    "summary": {
+      "termination_reason": "timer_expired",
+      "total_training_seconds": 2700.015280008316,
+      "training_steps": 1620,
+      "collapse_signals": {
+        "min_policy_entropy": 6.2057,
+        "final_policy_entropy": 6.2057,
+        "pEnt_ever_below_5": false,
+        "pEnt_final_below_5": false,
+        "max_policy_logit_abs_max": 8.239,
+        "final_policy_logit_abs_max": 8.239,
+        "policy_logit_blowup": false,
+        "policy_logit_severe_blowup": false,
+        "final_top1_legal_fraction": 0.0625,
+        "top1_legal_ever_positive": true,
+        "min_legal_mass": 0.004549,
+        "final_legal_mass": 0.035296,
+        "legal_mass_below_pct1_at_end": false,
+        "max_grad_global_norm": 58.799,
+        "final_grad_global_norm": 19.716,
+        "grad_norm_ever_exceeded_100": false,
+        "grad_norm_ever_exceeded_200": false,
+        "final_value_abs_mean": 0.25,
+        "value_head_saturated": false,
+        "final_policy_loss": -0.996,
+        "policy_loss_extreme_negative": false,
+        "late_probe_collapsed": false,
+        "late_probe_window_size": 15
+      },
+      "arenas": {
+        "count": 4,
+        "promoted": 0
+      },
+      "candidate_probes_last": {
+        "elapsed_sec": 2702.4,
+        "max_prob": 0.07839,
+        "above_uniform_count": 4,
+        "legal_mass_sum": 0.69587,
+        "top100_sum": 0.85434,
+        "value_output": -0.97876
+      }
+    },
+    "result_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260430-211512/result.json",
+    "parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260430-211512/parameters.json",
+    "previous_parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260430-211512/previous_parameters.json"
+  },
+  {
+    "timestamp": "20260430-220314",
+    "status": "ACCEPTED",
+    "analysis_commentary": "Window extended 2700s\u21923000s with no full-collapse signals: pEnt min 6.77 (better than 6.21 baseline), top1_legal positive, gNorm 58.8, no early bail. End-of-run candidate probe shows higher max=0.434 and lower legal_mass=0.584 vs baseline, but well clear of collapse thresholds. Longer-window accept clause is satisfied. 4 arenas, 0 promotions.",
+    "goal": "GOAL: Increase training length perpetually without full collapse.\n\nEach iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy",
+    "change_details": "Extend training_time 2700s to 3000s with same params. The new entropy_bonus=0.014 baseline shows much healthier end-of-run state (max=0.078, legal_mass=0.696) at 2700s, so the previously-regressing 3000s extension should now succeed.",
+    "proposed_training_time": 3000,
+    "changed_params_diff": {},
+    "training_elapsed_seconds": 3000.013102054596,
+    "termination_reason": "timer_expired",
+    "summary": {
+      "termination_reason": "timer_expired",
+      "total_training_seconds": 3000.013102054596,
+      "training_steps": 1784,
+      "collapse_signals": {
+        "min_policy_entropy": 6.7685,
+        "final_policy_entropy": 6.7875,
+        "pEnt_ever_below_5": false,
+        "pEnt_final_below_5": false,
+        "max_policy_logit_abs_max": 7.923,
+        "final_policy_logit_abs_max": 7.923,
+        "policy_logit_blowup": false,
+        "policy_logit_severe_blowup": false,
+        "final_top1_legal_fraction": 0.0234,
+        "top1_legal_ever_positive": true,
+        "min_legal_mass": 0.003141,
+        "final_legal_mass": 0.015999,
+        "legal_mass_below_pct1_at_end": false,
+        "max_grad_global_norm": 58.808,
+        "final_grad_global_norm": 34.989,
+        "grad_norm_ever_exceeded_100": false,
+        "grad_norm_ever_exceeded_200": false,
+        "final_value_abs_mean": 0.1326,
+        "value_head_saturated": false,
+        "final_policy_loss": -1.185,
+        "policy_loss_extreme_negative": false,
+        "late_probe_collapsed": false,
+        "late_probe_window_size": 15
+      },
+      "arenas": {
+        "count": 4,
+        "promoted": 0
+      },
+      "candidate_probes_last": {
+        "elapsed_sec": 2990.1,
+        "max_prob": 0.4335,
+        "above_uniform_count": 2,
+        "legal_mass_sum": 0.58357,
+        "top100_sum": 0.99763,
+        "value_output": 0.31133
+      }
+    },
+    "result_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260430-220314/result.json",
+    "parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260430-220314/parameters.json",
+    "previous_parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260430-220314/previous_parameters.json"
+  },
+  {
+    "timestamp": "20260501-000729",
+    "status": "ACCEPTED",
+    "analysis_commentary": "3300s window completed (timer_expired, no early-bail). End-of-run candidate probe healthier than baseline: illegal_mass_sum 0.416\u21920.211, max 0.434\u21920.286, legal_mass_sum 0.584\u21920.789. pEnt min 6.64 (>5.0), top1_legal_ever_positive true. Build delta 404\u2192411 (session-save UI scope, training-neutral) noted but the goal-relevant signals moved clearly past noise. 5 arenas, 0 promotions.",
+    "goal": "GOAL: Increase training length perpetually without full collapse.\n\nEach iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy",
+    "change_details": "Extend training window 3000s\u21923300s with identical parameters. Same config has shown stable health (pEnt>6.7, no collapse) across 2700s and 3000s runs; continuing the +300s window-extension cadence per directive.",
+    "proposed_training_time": 3300,
+    "changed_params_diff": {},
+    "training_elapsed_seconds": 3300.00348007679,
+    "termination_reason": "timer_expired",
+    "summary": {
+      "termination_reason": "timer_expired",
+      "total_training_seconds": 3300.00348007679,
+      "training_steps": 1751,
+      "collapse_signals": {
+        "min_policy_entropy": 6.6435,
+        "final_policy_entropy": 6.6435,
+        "pEnt_ever_below_5": false,
+        "pEnt_final_below_5": false,
+        "max_policy_logit_abs_max": 7.701,
+        "final_policy_logit_abs_max": 7.701,
+        "policy_logit_blowup": false,
+        "policy_logit_severe_blowup": false,
+        "final_top1_legal_fraction": 0.0547,
+        "top1_legal_ever_positive": true,
+        "min_legal_mass": 0.002815,
+        "final_legal_mass": 0.020044,
+        "legal_mass_below_pct1_at_end": false,
+        "max_grad_global_norm": 83.045,
+        "final_grad_global_norm": 17.04,
+        "grad_norm_ever_exceeded_100": false,
+        "grad_norm_ever_exceeded_200": false,
+        "final_value_abs_mean": 0.3003,
+        "value_head_saturated": false,
+        "final_policy_loss": -0.858,
+        "policy_loss_extreme_negative": false,
+        "late_probe_collapsed": false,
+        "late_probe_window_size": 15
+      },
+      "arenas": {
+        "count": 5,
+        "promoted": 0
+      },
+      "candidate_probes_last": {
+        "elapsed_sec": 3290.1,
+        "max_prob": 0.28633,
+        "above_uniform_count": 4,
+        "legal_mass_sum": 0.78878,
+        "top100_sum": 0.90869,
+        "value_output": -1.0
+      }
+    },
+    "result_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-000729/result.json",
+    "parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-000729/parameters.json",
+    "previous_parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-000729/previous_parameters.json"
+  },
+  {
+    "timestamp": "20260501-060552",
+    "status": "ACCEPTED",
+    "analysis_commentary": "Window 3300s\u21923600s completed (timer_expired, no early-bail). Per goal's strict full-collapse definition (all three signals), this is not a full collapse: max_prob 0.183 (well below 0.99), top1_legal_ever_positive=true. illegal_mass_sum=0.999 alone does not trip the rejection bar. Window extended successfully \u2192 ACCEPT. CAVEATS: build 411\u2192463 (arena-concurrency code change), end-of-run legal_mass eroded 0.789\u21920.001, gNorm max 217 (exceeded 100 first time on this baseline family), pEnt min 5.23 (well above 5.0 floor but trending down). 11 arenas, 0 promoted.",
+    "goal": "GOAL: Increase training length perpetually without full collapse.\n\nEach iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy",
+    "change_details": "Extend training window 3300s\u21923600s with identical parameters. The 3300s baseline (build 411) finished healthy: end-of-run illegal_mass 0.211, max_prob 0.286, pEnt min 6.64, top1_legal positive throughout. Continuing the +300s cadence on a stable axis.",
+    "proposed_training_time": 3600,
+    "changed_params_diff": {},
+    "training_elapsed_seconds": 3600.015445947647,
+    "termination_reason": "timer_expired",
+    "summary": {
+      "termination_reason": "timer_expired",
+      "total_training_seconds": 3600.015445947647,
+      "training_steps": 2234,
+      "collapse_signals": {
+        "min_policy_entropy": 5.2345,
+        "final_policy_entropy": 5.2345,
+        "pEnt_ever_below_5": false,
+        "pEnt_final_below_5": false,
+        "max_policy_logit_abs_max": 28.986,
+        "final_policy_logit_abs_max": 28.986,
+        "policy_logit_blowup": false,
+        "policy_logit_severe_blowup": false,
+        "final_top1_legal_fraction": 0,
+        "top1_legal_ever_positive": true,
+        "min_legal_mass": 0.000967,
+        "final_legal_mass": 0.001157,
+        "legal_mass_below_pct1_at_end": true,
+        "max_grad_global_norm": 217.392,
+        "final_grad_global_norm": 217.392,
+        "grad_norm_ever_exceeded_100": true,
+        "grad_norm_ever_exceeded_200": true,
+        "final_value_abs_mean": 0.1934,
+        "value_head_saturated": false,
+        "final_policy_loss": -56.806,
+        "policy_loss_extreme_negative": true,
+        "late_probe_collapsed": false,
+        "late_probe_window_size": 15
+      },
+      "arenas": {
+        "count": 11,
+        "promoted": 0
+      },
+      "candidate_probes_last": {
+        "elapsed_sec": 3593.4,
+        "max_prob": 0.18299,
+        "above_uniform_count": 0,
+        "legal_mass_sum": 0.00141,
+        "top100_sum": 0.98517,
+        "value_output": -0.01996
+      }
+    },
+    "result_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-060552/result.json",
+    "parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-060552/parameters.json",
+    "previous_parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-060552/previous_parameters.json"
+  },
+  {
+    "timestamp": "20260501-070844",
+    "status": "REJECTED",
+    "analysis_commentary": "Window 3600s\u21927200s completed (timer_expired) but late-run collapse: last_probe at 7192s shows max_prob=1.000, legal_mass=0.000 (2 of 3 strict-collapse signals met; top1_legal_ever_positive=TRUE because mid-run was healthy). Mid-probe at 3391s was strong (max 0.197, legal 0.450), so collapse occurred in the 2nd hour. pEnt min 4.975 crossed the 5.0 alarm floor for the first time on this baseline family. gNorm max 189 (>100). 19 arenas, 1\u00d7 promoted. REGRESSED vs 3600s baseline end-of-run health.",
+    "goal": "GOAL: Increase training length perpetually without full collapse.\n\nEach iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy",
+    "change_details": "Double training window 3600s\u21927200s (60min\u2192120min) with identical parameters. Per directive: aggressive doubling on stable-axis success. Will live-monitor every ~5min and intervene only if all-three-signal full collapse approaches.",
+    "proposed_training_time": 7200,
+    "changed_params_diff": {
+      "training_time_limit": {
+        "prev": 3600,
+        "new": 7200
+      }
+    },
+    "training_elapsed_seconds": 7200.030212044716,
+    "termination_reason": "timer_expired",
+    "summary": {
+      "termination_reason": "timer_expired",
+      "total_training_seconds": 7200.030212044716,
+      "training_steps": 2570,
+      "collapse_signals": {
+        "min_policy_entropy": 4.9752,
+        "final_policy_entropy": 5.1454,
+        "pEnt_ever_below_5": true,
+        "pEnt_final_below_5": false,
+        "max_policy_logit_abs_max": 40.828,
+        "final_policy_logit_abs_max": 40.828,
+        "policy_logit_blowup": true,
+        "policy_logit_severe_blowup": false,
+        "final_top1_legal_fraction": 0,
+        "top1_legal_ever_positive": true,
+        "min_legal_mass": 0.00192,
+        "final_legal_mass": 0.002412,
+        "legal_mass_below_pct1_at_end": true,
+        "max_grad_global_norm": 189.09,
+        "final_grad_global_norm": 180.443,
+        "grad_norm_ever_exceeded_100": true,
+        "grad_norm_ever_exceeded_200": false,
+        "final_value_abs_mean": 0.2207,
+        "value_head_saturated": false,
+        "final_policy_loss": -21.116,
+        "policy_loss_extreme_negative": true,
+        "late_probe_collapsed": true,
+        "late_probe_window_size": 15
+      },
+      "arenas": {
+        "count": 19,
+        "promoted": 1
+      },
+      "candidate_probes_last": {
+        "elapsed_sec": 7192.5,
+        "max_prob": 1,
+        "above_uniform_count": 0,
+        "legal_mass_sum": 0,
+        "top100_sum": 1,
+        "value_output": -0.07458
+      }
+    },
+    "result_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-070844/result.json",
+    "parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-070844/parameters.json",
+    "previous_parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-070844/previous_parameters.json"
+  },
+  {
+    "timestamp": "20260501-091101",
+    "status": "ACCEPTED",
+    "analysis_commentary": "Window 3600s\u21925400s (60\u219290min) completed cleanly (timer_expired). Trajectory metrics IMPROVED vs 60m baseline: pEnt min 5.98 (vs 5.23), gNorm max 105.7 (vs 217.4), no full-collapse signals tripped (top1_legal_ever_positive=true, pEnt never below 5.0). 15 arenas (vs 11), 0 promoted. Mid/last candidate probes show training-mode max_prob=1.0 like 60m end-probe but inference arenas all at parity (mean 0.51). Binary-search midpoint succeeds.",
+    "goal": "GOAL: Increase training length perpetually without full collapse.\n\nEach iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy",
+    "change_details": "Binary-search to 5400s (90min) midpoint between last-good 3600s and last-failed 7200s. 7200s saw late-run collapse (max_prob 1.0 at end) but mid-probe at 57min was healthy. Probe whether 90min stays in the safe zone with identical params.",
+    "proposed_training_time": 5400,
+    "changed_params_diff": {
+      "training_time_limit": {
+        "prev": 3600,
+        "new": 5400
+      }
+    },
+    "training_elapsed_seconds": 5400.020430922508,
+    "termination_reason": "timer_expired",
+    "summary": {
+      "termination_reason": "timer_expired",
+      "total_training_seconds": 5400.020430922508,
+      "training_steps": 2349,
+      "collapse_signals": {
+        "min_policy_entropy": 5.9828,
+        "final_policy_entropy": 5.9828,
+        "pEnt_ever_below_5": false,
+        "pEnt_final_below_5": false,
+        "max_policy_logit_abs_max": 25.047,
+        "final_policy_logit_abs_max": 25.047,
+        "policy_logit_blowup": false,
+        "policy_logit_severe_blowup": false,
+        "final_top1_legal_fraction": 0,
+        "top1_legal_ever_positive": true,
+        "min_legal_mass": 0.001943,
+        "final_legal_mass": 0.002135,
+        "legal_mass_below_pct1_at_end": true,
+        "max_grad_global_norm": 105.656,
+        "final_grad_global_norm": 105.656,
+        "grad_norm_ever_exceeded_100": true,
+        "grad_norm_ever_exceeded_200": false,
+        "final_value_abs_mean": 0.1232,
+        "value_head_saturated": false,
+        "final_policy_loss": -2.107,
+        "policy_loss_extreme_negative": false,
+        "late_probe_collapsed": true,
+        "late_probe_window_size": 15
+      },
+      "arenas": {
+        "count": 15,
+        "promoted": 0
+      },
+      "candidate_probes_last": {
+        "elapsed_sec": 5381.1,
+        "max_prob": 1,
+        "above_uniform_count": 0,
+        "legal_mass_sum": 0,
+        "top100_sum": 1,
+        "value_output": -0.08449
+      }
+    },
+    "result_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-091101/result.json",
+    "parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-091101/parameters.json",
+    "previous_parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-091101/previous_parameters.json"
+  },
+  {
+    "timestamp": "20260501-104322",
+    "status": "REJECTED",
+    "analysis_commentary": "105m (6300s) completed timer_expired but pEnt min 4.798 dropped below 5.0 alarm floor (90m had min 5.98, 60m baseline 5.23) \u2014 first time on this baseline family. Per strict collapse rule (pEnt<5.0 when previously held), classifying regressed. Notable countersignals: 1 arena promotion (vs 0 in 90m), final candidate probes healthy (max_prob 0.113 vs 1.0 in 90m), final top1_legal=0.047 (vs 0 in 90m), gNorm max 114 still <90m's 106. Promoted 1\u00d7 at arena 14.",
+    "goal": "GOAL: Increase training length perpetually without full collapse.\n\nEach iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy",
+    "change_details": "Binary-search to 6300s (105min) midpoint between new last-good 5400s and last-failed 7200s. Identical params; probe whether 105min stays in safe zone.",
+    "proposed_training_time": 6300,
+    "changed_params_diff": {},
+    "training_elapsed_seconds": 6300.020693898201,
+    "termination_reason": "timer_expired",
+    "summary": {
+      "termination_reason": "timer_expired",
+      "total_training_seconds": 6300.020693898201,
+      "training_steps": 3375,
+      "collapse_signals": {
+        "min_policy_entropy": 4.798,
+        "final_policy_entropy": 4.798,
+        "pEnt_ever_below_5": true,
+        "pEnt_final_below_5": true,
+        "max_policy_logit_abs_max": 10.961,
+        "final_policy_logit_abs_max": 10.961,
+        "policy_logit_blowup": false,
+        "policy_logit_severe_blowup": false,
+        "final_top1_legal_fraction": 0.0469,
+        "top1_legal_ever_positive": true,
+        "min_legal_mass": 0.002219,
+        "final_legal_mass": 0.033146,
+        "legal_mass_below_pct1_at_end": false,
+        "max_grad_global_norm": 114.143,
+        "final_grad_global_norm": 21.031,
+        "grad_norm_ever_exceeded_100": true,
+        "grad_norm_ever_exceeded_200": false,
+        "final_value_abs_mean": 0.2381,
+        "value_head_saturated": false,
+        "final_policy_loss": -1.015,
+        "policy_loss_extreme_negative": false,
+        "late_probe_collapsed": false,
+        "late_probe_window_size": 15
+      },
+      "arenas": {
+        "count": 18,
+        "promoted": 1
+      },
+      "candidate_probes_last": {
+        "elapsed_sec": 6291.2,
+        "max_prob": 0.11252,
+        "above_uniform_count": 11,
+        "legal_mass_sum": 0.8321,
+        "top100_sum": 0.93416,
+        "value_output": -0.99912
+      }
+    },
+    "result_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-104322/result.json",
+    "parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-104322/parameters.json",
+    "previous_parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-104322/previous_parameters.json"
+  },
+  {
+    "timestamp": "20260501-123013",
+    "status": "REJECTED",
+    "analysis_commentary": "Early-killed at 3755s on hard-reject H2+H3+H4: pEnt 4.91 (below 5.0 alarm floor), pLogitAbsMax 79.96 (severe blowup, H3 threshold 50), legalMass 0.0023 with top1Legal=0 (late_probe_collapsed equivalent). gNorm climbed to 304 (3\u00d7 90m baseline max of 106). Run never produced healthy training; full collapse confirmed by user's UI Forward Pass output. No promotions. Wrapper exit 6 \u2192 no result.json; classified regressed via stub.",
+    "goal": "GOAL: Increase training length perpetually without full collapse.\n\nEach iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy",
+    "change_details": "Binary-search to 5850s (97.5min) midpoint between last-good 5400s and last-failed 6300s. Identical params; probe whether 97.5min stays above pEnt 5.0 alarm floor.",
+    "proposed_training_time": 5850,
+    "changed_params_diff": {},
+    "training_elapsed_seconds": null,
+    "summary": null,
+    "result_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-123013/result.json",
+    "parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-123013/parameters.json",
+    "previous_parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-123013/previous_parameters.json"
+  },
+  {
+    "timestamp": "20260501-133536",
+    "status": "REJECTED",
+    "analysis_commentary": "Run was interrupted by user pause before completion \u2014 no result.json was ever written. Folder preserved as evidence of the in-flight binary-search probe (5625s window between last-good 5400s and last-failed 5850s) but treated as FAILED for streak/dashboard purposes since the run did not produce a result.",
+    "goal": "GOAL: Increase training length perpetually without full collapse.\n\nEach iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy",
+    "change_details": "Binary-search to 5625s (~94min) midpoint between last-good 5400s and last-failed 5850s. Identical params; probe whether 94min stays clear of all hard-reject criteria.",
+    "proposed_training_time": 5625,
+    "changed_params_diff": {},
+    "training_elapsed_seconds": null,
+    "summary": null,
+    "result_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-133536/result.json",
+    "parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-133536/parameters.json",
+    "previous_parameters_json_path": "/Users/andrew/cursor/drews-chess-machine/experiments/20260501-133536/previous_parameters.json"
+  }
+]

@@ -1,0 +1,533 @@
+{
+  "session_id": "20260501-24-4rqG",
+  "build_number": {
+    "first": 463,
+    "last": 463,
+    "changed_mid_run": false,
+    "unique": null
+  },
+  "termination_reason": "timer_expired",
+  "total_training_seconds": 5400.020430922508,
+  "training_steps": 2349,
+  "derived_budget": {
+    "training_steps_per_window": 2349,
+    "recommended_lr_warmup_max": 783,
+    "steps_per_sec": 0.435
+  },
+  "positions_trained": 13220742,
+  "self_play_games_final": 38535,
+  "buffer_count_final": 500000,
+  "avg_game_length_final": 343.08400155702606,
+  "trainer_id_final": "20260501-23-2ZJP-1",
+  "champion_id_final": "20260501-23-2ZJP",
+  "diversity_final": {
+    "diversity_unique_percent": 100,
+    "diversity_avg_divergence_ply": 2.58,
+    "diversity_games_in_window": 200,
+    "diversity_unique_games": 200
+  },
+  "draws_by_type_final": {
+    "fifty_move_draws": 6737,
+    "insufficient_material_draws": 6794,
+    "threefold_repetition_draws": 19743,
+    "stalemates": 1034,
+    "white_checkmates": 2098,
+    "black_checkmates": 2129
+  },
+  "training_trajectory": {
+    "policy_entropy": {
+      "first": 6.319867,
+      "min": 5.982808,
+      "median": 6.485223,
+      "mean": 6.45082,
+      "max": 6.55024,
+      "final": 5.982808
+    },
+    "policy_logit_abs_max": {
+      "first": 8.391003,
+      "min": 8.048058,
+      "median": 8.104074,
+      "mean": 9.332249,
+      "max": 25.047262,
+      "final": 25.047262
+    },
+    "top1_legal_fraction": {
+      "first": 0.0,
+      "min": 0.0,
+      "median": 0.0,
+      "mean": 0.000327,
+      "max": 0.015625,
+      "final": 0.0
+    },
+    "legal_mass": {
+      "first": 0.003737,
+      "min": 0.001943,
+      "median": 0.003737,
+      "mean": 0.003654,
+      "max": 0.011244,
+      "final": 0.002135
+    },
+    "grad_global_norm": {
+      "first": 81.856224,
+      "min": 24.69014,
+      "median": 34.976106,
+      "mean": 45.406611,
+      "max": 105.656292,
+      "final": 105.656292
+    },
+    "policy_loss": {
+      "first": 1.050976,
+      "min": -10.736982,
+      "median": 0.299873,
+      "mean": -0.221041,
+      "max": 1.087909,
+      "final": -2.107398
+    },
+    "value_loss": {
+      "first": 0.546827,
+      "min": 0.080577,
+      "median": 0.410927,
+      "mean": 0.395323,
+      "max": 0.554185,
+      "final": 0.080577
+    },
+    "value_abs_mean": {
+      "first": 0.57328,
+      "min": 0.123228,
+      "median": 0.472664,
+      "mean": 0.450258,
+      "max": 0.57905,
+      "final": 0.123228
+    },
+    "value_mean": {
+      "first": 0.555856,
+      "min": 0.052921,
+      "median": 0.431721,
+      "mean": 0.407276,
+      "max": 0.562066,
+      "final": 0.052921
+    },
+    "played_move_prob": {
+      "first": 0.000974,
+      "min": 0.000592,
+      "median": 0.00207,
+      "mean": 0.001901,
+      "max": 0.003033,
+      "final": 0.000592
+    },
+    "played_move_prob_pos_adv": {
+      "first": 0.000459,
+      "min": 0.00044,
+      "median": 0.007575,
+      "mean": 0.005833,
+      "max": 0.009433,
+      "final": 0.00047
+    },
+    "played_move_prob_neg_adv": {
+      "first": 0.001003,
+      "min": 0.000611,
+      "median": 0.001568,
+      "mean": 0.001456,
+      "max": 0.002072,
+      "final": 0.000611
+    },
+    "adv_mean": {
+      "first": -0.644333,
+      "min": -0.657375,
+      "median": -0.528043,
+      "mean": -0.503387,
+      "max": -0.149537,
+      "final": -0.149537
+    },
+    "adv_std": {
+      "first": 0.362853,
+      "min": 0.240834,
+      "median": 0.34598,
+      "mean": 0.33672,
+      "max": 0.362853,
+      "final": 0.240976
+    },
+    "ratio_current": {
+      "first": 0.0,
+      "min": 0.0,
+      "median": 0.913572,
+      "mean": 0.865326,
+      "max": 1.030461,
+      "final": 0.525895
+    }
+  },
+  "collapse_signals": {
+    "min_policy_entropy": 5.9828,
+    "final_policy_entropy": 5.9828,
+    "pEnt_ever_below_5": false,
+    "pEnt_final_below_5": false,
+    "max_policy_logit_abs_max": 25.047,
+    "final_policy_logit_abs_max": 25.047,
+    "policy_logit_blowup": false,
+    "policy_logit_severe_blowup": false,
+    "final_top1_legal_fraction": 0,
+    "top1_legal_ever_positive": true,
+    "min_legal_mass": 0.001943,
+    "final_legal_mass": 0.002135,
+    "legal_mass_below_pct1_at_end": true,
+    "max_grad_global_norm": 105.656,
+    "final_grad_global_norm": 105.656,
+    "grad_norm_ever_exceeded_100": true,
+    "grad_norm_ever_exceeded_200": false,
+    "final_value_abs_mean": 0.1232,
+    "value_head_saturated": false,
+    "final_policy_loss": -2.107,
+    "policy_loss_extreme_negative": false,
+    "late_probe_collapsed": true,
+    "late_probe_window_size": 15
+  },
+  "arenas": {
+    "count": 15,
+    "promoted": 0,
+    "mean_score": 0.51,
+    "rounds": [
+      {
+        "index": 1,
+        "promoted": false,
+        "score": 0.535,
+        "score_ci": [
+          0.4977,
+          0.5723
+        ],
+        "elo": 24.36,
+        "games": 100,
+        "candidate_W_L_D": [
+          11,
+          4,
+          85
+        ],
+        "score_white": 0.52,
+        "score_black": 0.55,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 55.1
+      },
+      {
+        "index": 2,
+        "promoted": false,
+        "score": 0.52,
+        "score_ci": [
+          0.4926,
+          0.5474
+        ],
+        "elo": 13.9,
+        "games": 100,
+        "candidate_W_L_D": [
+          6,
+          2,
+          92
+        ],
+        "score_white": 0.54,
+        "score_black": 0.5,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 45.1
+      },
+      {
+        "index": 3,
+        "promoted": false,
+        "score": 0.5,
+        "score_ci": [
+          0.4723,
+          0.5277
+        ],
+        "elo": 0,
+        "games": 100,
+        "candidate_W_L_D": [
+          4,
+          4,
+          92
+        ],
+        "score_white": 0.5,
+        "score_black": 0.5,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 45.8
+      },
+      {
+        "index": 4,
+        "promoted": false,
+        "score": 0.495,
+        "score_ci": [
+          0.4597,
+          0.5303
+        ],
+        "elo": -3.47,
+        "games": 100,
+        "candidate_W_L_D": [
+          6,
+          7,
+          87
+        ],
+        "score_white": 0.53,
+        "score_black": 0.46,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 31.6
+      },
+      {
+        "index": 5,
+        "promoted": false,
+        "score": 0.535,
+        "score_ci": [
+          0.5032,
+          0.5668
+        ],
+        "elo": 24.36,
+        "games": 100,
+        "candidate_W_L_D": [
+          9,
+          2,
+          89
+        ],
+        "score_white": 0.52,
+        "score_black": 0.55,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 53.2
+      },
+      {
+        "index": 6,
+        "promoted": false,
+        "score": 0.515,
+        "score_ci": [
+          0.4857,
+          0.5443
+        ],
+        "elo": 10.43,
+        "games": 100,
+        "candidate_W_L_D": [
+          6,
+          3,
+          91
+        ],
+        "score_white": 0.5,
+        "score_black": 0.53,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 55.2
+      },
+      {
+        "index": 7,
+        "promoted": false,
+        "score": 0.515,
+        "score_ci": [
+          0.4798,
+          0.5502
+        ],
+        "elo": 10.43,
+        "games": 100,
+        "candidate_W_L_D": [
+          8,
+          5,
+          87
+        ],
+        "score_white": 0.51,
+        "score_black": 0.52,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 54.1
+      },
+      {
+        "index": 8,
+        "promoted": false,
+        "score": 0.505,
+        "score_ci": [
+          0.4697,
+          0.5403
+        ],
+        "elo": 3.47,
+        "games": 100,
+        "candidate_W_L_D": [
+          7,
+          6,
+          87
+        ],
+        "score_white": 0.52,
+        "score_black": 0.49,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 56.7
+      },
+      {
+        "index": 9,
+        "promoted": false,
+        "score": 0.5,
+        "score_ci": [
+          0.469,
+          0.531
+        ],
+        "elo": 0,
+        "games": 100,
+        "candidate_W_L_D": [
+          5,
+          5,
+          90
+        ],
+        "score_white": 0.53,
+        "score_black": 0.47,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 63.5
+      },
+      {
+        "index": 10,
+        "promoted": false,
+        "score": 0.495,
+        "score_ci": [
+          0.4625,
+          0.5275
+        ],
+        "elo": -3.47,
+        "games": 100,
+        "candidate_W_L_D": [
+          5,
+          6,
+          89
+        ],
+        "score_white": 0.49,
+        "score_black": 0.5,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 54.2
+      },
+      {
+        "index": 11,
+        "promoted": false,
+        "score": 0.515,
+        "score_ci": [
+          0.4892,
+          0.5408
+        ],
+        "elo": 10.43,
+        "games": 100,
+        "candidate_W_L_D": [
+          5,
+          2,
+          93
+        ],
+        "score_white": 0.51,
+        "score_black": 0.52,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 58.4
+      },
+      {
+        "index": 12,
+        "promoted": false,
+        "score": 0.495,
+        "score_ci": [
+          0.4597,
+          0.5303
+        ],
+        "elo": -3.47,
+        "games": 100,
+        "candidate_W_L_D": [
+          6,
+          7,
+          87
+        ],
+        "score_white": 0.49,
+        "score_black": 0.5,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 58.2
+      },
+      {
+        "index": 13,
+        "promoted": false,
+        "score": 0.52,
+        "score_ci": [
+          0.4786,
+          0.5614
+        ],
+        "elo": 13.9,
+        "games": 100,
+        "candidate_W_L_D": [
+          11,
+          7,
+          82
+        ],
+        "score_white": 0.54,
+        "score_black": 0.5,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 67.3
+      },
+      {
+        "index": 14,
+        "promoted": false,
+        "score": 0.51,
+        "score_ci": [
+          0.4761,
+          0.5439
+        ],
+        "elo": 6.95,
+        "games": 100,
+        "candidate_W_L_D": [
+          7,
+          5,
+          88
+        ],
+        "score_white": 0.52,
+        "score_black": 0.5,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 67.7
+      },
+      {
+        "index": 15,
+        "promoted": false,
+        "score": 0.495,
+        "score_ci": [
+          0.4731,
+          0.5169
+        ],
+        "elo": -3.47,
+        "games": 100,
+        "candidate_W_L_D": [
+          2,
+          3,
+          95
+        ],
+        "score_white": 0.5,
+        "score_black": 0.49,
+        "candidate_id": "20260501-23-2ZJP-1",
+        "champion_id": "20260501-23-2ZJP",
+        "duration_sec": 58.9
+      }
+    ]
+  },
+  "candidate_probes": {
+    "count": 305,
+    "first": {
+      "elapsed_sec": 8.9,
+      "max_prob": 0.17607,
+      "above_uniform_count": 0,
+      "legal_mass_sum": 0.00057,
+      "top100_sum": 0.85138,
+      "value_output": 0.72523
+    },
+    "mid": {
+      "elapsed_sec": 2589.8,
+      "max_prob": 1,
+      "above_uniform_count": 0,
+      "legal_mass_sum": 0,
+      "top100_sum": 1,
+      "value_output": 0.403
+    },
+    "last": {
+      "elapsed_sec": 5381.1,
+      "max_prob": 1,
+      "above_uniform_count": 0,
+      "legal_mass_sum": 0,
+      "top100_sum": 1,
+      "value_output": -0.08449
+    }
+  }
+}
