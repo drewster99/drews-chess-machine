@@ -425,7 +425,7 @@ public enum LegalMassCollapseThreshold: TrainingParameterKey {}
 @TrainingParameter(
     name: "Legal-Mass Collapse Grace (sec)",
     description: "Post-training-start grace window during which legal-mass collapse early-bail is suppressed.",
-    default: 300.0,
+    default: 180.0,
     range: 0.0...86400.0,
     category: "Collapse Detection",
     liveTunable: false
