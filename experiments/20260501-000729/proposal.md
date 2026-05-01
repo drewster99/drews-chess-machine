@@ -1,0 +1,1 @@
+Extend training window 3000s→3300s with identical parameters. Same config has shown stable health (pEnt>6.7, no collapse) across 2700s and 3000s runs; continuing the +300s window-extension cadence per directive.
