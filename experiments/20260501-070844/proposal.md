@@ -1,0 +1,1 @@
+Double training window 3600s→7200s (60min→120min) with identical parameters. Per directive: aggressive doubling on stable-axis success. Will live-monitor every ~5min and intervene only if all-three-signal full collapse approaches.

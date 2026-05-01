@@ -1,0 +1,1 @@
+Binary-search to 5400s (90min) midpoint between last-good 3600s and last-failed 7200s. 7200s saw late-run collapse (max_prob 1.0 at end) but mid-probe at 57min was healthy. Probe whether 90min stays in the safe zone with identical params.

@@ -27,5 +27,5 @@
   "legal_mass_collapse_threshold": 0.999,
   "legal_mass_collapse_grace_seconds": 600,
   "legal_mass_collapse_no_improvement_probes": 8,
-  "training_time_limit": 5400
+  "training_time_limit": 7200
 }
