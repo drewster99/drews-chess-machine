@@ -191,11 +191,17 @@ final class TournamentDriver {
     ///     task after each finished game with `(completedSoFar, aWins,
     ///     bWins, draws)`. The first argument is the count of games
     ///     completed up to and including this one (1-based).
-    ///   - onSlotExited: Optional async callback invoked from inside
-    ///     each slot task right before it returns its game record.
-    ///     Used by the parallel-arena callsite to decrement each
-    ///     batcher's `expectedSlotCount` as games finish so the
-    ///     count barrier remains achievable.
+    ///   - onSlotRetired: Optional async callback invoked from the
+    ///     parent harvest loop when a slot leaves the live pool —
+    ///     i.e., when a slot exits and *no replacement is spawned*.
+    ///     This fires at most `min(games, concurrency)` times across
+    ///     a run (once per slot in the initial fan-out, as each of
+    ///     the final K games completes). Used by the parallel-arena
+    ///     callsite to decrement each batcher's `expectedSlotCount`
+    ///     so the count barrier tracks live game count: the count
+    ///     stays at K while replacements keep the pool full, and
+    ///     decrements during the tail as games finish without
+    ///     replacement.
     /// - Returns: Aggregated win/loss/draw statistics. Per-game
     ///   records (used by callers that want to run post-tournament
     ///   checks) flow out via the `onGameRecorded` callback, fired
@@ -209,7 +215,7 @@ final class TournamentDriver {
         diversityTracker: GameDiversityTracker? = nil,
         isCancelled: (@Sendable () -> Bool)? = nil,
         onGameCompleted: (@Sendable (Int, Int, Int, Int) -> Void)? = nil,
-        onSlotExited: (@Sendable () async -> Void)? = nil,
+        onSlotRetired: (@Sendable () async -> Void)? = nil,
         onGameRecorded: (@Sendable (TournamentGameRecord) -> Void)? = nil
     ) async throws -> TournamentStats {
         let effectiveConcurrency = max(1, min(concurrency, games))
@@ -261,14 +267,10 @@ final class TournamentDriver {
                             white: white, black: black
                         )
                     } catch is CancellationError {
-                        await onSlotExited?()
                         return nil
                     } catch {
-                        await onSlotExited?()
                         throw error
                     }
-
-                    await onSlotExited?()
 
                     return TournamentGameRecord(
                         gameIndex: gameIndex,
@@ -286,21 +288,33 @@ final class TournamentDriver {
                 nextGameIndex += 1
             }
 
+            // A slot is "retired" the moment its task returns AND we
+            // decide not to spawn a replacement — that's when the live
+            // pool actually shrinks and arena bookkeeping needs to
+            // know. Fires at most min(games, concurrency) times across
+            // a run. The cancellation-drain branch retires too: once
+            // the run is cancelled we never spawn replacements, so
+            // every harvested completion is a pool shrink.
             while let maybeRecord = try await group.next() {
-                if Task.isCancelled || isCancelled?() == true {
-                    // Stop fanning out; let in-flight slots drain.
+                let stopRequested = Task.isCancelled || isCancelled?() == true
+                let canSpawnReplacement = nextGameIndex < games && !stopRequested
+
+                if stopRequested {
+                    // Cancellation drain: harvested slot leaves the
+                    // pool, no replacement.
+                    await onSlotRetired?()
                     continue
                 }
 
                 guard let record = maybeRecord else {
-                    // Slot was cancelled. Spawn a replacement only
-                    // if we still have games to play AND we haven't
-                    // been asked to stop.
-                    if nextGameIndex < games,
-                       !Task.isCancelled,
-                       isCancelled?() != true {
+                    // Slot was cancelled (returned nil). Spawn a
+                    // replacement if we still have games to play;
+                    // otherwise the slot has retired from the pool.
+                    if canSpawnReplacement {
                         spawnTask(forGameIndex: nextGameIndex)
                         nextGameIndex += 1
+                    } else {
+                        await onSlotRetired?()
                     }
                     continue
                 }
@@ -330,10 +344,13 @@ final class TournamentDriver {
                 onGameRecorded?(record)
                 onGameCompleted?(completed, aWins, bWins, draws)
 
-                // Refill the slot pool with the next game.
-                if nextGameIndex < games {
+                // Refill the slot pool with the next game, or retire
+                // the slot if we've already spawned every gameIndex.
+                if canSpawnReplacement {
                     spawnTask(forGameIndex: nextGameIndex)
                     nextGameIndex += 1
+                } else {
+                    await onSlotRetired?()
                 }
             }
         }

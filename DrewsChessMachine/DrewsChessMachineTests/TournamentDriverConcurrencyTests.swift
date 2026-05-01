@@ -93,14 +93,37 @@ final class TournamentDriverConcurrencyTests: XCTestCase {
         XCTAssertEqual(claimedIndices, Set(0..<games))
     }
 
-    func testOnSlotExitedFiresOncePerCompletedGame() async throws {
+    func testOnSlotRetiredFiresOncePerLiveSlot() async throws {
         // Arena uses this callback to decrement each batcher's
-        // `expectedSlotCount` as games finish. Verify it fires
-        // exactly once per completed game; under-firing would peg
-        // the count barrier above achievable values, over-firing
-        // would clamp it to 0 prematurely and force every fire
-        // through drain mode.
+        // `expectedSlotCount` as the live pool shrinks. Retirement
+        // fires only when a slot leaves the pool (no replacement
+        // spawned), so the count must equal the initial fan-out —
+        // once per slot as each of the final K games drains. Over-
+        // firing (e.g. once per completed game) would pin the
+        // barrier count to 0 partway through the run and collapse
+        // the remaining batches to size 1; under-firing would leave
+        // it above achievable values during the tail.
         let games = 8
+        let concurrency = 4
+        let counter = AtomicCounter()
+        let driver = TournamentDriver()
+        _ = try await driver.run(
+            playerA: { FoolsMateScriptedPlayer(name: "A") },
+            playerB: { FoolsMateScriptedPlayer(name: "B") },
+            games: games,
+            concurrency: concurrency,
+            onSlotRetired: {
+                counter.increment()
+            }
+        )
+        XCTAssertEqual(counter.value, min(games, concurrency))
+    }
+
+    func testOnSlotRetiredFiresPerGameWhenGamesEqualsConcurrency() async throws {
+        // Boundary: when games == concurrency every slot in the
+        // initial fan-out runs exactly one game and no replacements
+        // are ever spawned, so retirement count equals game count.
+        let games = 4
         let counter = AtomicCounter()
         let driver = TournamentDriver()
         _ = try await driver.run(
@@ -108,7 +131,7 @@ final class TournamentDriverConcurrencyTests: XCTestCase {
             playerB: { FoolsMateScriptedPlayer(name: "B") },
             games: games,
             concurrency: 4,
-            onSlotExited: {
+            onSlotRetired: {
                 counter.increment()
             }
         )

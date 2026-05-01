@@ -6787,10 +6787,15 @@ struct ContentView: View {
         // batches.
         //
         // Live count tracking: `expectedSlotCount` starts at `liveK`
-        // (clamped to game count). As each slot finishes a game the
-        // `onSlotExited` callback below decrements both batchers'
-        // expected counts so the count barrier remains achievable
-        // during the tail when fewer than K games are still live.
+        // (clamped to game count) and stays there while replacements
+        // keep the pool full. The `onSlotRetired` callback below
+        // fires only when a slot leaves the pool (no replacement
+        // spawned) — i.e. exactly when each of the final K games
+        // finishes — so each batcher's `expectedSlotCount` decrements
+        // 1:1 with live game count during the tail. Decrementing on
+        // every completion (the prior approach) drove the count to
+        // 0 partway through the tournament and forced the rest of
+        // the run through drain mode = single-position batches.
         let liveK = max(1, min(effectiveArenaConcurrency, totalGames))
         let candidateBatcher = BatchedMoveEvaluationSource(
             network: candidateInference,
@@ -6865,10 +6870,12 @@ struct ContentView: View {
                                 concurrency: liveK
                             ))
                         },
-                        onSlotExited: {
-                            // Track live game count on both batchers
-                            // so the count barrier stays achievable
-                            // as games finish during the tail.
+                        onSlotRetired: {
+                            // Fires only when a slot leaves the
+                            // live pool (no replacement spawned).
+                            // Decrementing on every completion would
+                            // peg the count at 0 mid-tournament and
+                            // collapse all remaining batches to size 1.
                             await candidateBatcher.decrementExpectedSlotCount()
                             await championBatcher.decrementExpectedSlotCount()
                         },

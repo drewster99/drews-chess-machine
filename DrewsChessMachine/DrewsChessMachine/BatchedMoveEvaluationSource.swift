@@ -394,7 +394,17 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     private func scheduleBatchWaitTimer(forGeneration generation: Int) {
         let waitNs = UInt64((maxBatchWaitMs * 1_000_000.0).rounded())
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: waitNs)
+            do {
+                try await Task.sleep(nanoseconds: waitNs)
+            } catch {
+                // `Task.sleep` only throws on cancellation. If the
+                // timer task is cancelled (e.g. enclosing arena run
+                // is winding down) we just bail — the actor's drain
+                // path on `setExpectedSlotCount(0)` flushes any
+                // leftover pending entries, so there's nothing for
+                // a stale timer to do.
+                return
+            }
             guard let self else { return }
             await self.fireIfStillCurrent(generation: generation)
         }
