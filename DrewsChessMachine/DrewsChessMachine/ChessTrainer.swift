@@ -92,7 +92,7 @@ struct TrainStepTiming: Sendable {
     let freshBaselineMs: Double?
 
     /// L2 norm (sqrt of sum of squares) of the policy head's final
-    /// 1×1 conv weight tensor (128 → 76). Tracks whether the decoupled
+    /// 1×1 conv weight tensor (128 → 76). Tracks whether the L2
     /// weight decay is actually holding the weights that produce the
     /// policy logits in check. Monotonic growth here, especially if
     /// logit gaps on the Candidate Test panel look extreme, means the
@@ -849,15 +849,20 @@ final class ChessTrainer: @unchecked Sendable {
 
     // MARK: Configuration
 
-    /// Default L2 weight-decay coefficient applied per training step
-    /// (decoupled, AdamW-style). The update rule for decay-eligible
-    /// variables is `v_new = v - lr * (clipped_grad + weightDecayC * v)`,
-    /// equivalent to `(1 - lr*c) * v - lr * clipped_grad`. Decay is
-    /// applied only to conv and FC weight matrices; BN gamma/beta and
-    /// FC biases are excluded, matching the standard PyTorch / AdamW
-    /// recipe. (Decaying BN gamma toward zero zeros out a channel and
-    /// reduces effective capacity — the prior "L2 on all params"
-    /// decision was reverted after the deep ML review.)
+    /// L2 weight-decay coefficient applied per training step. The
+    /// optimizer here is plain SGD (no momentum, no Adam state), so
+    /// the update rule for decay-eligible variables is
+    /// `v_new = v - lr * (clipped_grad + weightDecayC * v)`,
+    /// equivalent to `(1 - lr*c) * v - lr * clipped_grad`. With plain
+    /// SGD, "decoupled" weight decay and ordinary L2 regularization
+    /// are mathematically identical — the AdamW-vs-Adam-with-L2
+    /// distinction only matters for adaptive optimizers, so this is
+    /// just L2. Decay is applied only to conv and FC weight matrices;
+    /// BN gamma/beta and FC biases are excluded, matching the standard
+    /// PyTorch / AdamW recipe for which params to decay. (Decaying BN
+    /// gamma toward zero zeros out a channel and reduces effective
+    /// capacity — the prior "L2 on all params" decision was reverted
+    /// after the deep ML review.)
     ///
     /// The actual value applied by the graph is read from
     /// `weightDecayC` and fed as a per-step scalar so the user can
@@ -2104,9 +2109,11 @@ final class ChessTrainer: @unchecked Sendable {
         // v_new = v - lr * (clipped_grad + weightDecayC * v)
         //       = (1 - lr*weightDecayC) * v - lr * clipped_grad
         //
-        // Decoupled weight decay (AdamW-style) applied uniformly to
-        // every trainable variable including biases and BN params.
-        // Matches the design-doc decision to "L2 on all params".
+        // Plain SGD with L2 weight decay (no momentum, no Adam state).
+        // Decay is applied only to variables flagged in
+        // `network.trainableShouldDecay` — conv and FC weight matrices
+        // — and skipped for BN gamma/beta and biases per the standard
+        // PyTorch / AdamW recipe.
         //
         // The learning rate is a placeholder (not a constant) so it
         // can be changed between steps without rebuilding the graph.
@@ -2130,7 +2137,7 @@ final class ChessTrainer: @unchecked Sendable {
             }
             // Apply the global L2 clip scale to this gradient.
             let clippedGrad = graph.multiplication(grad, clipScale, name: nil)
-            // Decoupled weight decay term: c*v. Skipped for BN gamma/beta
+            // L2 weight decay term: c*v. Skipped for BN gamma/beta
             // and FC biases per the standard no-decay recipe.
             let combinedUpdate: MPSGraphTensor
             if network.trainableShouldDecay[i] {
