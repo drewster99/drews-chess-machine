@@ -1,0 +1,15 @@
+{
+  "arena_results" : [
+
+  ],
+  "candidate_tests" : [
+
+  ],
+  "session_id" : "20260502-10-L7lF",
+  "stats" : [
+
+  ],
+  "termination_reason" : "app-will-terminate",
+  "total_training_seconds" : 17.428263068199158,
+  "training_elapsed_seconds" : 17.428263068199158
+}

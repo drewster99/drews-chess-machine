@@ -13,6 +13,21 @@ struct TrainingChartSample: Identifiable, Sendable {
     let rollingPolicyNonNegCount: Double?
     let rollingGradNorm: Double?
     let replayRatio: Double?
+    /// Outcome-partitioned policy loss — mean over batch positions
+    /// where outcome z > +0.5 (winning game) / z < -0.5 (losing game).
+    /// Splitting the conventional `rollingPolicyLoss` by outcome makes
+    /// the curve unambiguous; rendered together on the upper-left
+    /// chart instead of total loss.
+    let rollingPolicyLossWin: Double?
+    let rollingPolicyLossLoss: Double?
+    /// Legal-masked Shannon entropy (in nats) over the legal-only
+    /// renormalized policy softmax. Distinct from `rollingPolicyEntropy`
+    /// (which is over the full 4864-dim head): a high value means
+    /// "diffuse across legal moves" while the full-head pEnt can be
+    /// high while concentrating on illegals. Charted on the same
+    /// tile as `rollingPolicyEntropy` so the two trajectories can
+    /// be compared directly.
+    let rollingLegalEntropy: Double?
 
     // System metrics
     let cpuPercent: Double?
@@ -163,13 +178,8 @@ struct TrainingChartGridView: View {
         //   Col 5: App Memory, GPU RAM
         // But LazyVGrid fills row-major, so we order accordingly.
         LazyVGrid(columns: Self.columns, spacing: 1) {
-            // Row 1: Loss Total | Entropy | Progress Rate | CPU % | App Memory
-            miniChart(
-                title: "Loss (pLoss + vLoss)",
-                yPath: \.rollingTotalLoss,
-                unit: "",
-                color: .red
-            )
+            // Row 1: pLossWin/pLossLoss | Entropy + LegalEntropy | Progress Rate | CPU % | App Memory
+            policyLossSplitChart
             entropyChart
             progressRateChart
             miniChart(
@@ -789,6 +799,97 @@ struct TrainingChartGridView: View {
 
     private static let maxEntropy = log(Double(ChessNetwork.policySize))
 
+    /// Upper-left tile (replaces the legacy "Loss (pLoss + vLoss)"
+    /// total-loss sparkgraph). Plots two outcome-partitioned series:
+    /// the policy loss restricted to win-outcome batch positions
+    /// (`pLossWin`) and to loss-outcome positions (`pLossLoss`).
+    /// The total-loss curve is ambiguous because outcome-weighted CE
+    /// flips sign with z; splitting by outcome makes both lines
+    /// individually interpretable — both should drift below zero
+    /// as the network learns to favor moves correlating with their
+    /// own game outcomes.
+    private var policyLossSplitChart: some View {
+        let lastWin = trainingChartSamples.last?.rollingPolicyLossWin
+        let lastLoss = trainingChartSamples.last?.rollingPolicyLossLoss
+        let headerText: String
+        switch (lastWin, lastLoss) {
+        case (let w?, let l?):
+            headerText = String(format: "win %+.4f / loss %+.4f", w, l)
+        case (let w?, nil):
+            headerText = String(format: "win %+.4f / loss --", w)
+        case (nil, let l?):
+            headerText = String(format: "win -- / loss %+.4f", l)
+        default:
+            headerText = "--"
+        }
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("pLoss split (W vs L)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(headerText)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                Chart {
+                    ForEach(trainingChartSamples) { sample in
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("pLoss", sample.rollingPolicyLossWin ?? .nan)
+                        )
+                        .foregroundStyle(by: .value("Series", "pLossWin"))
+                    }
+                    ForEach(trainingChartSamples) { sample in
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("pLoss", sample.rollingPolicyLossLoss ?? .nan)
+                        )
+                        .foregroundStyle(by: .value("Series", "pLossLoss"))
+                    }
+                    // Zero baseline — pLoss under the advantage-
+                    // weighted CE can be negative; the y=0 reference
+                    // line makes the sign visually obvious.
+                    RuleMark(y: .value("Zero", 0.0))
+                        .foregroundStyle(Color.gray.opacity(0.4))
+                        .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
+                }
+                .chartForegroundStyleScale([
+                    "pLossWin": Color.green,
+                    "pLossLoss": Color.red
+                ])
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(Self.compactLabel(v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartXScale(domain: timeSeriesXDomain)
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
+            }
+            .frame(height: 75)
+        }
+    }
+
     private var entropyChart: some View {
         let readout = hoverReadout(path: \.rollingPolicyEntropy)
         let headerText: String
@@ -826,7 +927,18 @@ struct TrainingChartGridView: View {
                             x: .value("Time", sample.elapsedSec),
                             y: .value("Entropy", sample.rollingPolicyEntropy ?? .nan)
                         )
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(by: .value("Series", "pEnt"))
+                    }
+                    // pEntLegal — entropy over the legal-only
+                    // renormalized softmax. log(N_legal) ≈ 3.4 nats at
+                    // 30 legal moves; falls toward 0 as the policy
+                    // concentrates on preferred legal moves.
+                    ForEach(trainingChartSamples) { sample in
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Entropy", sample.rollingLegalEntropy ?? .nan)
+                        )
+                        .foregroundStyle(by: .value("Series", "pEntLegal"))
                     }
                     if let t = hoveredSec {
                         RuleMark(x: .value("Time", t))
@@ -839,6 +951,10 @@ struct TrainingChartGridView: View {
                             .symbolSize(40)
                     }
                 }
+                .chartForegroundStyleScale([
+                    "pEnt": Color.purple,
+                    "pEntLegal": Color.green
+                ])
                 .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
                 .chartYAxis {
                     AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in

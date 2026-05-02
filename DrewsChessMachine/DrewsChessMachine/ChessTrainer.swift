@@ -171,6 +171,21 @@ struct TrainStepTiming: Sendable {
     /// budget. Nil on the random-data sweep path (percentile view is
     /// meaningless there).
     let advantageRaw: [Float]?
+
+    /// Mean policy loss over the batch positions where outcome z > 0.5
+    /// (the position came from a winning game). Splitting the
+    /// classic `policyLoss` by outcome makes the curve unambiguous:
+    /// `policyLossWin` should drift negative as the network learns to
+    /// favor moves played in winning games. Nil only when no batch
+    /// position satisfies the predicate (rare — a batch with zero
+    /// wins).
+    let policyLossWin: Float?
+    /// Mean policy loss over the batch positions where z < -0.5.
+    /// Should drift negative as well, since the advantage-weighted
+    /// CE term flips sign for losing positions: low p(a*) on a loss
+    /// is rewarded ("don't repeat that move"). Nil when no batch
+    /// position has a loss outcome.
+    let policyLossLoss: Float?
 }
 
 // MARK: - Sweep Result
@@ -475,6 +490,13 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let advantageP05: Double?
         let advantageP50: Double?
         let advantageP95: Double?
+        /// Rolling-window mean policy loss restricted to win-outcome
+        /// batch positions (z > 0.5). Pairs with `rollingPolicyLossLoss`
+        /// to disambiguate the standard `rollingPolicyLoss` curve.
+        let rollingPolicyLossWin: Double?
+        /// Rolling-window mean policy loss restricted to loss-outcome
+        /// batch positions (z < -0.5).
+        let rollingPolicyLossLoss: Double?
         let error: String?
     }
 
@@ -510,6 +532,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _advMaxWindow: RollingDoubleWindow
     private var _advFracPosWindow: RollingDoubleWindow
     private var _advFracSmallWindow: RollingDoubleWindow
+    private var _policyLossWinWindow: RollingDoubleWindow
+    private var _policyLossLossWindow: RollingDoubleWindow
     /// Ring of raw per-position advantage values across the rolling
     /// window of recent steps. Capped at `advRawRingMaxCapacity`
     /// floats (see the constant for the full rationale). `snapshot()`
@@ -561,6 +585,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._advMaxWindow = RollingDoubleWindow(limit: rollingWindow)
         self._advFracPosWindow = RollingDoubleWindow(limit: rollingWindow)
         self._advFracSmallWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._policyLossWinWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._policyLossLossWindow = RollingDoubleWindow(limit: rollingWindow)
     }
 
     /// Seed the stats with values from a resumed session so the
@@ -618,6 +644,16 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._advMaxWindow.append(Double(timing.advantageMax))
             self._advFracPosWindow.append(Double(timing.advantageFracPositive))
             self._advFracSmallWindow.append(Double(timing.advantageFracSmall))
+            // Outcome-partitioned policy losses — appended only when
+            // finite. The graph emits NaN for batches with zero
+            // win/loss positions; skipping NaN means the rolling mean
+            // stays well-defined rather than getting poisoned.
+            if let pwin = timing.policyLossWin, pwin.isFinite {
+                self._policyLossWinWindow.append(Double(pwin))
+            }
+            if let plos = timing.policyLossLoss, plos.isFinite {
+                self._policyLossLossWindow.append(Double(plos))
+            }
             if let raw = timing.advantageRaw, !raw.isEmpty {
                 self.pushAdvRaw(raw)
             }
@@ -695,6 +731,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._advMaxWindow.removeAll()
             self._advFracPosWindow.removeAll()
             self._advFracSmallWindow.removeAll()
+            self._policyLossWinWindow.removeAll()
+            self._policyLossLossWindow.removeAll()
             self._advRawRingHead = 0
             self._advRawRingFilled = 0
             // Keep _advRawRing capacity allocated — next push reuses it.
@@ -729,6 +767,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingAdvMax = _advMaxWindow.mean
             let rollingAdvFracPos = _advFracPosWindow.mean
             let rollingAdvFracSmall = _advFracSmallWindow.mean
+            let rollingPLossWin = _policyLossWinWindow.mean
+            let rollingPLossLoss = _policyLossLossWindow.mean
             let (advP05, advP50, advP95) = Self.percentiles(
                 ring: _advRawRing,
                 filled: _advRawRingFilled
@@ -761,6 +801,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 advantageP05: advP05,
                 advantageP50: advP50,
                 advantageP95: advP95,
+                rollingPolicyLossWin: rollingPLossWin,
+                rollingPolicyLossLoss: rollingPLossLoss,
                 error: _error
             )
         }
@@ -963,6 +1005,12 @@ final class ChessTrainer: @unchecked Sendable {
     /// [batch, 1] raw advantage tensor — read back per step so the
     /// stats box can maintain a rolling percentile window.
     private var advantageRawTensor: MPSGraphTensor
+    /// Scalar mean policy loss restricted to batch positions where
+    /// outcome z > 0.5. NaN when no win positions are in the batch.
+    private var policyLossWinTensor: MPSGraphTensor
+    /// Scalar mean policy loss restricted to batch positions where
+    /// outcome z < -0.5. NaN when no loss positions are in the batch.
+    private var policyLossLossTensor: MPSGraphTensor
     private var assignOps: [MPSGraphOperation]
 
     /// Pre-allocated scalar ND array for the learning-rate feed.
@@ -1032,7 +1080,9 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotAdvFracSmall: Int = 16
     private static let lossReadbackSlotPlayedMoveProbPosAdv: Int = 17
     private static let lossReadbackSlotPlayedMoveProbNegAdv: Int = 18
-    private static let lossReadbackSlotCount: Int = 19
+    private static let lossReadbackSlotPolicyLossWin: Int = 19
+    private static let lossReadbackSlotPolicyLossLoss: Int = 20
+    private static let lossReadbackSlotCount: Int = 21
 
     /// Reusable host-side staging buffers for replay-buffer samples.
     /// The trainer owns these buffers so real-data training can hop
@@ -1043,6 +1093,33 @@ final class ChessTrainer: @unchecked Sendable {
     private var replayBatchMoves: UnsafeMutablePointer<Int32>?
     private var replayBatchZs: UnsafeMutablePointer<Float>?
     private var replayBatchVBaselines: UnsafeMutablePointer<Float>?
+
+    // Per-position observability metadata staging buffers — populated
+    // only on stats-collection batches (every Nth, when
+    // `batchStatsInterval > 0`). Allocated alongside the training
+    // buffers so they're sized in lock-step with batchSize.
+    private var replayBatchPlies: UnsafeMutablePointer<UInt16>?
+    private var replayBatchGameLengths: UnsafeMutablePointer<UInt16>?
+    private var replayBatchTaus: UnsafeMutablePointer<Float>?
+    private var replayBatchHashes: UnsafeMutablePointer<UInt64>?
+    private var replayBatchWorkerGameIds: UnsafeMutablePointer<UInt32>?
+
+    /// How often (in training steps) to compute and emit a
+    /// `[BATCH-STATS]` log line. 0 disables. Live-tunable from the UI
+    /// or from `TrainingParameters.batchStatsInterval`.
+    var batchStatsInterval: Int = 10
+    /// Last computed unique-position percent (0..1) for surfacing in
+    /// the regular `[STATS]` line. Defaults to NaN until the first
+    /// stats-collection batch lands.
+    private(set) var lastBatchStatsUniquePct: Double = .nan
+    /// Last full batch-stats summary so the CLI recorder can ship
+    /// every result.json's stats tick with the most-recent
+    /// observability snapshot. Nil until the first stats batch lands.
+    /// Reads/writes are unsynchronized scalar pointer assignments
+    /// (the struct is small, but Swift atomicity isn't guaranteed) —
+    /// acceptable for diagnostic purposes; readers may briefly see
+    /// the prior value during update.
+    private(set) var lastBatchStatsSummary: ReplayBuffer.BatchStatsSummary?
 
     // MARK: Init
 
@@ -1095,6 +1172,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.advantageFracPosTensor = built.advantageFracPos
         self.advantageFracSmallTensor = built.advantageFracSmall
         self.advantageRawTensor = built.advantageRaw
+        self.policyLossWinTensor = built.policyLossWin
+        self.policyLossLossTensor = built.policyLossLoss
         self.assignOps = built.assignOps
 
         // Scalar ND array for the learning rate feed, reused every step.
@@ -1144,6 +1223,26 @@ final class ChessTrainer: @unchecked Sendable {
             ptr.deinitialize(count: replayBatchCapacity)
             ptr.deallocate()
         }
+        if let ptr = replayBatchPlies {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchGameLengths {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchTaus {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchHashes {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchWorkerGameIds {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
     }
 
     /// Tear down the current training-mode network and build a fresh one.
@@ -1189,6 +1288,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.advantageFracPosTensor = built.advantageFracPos
         self.advantageFracSmallTensor = built.advantageFracSmall
         self.advantageRawTensor = built.advantageRaw
+        self.policyLossWinTensor = built.policyLossWin
+        self.policyLossLossTensor = built.policyLossLoss
         self.assignOps = built.assignOps
         // Rebuild the LR scalar feed against the new network's device
         // so the new graph's placeholder maps to a fresh wrapper.
@@ -1251,6 +1352,8 @@ final class ChessTrainer: @unchecked Sendable {
         advantageFracPos: MPSGraphTensor,
         advantageFracSmall: MPSGraphTensor,
         advantageRaw: MPSGraphTensor,
+        policyLossWin: MPSGraphTensor,
+        policyLossLoss: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
         let graph = network.graph
@@ -1390,6 +1493,49 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let weightedCE = graph.multiplication(advantageNormalized, negLogProb, name: "adv_weighted_ce")
         let policyLoss = graph.mean(of: weightedCE, axes: [0, 1], name: "policy_loss")
+
+        // --- Outcome-partitioned policy loss (diagnostic only) ---
+        //
+        // Split the batch policy loss by the sign of `z` (the
+        // play-time outcome) so the curve can be read unambiguously:
+        //   `policyLossWin` = mean over z > +0.5
+        //   `policyLossLoss` = mean over z < -0.5
+        // The mean computation is `sum(weightedCE * mask) / sum(mask)`.
+        // We add a tiny epsilon to the denominator so a batch with
+        // zero wins (or zero losses) returns 0 instead of NaN; that
+        // case is rare but does happen near the start of a session.
+        // These tensors are diagnostic-only — they're fetched via
+        // `targetTensors`, never feed back into `totalLoss`, so
+        // autodiff doesn't walk into them.
+        let zPosThreshold = graph.constant(0.5, dataType: dtype)
+        let zNegThreshold = graph.constant(-0.5, dataType: dtype)
+        let maskWin = graph.cast(
+            graph.greaterThan(z, zPosThreshold, name: "z_gt_pos_thresh"),
+            to: dtype,
+            name: "mask_win"
+        )
+        let maskLoss = graph.cast(
+            graph.lessThan(z, zNegThreshold, name: "z_lt_neg_thresh"),
+            to: dtype,
+            name: "mask_loss"
+        )
+        let weightedCEWin = graph.multiplication(weightedCE, maskWin, name: "weighted_ce_win")
+        let weightedCELoss = graph.multiplication(weightedCE, maskLoss, name: "weighted_ce_loss")
+        let winSum = graph.reductionSum(with: weightedCEWin, axes: [0, 1], name: "weighted_ce_win_sum")
+        let lossSum = graph.reductionSum(with: weightedCELoss, axes: [0, 1], name: "weighted_ce_loss_sum")
+        let winMaskSum = graph.reductionSum(with: maskWin, axes: [0, 1], name: "mask_win_sum")
+        let lossMaskSum = graph.reductionSum(with: maskLoss, axes: [0, 1], name: "mask_loss_sum")
+        let denomEps = graph.constant(1e-6, dataType: dtype)
+        let policyLossWin = graph.division(
+            winSum,
+            graph.addition(winMaskSum, denomEps, name: "mask_win_sum_eps"),
+            name: "policy_loss_win"
+        )
+        let policyLossLoss = graph.division(
+            lossSum,
+            graph.addition(lossMaskSum, denomEps, name: "mask_loss_sum_eps"),
+            name: "policy_loss_loss"
+        )
 
         // --- Value loss: L = mean( (z - v)^2 ) ---
 
@@ -1996,6 +2142,7 @@ final class ChessTrainer: @unchecked Sendable {
             advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
             advantageFracPosTensor, advantageFracSmallTensor,
             advantage,
+            policyLossWin, policyLossLoss,
             ops
         )
     }
@@ -2141,18 +2288,56 @@ final class ChessTrainer: @unchecked Sendable {
                 let boards = self.replayBatchBoards,
                 let moves = self.replayBatchMoves,
                 let zs = self.replayBatchZs,
-                let vBaselines = self.replayBatchVBaselines
+                let vBaselines = self.replayBatchVBaselines,
+                let plies = self.replayBatchPlies,
+                let gameLengths = self.replayBatchGameLengths,
+                let taus = self.replayBatchTaus,
+                let hashes = self.replayBatchHashes,
+                let workerGameIds = self.replayBatchWorkerGameIds
             else {
                 preconditionFailure("ChessTrainer.ensureReplayBatchCapacity should populate replay staging buffers")
             }
+            // Whether THIS step computes batch-stats — gates whether
+            // the metadata buffers get filled. The interval is read
+            // here on the trainer queue so toggling 0->N from the UI
+            // takes effect immediately on the next step without
+            // racing the in-flight one.
+            let interval = self.batchStatsInterval
+            let nextStep = self._completedTrainSteps + 1
+            let isStatsStep = interval > 0 && nextStep % interval == 0
             let didSample = replayBuffer.sample(
                 count: batchSize,
                 intoBoards: boards,
                 moves: moves,
                 zs: zs,
-                vBaselines: vBaselines
+                vBaselines: vBaselines,
+                plies: isStatsStep ? plies : nil,
+                gameLengths: isStatsStep ? gameLengths : nil,
+                taus: isStatsStep ? taus : nil,
+                hashes: isStatsStep ? hashes : nil,
+                workerGameIds: isStatsStep ? workerGameIds : nil
             )
             guard didSample else { return nil }
+            // Compute batch stats up-front (cheap, ~1 ms) and emit the
+            // line BEFORE the heavy GPU work fires. Doing it here keeps
+            // it on the trainer queue (no cross-queue ownership of the
+            // metadata pointers) and means a stats failure can't
+            // interrupt training.
+            if isStatsStep {
+                let summary = replayBuffer.computeBatchStats(
+                    step: nextStep,
+                    batchSize: batchSize,
+                    plies: plies,
+                    gameLengths: gameLengths,
+                    taus: taus,
+                    hashes: hashes,
+                    workerGameIds: workerGameIds,
+                    zs: zs
+                )
+                self.lastBatchStatsUniquePct = summary.uniquePct
+                self.lastBatchStatsSummary = summary
+                SessionLogger.shared.log("[BATCH-STATS] " + summary.jsonLine())
+            }
             let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
             let totalFloats = batchSize * floatsPerBoard
             let boardsCopy = Array(UnsafeBufferPointer(start: boards, count: totalFloats))
@@ -2286,7 +2471,9 @@ final class ChessTrainer: @unchecked Sendable {
                 advantageMax: baseTiming.advantageMax,
                 advantageFracPositive: baseTiming.advantageFracPositive,
                 advantageFracSmall: baseTiming.advantageFracSmall,
-                advantageRaw: baseTiming.advantageRaw
+                advantageRaw: baseTiming.advantageRaw,
+                policyLossWin: baseTiming.policyLossWin,
+                policyLossLoss: baseTiming.policyLossLoss
             )
         }
     }
@@ -2393,6 +2580,18 @@ final class ChessTrainer: @unchecked Sendable {
         var legalMassSum: Double = 0
         var top1LegalCount: Int = 0
         var positionsWithLegal: Int = 0
+        // Sum of per-position legal-masked Shannon entropies (in nats).
+        // Distinct from the full-policy `pEnt`: it's computed over the
+        // legal-only renormalized softmax, so a high value means
+        // "policy is diffuse across legal moves" (early-training,
+        // healthy) and a low value means "policy is concentrating
+        // among legal moves" (mid-training, healthy goal). When the
+        // network has placed essentially all mass on illegal cells,
+        // legalEntropy still reads a finite value because we
+        // renormalize — but the legalMass denominator is tiny, so
+        // pEntLegal alone shouldn't be treated as a collapse signal;
+        // pair it with legalMass to interpret.
+        var legalEntropySum: Double = 0
 
         // CPU decode + softmax + mask on legal indices. ~2 ms total
         // for sampleSize=128 in micro-benchmarks.
@@ -2444,6 +2643,22 @@ final class ChessTrainer: @unchecked Sendable {
                 if legalIndexSet.contains(argmax) {
                     top1LegalCount += 1
                 }
+
+                // Legal-masked Shannon entropy. Renormalize the legal-
+                // only softmax mass to sum to 1 by dividing each
+                // legal-cell exp by `legalExpSum`, then compute
+                // -Σ p · log p in nats. Skip when legalExpSum is zero
+                // (network has no probability on any legal cell — rare
+                // numerical edge case).
+                if legalExpSum > 0 {
+                    var ent: Double = 0
+                    for idx in legalIndexSet {
+                        let pUn = Double(expf(policy[base + idx] - maxLogit))
+                        let p = pUn / legalExpSum
+                        if p > 0 { ent -= p * log(p) }
+                    }
+                    legalEntropySum += ent
+                }
             }
         }
 
@@ -2451,7 +2666,8 @@ final class ChessTrainer: @unchecked Sendable {
         return LegalMassSnapshot(
             sampleSize: positionsWithLegal,
             legalMass: legalMassSum / Double(positionsWithLegal),
-            top1LegalFraction: Double(top1LegalCount) / Double(positionsWithLegal)
+            top1LegalFraction: Double(top1LegalCount) / Double(positionsWithLegal),
+            legalEntropy: legalEntropySum / Double(positionsWithLegal)
         )
     }
 
@@ -2468,6 +2684,16 @@ final class ChessTrainer: @unchecked Sendable {
         /// Fraction of positions where the full-4864-way argmax
         /// corresponds to a legal move. Rank-based sanity signal.
         let top1LegalFraction: Double
+        /// Batch-mean Shannon entropy (in nats) of the legal-only
+        /// renormalized softmax. log(N_legal) at random init for a
+        /// position with N_legal legal moves (~3.4 nats for 30 legal
+        /// moves), shrinking toward 0 as the policy concentrates on
+        /// preferred legal moves. Distinguishes "diffuse across
+        /// legal moves" (early-training, fine) from "concentrating
+        /// onto a single legal move" (mid-training, the goal) — the
+        /// full-policy `pEnt` cannot make this distinction because
+        /// it conflates legal vs illegal mass.
+        let legalEntropy: Double
     }
 
     private func ensureReplayBatchCapacity(_ needed: Int) {
@@ -2489,6 +2715,26 @@ final class ChessTrainer: @unchecked Sendable {
             ptr.deinitialize(count: replayBatchCapacity)
             ptr.deallocate()
         }
+        if let ptr = replayBatchPlies {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchGameLengths {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchTaus {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchHashes {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchWorkerGameIds {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
 
         let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
         let boardSlots = needed * floatsPerBoard
@@ -2507,6 +2753,26 @@ final class ChessTrainer: @unchecked Sendable {
         let newVBaselines = UnsafeMutablePointer<Float>.allocate(capacity: needed)
         newVBaselines.initialize(repeating: 0, count: needed)
         replayBatchVBaselines = newVBaselines
+
+        let newPlies = UnsafeMutablePointer<UInt16>.allocate(capacity: needed)
+        newPlies.initialize(repeating: 0, count: needed)
+        replayBatchPlies = newPlies
+
+        let newGameLengths = UnsafeMutablePointer<UInt16>.allocate(capacity: needed)
+        newGameLengths.initialize(repeating: 0, count: needed)
+        replayBatchGameLengths = newGameLengths
+
+        let newTaus = UnsafeMutablePointer<Float>.allocate(capacity: needed)
+        newTaus.initialize(repeating: 0, count: needed)
+        replayBatchTaus = newTaus
+
+        let newHashes = UnsafeMutablePointer<UInt64>.allocate(capacity: needed)
+        newHashes.initialize(repeating: 0, count: needed)
+        replayBatchHashes = newHashes
+
+        let newWorkerGameIds = UnsafeMutablePointer<UInt32>.allocate(capacity: needed)
+        newWorkerGameIds.initialize(repeating: 0, count: needed)
+        replayBatchWorkerGameIds = newWorkerGameIds
 
         replayBatchCapacity = needed
     }
@@ -2724,7 +2990,8 @@ final class ChessTrainer: @unchecked Sendable {
                 playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
                 advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
                 advantageFracPosTensor, advantageFracSmallTensor,
-                advantageRawTensor
+                advantageRawTensor,
+                policyLossWinTensor, policyLossLossTensor
             ],
             targetOperations: assignOps
         )
@@ -2751,7 +3018,9 @@ final class ChessTrainer: @unchecked Sendable {
             let advMaxData = results[advantageMaxTensor],
             let advFracPosData = results[advantageFracPosTensor],
             let advFracSmallData = results[advantageFracSmallTensor],
-            let advRawData = results[advantageRawTensor]
+            let advRawData = results[advantageRawTensor],
+            let policyLossWinData = results[policyLossWinTensor],
+            let policyLossLossData = results[policyLossLossTensor]
         else {
             throw ChessTrainerError.lossOutputMissing
         }
@@ -2850,6 +3119,16 @@ final class ChessTrainer: @unchecked Sendable {
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracSmall),
             count: 1
         )
+        ChessNetwork.readFloats(
+            from: policyLossWinData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossWin),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: policyLossLossData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossLoss),
+            count: 1
+        )
         // Raw per-position advantage — batch-sized vector. Read into
         // a fresh [Float] since the size depends on the runtime batch
         // and we don't want to resize the scratch every time.
@@ -2883,6 +3162,8 @@ final class ChessTrainer: @unchecked Sendable {
         let advMaxBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvMax]
         let advFracPosBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvFracPos]
         let advFracSmallBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvFracSmall]
+        let policyLossWinBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLossWin]
+        let policyLossLossBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLossLoss]
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         // Health check: any NaN/Inf in the headline loss or grad scalars means
@@ -2940,7 +3221,9 @@ final class ChessTrainer: @unchecked Sendable {
             advantageMax: advMaxBufValue,
             advantageFracPositive: advFracPosBufValue,
             advantageFracSmall: advFracSmallBufValue,
-            advantageRaw: advRawValues
+            advantageRaw: advRawValues,
+            policyLossWin: policyLossWinBufValue.isFinite ? policyLossWinBufValue : nil,
+            policyLossLoss: policyLossLossBufValue.isFinite ? policyLossLossBufValue : nil
         )
         }  // autoreleasepool
     }

@@ -20508,22 +20508,399 @@ window.EXPERIMENTS = [
     "arena_count": null,
     "arena_promotions": null,
     "folder": "experiments/20260502-010357"
+  },
+  {
+    "timestamp": "20260502-014019-replicate",
+    "start_time_iso": "2026-05-02T01:40:19Z",
+    "status": "REJECTED",
+    "mode": "replicate",
+    "change_details": "Replicate of 20260501-104322 baseline at 7200s. Prior attempt 20260502-010357 failed H4 at 33min \u2014 same params, different seed. Retrying to determine seed-success rate.",
+    "changed_params": [],
+    "parameters": {
+      "entropy_bonus": 0.014,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 30,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 600,
+      "legal_mass_collapse_no_improvement_probes": 8,
+      "training_time_limit": 5400
+    },
+    "analysis_commentary": "Early-kill at 1:31:37 on combined H6+H4 trigger. H6: gNorm runaway, four consecutive readings 350\u2192487\u2192469\u2192475\u2192466 all well above 300 threshold; trend is sustained, not transient. H4: legalMass<0.005 and top1Legal=0 persistent across the entire window (range 0.0013\u20130.0085). Critical Training Divergence alarm fired at 22:06:30 (pEnt=2.99, gNorm=458.87). 16 arenas, 0 promotions (best score 52% at arena #15 step 2849, then drifted to 47.5% at #16 step 3030). pLoss progression -17.5\u2192-14.0\u2192-11.0\u2192-8.3\u2192-6.2\u2192-3.9\u2192-2.9 \u2014 entropy bonus (1.4e-2) is being aggressively exploited; high-magnitude logits (pLogitAbsMax=32) on illegal moves produce huge gradient norms. This is the second consecutive failed replicate of the 20260501-104322 baseline (first was 20260502-010357 stuck-uniform at min 33), confirming the baseline is seed-fragile: same params produced a record run AND now two failure modes (stuck-uniform + entropy-runaway). The promotion was likely lucky-seed.",
+    "training_time_seconds": 7200,
+    "arena_count": null,
+    "arena_promotions": null,
+    "folder": "experiments/20260502-014019-replicate"
+  },
+  {
+    "timestamp": "20260502-034032",
+    "start_time_iso": "2026-05-02T03:40:32Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Reduce entropy_bonus 0.014->0.010 to cut the runaway driver after two back-to-back failures (gNorm 487, pLoss -17 via entropy-bonus exploitation of illegal logits). Single targeted change; all other params held to isolate the effect. Matches baseline 5400s window for fair collapse-vs-baseline comparison.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.014,
+        "new": 0.01
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.01,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 30,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 600,
+      "legal_mass_collapse_no_improvement_probes": 8,
+      "training_time_limit": 5400
+    },
+    "analysis_commentary": "Early-kill at 33:33 on H4: legalMass=0.0025 (<0.005) AND top1Legal=0 AND elapsed>30min. Entropy_bonus 0.014\u21920.010 successfully tamed the runaway driver \u2014 gNorm stayed in 14\u201317 band through min 24 vs the prior run's 100\u2192500 climb \u2014 but the network landed in the same stuck-uniform basin as 010357: legalMass capped at ~0.018 by min 19, then declined to 0.003 by min 33. Top1Legal collapsed from 0.03 (min 19) to 0 (min 33). 5 arenas, 0 promotions; arena scores 54\u219253\u219248\u219252.5\u219251% (drifting toward parity). gNorm started climbing at min 29 (15.7\u219225.2\u219241.3) \u2014 late-onset destabilization. Diagnosis: reducing entropy bonus removed the runaway *amplifier* but didn't fix the underlying *sample-efficiency / fresh-data* problem that the seed-fragility analysis pointed at. Next iteration applies the user-directed overlay: 1M buffer + 300k pre-fill + lr_warmup 2000 + ratio 0.75 \u2014 addresses fresh-data flow + slow ramp directly.",
+    "training_time_seconds": 5400,
+    "arena_count": null,
+    "arena_promotions": null,
+    "folder": "experiments/20260502-034032"
+  },
+  {
+    "timestamp": "20260502-041819",
+    "start_time_iso": "2026-05-02T04:18:19Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "User-directed overlay applied on rejection of 20260502-034032: replay_buffer 500k->1M, pre-fill 75k->300k, lr_warmup 30->2000 batches, replay_ratio_target 1.10->0.75. Mechanism: bigger fresher buffer + slow lr warmup + lower replay-ratio = much smoother early dynamics, less chance of locking into stuck-uniform or runaway basin.",
+    "changed_params": [
+      {
+        "key": "lr_warmup_steps",
+        "old": 30,
+        "new": 2000
+      },
+      {
+        "key": "replay_buffer_capacity",
+        "old": 500000,
+        "new": 1000000
+      },
+      {
+        "key": "replay_buffer_min_positions_before_training",
+        "old": 75000,
+        "new": 300000
+      },
+      {
+        "key": "replay_ratio_target",
+        "old": 1.1,
+        "new": 0.75
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.014,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 2000,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 0.75,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 1000000,
+      "replay_buffer_min_positions_before_training": 300000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 600,
+      "legal_mass_collapse_no_improvement_probes": 8,
+      "training_time_limit": 5400
+    },
+    "analysis_commentary": "User-killed at 1:09:50 mid-run after the slow-ramp overlay (1M buffer + 300k pre-fill + lr_warmup 2000 + replay_ratio_target 0.75 + entropy_bonus 0.014, 5400s window, but training_time clamped too short for ramp completion). Same end-state as prior runs: gNorm 35, pLogitAbsMax 13.7, legalMass 0.002, top1Legal 0, pLoss -1.9, pEnt 6.29 \u2014 the slow ramp delayed but did not fundamentally change the basin. By min 49 the run was clearly tracking the same entropy-bonus exploitation dynamics. Termination authorized by user; this iteration counts as regressed for streak. Next iteration should take the same overlay at 36000s window (10hr per user directive) AND ship the new replay-buffer batch-stats instrumentation that lets us *see* what's in the buffer before changing the sampler.",
+    "training_time_seconds": 5400,
+    "arena_count": null,
+    "arena_promotions": null,
+    "folder": "experiments/20260502-041819"
+  },
+  {
+    "timestamp": "20260502-053212",
+    "start_time_iso": "2026-05-02T05:32:12Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "User-directed overlay re-applied at 10-hour window: 1M buffer + 300k pre-fill + lr_warmup 2000 + replay_ratio_target 0.75 + 36000s window. New build (495+) ships replay-buffer batch-stats observability \u2014 every 10th batch will emit [BATCH-STATS] JSON line with unique-position ratio, ply/length/tau/worker histograms, WLD breakdown, and phase\u00d7outcome cross-product.",
+    "changed_params": [
+      {
+        "key": "batch_stats_interval",
+        "old": null,
+        "new": 10
+      },
+      {
+        "key": "lr_warmup_steps",
+        "old": 30,
+        "new": 2000
+      },
+      {
+        "key": "replay_buffer_capacity",
+        "old": 500000,
+        "new": 1000000
+      },
+      {
+        "key": "replay_buffer_min_positions_before_training",
+        "old": 75000,
+        "new": 300000
+      },
+      {
+        "key": "replay_ratio_target",
+        "old": 1.1,
+        "new": 0.75
+      },
+      {
+        "key": "training_time_limit",
+        "old": 5400,
+        "new": 36000
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.014,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 2000,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 0.75,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 1000000,
+      "replay_buffer_min_positions_before_training": 300000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 600,
+      "legal_mass_collapse_no_improvement_probes": 8,
+      "training_time_limit": 36000,
+      "batch_stats_interval": 10
+    },
+    "analysis_commentary": "User-killed at ~52min mid-run after instrumentation work landed. Same dynamics as prior runs were tracking by min 49: pLogitAbsMax climbing 8.0\u21929.99 over the warmup, gNorm 18\u219223, pLoss diving to -0.77, legalMass dropping. Overlay (1M buffer + lr_warmup 2000 + ratio 0.75 + entropy 0.014) delayed but didn't prevent the entropy-bonus exploitation basin. Next iteration reverts to a more conventional regime (replay_ratio 1.0, warmup 300, entropy 0.010, 10hr) so the new replay-buffer batch-stats instrumentation can reveal what's actually in the buffer before further parameter cranking.",
+    "training_time_seconds": 17,
+    "arena_count": 0,
+    "arena_promotions": 0,
+    "folder": "experiments/20260502-053212"
+  },
+  {
+    "timestamp": "20260502-055104",
+    "start_time_iso": "2026-05-02T05:51:04Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "User-directed overlay (2026-05-02 ~01:00 CDT): entropy_bonus 0.014->0.010, lr_warmup_steps 30->300, replay_ratio_target 1.1->1.0, 10hr window. Plus new build 499 ships replay-buffer batch-stats observability \u2014 every 10th batch emits [BATCH-STATS] JSON line; result.json's stats[].batch_stats sub-objects carry per-batch unique-pct, ply/length/tau/worker histograms (counts AND fractions), WLD breakdown, phase x outcome cross. Also pLossWin/pLossLoss split, pEntLegal in [STATS] and result.json.",
+    "changed_params": [
+      {
+        "key": "batch_stats_interval",
+        "old": null,
+        "new": 10
+      },
+      {
+        "key": "entropy_bonus",
+        "old": 0.014,
+        "new": 0.01
+      },
+      {
+        "key": "lr_warmup_steps",
+        "old": 30,
+        "new": 300
+      },
+      {
+        "key": "replay_ratio_target",
+        "old": 1.1,
+        "new": 1.0
+      },
+      {
+        "key": "training_time_limit",
+        "old": 5400,
+        "new": 36000
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.01,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 300,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.0,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 600,
+      "legal_mass_collapse_no_improvement_probes": 8,
+      "training_time_limit": 36000,
+      "batch_stats_interval": 10
+    },
+    "analysis_commentary": "User-closed the app early before persistence-bump landed; relaunched on build 502 with v5 file format persisting all per-position metadata (ply, length, tau, hash, workerGameId).",
+    "training_time_seconds": 3,
+    "arena_count": 0,
+    "arena_promotions": 0,
+    "folder": "experiments/20260502-055104"
+  },
+  {
+    "timestamp": "20260502-055623",
+    "start_time_iso": "2026-05-02T05:56:23Z",
+    "status": "IN_PROGRESS",
+    "mode": "normal",
+    "change_details": "Relaunch of the 10hr overlay (entropy 0.010, lr_warmup 300, ratio 1.0) on build 502 \u2014 adds v5 replay-buffer persistence (per-position ply/length/tau/hash/workerGameId now survive session save/load). Previous launch (055104) was closed by user before persistence work landed.",
+    "changed_params": [
+      {
+        "key": "batch_stats_interval",
+        "old": null,
+        "new": 10
+      },
+      {
+        "key": "entropy_bonus",
+        "old": 0.014,
+        "new": 0.01
+      },
+      {
+        "key": "lr_warmup_steps",
+        "old": 30,
+        "new": 300
+      },
+      {
+        "key": "replay_ratio_target",
+        "old": 1.1,
+        "new": 1.0
+      },
+      {
+        "key": "training_time_limit",
+        "old": 5400,
+        "new": 36000
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.01,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 300,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.0,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 600,
+      "legal_mass_collapse_no_improvement_probes": 8,
+      "training_time_limit": 36000,
+      "batch_stats_interval": 10
+    },
+    "analysis_commentary": "",
+    "training_time_seconds": 36000,
+    "arena_count": null,
+    "arena_promotions": null,
+    "folder": "experiments/20260502-055623"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 429,
+  "total_iterations": 435,
   "counts": {
     "SEED": 1,
     "ACCEPTED": 43,
     "NEUTRAL": 39,
-    "REJECTED": 344,
+    "REJECTED": 349,
     "FAILED": 3,
-    "IN_PROGRESS": 0
+    "IN_PROGRESS": 1
   },
-  "accept_rate": 0.10023310023310024,
-  "failure_streak": 6,
+  "accept_rate": 0.09907834101382489,
+  "failure_streak": 11,
   "trailing_replicates": 0,
-  "iterations_since_codechange": 15,
+  "iterations_since_codechange": 20,
   "code_iteration_due": false,
   "code_iteration_interval": 40,
   "arena_count": 354,

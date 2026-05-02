@@ -1,0 +1,1 @@
+Relaunch of the 10hr overlay (entropy 0.010, lr_warmup 300, ratio 1.0) on build 502 — adds v5 replay-buffer persistence (per-position ply/length/tau/hash/workerGameId now survive session save/load). Previous launch (055104) was closed by user before persistence work landed.

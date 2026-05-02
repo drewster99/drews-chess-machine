@@ -1,0 +1,1 @@
+Reduce entropy_bonus 0.014->0.010 to cut the runaway driver after two back-to-back failures (gNorm 487, pLoss -17 via entropy-bonus exploitation of illegal logits). Single targeted change; all other params held to isolate the effect. Matches baseline 5400s window for fair collapse-vs-baseline comparison.

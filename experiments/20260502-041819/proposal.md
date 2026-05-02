@@ -1,0 +1,1 @@
+User-directed overlay applied on rejection of 20260502-034032: replay_buffer 500k->1M, pre-fill 75k->300k, lr_warmup 30->2000 batches, replay_ratio_target 1.10->0.75. Mechanism: bigger fresher buffer + slow lr warmup + lower replay-ratio = much smoother early dynamics, less chance of locking into stuck-uniform or runaway basin.

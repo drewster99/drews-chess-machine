@@ -1893,6 +1893,11 @@ struct ContentView: View {
     /// (usually just metric noise).
     @State private var realRollingPolicyLoss: Double?
     @State private var realRollingValueLoss: Double?
+    /// Latest legal-mass snapshot the [STATS] logger computed. Cached
+    /// here so the chart-sample heartbeat (which fires more often
+    /// than the [STATS] tick) can render the legal-masked entropy
+    /// trace without recomputing the snapshot itself.
+    @State private var realLastLegalMassSnapshot: ChessTrainer.LegalMassSnapshot?
     nonisolated static let replayBufferCapacity = 1_000_000
     /// Don't start sampling training batches until the buffer holds at least
     /// this many positions — the greater of a 25k-position floor and 20% of
@@ -3511,6 +3516,9 @@ struct ContentView: View {
             rollingPolicyNonNegCount: trainingSnap?.rollingPolicyNonNegCount,
             rollingGradNorm: trainingSnap?.rollingGradGlobalNorm,
             replayRatio: ratioSnap?.currentRatio,
+            rollingPolicyLossWin: trainingSnap?.rollingPolicyLossWin,
+            rollingPolicyLossLoss: trainingSnap?.rollingPolicyLossLoss,
+            rollingLegalEntropy: realLastLegalMassSnapshot.map { Double($0.legalEntropy) },
             cpuPercent: cpuPercent,
             gpuBusyPercent: trainingSnap != nil ? gpuBusy : nil,
             gpuMemoryMB: gpuMemMB,
@@ -7383,6 +7391,7 @@ struct ContentView: View {
             trainer.policyScaleK = Float(trainingParams.policyScaleK)
             trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
             trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
+            trainer.batchStatsInterval = trainingParams.batchStatsInterval
             return trainer
         }
         do {
@@ -8753,6 +8762,18 @@ struct ContentView: View {
                         } else {
                             policyStr = "--"
                         }
+                        let pLossWinStr: String
+                        if let p = trainingSnap.rollingPolicyLossWin {
+                            pLossWinStr = String(format: "%+.4f", p)
+                        } else {
+                            pLossWinStr = "--"
+                        }
+                        let pLossLossStr: String
+                        if let p = trainingSnap.rollingPolicyLossLoss {
+                            pLossLossStr = String(format: "%+.4f", p)
+                        } else {
+                            pLossLossStr = "--"
+                        }
                         let valueStr: String
                         if let v = trainingSnap.rollingValueLoss {
                             valueStr = String(format: "%+.4f", v)
@@ -8945,14 +8966,28 @@ struct ContentView: View {
                         let advStr = "mean=\(advFmt(trainingSnap.rollingAdvMean)) std=\(advFmt(trainingSnap.rollingAdvStd)) min=\(advFmt(trainingSnap.rollingAdvMin)) max=\(advFmt(trainingSnap.rollingAdvMax)) frac+=\(advFracFmt(trainingSnap.rollingAdvFracPositive)) fracSmall=\(advFracFmt(trainingSnap.rollingAdvFracSmall)) p05=\(advFmt(trainingSnap.advantageP05)) p50=\(advFmt(trainingSnap.advantageP50)) p95=\(advFmt(trainingSnap.advantageP95))"
                         let legalMassStr: String
                         let top1LegalStr: String
+                        let pEntLegalStr: String
                         if let lm = legalMassOverride {
                             legalMassStr = String(format: "%.4f", lm.legalMass)
                             top1LegalStr = String(format: "%.2f", lm.top1LegalFraction)
+                            pEntLegalStr = String(format: "%.4f", lm.legalEntropy)
                         } else {
                             legalMassStr = "--"
                             top1LegalStr = "--"
+                            pEntLegalStr = "--"
                         }
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        // Surface the most-recent batch unique-position
+                        // ratio so it scrolls past the eye in the same
+                        // line as pEnt / gNorm. Reads NaN until the
+                        // first stats-collection batch lands.
+                        let bufUniqStr: String
+                        let bufUniqPct = trainer.lastBatchStatsUniquePct
+                        if !bufUniqPct.isNaN {
+                            bufUniqStr = String(format: "%.4f", bufUniqPct)
+                        } else {
+                            bufUniqStr = "--"
+                        }
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // CLI `--output` capture: one StatsLine per
@@ -8986,6 +9021,29 @@ struct ContentView: View {
                                 playedMoveCondWindowSize: trainingSnap.rollingPlayedMoveCondWindowSize,
                                 legalMass: legalMassOverride.map { Double($0.legalMass) },
                                 top1LegalFraction: legalMassOverride.map { Double($0.top1LegalFraction) },
+                                legalEntropy: legalMassOverride.map { Double($0.legalEntropy) },
+                                policyLossWin: trainingSnap.rollingPolicyLossWin,
+                                policyLossLoss: trainingSnap.rollingPolicyLossLoss,
+                                batchStats: trainer.lastBatchStatsSummary.map { s in
+                                    CliTrainingRecorder.BatchStatsSnapshot(
+                                        step: s.step,
+                                        batchSize: s.batchSize,
+                                        uniqueCount: s.uniqueCount,
+                                        uniquePct: s.uniquePct,
+                                        dupMax: s.dupMax,
+                                        dupDistribution: Dictionary(uniqueKeysWithValues:
+                                            s.dupDistribution.map { (String($0.key), $0.value) }
+                                        ),
+                                        plyPhaseHistogram: s.plyPhaseHistogram,
+                                        gameLengthHistogram: s.gameLengthHistogram,
+                                        temperatureHistogram: s.temperatureHistogram,
+                                        workerHistogram: s.workerHistogram,
+                                        outcomeCounts: s.outcomeCounts,
+                                        phaseByPlyXOutcome: s.phaseByPlyXOutcome,
+                                        bufferUniquePositions: s.bufferUniquePositions,
+                                        bufferStoredCount: s.bufferStoredCount
+                                    )
+                                },
                                 valueMean: trainingSnap.rollingValueMean,
                                 valueAbsMean: trainingSnap.rollingValueAbsMean,
                                 vBaselineDelta: trainingSnap.rollingVBaselineDelta,
@@ -9081,6 +9139,14 @@ struct ContentView: View {
                                             sampleSize: legalMassSampleSize,
                                             inferenceNetwork: probeNet
                                         )
+                                        // Mirror to @State so the
+                                        // chart-sample heartbeat can
+                                        // render the legal-entropy
+                                        // trace at its own cadence.
+                                        let snap = lastLegalMass
+                                        await MainActor.run {
+                                            realLastLegalMassSnapshot = snap
+                                        }
                                     } catch {
                                         lastLegalMass = nil
                                         SessionLogger.shared.log(
@@ -9127,6 +9193,13 @@ struct ContentView: View {
                                     sampleSize: legalMassSampleSize,
                                     inferenceNetwork: probeNet
                                 )
+                                // Mirror to @State so the chart-sample
+                                // heartbeat sees a fresh legal-entropy
+                                // value at the steady-state cadence.
+                                let snap = lastLegalMass
+                                await MainActor.run {
+                                    realLastLegalMassSnapshot = snap
+                                }
                             } catch {
                                 lastLegalMass = nil
                                 SessionLogger.shared.log(

@@ -1,0 +1,1 @@
+User-directed overlay re-applied at 10-hour window: 1M buffer + 300k pre-fill + lr_warmup 2000 + replay_ratio_target 0.75 + 36000s window. New build (495+) ships replay-buffer batch-stats observability — every 10th batch will emit [BATCH-STATS] JSON line with unique-position ratio, ply/length/tau/worker histograms, WLD breakdown, and phase×outcome cross-product.

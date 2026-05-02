@@ -306,6 +306,122 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
     // MARK: - [STATS] snapshot
 
+    /// Replay-buffer per-batch observability snapshot. Captured at
+    /// each `[STATS]` tick from the trainer's most-recent stats
+    /// batch. Field semantics match `ReplayBuffer.BatchStatsSummary`.
+    struct BatchStatsSnapshot: Encodable, Sendable {
+        let step: Int
+        let batchSize: Int
+        let uniqueCount: Int
+        let uniquePct: Double
+        let dupMax: Int
+        /// Histograms in counts. Values sum to `batchSize` for any
+        /// partition-style histogram.
+        let dupDistribution: [String: Int]
+        let plyPhaseHistogram: [String: Int]
+        let gameLengthHistogram: [String: Int]
+        let temperatureHistogram: [String: Int]
+        let workerHistogram: [String: Int]
+        let outcomeCounts: [String: Int]
+        let phaseByPlyXOutcome: [String: Int]
+        /// Same histograms expressed as fractions of `batchSize` (or
+        /// of `bufferStoredCount` where that's the natural denominator).
+        /// Pre-computed so post-run analysis doesn't need to know the
+        /// per-snapshot batch size to interpret each cell.
+        let dupDistributionPct: [String: Double]
+        let plyPhaseHistogramPct: [String: Double]
+        let gameLengthHistogramPct: [String: Double]
+        let temperatureHistogramPct: [String: Double]
+        let workerHistogramPct: [String: Double]
+        let outcomeCountsPct: [String: Double]
+        let phaseByPlyXOutcomePct: [String: Double]
+        let bufferUniquePositions: Int
+        let bufferStoredCount: Int
+        /// `bufferUniquePositions / bufferStoredCount`. Range [0, 1].
+        /// Tells you what fraction of the ring's slots hold distinct
+        /// positions globally — pairs with the per-batch `unique_pct`
+        /// to distinguish "buffer full of duplicates" from "sampler
+        /// happened to draw duplicates from a diverse buffer."
+        let bufferUniquePct: Double
+
+        enum CodingKeys: String, CodingKey {
+            case step
+            case batchSize = "batch_size"
+            case uniqueCount = "unique_count"
+            case uniquePct = "unique_pct"
+            case dupMax = "dup_max"
+            case dupDistribution = "dup_distribution"
+            case plyPhaseHistogram = "ply_phase_histogram"
+            case gameLengthHistogram = "game_length_histogram"
+            case temperatureHistogram = "temperature_histogram"
+            case workerHistogram = "worker_histogram"
+            case outcomeCounts = "outcome_counts"
+            case phaseByPlyXOutcome = "phase_by_ply_x_outcome"
+            case dupDistributionPct = "dup_distribution_pct"
+            case plyPhaseHistogramPct = "ply_phase_histogram_pct"
+            case gameLengthHistogramPct = "game_length_histogram_pct"
+            case temperatureHistogramPct = "temperature_histogram_pct"
+            case workerHistogramPct = "worker_histogram_pct"
+            case outcomeCountsPct = "outcome_counts_pct"
+            case phaseByPlyXOutcomePct = "phase_by_ply_x_outcome_pct"
+            case bufferUniquePositions = "buffer_unique_positions"
+            case bufferStoredCount = "buffer_stored_count"
+            case bufferUniquePct = "buffer_unique_pct"
+        }
+
+        /// Convenience constructor that auto-derives all `*_pct`
+        /// fields from the count-valued ones and the batch / buffer
+        /// denominators.
+        init(
+            step: Int,
+            batchSize: Int,
+            uniqueCount: Int,
+            uniquePct: Double,
+            dupMax: Int,
+            dupDistribution: [String: Int],
+            plyPhaseHistogram: [String: Int],
+            gameLengthHistogram: [String: Int],
+            temperatureHistogram: [String: Int],
+            workerHistogram: [String: Int],
+            outcomeCounts: [String: Int],
+            phaseByPlyXOutcome: [String: Int],
+            bufferUniquePositions: Int,
+            bufferStoredCount: Int
+        ) {
+            self.step = step
+            self.batchSize = batchSize
+            self.uniqueCount = uniqueCount
+            self.uniquePct = uniquePct
+            self.dupMax = dupMax
+            self.dupDistribution = dupDistribution
+            self.plyPhaseHistogram = plyPhaseHistogram
+            self.gameLengthHistogram = gameLengthHistogram
+            self.temperatureHistogram = temperatureHistogram
+            self.workerHistogram = workerHistogram
+            self.outcomeCounts = outcomeCounts
+            self.phaseByPlyXOutcome = phaseByPlyXOutcome
+            self.bufferUniquePositions = bufferUniquePositions
+            self.bufferStoredCount = bufferStoredCount
+            let bs = batchSize > 0 ? Double(batchSize) : 1
+            func pct(_ d: [String: Int]) -> [String: Double] {
+                var out: [String: Double] = [:]
+                out.reserveCapacity(d.count)
+                for (k, v) in d { out[k] = Double(v) / bs }
+                return out
+            }
+            self.dupDistributionPct = pct(dupDistribution)
+            self.plyPhaseHistogramPct = pct(plyPhaseHistogram)
+            self.gameLengthHistogramPct = pct(gameLengthHistogram)
+            self.temperatureHistogramPct = pct(temperatureHistogram)
+            self.workerHistogramPct = pct(workerHistogram)
+            self.outcomeCountsPct = pct(outcomeCounts)
+            self.phaseByPlyXOutcomePct = pct(phaseByPlyXOutcome)
+            self.bufferUniquePct = bufferStoredCount > 0
+                ? Double(bufferUniquePositions) / Double(bufferStoredCount)
+                : 0
+        }
+    }
+
     struct StatsLine: Encodable, Sendable {
         let elapsedSec: Double
         let steps: Int
@@ -335,6 +451,31 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let playedMoveCondWindowSize: Int
         let legalMass: Double?
         let top1LegalFraction: Double?
+        /// Legal-masked Shannon entropy (in nats) over the legal-only
+        /// renormalized softmax. Distinguishes "diffuse across legal
+        /// moves" from "concentrating onto preferred legal moves" —
+        /// the full-policy `policyEntropy` cannot tell those apart.
+        let legalEntropy: Double?
+        /// Mean policy loss over batch positions where outcome z > 0.5
+        /// (the move was played in a winning game). Splitting the
+        /// classic `policyLoss` average into win and loss halves
+        /// makes the curve unambiguous: pLossWin negative means the
+        /// network is concentrating on moves that correlate with
+        /// wins (good); pLossLoss negative means it's concentrating
+        /// on moves that correlate with losses (bad).
+        let policyLossWin: Double?
+        /// Mean policy loss over batch positions where z < -0.5.
+        let policyLossLoss: Double?
+        /// Latest replay-buffer batch-stats summary captured at this
+        /// `[STATS]` tick. Mirrors the contents of the `[BATCH-STATS]`
+        /// log line — unique-position ratio, ply-phase histogram,
+        /// game-length histogram, temperature histogram, worker
+        /// histogram, WLD counts, phase×outcome cross product — so
+        /// post-run analysis can read them straight from
+        /// result.json without parsing the log file. Nil until the
+        /// first stats-collection batch lands or when
+        /// `batch_stats_interval` is 0.
+        let batchStats: BatchStatsSnapshot?
         let valueMean: Double?
         let valueAbsMean: Double?
         let vBaselineDelta: Double?
@@ -408,6 +549,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case playedMoveCondWindowSize = "played_move_cond_window_size"
             case legalMass = "legal_mass"
             case top1LegalFraction = "top1_legal_fraction"
+            case legalEntropy = "legal_entropy"
+            case policyLossWin = "policy_loss_win"
+            case policyLossLoss = "policy_loss_loss"
+            case batchStats = "batch_stats"
             case valueMean = "value_mean"
             case valueAbsMean = "value_abs_mean"
             case vBaselineDelta = "v_baseline_delta"

@@ -452,6 +452,16 @@ public enum LegalMassCollapseNoImprovementProbes: TrainingParameterKey {}
 )
 public enum ArenaConcurrency: TrainingParameterKey {}
 
+@TrainingParameter(
+    name: "Batch Stats Interval",
+    description: "Compute and emit [BATCH-STATS] every N training batches. 0 disables. Cost is ~1ms per evaluated batch; default 10 keeps log volume manageable.",
+    default: 10,
+    range: 0...10000,
+    category: "Observability",
+    liveTunable: true
+)
+public enum BatchStatsInterval: TrainingParameterKey {}
+
 // MARK: - TrainingParametersSnapshot
 
 public struct TrainingParametersSnapshot: Sendable {
@@ -510,6 +520,7 @@ public extension TrainingParametersSnapshot {
     var legalMassCollapseGraceSeconds: Double { value(for: LegalMassCollapseGraceSeconds.self) }
     var legalMassCollapseNoImprovementProbes: Int { value(for: LegalMassCollapseNoImprovementProbes.self) }
     var arenaConcurrency: Int { value(for: ArenaConcurrency.self) }
+    var batchStatsInterval: Int { value(for: BatchStatsInterval.self) }
 }
 
 // MARK: - TrainingParameters singleton
@@ -550,6 +561,7 @@ public final class TrainingParameters {
     public var legalMassCollapseGraceSeconds: Double { didSet { Self.persist(LegalMassCollapseGraceSeconds.self, value: legalMassCollapseGraceSeconds) } }
     public var legalMassCollapseNoImprovementProbes: Int { didSet { Self.persist(LegalMassCollapseNoImprovementProbes.self, value: legalMassCollapseNoImprovementProbes) } }
     public var arenaConcurrency: Int { didSet { Self.persist(ArenaConcurrency.self, value: arenaConcurrency) } }
+    public var batchStatsInterval: Int { didSet { Self.persist(BatchStatsInterval.self, value: batchStatsInterval) } }
 
     private init() {
         // Read each value from UserDefaults (or definition default if absent / invalid).
@@ -583,6 +595,7 @@ public final class TrainingParameters {
         self.legalMassCollapseGraceSeconds = Self.read(LegalMassCollapseGraceSeconds.self)
         self.legalMassCollapseNoImprovementProbes = Self.read(LegalMassCollapseNoImprovementProbes.self)
         self.arenaConcurrency = Self.read(ArenaConcurrency.self)
+        self.batchStatsInterval = Self.read(BatchStatsInterval.self)
     }
 
     // MARK: Snapshot
@@ -622,6 +635,7 @@ public final class TrainingParameters {
         v[LegalMassCollapseGraceSeconds.id] = LegalMassCollapseGraceSeconds.encode(legalMassCollapseGraceSeconds)
         v[LegalMassCollapseNoImprovementProbes.id] = LegalMassCollapseNoImprovementProbes.encode(legalMassCollapseNoImprovementProbes)
         v[ArenaConcurrency.id] = ArenaConcurrency.encode(arenaConcurrency)
+        v[BatchStatsInterval.id] = BatchStatsInterval.encode(batchStatsInterval)
         return v
     }
 
@@ -696,6 +710,8 @@ public final class TrainingParameters {
             try LegalMassCollapseNoImprovementProbes.definition.validate(raw); legalMassCollapseNoImprovementProbes = try LegalMassCollapseNoImprovementProbes.decode(raw)
         case ArenaConcurrency.id:
             try ArenaConcurrency.definition.validate(raw); arenaConcurrency = try ArenaConcurrency.decode(raw)
+        case BatchStatsInterval.id:
+            try BatchStatsInterval.definition.validate(raw); batchStatsInterval = try BatchStatsInterval.decode(raw)
         default:
             throw TrainingConfigError.unknownParameter(id: id)
         }
@@ -788,7 +804,8 @@ public final class TrainingParameters {
         LegalMassCollapseThreshold.self,
         LegalMassCollapseGraceSeconds.self,
         LegalMassCollapseNoImprovementProbes.self,
-        ArenaConcurrency.self
+        ArenaConcurrency.self,
+        BatchStatsInterval.self
     ]
 
     public nonisolated static var allDefinitions: [TrainingParameterDefinition] {

@@ -205,6 +205,12 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             replayBuffer: buffer,
             schedule: scheduleBox.selfPlay
         )
+        // Stamp the slot id onto each player so per-position
+        // observability metadata can attribute samples back to which
+        // self-play slot produced them. UInt8 caps at 255; clamp.
+        let stampedWorkerId = UInt8(min(id, Int(UInt8.max)))
+        white.workerId = stampedWorkerId
+        black.workerId = stampedWorkerId
 
         while !Task.isCancelled {
             // Refresh schedule between games so live UI edits propagate

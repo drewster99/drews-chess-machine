@@ -1,0 +1,1 @@
+{"classification":"regressed","analysis_commentary":"User-closed the app early before persistence-bump landed; relaunched on build 502 with v5 file format persisting all per-position metadata (ply, length, tau, hash, workerGameId)."}
