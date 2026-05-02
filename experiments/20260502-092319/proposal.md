@@ -1,0 +1,1 @@
+Extend training window 3600->5400s (90 min). Prior 60-min run was rock-stable (gNorm max 6.47, no blowup, all hard-rejects clear); same params, more runway for legal-mass emergence which has not yet kicked in.

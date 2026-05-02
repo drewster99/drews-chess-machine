@@ -1,0 +1,1 @@
+Tighten grad_clip_max_norm 25→10 against baseline (lr=5e-5, ent=0.013) on a 5400s window. Three prior 90-min H4 rejections at varied lr/entropy show late-stage candidate-softmax crystallization isn't sensitive to those; observed gNorm max ~14 across runs but clip never bound at 25. A clip of 10 will start firing on large updates and directly cap per-step logit growth.

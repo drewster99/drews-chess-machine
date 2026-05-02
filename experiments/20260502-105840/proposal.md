@@ -1,0 +1,1 @@
+Reduce LR 5e-5->4e-5 at 90min window. Prior 90min run (lr=5e-5) tripped H4 late_probe_collapsed despite healthy aggregate metrics — softmax crystallized on illegals in last 5min. Lower LR slows late-stage drift while keeping baseline params otherwise.

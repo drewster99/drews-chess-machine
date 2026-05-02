@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "H4 tripped: late_probe_collapsed=true (third consecutive 90-min H4 rejection across lr=5e-5, lr=4e-5+ent=0.013, lr=4e-5+ent=0.018). pLogitMax max=15.8 vs baseline 7.7 (2× threshold). Higher entropy_bonus 0.018 did not prevent late-stage candidate-softmax crystallization on illegals. arenas.count=16 mean=0.504 vs baseline 10/0.516, promoted=0. 90-min window appears to reliably trigger H4 across the tested LR/entropy parameter space; needs different mechanism (LR decay/cosine, batch increase, or grad-clip lowering) rather than further entropy uplift.",
+  "classification": "regressed"
+}

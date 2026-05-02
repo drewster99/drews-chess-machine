@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "H4 tripped: late_probe_collapsed=true (baseline was false). Final candidate probes show softmax crystallized onto illegal moves (max_prob>=0.99, legal_mass<0.01 in last 5min). Aggregate metrics looked OK (gNorm 6.2 vs baseline 6.5, pLogitMax 11.9 vs 9.7), arenas.count=16 mean=0.514 vs baseline 10/0.516, but the candidate trainer-mode network late-stage degenerated. No promotion (arenas.promoted=0).",
+  "classification": "regressed"
+}

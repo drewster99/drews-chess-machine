@@ -1,0 +1,1 @@
+Combine clip-10 (which drove the first 90-min promotion despite H4 trip) with a 4500s window (75-min, +25% over 3600s baseline, well under the 90-min H4 wall). Lock in the demonstrated learning gain at a window length that shouldn't trigger late-stage candidate crystallization.

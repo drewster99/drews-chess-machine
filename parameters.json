@@ -1,6 +1,6 @@
 {
   "entropy_bonus": 0.013,
-  "grad_clip_max_norm": 25,
+  "grad_clip_max_norm": 10,
   "weight_decay": 0.0002,
   "K": 1.0,
   "learning_rate": 5e-05,
@@ -27,6 +27,6 @@
   "legal_mass_collapse_threshold": 0.999,
   "legal_mass_collapse_grace_seconds": 600,
   "legal_mass_collapse_no_improvement_probes": 8,
-  "training_time_limit": 3600,
+  "training_time_limit": 4500,
   "batch_stats_interval": 10
 }

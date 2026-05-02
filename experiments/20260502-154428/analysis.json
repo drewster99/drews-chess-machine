@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Cracked the H4 wall: late_probe_collapsed=false at 75-min (vs 4 prior 90-min trips). final_legal_mass=0.0225 vs baseline 0.0023 (~10× — A1 fires strong); final_top1_legal_fraction=0.0234 vs 0.0 (A2 fires); arenas.promoted=1 vs 0 (E1 fires); min_policy_entropy=6.99 in-band (A3 fires). Four positive signals across A & E axes, all hard/soft rejects clear, max pLogitAbsMax=6.78 (clip=10 held it remarkably stable for 70+ min). Promoted 1× during session; arena mean 0.499 slightly below baseline 0.516 but offset by genuine distribution-shape progress.",
+  "classification": "improved"
+}

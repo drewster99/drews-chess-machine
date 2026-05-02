@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "H4 tripped: late_probe_collapsed=true (last probe max_prob=1.0, legal_mass_sum=0.0). Aggregate trajectory healthier than baseline (legalMass 0.004 vs 0.002, top1_legal_ever_positive=true vs false, gNorm 6.0 vs 6.5, pEnt min 6.76 vs 6.55), but candidate softmax crystallized on illegal moves in last 5min — same pattern as prior 90-min rejection at lr=5e-5. Suggests 90-min window triggers late-stage crystallization across LR settings. arenas.count=16 mean=0.507 vs baseline 10/0.516, promoted=0.",
+  "classification": "regressed"
+}

@@ -1,0 +1,171 @@
+run_training.sh: launching DrewsChessMachine (limit=4500s, params=/Users/andrew/cursor/drews-chess-machine/experiments/20260502-154428/parameters.json, out=/Users/andrew/cursor/drews-chess-machine/experiments/20260502-154428/result.json)
+run_latest.sh: launching /Users/andrew/Library/Developer/Xcode/DerivedData/DrewsChessMachine-eyigcdvyyrcsakaqcybzcfgsurbr/Build/Products/Debug/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine
+[APP] session log: /Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20260502-104504.txt
+[ARENA] #1 Candidate vs Champion @ step 177
+[ARENA]     Games: 100/100
+[ARENA]     Result: 11W / 89D / 0L
+[ARENA]     Score: 55.5% [52.4%, 58.6%]
+[ARENA]     Elo diff: +38 [+17, +60]
+[ARENA]     Draw rate: 89.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 55.0%  (5W/45D/0L, n=50)
+[ARENA]       Candidate as black: 56.0%  (6W/44D/0L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-1  champion=20260502-35-OF8D  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=1.9
+[ARENA]     Verdict: PROMOTED(auto)=20260502-35-OF8D-1    dur=0:30
+[ARENA] #1 kv step=177 games=100 w=11 d=89 l=0 score=0.5550 elo=+38 elo_lo=+17 elo_hi=+60 draw_rate=0.8900 cand_white_w=5 cand_white_d=45 cand_white_l=0 cand_black_w=6 cand_black_d=44 cand_black_l=0 cand_white_score=0.5500 cand_black_score=0.5600 promoted=1 kind=automatic dur_sec=30.7 build=512 candidate=20260502-35-OF8D-1 champion=20260502-35-OF8D trainer=20260502-35-OF8D-2
+[ARENA] #2 Candidate vs Champion @ step 381
+[ARENA]     Games: 100/100
+[ARENA]     Result: 3W / 95D / 2L
+[ARENA]     Score: 50.5% [48.3%, 52.7%]
+[ARENA]     Elo diff: +3 [-12, +19]
+[ARENA]     Draw rate: 95.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 49.0%  (1W/47D/2L, n=50)
+[ARENA]       Candidate as black: 52.0%  (2W/48D/0L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=2.9
+[ARENA]     Verdict: kept    dur=0:34
+[ARENA] #2 kv step=381 games=100 w=3 d=95 l=2 score=0.5050 elo=+3 elo_lo=-12 elo_hi=+19 draw_rate=0.9500 cand_white_w=1 cand_white_d=47 cand_white_l=2 cand_black_w=2 cand_black_d=48 cand_black_l=0 cand_white_score=0.4900 cand_black_score=0.5200 promoted=0 kind=none dur_sec=34.2 build=512 candidate=20260502-35-OF8D-2 champion=20260502-35-OF8D-1 trainer=20260502-35-OF8D-2
+[ARENA] #3 Candidate vs Champion @ step 586
+[ARENA]     Games: 100/100
+[ARENA]     Result: 5W / 89D / 6L
+[ARENA]     Score: 49.5% [46.3%, 52.7%]
+[ARENA]     Elo diff: -3 [-26, +19]
+[ARENA]     Draw rate: 89.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 48.0%  (1W/46D/3L, n=50)
+[ARENA]       Candidate as black: 51.0%  (4W/43D/3L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=3.0
+[ARENA]     Verdict: kept    dur=0:30
+[ARENA] #3 kv step=586 games=100 w=5 d=89 l=6 score=0.4950 elo=-3 elo_lo=-26 elo_hi=+19 draw_rate=0.8900 cand_white_w=1 cand_white_d=46 cand_white_l=3 cand_black_w=4 cand_black_d=43 cand_black_l=3 cand_white_score=0.4800 cand_black_score=0.5100 promoted=0 kind=none dur_sec=31.0 build=512 candidate=20260502-35-OF8D-2 champion=20260502-35-OF8D-1 trainer=20260502-35-OF8D-2
+[ARENA] #4 Candidate vs Champion @ step 785
+[ARENA]     Games: 100/100
+[ARENA]     Result: 5W / 92D / 3L
+[ARENA]     Score: 51.0% [48.2%, 53.8%]
+[ARENA]     Elo diff: +7 [-12, +26]
+[ARENA]     Draw rate: 92.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 52.0%  (4W/44D/2L, n=50)
+[ARENA]       Candidate as black: 50.0%  (1W/48D/1L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=3.5
+[ARENA]     Verdict: kept    dur=0:30
+[ARENA] #4 kv step=785 games=100 w=5 d=92 l=3 score=0.5100 elo=+7 elo_lo=-12 elo_hi=+26 draw_rate=0.9200 cand_white_w=4 cand_white_d=44 cand_white_l=2 cand_black_w=1 cand_black_d=48 cand_black_l=1 cand_white_score=0.5200 cand_black_score=0.5000 promoted=0 kind=none dur_sec=30.8 build=512 candidate=20260502-35-OF8D-2 champion=20260502-35-OF8D-1 trainer=20260502-35-OF8D-2
+[ARENA] #5 Candidate vs Champion @ step 983
+[ARENA]     Games: 100/100
+[ARENA]     Result: 1W / 91D / 8L
+[ARENA]     Score: 46.5% [43.6%, 49.4%]
+[ARENA]     Elo diff: -24 [-44, -4]
+[ARENA]     Draw rate: 91.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 47.0%  (1W/45D/4L, n=50)
+[ARENA]       Candidate as black: 46.0%  (0W/46D/4L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=2.9
+[ARENA]     Verdict: kept    dur=0:30
+[ARENA] #5 kv step=983 games=100 w=1 d=91 l=8 score=0.4650 elo=-24 elo_lo=-44 elo_hi=-4 draw_rate=0.9100 cand_white_w=1 cand_white_d=45 cand_white_l=4 cand_black_w=0 cand_black_d=46 cand_black_l=4 cand_white_score=0.4700 cand_black_score=0.4600 promoted=0 kind=none dur_sec=30.6 build=512 candidate=20260502-35-OF8D-2 champion=20260502-35-OF8D-1 trainer=20260502-35-OF8D-2
+[ARENA] #6 Candidate vs Champion @ step 1177
+[ARENA]     Games: 100/100
+[ARENA]     Result: 2W / 93D / 5L
+[ARENA]     Score: 48.5% [45.9%, 51.1%]
+[ARENA]     Elo diff: -10 [-28, +7]
+[ARENA]     Draw rate: 93.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 45.0%  (0W/45D/5L, n=50)
+[ARENA]       Candidate as black: 52.0%  (2W/48D/0L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=3.2
+[ARENA]     Verdict: kept    dur=0:31
+[ARENA] #6 kv step=1177 games=100 w=2 d=93 l=5 score=0.4850 elo=-10 elo_lo=-28 elo_hi=+7 draw_rate=0.9300 cand_white_w=0 cand_white_d=45 cand_white_l=5 cand_black_w=2 cand_black_d=48 cand_black_l=0 cand_white_score=0.4500 cand_black_score=0.5200 promoted=0 kind=none dur_sec=31.8 build=512 candidate=20260502-35-OF8D-2 champion=20260502-35-OF8D-1 trainer=20260502-35-OF8D-2
+[ARENA] #7 Candidate vs Champion @ step 1368
+[ARENA]     Games: 100/100
+[ARENA]     Result: 1W / 94D / 5L
+[ARENA]     Score: 48.0% [45.6%, 50.4%]
+[ARENA]     Elo diff: -14 [-30, +3]
+[ARENA]     Draw rate: 94.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 48.0%  (1W/46D/3L, n=50)
+[ARENA]       Candidate as black: 48.0%  (0W/48D/2L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=2.9
+[ARENA]     Verdict: kept    dur=0:31
+[ARENA] #7 kv step=1368 games=100 w=1 d=94 l=5 score=0.4800 elo=-14 elo_lo=-30 elo_hi=+3 draw_rate=0.9400 cand_white_w=1 cand_white_d=46 cand_white_l=3 cand_black_w=0 cand_black_d=48 cand_black_l=2 cand_white_score=0.4800 cand_black_score=0.4800 promoted=0 kind=none dur_sec=31.7 build=512 candidate=20260502-35-OF8D-2 champion=20260502-35-OF8D-1 trainer=20260502-35-OF8D-2
+[ARENA] #8 Candidate vs Champion @ step 1559
+[ARENA]     Games: 100/100
+[ARENA]     Result: 1W / 94D / 5L
+[ARENA]     Score: 48.0% [45.6%, 50.4%]
+[ARENA]     Elo diff: -14 [-30, +3]
+[ARENA]     Draw rate: 94.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 49.0%  (1W/47D/2L, n=50)
+[ARENA]       Candidate as black: 47.0%  (0W/47D/3L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=3.3
+[ARENA]     Verdict: kept    dur=0:30
+[ARENA] #8 kv step=1559 games=100 w=1 d=94 l=5 score=0.4800 elo=-14 elo_lo=-30 elo_hi=+3 draw_rate=0.9400 cand_white_w=1 cand_white_d=47 cand_white_l=2 cand_black_w=0 cand_black_d=47 cand_black_l=3 cand_white_score=0.4900 cand_black_score=0.4700 promoted=0 kind=none dur_sec=30.7 build=512 candidate=20260502-35-OF8D-2 champion=20260502-35-OF8D-1 trainer=20260502-35-OF8D-2
+[ARENA] #9 Candidate vs Champion @ step 1744
+[ARENA]     Games: 100/100
+[ARENA]     Result: 7W / 90D / 3L
+[ARENA]     Score: 52.0% [48.9%, 55.1%]
+[ARENA]     Elo diff: +14 [-7, +35]
+[ARENA]     Draw rate: 90.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 54.0%  (4W/46D/0L, n=50)
+[ARENA]       Candidate as black: 50.0%  (3W/44D/3L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=3.1
+[ARENA]     Verdict: kept    dur=0:30
+[ARENA] #9 kv step=1744 games=100 w=7 d=90 l=3 score=0.5200 elo=+14 elo_lo=-7 elo_hi=+35 draw_rate=0.9000 cand_white_w=4 cand_white_d=46 cand_white_l=0 cand_black_w=3 cand_black_d=44 cand_black_l=3 cand_white_score=0.5400 cand_black_score=0.5000 promoted=0 kind=none dur_sec=30.7 build=512 candidate=20260502-35-OF8D-2 champion=20260502-35-OF8D-1 trainer=20260502-35-OF8D-2
+[ARENA] #10 Candidate vs Champion @ step 1925
+[ARENA]     Games: 100/100
+[ARENA]     Result: 3W / 94D / 3L
+[ARENA]     Score: 50.0% [47.6%, 52.4%]
+[ARENA]     Elo diff: +0 [-17, +17]
+[ARENA]     Draw rate: 94.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 52.0%  (2W/48D/0L, n=50)
+[ARENA]       Candidate as black: 48.0%  (1W/46D/3L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=3.1
+[ARENA]     Verdict: kept    dur=0:31
+[ARENA] #10 kv step=1925 games=100 w=3 d=94 l=3 score=0.5000 elo=+0 elo_lo=-17 elo_hi=+17 draw_rate=0.9400 cand_white_w=2 cand_white_d=48 cand_white_l=0 cand_black_w=1 cand_black_d=46 cand_black_l=3 cand_white_score=0.5200 cand_black_score=0.4800 promoted=0 kind=none dur_sec=31.4 build=512 candidate=20260502-35-OF8D-2 champion=20260502-35-OF8D-1 trainer=20260502-35-OF8D-2
+[ARENA] #11 Candidate vs Champion @ step 2100
+[ARENA]     Games: 100/100
+[ARENA]     Result: 4W / 93D / 3L
+[ARENA]     Score: 50.5% [47.9%, 53.1%]
+[ARENA]     Elo diff: +3 [-15, +22]
+[ARENA]     Draw rate: 93.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 49.0%  (1W/47D/2L, n=50)
+[ARENA]       Candidate as black: 52.0%  (3W/46D/1L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=3.4
+[ARENA]     Verdict: kept    dur=0:30
+[ARENA] #11 kv step=2100 games=100 w=4 d=93 l=3 score=0.5050 elo=+3 elo_lo=-15 elo_hi=+22 draw_rate=0.9300 cand_white_w=1 cand_white_d=47 cand_white_l=2 cand_black_w=3 cand_black_d=46 cand_black_l=1 cand_white_score=0.4900 cand_black_score=0.5200 promoted=0 kind=none dur_sec=30.7 build=512 candidate=20260502-35-OF8D-2 champion=20260502-35-OF8D-1 trainer=20260502-35-OF8D-2
+[ARENA] #12 Candidate vs Champion @ step 2271
+[ARENA]     Games: 100/100
+[ARENA]     Result: 1W / 93D / 6L
+[ARENA]     Score: 47.5% [45.0%, 50.0%]
+[ARENA]     Elo diff: -17 [-35, +0]
+[ARENA]     Draw rate: 93.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 46.0%  (1W/44D/5L, n=50)
+[ARENA]       Candidate as black: 49.0%  (0W/49D/1L, n=50)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=100 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=512
+[ARENA]     candidate=20260502-35-OF8D-2  champion=20260502-35-OF8D-1  trainer=20260502-35-OF8D-2
+[ARENA]     diversity: unique=100/100 (100%) avgDiverge=3.5
+[ARENA]     Verdict: kept    dur=0:30
+[run_training.sh: run complete, output at /Users/andrew/cursor/drews-chess-machine/experiments/20260502-154428/result.json

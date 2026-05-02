@@ -1,0 +1,1 @@
+Bump entropy_bonus 0.013→0.018 to push back harder on late-stage candidate-softmax concentration. Two 90-min runs at lr=5e-5 and lr=4e-5 both tripped H4 (last-5min probes show max_prob=1.0 on illegals) despite stable aggregate metrics; lower LR alone insufficient. Higher entropy bonus directly fights concentration without slowing legal-mass emergence.

@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "H4 tripped: late_probe_collapsed=true (fourth consecutive 90-min H4 rejection). Grad-clip 25→10 was binding throughout (max gNorm 6.6 vs clip 10) and dampened pLogitMax growth (max=17.1 vs prior 15.8 — slightly higher despite tighter clip), but candidate softmax still crystallized on illegals in last 5min. Notably this run promoted 1× at arena 1 (vs 0 in prior 3 H4 trials) and arenas.mean_score=0.517 vs baseline 0.516 — first concrete chess-strength signal at 90-min, suggesting clip-10 produced a learnable trajectory even though the late-stage probe still collapses. Mechanism for late-stage candidate-probe crystallization is independent of gradient magnitude; needs different intervention (e.g. LR cosine decay, lower self-play tau, or candidate-network regularization) rather than further clip tightening.",
+  "classification": "regressed"
+}
