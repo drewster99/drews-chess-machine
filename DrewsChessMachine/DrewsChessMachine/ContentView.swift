@@ -3519,6 +3519,7 @@ struct ContentView: View {
             rollingPolicyLossWin: trainingSnap?.rollingPolicyLossWin,
             rollingPolicyLossLoss: trainingSnap?.rollingPolicyLossLoss,
             rollingLegalEntropy: realLastLegalMassSnapshot.map { Double($0.legalEntropy) },
+            rollingLegalMass: realLastLegalMassSnapshot.map { Double($0.legalMass) },
             cpuPercent: cpuPercent,
             gpuBusyPercent: trainingSnap != nil ? gpuBusy : nil,
             gpuMemoryMB: gpuMemMB,
@@ -8732,6 +8733,17 @@ struct ContentView: View {
                     let legalMassBootstrapStride = 25
                     let legalMassSampleSize = 128
 
+                    // First-observed pwNorm becomes the session baseline
+                    // so each [STATS] line can report the absolute value
+                    // alongside the drift since session start. Captured
+                    // lazily on the first non-nil reading rather than at
+                    // task launch — when training has just kicked off
+                    // the trainer's rolling weight-norm window may not
+                    // be populated yet. Mutated from inside the nested
+                    // `logOne` closure; safe because every call site
+                    // runs serially on this task.
+                    var pwNormBaseline: Double? = nil
+
                     func logOne(elapsedTarget: TimeInterval, legalMassOverride: ChessTrainer.LegalMassSnapshot?) async {
                         let trainingSnap = box.snapshot()
                         let parallelSnap = pStatsBox.snapshot()
@@ -8822,7 +8834,11 @@ struct ContentView: View {
                         let arTau = String(format: "%.2f/%.2f/%.3f", arSched.startTau, arSched.floorTau, arSched.decayPerPly)
                         let pwNormStr: String
                         if let pwn = trainingSnap.rollingPolicyHeadWeightNorm {
-                            pwNormStr = String(format: "%.3f", pwn)
+                            if pwNormBaseline == nil {
+                                pwNormBaseline = pwn
+                            }
+                            let delta = pwn - (pwNormBaseline ?? pwn)
+                            pwNormStr = String(format: "%.5f(Δ%+.5f)", pwn, delta)
                         } else {
                             pwNormStr = "--"
                         }

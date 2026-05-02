@@ -28,6 +28,11 @@ struct TrainingChartSample: Identifiable, Sendable {
     /// tile as `rollingPolicyEntropy` so the two trajectories can
     /// be compared directly.
     let rollingLegalEntropy: Double?
+    /// Sum of softmax probability mass that lands on legal moves at
+    /// the probed position. In `[0, 1]` — the complement is mass on
+    /// illegal moves. Pulled from the periodic `LegalMassSnapshot`
+    /// probe (same source as `rollingLegalEntropy`).
+    let rollingLegalMass: Double?
 
     // System metrics
     let cpuPercent: Double?
@@ -194,13 +199,8 @@ struct TrainingChartGridView: View {
                 totalGB: appMemoryTotalGB,
                 color: .brown
             )
-            // Row 2: Loss Policy | Non-Neg Count | Replay Ratio | GPU % | GPU RAM
-            miniChart(
-                title: "pLoss (policy loss)",
-                yPath: \.rollingPolicyLoss,
-                unit: "",
-                color: .orange
-            )
+            // Row 2: pLoss + vLoss combo | Non-Neg Count | Replay Ratio | GPU % | GPU RAM
+            policyValueLossChart
             nonNegChart
             replayRatioChart
             miniChart(
@@ -215,13 +215,8 @@ struct TrainingChartGridView: View {
                 totalGB: gpuMemoryTotalGB,
                 color: .teal
             )
-            // Row 3: Loss Value | Diversity histogram | Power / Thermal | Arena activity
-            miniChart(
-                title: "vLoss (value loss)",
-                yPath: \.rollingValueLoss,
-                unit: "",
-                color: .cyan
-            )
+            // Row 3: Legal mass sum | gNorm | Diversity histogram | Power / Thermal | Arena activity
+            legalMassChart
             miniChart(
                 title: "gNorm (gradient L2 norm)",
                 yPath: \.rollingGradNorm,
@@ -880,6 +875,168 @@ struct TrainingChartGridView: View {
                         AxisValueLabel {
                             if let v = value.as(Double.self) {
                                 Text(Self.compactLabel(v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartXScale(domain: timeSeriesXDomain)
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
+            }
+            .frame(height: 75)
+        }
+    }
+
+    /// Combo chart showing pLoss (policy loss, orange) and vLoss
+    /// (value loss, cyan) on a shared Y axis. Both curves carry
+    /// useful training-health signal but live on similar magnitudes,
+    /// so plotting them together keeps the row-2 column-1 tile dense
+    /// and frees row-3 column-1 for the legal-mass tile below.
+    private var policyValueLossChart: some View {
+        let lastP = trainingChartSamples.last?.rollingPolicyLoss
+        let lastV = trainingChartSamples.last?.rollingValueLoss
+        let headerText: String
+        switch (lastP, lastV) {
+        case (let p?, let v?):
+            headerText = String(format: "pLoss %.3f / vLoss %.3f", p, v)
+        case (let p?, nil):
+            headerText = String(format: "pLoss %.3f / vLoss --", p)
+        case (nil, let v?):
+            headerText = String(format: "pLoss -- / vLoss %.3f", v)
+        default:
+            headerText = "--"
+        }
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("pLoss + vLoss")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(headerText)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                Chart {
+                    ForEach(trainingChartSamples) { sample in
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Loss", sample.rollingPolicyLoss ?? .nan)
+                        )
+                        .foregroundStyle(by: .value("Series", "pLoss"))
+                    }
+                    ForEach(trainingChartSamples) { sample in
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Loss", sample.rollingValueLoss ?? .nan)
+                        )
+                        .foregroundStyle(by: .value("Series", "vLoss"))
+                    }
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
+                }
+                .chartForegroundStyleScale([
+                    "pLoss": Color.orange,
+                    "vLoss": Color.cyan
+                ])
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(Self.compactLabel(v))
+                                    .font(.system(size: 7))
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+                .chartXScale(domain: timeSeriesXDomain)
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: visibleDomainSec)
+                .chartScrollPosition(x: $scrollX)
+                .chartOverlay { proxy in
+                    hoverOverlay(proxy: proxy)
+                }
+            }
+            .frame(height: 75)
+        }
+    }
+
+    /// Legal mass sum tile — fraction of the full softmax that lands
+    /// on legal moves at the probed position. Y axis is fixed to
+    /// `0...1` so the reader sees absolute health (a healthy network
+    /// concentrates ≈1.0 on legal moves) rather than auto-scaled
+    /// noise. Header reads as a percentage to match the format used
+    /// in the Policy Stats panel.
+    private var legalMassChart: some View {
+        let readout = hoverReadout(path: \.rollingLegalMass)
+        let headerText: String
+        switch readout {
+        case .notHovering:
+            if let v = trainingChartSamples.last?.rollingLegalMass {
+                headerText = String(format: "%.4f%%", v * 100)
+            } else {
+                headerText = "--"
+            }
+        case .hoveringNoData(let t):
+            headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
+        case .hoveringWithData(let t, let v):
+            headerText = String(
+                format: "t=%@ %.4f%%",
+                Self.formatElapsedAxis(t), v * 100
+            )
+        }
+        return chartCard {
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("Legal mass sum")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(headerText)
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                }
+                Chart {
+                    ForEach(trainingChartSamples) { sample in
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Legal mass", sample.rollingLegalMass ?? .nan)
+                        )
+                        .foregroundStyle(.cyan)
+                    }
+                    if let t = hoveredSec {
+                        RuleMark(x: .value("Time", t))
+                            .foregroundStyle(Color.gray.opacity(0.5))
+                            .lineStyle(StrokeStyle(lineWidth: 1))
+                    }
+                    if case .hoveringWithData(let t, let v) = readout {
+                        PointMark(x: .value("Time", t), y: .value("Legal mass", v))
+                            .foregroundStyle(.cyan)
+                            .symbolSize(40)
+                    }
+                }
+                .chartYScale(domain: 0...1)
+                .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: [0, 0.25, 0.5, 0.75, 1.0]) { value in
+                        AxisGridLine()
+                        AxisValueLabel {
+                            if let v = value.as(Double.self) {
+                                Text(String(format: "%.2f", v))
                                     .font(.system(size: 7))
                                     .monospacedDigit()
                             }
