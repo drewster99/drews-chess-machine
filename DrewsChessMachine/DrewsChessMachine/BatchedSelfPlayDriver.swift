@@ -207,8 +207,14 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         )
         // Stamp the slot id onto each player so per-position
         // observability metadata can attribute samples back to which
-        // self-play slot produced them. UInt8 caps at 255; clamp.
-        let stampedWorkerId = UInt8(min(id, Int(UInt8.max)))
+        // self-play slot produced them. `nextSlotID` increments
+        // monotonically across arena respawns / Stepper resizes —
+        // it never recycles cancelled IDs — so over a long session
+        // the value grows past any small fixed cap. We modulo into
+        // UInt16 so distinct currently-active slots never collide
+        // unless the counter wraps within ~65k respawns (1366
+        // arenas at typical 48-slot fleets ≈ 110 hours).
+        let stampedWorkerId = UInt16(id % (Int(UInt16.max) + 1))
         white.workerId = stampedWorkerId
         black.workerId = stampedWorkerId
 

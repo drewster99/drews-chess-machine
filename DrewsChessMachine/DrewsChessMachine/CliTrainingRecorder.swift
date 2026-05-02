@@ -315,33 +315,35 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let uniqueCount: Int
         let uniquePct: Double
         let dupMax: Int
-        /// Histograms in counts. Values sum to `batchSize` for any
-        /// partition-style histogram.
+        /// Counts. `dup_distribution[k]` is the number of distinct
+        /// hashes in the batch with multiplicity k; partition-style
+        /// histograms (`phase_by_ply` etc.) sum to `batch_size`.
         let dupDistribution: [String: Int]
-        let plyPhaseHistogram: [String: Int]
+        let phaseByPlyHistogram: [String: Int]
+        let phaseByMaterialHistogram: [String: Int]
         let gameLengthHistogram: [String: Int]
-        let temperatureHistogram: [String: Int]
-        let workerHistogram: [String: Int]
-        let outcomeCounts: [String: Int]
-        let phaseByPlyXOutcome: [String: Int]
-        /// Same histograms expressed as fractions of `batchSize` (or
-        /// of `bufferStoredCount` where that's the natural denominator).
-        /// Pre-computed so post-run analysis doesn't need to know the
-        /// per-snapshot batch size to interpret each cell.
+        let samplingTauHistogram: [String: Int]
+        let workerIdHistogram: [String: Int]
+        let outcomeHistogram: [String: Int]
+        let phaseByPlyXOutcomeHistogram: [String: Int]
+        /// Same histograms expressed as fractions. Partition
+        /// histograms divide by `batchSize`; `dup_distribution_pct`
+        /// divides by `uniqueCount` (so its values express "fraction
+        /// of distinct hashes with multiplicity k").
         let dupDistributionPct: [String: Double]
-        let plyPhaseHistogramPct: [String: Double]
+        let phaseByPlyHistogramPct: [String: Double]
+        let phaseByMaterialHistogramPct: [String: Double]
         let gameLengthHistogramPct: [String: Double]
-        let temperatureHistogramPct: [String: Double]
-        let workerHistogramPct: [String: Double]
-        let outcomeCountsPct: [String: Double]
-        let phaseByPlyXOutcomePct: [String: Double]
+        let samplingTauHistogramPct: [String: Double]
+        let workerIdHistogramPct: [String: Double]
+        let outcomeHistogramPct: [String: Double]
+        let phaseByPlyXOutcomeHistogramPct: [String: Double]
         let bufferUniquePositions: Int
         let bufferStoredCount: Int
         /// `bufferUniquePositions / bufferStoredCount`. Range [0, 1].
-        /// Tells you what fraction of the ring's slots hold distinct
-        /// positions globally — pairs with the per-batch `unique_pct`
-        /// to distinguish "buffer full of duplicates" from "sampler
-        /// happened to draw duplicates from a diverse buffer."
+        /// Distinguishes "buffer full of duplicates" (low) from
+        /// "sampler happened to draw duplicates from a diverse
+        /// buffer" (high here, low `unique_pct`).
         let bufferUniquePct: Double
 
         enum CodingKeys: String, CodingKey {
@@ -351,27 +353,27 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case uniquePct = "unique_pct"
             case dupMax = "dup_max"
             case dupDistribution = "dup_distribution"
-            case plyPhaseHistogram = "ply_phase_histogram"
-            case gameLengthHistogram = "game_length_histogram"
-            case temperatureHistogram = "temperature_histogram"
-            case workerHistogram = "worker_histogram"
-            case outcomeCounts = "outcome_counts"
-            case phaseByPlyXOutcome = "phase_by_ply_x_outcome"
+            case phaseByPlyHistogram = "phase_by_ply"
+            case phaseByMaterialHistogram = "phase_by_material"
+            case gameLengthHistogram = "game_length"
+            case samplingTauHistogram = "sampling_tau"
+            case workerIdHistogram = "worker_id"
+            case outcomeHistogram = "outcome"
+            case phaseByPlyXOutcomeHistogram = "phase_by_ply_x_outcome"
             case dupDistributionPct = "dup_distribution_pct"
-            case plyPhaseHistogramPct = "ply_phase_histogram_pct"
-            case gameLengthHistogramPct = "game_length_histogram_pct"
-            case temperatureHistogramPct = "temperature_histogram_pct"
-            case workerHistogramPct = "worker_histogram_pct"
-            case outcomeCountsPct = "outcome_counts_pct"
-            case phaseByPlyXOutcomePct = "phase_by_ply_x_outcome_pct"
+            case phaseByPlyHistogramPct = "phase_by_ply_pct"
+            case phaseByMaterialHistogramPct = "phase_by_material_pct"
+            case gameLengthHistogramPct = "game_length_pct"
+            case samplingTauHistogramPct = "sampling_tau_pct"
+            case workerIdHistogramPct = "worker_id_pct"
+            case outcomeHistogramPct = "outcome_pct"
+            case phaseByPlyXOutcomeHistogramPct = "phase_by_ply_x_outcome_pct"
             case bufferUniquePositions = "buffer_unique_positions"
             case bufferStoredCount = "buffer_stored_count"
             case bufferUniquePct = "buffer_unique_pct"
         }
 
-        /// Convenience constructor that auto-derives all `*_pct`
-        /// fields from the count-valued ones and the batch / buffer
-        /// denominators.
+        /// Auto-derives all `*_pct` fields from the counts.
         init(
             step: Int,
             batchSize: Int,
@@ -379,12 +381,13 @@ final class CliTrainingRecorder: @unchecked Sendable {
             uniquePct: Double,
             dupMax: Int,
             dupDistribution: [String: Int],
-            plyPhaseHistogram: [String: Int],
+            phaseByPlyHistogram: [String: Int],
+            phaseByMaterialHistogram: [String: Int],
             gameLengthHistogram: [String: Int],
-            temperatureHistogram: [String: Int],
-            workerHistogram: [String: Int],
-            outcomeCounts: [String: Int],
-            phaseByPlyXOutcome: [String: Int],
+            samplingTauHistogram: [String: Int],
+            workerIdHistogram: [String: Int],
+            outcomeHistogram: [String: Int],
+            phaseByPlyXOutcomeHistogram: [String: Int],
             bufferUniquePositions: Int,
             bufferStoredCount: Int
         ) {
@@ -394,28 +397,34 @@ final class CliTrainingRecorder: @unchecked Sendable {
             self.uniquePct = uniquePct
             self.dupMax = dupMax
             self.dupDistribution = dupDistribution
-            self.plyPhaseHistogram = plyPhaseHistogram
+            self.phaseByPlyHistogram = phaseByPlyHistogram
+            self.phaseByMaterialHistogram = phaseByMaterialHistogram
             self.gameLengthHistogram = gameLengthHistogram
-            self.temperatureHistogram = temperatureHistogram
-            self.workerHistogram = workerHistogram
-            self.outcomeCounts = outcomeCounts
-            self.phaseByPlyXOutcome = phaseByPlyXOutcome
+            self.samplingTauHistogram = samplingTauHistogram
+            self.workerIdHistogram = workerIdHistogram
+            self.outcomeHistogram = outcomeHistogram
+            self.phaseByPlyXOutcomeHistogram = phaseByPlyXOutcomeHistogram
             self.bufferUniquePositions = bufferUniquePositions
             self.bufferStoredCount = bufferStoredCount
             let bs = batchSize > 0 ? Double(batchSize) : 1
-            func pct(_ d: [String: Int]) -> [String: Double] {
+            let uc = uniqueCount > 0 ? Double(uniqueCount) : 1
+            func pct(_ d: [String: Int], denom: Double) -> [String: Double] {
                 var out: [String: Double] = [:]
                 out.reserveCapacity(d.count)
-                for (k, v) in d { out[k] = Double(v) / bs }
+                for (k, v) in d { out[k] = Double(v) / denom }
                 return out
             }
-            self.dupDistributionPct = pct(dupDistribution)
-            self.plyPhaseHistogramPct = pct(plyPhaseHistogram)
-            self.gameLengthHistogramPct = pct(gameLengthHistogram)
-            self.temperatureHistogramPct = pct(temperatureHistogram)
-            self.workerHistogramPct = pct(workerHistogram)
-            self.outcomeCountsPct = pct(outcomeCounts)
-            self.phaseByPlyXOutcomePct = pct(phaseByPlyXOutcome)
+            // dup_distribution counts distinct-hashes-by-multiplicity,
+            // so the natural denominator is uniqueCount (Σ values =
+            // uniqueCount, not batchSize).
+            self.dupDistributionPct = pct(dupDistribution, denom: uc)
+            self.phaseByPlyHistogramPct = pct(phaseByPlyHistogram, denom: bs)
+            self.phaseByMaterialHistogramPct = pct(phaseByMaterialHistogram, denom: bs)
+            self.gameLengthHistogramPct = pct(gameLengthHistogram, denom: bs)
+            self.samplingTauHistogramPct = pct(samplingTauHistogram, denom: bs)
+            self.workerIdHistogramPct = pct(workerIdHistogram, denom: bs)
+            self.outcomeHistogramPct = pct(outcomeHistogram, denom: bs)
+            self.phaseByPlyXOutcomeHistogramPct = pct(phaseByPlyXOutcomeHistogram, denom: bs)
             self.bufferUniquePct = bufferStoredCount > 0
                 ? Double(bufferUniquePositions) / Double(bufferStoredCount)
                 : 0

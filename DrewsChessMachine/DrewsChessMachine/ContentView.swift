@@ -9034,12 +9034,13 @@ struct ContentView: View {
                                         dupDistribution: Dictionary(uniqueKeysWithValues:
                                             s.dupDistribution.map { (String($0.key), $0.value) }
                                         ),
-                                        plyPhaseHistogram: s.plyPhaseHistogram,
+                                        phaseByPlyHistogram: s.phaseByPlyHistogram,
+                                        phaseByMaterialHistogram: s.phaseByMaterialHistogram,
                                         gameLengthHistogram: s.gameLengthHistogram,
-                                        temperatureHistogram: s.temperatureHistogram,
-                                        workerHistogram: s.workerHistogram,
-                                        outcomeCounts: s.outcomeCounts,
-                                        phaseByPlyXOutcome: s.phaseByPlyXOutcome,
+                                        samplingTauHistogram: s.samplingTauHistogram,
+                                        workerIdHistogram: s.workerIdHistogram,
+                                        outcomeHistogram: s.outcomeHistogram,
+                                        phaseByPlyXOutcomeHistogram: s.phaseByPlyXOutcomeHistogram,
                                         bufferUniquePositions: s.bufferUniquePositions,
                                         bufferStoredCount: s.bufferStoredCount
                                     )

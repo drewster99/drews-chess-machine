@@ -931,26 +931,48 @@ final class ChessTrainer: @unchecked Sendable {
     /// Live gradient-clip max norm. Fed via scalar placeholder each
     /// step.
     var gradClipMaxNorm: Float
-    /// Live policy-loss coefficient K. Fed via scalar placeholder
-    /// each step.
+    /// Live policy-loss coefficient K. Multiplied into `policyLoss`
+    /// before it joins `valueLoss` and `−entropyCoeff·policyEntropy`
+    /// in `total_loss`. Fed via scalar placeholder each step (live-
+    /// tunable). Behaviorally a per-head weighting on shared-trunk
+    /// gradients — bigger K = trunk pulled toward minimizing policy
+    /// CE, smaller K = balanced trunk that lets the value head
+    /// converge in parallel. NOT a multiplier on the policy LOGITS;
+    /// see `weightedPolicy` in `buildTrainingOps`. Without MCTS-
+    /// quality policy targets, values above ~3 tend to amplify
+    /// noise on the policy head before the value baseline becomes
+    /// useful. AlphaZero canonical is K=1 (equal weighting).
     var policyScaleK: Float
 
     /// Bootstrap-phase knob that rewrites drawn-game `z` values from 0
     /// to `-drawPenalty` before they reach the graph. Applied CPU-side
     /// in `trainStep` after the replay-buffer sample returns and
-    /// before `buildFeeds`. Zero = no change (default). Small positive
-    /// values (e.g. 0.05–0.25) turn REINFORCE-silent drawn games into
-    /// a mild negative signal so the policy has a reason to avoid
-    /// threefold-repetition and stalemate sequences during early
-    /// self-play — when z=0 otherwise dominates the replay buffer.
-    /// The transform treats all draw types the same (stalemate, 50-
-    /// move, threefold, insufficient material); anything with z=0.0
-    /// exactly becomes `-drawPenalty`. The advantage-baseline math
-    /// in-graph is unchanged — `advantage = z − v.detach()` just sees
-    /// the rewritten z. Since v(s) eventually learns to predict
-    /// `-drawPenalty` for draw-prone positions, the signal is
-    /// self-limiting: it bootstraps while v is uninformed and
-    /// diminishes as v converges.
+    /// before `buildFeeds`. Zero = no change (default). The transform
+    /// treats all draw types the same (stalemate, 50-move, threefold,
+    /// insufficient material); anything with z=0.0 exactly becomes
+    /// `-drawPenalty`.
+    ///
+    /// What it actually does, math-wise: the value head's MSE target
+    /// for drawn positions becomes `-drawPenalty` instead of 0, so v
+    /// learns to predict slightly negative values for draw-prone
+    /// positions. The advantage `z − v` then sees a lower baseline
+    /// for non-draw positions, so winning-game gradients get a small
+    /// extra positive lift relative to the prior baseline — and
+    /// drawn-game gradients are roughly unchanged in expectation.
+    ///
+    /// Caveat — the docstring USED to claim this "turns REINFORCE-
+    /// silent drawn games into a mild negative signal." That framing
+    /// is misleading: drawn games are NOT REINFORCE-silent under
+    /// `drawPenalty=0`. They produce signal *relative to the value
+    /// baseline* — a draw with vBaseline > 0 (model thought you were
+    /// winning) gives negative advantage; a draw with vBaseline < 0
+    /// gives positive advantage. drawPenalty just shifts the
+    /// "neutral-draw" threshold by `drawPenalty` units. The
+    /// "self-limiting" property still holds: as v converges toward
+    /// `-drawPenalty` for draw-prone positions, the threshold-shift
+    /// effect washes out. So this is most defensible as an early-
+    /// bootstrap nudge that anneals naturally; for steady-state
+    /// runs `drawPenalty=0` is a reasonable default.
     var drawPenalty: Float
     /// Count of successfully-completed SGD steps this trainer has
     /// run since construction (or since a session-resume `seed`).
@@ -1103,6 +1125,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var replayBatchTaus: UnsafeMutablePointer<Float>?
     private var replayBatchHashes: UnsafeMutablePointer<UInt64>?
     private var replayBatchWorkerGameIds: UnsafeMutablePointer<UInt32>?
+    private var replayBatchMaterialCounts: UnsafeMutablePointer<UInt8>?
 
     /// How often (in training steps) to compute and emit a
     /// `[BATCH-STATS]` log line. 0 disables. Live-tunable from the UI
@@ -1240,6 +1263,10 @@ final class ChessTrainer: @unchecked Sendable {
             ptr.deallocate()
         }
         if let ptr = replayBatchWorkerGameIds {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = replayBatchMaterialCounts {
             ptr.deinitialize(count: replayBatchCapacity)
             ptr.deallocate()
         }
@@ -2293,7 +2320,8 @@ final class ChessTrainer: @unchecked Sendable {
                 let gameLengths = self.replayBatchGameLengths,
                 let taus = self.replayBatchTaus,
                 let hashes = self.replayBatchHashes,
-                let workerGameIds = self.replayBatchWorkerGameIds
+                let workerGameIds = self.replayBatchWorkerGameIds,
+                let materials = self.replayBatchMaterialCounts
             else {
                 preconditionFailure("ChessTrainer.ensureReplayBatchCapacity should populate replay staging buffers")
             }
@@ -2315,7 +2343,8 @@ final class ChessTrainer: @unchecked Sendable {
                 gameLengths: isStatsStep ? gameLengths : nil,
                 taus: isStatsStep ? taus : nil,
                 hashes: isStatsStep ? hashes : nil,
-                workerGameIds: isStatsStep ? workerGameIds : nil
+                workerGameIds: isStatsStep ? workerGameIds : nil,
+                materialCounts: isStatsStep ? materials : nil
             )
             guard didSample else { return nil }
             // Compute batch stats up-front (cheap, ~1 ms) and emit the
@@ -2332,6 +2361,7 @@ final class ChessTrainer: @unchecked Sendable {
                     taus: taus,
                     hashes: hashes,
                     workerGameIds: workerGameIds,
+                    materialCounts: materials,
                     zs: zs
                 )
                 self.lastBatchStatsUniquePct = summary.uniquePct
@@ -2735,6 +2765,10 @@ final class ChessTrainer: @unchecked Sendable {
             ptr.deinitialize(count: replayBatchCapacity)
             ptr.deallocate()
         }
+        if let ptr = replayBatchMaterialCounts {
+            ptr.deinitialize(count: replayBatchCapacity)
+            ptr.deallocate()
+        }
 
         let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
         let boardSlots = needed * floatsPerBoard
@@ -2773,6 +2807,10 @@ final class ChessTrainer: @unchecked Sendable {
         let newWorkerGameIds = UnsafeMutablePointer<UInt32>.allocate(capacity: needed)
         newWorkerGameIds.initialize(repeating: 0, count: needed)
         replayBatchWorkerGameIds = newWorkerGameIds
+
+        let newMaterialCounts = UnsafeMutablePointer<UInt8>.allocate(capacity: needed)
+        newMaterialCounts.initialize(repeating: 0, count: needed)
+        replayBatchMaterialCounts = newMaterialCounts
 
         replayBatchCapacity = needed
     }

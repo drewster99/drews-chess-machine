@@ -86,6 +86,13 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Observability-only; not persisted in v4.
     private let workerGameIdStorage: UnsafeMutablePointer<UInt32>
 
+    /// Per-position non-pawn piece count (range 0–30). Drives the
+    /// "phase by material" bucket of the per-batch stats summary,
+    /// independent of the ply-based phase bucket. UInt8 is plenty —
+    /// chess starts with 16 non-pawn pieces total. Same ring index
+    /// as `boardStorage`. Persisted in v6+.
+    private let materialCountStorage: UnsafeMutablePointer<UInt8>
+
     /// Number of positions currently held, capped at `capacity`.
     private var storedCount: Int = 0
     /// Next write slot in the ring.
@@ -153,6 +160,10 @@ final class ReplayBuffer: @unchecked Sendable {
         let workerGames = UnsafeMutablePointer<UInt32>.allocate(capacity: capacity)
         workerGames.initialize(repeating: 0, count: capacity)
         self.workerGameIdStorage = workerGames
+
+        let materials = UnsafeMutablePointer<UInt8>.allocate(capacity: capacity)
+        materials.initialize(repeating: 0, count: capacity)
+        self.materialCountStorage = materials
     }
 
     deinit {
@@ -183,6 +194,9 @@ final class ReplayBuffer: @unchecked Sendable {
 
         workerGameIdStorage.deinitialize(count: capacity)
         workerGameIdStorage.deallocate()
+
+        materialCountStorage.deinitialize(count: capacity)
+        materialCountStorage.deallocate()
     }
 
     // MARK: - Introspection
@@ -216,6 +230,7 @@ final class ReplayBuffer: @unchecked Sendable {
         + MemoryLayout<Float>.size       // samplingTau
         + MemoryLayout<UInt64>.size      // stateHash
         + MemoryLayout<UInt32>.size      // workerGameId
+        + MemoryLayout<UInt8>.size       // materialCount
 
     // MARK: - Hash helper (encoded board → stable UInt64 hash)
 
@@ -235,16 +250,23 @@ final class ReplayBuffer: @unchecked Sendable {
         return UInt64(bitPattern: Int64(hasher.finalize()))
     }
 
-    /// Pack a worker_id (0..255) and an intra-worker game index
-    /// (0..16_777_215) into a single UInt32 for storage in
-    /// `workerGameIdStorage`. Top 8 bits = worker, low 24 bits = game.
+    /// Pack a worker_id (0..65_535) and an intra-worker game index
+    /// (0..65_535) into a single UInt32 for storage in
+    /// `workerGameIdStorage`. Top 16 bits = worker, low 16 bits = game.
+    ///
+    /// The 16-bit worker domain is large enough that the slot-ID
+    /// counter (which monotonically increments across arena
+    /// respawns and Stepper resizes — see `BatchedSelfPlayDriver`)
+    /// won't wrap inside any realistic session length: at 48 slots
+    /// respawning per arena and ~5 min between arenas, 65_536 / 48
+    /// ≈ 1366 arenas before the modulo wraps, i.e. ~110 hours.
     @inline(__always)
-    static func packWorkerGameId(workerId: UInt8, gameIndex: UInt32) -> UInt32 {
-        (UInt32(workerId) << 24) | (gameIndex & 0x00FF_FFFF)
+    static func packWorkerGameId(workerId: UInt16, gameIndex: UInt32) -> UInt32 {
+        (UInt32(workerId) << 16) | (gameIndex & 0x0000_FFFF)
     }
     @inline(__always)
-    static func unpackWorkerGameId(_ packed: UInt32) -> (workerId: UInt8, gameIndex: UInt32) {
-        (UInt8(packed >> 24), packed & 0x00FF_FFFF)
+    static func unpackWorkerGameId(_ packed: UInt32) -> (workerId: UInt16, gameIndex: UInt32) {
+        (UInt16(packed >> 16), packed & 0x0000_FFFF)
     }
 
     /// Atomic snapshot of the four persistence-relevant counters.
@@ -290,8 +312,9 @@ final class ReplayBuffer: @unchecked Sendable {
         plyIndices: UnsafePointer<UInt16>,
         samplingTaus: UnsafePointer<Float>,
         stateHashes: UnsafePointer<UInt64>,
+        materialCounts: UnsafePointer<UInt8>,
         gameLength: UInt16,
-        workerId: UInt8,
+        workerId: UInt16,
         intraWorkerGameIndex: UInt32,
         outcome: Float,
         count positionCount: Int
@@ -378,6 +401,10 @@ final class ReplayBuffer: @unchecked Sendable {
                 )
                 (workerGameIdStorage + writeIndex).update(
                     repeating: packedId,
+                    count: chunk
+                )
+                (materialCountStorage + writeIndex).update(
+                    from: materialCounts + srcOffset,
                     count: chunk
                 )
 
@@ -470,7 +497,8 @@ final class ReplayBuffer: @unchecked Sendable {
         gameLengths dstGameLengths: UnsafeMutablePointer<UInt16>? = nil,
         taus dstTaus: UnsafeMutablePointer<Float>? = nil,
         hashes dstHashes: UnsafeMutablePointer<UInt64>? = nil,
-        workerGameIds dstWorkerGameIds: UnsafeMutablePointer<UInt32>? = nil
+        workerGameIds dstWorkerGameIds: UnsafeMutablePointer<UInt32>? = nil,
+        materialCounts dstMaterialCounts: UnsafeMutablePointer<UInt8>? = nil
     ) -> Bool {
         precondition(sampleCount > 0, "Sample count must be positive")
         return queue.sync {
@@ -516,42 +544,78 @@ final class ReplayBuffer: @unchecked Sendable {
         public let uniqueCount: Int
         public let uniquePct: Double
         public let dupMax: Int
-        public let dupDistribution: [Int: Int]   // dup count -> # of batch slots with that count
-        public let plyPhaseHistogram: [String: Int]
+        /// `dup_distribution[k]` = number of distinct hashes in this
+        /// batch that occurred exactly `k` times. `Σ k · dup_dist[k] = batchSize`,
+        /// `Σ dup_dist[k] = uniqueCount`. This shape (count of distinct
+        /// hashes per multiplicity, not weighted by occurrences) matches
+        /// the original observability spec.
+        public let dupDistribution: [Int: Int]
+        public let phaseByPlyHistogram: [String: Int]
+        public let phaseByMaterialHistogram: [String: Int]
         public let gameLengthHistogram: [String: Int]
-        public let temperatureHistogram: [String: Int]
-        public let workerHistogram: [String: Int]
-        public let outcomeCounts: [String: Int]
-        public let phaseByPlyXOutcome: [String: Int]
+        public let samplingTauHistogram: [String: Int]
+        public let workerIdHistogram: [String: Int]
+        public let outcomeHistogram: [String: Int]
+        public let phaseByPlyXOutcomeHistogram: [String: Int]
         public let bufferUniquePositions: Int     // global, dict.count
         public let bufferStoredCount: Int
 
         /// Render to a single-line JSON string for the `[BATCH-STATS]`
-        /// log entry. Stable key ordering for grep/parse.
+        /// log entry. Counts AND fractions of every histogram are
+        /// included so post-run analysis from log files (rather than
+        /// result.json) doesn't lose information. Stable key ordering
+        /// for grep/parse.
         public func jsonLine() -> String {
             func encodeIntDict(_ d: [String: Int]) -> String {
                 let pairs = d.keys.sorted().map { "\"\($0)\":\(d[$0]!)" }
+                return "{" + pairs.joined(separator: ",") + "}"
+            }
+            func encodePctDict(_ d: [String: Int], denom: Double) -> String {
+                guard denom > 0 else { return "{}" }
+                let pairs = d.keys.sorted().map {
+                    String(format: "\"%@\":%.4f", $0 as NSString, Double(d[$0]!) / denom)
+                }
                 return "{" + pairs.joined(separator: ",") + "}"
             }
             func encodeIntKeyDict(_ d: [Int: Int]) -> String {
                 let pairs = d.keys.sorted().map { "\"\($0)\":\(d[$0]!)" }
                 return "{" + pairs.joined(separator: ",") + "}"
             }
+            func encodeIntKeyPctDict(_ d: [Int: Int], denom: Double) -> String {
+                guard denom > 0 else { return "{}" }
+                let pairs = d.keys.sorted().map {
+                    String(format: "\"%d\":%.4f", $0, Double(d[$0]!) / denom)
+                }
+                return "{" + pairs.joined(separator: ",") + "}"
+            }
+            let bs = Double(batchSize)
+            let uniq = Double(uniqueCount)
+            let stored = Double(bufferStoredCount)
             var out = "{"
             out += "\"step\":\(step),"
-            out += "\"batch\":\(batchSize),"
-            out += "\"uniq\":\(uniqueCount),"
-            out += String(format: "\"uniq_pct\":%.4f,", uniquePct)
+            out += "\"batch_size\":\(batchSize),"
+            out += "\"unique_count\":\(uniqueCount),"
+            out += String(format: "\"unique_pct\":%.4f,", uniquePct)
             out += "\"dup_max\":\(dupMax),"
-            out += "\"dup_dist\":\(encodeIntKeyDict(dupDistribution)),"
-            out += "\"ply\":\(encodeIntDict(plyPhaseHistogram)),"
-            out += "\"len\":\(encodeIntDict(gameLengthHistogram)),"
-            out += "\"tau\":\(encodeIntDict(temperatureHistogram)),"
-            out += "\"worker\":\(encodeIntDict(workerHistogram)),"
-            out += "\"wld\":\(encodeIntDict(outcomeCounts)),"
-            out += "\"phase_x_wld\":\(encodeIntDict(phaseByPlyXOutcome)),"
-            out += "\"buf_uniq\":\(bufferUniquePositions),"
-            out += "\"buf_stored\":\(bufferStoredCount)"
+            out += "\"dup_distribution\":\(encodeIntKeyDict(dupDistribution)),"
+            out += "\"dup_distribution_pct\":\(encodeIntKeyPctDict(dupDistribution, denom: uniq)),"
+            out += "\"phase_by_ply\":\(encodeIntDict(phaseByPlyHistogram)),"
+            out += "\"phase_by_ply_pct\":\(encodePctDict(phaseByPlyHistogram, denom: bs)),"
+            out += "\"phase_by_material\":\(encodeIntDict(phaseByMaterialHistogram)),"
+            out += "\"phase_by_material_pct\":\(encodePctDict(phaseByMaterialHistogram, denom: bs)),"
+            out += "\"game_length\":\(encodeIntDict(gameLengthHistogram)),"
+            out += "\"game_length_pct\":\(encodePctDict(gameLengthHistogram, denom: bs)),"
+            out += "\"sampling_tau\":\(encodeIntDict(samplingTauHistogram)),"
+            out += "\"sampling_tau_pct\":\(encodePctDict(samplingTauHistogram, denom: bs)),"
+            out += "\"worker_id\":\(encodeIntDict(workerIdHistogram)),"
+            out += "\"worker_id_pct\":\(encodePctDict(workerIdHistogram, denom: bs)),"
+            out += "\"outcome\":\(encodeIntDict(outcomeHistogram)),"
+            out += "\"outcome_pct\":\(encodePctDict(outcomeHistogram, denom: bs)),"
+            out += "\"phase_by_ply_x_outcome\":\(encodeIntDict(phaseByPlyXOutcomeHistogram)),"
+            out += "\"phase_by_ply_x_outcome_pct\":\(encodePctDict(phaseByPlyXOutcomeHistogram, denom: bs)),"
+            out += "\"buffer_unique\":\(bufferUniquePositions),"
+            out += "\"buffer_stored\":\(bufferStoredCount),"
+            out += String(format: "\"buffer_unique_pct\":%.4f", stored > 0 ? Double(bufferUniquePositions) / stored : 0)
             out += "}"
             return out
         }
@@ -574,6 +638,7 @@ final class ReplayBuffer: @unchecked Sendable {
         taus: UnsafePointer<Float>,
         hashes: UnsafePointer<UInt64>,
         workerGameIds: UnsafePointer<UInt32>,
+        materialCounts: UnsafePointer<UInt8>,
         zs: UnsafePointer<Float>
     ) -> BatchStatsSummary {
         // Per-batch dup count by hash.
@@ -584,58 +649,85 @@ final class ReplayBuffer: @unchecked Sendable {
         }
         let uniqueCount = perHashCount.count
         let uniquePct = batchSize > 0 ? Double(uniqueCount) / Double(batchSize) : 0
+        // dup_distribution[k] = number of DISTINCT hashes that
+        // appeared k times in the batch. Σ k * dup_dist[k] = batchSize;
+        // Σ dup_dist[k] = uniqueCount. Different from "weighted by
+        // occurrences" — this shape is what the spec calls for and
+        // is more directly interpretable: "1 hash appeared 12 times"
+        // rather than "12 batch slots are part of a 12-count group."
         var dupMax = 0
         var dupDist: [Int: Int] = [:]
         for (_, c) in perHashCount {
             if c > dupMax { dupMax = c }
-            dupDist[c, default: 0] += c   // weight by occurrences (batch slots), so values sum to batchSize
+            dupDist[c, default: 0] += 1
         }
 
-        // Phase by ply.
-        var plyHist: [String: Int] = ["op": 0, "early": 0, "mid": 0, "late": 0, "end": 0]
-        // Game length buckets.
-        var lenHist: [String: Int] = ["short": 0, "med": 0, "long": 0]
-        // Temperature histogram — coarse buckets keyed by 1-decimal tau.
-        var tauHist: [String: Int] = [:]
-        // Worker histogram.
-        var workerHist: [String: Int] = [:]
-        // WLD.
-        var wldHist: [String: Int] = ["W": 0, "D": 0, "L": 0]
-        // Cross product phase × WLD.
-        var phaseXWld: [String: Int] = [:]
+        // Phase by ply. Buckets sized so each holds a meaningful
+        // share of typical self-play batches. Inclusive on upper
+        // bound:
+        //   open: ≤ 20    early: 21–60    mid: 61–150
+        //   late: 151–300    end: 301+
+        var phaseByPly: [String: Int] = [
+            "open": 0, "early": 0, "mid": 0, "late": 0, "end": 0,
+        ]
+        // Phase by material (non-pawn piece count). open ≥ 14
+        // (full-board, both queens still on), early 12–13, mid 8–11,
+        // late 4–7, end ≤ 3 (king-and-pawn endgame territory). Cells
+        // populated with zero so absent buckets show explicitly in
+        // the JSON rather than being missing keys.
+        var phaseByMaterial: [String: Int] = ["open": 0, "early": 0, "mid": 0, "late": 0, "end": 0]
+        // Game length buckets:
+        //   short: ≤ 50    medium: 51–150    long: 151–300
+        //   very_long: 301+
+        var gameLenHist: [String: Int] = [
+            "short": 0, "medium": 0, "long": 0, "very_long": 0,
+        ]
+        var samplingTauHist: [String: Int] = [:]
+        var workerIdHist: [String: Int] = [:]
+        var outcomeHist: [String: Int] = ["W": 0, "D": 0, "L": 0]
+        var phaseByPlyXOutcome: [String: Int] = [:]
 
         for i in 0..<batchSize {
             let ply = Int(plies[i])
-            let phaseLabel: String
-            if ply <= 10 { phaseLabel = "op" }
-            else if ply <= 25 { phaseLabel = "early" }
-            else if ply <= 40 { phaseLabel = "mid" }
-            else if ply <= 60 { phaseLabel = "late" }
-            else { phaseLabel = "end" }
-            plyHist[phaseLabel, default: 0] += 1
+            let phasePlyLabel: String
+            if ply <= 20 { phasePlyLabel = "open" }
+            else if ply <= 60 { phasePlyLabel = "early" }
+            else if ply <= 150 { phasePlyLabel = "mid" }
+            else if ply <= 300 { phasePlyLabel = "late" }
+            else { phasePlyLabel = "end" }
+            phaseByPly[phasePlyLabel, default: 0] += 1
+
+            let mat = Int(materialCounts[i])
+            let phaseMatLabel: String
+            if mat >= 14 { phaseMatLabel = "open" }
+            else if mat >= 12 { phaseMatLabel = "early" }
+            else if mat >= 8 { phaseMatLabel = "mid" }
+            else if mat >= 4 { phaseMatLabel = "late" }
+            else { phaseMatLabel = "end" }
+            phaseByMaterial[phaseMatLabel, default: 0] += 1
 
             let gameLen = Int(gameLengths[i])
             let lenLabel: String
-            if gameLen <= 80 { lenLabel = "short" }
-            else if gameLen <= 250 { lenLabel = "med" }
-            else { lenLabel = "long" }
-            lenHist[lenLabel, default: 0] += 1
+            if gameLen <= 50 { lenLabel = "short" }
+            else if gameLen <= 150 { lenLabel = "medium" }
+            else if gameLen <= 300 { lenLabel = "long" }
+            else { lenLabel = "very_long" }
+            gameLenHist[lenLabel, default: 0] += 1
 
-            let tau = taus[i]
-            let tauKey = String(format: "%.1f", tau)
-            tauHist[tauKey, default: 0] += 1
+            let tauKey = String(format: "%.1f", taus[i])
+            samplingTauHist[tauKey, default: 0] += 1
 
             let (workerId, _) = Self.unpackWorkerGameId(workerGameIds[i])
-            workerHist["\(workerId)", default: 0] += 1
+            workerIdHist["\(workerId)", default: 0] += 1
 
             let z = zs[i]
             let outcomeLabel: String
             if z > 0.5 { outcomeLabel = "W" }
             else if z < -0.5 { outcomeLabel = "L" }
             else { outcomeLabel = "D" }
-            wldHist[outcomeLabel, default: 0] += 1
+            outcomeHist[outcomeLabel, default: 0] += 1
 
-            phaseXWld["\(phaseLabel)_\(outcomeLabel)", default: 0] += 1
+            phaseByPlyXOutcome["\(phasePlyLabel)_\(outcomeLabel)", default: 0] += 1
         }
 
         // Snapshot buffer-global counters under the lock so the
@@ -649,12 +741,13 @@ final class ReplayBuffer: @unchecked Sendable {
             uniquePct: uniquePct,
             dupMax: dupMax,
             dupDistribution: dupDist,
-            plyPhaseHistogram: plyHist,
-            gameLengthHistogram: lenHist,
-            temperatureHistogram: tauHist,
-            workerHistogram: workerHist,
-            outcomeCounts: wldHist,
-            phaseByPlyXOutcome: phaseXWld,
+            phaseByPlyHistogram: phaseByPly,
+            phaseByMaterialHistogram: phaseByMaterial,
+            gameLengthHistogram: gameLenHist,
+            samplingTauHistogram: samplingTauHist,
+            workerIdHistogram: workerIdHist,
+            outcomeHistogram: outcomeHist,
+            phaseByPlyXOutcomeHistogram: phaseByPlyXOutcome,
             bufferUniquePositions: uniqBuf,
             bufferStoredCount: storedBuf
         )
@@ -703,7 +796,7 @@ final class ReplayBuffer: @unchecked Sendable {
     private static let fileMagic: [UInt8] = Array("DCMRPBUF".utf8)
     /// Format version. Bump on any on-disk layout change.
     ///
-    /// Current format is v5:
+    /// Current format is v6:
     ///   - Header: 8-byte magic + 4-byte version + 4-byte pad + 5 × Int64
     ///     (floatsPerBoard, capacity, storedCount, writeIndex,
     ///     totalPositionsAdded).
@@ -712,27 +805,21 @@ final class ReplayBuffer: @unchecked Sendable {
     ///     2. moves (Int32)
     ///     3. outcomes (Float32)
     ///     4. vBaselines (Float32)
-    ///     5. plyIndices (UInt16) ← v5 new
-    ///     6. gameLengths (UInt16) ← v5 new
-    ///     7. samplingTaus (Float32) ← v5 new
-    ///     8. stateHashes (UInt64) ← v5 new
-    ///     9. workerGameIds (UInt32) ← v5 new
+    ///     5. plyIndices (UInt16) ← v5
+    ///     6. gameLengths (UInt16) ← v5
+    ///     7. samplingTaus (Float32) ← v5
+    ///     8. stateHashes (UInt64) ← v5
+    ///     9. workerGameIds (UInt32) ← v5
+    ///     10. materialCounts (UInt8) ← v6 new
     ///   - Trailer: 32-byte SHA-256 digest over every preceding byte.
     ///
-    /// v5 per-slot byte cost = `floatsPerBoard × 4 + 4 + 4 + 4 + 2 + 2 + 4 + 8 + 4 = floatsPerBoard × 4 + 32`.
-    /// v5 file-size invariant:
-    /// ```
-    /// totalBytes == headerSize + storedCount × (floatsPerBoard × 4 + 32) + 32
-    /// ```
-    ///
-    /// **v4 read compatibility.** The reader still loads v4 files (4
-    /// body sections, no metadata) by rebuilding the new v5 metadata
-    /// fields as zero (ply, length, tau, workerGameId) and by
-    /// re-hashing the restored boards on the way in. This is a
-    /// one-way compat: a v4 file loaded into a v5-build session will
-    /// be re-saved as v5 on the next checkpoint write. Older versions
-    /// (v1–v3) remain rejected with `unsupportedVersion`.
-    private static let fileVersion: UInt32 = 5
+    /// **v4 / v5 read compatibility.** The reader still loads older
+    /// formats by zeroing the missing metadata fields and rebuilding
+    /// hashes from boards (v4) or reading them directly (v5). One-
+    /// way compat: an older file loaded into a v6 build will be
+    /// re-saved as v6 on the next checkpoint. Versions v1–v3 are
+    /// rejected with `unsupportedVersion`.
+    private static let fileVersion: UInt32 = 6
     /// Header size in bytes: 8 magic + 4 version + 4 pad + 5 × Int64 fields.
     private static let headerSize: Int = 8 + 4 + 4 + 8 * 5
     /// SHA-256 trailer size in bytes.
@@ -985,6 +1072,19 @@ final class ReplayBuffer: @unchecked Sendable {
                 elementsPerSlot: 1,
                 slotSize: MemoryLayout<UInt32>.size
             )
+            let matChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<UInt8>.size)
+            try writeRange(
+                handle: handle,
+                hasher: &hasher,
+                start: startIndex,
+                total: stored,
+                capacity: cap,
+                chunkPositions: matChunk,
+                elementBytes: MemoryLayout<UInt8>.size,
+                basePtr: UnsafeRawPointer(materialCountStorage),
+                elementsPerSlot: 1,
+                slotSize: MemoryLayout<UInt8>.size
+            )
         }
 
         // Trailer — 32 bytes of SHA-256 over all preceding bytes.
@@ -1130,15 +1230,15 @@ final class ReplayBuffer: @unchecked Sendable {
         let version: UInt32 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
         }
-        // v5 is the canonical format. v4 is silently upgraded on read
-        // (the new metadata sections are absent in v4 — `ply`,
-        // `length`, `tau`, `workerGameId` are loaded as zero, and
-        // `stateHashes` are recomputed from the boards). Older
-        // versions (v1–v3) are rejected.
-        guard version == Self.fileVersion || version == 4 else {
+        // v6 is the canonical format. v5 and v4 are silently upgraded
+        // on read by zeroing the missing metadata sections (and, for
+        // v4, also recomputing stateHashes from the restored boards).
+        // v1–v3 are rejected.
+        guard version == Self.fileVersion || version == 5 || version == 4 else {
             throw PersistenceError.unsupportedVersion(version)
         }
         let isV4 = (version == 4)
+        let isV5 = (version == 5)
         let fpbFile: Int64 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 16, as: Int64.self)
         }
@@ -1212,7 +1312,15 @@ final class ReplayBuffer: @unchecked Sendable {
             + Int64(MemoryLayout<Float>.size)       // samplingTau
             + Int64(MemoryLayout<UInt64>.size)      // stateHash
             + Int64(MemoryLayout<UInt32>.size)      // workerGameId
-        let perSlotBytes: Int64 = isV4 ? v4PerSlotBytes : (v4PerSlotBytes + v5MetadataBytes)
+        let v6MetadataBytes: Int64 = Int64(MemoryLayout<UInt8>.size)         // materialCount
+        let perSlotBytes: Int64
+        if isV4 {
+            perSlotBytes = v4PerSlotBytes
+        } else if isV5 {
+            perSlotBytes = v4PerSlotBytes + v5MetadataBytes
+        } else {
+            perSlotBytes = v4PerSlotBytes + v5MetadataBytes + v6MetadataBytes
+        }
         let expectedBytes: Int64 = Int64(Self.headerSize)
             + stcFile * perSlotBytes
             + Int64(Self.trailerSize)
@@ -1409,6 +1517,25 @@ final class ReplayBuffer: @unchecked Sendable {
                     slotBytes: MemoryLayout<UInt32>.size,
                     count: target
                 )
+                if !isV5 {
+                    // v6+ — read materialCounts. v5 lacks the section,
+                    // so we zero materialCountStorage in-place above
+                    // (it was initialized to zero at allocation).
+                    if skip > 0 {
+                        try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt8>.size)
+                    }
+                    try readContiguous(
+                        handle: handle,
+                        into: UnsafeMutableRawPointer(materialCountStorage),
+                        slotBytes: MemoryLayout<UInt8>.size,
+                        count: target
+                    )
+                } else {
+                    // Explicit zero of the legacy slots so cycled-out
+                    // entries from a v5 restore don't carry stale
+                    // material counts from a previous session.
+                    materialCountStorage.update(repeating: 0, count: target)
+                }
             }
 
             storedCount = target

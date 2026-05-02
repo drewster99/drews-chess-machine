@@ -799,6 +799,14 @@ struct TrainingChartGridView: View {
 
     private static let maxEntropy = log(Double(ChessNetwork.policySize))
 
+    /// Reference uniform-distribution entropy for the legal-only
+    /// renormalized softmax. A typical chess position has ~30 legal
+    /// moves, so log(30) ≈ 3.40 nats is a reasonable "fully diffuse
+    /// over legal" baseline. Used to render pEntLegal as a percentage
+    /// of its own uniform reference, parallel to how pEnt is rendered
+    /// against `maxEntropy`.
+    private static let maxLegalEntropy = log(30.0)
+
     /// Upper-left tile (replaces the legacy "Loss (pLoss + vLoss)"
     /// total-loss sparkgraph). Plots two outcome-partitioned series:
     /// the policy loss restricted to win-outcome batch positions
@@ -893,18 +901,46 @@ struct TrainingChartGridView: View {
     private var entropyChart: some View {
         let readout = hoverReadout(path: \.rollingPolicyEntropy)
         let headerText: String
+        // Pull the two latest values once so the header logic below
+        // can format them side-by-side ("pEnt X.XXX / pEntLegal Y.YYY")
+        // analogous to the pLoss-split chart's "win / loss" header.
+        let latestPEnt = trainingChartSamples.last?.rollingPolicyEntropy
+        let latestPEntLegal = trainingChartSamples.last?.rollingLegalEntropy
+
+        func formatEntropy(_ v: Double?) -> String {
+            guard let v else { return "--" }
+            return String(format: "%.3f", v)
+        }
+
         switch readout {
         case .notHovering:
-            if let lastValue = trainingChartSamples.last?.rollingPolicyEntropy {
-                headerText = String(format: "%.3f (%.1f%%)", lastValue, lastValue / Self.maxEntropy * 100)
+            // Two-value form. pEnt is normalized against the
+            // full-policy max (log(4864) ≈ 8.49); pEntLegal is
+            // normalized against log(30) ≈ 3.4 — a typical legal-move
+            // count. Both percentages are diagnostic-only so the
+            // reader can scan how concentrated each distribution is
+            // relative to its own uniform reference.
+            let pEntStr: String
+            if let v = latestPEnt {
+                pEntStr = String(format: "%.3f (%.1f%%)", v, v / Self.maxEntropy * 100)
             } else {
-                headerText = "--"
+                pEntStr = "--"
             }
+            let pEntLegalStr: String
+            if let v = latestPEntLegal {
+                pEntLegalStr = String(format: "%.3f (%.1f%%)", v, v / Self.maxLegalEntropy * 100)
+            } else {
+                pEntLegalStr = "--"
+            }
+            headerText = "pEnt \(pEntStr) / pEntLegal \(pEntLegalStr)"
         case .hoveringNoData(let t):
             headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
         case .hoveringWithData(let t, let v):
-            let pct = v / Self.maxEntropy * 100
-            headerText = "t=\(Self.formatElapsedAxis(t)) \(String(format: "%.3f (%.1f%%)", v, pct))"
+            // Hover targets the pEnt series; show pEnt at the hover
+            // time and the most-recent pEntLegal alongside so both
+            // numbers stay visible while the user inspects history.
+            let pEntStr = String(format: "%.3f (%.1f%%)", v, v / Self.maxEntropy * 100)
+            headerText = "t=\(Self.formatElapsedAxis(t)) pEnt \(pEntStr) / pEntLegal \(formatEntropy(latestPEntLegal))"
         }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {

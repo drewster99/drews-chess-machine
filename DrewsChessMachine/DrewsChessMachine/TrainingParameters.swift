@@ -195,7 +195,7 @@ public enum WeightDecay: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Policy Scale K",
-    description: "Multiplicative factor on the policy logits at the loss site. Larger = more decisive policy updates.",
+    description: "Per-component weighting on the POLICY-LOSS TENSOR inside total_loss = valueLoss + K · policyLoss − entropyCoeff · policyEntropy. Higher K shifts shared-trunk gradients toward policy fitting and away from value regression: at K=1 the trunk is pulled equally by both heads (AlphaZero canonical); at K=5+ the policy head dominates trunk shaping and the value head trails. NOT a multiplier on policy logits — that's a common misreading. Without MCTS-quality policy targets (this engine has none), values above ~3 amplify policy-target noise faster than the value head can supply a useful baseline.",
     default: 5.0,
     range: 0.1...20.0,
     category: "Optimizer",

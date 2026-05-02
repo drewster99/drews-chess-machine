@@ -20818,7 +20818,7 @@ window.EXPERIMENTS = [
   {
     "timestamp": "20260502-055623",
     "start_time_iso": "2026-05-02T05:56:23Z",
-    "status": "IN_PROGRESS",
+    "status": "REJECTED",
     "mode": "normal",
     "change_details": "Relaunch of the 10hr overlay (entropy 0.010, lr_warmup 300, ratio 1.0) on build 502 \u2014 adds v5 replay-buffer persistence (per-position ply/length/tau/hash/workerGameId now survive session save/load). Previous launch (055104) was closed by user before persistence work landed.",
     "changed_params": [
@@ -20880,10 +20880,10 @@ window.EXPERIMENTS = [
       "training_time_limit": 36000,
       "batch_stats_interval": 10
     },
-    "analysis_commentary": "",
-    "training_time_seconds": 36000,
-    "arena_count": null,
-    "arena_promotions": null,
+    "analysis_commentary": "User-killed at ~46min as the trajectory entered the same exploitation basin: pEnt collapsed 6.50\u21925.42 over min 31\u201346, pLogitAbsMax climbed 11\u219235 (past the 30 soft-reject S2 threshold), gNorm jumped 54\u2192117 (past the 100 watch threshold), pLoss-split magnitudes grew 60/-70 \u2192 239/-269. Arenas stayed at parity (49\u201351%, 95\u201397% draws). The new replay-buffer batch-stats instrumentation worked correctly throughout: BATCH-STATS lines emitted every 10 batches with the full histogram set; uniq_pct stayed at 0.99 (buffer not degenerate); ply phase showed 67\u201369% in the legacy 'end' bucket (now rebalanced into open/early/mid/late/end/shuffle for the next run); WLD distribution was 97% draws across the run. Worker_id histogram exposed a clamp bug (UInt8 cap pinning all rotated slots to 255), now fixed in build 503+ with UInt16. Surfaced the asymmetric pLossWin/pLossLoss split that had been hidden under the conventional pLoss mean \u2014 clear architectural insight gained even though the run itself didn't beat baseline.",
+    "training_time_seconds": 2797,
+    "arena_count": 8,
+    "arena_promotions": 0,
     "folder": "experiments/20260502-055623"
   }
 ];
@@ -20893,17 +20893,17 @@ window.AGGREGATES = {
     "SEED": 1,
     "ACCEPTED": 43,
     "NEUTRAL": 39,
-    "REJECTED": 349,
+    "REJECTED": 350,
     "FAILED": 3,
-    "IN_PROGRESS": 1
+    "IN_PROGRESS": 0
   },
-  "accept_rate": 0.09907834101382489,
-  "failure_streak": 11,
+  "accept_rate": 0.09885057471264368,
+  "failure_streak": 12,
   "trailing_replicates": 0,
   "iterations_since_codechange": 20,
   "code_iteration_due": false,
   "code_iteration_interval": 40,
-  "arena_count": 354,
+  "arena_count": 362,
   "promotions": 15,
   "best_arena_score": 0.57,
   "best_arena_folder": "experiments/20260430-170725"

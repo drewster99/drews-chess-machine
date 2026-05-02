@@ -265,12 +265,21 @@ final class MPSChessPlayer: ChessPlayer {
     /// duplicate-position counts across the buffer.
     private var gameStateHashes: [UInt64]
 
+    /// Per-recorded-ply non-pawn piece count (0–30). Drives the
+    /// "phase by material" bucket of replay-buffer batch stats —
+    /// independent of, and complementary to, the ply-based phase
+    /// bucket. UInt8 is plenty (chess starts with 16 non-pawn).
+    private var gameMaterialCounts: [UInt8]
+
     /// Stable identity for this player's owning self-play slot. Goes
     /// into the replay buffer's per-position metadata so per-batch
     /// stats can detect over-representation of any one slot. Not used
     /// for training. Default 0 — non-self-play callers (Play Game,
-    /// arena) leave it at zero.
-    var workerId: UInt8 = 0
+    /// arena) leave it at zero. UInt16 (rather than UInt8) so the
+    /// monotonically-increasing slot counter in
+    /// `BatchedSelfPlayDriver` doesn't pin everything to a single
+    /// id after a few arena-respawn cycles.
+    var workerId: UInt16 = 0
 
     /// Intra-worker monotonically increasing game counter.
     /// Incremented at the top of each `onNewGame` call. The (worker_id,
@@ -383,6 +392,10 @@ final class MPSChessPlayer: ChessPlayer {
         var hashes: [UInt64] = []
         hashes.reserveCapacity(initialCapacity)
         self.gameStateHashes = hashes
+
+        var mats: [UInt8] = []
+        mats.reserveCapacity(initialCapacity)
+        self.gameMaterialCounts = mats
     }
 
     deinit {
@@ -400,6 +413,7 @@ final class MPSChessPlayer: ChessPlayer {
         gamePlyIndices.removeAll(keepingCapacity: true)
         gameSamplingTaus.removeAll(keepingCapacity: true)
         gameStateHashes.removeAll(keepingCapacity: true)
+        gameMaterialCounts.removeAll(keepingCapacity: true)
         gamePliesRecorded = 0
         gameRandomishMoveCount = 0
         intraWorkerGameIndex &+= 1
@@ -453,6 +467,19 @@ final class MPSChessPlayer: ChessPlayer {
         // 1280 floats with stdlib SipHash).
         let stateHash = ReplayBuffer.hashBoard(rowBase, count: boardFloats)
         let plyTau = schedule.tau(forPly: gamePliesRecorded)
+        // Non-pawn piece count for the by-material phase bucket.
+        // Iterates the 64-element [Piece?] array and counts squares
+        // occupied by anything other than a pawn. Explicit `if let`
+        // (rather than for-where + force-unwrap) so the predicate
+        // is unambiguous and there's zero force-unwrap risk if a
+        // future GameState refactor changes the optionality model.
+        var matCount: Int = 0
+        for sq in gameState.board {
+            if let piece = sq, piece.type != .pawn {
+                matCount += 1
+            }
+        }
+        let materialCount = UInt8(min(matCount, Int(UInt8.max)))
 
         let (policy, value) = try await source.evaluate(encodedBoard: encoded)
         let move = policy.withUnsafeBufferPointer { policyBuf in
@@ -467,6 +494,7 @@ final class MPSChessPlayer: ChessPlayer {
         gamePlyIndices.append(UInt16(min(gamePliesRecorded, Int(UInt16.max))))
         gameSamplingTaus.append(plyTau)
         gameStateHashes.append(stateHash)
+        gameMaterialCounts.append(materialCount)
         gamePliesRecorded += 1
 
         return move
@@ -496,26 +524,30 @@ final class MPSChessPlayer: ChessPlayer {
                 gamePlyIndices.withUnsafeBufferPointer { pliesBuf in
                     gameSamplingTaus.withUnsafeBufferPointer { tausBuf in
                         gameStateHashes.withUnsafeBufferPointer { hashesBuf in
-                            guard
-                                let movesBase = movesBuf.baseAddress,
-                                let valuesBase = valuesBuf.baseAddress,
-                                let pliesBase = pliesBuf.baseAddress,
-                                let tausBase = tausBuf.baseAddress,
-                                let hashesBase = hashesBuf.baseAddress
-                            else { return }
-                            replayBuffer.append(
-                                boards: UnsafePointer(gameBoardScratchPtr),
-                                policyIndices: movesBase,
-                                vBaselines: valuesBase,
-                                plyIndices: pliesBase,
-                                samplingTaus: tausBase,
-                                stateHashes: hashesBase,
-                                gameLength: gameLength,
-                                workerId: workerId,
-                                intraWorkerGameIndex: intraWorkerGameIndex,
-                                outcome: myOutcome,
-                                count: gamePliesRecorded
-                            )
+                            gameMaterialCounts.withUnsafeBufferPointer { matsBuf in
+                                guard
+                                    let movesBase = movesBuf.baseAddress,
+                                    let valuesBase = valuesBuf.baseAddress,
+                                    let pliesBase = pliesBuf.baseAddress,
+                                    let tausBase = tausBuf.baseAddress,
+                                    let hashesBase = hashesBuf.baseAddress,
+                                    let matsBase = matsBuf.baseAddress
+                                else { return }
+                                replayBuffer.append(
+                                    boards: UnsafePointer(gameBoardScratchPtr),
+                                    policyIndices: movesBase,
+                                    vBaselines: valuesBase,
+                                    plyIndices: pliesBase,
+                                    samplingTaus: tausBase,
+                                    stateHashes: hashesBase,
+                                    materialCounts: matsBase,
+                                    gameLength: gameLength,
+                                    workerId: workerId,
+                                    intraWorkerGameIndex: intraWorkerGameIndex,
+                                    outcome: myOutcome,
+                                    count: gamePliesRecorded
+                                )
+                            }
                         }
                     }
                 }
