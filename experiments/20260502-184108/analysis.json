@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "Cracked the H4 wall at 80min: late_probe_collapsed=false (vs prior 90-min trips). Window extended 4500s→4800s without full collapse. Two positive signals fire across axes: A3 (min_pEnt=6.78, in-band, ≥0.95× baseline 6.99) and B1 (max_gNorm=11.03 < 0.7×baseline 16.21=11.35 — clearly more stable training). pLogitMax peaked at just 11.4 (vs baseline 6.78) — wd uplift dramatically tamed logit-magnitude growth. No promotion across 14 arenas; mean_score=0.508 vs baseline 0.499. final_legal_mass=0.0033 regressed (0.0225→0.0033) but goal's 'full collapse' requires top1_legal_ever_positive=false which remained true.",
+  "classification": "improved"
+}

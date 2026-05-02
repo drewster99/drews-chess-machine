@@ -1,0 +1,4 @@
+{
+  "analysis_commentary": "H4 tripped: late_probe_collapsed=true (last/mid candidate probes both at max_prob=1.0, legal_mass_sum=0). H7 also tripped: final_policy_loss=-12.30 with arenas.promoted=0 vs baseline.promoted=1 — the extra 15min past the 75-min threshold pushed the candidate softmax onto illegals exactly as the prior four 90-min trials. policy_logit_blowup=true (max=36.99 vs baseline 6.78) — clip=10 alone doesn't gate the 90-min wall. No promotion across 16 arenas (mean=0.510 vs baseline 0.499). 75-min cracked H4 by stopping before crystallization; 90-min always trips it.",
+  "classification": "regressed"
+}

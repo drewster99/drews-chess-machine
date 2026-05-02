@@ -1,0 +1,1 @@
+Extend window 4500s→5400s (75→90-min, +20%) at clip=10. The prior 75-min run held pLogitMax flat at 6.7 for 70+ min and cleared H4 cleanly; testing whether clip=10 also tames the 90-min H4 wall that clip=25 reliably tripped.

@@ -1,0 +1,1 @@
+Bump weight_decay 2e-4 → 5e-4 to slow logit-magnitude drift orthogonally to clip=10 (which only caps update magnitude, not direction). Prior 90-min H4 trip showed pLogitMax climbing 7→37 despite tight clip; stronger L2 directly opposes logit-norm growth across long runs. Modest window extension 4500s → 4800s to test whether wd uplift breaks the 75-min ceiling.
