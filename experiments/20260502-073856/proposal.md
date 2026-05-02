@@ -1,0 +1,1 @@
+30-min baseline (replay of prior aborted launch); testing AppleScript-activate wrapper workaround.

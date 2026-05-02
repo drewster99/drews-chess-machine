@@ -104,6 +104,22 @@ WATCHDOG=$((TIME_LIMIT + 120))
 ) >>"$LOG_FILE" 2>&1 &
 APP_PID=$!
 
+# OVERNIGHT WORKAROUND (2026-05-02): the SwiftUI window's `.onAppear`
+# is what triggers `--train`'s startRealTraining call, and when the
+# wrapper launches the app from a background shell with no
+# controlling window state, macOS sometimes opens DCM hidden /
+# unactivated → onAppear never fires until a human clicks the icon.
+# Forcing activation via osascript a few seconds after launch is a
+# bandage. THE ROOT CAUSE NEEDS TO BE FOUND TOMORROW — likely involves
+# moving the --train trigger off `.onAppear` and onto a more robust
+# lifecycle hook (NSApplicationDelegate didFinishLaunching or a
+# Task at app init), so the app starts whether or not its window
+# happens to be displayed.
+(
+    sleep 3
+    /usr/bin/osascript -e 'tell application "DrewsChessMachine" to activate' >/dev/null 2>&1
+) &
+
 (
     sleep "$WATCHDOG"
     if kill -0 "$APP_PID" 2>/dev/null; then

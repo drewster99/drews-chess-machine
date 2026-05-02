@@ -1,0 +1,1 @@
+Extend training window 1800->3600s and bump entropy_bonus 0.011->0.013. Baseline was healthy at full 30min (no logit blowup, pEnt 6.5-6.7, top1_legal_ever_positive=true) but legalMass stuck at 0.002. Doubling runway gives the legal-move signal time to emerge; slightly higher entropy keeps mass diffuse off illegals while K=1 keeps dynamics tame.

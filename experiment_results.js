@@ -20885,25 +20885,243 @@ window.EXPERIMENTS = [
     "arena_count": 8,
     "arena_promotions": 0,
     "folder": "experiments/20260502-055623"
+  },
+  {
+    "timestamp": "20260502-073510",
+    "start_time_iso": "2026-05-02T07:35:10Z",
+    "status": "IN_PROGRESS",
+    "mode": "normal",
+    "change_details": "30-min baseline at user-directed params: K=1 (AlphaZero canonical, was 5), lr_warmup_steps 30->300, learning_rate=5e-5, entropy_bonus 0.014->0.011, self_play_tau_decay 0.03->0.015, arena_tau_decay 0.01->0.015. Build 509+ ships material_count fix + bucket rebalance + worker_id UInt16 + dup_distribution semantics fix + log-line fractions + corrected K/drawPenalty doc comments. After this 30-min completes, autotrain proposer takes over with /loop /autotrain at 5-min cron. Goal for the loop: maximize stable training time + arena promotions; let proposer make adjustments naturally.",
+    "changed_params": [
+      {
+        "key": "K",
+        "old": 5,
+        "new": 1.0
+      },
+      {
+        "key": "arena_tau_decay_per_ply",
+        "old": 0.01,
+        "new": 0.015
+      },
+      {
+        "key": "batch_stats_interval",
+        "old": null,
+        "new": 10
+      },
+      {
+        "key": "entropy_bonus",
+        "old": 0.014,
+        "new": 0.011
+      },
+      {
+        "key": "lr_warmup_steps",
+        "old": 30,
+        "new": 300
+      },
+      {
+        "key": "self_play_tau_decay_per_ply",
+        "old": 0.03,
+        "new": 0.015
+      },
+      {
+        "key": "training_time_limit",
+        "old": 5400,
+        "new": 1800
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.011,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 1.0,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 300,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.015,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.015,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 600,
+      "legal_mass_collapse_no_improvement_probes": 8,
+      "training_time_limit": 1800,
+      "batch_stats_interval": 10
+    },
+    "analysis_commentary": "",
+    "training_time_seconds": 166,
+    "arena_count": 0,
+    "arena_promotions": 0,
+    "folder": "experiments/20260502-073510"
+  },
+  {
+    "timestamp": "20260502-073856",
+    "start_time_iso": "2026-05-02T07:38:56Z",
+    "status": "ACCEPTED",
+    "mode": "normal",
+    "change_details": "30-min baseline (replay of prior aborted launch); testing AppleScript-activate wrapper workaround.",
+    "changed_params": [
+      {
+        "key": "K",
+        "old": 5,
+        "new": 1.0
+      },
+      {
+        "key": "arena_tau_decay_per_ply",
+        "old": 0.01,
+        "new": 0.015
+      },
+      {
+        "key": "batch_stats_interval",
+        "old": null,
+        "new": 10
+      },
+      {
+        "key": "entropy_bonus",
+        "old": 0.014,
+        "new": 0.011
+      },
+      {
+        "key": "lr_warmup_steps",
+        "old": 30,
+        "new": 300
+      },
+      {
+        "key": "self_play_tau_decay_per_ply",
+        "old": 0.03,
+        "new": 0.015
+      },
+      {
+        "key": "training_time_limit",
+        "old": 5400,
+        "new": 1800
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.011,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 1.0,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 300,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.015,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.015,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 600,
+      "legal_mass_collapse_no_improvement_probes": 8,
+      "training_time_limit": 1800,
+      "batch_stats_interval": 10
+    },
+    "analysis_commentary": "User-directed 30-min seed baseline (K=1, lr_warmup=300, entropy_bonus=0.011, tau_decay 0.015 sp+arena, lr=5e-5). Promoted to root parameters/results so the overnight /autotrain loop's proposer compares against this baseline.",
+    "training_time_seconds": 1803,
+    "arena_count": 5,
+    "arena_promotions": 0,
+    "folder": "experiments/20260502-073856"
+  },
+  {
+    "timestamp": "20260502-081203",
+    "start_time_iso": "2026-05-02T08:12:03Z",
+    "status": "ACCEPTED",
+    "mode": "normal",
+    "change_details": "Extend training window 1800->3600s and bump entropy_bonus 0.011->0.013. Baseline was healthy at full 30min (no logit blowup, pEnt 6.5-6.7, top1_legal_ever_positive=true) but legalMass stuck at 0.002. Doubling runway gives the legal-move signal time to emerge; slightly higher entropy keeps mass diffuse off illegals while K=1 keeps dynamics tame.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.011,
+        "new": 0.013
+      },
+      {
+        "key": "training_time_limit",
+        "old": 1800,
+        "new": 3600
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.013,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 1.0,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 300,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.015,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.015,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 600,
+      "legal_mass_collapse_no_improvement_probes": 8,
+      "training_time_limit": 3600,
+      "batch_stats_interval": 10
+    },
+    "analysis_commentary": "60-min run cleared all hard-rejects (baseline tripped H4 late_probe_collapsed and H7 policy_loss_extreme_negative=-36.06). Three positive signals across A/B/E: min_pEnt=6.55 in-band; max_grad_global_norm=6.47 vs baseline 58.23 (massively more stable); arenas.mean_score=0.516 vs 0.49 with count 10>=5. legal_mass still flat at 0.0023 but baseline didn't emerge either. No promotion (arenas.promoted=0).",
+    "training_time_seconds": 3603,
+    "arena_count": 10,
+    "arena_promotions": 0,
+    "folder": "experiments/20260502-081203"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 435,
+  "total_iterations": 438,
   "counts": {
     "SEED": 1,
-    "ACCEPTED": 43,
+    "ACCEPTED": 45,
     "NEUTRAL": 39,
     "REJECTED": 350,
     "FAILED": 3,
-    "IN_PROGRESS": 0
+    "IN_PROGRESS": 1
   },
-  "accept_rate": 0.09885057471264368,
-  "failure_streak": 12,
+  "accept_rate": 0.10297482837528604,
+  "failure_streak": 0,
   "trailing_replicates": 0,
-  "iterations_since_codechange": 20,
+  "iterations_since_codechange": 23,
   "code_iteration_due": false,
   "code_iteration_interval": 40,
-  "arena_count": 362,
+  "arena_count": 377,
   "promotions": 15,
   "best_arena_score": 0.57,
   "best_arena_folder": "experiments/20260430-170725"

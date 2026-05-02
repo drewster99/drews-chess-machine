@@ -1,0 +1,1 @@
+{"classification":"improved","analysis_commentary":"User-directed 30-min seed baseline (K=1, lr_warmup=300, entropy_bonus=0.011, tau_decay 0.015 sp+arena, lr=5e-5). Promoted to root parameters/results so the overnight /autotrain loop's proposer compares against this baseline."}

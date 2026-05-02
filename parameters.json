@@ -1,18 +1,18 @@
 {
-  "entropy_bonus": 0.014,
+  "entropy_bonus": 0.013,
   "grad_clip_max_norm": 25,
   "weight_decay": 0.0002,
-  "K": 5,
+  "K": 1.0,
   "learning_rate": 5e-05,
   "sqrt_batch_scaling_lr": false,
-  "lr_warmup_steps": 30,
+  "lr_warmup_steps": 300,
   "draw_penalty": 0.1,
   "self_play_start_tau": 2,
   "self_play_target_tau": 0.8,
-  "self_play_tau_decay_per_ply": 0.03,
+  "self_play_tau_decay_per_ply": 0.015,
   "arena_start_tau": 2,
   "arena_target_tau": 0.5,
-  "arena_tau_decay_per_ply": 0.01,
+  "arena_tau_decay_per_ply": 0.015,
   "replay_ratio_target": 1.1,
   "replay_ratio_auto_adjust": true,
   "self_play_workers": 48,
@@ -27,5 +27,6 @@
   "legal_mass_collapse_threshold": 0.999,
   "legal_mass_collapse_grace_seconds": 600,
   "legal_mass_collapse_no_improvement_probes": 8,
-  "training_time_limit": 5400
+  "training_time_limit": 3600,
+  "batch_stats_interval": 10
 }
