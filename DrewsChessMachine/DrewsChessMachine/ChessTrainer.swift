@@ -2264,7 +2264,10 @@ final class ChessTrainer: @unchecked Sendable {
         // historically — so losses stay comparable to prior sweep runs.
         let vBaselineValues = [Float](repeating: 0, count: batchSize)
 
-        // Legal moves mask
+        // All-ones (no masking) for the synthetic-data path; the additive
+        // mask term then evaluates to 0 everywhere and the graph behaves
+        // identically to the pre-masking version. The real per-position
+        // legal mask is built in `trainStepFromReplay`.
         let legalMaskValues = [Float](repeating: 1.0, count: batchSize * ChessNetwork.policySize)
 
         // Unbox the four Swift arrays into raw pointers and feed
@@ -2420,7 +2423,7 @@ final class ChessTrainer: @unchecked Sendable {
         // trainer's network to compute v(s) for every position. We
         // discard the policy output and keep only the value scalars.
         let freshBaselineStart = CFAbsoluteTimeGetCurrent()
-        let (_, freshValues) = try await network.evaluate(
+        let (freshPolicy, freshValues) = try await network.evaluate(
             batchBoards: phase1.boardsCopy,
             count: batchSize
         )
@@ -2442,7 +2445,7 @@ final class ChessTrainer: @unchecked Sendable {
         // graph. Same flow as the pre-fresh-baseline implementation,
         // just with vBaselines now containing current-trainer values
         // instead of replay-buffer-frozen values.
-        return try await enqueue { [batchSize, freshValues, freshBaselineMs, meanAbsDelta] in
+        return try await enqueue { [batchSize, freshValues, freshPolicy, freshBaselineMs, meanAbsDelta] in
             let totalStart = CFAbsoluteTimeGetCurrent()
             let prepStart = CFAbsoluteTimeGetCurrent()
 
@@ -2493,9 +2496,11 @@ final class ChessTrainer: @unchecked Sendable {
                 let maskBase = pos * policySize
                 for move in legalMoves {
                     let idx = PolicyEncoding.policyIndex(move, currentPlayer: .white)
-                    if idx >= 0 && idx < policySize {
-                        masks[maskBase + idx] = 1.0
-                    }
+                    precondition(
+                        idx >= 0 && idx < policySize,
+                        "PolicyEncoding.policyIndex returned out-of-range index \(idx) for legal move \(move); policySize=\(policySize)"
+                    )
+                    masks[maskBase + idx] = 1.0
                 }
             }
 
@@ -2511,6 +2516,53 @@ final class ChessTrainer: @unchecked Sendable {
                         "[MASK CHECK] pos=\(pos) movedIdx=\(movedIdx) inLegalMask=\(inLegalMask) legalCount=\(legalCount)"
                     )
                 }
+            }
+
+            // One-shot at step 200: confirm the additive -1e9 mask is
+            // actually wiping illegal-cell mass. Computes
+            // `softmax(maskedLogits)` for the first batch position
+            // (using the same -1e9 constant the graph uses) and reports
+            // the summed mass over legal vs. illegal indices. A healthy
+            // run shows legal_sum ≈ 1.0 and illegal_sum ≈ 0.0; a non-
+            // zero illegal_sum here would mean the mask isn't reaching
+            // the loss path. Uses `freshPolicy` (raw logits captured
+            // from the phase-2 forward pass) so no extra GPU work is
+            // spent on the probe.
+            if self._completedTrainSteps == 200 {
+                let policySize = ChessNetwork.policySize
+                let largeNeg: Float = -1e9
+                let logitsBase = 0 // first batch position
+                let maskBase = 0
+                var maxMaskedLogit: Float = -.infinity
+                for i in 0..<policySize {
+                    let mask = masks[maskBase + i]
+                    let masked = freshPolicy[logitsBase + i] + (1 - mask) * largeNeg
+                    if masked > maxMaskedLogit { maxMaskedLogit = masked }
+                }
+                var expSum: Double = 0
+                var legalExpSum: Double = 0
+                var illegalExpSum: Double = 0
+                var legalCount: Int = 0
+                for i in 0..<policySize {
+                    let mask = masks[maskBase + i]
+                    let masked = freshPolicy[logitsBase + i] + (1 - mask) * largeNeg
+                    let e = Double(expf(masked - maxMaskedLogit))
+                    expSum += e
+                    if mask == 1.0 {
+                        legalExpSum += e
+                        legalCount += 1
+                    } else {
+                        illegalExpSum += e
+                    }
+                }
+                let legalSum = expSum > 0 ? legalExpSum / expSum : 0
+                let illegalSum = expSum > 0 ? illegalExpSum / expSum : 0
+                SessionLogger.shared.log(
+                    String(
+                        format: "[MASKED-SOFTMAX] step=200 pos=0 legalCount=%d legal_sum=%.6e illegal_sum=%.6e",
+                        legalCount, legalSum, illegalSum
+                    )
+                )
             }
 
             let feeds = self.buildFeeds(

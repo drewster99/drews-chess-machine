@@ -511,6 +511,15 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let ratioCurrent: Double
         let ratioProductionRate: Double
         let ratioConsumptionRate: Double
+        /// Self-play production rate expressed in moves/hour (3600 ×
+        /// `ratioProductionRate`). Same rolling 60-s window as the
+        /// underlying production rate; provided as a convenience so
+        /// post-run analysis doesn't need to re-derive the unit.
+        let selfPlayMovesPerHour: Double
+        /// Trainer consumption rate expressed in moves/hour (3600 ×
+        /// `ratioConsumptionRate`). Same window/source as the
+        /// production rate companion above.
+        let trainingMovesPerHour: Double
         let ratioAutoAdjust: Bool
         let ratioComputedDelayMs: Int
         let whiteCheckmates: Int
@@ -588,6 +597,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case ratioCurrent = "ratio_current"
             case ratioProductionRate = "ratio_production_rate"
             case ratioConsumptionRate = "ratio_consumption_rate"
+            case selfPlayMovesPerHour = "self_play_moves_per_hour"
+            case trainingMovesPerHour = "training_moves_per_hour"
             case ratioAutoAdjust = "ratio_auto_adjust"
             case ratioComputedDelayMs = "ratio_computed_delay_ms"
             case whiteCheckmates = "white_checkmates"

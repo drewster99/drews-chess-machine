@@ -4,6 +4,17 @@ Long-term goals, deferred work, and notes on decisions.
 
 ## Future improvements
 
+- **`BatchFeedsInput` struct for `ChessTrainer.buildFeeds`.** The
+  current call site takes six positional pointer arguments
+  (`boards`, `moves`, `zs`, `vBaselines`, `legalMasks`, plus
+  `batchSize`), three of which are `UnsafePointer<Float>`. Easy
+  to silently swap two same-typed pointers in a future refactor
+  and produce a wrong-but-shaped batch. Wrap them in a small
+  `struct BatchFeedsInput` with named fields so the compiler
+  enforces the binding by name rather than position. No
+  behavioral change; pure call-site safety. Apply at the same
+  time to `runPreparedStep` if it grows similarly.
+
 - **Autosave retention pruning.** Today every `.dcmsession` autosave
   (post-promotion and the new 4-hour periodic save) is kept forever
   per the project-wide "nothing is ever overwritten" invariant. A

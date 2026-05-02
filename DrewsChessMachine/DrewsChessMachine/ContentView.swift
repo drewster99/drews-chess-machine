@@ -8867,9 +8867,18 @@ struct ContentView: View {
                         } else {
                             trMsStr = "--"
                         }
-                        let ratioStr = String(format: "target=%.2f cur=%.2f prod=%.1f cons=%.1f auto=%@ delay=%dms spDelay=%dms spMs=%@ trMs=%@ workers=%d",
+                        // moves/hour companions to prod/cons (which are
+                        // pos/sec). Same rolling 60-s window — these are
+                        // a pure unit conversion, exposed here so the
+                        // [STATS] line and result.json carry the rate in
+                        // the unit a human asks for ("how many moves per
+                        // hour are we training on?").
+                        let spMovesPerHour = ratioSnap.productionRate * 3600.0
+                        let trainMovesPerHour = ratioSnap.consumptionRate * 3600.0
+                        let ratioStr = String(format: "target=%.2f cur=%.2f prod=%.1f cons=%.1f spRate=%.0f/hr trainRate=%.0f/hr auto=%@ delay=%dms spDelay=%dms spMs=%@ trMs=%@ workers=%d",
                                               ratioSnap.targetRatio, ratioSnap.currentRatio,
                                               ratioSnap.productionRate, ratioSnap.consumptionRate,
+                                              spMovesPerHour, trainMovesPerHour,
                                               ratioSnap.autoAdjust ? "on" : "off",
                                               ratioSnap.computedDelayMs, ratioSnap.computedSelfPlayDelayMs,
                                               spMsStr, trMsStr, ratioSnap.workerCount)
@@ -9087,6 +9096,8 @@ struct ContentView: View {
                                 ratioCurrent: ratioSnap.currentRatio,
                                 ratioProductionRate: ratioSnap.productionRate,
                                 ratioConsumptionRate: ratioSnap.consumptionRate,
+                                selfPlayMovesPerHour: spMovesPerHour,
+                                trainingMovesPerHour: trainMovesPerHour,
                                 ratioAutoAdjust: ratioSnap.autoAdjust,
                                 ratioComputedDelayMs: ratioSnap.computedDelayMs,
                                 whiteCheckmates: parallelSnap.whiteCheckmates,
