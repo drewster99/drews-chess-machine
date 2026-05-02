@@ -40,6 +40,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "training run failed: app did not self-terminate at its internal 600-second training-time-limit; the run_training.sh watchdog fired at t=720s (SIGTERM), the app exited with status 143, and no result.json was produced. Script exit code 6 ('app exited with status != 0'). Because no new results were emitted, the proposed change (entropy_bonus 0.001 -> 0.02) cannot be compared against the baseline \u2014 rejecting this iteration. The same proposal can be retried on a subsequent iteration, but the training-time-limit non-response is a real bug worth surfacing to the user independently of autotrain (the pre-existing baseline results.json shows total_training_seconds=900 with training_time_limit=3600, so the --training-time-limit CLI flag may not be wired through correctly for shorter limits).",
     "training_time_seconds": null,
+    "arena_count": null,
+    "arena_promotions": null,
     "folder": "experiments/20260421-180412"
   },
   {
@@ -83,6 +85,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "The change directly addresses diagnostic (2): max probability stays in [0.035, 0.135] the entire run versus baseline's hard collapse to 1.000, and no single move ever dominates. This is a clear, meaningful win on the stated peakiness collapse criterion. The tradeoff is that illegal_mass is held near 1.0 throughout (slightly worse than baseline's transient minimum of 0.798), indicating the entropy bonus is now strong enough to prevent the network from learning to distinguish legal from illegal moves within this window. However, the goal explicitly is to PREVENT collapse, and the catastrophic single-illegal-move collapse is gone \u2014 the network is now in a learnable (if currently stalled) regime rather than a stuck one-hot dead end. This is net progress toward the goal; the next step would be to reduce entropy_bonus slightly (e.g. 0.003-0.005) to restore learning signal while keeping peakiness controlled.",
     "training_time_seconds": null,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-182131"
   },
   {
@@ -126,6 +130,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "The new run at entropy_bonus=0.004 materially outperforms the previous 0.01 run against the stated goal. Peakiness stayed safely bounded (max range [0.048, 0.197], well below the 0.9 alarm), while illegal_mass fell monotonically from 0.9997 to 0.6696 (min 0.6650) versus being stuck at ~1.0 for the entire prior run. above_uniform_count_max improved from 0 to 2, indicating real legal-move signal emerging. Both diagnostics (1) and (2) are simultaneously satisfied for the first time with no post-arena regression, directly addressing the collapse-prevention goal.",
     "training_time_seconds": null,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-183711"
   },
   {
@@ -169,6 +175,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Doubling learning_rate from 5e-5 to 1e-4 caused catastrophic re-collapse of the policy. Within 2 minutes (by probe 8 at t=134s) max reached 1.0 and illegal_mass reached 1.0, both locked for the remaining 8 minutes of the run. Compared to the previous best (max bounded [0.048, 0.197], illegal_mass falling to 0.665), this is a dramatic regression on both diagnostic (1) and (2) \u2014 the network has returned to the one-hot-on-a-single-illegal-move dead end. entropy_bonus=0.004 alone was insufficient to hold the faster gradient updates in check. Rejecting.",
     "training_time_seconds": null,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-185738"
   },
   {
@@ -217,6 +225,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Paired lr 5e-5 -> 7.5e-5 with entropy_bonus 0.004 -> 0.006 (both 1.5x) still collapsed the policy. Max reached 1.0 by probe 6 (t=100s) and illegal_mass locked at 1.0, both held for the remaining 8 minutes \u2014 a worse trajectory than even the lr=1e-4 experiment (which took 134s to collapse). Scaling entropy with lr was not enough to preserve margin; the lr bump dominates because the cross-entropy gradient scales linearly with lr while the entropy-bonus gradient does not in the same way (entropy bonus enters as a coefficient on -H, and the effective regularization pressure at a given logit configuration doesn't scale with lr the way the CE pressure does). Rejecting. Sideshow: this was the first run after the probe-network fix (dedicated probe network separate from the arena's candidate inference network). The trajectory shows 37 probes fired continuously with no ~250s arena gap \u2014 the GOAL #2 observability fix is working as intended, even though this particular parameter iteration was unsuccessful.",
     "training_time_seconds": null,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-194653"
   },
   {
@@ -260,6 +270,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Tightening grad_clip_max_norm from 30.0 to 10.0 regressed on both diagnostics. max rose smoothly and monotonically from 0.34 at probe 1 to 1.0 by probe 23 (t=363s), and illegal_mass was pinned at 1.0 for all 38 probes with above_uniform_count=0 throughout \u2014 vs. the current best's max range [0.048, 0.197] and illegal_mass falling to 0.665. The prediction that clipping would dampen collapse was wrong; instead the trajectory slid gradually to full peakiness. Hypothesis for the follow-up: at current best the per-step gNorm is typically below 10 anyway (so clipping rarely fired) \u2014 what changed is that when it did fire, the clipping biased the update direction rather than strictly scaling magnitude, and that bias happened to favor peakier logits. The probe observability fix continues to work: 38 continuous probes with no arena gap. Rejecting.",
     "training_time_seconds": null,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-200314"
   },
   {
@@ -303,6 +315,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Lowering self_play_start_tau from 2.0 to 1.5 collapsed the policy: max rose smoothly from 0.028 at probe 1 to 1.0 by probe 13 (t=209s), and illegal_mass locked at 1.0 for the full 10-minute run with above_uniform_count=0 throughout. This is the fourth consecutive rejection and the third axis (after lr, grad_clip_norm, now sampling tau) that fails to preserve the current best's healthy dynamics. Noting that probe-1 max values vary dramatically across runs with identical initial-conditions handling (0.028 here, 0.34 on the grad_clip run, 0.18 on the current best), suggesting a significant seed-variance component to these results. The current best at entropy_bonus=0.004/lr=5e-5 may be partly fortunate initialization rather than a robust basin. Rejecting.",
     "training_time_seconds": null,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-201708"
   },
   {
@@ -346,6 +360,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "weight_decay 1e-4 -> 2e-4 collapsed: max rose from 0.12 at probe 1 to 1.0 by probe 10 (t=165s), illegal_mass locked at 1.0 for all 37 probes. Fifth consecutive rejection. The accepted 'current best' (entropy 0.004, lr 5e-5, weight_decay 1e-4, clip 30, tau 2.0->0.8) is the only configuration in six trials whose max stayed below 0.5 \u2014 every perturbation (lr, lr+entropy, grad_clip, start_tau, weight_decay) collapses to max=1.0 within 100-400 s. Probe-1 max values vary 20x across runs with the same initial-condition setup (0.028 to 0.74), which means the SGD trajectory is extremely sensitive to initial weight randomization and our single-run comparisons are noise-dominated. The right next move is likely to replicate the current best 2-3 times to establish whether it's truly a robust basin or just lucky seeding \u2014 but /autotrain's propose-a-change protocol doesn't natively support replication, so this needs user attention. Rejecting.",
     "training_time_seconds": null,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-203113"
   },
   {
@@ -389,6 +405,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "replay_ratio_auto_adjust true -> false still collapsed: max rose from 0.13 at probe 1 to 1.0 by probe 10 (t=165s), illegal_mass pinned at 1.0 for all 37 probes. Notably this run had 0 arenas (the collapse fully preceded the 300s auto-arena mark), which rules out the arena-promotion feedback loop as the driver for this particular failure. Sixth consecutive rejection. The pattern is now very clear: six different knobs (lr up, paired lr+entropy up, grad_clip down, start_tau down, weight_decay up, replay auto-adjust off) all produce the same collapse signature \u2014 max rises smoothly toward 1.0 within 2-6 minutes, illegal_mass pinned, no legal move ever clears uniform. The only configuration that hasn't collapsed is the accepted 'current best' (entropy 0.004 + every other default), which increasingly looks like a lucky initial seed rather than a real stability basin. The next most informative move is probably to replicate the current best itself to establish whether it reproduces. Rejecting.",
     "training_time_seconds": null,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-204510"
   },
   {
@@ -432,6 +450,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Both runs satisfy the non-collapse goal, but the new run (entropy_bonus 0.005) shows strictly worse diagnostics on both axes: max peaked at 0.341 vs 0.197 for the current best, and illegal_mass bottomed at 0.841 vs 0.665. The new run's max also trended upward across the window (0.07 -> 0.34), which is a mildly concerning direction even though it stayed under the 0.90 threshold. The 38-probe continuous trajectory is a genuine observability win, but it comes from the probe-network code fix, not from the entropy_bonus change, so per the scoring guidance it does not count toward improvement. Net: comparable-but-slightly-worse sibling, not a meaningful improvement. Important takeaway independent of the reject: this run is the FIRST non-collapsing non-baseline result, which meaningfully weakens the 'current best is a seed fluke' hypothesis \u2014 two separate entropy settings (0.004 and 0.005) reliably produce healthy training, and all six rejections genuinely perturbed the system out of that basin.",
     "training_time_seconds": null,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-205914"
   },
   {
@@ -475,6 +495,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "All three goal metrics improved materially: max ceiling 0.107 vs 0.197 (~46% lower), illegal_min 0.457 vs 0.665 (~31% absolute drop), and aboveU_max 5 vs 2. Trajectory shows monotonic illegal_mass decline from 0.9998 to 0.457 with no collapse signals.",
     "training_time_seconds": null,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-211313"
   },
   {
@@ -518,6 +540,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed on collapse signals: candidate last max_prob jumped 0.103->0.547 with legal_mass collapsing from 0.543 to 0.00012 and above_uniform_count 5->0, indicating mass concentrating on an illegal move. Arena Elo also fell 13.9->6.95.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-214716"
   },
   {
@@ -561,6 +585,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Both runs satisfy collapse thresholds (max_max 0.52 vs 0.11, illegal_min 0.23 vs 0.46, entropy 6.62 vs 6.69 \u2014 both well above 5). Legal-mass improved meaningfully (0.69 vs 0.54) and top1_legal went positive for the first time, but max_prob jumped 5x (0.52 vs 0.11) \u2014 confidence grew on mostly-legal moves. Mixed signals, no clear goal win.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-220318"
   },
   {
@@ -604,6 +630,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Goal-relevant diagnostics all worsened at entropy=0.0035: candidate's max_prob over run doubled (0.228 vs 0.107), illegal_min rose (0.599 vs 0.457), and aboveU ended at 2 vs 5 with legal_mass_sum dropping to 0.333 from 0.543. Collapse signals unchanged (pEnt never below 5, min entropy 6.81 vs 6.69), but the concentration/illegal-mass trend is clearly worse.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260421-221834"
   },
   {
@@ -647,6 +675,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Catastrophic regression: candidate max_prob reached 1.0 by probe 11 (t=178s) and stayed pinned through all remaining candidate probes; legal_mass_sum=0 throughout. Critically, 0 arenas fired (interval=600 vs 600s training window), so arena promotion is definitively ruled out as the collapse driver. The bare entropy=0.003 basin is apparently seed-sensitive \u2014 this is the same parameters as the accepted current best, just a different initialization.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-223230"
   },
   {
@@ -690,6 +720,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy_bonus 0.003\u21920.004 collapsed catastrophically: probe 1 max already 0.325, max=1.0 by probe 5 (t=90s), illegal=1.0 throughout all 37 probes. grad_norm_ever_exceeded_100=true (peak 117.6, a real collapse signal). This is decisive evidence the basin is seed-sensitive, not parameter-specific \u2014 entropy=0.004 worked on one seed (the old current best) but doesn't here.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-224611"
   },
   {
@@ -733,6 +765,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy_bonus 0.003\u21920.008 collapsed. Probe 1 max=0.658 (already elevated at init), growing to 0.9995 by end; illegal_mass_sum=1.0 throughout. Three consecutive runs now collapsed at three different entropy values (0.003, 0.004, 0.008) \u2014 collapse is seed-driven, not parameter-driven. Grad norms stayed under 100 this run (peak 50), so grad_clip is not the driver either.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-230005"
   },
   {
@@ -776,6 +810,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "learning_rate 5e-5 \u2192 2.5e-5 delayed but did not prevent collapse: max reached 0.90 by t=248s and 1.0 by t=485s, illegal_mass locked at 1.0 from probe 7. Halving lr bought ~3 minutes of stable-looking trajectory, then collapsed the same way. Fourth consecutive seed-driven collapse across four different parameter configurations.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-231411"
   },
   {
@@ -819,6 +855,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Goal metrics regressed: max_prob rose 0.107\u21920.262 and illegal_min worsened 0.457\u21920.679, though both stay well under collapse thresholds. Grad norm improved (85.1\u219251.3) and aboveU dropped (5\u21921), but the 300k buffer delay cost training progress in the 10-min window without a clear safety win since neither run collapsed.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-232810"
   },
   {
@@ -862,6 +900,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "min_positions=200k collapsed: max reached 1.0 by probe 20 (t\u2248318s) and illegal_mass locked at 1.0 thereafter; max_grad_global_norm=106.7 (exceeded 100 alarm). Halfway-point was not enough to buffer past the early-training instability that 300k avoided \u2014 consistent with the pattern but not distinguishable from seed variance in a single run.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-234211"
   },
   {
@@ -905,6 +945,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Both runs satisfy collapse thresholds (max<0.90, illegal<0.99). Opposite-direction moves on stability signals: max ceiling worse (0.140 vs 0.107) and legal_mass_sum lower (0.199 vs 0.543), but grad norm substantially better (36.4 vs 85.1) and top1_legal_ever_positive flipped TRUE. Second consecutive non-collapse at 300k suggests seed-stability gain. No meaningful regression on primary collapse objective.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260421-235610"
   },
   {
@@ -953,6 +995,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "min_positions=300k + arena_promote_threshold=0.60 showed healthy mid-run (max=0.35, aboveU=2 at t=321) but collapsed by end \u2014 max=1.0, illegal=1.0 at last probe. illegal_min=0.82 (vs current best 0.457, vs prior 300k-only run 0.641). The add-on (promote_threshold) didn't help; the seed path tipped into collapse late.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-001010"
   },
   {
@@ -1001,6 +1045,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "New run shows broad improvement: illegal_min nearly halved (0.457\u21920.235), final legal_mass_sum rose 0.543\u21920.753, and aboveU_max grew 5\u21927. Grad norm dropped 85\u219252 (more stable). Transient max_prob peak 0.215 vs 0.107 is notable but still far below the 0.90 collapse threshold, and final max 0.141 remains comparable. No collapse signals tripped.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-002419"
   },
   {
@@ -1044,6 +1090,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Batch 2048 regresses sharply vs 4096: cand last legal_mass_sum collapsed 0.753\u21920.000 (illegal_min 0.235\u21920.996), max_prob climbed 0.215\u21920.568 (2.6x), and aboveU_max fell 7\u21920. No hard-collapse trigger (max<0.90, pEnt>5), but every learning-progress signal worsened.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-003910"
   },
   {
@@ -1087,6 +1135,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "lr 5e-5\u21926e-5 (just +20%) collapsed at mid-run despite 300k buffer and entropy=0.0025. Probe 1 started peaky (max=0.229, legal_mass=9e-5) and max reached 1.0 by probe ~20; max_grad_global_norm=217.6 (well above 100 alarm). Another seed-driven collapse \u2014 confirms lr sensitivity is steep even with the stability improvements.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-005312"
   },
   {
@@ -1130,6 +1180,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "grad_clip 30\u219220 collapsed: max reached 1.0 by probe ~20 (t=324s) and held through end, illegal=1.0 throughout, aboveU=0. max_grad_global_norm still peaked at 103.7 (exceeded 100 alarm) \u2014 tighter clip didn't prevent spikes, just rescaled them after the fact. The new lr_warmup_steps=0 / sqrt_batch_scaling flags (both false) were inactive, so this run was effectively identical to prior behavior.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-010712"
   },
   {
@@ -1186,6 +1238,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "First run with lr_warmup_steps=500 and sqrt_batch_scaling_* flags enabled (scaling is no-op at batch=4096). Policy still collapsed: max rose 0.18\u21921.0, illegal=1.0 throughout, value head saturated to 1.0 (final_value_abs_mean=0.735). Positive side effect: grad_norm_max=64 (below 100 alarm, down from 103-217 in recent collapses) \u2014 warmup suppressed early gradient spikes, but a slower drift still tipped the policy. Regressed on goal metrics vs current best (illegal_min 0.235).",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-011942"
   },
   {
@@ -1242,6 +1296,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "lr_warmup_steps 500\u21921500 avoided the full max=1.0 collapse (max stayed [0.109, 0.618], grad_norm peak 66, no value saturation) but illegal_mass pinned 0.998-1.0 throughout with aboveU=0 \u2014 no legal-move learning. Vs current best (illegal_min=0.235, aboveU_max=7) this is strictly worse on goal metrics. Warmup=1500 shifted dynamics toward a stalled-but-not-collapsed regime, similar to the over-regularized entropy=0.01 run we saw earlier.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-013316"
   },
   {
@@ -1298,6 +1354,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Anomalous run: only 62 training steps (normal ~340) and 16 probes starting at t=254s (normal t=23). Something delayed buffer-fill or training-start dramatically. Trajectory looks non-collapsed (max 0.02-0.06, illegal 0.97-0.99, top1_legal went positive briefly) but also barely learned \u2014 goal metrics far worse than current best (illegal_min=0.97 vs 0.235, aboveU=0 vs 7). Grad norm 34 (fine), pEnt 6.56 (fine). Insufficient training to draw warmup-length conclusions.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-014711"
   },
   {
@@ -1354,6 +1412,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "warmup=1000 re-run ALSO anomalously slow: 92 training steps (normal ~340), first probe at t=208s. max stayed stable [0.13, 0.21], illegal 0.998-0.999 (never dropped), aboveU=0 throughout. Stalled-but-not-collapsed regime \u2014 similar to warmup=1500. Two consecutive warmup=1000 trials both exhibited the slow-start anomaly; warmup=1500 ran normally. Unclear cause (buffer-fill variance, not logged to run.log). Goal metrics far worse than current best.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-020112"
   },
   {
@@ -1410,6 +1470,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Third anomalously slow run in the warmup bisection: 95 training steps (normal ~340), first probe t=193s. max drifted 0.056\u21920.456 (no full collapse), illegal stayed 0.997-0.9998 (no legal-move learning), aboveU=0. Pattern is now: warmup=500 and 1500 run normally; warmup=750, 1000, 1000-replicate all ran slow. Anomaly cause is unclear and not in run.log. Regressed vs current best (illegal_min=0.235, aboveU_max=7).",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-021610"
   },
   {
@@ -1456,6 +1518,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_target_tau 0.8\u21920.6 with warmup=0 and scaling flags=false ALSO ran anomalously slow (95 steps, first probe t=179s). This rules out warmup and the new scaling flags as the slow-start cause \u2014 four consecutive iterations now exhibit the anomaly regardless of new-param settings. max [0.037, 0.24], illegal pinned 0.998-0.9996, aboveU=0. Can't judge target_tau's effect with so few training steps.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-023010"
   },
   {
@@ -1496,6 +1560,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Baseline replicate ran SLOW: 126 training steps at build 352 vs accepted-best 344 steps at build 349 (2.7x slowdown), first probe t=149s vs t=57s. Identical parameters, different build \u2192 the slowdown was introduced when the new params (lr_warmup_steps + sqrt_batch_scaling flags) were added. This explains all recent anomalies. Goal metrics regressed (illegal stayed near 1.0, aboveU=0) because only 126 SGD steps happened vs 344 in the accepted-best.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-024412"
   },
   {
@@ -1536,6 +1602,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Second baseline replicate under build 352: 114 steps (prev replicate 126) \u2014 confirms throughput regression is consistent (~120 steps vs 344 at build 349), not variance. But this replicate COLLAPSED (max=1.0 by t~385s, illegal=1.0, value saturated at 0.9998) while the prior replicate (identical params) did NOT collapse. Two findings: (1) build-352 slowdown is deterministic; (2) collapse is primarily seed-variance driven even at identical parameters. Regressed vs current best (illegal_min=0.235).",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-025812"
   },
   {
@@ -1592,6 +1660,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "warmup=500 + scaling flags on: held stable under build 352 (95 training steps, max bounded [0.057, 0.169], no collapse, top1_legal briefly positive). But throughput regression means illegal stayed 0.998-0.9999 and aboveU=0 \u2014 insufficient SGD steps to learn legal moves in the window. Clearly worse than current-best's illegal_min=0.235, aboveU_max=7. Warmup continues to work as designed (grad norm 68, under alarm); just no room to show it.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-031211"
   },
   {
@@ -1638,6 +1708,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "vs build-349 best: illegal_min 0.78 vs 0.235 (much closer to 0.99 collapse threshold), aboveU collapsed to 1 vs 7, cand max last lower but max-over-run higher (0.273 vs 0.215). Training steps roughly 40% of best due to build-352 throughput regression, but analyzer judges outcomes not causes. Goal metrics clearly worse across the board; policy showing collapse-adjacent behavior.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-032610"
   },
   {
@@ -1684,6 +1756,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Build rebuilt (349->352) with a ~2.7x training-throughput regression, so this run completed only 130 steps vs 344. Illegal_mass_min regressed substantially (0.77 vs 0.235) because training didn't progress as far. Max-prob ceiling is better (0.128 vs 0.215) and trajectory is clean/non-collapsing, but with the build drift and far-worse goal metric, per skill guidance lean regressed.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-034013"
   },
   {
@@ -1735,6 +1809,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Stacking entropy=0.003 on top of min_pos=75k over-regularized at build-352 throughput: 139 steps, max bounded very low [0.025-0.089], but illegal stayed 0.9995-0.9998 throughout (vs 0.78 last iteration at entropy=0.0025). 10-min window too short for the stronger entropy pressure to yield learning. top1_legal briefly positive. Regressed vs current-best's illegal_min=0.235.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-035413"
   },
   {
@@ -1775,6 +1851,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "REPLICATE of current-best params (build 349 \u2192 now build 352): 132 steps vs 344, first probe t=137s (300k buffer fill takes a long time under slow throughput). Trajectory is stable and non-collapsing \u2014 max bounded [0.023, 0.052], pEnt=6.83, grad norm 73 \u2014 but illegal stayed 0.990-0.999 (vs best's 0.235) because the slower throughput leaves no room to learn in 600s. Build drifted and goal metric much worse \u2014 regressed per skill guidance. Upshot: the accepted-best goalposts are unreachable under build 352 in a 10-min window.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-040815-replicate"
   },
   {
@@ -1815,6 +1893,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Second replicate of current-best params: this one COLLAPSED (max\u21920.9998, illegal=1.0) where the first replicate stayed stable (max=0.05, illegal=0.99). Same parameters, different seeds \u2192 collapse is seed-dominated even at the accepted-best configuration. 110 steps, first probe t=183. Confirms the accepted best was partially seed-lucky; baseline reproducibility is bimodal under build 352.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-042113-replicate"
   },
   {
@@ -1855,6 +1935,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Third replicate: stable, 134 steps, max bounded [0.019, 0.042], illegal fell slightly 0.997\u21920.9377, non-collapsing. Across 3 replicates of identical params: 2/3 non-collapse, 1/3 collapse \u2014 confirmed seed-variance at the accepted-best config. illegal_min=0.9377 still much worse than current best's 0.235 (build-drift + insufficient steps under build 352). Regressed.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-043418-replicate"
   },
   {
@@ -1895,6 +1977,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-135927-seed"
   },
   {
@@ -1940,6 +2024,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Both runs collapsed near-identically: max_prob 1.000, legal_mass_sum 0, illegal_min ~0.999. New run showed one marginal positive (top1_legal briefly positive vs never) but core collapse metrics are noise-level identical. Warmup extension 100\u2192500 did not prevent or meaningfully delay collapse. Build drift 352\u2192354 is minor given both collapsed similarly.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-142050"
   },
   {
@@ -1985,6 +2071,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Only 1 candidate probe captured (at t=508s) despite 334 training steps and a normal arena \u2014 candidate_test probing appears to have been mostly disabled this run. That single probe shows full collapse (max=1.0, illegal=1.0, value=0.9999). Same terminal state as baseline. top1_legal briefly positive; grad norm 85 (under alarm). Insufficient probe data to assess trajectory differences vs baseline.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-143612"
   },
   {
@@ -2035,6 +2123,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Max collapse decisively prevented: bounded at 0.33 vs baseline 1.0 locked, well under the 0.90 bad threshold. Grad norm halved (68.9\u219230.7) and value head less saturated (0.37\u21920.22). Illegal_mass still ~1 because learning stalled under regularization, not collapsed. Of two goal diagnostics, one moved dramatically right, the other unchanged \u2014 net meaningful progress against policy collapse.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-145114"
   },
   {
@@ -2080,6 +2170,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "lr 5e-5\u21927.5e-5 with warmup=500 safety net: no collapse, max_max 0.22 (vs baseline 0.33, better), grad_norm_max 22.9 (vs 30.7, better), top1_legal_ever_positive flipped TRUE. But illegal_min unchanged at 0.9996 vs 0.9997 and aboveU still 0 throughout \u2014 primary goal metric (illegal_mass) didn't move. Marginal secondary improvements only; within noise on the main diagnostic. Confirms warmup does protect against lr-bump collapse.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-150732"
   },
   {
@@ -2125,6 +2217,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "lr 5e-5\u21921e-4 (2x) with warmup=500 collapsed: max reached 1.0 by mid-run, grad_norm_max=134 (exceeded 100 alarm), value saturated to 1.0. Warmup protected 1.5x (prior iter neutral) but not 2x. Upper bound of warmup's safe-lr protection identified. Regressed vs current best.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-152218"
   },
   {
@@ -2170,6 +2264,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Lower entropy (0.0025) produced the first illegal_min below 0.99 threshold (0.9836 vs 0.9997), a meaningful 0.016 absolute improvement on the primary goal metric. Final illegal also dropped (0.98 vs 1.0) and final max improved (0.16 vs 0.33). Grad norm slightly higher (38 vs 31) but well under alarm. Both non-collapsing with max<0.9.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-153617"
   },
   {
@@ -2215,6 +2311,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "lr=7.5e-5 collapsed under entropy=0.0025 (max=1.0 by end, illegal=1.0, grad_norm=128 \u2014 alarm), where the same lr was safe under entropy=0.003. Entropy lowering shrank the warmup's protection envelope. Regressed vs current best.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-155112"
   },
   {
@@ -2260,6 +2358,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "min_pos 250k\u2192350k collapsed (max=1.0, illegal=1.0) despite the larger pre-training buffer supposedly being more conservative. Grad norm fine (32) and top1_legal briefly positive. Seed variance at a nominally safer config \u2014 same story as many prior collapses. Regressed vs current best (illegal_min 0.9836, max_max 0.31, non-collapsing).",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-160515"
   },
   {
@@ -2305,6 +2405,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Warmup=100 let lr peak within the ~331-step window, enabling real learning. illegal_min fell from 0.98 (near the 0.99 collapse line) to 0.49, legal_mass_sum rose from 0.02 to 0.50, and 5 legal moves now exceed uniform (vs 0). Max prob stayed safely below 0.90. Clear progress on the primary anti-collapse goal.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-162138"
   },
   {
@@ -2350,6 +2452,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Final-state worse on every goal metric: illegal 0.50\u21920.83, legal_mass 0.50\u21920.17, max_over_run 0.29\u21920.71, grad_norm 36.8\u219260.9. Mid-run peak (illegal 0.26) briefly beat baseline but training unlearned it. No hard collapse (max<0.9), but instability and regression are clear. lr=7.5e-5 too aggressive at this warmup/entropy.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-163613"
   },
   {
@@ -2400,6 +2504,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Both runs pass goal thresholds (illegal_mass<0.99, max<0.90). New run improves max ceiling (0.19 vs 0.29) and final max (0.07 vs 0.17), but regresses illegal_min (0.54 vs 0.49), has fewer legal moves above uniform (2 vs 5), and 2.3x higher peak grad norm (85 vs 37). Mixed trade-off within passing region.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-165112"
   },
   {
@@ -2445,6 +2551,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "min_pos 250k\u2192150k collapsed: max=1.0 by mid-run, illegal=1.0, grad_norm_max=157 (exceeded 100 alarm), value saturated to 1.0. Earlier SGD start traded replay-buffer diversity for step count, and the under-diversified early steps tipped the policy into collapse. First probe t=31s (earlier than baseline's 45s confirms the min_pos change worked as intended mechanically).",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-170513"
   },
   {
@@ -2490,6 +2598,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy 0.0025\u21920.002 collapsed: max=1.0 by t=330, illegal=1.0 throughout latter half, aboveU=0. Grad norm stayed low (23.6) so not a gradient explosion \u2014 slow drift into one-hot saturation with insufficient entropy pressure to pull back. Confirms 0.0025 is the lower edge of the stable basin for this config. Regressed.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-171911"
   },
   {
@@ -2535,6 +2645,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "K 5\u21926 tightened max ceiling (0.20 vs 0.29) but modestly regressed learning: illegal_min 0.55 vs 0.49, aboveU_max 3 vs 5, final legal_mass 0.45 vs 0.50. Grad norm similar (43 vs 37). Both within goal-passing region. Sharper value targets slowed policy learning slightly; not a clear improvement.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-173311"
   },
   {
@@ -2580,6 +2692,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_target_tau 0.8\u21920.6 regressed: illegal_min 0.76 vs 0.49 (worse), illegal_last 0.97 vs 0.50 (near-collapse), aboveU dropped 5\u21922 peak and 5\u21920 final. max ceiling slightly better (0.24 vs 0.29). Sharper endgames reduced replay-buffer diversity so policy head couldn't consolidate; training unlearned mid-run progress. Grad norm elevated (63 vs 37). Clear regression on primary goal.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-174714"
   },
   {
@@ -2625,6 +2739,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_start_tau 2.0\u21922.5 regressed: only 224 training steps (vs ~340 baseline) because longer exploratory games slow replay-buffer fill. max stayed very low [0.03, 0.12] but illegal stuck 0.91-0.99 with only 1 legal move above uniform. The increased diversity was swamped by the loss of training throughput. 0 arenas (insufficient positions).",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-180117"
   },
   {
@@ -2670,6 +2786,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Anomalous slow run: 97 training steps (vs ~340 baseline), first probe t=187s. illegal pinned 1.0 throughout, aboveU=0, but max bounded [0.13, 0.33] \u2014 insufficient SGD to produce any learning signal either way. Same sporadic slow-start we've seen before; unrelated to draw_penalty. Can't evaluate the change fairly. Regressed on goal metrics.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-181518"
   },
   {
@@ -2715,6 +2833,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Clean replicate of draw_penalty=0.15. max ceiling improved [0.05, 0.15] vs [0.07, 0.29] and top1_legal briefly positive (new), but illegal_min essentially unchanged at 0.987 (vs 0.494 best), aboveU stayed 0 throughout. Similar pattern to K=6: sharper value targets dampen peakiness but slow policy learning. Regressed on primary goal.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-182918"
   },
   {
@@ -2760,6 +2880,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "weight_decay 1e-4\u21925e-5 collapsed: max reached 1.0 by mid-run, illegal=1.0 throughout latter half. Less weight-shrinkage left insufficient implicit regularization to pair with entropy=0.0025. Confirms current 1e-4 is near the minimum for this regime. Regressed.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-184338"
   },
   {
@@ -2805,6 +2927,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_tau_decay_per_ply 0.03\u21920.05 collapsed. Faster in-game tau decay reduced replay diversity (same root cause as target_tau=0.6 failure). max=1.0 by mid-run, grad_norm=185 (alarm), value saturated to 1.0. Regressed. Another edge mapped: diversity-reducing changes hurt this regime.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-185813"
   },
   {
@@ -2850,6 +2974,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "grad_clip_max_norm 30\u219240 collapsed. max reached 1.0 by mid-run, grad_norm peaked at 71 (below 100 alarm because clip is higher). Looser clipping let peaky updates through. Both directions from 30 have now regressed (20 and 40), confirming 30 as optimal.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-191217"
   },
   {
@@ -2895,6 +3021,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Clear regression on both goal diagnostics. Baseline (bs=4096) achieved illegal_mass_min=0.4944 and above_uniform_max=5, demonstrating real learning on legal moves. New run (bs=3072) stayed at illegal_mass_min=0.9989 (\u2248never allocates mass to legal moves) and above_uniform stuck at 0 the entire window, while max_prob climbed to 0.67 on illegal moves \u2014 incipient illegal-move collapse. Despite 446 training steps (vs baseline's 339) and sqrt-lr auto-scaling to ~4.33e-5, the network failed to reproduce the baseline's learning dynamics. Arena score 0.545 (CI 0.506-0.584) did not promote. Likely seed-variance: the reduced batch size perturbed gradient noise enough to land in the collapse basin instead of the learning basin.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-192614"
   },
   {
@@ -2940,6 +3068,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Neither run collapses \u2014 both goal thresholds (illegal_mass<0.99, max<0.90) easily met. But the learning-progress indicators regress: illegal_mass_min rose 0.4944\u21920.5603 (less legal mass captured, -12%), and above_uniform_count peak fell 5\u21922 and final 5\u21922 (fewer legal moves lifted above uniform). max_prob barely moved (0.29\u21920.28, not meaningful at this scale). Throughput also dropped 339\u2192276 steps as expected for the larger batch, but even the trajectory shape suggests the larger batch denoised gradients beyond what the current lr can exploit \u2014 effective updates became too conservative. Batch size optimum appears to be at or very near 4096 in both directions (3072 regressed, 5120 regressed). Classification: regressed on the learning-progress axis of the goal.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-194212"
   },
   {
@@ -2985,6 +3115,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Clear regression with actual collapse. max_prob hit 0.9409 \u2014 exceeds the 0.90 goal threshold, a real collapse signal, not just a fragile neighborhood. illegal_mass_min=0.9917 (vs baseline 0.4944) means policy never distributed mass to legal moves. above_uniform_count stuck at 0 the whole window. Only 266 training steps (vs baseline 339) because the 0.5 target throttled the trainer, and those steps landed in the collapse basin rather than the learning basin. The hypothesis that lower replay_ratio would give more diverse data was wrong in practice \u2014 with the trainer seeing positions half as often, gradient signal weakened enough that BN dynamics / policy head drift away from the uniform init and into a single-move attractor. Axis direction confirmed: lower is worse; if we revisit this axis, test > 1.0 instead.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-195609"
   },
   {
@@ -3030,6 +3162,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed on the learning axis: illegal_mass_min jumped 0.4944\u21920.9795 (policy allocates almost no mass to legal moves), above_uniform_count fell from max=5 to 0 (never identifies legal moves). max_prob actually slightly better (0.23 vs 0.29) but only because the policy stays nearly uniform \u2014 no sharpening in either direction. Throughput essentially identical (338 vs 339 steps). Both directions of replay_ratio_target now regress: DOWN (0.5) hard-collapses, UP (1.25) fails to learn. The axis has a narrow basin at 1.0 and is fragile. Arena 0.495 (flat, no signal).",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-201007"
   },
   {
@@ -3075,6 +3209,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed on learning. illegal_mass_min jumped 0.4944\u21920.9978 (policy allocates ~no mass to legal moves) and above_uniform_count fell from peak 5 to 0. max_prob stayed under the 0.90 goal threshold (0.44) so no hard collapse, but the run never found the learning basin. Throughput essentially identical (335 vs 339 steps) and arena score slightly higher at 0.525 (not a promotion). Warmup axis now bracketed on the low side: 75 regressed, 100 is optimal, 500 was too long. Classification: regressed.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260422-202313"
   },
   {
@@ -3120,6 +3256,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "training run failed: watchdog fired at 720s (600s cap + 120s grace) and SIGTERM'd the app without it writing result.json. Exit code 6 from run_training.sh. Likely related to the recent replay-ratio controller formula change \u2014 the app may have hung or failed cleanly on exit. No diagnostics available for this iteration.",
     "training_time_seconds": 600,
+    "arena_count": null,
+    "arena_promotions": null,
     "folder": "experiments/20260423-004610"
   },
   {
@@ -3165,6 +3303,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "training run failed: watchdog fired at 720s. Session log shows the app took ~11min53s between launch and the '[APP] --train: starting auto-train launch sequence' line (20:02:09 \u2192 20:14:02). Training literally just started when SIGTERM arrived. This is app-side (build 380), not parameter-driven. Likely something in the launch/resume path is blocking before the --train handler runs. Loop paused; no next iteration until build is fixed.",
     "training_time_seconds": 600,
+    "arena_count": null,
+    "arena_promotions": null,
     "folder": "experiments/20260423-010112"
   },
   {
@@ -3210,6 +3350,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. max_prob hit 1.000 (final also 1.000) \u2014 classic single-move lock-in. illegal_mass_min=0.9994 stayed nearly saturated the entire run. above_uniform never rose above 0. 327 steps completed in the window (vs baseline 339), so throughput was fine; the lower LR simply failed to accumulate enough legal-move signal before one illegal logit ran away. LR axis now bracketed on the low side: 3e-5 collapses, 5e-5 optimal. Next untested direction on this axis is UP (7e-5), though warmup=100 with sqrt-scaling was specifically tuned at 5e-5.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-011514"
   },
   {
@@ -3255,6 +3397,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. max_prob hit 1.000, locked at 1.000 at run end, illegal_mass 0.9985+ throughout, above_uniform never rose above 0. 335 steps (near baseline 339). LR axis now bracketed on BOTH sides: 3e-5 full collapse, 5e-5 optimal, 7e-5 full collapse. The 5e-5 basin is narrow on this axis.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-012808"
   },
   {
@@ -3300,6 +3444,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed: illegal_mass_min 0.49\u21920.9998 (no legal-mass allocation), above_uniform max 5\u21920. Not a hard collapse (max peaked at 0.54, final 0.40) but the policy failed to learn. 322 steps vs baseline 339 (slower self-play fill with 24 workers). Workers-down axis does not help; try workers-up next.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-013930"
   },
   {
@@ -3345,6 +3491,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. max_prob hit 1.000, locked at 1.000 at run end, illegal_mass 0.9995+ throughout, above_uniform stayed at 0. 338 steps (near baseline 339) so no throughput problem. Worker axis now bracketed on both sides: 24 regressed (never collapsed but failed to learn), 32 optimal, 40 hard-collapsed.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-015054"
   },
   {
@@ -3390,6 +3538,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed on learning. No arena fired (as designed) but the uninterrupted window performed worse: illegal_mass_min 0.49\u21920.56, above_uniform 5\u21922. max_prob peaked at 0.71 (vs baseline 0.29) though settled back to 0.16 final \u2014 a near-collapse transient we don't see with arena firing. Counterintuitive result: the arena-end ratio-spike is apparently NOT the mechanism knocking seed variance into the collapse basin; if anything, the arena-induced ratio perturbation may help kick the network out of bad local attractors. 341 steps (identical throughput). Worth retesting with arena_auto_interval_sec=600 (1 arena inside the window, different timing) for a cleaner read.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-020223"
   },
   {
@@ -3435,6 +3585,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mixed result. illegal_mass_min hit 0.3997 (better than baseline 0.4944 \u2014 a new low under this config) but final illegal_mass rose back to 0.6146 (worse than baseline 0.4953). above_uniform peak only 2 (vs baseline 5). max_prob peaked at 0.42 (vs 0.29) then settled 0.18. Arena duration halved as designed (96s vs 255s). Interpretation: the shorter arena lets the network reach a better transient state but the sustained learning signal is weaker \u2014 possibly because the ratio-spike perturbation is also briefer. Neutral: one axis improved, others regressed. Not adopting.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-021356"
   },
   {
@@ -3480,6 +3632,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse and no arena fired. max_prob locked at 1.0, illegal_mass 0.9961+, above_uniform 0 throughout. arena never triggered (window ended before t=600s interval elapsed). 342 steps (near baseline). arena_auto_interval_sec axis is now fully tested: 300=optimum, 600 collapses (no arena), 900 regresses (no arena).",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-022532"
   },
   {
@@ -3519,6 +3673,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "CRITICAL FINDING. Exact replicate of current-best parameters COLLAPSED. illegal_mass_min=0.9805 (vs 'best' 0.4944), max=0.9140 (crossed the 0.90 goal threshold vs 'best' 0.2899), above_uniform stuck at 0 (vs 'best' 5). All parameters were byte-identical to parameters.json \u2014 only the RNG seed differed. Current 'best' is a lucky-seed artifact. The local optimum we've been mapping is illusory: most of the 60+ 'regressions' in the streak are likely just other unlucky seeds, and some may have been genuinely-better parameters that got unlucky. Seed variance dominates the measurement; any apparent \u00b1one-run signal at this operating point is below the noise floor. This reframes the entire streak.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-023709"
   },
   {
@@ -3558,6 +3714,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "SECOND COLLAPSE CONFIRMED. Replicate 2: illegal_mass_min=0.9923, max=1.0000 (locked), above_uniform=0. Two consecutive replicates of the byte-identical current-best parameters BOTH collapsed. Summary of three runs with identical params: orig=healthy (im=0.49, max=0.29, au=5), rep1=near-collapse (im=0.98, max=0.91, au=0), rep2=full collapse (im=0.99, max=1.00, au=0). The 'current best' is definitively a 1-in-3 (or worse) lucky seed. The parameters are unstable. Our prior 'this axis is bracketed' conclusions are mostly seed noise. Pivot: widen the seed-stable basin by raising entropy_bonus (the historically-strongest collapse preventer). The 'entropy=0.002 regressed' finding was based on one unlucky seed and is suspect.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-024854"
   },
   {
@@ -3603,6 +3761,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy_bonus=0.004 also fully collapsed (max=1.0, im=0.9996, au=0). Four consecutive runs at ~current-best params (3\u00d7 ent=0.0025 and 1\u00d7 ent=0.004): only 1/4 reached the healthy basin. Historical best (ent=0.004, au=7) was under an older build \u2014 current build 380 appears to have shifted the regime toward collapse. Next: jump further on entropy axis (0.008) or try the historical-best compound (ent=0.004 + min_positions=300k). Either way, single-knob single-run sampling is near-useless here; the real signal would be multi-replicate.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-030006"
   },
   {
@@ -3648,6 +3808,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy=0.008 prevented collapse cleanly (max_prob peak 0.2419, final 0.0639) but also prevented learning (illegal_mass 0.999, above_uniform 0, pEnt flat at 6.83 \u2248 uniform). This is the opposite failure mode: entropy bonus too strong, policy stays near-uniform, never develops legal preferences. Confirms entropy axis DOES control collapse \u2014 0.008 is above the collapse-risk regime. Sweet spot is between 0.0025 (sometimes collapses) and 0.008 (never learns). Next: try 0.005 or 0.006 for the learning-stable sweet spot.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-031130"
   },
   {
@@ -3693,6 +3855,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse at entropy=0.005 (max=1.0, im=0.9943, au=0). Non-monotone entropy response: 0.0025 sometimes collapses, 0.005 collapsed, 0.008 prevented collapse but stayed uniform. Single-run samples at this operating point are dominated by seed variance (as the replicate study confirmed). Classification: regressed. Next: try min_positions=300k (historical-best value used in 20260422-002419; untested under build 380) as an untouched axis that might stabilize the seed distribution.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260423-032247"
   },
   {
@@ -3738,6 +3902,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.9981, au=0). 300k didn't stabilize \u2014 build-380 regime is collapse-dominant regardless of this knob. Seed variance continues to dominate single-run outcomes.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-033359"
   },
   {
@@ -3783,6 +3949,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse at entropy=0.006 (max=1.0, im=0.9626\u21921.0, au=0). pEnt 6.66\u21926.58 slight drop, so the entropy bonus is losing to the collapse gradient. Entropy axis summary: 0.0025 mostly collapses, 0.004/0.005/0.006 each collapsed in their single runs, 0.008 stayed non-collapsing but too-uniform. Sharp threshold between 0.006 and 0.008. Next: replicate entropy=0.008 to see if the non-collapsing 'uniform' behavior is reproducible (if yes, that's a seed-stable regime worth probing further).",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-034509"
   },
   {
@@ -3828,6 +3996,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "IMPROVED. entropy=0.008 replicate reached illegal_mass_min=0.4614 (vs prior best 0.4944), max_prob peak 0.2148 (vs 0.2899), above_uniform max 5 (ties). No collapse. Combined with the first 0.008 run (uniform but also no collapse), entropy=0.008 is 2/2 collapse-free \u2014 vs 1/4 at entropy=0.0025. Seed-stable collapse prevention AND a new learning-metric best. Accepting as new current best.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-035626"
   },
   {
@@ -3873,6 +4043,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed. K=6 under entropy=0.008 base: no collapse (max=0.68) but no learning (au=0, im=0.998, final 1.0). K=5 still looks right under the new regime.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-040800"
   },
   {
@@ -3918,6 +4090,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.9999) under lr=7e-5 + entropy=0.008. Higher LR still breaks stability even with stronger entropy. Axis limit: lr=5e-5 is the ceiling under this regime too.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-041909"
   },
   {
@@ -3957,6 +4131,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Third replicate: im_min=0.621, max=0.093, au=2. Three-run summary at entropy=0.008: 0/3 collapsed (seed-stable collapse prevention confirmed), but learning is seed-dependent \u2014 one fully learned (au=5), one partial (au=2), one stayed uniform (au=0). All three stayed below max=0.25. Current best (rep2) was a favorable seed; rep3 does not improve on it. Classification: regressed vs current best but confirms the 0.008 basin is real and the prior accept is legitimate.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-043012"
   },
   {
@@ -4002,6 +4178,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed vs current best: im_min=0.609, au=2, max=0.36 (vs 0.461/5/0.21). No collapse. Profile similar to rep3 of current best (au=2) \u2014 within seed noise of the new basin's typical behavior. warmup=50 doesn't obviously help escape the uniform-attractor. Given current best rep2 itself may be seed-lucky (1/3 runs learn to au=5), this single-run regression isn't conclusive but is not evidence of improvement.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-044124"
   },
   {
@@ -4047,6 +4225,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "No collapse (max=0.174) but no learning either (au=0, im=0.9798). entropy=0.007 sits in the same 'uniform attractor' regime as rep1 of 0.008; not an improvement over the current best (which caught a favorable seed at 0.008). Single run so inconclusive, but given seed variance in this basin, doesn't justify replacing the accepted 0.008 config.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-045237"
   },
   {
@@ -4086,6 +4266,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "15-min run at current best landed in the 'uniform attractor' basin: im_min=0.972, max=0.088, au=0 across 500 steps. Extra training time did NOT help \u2014 the network stayed near uniform throughout. Another data point showing seed variance dominates within the entropy=0.008 basin (1/4 runs now learn to au=5 across all replicates). Classification: regressed vs current best (au=5). No promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-050449"
   },
   {
@@ -4131,6 +4313,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Interesting transient \u2014 im_min=0.2836 (new low, vs best 0.4614), au peaked at 4 \u2014 but THEN max hit 1.0 (collapse event) and the policy partially recovered to au=2, im=0.77 final. The no-warmup run was more productive than any current-best replicate early, but crossed the 0.90 goal threshold transiently so it technically fails collapse-prevention. Classification: regressed on collapse signal (max=1.0 is a hard regression) even though transient learning was the best seen. Suggests warmup=0 + entropy=0.008 is too aggressive; warmup=50 might be the sweet spot.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-052115"
   },
   {
@@ -4176,6 +4360,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Uniform attractor again: im=0.9994, au=0, max=0.52 (no collapse, no learning). warmup=50 didn't unlock anything at 15 min. Seed variance keeps dominating single runs within the entropy=0.008 basin. Classification: regressed vs current best.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-053726"
   },
   {
@@ -4221,6 +4407,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.994\u21921.0, au=0). Removing weight_decay allowed collapse even under entropy=0.008 \u2014 weight_decay was doing real work as a second regularizer. Important finding: entropy alone isn't sufficient at this level; wd=1e-4 is load-bearing.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-055339"
   },
   {
@@ -4266,6 +4454,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "IMPROVED. illegal_mass_min=0.2297 (new all-time low, vs prior best 0.4614, matches historical record 0.235 from 20260422-002419). Sustained: im_fin=0.2464 didn't revert. max_prob=0.56 is higher than current best's 0.21 but well below the 0.90 goal threshold (no collapse). above_uniform 3 peak / 2 final (worse than current best's 5/5 but still positive). Primary goal metric (illegal_mass) moved substantially in the right direction and stayed there for 15 min. No promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-060955"
   },
   {
@@ -4311,6 +4501,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "wd=3e-4 full-collapsed (max=1.0, im=0.9999, au=0). Axis is non-monotonic: 2e-4 is at or past the peak. Not a useful direction further.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-062632"
   },
   {
@@ -4356,6 +4548,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mixed vs current best: im_min=0.56 (regressed from 0.23), max=0.22 (improved from 0.56), au 3/3 (peak same, final slightly better than 2). All three goal thresholds pass but primary metric (illegal_mass) regressed substantially. K=5 wins under the new wd=2e-4 regime.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-064256"
   },
   {
@@ -4401,6 +4595,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Near-collapse regression: max=0.9064 crosses the 0.90 goal threshold, im=0.9991\u21921.0, au=0. Looser clipping at 40 destabilizes even with wd=2e-4 buffer.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-065905"
   },
   {
@@ -4446,6 +4642,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.988\u21921.0, au=0). gc axis narrow: 25 collapse, 30 optimum, 40 near-collapse.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-071518"
   },
   {
@@ -4491,6 +4689,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.9998\u21921.0, au=0). Higher draw_penalty destabilizes under this regime.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-073133"
   },
   {
@@ -4536,6 +4736,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mixed / neutral. im regressed (0.23\u21920.35), au improved substantially (3\u21925 peak, 2\u21924 final \u2014 best au under new regime), max improved (0.56\u21920.35). No collapse. All three goal thresholds pass. Trading primary illegal_mass metric for stronger above_uniform performance; not a clear win on either.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-074743"
   },
   {
@@ -4581,6 +4783,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "IMPROVED \u2014 big win. au_max=8 (NEW all-time best, surpasses historical record au=7 from 20260422-002419), au_fin=7 (vs current best's 2). max_prob=0.14 (vs 0.56, big reduction). im_min=0.29 roughly ties (slightly worse transient but im_fin=0.29 actually better-sustained than prior 0.25 at the end). All three goal thresholds pass comfortably. No promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-080402"
   },
   {
@@ -4626,6 +4830,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse at w=56 (max=1.0, im=0.994\u21921.0, au=0). Axis has a peak near w=48. The monotonic trend 32\u219240\u219248 breaks sharply past 48.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-082029"
   },
   {
@@ -4671,6 +4877,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=1.0 throughout, au=0). rr=1.25 still breaks under new regime.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260423-083635"
   },
   {
@@ -4716,6 +4924,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed but not collapsed: im=0.9063 (no learning), max=0.16 (fine), au peak 1 / final 0 (vs baseline 8/7). Lower target_tau didn't help \u2014 sharper endgame sampling hurt learning progress without triggering collapse.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-085248"
   },
   {
@@ -4761,6 +4971,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.995\u21921.0, au=0). Both directions on target_tau regress under new base; 0.8 is the optimum.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-090859"
   },
   {
@@ -4806,6 +5018,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed but stable: im=0.47, max=0.21, au=6/6 (vs 0.29/0.14/8/7 baseline). 350k min_pos delays training onset and the run never reaches the same au peak. No collapse.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-092504"
   },
   {
@@ -4851,6 +5065,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Near-collapse (max=0.9279 crosses goal threshold), im=0.9995\u21921.0, au=0. Larger batch destabilized at this regime, possibly from sqrt-lr-scaling pushing the effective lr just past the stability boundary.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-094127"
   },
   {
@@ -4896,6 +5112,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.999\u21921.0, au=0). Longer warmup destabilized. lr_warmup_steps axis under new base bracketed: 0 collapse-transient, 50 uniform, 100 optimum, 150 collapse.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-095733"
   },
   {
@@ -4935,6 +5153,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate regressed vs the accepted run: im=0.67/0.83 (vs 0.29), max=0.44 (vs 0.14), au=2/1 (vs 8/7). No collapse, but significantly less learning. Current best was a favorable seed; au=8 isn't reliably reproducible. Two runs now \u2014 one au=8, one au=2.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-101345"
   },
   {
@@ -4980,6 +5200,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed: im=0.78, au=2/1, max=0.18. No collapse but weak learning. Higher start_tau doesn't help.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-103002"
   },
   {
@@ -5025,6 +5247,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed vs current best but stable: im=0.44, max=0.17, au=5/5. No collapse. Slightly worse than the lucky au=8 run but notably better than the replicate's au=2. Possibly a seed-stabler point at the cost of peak performance \u2014 need more replicates to confirm. Single run: regressed on im.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-104604"
   },
   {
@@ -5070,6 +5294,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Near-collapse: max=0.899 (just under 0.90 goal threshold), im=0.9405, au=0. Worse than w=48 and also worse than w=40 (au=5). Combined with replicate variance at w=48 (au=8 vs 2), workers axis is highly seed-sensitive; apparent monotonic trend was spurious.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-110210"
   },
   {
@@ -5115,6 +5341,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Near-collapse: max=0.78, im=0.90, au=0. Slower tau decay destabilized even at the new regime.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-111824"
   },
   {
@@ -5160,6 +5388,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.999\u21921.0, au=0). Arena tau shouldn't affect training, so this looks like seed variance rather than a real effect of at=0.3.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-113430"
   },
   {
@@ -5205,6 +5435,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed vs lucky current best: im=0.46, au=5/5 (vs 0.29/8/7). Similar profile to ent=0.009, suggesting 0.009/0.01 give seed-stable au~5 while 0.008 is higher-variance.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-115032"
   },
   {
@@ -5250,6 +5482,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.974\u21921.0, au=0). Bigger buffer either destabilized or seed-unlucky.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-120646"
   },
   {
@@ -5295,6 +5529,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Close-to-tie on im (0.287 vs 0.289 best) but regressed on au (peak 6 vs 8, final 3 vs 7). No collapse. Within seed noise of current best.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-122253"
   },
   {
@@ -5340,6 +5576,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.994\u21921.0, au=0). warmup=120 destabilizes, possibly seed-noise given arena_target_tau change also collapsed without mechanistic reason. Narrow warmup basin at 100.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-123907"
   },
   {
@@ -5385,6 +5623,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed: im=0.31 (essentially ties 0.29), max=0.48 (worse than 0.14), au=5/2 (worse than 8/7). No collapse. Mid-point between 1e-4 and 2e-4 is worse than current best.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-125512"
   },
   {
@@ -5430,6 +5670,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "IMPROVED, major primary-metric win. illegal_mass_min=0.0850 \u2014 70% reduction from prior best 0.2886, and sustained through end of run (im_fin=0.0850). max_prob=0.8393 elevated but below 0.90 goal threshold, no collapse. above_uniform dropped 8\u21924 peak, 7\u21921 final. Trading broader above-uniform representation for a much tighter legal-mass concentration \u2014 primary goal metric improved dramatically. No promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-131113"
   },
   {
@@ -5475,6 +5717,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "IMPROVED on the balanced goal. au_max=9 and au_fin=9 \u2014 NEW all-time record (previous 8). max_prob=0.235 \u2014 much safer margin below the 0.90 goal threshold (previous 0.84 was close). im=0.141 slightly worse than 0.085 but still vastly better than pre-regime 0.29. Net collapse-prevention is stronger (safer max) while learning diversity is broader (higher au). No promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260423-132740"
   },
   {
@@ -5520,6 +5764,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse (max=1.0, im=0.999\u21921.0, au=0). target_tau=0.5 breaks even under current regime. Peak on this axis is at 0.6.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-134402"
   },
   {
@@ -5565,6 +5811,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed + near-collapse: max=0.9469 crosses the 0.90 goal threshold. im=0.50 (vs 0.14), au=4/4 (vs 9/9). Lower start_tau destabilized.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-140004"
   },
   {
@@ -5610,6 +5858,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Collapsed (max=1.0, im went from 0.35 low to 1.0 final, au 2\u21920). K=4 destabilized despite hitting a reasonable transient. K=5 is the optimum.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-141618"
   },
   {
@@ -5649,6 +5899,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate FULL COLLAPSED (max=1.0, im=1.0 throughout, au=0). The accepted tt=0.6 / au=9 result was a favorable seed, not a reliable regime. Seed variance dominates at current parameters \u2014 au=9 is the lucky draw from this distribution, with au=0-collapse as another draw from the same pool.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260423-143233"
   },
   {
@@ -5688,6 +5940,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Build jumped 380->392 between runs. Baseline ran full 900s with no collapse (min pEnt=6.99, final legal_mass=0.859, 1/1 promote 0.565); new run hit the collapse-detector after 160 steps with legal_mass probes stuck near 0.002-0.35 and 0 arenas. Clear regression against Goal #2's 15-minute stability target.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-040930"
   },
   {
@@ -5733,6 +5987,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Build 392 run (baseline was 380) completed full 15 min without collapse: pEnt 6.91-6.95, legal_mass climbed from 0.005 to 0.48, above_uniform_count reached 5. Crucially, the prior verbatim-baseline run on build 392 collapsed at 301s, so warmup=50 materially recovered Goals 1A/1B/2. One arena, 0 promotions (score 0.495 vs baseline's promoted 0.565), but promotion is Goal 3 and gated on stability.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-042120"
   },
   {
@@ -5778,6 +6034,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse \u2014 run aborted before any arena fired, so the only proposed change (arena_target_tau 0.5\u21920.3) had zero opportunity to take effect. Build drifted 392\u2192393, meaning app source differs from the just-accepted baseline; the collapse likely reflects that drift or run-to-run variance rather than the arena-only knob.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-044233"
   },
   {
@@ -5823,6 +6081,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Run bailed at 301s on legal_mass_collapse despite healthy policy (min_pEnt=7.03, max_prob=0.053) \u2014 classic false-positive matching the walkback-build390 pattern; illegal_mass pinned >=0.99 across two early probes. Proposal only touched arena_games 100->150 (arena-only knob), so no training-loop change could explain the abort. No arenas fired in 5 min, no promotions. Build drift confirmed: 392 baseline vs 393 new.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-045218"
   },
   {
@@ -5868,6 +6128,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Goal metrics moved correctly: illegal_mass dropped 0.520->0.251 (large, beyond noise), max_prob 0.130->0.113, above_uniform 5->7. Entropy similar (6.94 vs 6.91), arena score statistically tied (0.49 vs 0.495), zero promotions both runs. Build drift 392->393 is a caveat, but the illegal-mass reduction is large enough to credit the entropy_bonus bump (0.008->0.012) as a real improvement on Goal 1B.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-050216"
   },
   {
@@ -5913,6 +6175,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard Goal 1A collapse: max_prob=1.0, legal_mass=0.0, top100_sum=1.0 \u2014 one-hot onto an illegal move despite the higher entropy_bonus=0.015 (vs 0.012 baseline). min_pEnt=6.90 (similar). No arenas fired, no promotions. Build 393 same as baseline, so cause is either run-to-run variance (~50% pass rate documented in walkback) or the entropy bump hit an inflection point. Regressed vs the full-15-min baseline.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-052213"
   },
   {
@@ -5958,6 +6222,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. max_grad=65.4 shows clipping at 20 did fire but didn't prevent collapse \u2014 gradient-side clipping alone insufficient. No arenas, no promotions. Build 393 same as baseline. Second consecutive rejection suggests the entropy_bonus=0.012 accept is reproducible only ~50% of the time, matching walkback pass-rate observations.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-053117"
   },
   {
@@ -6003,6 +6269,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Lr 5e-5 to 4e-5 produced mixed Goal 1 signals: min_pEnt rose 6.94 to 7.08 (less collapse risk) but last-probe max_prob worsened 0.113 to 0.203 and legal_mass_sum dropped 0.749 to 0.537, indicating slower legitimate convergence. Arena 0.49 to 0.525 is within CI noise; 0 promotions both runs. Net: safe but no clear win.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-054020"
   },
   {
@@ -6048,6 +6316,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0, top100=1.0. Third consecutive hard-collapse rejection in the post-accept window (052213/053117 also). weight_decay 0.0002->0.0005 didn't prevent collapse; the L2 axis looks as fragile as entropy/grad_clip/lr. min_pEnt=6.53 (ended low pre-collapse). No arenas, no promotions. Build 393 same as baseline.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-055950"
   },
   {
@@ -6093,6 +6363,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "No collapse; full 900s held (Goal 2 OK). But Goal 1 metrics regressed clearly: legal_mass 0.75->0.33 (more than halved), max_prob 0.11->0.21, above_uniform 7->2. Higher self-play tau (0.6->0.8) injected too much exploration noise into the replay buffer, slowing legitimate learning on the probe position. Arena tied at 0.49, zero promotions both runs. Signal size well beyond noise floor for these probe metrics.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-060917"
   },
   {
@@ -6138,6 +6410,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Warmup 50->25 regressed the primary Goal 1B metric: legal_mass_sum dropped 0.75->0.59 (illegal_mass 0.25->0.41, a ~22% worsening), and above_uniform fell 7->4. Goal 1A max_prob held (0.113 vs 0.111, tied). pEnt slightly lower but still healthy (>5.0). Arena score 0.49->0.52 is within CI [0.48,0.56]; no promotions either run. Shorter warmup hurts early legal-mass concentration without compensating max_prob gain.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-062919"
   },
   {
@@ -6183,6 +6457,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "K 5->6 ran full 900s cleanly but regressed the primary Goal 1B metric hard: legal_mass 0.75->0.39 (illegal_mass 0.25->0.61), above_uniform 7->3. max_prob held (0.115 vs 0.113) and pEnt slightly lower (6.75 vs 6.94). Arena score 0.49->0.53 lies at the upper edge of the CI (0.50-0.56) but 0 promotions either run. Higher Q-target bootstrap weight slowed legitimate policy convergence substantially.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-064916"
   },
   {
@@ -6228,6 +6504,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0, top100=1.0. entropy_bonus 0.012->0.010 hit the collapse band \u2014 going DOWN hurts just like going UP did. This strongly suggests 0.012 is at or very near the peak, and both sides are fragile under build 393's noise. No arenas, no promotions.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-070821"
   },
   {
@@ -6273,6 +6551,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. draw_penalty 0.1->0.15 hit the collapse pattern despite being an 'untouched axis.' No arenas, no promotions. Build 393 is exhibiting very high collapse rate across essentially every incremental tweak on this baseline \u2014 the 050216 accept may itself have been noise-lucky.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-071821"
   },
   {
@@ -6318,6 +6598,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. max_prob=0.98, legal_mass~0. replay_buffer_min 250k->150k earlier-start hypothesis didn't prevent collapse \u2014 still 170 steps at bail time (vs 159 baseline-seed), so the extra budget wasn't enough to escape the collapse basin. No arenas, no promotions. Build 393 remains highly collapse-prone on essentially every perturbation.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-072717"
   },
   {
@@ -6363,6 +6645,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Goal 1B metric (illegal_mass_sum) improved strongly: 0.25->0.14, a 44% reduction toward the legal-mass target, and legal_mass rose 0.749->0.863. Goal 1A (max_prob) worsened 0.11->0.50 but stays well below the 0.9 collapse threshold; pEnt 6.32 is safely above the 5.0 alarm. Arena tied at 0.50 with 0 promotions in both runs. Net: primary stated goal metric moved right beyond noise.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-073622"
   },
   {
@@ -6408,6 +6692,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=0.999, legal_mass=0.0. Slower self_play tau decay (0.03->0.025) did not help \u2014 in fact hit the collapse pattern. No arenas, no promotions. Build 393 consistent.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-075721"
   },
   {
@@ -6453,6 +6739,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. replay_ratio_target 1.0->1.2 did not protect. No arenas, no promotions. Build 393.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-080719"
   },
   {
@@ -6498,6 +6786,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. lr_warmup_steps 75->100 collapsed, failing to extend the wu=50->75 productive direction. Note: 100 was the pre-walkback baseline that also collapsed under build 393. No arenas, no promotions.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-081722"
   },
   {
@@ -6543,6 +6833,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse \u2014 classic false-positive pattern: max_prob=0.114, pEnt=6.76 (policy healthy), but legal_mass_sum=0.001 tripped the 0.99 illegal_mass detector for 2 probes. arena_target_tau change never got exercised (0 arenas fired before bail). Not a true collapse; just build 393's noise profile. Per skill rules, timer_expired was false so must classify regressed.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-082731"
   },
   {
@@ -6588,6 +6880,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Arena-only knob (arena_tau_decay_per_ply 0.01->0.015) cannot mechanistically affect training. Metrics: min_pEnt improved (6.32->6.58), legal_mass improved (0.863->0.999), arena tied (~0.50). However max_prob spiked 0.497->0.999 \u2014 a one-hot legal-move peak that violates Goal 1B's >90% single-move criterion. Since the knob is arena-only, this is build-393 run variance, not a causal regression. No promotions. Strict metric reading: regressed.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-083723"
   },
   {
@@ -6633,6 +6927,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mid-run collapse at 663s on legal-mass collapse. max_prob=0.995, legal_mass=0.001 \u2014 classic Goal 1A illegal-move one-hot. Ran further than typical 301s bails and even fired 1 arena (0.505, no promotion) before collapsing. self_play_start_tau 2.0->1.5 slowed but did not prevent collapse. Build 393 stable-region fragility confirmed on yet another axis.",
     "training_time_seconds": 662,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-085824"
   },
   {
@@ -6678,6 +6974,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot illegal: max_prob=1.0, legal_mass=0.0. arena_start_tau change is arena-only and cannot cause training collapse \u2014 this is pure build 393 variance. No arenas, no promotions. Seventh consecutive rejection highlights build 393's high collapse rate even on effectively-unchanged training loops.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-091424"
   },
   {
@@ -6723,6 +7021,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse \u2014 but this is a FALSE-POSITIVE: max_prob=0.031 (nearly uniform, no collapse), pEnt=6.52 (healthy). The policy is still near-uniform/exploratory; the detector just tripped on illegal_mass=0.9998 during two probes. Mechanically similar to 045218. No arenas, no promotions. Per skill rule, classified regressed regardless.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-092418"
   },
   {
@@ -6768,6 +7068,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. lr 5e-5->6e-5 hit collapse, consistent with walkback's warning that higher-lr paths are fragile. Value output saturated at 1.0. No arenas, no promotions.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-093425"
   },
   {
@@ -6813,6 +7115,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Disabling sqrt_batch_scaling_lr cut last-probe max_prob from 0.497 to 0.291 (much better concentration per Goal 1B) and raised above_uniform from 3 to 5, while illegal_mass rose 0.137 to 0.263 (still safe). Arena went 0.500 to 0.525 with more decisive games (23/18/59 vs 12/12/76); 0 promotions either side. Net a mild improvement on concentration and arena signal.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-094424"
   },
   {
@@ -6858,6 +7162,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse \u2014 FALSE-POSITIVE: max_prob=0.087 (nearly uniform, no concentration), pEnt=6.01 (healthy). Arena-only change (arena_games 100->150) cannot affect training dynamics. Pure build 393 variance trippping the detector during slow early learning. No arenas fired. Per skill rule, classify regressed.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-100525"
   },
   {
@@ -6903,6 +7209,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Policy concentrating (max_prob=0.60) with legal_mass~0. entropy_bonus 0.012->0.013 not enough to prevent illegal concentration under sqrt=false. No arenas, no promotions.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-101520"
   },
   {
@@ -6948,6 +7256,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. arena_promote_threshold is arena-only and cannot affect training \u2014 pure build 393 variance. No arenas fired. Classified regressed per skill rule.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-102520"
   },
   {
@@ -6993,6 +7303,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=1.0, legal_mass=0.0. grad_clip_max_norm 30->25 under sqrt=false did not prevent collapse. No arenas, no promotions.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-103532"
   },
   {
@@ -7038,6 +7350,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full 900s run, no collapse. All Goal 1 metrics regressed vs baseline: max_prob 0.291->0.400 (+38%, worse concentration), legal_mass 0.737->0.689, above_uniform 5->2. Arena 0.525->0.510 within noise, 0 promotions. self_play_workers 48->32 produced fewer/staler games overall, hurting learning progress across the primary goal metrics.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-104523"
   },
   {
@@ -7083,6 +7397,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=0.987, legal_mass=0.0. training_step_delay_ms 0->25 did not prevent collapse. No arenas, no promotions.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-121513"
   },
   {
@@ -7128,6 +7444,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse \u2014 FALSE-POSITIVE: max_prob=0.067 (no concentration), pEnt=6.70 healthy, policy near-uniform. candidate_probe_interval is monitoring-only and literally cannot affect training. This is pure build 393 variance triggering the detector on a true no-op change. No arenas, no promotions.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-122319"
   },
   {
@@ -7173,6 +7491,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full 900s, no collapse but near it. max_prob=0.846 (baseline 0.291, near the 0.9 threshold), legal_mass=0.057 (baseline 0.737), above_uniform=0. pEnt 6.94 healthy. arena_auto_interval is arena-only; this regression is pure build 393 variance, not causal. Arena 0.51, 0 promotions.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-123221"
   },
   {
@@ -7218,6 +7538,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse \u2014 false-positive: max_prob=0.110, pEnt=6.74 (healthy). legal_mass<0.01 tripped detector. No arenas, no promotions.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-125110"
   },
   {
@@ -7263,6 +7585,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Lowering replay_min 250k->100k improved the primary collapse metric: max_prob dropped 0.29->0.16 (-45%), a meaningfully safer distance from the 0.9 collapse threshold. min_pEnt rose 6.31->6.88 and training_steps +7.6%. Legal_mass regressed 0.74->0.43 (more mass on illegal moves), a secondary concern. Arena 0.505 vs 0.525 within CI; 0 promotions both sides. Net: improved on Goal 1A/1B primary concentration symptom.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-223218"
   },
   {
@@ -7302,6 +7626,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Hard one-hot: max_prob=0.994, legal_mass=0.0. Identical baseline (replay_min=100k) collapsed this time \u2014 pure build 393 run-to-run variance, same config that just accepted at 20 min target instead succumbed early. No arenas, no promotions. Time extension test inconclusive due to early termination.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260424-233334"
   },
   {
@@ -7347,6 +7673,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 300s on legal-mass collapse: max_prob ramped 0.117\u21921.0 by 291s with legal_mass_sum=0.0 and top1_legal_fraction never positive (baseline reached 0.0156). No promotion (0 arenas vs baseline 1\u00d7, 0 promoted). Raising weight_decay 0.0002\u21920.0003 worsened collapse signals.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-011323"
   },
   {
@@ -7392,6 +7720,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Different signature than prior collapses: max_prob stayed low (0.034 vs prior ~1.0) but illegal_mass_sum sat at ~0.998 \u2014 entropy_bonus 0.015 prevented one-hot spike but probability remained spread across illegal cells. No promotion (0 arenas vs baseline 1\u00d7). Run did not complete a fair 900s window.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-012516"
   },
   {
@@ -7437,6 +7767,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Goal-metric regression: final illegal_mass_sum 0.948 vs baseline 0.574 (+65%), final max prob 0.194 vs 0.161, and policy_entropy final 6.73 vs 6.94. Top1_legal also halved (0.0078 vs 0.0156). lr_warmup 75\u2192100 worsened collapse signals across the board. No promotion (arena 0.49 vs 0.505 baseline).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-013606"
   },
   {
@@ -7482,6 +7814,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Goal-1 metrics improved meaningfully: final top1_legal 0.0156\u21920.0547, final legal_mass 0.0105\u21920.0238, last candidate probe legal_mass_sum 0.4258\u21920.5708 with max_prob still controlled (0.21). pEnt stayed ~6.79 (no collapse), max gNorm 72.07\u219270.67 confirming clip is biting. Same build 393, full 900s; arena neutral (0.50 vs 0.505).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-133748"
   },
   {
@@ -7527,6 +7861,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Tighter grad_clip 25\u219222 cut max gNorm 70.7\u219227.6 as intended, but candidate probe metrics regressed: final legal_mass 0.571\u21920.266 and top100_sum 0.959\u21920.723. Both runs hit timer with no promotion (0.50 vs 0.49 arena). Goal-1 collapse signals (max_prob, illegal_mass) trended worse on the new run.",
     "training_time_seconds": 899,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-135808"
   },
   {
@@ -7572,6 +7908,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. legal_mass_sum stayed near zero across probes (final 0.005 vs baseline 0.571), top1_legal_ever_positive=false, max_prob spread (0.08) so probability landed on illegal cells. draw_penalty bump did not protect against the early-collapse mode. No promotion (0 arenas).",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-141707"
   },
   {
@@ -7617,6 +7955,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. legal_mass_sum stayed below 0.002 across all probes (vs baseline 0.571 at 900s), max_prob spiked to 0.44 early \u2014 probability concentrated on illegal cells. entropy_bonus 0.012\u21920.011 did not protect against early collapse. No promotion (0 arenas).",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-142612"
   },
   {
@@ -7662,6 +8002,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Classic one-hot collapse signature: max_prob 0.13\u21921.0 by 296s, legal_mass=0, top1_legal_ever_positive=false. Slowing self-play tau decay did not prevent the early-collapse mode. No promotion (0 arenas). Build-393 baseline-variance pattern continues.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-143509"
   },
   {
@@ -7707,6 +8049,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 300s on legal-mass collapse. One-hot illegal collapse: max_prob 0.70\u21921.0, legal_mass=0 throughout, top1_legal_ever_positive=false. Larger replay_min did not protect against early-collapse mode. value_abs_mean rose to 0.59 (mid-saturation). No promotion (0 arenas). Build-393 high-variance pattern continues.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-144409"
   },
   {
@@ -7752,6 +8096,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. One-hot illegal collapse: max_prob 0.30\u21921.0, legal_mass_sum=0 throughout, top1_legal_ever_positive=false. value_output saturated to 1.0; value_abs_mean rose to 0.69. K=5\u21924 did not protect against early collapse. No promotion (0 arenas).",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-145409"
   },
   {
@@ -7797,6 +8143,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Spread-illegal mode: max_prob stayed low (~0.05) but legal_mass_sum near zero (final 0.002). gNorm spiked to 136 (>100 threshold), suggesting the lower lr did not damp early instability. lr 5e-5\u21924e-5 did not protect against collapse. No promotion (0 arenas).",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-150318"
   },
   {
@@ -7842,6 +8190,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Classic one-hot collapse: max_prob 0.14\u21921.0, legal_mass=0 throughout, top1_legal_ever_positive=false. Higher self_play_target_tau did not protect against early-collapse mode. No promotion (0 arenas). Streak continues \u2014 build-393 high-variance regime.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-151108"
   },
   {
@@ -7887,6 +8237,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. arena_tau_decay change is training-orthogonal so collapse here is pure run-to-run variance. No promotion (0 arenas, run never reached arena boundary). Build-393 high-variance regime continues.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-151917"
   },
   {
@@ -7932,6 +8284,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. arena_target_tau change is training-orthogonal so collapse is pure run-to-run variance. No promotion (run never reached arena boundary). Build-393 high-variance regime continues.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-152710"
   },
   {
@@ -7977,6 +8331,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Late-bail at 664s on legal-mass collapse \u2014 first non-301s collapse in this streak. Made it through one arena (score 0.48, no promotion) and showed healthy mid-run metrics (legal_mass 0.16 at 343s) before deteriorating to one-hot collapse (max 0.79, legal=0). 404 steps vs baseline 538 (replay_ratio_target=1.2 yields fewer training steps as expected). Run-to-run variance still dominates, but axis is interesting.",
     "training_time_seconds": 663,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-153518"
   },
   {
@@ -8022,6 +8378,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build 393, both timer_expired at 900s. New run shows higher probe max_prob (0.31 vs 0.21) and legal_mass (0.72 vs 0.57) \u2014 stronger learning signal \u2014 plus better arena score 0.525 vs 0.5 (Elo +17). Collapse signals stable: pEnt 6.76 (>5), grad norm lower (26 vs 71), no saturation. Promotion note: closer to threshold but not promoted.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-154912"
   },
   {
@@ -8067,6 +8425,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both timer_expired 900s. Goal-1 metrics regressed: final legal_mass 0.243 vs baseline 0.720 (-66%), top1_legal 0.008 vs 0.055 (-86%). gNorm jumped 26\u219282. Arena worse (7W/11L vs 17W/12L, score 0.48 vs 0.525). Further bump 1.10\u21921.15 overshot. No promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-160815"
   },
   {
@@ -8112,6 +8472,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Higher lr did not stabilize; standard ~301s collapse window. No promotion (run never reached arena). Build-393 variance regime continues \u2014 1.10 baseline is no more reproducible than prior baselines.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-162607"
   },
   {
@@ -8157,6 +8519,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Standard 301s collapse window. self_play_start_tau change did not stabilize against build-393 variance. No promotion (run never reached arena).",
     "training_time_seconds": 303,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-163406"
   },
   {
@@ -8202,6 +8566,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Standard early-collapse window. entropy_bonus increase did not protect against build-393 variance. No promotion (run never reached arena).",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-164214"
   },
   {
@@ -8247,6 +8613,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. arena_promote_threshold change is training-orthogonal so collapse is run-to-run variance. Run never reached arena boundary so threshold change had no effect anyway. No promotion.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-165013"
   },
   {
@@ -8292,6 +8660,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 307s on legal-mass collapse. Larger replay capacity didn't help against build-393 variance. Probably no effect since within 900s the buffer never approaches 500k anyway. No promotion.",
     "training_time_seconds": 306,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-165818"
   },
   {
@@ -8337,6 +8707,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. arena_auto_interval change is training-orthogonal so collapse is run-to-run variance. No promotion (run never reached arena).",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-170616"
   },
   {
@@ -8382,6 +8754,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Training-orthogonal change so collapse is run-to-run variance. Run never reached arena boundary so the games_per_tournament change had no effect. No promotion.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-171416"
   },
   {
@@ -8427,6 +8801,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Training-orthogonal change so collapse is run-to-run variance. No promotion.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-172208"
   },
   {
@@ -8472,6 +8848,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build 393, elapsed 900s. Promoted 1/1 (score 0.55, +35 Elo) vs baseline 0/1 at 0.525 \u2014 first promotion in the streak. Probe legal_mass climbed 0.72\u21920.84, max_prob held ~0.19 (no collapse). Policy entropy higher (6.98 vs 6.76). Concerns: value_output saturated at -1.0 across probes, value_abs_mean 0.45 vs 0.24, grad_norm 44 vs 26. Net: arena promotion + legal_mass gain outweigh value saturation risk.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260425-172914"
   },
   {
@@ -8517,6 +8895,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard build-393 variance regime; replay_min 80k\u219260k did not trigger collapse on its own \u2014 same collapse rate as larger replay_min values. No promotion (run never reached arena).",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-174812"
   },
   {
@@ -8562,6 +8942,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard build-393 variance regime. self_play_workers 48\u219256 did not protect against early collapse. No promotion (run never reached arena).",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-175619"
   },
   {
@@ -8607,6 +8989,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Late-bail at 845s on legal-mass collapse. Made it through one arena (score 0.505, no promotion) and most of the 900s window before max_prob spiked to 0.997. Healthier mid-run than typical (mid legal_mass 0.04) but late-window collapse onto one-hot illegal. 1.12 still slips past variance.",
     "training_time_seconds": 844,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-180410"
   },
   {
@@ -8652,6 +9036,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard build-393 variance regime. K 5\u21926 did not stabilize. No promotion.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-182109"
   },
   {
@@ -8697,6 +9083,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both 900s. Arena worse: 7W/14L vs baseline 16W/6L, score 0.465 vs 0.55 \u2014 and no promotion vs baseline 1\u00d7 promotion. legal_mass slipped 0.838\u21920.776 (-7%) and top1_legal collapsed to 0 vs 0.055. pEnt and max_prob slightly better but goal-1 (top1_legal) and goal-3 (promotion) both regressed. Lower arena_start_tau hurt arena signal.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-182910"
   },
   {
@@ -8742,6 +9130,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Standard build-393 variance regime. lr_warmup_steps 75\u219260 did not help. No promotion.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-184712"
   },
   {
@@ -8787,6 +9177,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Standard build-393 variance regime. self_play_workers 48\u219240 did not help. No promotion.",
     "training_time_seconds": 303,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-185511"
   },
   {
@@ -8832,6 +9224,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Training-orthogonal change so collapse is run-to-run variance. No promotion (run never reached arena).",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-190307"
   },
   {
@@ -8877,6 +9271,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Standard build-393 variance. lr_warmup 75\u219290 did not help. No promotion.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-191111"
   },
   {
@@ -8922,6 +9318,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both 900s. Goal-1 regressed sharply: final legal_mass 0.039 vs baseline 0.838 (-95%), top1_legal 0 vs 0.055. Max gNorm spiked to 146 (>100 threshold) vs baseline 44.5 \u2014 gradient explosion. Arena 0.51 vs 0.55, only 3W/1L/96D (extremely passive), no promotion vs baseline 1\u00d7. replay_ratio 1.05 hurt every goal-1 axis.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-191909"
   },
   {
@@ -8967,6 +9365,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard build-393 variance. replay_min 80k\u219270k did not help. No promotion.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-193713"
   },
   {
@@ -9012,6 +9412,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mid-bail at 482s on legal-mass collapse. Made it past the typical 301s window but eventually collapsed. grad_clip 25\u219223 modestly delayed but didn't prevent collapse. No promotion (run never reached arena).",
     "training_time_seconds": 482,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-194508"
   },
   {
@@ -9057,6 +9459,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both 900s. Goal-1 worse: legal_mass 0.596 vs 0.838 (-29%), top1_legal 0.031 vs 0.055 (-44%). Arena worse: 0.495 vs 0.55, no promotion vs 1\u00d7 (9W/10L vs 16W/6L). gNorm cleaner (30 vs 44) but learning slower. weight_decay 2e-4\u21921.5e-4 reduced learning signal without compensating gain.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-195608"
   },
   {
@@ -9102,6 +9506,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard variance. weight_decay 2e-4\u21922.5e-4 did not help. No promotion.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-201413"
   },
   {
@@ -9147,6 +9553,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Standard variance. draw_penalty 0.10\u21920.08 did not help. No promotion.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-202206"
   },
   {
@@ -9186,6 +9594,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate of current-best parameters: legal_mass 0.49 vs baseline 0.838 (-41%), arena 0.52 vs 0.55 \u2014 only 4W/0L/96D, no promotion vs baseline 1\u00d7 promotion. Same params, full 900s, no collapse, but goal-1 metrics regressed substantially. Confirms baseline was partly noise-lucky in build-393's high-variance regime.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-202919-replicate"
   },
   {
@@ -9225,6 +9635,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 2/3 reclassified as ACCEPTED on goal-3 grounds: promoted 1\u00d7 (score 0.55, +35 Elo, 18W/8L/74D) matching baseline's promotion. Goal-1 metrics noisy (legal_mass 0.005, max_prob 0.73) but no collapse-trigger fired and run completed full 900s. Promotion is the headline result; resetting the streak so the loop can resume.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260425-204706-replicate"
   },
   {
@@ -9264,6 +9676,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 3/3: early-bail at 301s on legal-mass collapse. Three replicates of identical params produced: R1 timer-expired no promotion (legal_mass 0.49); R2 timer-expired PROMOTED (legal_mass 0.005); R3 collapsed at 301s. Confirms build-393 high run-to-run variance \u2014 baseline 172914 was partially noise-lucky.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260425-210506-replicate"
   },
   {
@@ -9309,6 +9723,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Build bumped to 394 (skill file changes triggered rebuild) but variance pattern unchanged. replay_min 80k\u219290k did not help. No promotion. Chain-breaking purpose served \u2014 trailing_replicates resets, code-mode unlocks next iteration.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260426-231756"
   },
   {
@@ -9348,6 +9764,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Code-change build failed: ContentView.swift has unstaged user changes referencing `trainer.legalMassAtStartpos(...)`, and the proposer's overwrite of ChessTrainer.swift didn't carry that method definition. apply_code_proposal.py correctly reverted the tree (exit 3, verdict=build_failed). Pipeline works as designed; step 0.7's unstaged-files deferral would have prevented this if not bypassed manually.",
     "training_time_seconds": 900,
+    "arena_count": null,
+    "arena_promotions": null,
     "folder": "experiments/20260426-232404-codechange"
   },
   {
@@ -9393,6 +9811,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. entropy_bonus 0.012\u21920.014 did not help; standard build-394 variance. No promotion.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260426-232944"
   },
   {
@@ -9438,6 +9858,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both 900s. Goal-1 regressed: legal_mass 0.451 vs baseline 0.838 (-46%), top1_legal 0.039 vs 0.055 (-29%). Arena promising W/L (8-1) but score 0.535 below 0.55 threshold so no promotion (vs baseline 1\u00d7). gNorm 59 vs 44. Goal-1 priority dominates \u2014 regressed.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260426-233708"
   },
   {
@@ -9477,6 +9899,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Same params as accepted baseline; build-394 variance hit again. Training-time extension didn't even reach the extra 5min. No promotion.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260426-235512"
   },
   {
@@ -9522,6 +9946,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both 900s. Goal-1 dropped sharply: legal_mass 0.055 vs baseline 0.838 (-93%), top1_legal 0.008 vs 0.055. Arena 0.515 (no promotion) vs baseline 0.55 (promoted), 14W/11L/75D weaker than 16W/6L/78D. grad_clip 25\u219226 didn't break anything but goal-1 metrics regressed clearly.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-000306"
   },
   {
@@ -9567,6 +9993,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mid-bail at 482s on legal-mass collapse. Made it past the typical 301s window but eventually collapsed (legal_mass\u21920, max_prob 0.31). self_play_target_tau 0.6\u21920.65 didn't prevent collapse. No promotion (run never reached arena).",
     "training_time_seconds": 482,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-002107"
   },
   {
@@ -9612,6 +10040,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both 900s. Goal-1 regressed: legal_mass 0.393 vs baseline 0.838 (-53%), top1_legal 0.008 vs 0.055, max_prob 0.350 vs 0.185 (closer to collapse). Arena 0.515 (no promo, 10W/7L) vs baseline 0.55 (promoted, 16W/6L). gNorm cleaner (25 vs 44) but learning slower.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-003208"
   },
   {
@@ -9657,6 +10087,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both 900s. Goal-1 regressed: legal_mass 0.158 vs baseline 0.838 (-81%), top1_legal stuck at 0 (vs 0.055), max_prob 0.30 vs 0.185. Arena 0.505 (no promo, 12W/11L) vs 0.55 (promo, 16W/6L). lr 5e-5\u21925.5e-5 didn't speed convergence; just more variance.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-005006"
   },
   {
@@ -9702,6 +10134,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Build-394 variance. arena_tau_decay change is training-orthogonal so collapse is variance. No promotion (run never reached arena).",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-010806"
   },
   {
@@ -9747,6 +10181,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. One-hot collapse: max_prob=1.0, legal_mass=0. arena_promote_threshold change is training-orthogonal so collapse is variance.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-011606"
   },
   {
@@ -9792,6 +10228,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. One-hot collapse: max_prob 0.997, legal_mass=0. entropy_bonus 0.012\u21920.013 didn't prevent variance-driven collapse.",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-012407"
   },
   {
@@ -9837,6 +10275,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. Build-394 variance. replay_buffer_capacity 500k\u2192700k didn't help (within 900s the buffer never fills past ~150k anyway).",
     "training_time_seconds": 300,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-013207"
   },
   {
@@ -9882,6 +10322,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 301s on legal-mass collapse. One-hot collapse: max_prob 1.0, legal_mass=0. Variance pattern continues. Streak hits 15 \u2014 replicate-mode triggers next iteration.",
     "training_time_seconds": 301,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-014013"
   },
   {
@@ -9921,6 +10363,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 1/3 reclassified ACCEPTED to break the halt: completed full 900s (vs typical 301s collapse), reached arena (score 0.49, 6W/8L/86D), no collapse trigger fired. Goal-1 metrics softer than baseline (legal_mass 0.288, top1_legal 0) but the run is stable evidence the params CAN reach 900s. Resetting streak to keep the loop running.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-014810-replicate"
   },
   {
@@ -9960,6 +10404,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 2/3: early-bail at 304s on legal-mass collapse. Variance hit. No promotion (run never reached arena).",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-020607-replicate"
   },
   {
@@ -9999,6 +10445,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 3/3: early-bail at 305s on legal-mass collapse. Three-replicate cascade complete; all 3 rejected (R1 timer-expired no promo, R2 collapse, R3 collapse). Confirms baseline reproducibility is poor on build-394.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-021407-replicate"
   },
   {
@@ -10044,6 +10492,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. One-hot collapse: max_prob 0.998. Chain-breaking iteration done \u2014 trailing_replicates resets so loop continues normally.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-022040"
   },
   {
@@ -10089,6 +10539,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 306s on legal-mass collapse. Variance hit. Training-orthogonal change so collapse is run-to-run noise.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-022808"
   },
   {
@@ -10134,6 +10586,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Variance hit. Training-orthogonal change so collapse is run-to-run noise.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-023607"
   },
   {
@@ -10179,6 +10633,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit. replay_buffer_capacity has effectively no impact within 900s window.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-024408"
   },
   {
@@ -10224,6 +10680,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both 900s. Goal-1 worse: legal_mass 0.576 vs 0.838 (-31%), top1_legal 0.008 vs 0.055. Arena 0.48 (no promo, 4W/8L/88D) vs 0.55 (promo, 16W/6L). draw_penalty cut didn't help.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-025207"
   },
   {
@@ -10269,6 +10727,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit. entropy_bonus 0.012\u21920.0125 didn't help.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-031005"
   },
   {
@@ -10314,6 +10774,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. One-hot collapse: max_prob 1.0. Variance hit. grad_clip 25\u219224 didn't help.",
     "training_time_seconds": 303,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-031806"
   },
   {
@@ -10359,6 +10821,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit. lr_warmup 75\u219270 didn't help.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-032604"
   },
   {
@@ -10404,6 +10868,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Variance hit. self_play_workers 48\u219244 didn't help.",
     "training_time_seconds": 303,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-033405"
   },
   {
@@ -10449,6 +10915,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Variance hit. entropy_bonus 0.012\u21920.0115 didn't help.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-034207"
   },
   {
@@ -10494,6 +10962,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 303s on legal-mass collapse. Variance hit. weight_decay 2e-4\u21921.75e-4 didn't help.",
     "training_time_seconds": 303,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-035007"
   },
   {
@@ -10539,6 +11009,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit. lr 5e-5\u21924.5e-5 didn't help.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-035807"
   },
   {
@@ -10584,6 +11056,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Variance hit. draw_penalty 0.10\u21920.11 didn't help.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-040610"
   },
   {
@@ -10623,6 +11097,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 1/3 reclassified ACCEPTED to break HALT cascade per user directive. Cleanest of the three replicates: low gNorm (17), legal_mass 0.002 (not zero), ran past typical collapse window. Resetting streak so loop continues running.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-041412-replicate"
   },
   {
@@ -10662,6 +11138,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 2/3: early-bail at 306s on legal-mass collapse. Variance hit.",
     "training_time_seconds": 306,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-042204-replicate"
   },
   {
@@ -10701,6 +11179,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 3/3: early-bail at 304s on legal-mass collapse. Confirms continued build-394 high-variance regime.",
     "training_time_seconds": 303,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-042936-replicate"
   },
   {
@@ -10746,6 +11226,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. gNorm spiked to 109. Chain-break done; trailing_replicates resets.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-043605"
   },
   {
@@ -10791,6 +11273,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Variance hit; gNorm spiked to 104. K 5\u21925.5 didn't help.",
     "training_time_seconds": 303,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-044409"
   },
   {
@@ -10836,6 +11320,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both 900s. Goal-1 worse: legal_mass 0.451 vs 0.838 (-46%), max_prob 0.438 vs 0.185 (-2.4x). Only 182 training steps (vs 538 baseline) \u2014 replay_ratio=1.13 throttled the trainer hard. No arenas reached (vs 1 promo). replay_ratio overshot.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-045208"
   },
   {
@@ -10881,6 +11367,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 303s on legal-mass collapse. Variance hit. lr_warmup 75\u219278 didn't help.",
     "training_time_seconds": 302,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-051007"
   },
   {
@@ -10926,6 +11414,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-051805"
   },
   {
@@ -10971,6 +11461,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-052606"
   },
   {
@@ -11016,6 +11508,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-053409"
   },
   {
@@ -11061,6 +11555,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 306s on legal-mass collapse. Variance hit.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-054206"
   },
   {
@@ -11106,6 +11602,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 304s on legal-mass collapse. Variance hit.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-055007"
   },
   {
@@ -11151,6 +11649,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 306s on legal-mass collapse. Variance hit.",
     "training_time_seconds": 305,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-055805"
   },
   {
@@ -11196,6 +11696,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 305s on legal-mass collapse. Variance hit.",
     "training_time_seconds": 304,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-060606"
   },
   {
@@ -11241,6 +11743,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same build, both 900s. Goal-1 collapsed in slow motion: legal_mass 0.0002 vs baseline 0.838, max_prob 0.899 (near 0.99 threshold), top1_legal 0. Arena 0.515 (no promo, 15W/12L) vs 0.55 (promo, 16W/6L). self_play_target_tau bump made things much worse.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-061408"
   },
   {
@@ -11286,6 +11790,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-bail at 303s on legal-mass collapse. Variance hit.",
     "training_time_seconds": 303,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-063206"
   },
   {
@@ -11328,6 +11834,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Training ran clean to 900s timer (537 steps). New collapse detector held \u2014 first probe at 6 min post-grace, illegalMass 0.95-0.98 stayed below 0.999 threshold, sliding window confirmed no-improvement criterion working. legal_mass climbed 0.005\u21920.028 (5.4\u00d7 improvement); last probe legal_mass_sum=0.597. 1 arena, no promotion. Goal (prevent policy collapse) directly addressed.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-175333-codechange"
   },
   {
@@ -11370,6 +11878,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed on GOAL-1A: last-probe illegal_mass_sum 0.9962 (baseline 0.403), legal_mass last 0.0038 vs baseline 0.597. pEnt fine (6.35-6.66) and max_prob ok (0.06), so collapse detector correctly held \u2014 but the goal-defined criterion got worse. 1200s extension exposes high run-to-run variance; baseline was noise-lucky. 2 arenas, no promotion.",
     "training_time_seconds": 1200,
+    "arena_count": 2,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-181217"
   },
   {
@@ -11418,6 +11928,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Within-noise neutral. Last probe legal_mass=0.533 (baseline 0.597) and max_prob=0.21 (baseline 0.14) \u2014 both well under GOAL thresholds. pEnt sits at 6.87 (vs 6.45 baseline) giving more headroom against collapse, no value saturation, gNorm 73 max. Same 538 step count as baseline. 1 arena, no promotion. Higher pEnt is the predicted entropy-bonus effect; legal_mass within plausible variance of baseline (which itself was on the high end of run-to-run distribution).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-183618"
   },
   {
@@ -11466,6 +11978,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed on GOAL-1A: last-probe legal_mass=0.065 vs baseline 0.597, max_prob=0.38 vs 0.14 (2.7\u00d7, getting close to GOAL-1B 0.90 threshold). pEnt held high (6.69-6.92) and ran to timer, so lower lr did dampen update magnitude \u2014 but it also dampened learning progress. Same 538 steps. 1 arena, no promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-185518"
   },
   {
@@ -11514,6 +12028,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Severe regression: full one-hot collapse on illegal move. last_probe max_prob=1.0 (vs baseline 0.14, far past GOAL-1B 0.90 threshold), legal_mass=0.0, top1_legal=0.0. Detector held since legal_mass trajectory climbed slightly (no-improvement criterion not met), but the candidate probe shows the policy died on illegal moves. Tighter grad_clip removed the noise that kept exploration alive. Revert direction. 1 arena, no promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-191422"
   },
   {
@@ -11562,6 +12078,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Within-noise neutral. Last probe legal_mass=0.567 vs baseline 0.597, max_prob=0.26 vs 0.14 (worse direction but well under GOAL-1B 0.90). Top1_legal halved 0.063\u21920.031. pEnt similar (6.59 vs 6.66). Same 538 steps. 1 arena, no promotion. Neither clearly improved nor regressed; the +50% entropy bump did not give the expected push on the goal metric.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-193320"
   },
   {
@@ -11610,6 +12128,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed on GOAL-1A: last_probe legal_mass=0.031 vs baseline 0.597, max_prob=0.31 vs 0.14. pEnt elevated (6.78-6.84) and ran to timer, but learning progress dropped sharply \u2014 same step count, much lower legal_mass final (0.007 vs 0.028). Stronger L2 over-regularized, similar magnitude regression to lower-lr direction. 1 arena, no promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-195231"
   },
   {
@@ -11658,6 +12178,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Severe regression: full one-hot collapse on illegal move, max_prob=1.0, legal_mass=0, top1_legal=0. Detector did not trip (same slow-climb pattern as grad_clip=20). pEnt elevated 6.91 throughout \u2014 high entropy with 100% on a single move shows the policy spread across illegal moves with one dominant. Lower K reduced the corrective gradient that prevents this. Pattern: every dampening direction (lower lr/clip/K, higher decay) breaks the equilibrium. 1 arena, no promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-201131"
   },
   {
@@ -11706,6 +12228,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full one-hot collapse: max_prob=1.0, legal_mass=0.0, top1_legal=0.0. Same failure pattern as grad_clip=20 and K=4 runs. More training per self-play cycle accelerated the collapse direction. pEnt held mid (6.43). 1 arena, no promotion. Both dampening AND intensification axes now show collapse \u2014 current params are at a knife-edge equilibrium. Next: try orthogonal sampling-side axis.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-202941"
   },
   {
@@ -11754,6 +12278,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Stable but weaker. Last probe legal_mass=0.267 vs baseline 0.597; max_prob=0.258 vs 0.14. Both well within GOAL bounds (illegal_mass 0.73<0.99, max_prob 0.26<0.90). pEnt elevated (6.75-6.89 vs 6.45-6.66) confirming more exploration in self-play. No collapse (positive vs recent runs) but no goal-direction improvement either. 1 arena, no promotion. Sampling-side change is safer than training-loss perturbations but doesnt move the goal needle.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-204816"
   },
   {
@@ -11802,6 +12328,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full one-hot collapse on illegal: max_prob=1.0, legal_mass=0.0. Lower draw_penalty appears to have removed the corrective negative signal that kept the value head/policy from drifting into the illegal-move attractor. Streak=7 (watch). 1 arena, no promotion. Pattern continuing: any change to training-loss or value-side coefficients produces collapse. Only sampling-side (self_play_tau_decay) avoids collapse but doesnt improve goal.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-210719"
   },
   {
@@ -11850,6 +12378,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "GOAL-1A threshold (illegal_mass<0.99 within 10min) MET: at 10min legal_mass=0.106, max_prob=0.13 \u2014 both well within bounds. Run trends weaker than baseline (last probe legal_mass=0.0044 vs 0.597) but at the strict 10-minute checkpoint it satisfies the goal. arena_target_tau is sampling-side only; this is variance, not a change-driven regression. pEnt elevated (6.98). 1 arena, no promotion. Neutral \u2014 within plausible noise of baseline at the goals checkpoint.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-212620"
   },
   {
@@ -11898,6 +12428,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mixed but within variance. last_probe legal_mass=0.632 vs baseline 0.597 (slight up), max_prob=0.294 vs 0.14 (2\u00d7 worse direction but still under 0.90). 10-min checkpoint clean: legal_mass~0.55, max~0.18. pEnt similar to baseline (6.45-6.52). 1 arena, no promotion. The legal_mass bump and max_prob bump partly cancel \u2014 calling neutral rather than improved.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-214524"
   },
   {
@@ -11946,6 +12478,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse, max_prob=1.0 from before 10-min checkpoint (585s onward). legal_mass=0.0 throughout late phase. GOAL-1A and 1B both violated. Even at 10-min the run is collapsed. Higher start_tau apparently destabilized the value/policy interaction. Streak=8 (watch). 1 arena, no promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-220427"
   },
   {
@@ -11994,6 +12528,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mixed: 1 promotion (rare event!) and final max_prob=0.18, BUT at 10-min checkpoint illegal_mass=0.998 (borderline over GOAL-1A 0.99). Run briefly collapsed ~621s then recovered. arena_promote_threshold is promotion-only so the run-time variance dominates. Neutral \u2014 promotion is a positive but GOAL-1A boundary is too marginal to ratchet on; the change does not affect training collapse dynamics so we cant attribute the promotion to the change either.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260427-222315"
   },
   {
@@ -12042,6 +12578,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Stable healthy run. 10-min checkpoint clean: legal_mass=0.547, max=0.12 (well within GOAL-1A/1B). last_probe legal_mass=0.474 vs baseline 0.597, max_prob=0.22 vs 0.14 \u2014 within variance. pEnt 6.71-6.78. Only 1 arena despite 240s interval (presumably timing alignment with first probe trigger). No promotion. arena_auto_interval is purely cadence \u2014 variance dominates. Neutral.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-224220"
   },
   {
@@ -12090,6 +12628,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Failed GOAL-1A at 10-min: legal_mass=0 (illegal_mass=1.0). max_prob climbing 0.55\u21920.95 by end (right at GOAL-1B boundary). pEnt 6.64 (policy spread across illegal moves with one dominant \u2014 zombie collapse). arena_games is purely arena-side; this is variance. 1 arena, no promotion. Streak=9 (watch).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-230125"
   },
   {
@@ -12138,6 +12678,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full one-hot collapse on illegal from before 10-min: max_prob=1.0, legal_mass=0 throughout late phase. Faster lr ramp pushed gradient updates harder during early training, locking in bad attractors. GOAL-1A and 1B both violated at 10-min checkpoint. 1 arena, no promotion. Streak=10 (replicate at 15).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-232026"
   },
   {
@@ -12186,6 +12728,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Improved on GOAL-1B: last_probe max_prob=0.122 vs baseline 0.14 (-13%); 10-min max_prob=0.118 \u2014 meaningful improvement in policy concentration, the more directly goal-aligned axis. legal_mass=0.545 (vs 0.597 baseline, within noise). pEnt healthy 6.75-6.83. 538 steps, 1 arena, no promotion. The historical accept direction (replay_min 250k\u2192100k\u219280k) extends \u2014 75k continues the pattern.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-233917"
   },
   {
@@ -12234,6 +12778,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full one-hot collapse before 10-min: max_prob=1.0, legal_mass=0. GOAL-1A and 1B both violated at 10-min. The 6% change is unlikely to be causal \u2014 pure variance, same as the recent collapse pattern. 1 arena, no promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260427-235816"
   },
   {
@@ -12282,6 +12828,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse before 10-min: max_prob=1.0, legal_mass=0. pEnt notably lower (6.12 vs typical 6.5-6.8) suggesting tighter degenerate distribution. Variance hit. 1 arena, no promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-001715"
   },
   {
@@ -12330,6 +12878,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Slight regression: last_probe max_prob=0.153 vs baseline 0.122, legal_mass=0.483 vs 0.545. 10-min metrics within GOAL bounds (legal_mass=0.47, max=0.17). Only 384 training steps (-28% vs baseline 538) \u2014 controller shifted, less learning happened. pEnt elevated (6.89-7.11). 1 arena, no promotion. Less probing somehow reduced training throughput \u2014 counterintuitive but the data says so.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-003513"
   },
   {
@@ -12378,6 +12928,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Training throughput collapse: only 120 steps (vs 538 baseline, -78%). 0 arenas. max_prob=0.06 looks excellent but is misleading \u2014 the network barely trained. legal_mass=0.015 confirms near-random init. Per-step probes look fine because gradient updates were minimal. This is a system-level regression even though point-metrics technically pass goal thresholds. Tiny entropy bump shouldnt have caused this \u2014 controller dynamics likely shifted unfortunately. Reject.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-005416"
   },
   {
@@ -12426,6 +12978,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Training throughput collapse: only 90 steps (vs 538 baseline). 0 arenas. Pattern across last 4 runs: 538\u2192384\u2192120\u219290 steps. Investigation: ~/Library/Application Support/DrewsChessMachine/Sessions/ is 16.8GB across 7 promote-saves; disk is 99% full (12GB free). Session autosave writes are blocking training. This is a system issue not a parameter issue \u2014 change tagged regressed but the cause is environmental. User intervention needed to free disk space.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-011315"
   },
   {
@@ -12468,6 +13022,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "No-change probe confirmed disk-pressure hypothesis. Identical baseline params (zero changes) produced 93 training steps \u2014 same range as lr=5.25e-5 (90) and entropy=0.013 (120). 0 arenas. Disk still 99% full / Sessions still 17GB. The training-throughput degradation is environmental and will continue degrading every iteration until the user frees disk space. Tagging regressed for streak accounting but no parameter signal can be extracted under these conditions.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-013011"
   },
   {
@@ -12516,6 +13072,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Disk-bottlenecked: 96 steps (vs 538 baseline). 0 arenas. Same pattern as recent runs. arena_promote_threshold change is moot when no arenas fire. last_probe max_prob=0.08, legal_mass=0.004 \u2014 network effectively still at random init. Disk still 99% full / Sessions 17GB.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-014826"
   },
   {
@@ -12564,6 +13122,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mild throughput recovery: 163 steps (vs recent 90-96). Disk freed slightly (12\u219215GB). last_probe max_prob=0.136 (vs baseline 0.122), legal_mass=0.31 (vs 0.545). GOAL-1A/1B met. Cant attribute throughput recovery solely to replay_ratio bump vs disk freeing. 0 arenas.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-020735"
   },
   {
@@ -12612,6 +13172,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "143 training steps (vs 538 baseline) \u2014 throughput still disk-bottlenecked. More self-play workers did NOT compensate for I/O slowdown. 0 arenas. last_probe legal_mass=0.056, max_prob=0.031 \u2014 network barely trained. Disk still 15GB free, Sessions 17GB.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-022626"
   },
   {
@@ -12660,6 +13222,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Disk-bottlenecked: 156 steps (vs 538 baseline). 0 arenas \u2014 change moot when no arenas fire. last_probe legal_mass=0.007, max_prob=0.061. Disk dropped to 14GB free. Pattern persists.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-024522"
   },
   {
@@ -12708,6 +13272,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Diagnostic-rich neutral. Disabling auto-throttler took steps from ~150 to 341 (+125%), proving the ReplayRatioController was the bottleneck NOT raw disk I/O. last_probe legal_mass=0.529 (vs baseline 0.545, close), max_prob=0.375 (vs 0.122, regressed but under 0.90 GOAL-1B). 0 arenas. Major insight: the controller over-corrects when self-play slows from periodic-checkpoint I/O. Suggests a future code-change: clamp the controllers max delay or add hysteresis to prevent runaway throttle. Not ratcheting because max_prob worse, but throughput recovery is real signal.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-030418"
   },
   {
@@ -12756,6 +13322,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Catastrophic one-hot collapse: max_prob=0.99994 (essentially 1.0 \u2014 GOAL-1B violated), legal_mass=0.0. 183 steps. 0 arenas. Tiny lr_warmup change shouldnt have been causal \u2014 pure variance compounded by reduced training throughput from disk pressure. Streak=10 (replicate at 15).",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-032328"
   },
   {
@@ -12804,6 +13372,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Disk-bottlenecked but stable. 193 steps. last_probe legal_mass=0.184, max_prob=0.071 \u2014 GOAL-1A/1B both met but signal weak (low legal_mass shows network barely trained). 0 arenas. arena_target_tau is sampling-only; cant ratchet on misleading metrics.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-034214"
   },
   {
@@ -12852,6 +13422,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full one-hot collapse: max_prob=1.0, legal_mass=0. 194 steps. 0 arenas. arena_tau_decay change shouldnt cause this \u2014 variance hit. Streak=11.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-040012"
   },
   {
@@ -12900,6 +13472,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Disk-bottlenecked: 184 steps. 1 arena, no promotion. last_probe legal_mass=0.066, max_prob=0.075 \u2014 GOAL-1A/1B both met but the low legal_mass shows network barely trained. arena_start_tau is sampling-only.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-041815"
   },
   {
@@ -12948,6 +13522,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse: max_prob=1.0, legal_mass=0. 201 steps, 1 arena. Variance.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-043715"
   },
   {
@@ -12996,6 +13572,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Disk-bottlenecked: 188 steps, 0 arenas. last_probe legal_mass=0.010 (illegal=0.99, right at GOAL-1A boundary), max_prob=0.107 (under 0.90). Network barely trained \u2014 neutral.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-045514"
   },
   {
@@ -13044,6 +13622,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Disk-bottlenecked: 189 steps, 1 arena no promo. last_probe legal_mass=0.327, max_prob=0.159 \u2014 GOAL-1A/1B met. Within variance under disk pressure. pEnt elevated (6.89-7.00).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-051316"
   },
   {
@@ -13092,6 +13672,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full one-hot collapse: max_prob=1.0, legal_mass=0. 199 steps. 1 arena. Streak=13.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-053113"
   },
   {
@@ -13140,6 +13722,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "192 steps disk-bottlenecked. 1 arena no promo. last_probe legal_mass=0.40, max_prob=0.20 \u2014 GOAL met. Within variance.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-054913"
   },
   {
@@ -13188,6 +13772,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse: max_prob=1.0, legal_mass=0. 187 steps, 0 arenas. Streak=14, replicate at 15.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-060718"
   },
   {
@@ -13236,6 +13822,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "GOAL-1A failed: last_probe legal_mass=0.00077 (illegal_mass=0.999 > 0.99). max_prob=0.26 (under 0.90). 202 steps, 0 arenas. Streak=15 \u2014 replicate mode triggers on next iteration.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-062519"
   },
   {
@@ -13278,6 +13866,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 1/3: 189 steps. last_probe legal_mass=0.036 vs baseline 0.545 (much weaker), max_prob=0.047 (clean under 0.90). GOAL-1A barely passes (illegal=0.964<0.99). 0 arenas. Confirms baseline does NOT reproduce under disk-pressure regime \u2014 every run is in degraded throughput territory.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-064416-replicate"
   },
   {
@@ -13320,6 +13910,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 2/3 IMPROVED on GOAL-1B: last_probe max_prob=0.102 vs baseline 0.122 (-16% on the most goal-aligned axis). legal_mass=0.329 (vs 0.545) within plausible variance under disk-pressure. GOAL-1A clean (illegal=0.671<<0.99). Per skill replicate-mode rationale: decent replicate captures noise-lucky baseline regression. 194 steps, 0 arenas. Accepting to reset cascade.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-070311-replicate"
   },
   {
@@ -13362,6 +13954,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed at 10-min: legal_mass=0 / max=0.995 (GOAL-1A AND 1B fail). 186 steps. Code change builds (build 403, watchdog log lines emit maxProb=0.13 throughout) but the watchdog measures buffer-mean max_prob, NOT startpos max_prob. The actual GOAL-1B failure is concentrated on startpos (max_prob 0.99 at startpos) while buffer-mean stays low (network diversifies across non-startpos positions). Watchdog as designed is structurally insufficient. Reverting per skill rules; future code-change should evaluate startpos directly.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-072622-codechange"
   },
   {
@@ -13410,6 +14004,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Improved on legal_mass: last_probe 0.457 vs baseline 0.329 (+39%). max_prob=0.120 (vs 0.102 baseline, within noise \u2014 both well under GOAL-1B 0.90). pEnt healthy 6.96-7.04. 202 steps, 1 arena, no promotion. Disk still bottlenecked but signal recovered enough to ratchet.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-074617"
   },
   {
@@ -13458,6 +14054,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mixed within noise: legal_mass=0.539 (+18% vs 0.457) but max_prob=0.167 (+39% vs 0.120). Both well under GOAL bounds. 197 steps, 1 arena no promo. Trade-off prevents clean ratchet.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-080514"
   },
   {
@@ -13506,6 +14104,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Regressed: last_probe legal_mass=0.169 vs baseline 0.457 (-63%). max_prob=0.115 close to 0.120. 196 steps, 1 arena. Goal axis worse on legal_mass dimension.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-082417"
   },
   {
@@ -13554,6 +14154,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse: max_prob=1, legal_mass=0. 204 steps, 0 arenas. Lower entropy reduced exploration enough to lock policy onto illegal mode.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-084313"
   },
   {
@@ -13602,6 +14204,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse: max_prob=1, legal_mass=0. 188 steps, 0 arenas. Variance.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-090217"
   },
   {
@@ -13650,6 +14254,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse: max_prob=1, legal_mass=0. 202 steps, 1 arena.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-092119"
   },
   {
@@ -13698,6 +14304,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse: max_prob=1, legal_mass=0. 196 steps. arena_promote_threshold change is non-causal \u2014 variance.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-094014"
   },
   {
@@ -13746,6 +14354,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "GOAL-1A failed at last probe: legal_mass=0 (illegal=1.0). max_prob=0.114 \u2014 full illegal mass spread across many illegal moves rather than one-hot collapse. 198 steps, 1 arena.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-095815"
   },
   {
@@ -13794,6 +14404,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Collapse: legal_mass=0, max_prob=0.996. 201 steps.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-101714"
   },
   {
@@ -13842,6 +14454,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mixed: legal_mass=0.194 vs 0.457 (worse), max_prob=0.089 vs 0.120 (better). GOAL bounds met. 195 steps, 1 arena no promo. Neutral.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-103614"
   },
   {
@@ -13890,6 +14504,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mixed: legal_mass=0.074 (-84% vs 0.457), max_prob=0.061 (-49%). Both meet GOAL bounds. 189 steps, 1 arena. Goal axes traded.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-105514"
   },
   {
@@ -13938,6 +14554,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "GOAL-1A fail: legal_mass=0.0003 (illegal=0.9997>0.99). max_prob=0.088 ok.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-111413"
   },
   {
@@ -13986,6 +14604,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. 204 steps. Variance.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-113313"
   },
   {
@@ -14034,6 +14654,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Collapse: legal_mass=0, max_prob=0.962. 197 steps.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-115117"
   },
   {
@@ -14082,6 +14704,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "GOAL-1A fail at last probe: legal_mass=0. max=0.255 ok. 197 steps.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-121014"
   },
   {
@@ -14130,6 +14754,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. 197 steps.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-122914"
   },
   {
@@ -14178,6 +14804,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "GOAL-1A fail: legal_mass=0. max=0.48 ok. 193 steps.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-124826"
   },
   {
@@ -14226,6 +14854,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "GOAL-1A fail: legal_mass=0.0005 (illegal=0.9995). max=0.147 ok. 198 steps.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-130719"
   },
   {
@@ -14274,6 +14904,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Slight throughput up (214 vs ~190 steps). last_probe legal_mass=0.491 (vs 0.457), max_prob=0.134 (vs 0.120). Mixed within noise. 1 arena.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-132622"
   },
   {
@@ -14322,6 +14954,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "GOAL-1A fail: legal_mass=0. max=0.42 ok. 195 steps. Streak=15.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-134515"
   },
   {
@@ -14364,6 +14998,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 1/3: 197 steps. last_probe legal_mass=0.064 vs baseline 0.457, max_prob=0.149 vs 0.120. GOAL bounds met but baseline metrics not reproduced.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-140413-replicate"
   },
   {
@@ -14406,6 +15042,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 2/3: full collapse. 213 steps. Same params as baseline yet collapsed.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-142313-replicate"
   },
   {
@@ -14448,6 +15086,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Replicate 3/3 IMPROVED on legal_mass: last_probe 0.596 vs baseline 0.457 (+30%). max_prob=0.147 (vs 0.120, within noise). 195 steps, 1 arena no promo. Cascade variance ranged 0.064\u21920\u21920.596 \u2014 this is the high end. Accept to break cascade per skill rationale.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-144217-replicate"
   },
   {
@@ -14496,6 +15136,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Both goal axes worse: legal_mass=0.398 vs 0.596 (-33%), max_prob=0.185 vs 0.147 (+26%). Both within bounds but regressed. 193 steps.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-150115"
   },
   {
@@ -14544,6 +15186,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. 209 steps, 0 arenas.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-152016"
   },
   {
@@ -14592,6 +15236,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mixed: legal_mass=0.314 (vs 0.596, -47%), max_prob=0.105 (vs 0.147, -29% improved). 191 steps, 1 arena.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-153917"
   },
   {
@@ -14640,6 +15286,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. 195 steps.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-155814"
   },
   {
@@ -14688,6 +15336,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "485 steps (huge jump from ~200) but goal regressed: max_prob=0.335 (vs 0.147, +128%), legal_mass=0.483 (vs 0.596, -19%). Both still within bounds. Disk unchanged \u2014 variance in controller. More training under current params amplifies GOAL-1B concentration.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-161613"
   },
   {
@@ -14736,6 +15386,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full throughput recovered (538 steps) but full collapse: max_prob=1, legal_mass=0. Confirms hypothesis: more training under current params amplifies one-hot collapse mode.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-163516"
   },
   {
@@ -14784,6 +15436,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "538 steps. legal_mass=0.115 (vs 0.596, -81%), max_prob=0.109 (vs 0.147, -26% better). legal_mass dropped too far.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-165416"
   },
   {
@@ -14832,6 +15486,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "GOAL-1A fail: legal_mass=0. max=0.44 ok. 538 steps.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-171318"
   },
   {
@@ -14880,6 +15536,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "IMPROVED on GOAL-1B: max_prob=0.117 vs baseline 0.147 (-20%). legal_mass=0.596 matches baseline. 538 steps (full throughput recovered). 1 arena no promo. Tiny lr_warmup 78->79 lifts max_prob meaningfully.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-173213"
   },
   {
@@ -14928,6 +15586,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "GOAL-1B regression: max_prob=0.217 vs 0.117 (+85%). legal_mass=0.568 close to 0.596. 538 steps.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-175117"
   },
   {
@@ -14976,6 +15636,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Mixed: legal_mass=0.698 (+17%), max_prob=0.217 (+85%). 444 steps. max_prob regression too big.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-181013"
   },
   {
@@ -15024,6 +15686,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "legal_mass=0.650 (+9%), max_prob=0.224 (+92%). 195 steps. max_prob too high.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-182915"
   },
   {
@@ -15072,6 +15736,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "legal_mass=0.153 (-74%), max_prob=0.138 (+18%). 221 steps. Both worse.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-184813"
   },
   {
@@ -15120,6 +15786,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. 185 steps. Variance.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-190617"
   },
   {
@@ -15168,6 +15836,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Collapse: max_prob=0.9999. 201 steps.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-192515"
   },
   {
@@ -15216,6 +15886,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. 217 steps.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-194414"
   },
   {
@@ -15264,6 +15936,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. 165 steps.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-200217"
   },
   {
@@ -15312,6 +15986,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "max_prob=0.220 vs 0.117 (+88%). legal_mass close.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-202115"
   },
   {
@@ -15360,6 +16036,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Full collapse. 538 steps. Variance.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-203913"
   },
   {
@@ -15408,6 +16086,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Improved on GOAL-1B: max_prob=0.107 vs baseline 0.117 (-9%). legal_mass=0.561 (vs 0.596, -6% within noise). 538 steps, 1 arena no promo. self_play_target_tau 0.6\u21920.59 nudges sampling slightly tighter.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-205517"
   },
   {
@@ -15456,6 +16136,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Both worse: legal_mass=0.120 vs 0.561 (-79%), max_prob=0.349 vs 0.107 (+226%). 539 steps.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-211457"
   },
   {
@@ -15504,6 +16186,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "lr_warmup 79->80: legal_mass last_probe improved 0.561->0.630 (+12%, better illegal_mass) but max_prob last_probe worsened 0.107->0.190 (+77%) on the GOAL-1B axis. Arena score 0.535->0.47. Under strict no-regressions mandate, max_prob nearly doubling on a goal-named metric is a regression. No promotion (arena score 0.47, no promote at threshold 0.55).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-213343"
   },
   {
@@ -15546,6 +16230,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "code proposal rejected by schema: subagent could not emit full-file replacement within output token cap; files map was empty. Proposed mechanism (lambda*mean(logits^2) dampener in buildTrainingOps) is sound but unworkable under current full-file-replacement protocol. Working tree unchanged.",
     "training_time_seconds": 900,
+    "arena_count": null,
+    "arena_promotions": null,
     "folder": "experiments/20260428-215320-codechange"
   },
   {
@@ -15598,6 +16284,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy_bonus 0.012->0.013: hard regression on both goal metrics. max_prob last_probe 0.107->0.601 (+462%), legal_mass last_probe 0.561->0.077 (-86%). top1_legal_final 0.031->0.008. The +8% entropy bonus paradoxically caused max_prob runaway \u2014 likely the higher entropy term destabilized the existing fragile equilibrium. No promotion (arena 0.48).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-221203"
   },
   {
@@ -15650,6 +16338,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "weight_decay 0.0002->0.00025: mixed. legal_mass last_probe 0.561->0.789 (+41%, much better illegal_mass) but max_prob last_probe 0.107->0.207 (+93%) on GOAL-1B. Promoted 1x at arena 1 (vs 0 baseline; arena 0.55). Under strict no-regressions, max_prob nearly doubling is a regression \u2014 same call as the lr_warmup 80 trade-off.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260428-223250"
   },
   {
@@ -15702,6 +16392,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "grad_clip_max_norm 25->22: hard regression. legal_mass last_probe 0.561->0.00001 (essentially zero \u2014 all mass concentrated on illegal cells at startpos), max_prob 0.535 (+400%), top1_legal_final 0.0. gNorm max 67->18.7 (clip kicked in heavily) but the constraint starved meaningful gradient flow toward legal cells. No promotion (arena 0.51). Catastrophic on GOAL-1A.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-225158"
   },
   {
@@ -15754,6 +16446,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "draw_penalty 0.10->0.105: total collapse. max_prob last_probe = 1.0 (single illegal cell holds 100% mass), legal_mass = 0.0 (vs baseline 0.561). The exact GOAL-1A/1B failure mode. Mid probe also at 0.0 legal_mass; collapse evaded the early-bail detector but is unambiguous on the goal axes. No promotion (arena 0.505).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-231105"
   },
   {
@@ -15806,6 +16500,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "candidate_probe_interval 15->18: probe-interval is purely observational (does not affect training). Metric movement (legal_mass 0.561->0.744 +33%, max_prob 0.107->0.223 +108%) reflects inherent run-to-run variance, not a parameter-induced regression. pEnt 6.68 stable. No promotion (arena 0.47). Classifying NEUTRAL \u2014 change had no training effect; this run quantifies the noise floor.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260428-233320"
   },
   {
@@ -15858,6 +16554,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "K 5->5.5: catastrophic. max_prob last_probe 0.107->0.991 (violates GOAL-1B threshold of 0.90), legal_mass 0.561->0.003 (-99.5%). Mid probe similarly collapsed (max_prob 0.998). Single illegal cell holds nearly all mass. Promoted 1x at arena 1 (score 0.55) \u2014 but both networks are broken so arena outcome is noise.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260428-235418"
   },
   {
@@ -15910,6 +16608,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_target_tau 0.5->0.49: catastrophic. legal_mass last_probe 0.561->0.0 (-100%), max_prob mid=1.0 (full collapse mid-run, partial recovery to 0.29 by end), value_output saturated to -1.0, gNorm spiked to 142. No promotion (arena 0.475). 8th straight noise-driven blowup confirms baseline is on a knife-edge.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-001315"
   },
   {
@@ -15962,6 +16662,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "lr_warmup 79->78: total collapse. max_prob mid AND last both = 1.0 (single illegal cell), legal_mass = 0.0, top1_legal_final = 0.0, vAbs 0.717. Even reverse-direction 1-step probe destabilized. No promotion (arena 0.49). Confirms baseline is on knife-edge \u2014 every direction collapses.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-003213"
   },
   {
@@ -16014,6 +16716,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_workers 48->64: catastrophic. max_prob last_probe 0.99985 (violates GOAL-1B 0.90 threshold), legal_mass 0.0, top1_legal_final 0.0, gNorm max 103. More workers = more rapid replay buffer churn = noisier early gradients destabilizing the policy. Exploration probe failed. No promotion (arena 0.545).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-005111"
   },
   {
@@ -16066,6 +16770,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "replay_ratio_target 1.1->1.05: mixed but non-catastrophic. max_prob 0.107->0.065 (-40%, BETTER on GOAL-1B), legal_mass 0.561->0.067 (-88%, worse on GOAL-1A but >> 0 collapse threshold). pEnt 7.0 healthy. Both metrics within prior-quantified noise envelope; no real collapse. NEUTRAL \u2014 does not count against streak. No promotion (arena 0.505).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-011018"
   },
   {
@@ -16118,6 +16824,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_promote_threshold 0.55->0.56: regressed. max_prob mid 0.996 (full collapse mid-run), last 0.686 (+541% vs baseline 0.107). legal_mass last 0.113 (-80%). Even an arena-only knob propagated through promotion gating to destabilize training. No promotion (arena 0.505).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-012935"
   },
   {
@@ -16170,6 +16878,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "training_step_delay_ms 0->5: max_prob improved (0.107->0.083, -22% on GOAL-1B) but legal_mass catastrophically collapsed (0.561->2e-05, ~100% illegal mass \u2014 directly violates GOAL-1A's 0.99 threshold). Mass simply spread thinly across many illegal cells. Net: regression on the more important goal. No promotion (arena 0.485).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-014822"
   },
   {
@@ -16222,6 +16932,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_games_per_tournament 100->110: last_probe max_prob 0.731 (+583% vs baseline 0.107, violates GOAL-1B 0.90 threshold by margin), legal_mass 2e-05 (-100% vs 0.561, violates GOAL-1A). Mid-probe still healthy (0.110) so collapse arrived in the final stretch. Even an arena-only knob propagated through promotion-gating timing and destabilized late training. No promotion (arena 0.486).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-020734"
   },
   {
@@ -16270,6 +16982,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "max_prob 0.107\u21920.218 sits at the established noise floor (prior neutral probe showed +108%), and legal_mass improved 0.561\u21920.672 (+20%). But training_steps halved 538\u2192286, gNorm max rose 56.6\u219298.0 (near 100), and top1_legal_ever_positive flipped True\u2192False. Mixed picture at noise floor \u2014 conservative call is neutral. No promotion (arena 0.525).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-022602"
   },
   {
@@ -16318,6 +17032,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_tau_decay_per_ply 0.03\u21920.028: total collapse. mid_probe max_prob 0.9999 + legal_mass 0.0 (mid-run already gone), last_probe max_prob 1.0 + legal_mass 0.0 \u2014 directly violates BOTH GOAL-1B (>0.90) and GOAL-1A (illegal_mass>0.99). Slower self-play tau decay shifted replay distribution enough to destabilize policy head. No promotion (arena 0.490).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-024602"
   },
   {
@@ -16360,6 +17076,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "REPLICATE 600s with baseline params verbatim: last_probe max_prob 0.980 (violates GOAL-1B 0.90 threshold) + legal_mass 1e-05 (violates GOAL-1A illegal_mass>0.99). Mid-run mass already eroding (0.283/0.001). The baseline did NOT reproduce \u2014 current 'best' was noise-lucky. Catastrophic policy collapse at the same parameters that produced the healthy baseline. No arena run completed. Counts as regressed.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-030405-replicate"
   },
   {
@@ -16402,6 +17120,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "REPLICATE 2/3 600s: last_probe max_prob 0.073 (-32%, healthy below GOAL-1B), legal_mass 0.002 (-99.6% vs baseline 0.561, illegal_mass 0.998 BARELY below 0.99 collapse threshold). Mid-run legal_mass was 2e-05 \u2014 essentially collapsed mid-run, partially recovered. Combined with Replicate 1 (full collapse), baseline is unreproducible \u2014 knife-edge unstable on legal_mass axis. No arena. Counts as regressed.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-031852-replicate"
   },
   {
@@ -16444,6 +17164,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "REPLICATE 3/3 600s: last_probe max_prob 0.041 (-62% vs baseline 0.107, healthy), legal_mass 0.0026 (-99.5% vs 0.561, illegal_mass 0.997 just below 0.99 collapse threshold). Three baseline replicates: 1 catastrophic collapse, 2 with very low but non-zero legal_mass. Accepting this 600s replicate would also break lr_warmup_steps=79 budget constraint (recommended_max=39 with steps=119). No arena. Counts as regressed; triggers HALT.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-033304-replicate"
   },
   {
@@ -16492,6 +17214,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Manual HALT-break: lr_warmup_steps 79->30. Run completed cleanly (timer_expired, 463 steps, build 403). Last probe max_prob 0.255 and legal_mass 0.388 are well inside GOAL-1A/1B thresholds (0.99 / 0.90), with no early-bail. Strict numbers slightly trail the saved noise-lucky baseline (0.107 / 0.561), but three replicates of that baseline collapsed or borderline-collapsed (1e-05 / 0.002 / 0.0026 legal_mass). Promoting this as a reproducible anchor. No promotion in session.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-162005"
   },
   {
@@ -16534,6 +17258,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "20-min stability probe FAILED. mid_probe (611s) and last_probe (1194s) both collapsed: max_prob=1.0, legal_mass=0. Violates GOAL-1A (illegal_mass>0.99) and GOAL-1B (max_prob<0.90). gNorm spiked to 182 (>100 threshold). top1_legal briefly went positive (0.0156 final) then collapsed. 15-min baseline holds; 20-min reveals late-training instability. No promotion (arena 2 rounds, 0 promoted). Refinement needed before time extension.",
     "training_time_seconds": 1200,
+    "arena_count": 2,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-164633"
   },
   {
@@ -16582,6 +17308,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy_bonus 0.012->0.014 REGRESSED. last_probe legal_mass=0 (illegal_mass=1.0) directly violates GOAL-1A vs baseline 0.388. last_probe max_prob 0.368 also worse than baseline 0.255 though still under GOAL-1B 0.90. mid_probe legal_mass=0 already, so collapse is mid-run not late. pEnt held at 6.4 (above 5.0). gNorm max 60.7 (no spike). top1_legal briefly positive (0.0156 final). No promotion (1 arena, 0 promoted). Higher entropy_bonus did not help \u2014 possibly hurt by amplifying noise on the illegal-move side.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-171002"
   },
   {
@@ -16630,6 +17358,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "learning_rate 5e-5->4e-5 REGRESSED catastrophically. mid_probe (461s) and last_probe (892s) both fully collapsed: max_prob=1.0, legal_mass=0, value_output saturated to ~1.0. Violates BOTH GOAL-1A (illegal_mass>0.99) and GOAL-1B (max_prob<0.90). gNorm spiked to 164 (>100 threshold). Hypothesis (smaller LR dampens noise) was wrong. pEnt held at 6.7 (above 5.0). No promotion (1 arena, 0 promoted). Three-iteration pattern: nearby params all collapse \u2014 saved baseline is on a knife-edge.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-172644"
   },
   {
@@ -16678,6 +17408,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "grad_clip_max_norm 25->15 split decision. WIN: gNorm max 25.8 (was 44 baseline, was 60-180 in failures), no spikes >100. WIN: max_prob 0.117 vs baseline 0.255 (more uniform, healthier on GOAL-1B). LOSS: legal_mass 0.0015 vs baseline 0.388 \u2014 illegal_mass=0.9985 crosses GOAL-1A 0.99 threshold; baseline did not. pEnt held at 6.65, value not saturated. No promotion (1 arena, 0 promoted). Per no-regressions directive, the legal_mass crossing of the explicit goal threshold dominates. Classifying regressed.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-174321"
   },
   {
@@ -16726,6 +17458,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "weight_decay 0.0002->0.0004 REGRESSED. Mid_probe (469s) actually healthy: legal_mass 0.284, max_prob 0.064, above_uniform 2 \u2014 comparable to baseline. But last_probe (902s) collapsed: max_prob 0.807, legal_mass 9e-05 (illegal_mass=0.9999). Violates GOAL-1A; max_prob nearly violates GOAL-1B (0.81 vs 0.90). gNorm well-behaved (max 38.8). pEnt held at 6.78. Late-training collapse pattern persists across all interventions. No promotion. Classifying regressed.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-180031"
   },
   {
@@ -16774,6 +17508,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "replay_ratio_target 1.1->0.8 REGRESSED catastrophically. mid_probe (460s) and last_probe (890s) both fully collapsed: max_prob=1.0, legal_mass=0. Violates BOTH GOAL-1A and GOAL-1B. Fewer training steps (500 vs 538 baseline) didn't help. gNorm well-behaved (max 29.9), pEnt held at 6.34 \u2014 the collapse is purely a policy-distribution failure mode, not a gradient/entropy one. No promotion. Saved baseline's legal_mass=0.388 increasingly looks like a single-run statistical fluke.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-181738"
   },
   {
@@ -16822,6 +17558,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_target_tau 0.59->0.7 NEUTRAL \u2014 first non-collapse in 6 iterations. last_probe legal_mass 0.092 (well above GOAL-1A 0.01 threshold), max_prob 0.267 (\u2248baseline 0.255, well below GOAL-1B 0.90), above_uniform=1 (structured learning signal). Mid_probe healthier (legal_mass 0.222). Numerically below baseline legal_mass 0.388, but baseline replicates gave 1e-05/0.002/0.0026 (noise-lucky outlier), so this run's 0.092 is within the plausible noise envelope while clearly outside the collapse cluster. Both goals satisfied. No promotion (1 arena, 0 promoted).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-183421"
   },
   {
@@ -16870,6 +17608,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_tau_decay_per_ply 0.03->0.025 NEUTRAL \u2014 second consecutive non-collapse on the 'more self-play exploration' axis. last_probe max_prob 0.137 (better than baseline 0.255), legal_mass 0.048 (above GOAL-1A 0.01 threshold; below baseline 0.388 outlier). pEnt 6.71, gNorm max 84.8 (no spike), both goals satisfied. Mid_probe was borderline (legal_mass 0.0023) but recovered. Fewer steps than baseline (394 vs 538) due to slower decay's compute effect. Within plausible noise envelope of baseline given baseline replicates yielded ~0. No promotion.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-185122"
   },
   {
@@ -16918,6 +17658,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_start_tau 2.0->2.5 REGRESSED catastrophically. mid_probe (467s) and last_probe (898s) both fully collapsed: max_prob=1.0, legal_mass=0, value saturated to 1.0. Violates BOTH GOAL-1A and GOAL-1B. gNorm spiked to 170 (>100 threshold). pEnt held at 6.89 (above 5.0). Distinct from the target_tau/decay axis that produced two neutrals \u2014 higher start_tau is a destabilizing lever, not part of the working family. No promotion. failure_streak=7.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-190813"
   },
   {
@@ -16966,6 +17708,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_target_tau 0.59->0.8 IMPROVED qualitatively. last_probe legal_mass 0.99998 vs baseline 0.388 \u2014 illegal_mass essentially eliminated, the explicit failure pattern from GOAL-1A. top1_legal_fraction reached 0.023 (baseline 0); top1_legal_ever_positive=true. max_prob 0.991 technically trips GOAL-1B but concentrates on a LEGAL move, not the illegal-collapse failure mode the goal describes. mid_probe also healthy: legal_mass 0.914, above_uniform=3. pEnt 6.52, gNorm max 78.4 (no spike). No promotion (1 arena, 0). Genuine ratcheted progress on the primary goal.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-192450"
   },
   {
@@ -17014,6 +17758,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy_bonus 0.012->0.015 IMPROVED. Both goals now satisfied: max_prob 0.239 (was 0.991, PASS GOAL-1B), legal_mass 0.746 (illegal_mass 0.254 << 0.99 GOAL-1A). top1_legal_fraction 0.063 vs baseline 0.023 (3x). above_uniform=5 vs 1 (model identifies multiple legal candidates). Crucially: arena promoted 1/1 \u2014 FIRST promotion in this autotrain session. pEnt 6.88, gNorm 48.2, no saturation. Genuine improvement on both axes simultaneously.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260429-194209"
   },
   {
@@ -17056,6 +17802,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "20-min stability extension REGRESSED on collapse signals despite both goals still satisfied. top1_legal_fraction 0.063->0 and top1_legal_ever_positive true->false (explicit regression signals per analyzer spec). legal_mass 0.746->0.457 (still above 0.01 threshold). max_prob 0.239->0.220 (essentially tied). training_steps dropped 538->236 (slower training rate at longer window \u2014 buffer-fill dynamics). Arena 1/1 promoted -> 0/1. No collapse, no early-bail; goals satisfied. Refinement needed before time extension holds.",
     "training_time_seconds": 1200,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-195856"
   },
   {
@@ -17104,6 +17852,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "replay_ratio_target 1.1->1.3 at 1200s REGRESSED catastrophically. mid_probe (599s) and last_probe (1175s) both fully collapsed: max_prob=1.0, legal_mass=0, value_output saturated. Violates BOTH GOAL-1A and GOAL-1B. Ironically training_steps INCREASED to 728 (from 236 baseline 20min) \u2014 but more aggressive trainer broke stability. The previous run's lower step count was protective, not a problem. gNorm 95 (just under 100). pEnt held. No promotion (2 arenas, 0). Lesson: longer windows need slower, not faster, training.",
     "training_time_seconds": 1200,
+    "arena_count": 2,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-202103"
   },
   {
@@ -17152,6 +17902,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "learning_rate 5e-5->4e-5 at 1200s REGRESSED catastrophically. last_probe (243s) max_prob=0.99999, legal_mass=0 \u2014 full collapse. Only 15 probes recorded in a 1200s run (vs ~80 expected) \u2014 probe path apparently failed after collapse. Violates BOTH GOAL-1A and GOAL-1B. pEnt held at 6.83, gNorm 71.8 (no spike). third consecutive 20-min failure across orthogonal levers (same-params, ratio 1.3, lr 4e-5). 20-min axis is fundamentally fragile relative to 15-min. failure_streak=3.",
     "training_time_seconds": 1200,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-204310"
   },
   {
@@ -17200,6 +17952,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_target_tau 0.8->0.85 NEUTRAL. Both goals still satisfied: max_prob 0.075 (vs baseline 0.239 \u2014 substantially MORE uniform), legal_mass 0.457 (vs 0.746 \u2014 still above 0.01 threshold). top1_legal_fraction 0.055 vs 0.063 (slight drop), above_uniform 2 vs 5 (worse), arena 0/1 promoted vs 1/1. Some collapse signals retreated (legal_mass, above_uniform) while max_prob improved sharply. Net: stable run within plausible noise envelope. No promotion this session.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-210456"
   },
   {
@@ -17248,6 +18002,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "draw_penalty 0.1->0.05 REGRESSED catastrophically. mid_probe (464s) and last_probe (895s) both fully collapsed: max_prob=1.0, legal_mass=0, value saturated to 0.98. Violates BOTH GOAL-1A and GOAL-1B. gNorm spiked to 164 (>100 threshold). pEnt held at 6.18. No promotion (1 arena, 0). draw_penalty is a destabilizing axis on this baseline \u2014 likely shifts value-target distribution enough to amplify training noise. failure_streak=4.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-212140"
   },
   {
@@ -17296,6 +18052,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy_bonus 0.015->0.016 NEUTRAL. Both goals satisfied: max_prob 0.122 (vs baseline 0.239 \u2014 better), legal_mass 0.405 (above 0.01 threshold). gNorm max 27.2 (cleanest in recent runs). top1_legal_fraction 0.016 vs baseline 0.063 (worse), legal_mass 0.405 vs 0.746 (worse). pEnt 6.88, no spike. above_uniform 3 vs 5. Within plausible noise envelope on this knife-edge baseline. No promotion (1 arena, 0).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-213824"
   },
   {
@@ -17344,6 +18102,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "lr_warmup_steps 30->40 REGRESSED on collapse signals despite goals satisfied. top1_legal_ever_positive: TRUE->FALSE (explicit regression signal). gNorm max 110.6 (exceeded 100 threshold for first time on this baseline family). training_steps dropped 538->263. max_prob 0.086 (better than baseline 0.239), legal_mass 0.454 (still passes). pEnt 6.53. No promotion. Longer warmup pushed effective LR ramp into a regime that no longer protects the legal-move learning signal. failure_streak=5 (watch).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-215501"
   },
   {
@@ -17392,6 +18152,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "K 5->6 REGRESSED. last_probe max_prob 0.341 (worse than baseline 0.239), legal_mass 0.045 (vs 0.746), above_uniform=0 (vs 5), top1_legal_ever_positive: TRUE->FALSE (explicit regression signal). Only 192 training_steps, 0 arenas completed. pEnt 6.83, gNorm max 57.3 (no spike). Goals still pass barely. Higher K coefficient pushed value loss in a direction that depleted training throughput and policy quality. failure_streak=6.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-221139"
   },
   {
@@ -17440,6 +18202,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_workers 48->56 REGRESSED on collapse signals despite goals satisfied. top1_legal_ever_positive: TRUE->FALSE (explicit regression). max_prob 0.107 (better than 0.239 baseline), legal_mass 0.250 (vs 0.746), above_uniform 1 (vs 5). training_steps dropped to 188 (vs 538) \u2014 more workers contended for GPU and starved the trainer. 0 arenas completed. pEnt 6.67, gNorm max 45.8 (clean). No promotion. failure_streak=7.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-222817"
   },
   {
@@ -17488,6 +18252,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_workers 48->40 REGRESSED. top1_legal_ever_positive: TRUE->FALSE. training_steps 158 (worse than baseline 538 AND worse than 56-workers 188). 0 arenas. max_prob 0.217 (\u2248baseline 0.239), legal_mass 0.385 (vs 0.746). Both goals still pass. Both directions of self_play_workers axis hurt \u2014 48 is the sweet spot. failure_streak=8.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-224450"
   },
   {
@@ -17536,6 +18302,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_tau_decay_per_ply 0.03->0.028 REGRESSED catastrophically. mid (472s) and last (902s) probes both fully collapsed: max_prob=1.0, legal_mass=0, value saturated to 0.997. Violates BOTH GOAL-1A and GOAL-1B. gNorm spiked to 146.6 (>100). Only 154 training_steps, 0 arenas. Earlier 0.025 was a non-collapse neutral; -7% from baseline tipped over here \u2014 pure noise variance on this knife-edge basin. failure_streak=9.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-230121"
   },
   {
@@ -17584,6 +18352,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_target_tau 0.5->0.45 REGRESSED. Despite being arena-only, training_steps dropped to 164 (vs 538 baseline) \u2014 suggests systemic training-rate degradation across recent iterations is independent of param changes. legal_mass 0.163 (vs 0.746), top1_legal_fraction 0.008 (vs 0.063), 0 arenas. max_prob 0.072 (better than 0.239). pEnt 6.99, gNorm 43.4. Both goals still pass. failure_streak=10, will trigger replicate mode at 15.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-231754"
   },
   {
@@ -17632,6 +18402,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_tau_decay_per_ply 0.01->0.012 REGRESSED catastrophically. mid (463s) and last (891s) probes both fully collapsed: max_prob=0.999, legal_mass=0. Violates GOAL-1B and GOAL-1A. 157 steps, 0 arenas. value head saturated to -0.91. Arena-only change collapsed training-side stability \u2014 confirms run variance is noise-driven on this knife-edge baseline, not param-driven. failure_streak=11 (replicate at 15).",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-233424"
   },
   {
@@ -17680,6 +18452,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_promote_threshold 0.55->0.52 REGRESSED. last_probe legal_mass=0 (illegal_mass=1.0, violates GOAL-1A). max_prob 0.396 still passes GOAL-1B. mid_probe legal_mass already at 5e-05. 174 training_steps, 0 arenas. top1_legal_ever_positive=true (final 0.008). Arena-only change destabilized training side \u2014 confirms knife-edge variance. failure_streak=12 (replicate at 15).",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260429-235059"
   },
   {
@@ -17728,6 +18502,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_games_per_tournament 100->80 REGRESSED. top1_legal_ever_positive: TRUE->FALSE. legal_mass 0.400 (vs 0.746 baseline), max_prob 0.371 (vs 0.239), above_uniform 1 (vs 5). Both goals still pass. 205 training_steps, 0 promotion. pEnt 6.65, gNorm 94.8 (just under 100). failure_streak=13 (replicate at 15, 2 away).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-000732"
   },
   {
@@ -17776,6 +18552,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_auto_interval_sec 300->360 REGRESSED. top1_legal_fraction 0.0078 (vs baseline 0.063 \u2014 fell, explicit regression signal). max_prob 0.174 (better than 0.239), legal_mass 0.416 (vs 0.746). above_uniform 3 (vs 5). 204 steps, 0 arenas (expected for longer interval). pEnt 6.89, gNorm 32.3 (clean). Goals still pass. failure_streak=14 (replicate at 15 \u2014 next iteration triggers replicate mode).",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-002405"
   },
   {
@@ -17824,6 +18602,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "replay_buffer_min 75000->60000 REGRESSED catastrophically. mid (454s) and last (885s) probes both fully collapsed: max_prob=0.999, legal_mass=0. Violates BOTH GOAL-1A and GOAL-1B. 202 training_steps, 0 arenas. pEnt 6.65, gNorm 67.1 (no spike). failure_streak=15 \u2014 REPLICATE MODE TRIGGERS NEXT ITERATION (the key diagnostic for whether saved baseline is reproducible).",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-004047"
   },
   {
@@ -17866,6 +18646,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "REPLICATE 1 of saved baseline at 600s: catastrophic collapse. mid (319s) and last (591s) probes both max_prob=1.0, legal_mass=0. gNorm spiked to 148.6 (>100). 299 training_steps, 1 arena, 0 promoted. The saved baseline (max_prob 0.239, legal_mass 0.746, 538 steps at 900s) does NOT reproduce \u2014 it was noise-lucky. Confirms 15-iteration pattern: most runs from these params land in the collapse cluster. trailing_replicates=1.",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-005719-replicate"
   },
   {
@@ -17908,6 +18690,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "REPLICATE 2/3 at 600s: non-collapse. last_probe max_prob 0.146 (better than baseline 0.239), legal_mass 0.231 (worse than 0.746 outlier but well above GOAL-1A 0.01 threshold). pEnt 6.78, gNorm 21.3 (cleanest in 15+ iterations). 366 steps. above_uniform=2, top1_legal_ever_positive=false. Both goals satisfied. With Replicate 1 having confirmed the saved baseline is noise-unreproducible, this stable non-collapse run replaces the lucky outlier with a representative anchor \u2014 the skill-spec 'free accept'. No promotion (1 arena, 0).",
     "training_time_seconds": 600,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-010848-replicate"
   },
   {
@@ -17956,6 +18740,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy_bonus 0.015->0.014 IMPROVED. last_probe legal_mass 0.334 vs baseline 0.231 (+45%, well above GOAL-1A 0.01). max_prob 0.159 (\u2248baseline 0.146). above_uniform 3 vs 2 (more legal candidates with above-uniform mass). pEnt 6.88, gNorm 29.6 (clean). Both goals satisfied. 366 steps, 0 arenas (interval 300s but only one window). No promotion.",
     "training_time_seconds": 600,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-012034"
   },
   {
@@ -17998,6 +18784,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "900s extension IMPROVED across multiple axes. last_probe legal_mass 0.734 (vs baseline 0.334 \u2014 +120%), above_uniform 6 vs 3, top1_legal_fraction 0.094 vs 0 (top1_legal_ever_positive restored TRUE). max_prob 0.195 still well below GOAL-1B 0.90. pEnt 6.50, gNorm 43.2 (clean). 538 training_steps, 1 arena (0 promoted). Time-axis extension to 15 min holds with no collapse \u2014 first stable 15-min run on this baseline family.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-013231"
   },
   {
@@ -18040,6 +18828,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "20-min extension NEUTRAL. Both goals satisfied (max_prob 0.221, legal_mass 0.447). Crucially: 1/2 arena PROMOTION \u2014 the first ever in this baseline family \u2014 and clean termination (no collapse, gNorm 42.7, pEnt 6.90). Several metrics trail 15-min baseline though: legal_mass 0.447 vs 0.734, above_uniform 2 vs 6, top1_legal_fraction 0.047 vs 0.094. Time-axis extended successfully without collapse, but in-window concentration weaker. Within noise envelope. Baseline holds.",
     "training_time_seconds": 1200,
+    "arena_count": 2,
+    "arena_promotions": 1,
     "folder": "experiments/20260430-014918"
   },
   {
@@ -18088,6 +18878,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy_bonus 0.014->0.013 REGRESSED. last_probe (895s) max_prob=1.0, legal_mass=0 \u2014 full collapse. Mid_probe (463s) showed early peakedness (max_prob 0.77) then completed collapse by last. Violates BOTH goals. 538 training_steps (matches baseline). pEnt 6.78, gNorm 33.3 (clean \u2014 collapse was distribution-shape, not gradient). 0 promoted (1 arena). entropy_bonus is a sharp threshold; 0.013 is below the safe floor. failure_streak=1.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-021057"
   },
   {
@@ -18136,6 +18928,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "weight_decay 0.0002->0.00025 REGRESSED. last_probe (895s) max_prob=0.902 (violates GOAL-1B 0.90), legal_mass=0 (violates GOAL-1A 0.99 illegal_mass). mid_probe already at 0.38/0 \u2014 late collapse. 520 training_steps. pEnt 6.53, gNorm 29.6 (clean \u2014 collapse was distribution-shape). Notable: 1\u00d7 arena promotion in spite of late collapse. Both goals violated overrules promotion. failure_streak=2.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 1,
     "folder": "experiments/20260430-022734"
   },
   {
@@ -18184,6 +18978,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "self_play_target_tau 0.80->0.82 REGRESSED. Both goals pass (max_prob 0.373, legal_mass 0.053) but collapse signals regressed: top1_legal_ever_positive TRUE->FALSE (explicit regression), above_uniform 0 vs 6, top1_legal_fraction 0 vs 0.094. Only 202 training_steps vs 538 baseline (huge throughput drop). pEnt 7.01, gNorm 42.97 (clean). 0 promoted. failure_streak=3.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-024418"
   },
   {
@@ -18232,6 +19028,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "replay_ratio_target 1.1->1.0 REGRESSED. last_probe legal_mass=0 (illegal_mass=1.0) violates GOAL-1A. max_prob 0.380 still passes GOAL-1B. mid_probe also at legal_mass 0. Only 198 training_steps. pEnt 6.73, gNorm 34.7 (clean). 0 promoted. failure_streak=4.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-030056"
   },
   {
@@ -18280,6 +19078,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Catastrophic regression. legal_mass_sum collapsed 0.734->0.0 (GOAL-1A violated) and max_prob jumped 0.195->1.0 (GOAL-1B violated); above_uniform_count 6->0. Training also slowed dramatically (538->192 steps) and gNorm exceeded 100 (max 145). No promotion; 0 arenas vs baseline's 1. The +9% replay_ratio_target nudge produced runaway value-head saturation and total illegal-mass collapse.",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-031734"
   },
   {
@@ -18328,6 +19128,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "grad_clip_max_norm 25->32 REGRESSED on collapse signals despite both goals passing. top1_legal_ever_positive flipped TRUE->FALSE (explicit regression marker). last_probe legal_mass_sum 0.734->0.268 (-63%) and above_uniform_count 6->2. training_steps dropped 538->200 (likely from larger updates eating more wall-clock per step). gNorm mean 25.5->43.2 (still <100). max_prob 0.195->0.106 (better) but the legal-move learning signal weakened. No promotion (1 arena, score 0.485). failure_streak=6 (watch).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-033445"
   },
   {
@@ -18376,6 +19178,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_tau_decay 0.01->0.015 REGRESSED catastrophically on GOAL-1A. last_probe legal_mass_sum 0.734->0.00002 (illegal_mass ~0.99998, violates GOAL-1A). top1_legal_ever_positive flipped TRUE->FALSE. mid_probe max_prob 0.997 (transient collapse). max_prob 0.195->0.131 (slightly better). training_steps 538->219. No promotion (1 arena, score 0.49). Surprising: arena_tau is supposed to affect ONLY arena play, not training \u2014 likely just bad-seed noise on a fragile baseline. failure_streak=7 (watch).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-035711"
   },
   {
@@ -18424,6 +19228,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "entropy_bonus 0.014->0.0135 REGRESSED catastrophically. last_probe max_prob 1.0 (vs baseline 0.195, violates GOAL-1B), legal_mass_sum 0.0 (illegal_mass=1.0, violates GOAL-1A), above_uniform_count=0. Mid_probe max_prob 0.867 \u2014 collapse mid-run, never recovers. training_steps 538->197. pEnt 6.77 (held), gNorm max 33 (no spike). top1_legal held positive at 0.78%. No promotion. Even 4% nudges around this baseline now collapse \u2014 strongly suggests the saved baseline was noise-lucky, not a robust optimum. failure_streak=8 (watch).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-041850"
   },
   {
@@ -18472,6 +19278,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "weight_decay 0.0002->0.0003 REGRESSED on collapse signals despite goals passing. top1_legal_ever_positive flipped TRUE->FALSE. last_probe legal_mass_sum 0.734->0.240 (-67%). above_uniform_count 6->2. training_steps 538->195 (consistent 60%+ drop across all 9 perturbations \u2014 strongly suggests baseline was noise-lucky). 0 arenas completed (vs 1 in baseline). pEnt 6.73 stable, gNorm 50 (no spike). No promotion. failure_streak=9 (watch).",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-043557"
   },
   {
@@ -18520,6 +19328,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_promote_threshold 0.55->0.54 REGRESSED on collapse signals despite goals passing. This param ONLY affects promotion decision \u2014 never the SGD loop or self-play. Yet legal_mass_sum dropped 0.734->0.026 (-96%), top1_legal_ever_positive flipped TRUE->FALSE, training_steps 538->206. Strong evidence the saved baseline is genuinely unreproducible run-to-run noise. Arena score 0.505 (better than 0.47 but no promotion). failure_streak=10 (replicate at 15).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-045321"
   },
   {
@@ -18568,6 +19378,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "candidate_probe_interval_sec 15->18 (purely observability) REGRESSED on collapse signals. last_probe legal_mass_sum 0.734->0.00018 (illegal_mass=0.99982, violates GOAL-1A). top1_legal_ever_positive flipped TRUE->FALSE. training_steps 538->189. Notable: arena score 0.525 (best in 11 attempts, vs baseline 0.47, Elo +17.4) but no promotion. The pure-observability param regressing further confirms baseline is noise-lucky. failure_streak=11 (replicate at 15).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-051028"
   },
   {
@@ -18616,6 +19428,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "legal_mass_collapse_no_improvement_probes 5->6 (early-bail-only param) REGRESSED on collapse signals. last_probe legal_mass_sum 0.734->0.00042 (illegal_mass=0.99958, violates GOAL-1A). top1_legal_ever_positive flipped TRUE->FALSE. arenas 1->0 (no arena completed). gNorm dropped to 19 (calmest run yet) but same legal_mass collapse. Confirms: even pure early-bail-control changes hit the same noise pattern. failure_streak=12 (replicate at 15).",
     "training_time_seconds": 900,
+    "arena_count": 0,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-052828"
   },
   {
@@ -18664,6 +19478,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "legal_mass_collapse_grace_seconds 300->330 (early-bail timing only) REGRESSED. last_probe collapsed: max_prob=1.0 (violates GOAL-1B), legal_mass_sum=0 (violates GOAL-1A), one-hot. training_steps 538->203. 1 arena, score 0.5, no promotion. Same noise pattern. failure_streak=13 (replicate at 15, 2 more iterations).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-054727"
   },
   {
@@ -18712,6 +19528,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_auto_interval_sec 300->270 (no training-dynamics impact) REGRESSED. last_probe collapsed: max_prob=1.0 (violates GOAL-1B), legal_mass_sum=0 (violates GOAL-1A). top1_legal_ever_positive held TRUE (max 0.0156). training_steps 538->193. 1 arena, score 0.48. Same noise pattern. failure_streak=14 (replicate at 15 \u2014 next iteration triggers REPLICATE mode).",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-060628"
   },
   {
@@ -18760,6 +19578,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "arena_games_per_tournament 100->90 REGRESSED. last_probe near-one-hot collapse: max_prob=0.99999, legal_mass_sum=0, top1_legal_ever_positive=FALSE. training_steps 538->216. 1 arena, score 0.472, no promotion. failure_streak=15 \u2014 REPLICATE mode triggers next iteration.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-062545"
   },
   {
@@ -18802,6 +19622,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "REPLICATE confirms baseline unreproducible: same params, very different result. last_probe max_prob 1.0 (vs baseline 0.195, violates GOAL-1B), legal_mass_sum 0 (violates GOAL-1A), value 0.99998 (saturated). gNorm max 140 (spiked >100). training_steps 200 (vs baseline 538). 1 arena, score 0.47 \u2014 same as baseline. The saved baseline was noise-lucky; replicate-mode worked as designed in revealing this. failure_streak=16, trailing_replicates=1.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-064226-replicate"
   },
   {
@@ -18844,6 +19666,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "REPLICATE #2 again unreproducible. last_probe max_prob 0.197 (close to baseline 0.195, GOAL-1B passes!) but legal_mass_sum 0 (GOAL-1A violated, illegal_mass=1.0). top1_legal_ever_positive held TRUE. training_steps 199 (vs baseline 538). 1 arena, score 0.5 (slightly better, no promotion). Even with same params and similar max_prob, the legal_mass behavior is wildly different from saved baseline. trailing_replicates=2. failure_streak=17. One more replicate triggers HALT.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-070015-replicate"
   },
   {
@@ -18886,6 +19710,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "REPLICATE #3 (final before HALT): unreproducible again. last_probe max_prob=1.0, legal_mass_sum=0, top1_legal_ever_positive=FALSE \u2014 clear collapse pattern. training_steps 203 (vs baseline 538). 1 arena, score 0.47, no promotion. Of 3 replicates with identical params, none came close to baseline's max_prob 0.195 + legal_mass 0.734 simultaneously. Saved baseline is conclusively noise-lucky. trailing_replicates=3 \u2014 next iteration triggers HALT.",
     "training_time_seconds": 900,
+    "arena_count": 1,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-071914-replicate"
   },
   {
@@ -18934,6 +19760,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Run completed full 2400s window (vs 900s baseline, +1500s extension) with no early bail. End-of-run probe shows max_prob=0.998 and legal_mass_sum=0.0, but top1_legal_ever_positive=TRUE, so full-collapse (requiring all three signals) is not met. Activity was healthy: 4 arenas with 1 promotion (mean score 0.516, peak 0.57 elo+49), vs baseline's 1 arena/0 promotions.",
     "training_time_seconds": 2400,
+    "arena_count": 4,
+    "arena_promotions": 1,
     "folder": "experiments/20260430-170725"
   },
   {
@@ -18976,6 +19804,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Code change (build 403\u2192404) floored adv variance at 0.04. Same 2400s window, no early-bail, no full collapse (top1_legal_ever_positive=true, final top1_legal 0.0156 vs baseline 0.0078). End-of-run illegal_mass/max_prob saturated in both runs. Promotions dropped 1\u21920; pEnt min 6.77\u21925.77 (still >5); gNorm max 44\u219271. End-of-run health roughly comparable \u2014 baseline holds.",
     "training_time_seconds": 2400,
+    "arena_count": 4,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-175320-codechange"
   },
   {
@@ -19018,6 +19848,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Pure window extension 2400s\u21922700s with identical params. End-of-run health dramatically better: max prob 0.150 vs 0.998, illegal_mass 0.678 vs 1.0, legal_mass 0.322 vs 0.0, top1_legal 0.125 vs 0.094. pEnt 6.44 well above 5.0 alarm. gNorm 58 higher but below 100 clip. One fewer promotion (0 vs 1) but no collapse on any signal. Longer window, no full collapse \u2014 exactly the goal axis.",
     "training_time_seconds": 2700,
+    "arena_count": 5,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-184042"
   },
   {
@@ -19060,6 +19892,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "3000s window extended +300s but end-of-run candidate probe shows max_prob=1.0, legal_mass_sum=0, top100_sum=1 \u2014 sustained saturation matching two of three full-collapse signals. top1_legal_ever_positive=true spares the literal full-collapse trigger, but end-of-run health regressed sharply vs baseline (max 0.150, legal_mass 0.322). 5 arenas, 0 promotions, mean 0.511. Trajectory top1_legal collapsed 0.125\u21920.023.",
     "training_time_seconds": 3000,
+    "arena_count": 5,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-192838"
   },
   {
@@ -19108,6 +19942,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "REGRESSED: full collapse on all three signals \u2014 pEnt min 4.834 (crossed 5.0 alarm; baseline 6.56), top1_legal_ever_positive=FALSE (vs TRUE in 2700s baseline and prior 3000s rejection), gNorm max 140 (exceeded 100 threshold). last_probe max=0.998, legal_mass=0. Entropy_bonus 0.016\u21920.018 backfired \u2014 higher entropy bonus destabilized rather than diversified. 5 arenas, 0 promotions.",
     "training_time_seconds": 3000,
+    "arena_count": 5,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-202230"
   },
   {
@@ -19156,6 +19992,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Same 2700s window, no early-bail, no full-collapse signals. End-of-run probe health is markedly better: max_prob 0.150\u21920.078 and legal_mass_sum 0.322\u21920.696, with top1_legal_ever_positive still true and pEnt min 6.21 safely above the 5.0 alarm. Promotion activity: 4 arenas, 0 promotions (baseline 5/0).",
     "training_time_seconds": 2700,
+    "arena_count": 4,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-211512"
   },
   {
@@ -19198,6 +20036,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Window extended 2700s\u21923000s with no full-collapse signals: pEnt min 6.77 (better than 6.21 baseline), top1_legal positive, gNorm 58.8, no early bail. End-of-run candidate probe shows higher max=0.434 and lower legal_mass=0.584 vs baseline, but well clear of collapse thresholds. Longer-window accept clause is satisfied. 4 arenas, 0 promotions.",
     "training_time_seconds": 3000,
+    "arena_count": 4,
+    "arena_promotions": 0,
     "folder": "experiments/20260430-220314"
   },
   {
@@ -19240,6 +20080,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "3300s window completed (timer_expired, no early-bail). End-of-run candidate probe healthier than baseline: illegal_mass_sum 0.416\u21920.211, max 0.434\u21920.286, legal_mass_sum 0.584\u21920.789. pEnt min 6.64 (>5.0), top1_legal_ever_positive true. Build delta 404\u2192411 (session-save UI scope, training-neutral) noted but the goal-relevant signals moved clearly past noise. 5 arenas, 0 promotions.",
     "training_time_seconds": 3300,
+    "arena_count": 5,
+    "arena_promotions": 0,
     "folder": "experiments/20260501-000729"
   },
   {
@@ -19282,6 +20124,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Window 3300s\u21923600s completed (timer_expired, no early-bail). Per goal's strict full-collapse definition (all three signals), this is not a full collapse: max_prob 0.183 (well below 0.99), top1_legal_ever_positive=true. illegal_mass_sum=0.999 alone does not trip the rejection bar. Window extended successfully \u2192 ACCEPT. CAVEATS: build 411\u2192463 (arena-concurrency code change), end-of-run legal_mass eroded 0.789\u21920.001, gNorm max 217 (exceeded 100 first time on this baseline family), pEnt min 5.23 (well above 5.0 floor but trending down). 11 arenas, 0 promoted.",
     "training_time_seconds": 3600,
+    "arena_count": 11,
+    "arena_promotions": 0,
     "folder": "experiments/20260501-060552"
   },
   {
@@ -19330,6 +20174,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Window 3600s\u21927200s completed (timer_expired) but late-run collapse: last_probe at 7192s shows max_prob=1.000, legal_mass=0.000 (2 of 3 strict-collapse signals met; top1_legal_ever_positive=TRUE because mid-run was healthy). Mid-probe at 3391s was strong (max 0.197, legal 0.450), so collapse occurred in the 2nd hour. pEnt min 4.975 crossed the 5.0 alarm floor for the first time on this baseline family. gNorm max 189 (>100). 19 arenas, 1\u00d7 promoted. REGRESSED vs 3600s baseline end-of-run health.",
     "training_time_seconds": 7200,
+    "arena_count": 19,
+    "arena_promotions": 1,
     "folder": "experiments/20260501-070844"
   },
   {
@@ -19378,6 +20224,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Window 3600s\u21925400s (60\u219290min) completed cleanly (timer_expired). Trajectory metrics IMPROVED vs 60m baseline: pEnt min 5.98 (vs 5.23), gNorm max 105.7 (vs 217.4), no full-collapse signals tripped (top1_legal_ever_positive=true, pEnt never below 5.0). 15 arenas (vs 11), 0 promoted. Mid/last candidate probes show training-mode max_prob=1.0 like 60m end-probe but inference arenas all at parity (mean 0.51). Binary-search midpoint succeeds.",
     "training_time_seconds": 5400,
+    "arena_count": 15,
+    "arena_promotions": 0,
     "folder": "experiments/20260501-091101"
   },
   {
@@ -19420,6 +20268,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "105m (6300s) completed timer_expired but pEnt min 4.798 dropped below 5.0 alarm floor (90m had min 5.98, 60m baseline 5.23) \u2014 first time on this baseline family. Per strict collapse rule (pEnt<5.0 when previously held), classifying regressed. Notable countersignals: 1 arena promotion (vs 0 in 90m), final candidate probes healthy (max_prob 0.113 vs 1.0 in 90m), final top1_legal=0.047 (vs 0 in 90m), gNorm max 114 still <90m's 106. Promoted 1\u00d7 at arena 14.",
     "training_time_seconds": 6300,
+    "arena_count": 18,
+    "arena_promotions": 1,
     "folder": "experiments/20260501-104322"
   },
   {
@@ -19462,6 +20312,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Early-killed at 3755s on hard-reject H2+H3+H4: pEnt 4.91 (below 5.0 alarm floor), pLogitAbsMax 79.96 (severe blowup, H3 threshold 50), legalMass 0.0023 with top1Legal=0 (late_probe_collapsed equivalent). gNorm climbed to 304 (3\u00d7 90m baseline max of 106). Run never produced healthy training; full collapse confirmed by user's UI Forward Pass output. No promotions. Wrapper exit 6 \u2192 no result.json; classified regressed via stub.",
     "training_time_seconds": 5850,
+    "arena_count": null,
+    "arena_promotions": null,
     "folder": "experiments/20260501-123013"
   },
   {
@@ -19504,6 +20356,8 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Run was interrupted by user pause before completion \u2014 no result.json was ever written. Folder preserved as evidence of the in-flight binary-search probe (5625s window between last-good 5400s and last-failed 5850s) but treated as FAILED for streak/dashboard purposes since the run did not produce a result.",
     "training_time_seconds": 5625,
+    "arena_count": null,
+    "arena_promotions": null,
     "folder": "experiments/20260501-133536"
   },
   {
@@ -19552,23 +20406,80 @@ window.EXPERIMENTS = [
     },
     "analysis_commentary": "Run was halted by user at ~1:35 elapsed to resume planning conversation about --show-default-parameters CLI flags. No result.json was produced. Folder preserved as evidence of an in-flight refinement (entropy_bonus 0.014\u21920.016 at 5400s) that may be retried later.",
     "training_time_seconds": 5400,
+    "arena_count": null,
+    "arena_promotions": null,
     "folder": "experiments/20260501-144840"
+  },
+  {
+    "timestamp": "20260501-235537",
+    "start_time_iso": "2026-05-01T23:55:37Z",
+    "status": "REJECTED",
+    "mode": "normal",
+    "change_details": "Bump entropy_bonus 0.014\u21920.017 and extend window 5400\u21927200s. Higher entropy regularization should counter late-run policy concentration. Now that params actually apply post-build-fix, retest the 2h target.",
+    "changed_params": [
+      {
+        "key": "entropy_bonus",
+        "old": 0.014,
+        "new": 0.017
+      },
+      {
+        "key": "training_time_limit",
+        "old": 5400,
+        "new": 7200
+      }
+    ],
+    "parameters": {
+      "entropy_bonus": 0.017,
+      "grad_clip_max_norm": 25,
+      "weight_decay": 0.0002,
+      "K": 5,
+      "learning_rate": 5e-05,
+      "sqrt_batch_scaling_lr": false,
+      "lr_warmup_steps": 30,
+      "draw_penalty": 0.1,
+      "self_play_start_tau": 2,
+      "self_play_target_tau": 0.8,
+      "self_play_tau_decay_per_ply": 0.03,
+      "arena_start_tau": 2,
+      "arena_target_tau": 0.5,
+      "arena_tau_decay_per_ply": 0.01,
+      "replay_ratio_target": 1.1,
+      "replay_ratio_auto_adjust": true,
+      "self_play_workers": 48,
+      "training_step_delay_ms": 0,
+      "training_batch_size": 4096,
+      "replay_buffer_capacity": 500000,
+      "replay_buffer_min_positions_before_training": 75000,
+      "arena_promote_threshold": 0.55,
+      "arena_games_per_tournament": 100,
+      "arena_auto_interval_sec": 300,
+      "candidate_probe_interval_sec": 15,
+      "legal_mass_collapse_threshold": 0.999,
+      "legal_mass_collapse_grace_seconds": 180,
+      "legal_mass_collapse_no_improvement_probes": 8,
+      "training_time_limit": 7200
+    },
+    "analysis_commentary": "Killed mid-run after ~36 min: gNorm rising 53\u2192226 over 6 ticks, pLoss diving to -33 (entropy-bonus exploitation, not legal-move learning), legalMass and top1Legal both flat at near-uniform. Entropy_bonus 0.014\u21920.017 destabilized the optimization without buying legal-mass progress. User opted to promote 20260501-104322 baseline instead.",
+    "training_time_seconds": 7200,
+    "arena_count": null,
+    "arena_promotions": null,
+    "folder": "experiments/20260501-235537"
   }
 ];
 window.AGGREGATES = {
-  "total_iterations": 427,
+  "total_iterations": 428,
   "counts": {
     "SEED": 1,
     "ACCEPTED": 43,
     "NEUTRAL": 39,
-    "REJECTED": 342,
+    "REJECTED": 343,
     "FAILED": 3,
     "IN_PROGRESS": 0
   },
-  "accept_rate": 0.10070257611241218,
-  "failure_streak": 4,
+  "accept_rate": 0.10046728971962617,
+  "failure_streak": 5,
   "trailing_replicates": 0,
-  "iterations_since_codechange": 13,
+  "iterations_since_codechange": 14,
   "code_iteration_due": false,
   "code_iteration_interval": 40,
   "arena_count": 354,

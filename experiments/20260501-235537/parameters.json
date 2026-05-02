@@ -1,5 +1,5 @@
 {
-  "entropy_bonus": 0.014,
+  "entropy_bonus": 0.017,
   "grad_clip_max_norm": 25,
   "weight_decay": 0.0002,
   "K": 5,
@@ -25,7 +25,7 @@
   "arena_auto_interval_sec": 300,
   "candidate_probe_interval_sec": 15,
   "legal_mass_collapse_threshold": 0.999,
-  "legal_mass_collapse_grace_seconds": 600,
+  "legal_mass_collapse_grace_seconds": 180,
   "legal_mass_collapse_no_improvement_probes": 8,
-  "training_time_limit": 5400
+  "training_time_limit": 7200
 }

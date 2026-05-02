@@ -147,6 +147,17 @@ def build_row(folder: Path):
         raw = proposal.get("training_time_seconds")
         if isinstance(raw, (int, float)):
             training_time = int(raw)
+    # Arenas + promotions for this iteration. Pulled from the same
+    # arena_results array that feeds AGGREGATES, but exposed
+    # per-row so the table can show "5/0" style counts (5 arenas
+    # ran, 0 promoted) instead of only a global rolling total.
+    arena_count = None
+    arena_promotions = None
+    if isinstance(result, dict):
+        ar = result.get("arena_results")
+        if isinstance(ar, list):
+            arena_count = len(ar)
+            arena_promotions = sum(1 for a in ar if isinstance(a, dict) and a.get("promoted"))
     return {
         "timestamp": folder.name,
         "start_time_iso": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -157,6 +168,8 @@ def build_row(folder: Path):
         "parameters": new_params if isinstance(new_params, dict) else None,
         "analysis_commentary": commentary,
         "training_time_seconds": training_time,
+        "arena_count": arena_count,
+        "arena_promotions": arena_promotions,
         "folder": f"experiments/{folder.name}",
     }
 
@@ -393,12 +406,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <span id="status">loading&hellip;</span>
 </header>
 <div id="aggregates"></div>
+<div id="filters" style="margin: 8px 0 4px; font-size: 13px;">
+  <label style="cursor: pointer; user-select: none;">
+    <input type="checkbox" id="filter-promotions" />
+    Show only iterations with promotions
+  </label>
+  <span id="filter-count" style="margin-left: 12px; color: #666;"></span>
+</div>
 <table id="experiments">
   <thead>
     <tr>
       <th class="col-start">Start (local)</th>
       <th>Status</th>
       <th>Dur.</th>
+      <th title="Arenas run / promotions during this iteration">Arenas</th>
       <th>Change</th>
       <th class="col-deltas">Param deltas</th>
       <th>Params</th>
@@ -482,6 +503,14 @@ function renderRow(exp) {
   const durCell = (typeof exp.training_time_seconds === 'number')
     ? `${Math.round(exp.training_time_seconds / 60)}m`
     : '—';
+  // Arenas cell: "<count>/<promoted>" — e.g. "5/0" means 5 arenas
+  // ran and 0 promoted. Falls back to em-dash for runs that
+  // pre-date the field or didn't produce a result.json.
+  let arenasCell = '—';
+  if (typeof exp.arena_count === 'number') {
+    const promo = (typeof exp.arena_promotions === 'number') ? exp.arena_promotions : 0;
+    arenasCell = `<span class="mono" title="${exp.arena_count} arenas, ${promo} promoted">${exp.arena_count}/${promo}</span>`;
+  }
   const paramsCell = exp.parameters
     ? `<span class="params-link" data-key="${escHTML(rowKey(exp))}">view</span>`
     : '<em>—</em>';
@@ -489,6 +518,7 @@ function renderRow(exp) {
     <td class="mono col-start">${escHTML(fmtLocal(exp.start_time_iso))}</td>
     <td>${statusCell}</td>
     <td class="mono">${durCell}</td>
+    <td>${arenasCell}</td>
     <td class="details">${escHTML(exp.change_details || '')}</td>
     <td class="col-deltas">${deltas}</td>
     <td>${paramsCell}</td>
@@ -588,7 +618,59 @@ function reconcile(experiments) {
   if (changed && wasAtBottom) {
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   }
+
+  // Re-apply the active row-level filter so newly added rows respect
+  // the current "promotions only" toggle without the user having to
+  // toggle it off-and-on after each poll.
+  applyRowFilter();
 }
+
+// Toggle row visibility based on the "Show only iterations with
+// promotions" checkbox. Rows where arena_promotions > 0 stay visible;
+// the rest get display:none. Hidden rows are not removed from the
+// DOM — the toggle is reversible and re-applied after every reconcile.
+function applyRowFilter() {
+  const checkbox = document.getElementById('filter-promotions');
+  const countEl = document.getElementById('filter-count');
+  if (!checkbox) return;
+  const onlyPromotions = checkbox.checked;
+  const tbody = document.querySelector('#experiments tbody');
+  if (!tbody) return;
+  let visible = 0;
+  let total = 0;
+  for (const tr of tbody.children) {
+    total += 1;
+    if (!onlyPromotions) {
+      tr.style.display = '';
+      visible += 1;
+      continue;
+    }
+    // Pull arena_promotions out of the row's stashed payload — that
+    // way we don't have to add yet another data-attribute and the
+    // filter stays in sync with whatever shape the row was rendered
+    // with.
+    let promotions = 0;
+    try {
+      const payload = JSON.parse(tr.dataset.payload || '{}');
+      promotions = (typeof payload.arena_promotions === 'number') ? payload.arena_promotions : 0;
+    } catch (e) { promotions = 0; }
+    if (promotions > 0) {
+      tr.style.display = '';
+      visible += 1;
+    } else {
+      tr.style.display = 'none';
+    }
+  }
+  if (countEl) {
+    countEl.textContent = onlyPromotions
+      ? `${visible} of ${total} rows shown (promotions only)`
+      : `${total} rows`;
+  }
+}
+
+document.addEventListener('change', (ev) => {
+  if (ev.target && ev.target.id === 'filter-promotions') applyRowFilter();
+});
 
 function renderAggregates(agg) {
   const el = document.getElementById('aggregates');
@@ -685,7 +767,12 @@ def main():
     # revision — that way existing dashboards auto-upgrade to new features
     # (like the params modal) without the user having to delete the file, but
     # we don't churn mtime every regen when the template hasn't changed.
-    template_marker = "col-start"
+    # Marker bumps when the template gains a new feature so existing
+    # dashboards auto-upgrade. Each marker should be a token that
+    # appears only in the new template, never the prior one.
+    # History: "col-start" (initial), "Arenas</th>" (per-row arena
+    # count + promotions column).
+    template_marker = "filter-promotions"
     if not OUT_HTML.is_file() or template_marker not in OUT_HTML.read_text():
         OUT_HTML.write_text(HTML_TEMPLATE)
     print(f"regen_dashboard: {len(rows)} runs -> {OUT_JS.relative_to(REPO_ROOT)}")

@@ -1,0 +1,1 @@
+Bump entropy_bonus 0.014→0.017 and extend window 5400→7200s. Higher entropy regularization should counter late-run policy concentration. Now that params actually apply post-build-fix, retest the 2h target.

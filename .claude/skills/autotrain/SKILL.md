@@ -383,7 +383,7 @@ Instructions embedded in the prompt:
 Read these directly off `new_summary.collapse_signals` and `new_summary.arenas`. Each exposes a bool you key off; you don't need to recompute from the trajectory.
 
   H1. `termination_reason == "legal_mass_collapse"` — early-bail.
-  H2. `pEnt_final_below_5 == true` — final policy entropy below the 5.0 alarm floor (≈ 60% of uniform `log(4864)=8.49`). Crossing this floor at end of run means the policy is collapsing.
+  H2. `pEnt_final_below_5 == true` **AND** `final_top1_legal_fraction < 0.01` — final policy entropy below the 5.0 alarm floor (≈ exp(5)=148 effective moves vs ~30–40 legal moves) **paired with no real legal-move preference forming** (top-1 legal at <1% mass = barely above uniform 1/4864 ≈ 0.0002). Concentration alone isn't collapse — concentration *onto illegal moves* is. If pEnt<5 but the network has a legitimate legal-move signal (top-1 legal ≥ 1%, ≥50× uniform), the narrowing is "starting to learn" rather than "collapsing", and the run shouldn't be hard-rejected on this rule. The pure "pEnt<5" signal still triggers a soft-reject (S1) when paired with another mid-run concern.
   H3. `policy_logit_severe_blowup == true` (i.e. `max_policy_logit_abs_max > 50`) — softmax has become a delta function. One logit dwarfs the rest by ≥e^50 ratio. Gradients through other classes are dead.
   H4. `late_probe_collapsed == true` — every candidate probe in the last ~5 minutes shows `max_prob ≥ 0.99` AND `legal_mass_sum < 0.01`. This is the equivalent of the UI Forward Pass demo showing 100% of mass on illegal moves.
   H5. `value_head_saturated == true` — `final_value_abs_mean ≥ 0.95`. The tanh has saturated, value gradients vanish.
