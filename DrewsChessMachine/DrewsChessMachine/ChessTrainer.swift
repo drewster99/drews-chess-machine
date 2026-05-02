@@ -1005,6 +1005,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var movePlayedPlaceholder: MPSGraphTensor   // [batch] int32
     private var zPlaceholder: MPSGraphTensor            // [batch, 1] float
     private var vBaselinePlaceholder: MPSGraphTensor    // [batch, 1] float
+    private var legalMaskPlaceholder: MPSGraphTensor
     private var lrPlaceholder: MPSGraphTensor           // [] scalar float
     private var entropyCoeffPlaceholder: MPSGraphTensor // [] scalar float
     private var weightDecayPlaceholder: MPSGraphTensor  // [] scalar float
@@ -1076,6 +1077,8 @@ final class ChessTrainer: @unchecked Sendable {
         let zTD: MPSGraphTensorData
         let vBaselineND: MPSNDArray
         let vBaselineTD: MPSGraphTensorData
+        let legalMaskND: MPSNDArray
+        let legalMaskTD: MPSGraphTensorData
         let feedsDict: [MPSGraphTensor: MPSGraphTensorData]
     }
     private var feedCache: [Int: BatchFeeds] = [:]
@@ -1120,6 +1123,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var replayBatchMoves: UnsafeMutablePointer<Int32>?
     private var replayBatchZs: UnsafeMutablePointer<Float>?
     private var replayBatchVBaselines: UnsafeMutablePointer<Float>?
+    private var replayBatchLegalMasks: UnsafeMutablePointer<Float>?
 
     // Per-position observability metadata staging buffers — populated
     // only on stats-collection batches (every Nth, when
@@ -1175,6 +1179,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
         self.vBaselinePlaceholder = built.vBaseline
+        self.legalMaskPlaceholder = built.legalMask
         self.lrPlaceholder = built.lr
         self.entropyCoeffPlaceholder = built.entropyCoeff
         self.weightDecayPlaceholder = built.weightDecay
@@ -1251,6 +1256,10 @@ final class ChessTrainer: @unchecked Sendable {
             ptr.deinitialize(count: replayBatchCapacity)
             ptr.deallocate()
         }
+        if let ptr = replayBatchLegalMasks {                              // <-- add
+            ptr.deinitialize(count: replayBatchCapacity * ChessNetwork.policySize)
+            ptr.deallocate()
+        }
         if let ptr = replayBatchPlies {
             ptr.deinitialize(count: replayBatchCapacity)
             ptr.deallocate()
@@ -1295,6 +1304,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.movePlayedPlaceholder = built.movePlayed
         self.zPlaceholder = built.z
         self.vBaselinePlaceholder = built.vBaseline
+        self.legalMaskPlaceholder = built.legalMask
         self.lrPlaceholder = built.lr
         self.entropyCoeffPlaceholder = built.entropyCoeff
         self.weightDecayPlaceholder = built.weightDecay
@@ -1359,6 +1369,7 @@ final class ChessTrainer: @unchecked Sendable {
         movePlayed: MPSGraphTensor,
         z: MPSGraphTensor,
         vBaseline: MPSGraphTensor,
+        legalMask: MPSGraphTensor, // legal moves mask
         lr: MPSGraphTensor,
         entropyCoeff: MPSGraphTensor,
         weightDecay: MPSGraphTensor,
@@ -1414,6 +1425,19 @@ final class ChessTrainer: @unchecked Sendable {
             name: "v_baseline"
         )
 
+        let legalMask = graph.placeholder(
+            shape: [-1, NSNumber(value: ChessNetwork.policySize)],
+            dataType: dtype,
+            name: "legal_move_mask"
+        )
+
+        // Build masked logits: illegal positions get a huge negative bias.
+        let oneConst = graph.constant(1.0, dataType: dtype)
+        let illegalMask = graph.subtraction(oneConst, legalMask, name: "illegal_mask")
+        let largeNeg = graph.constant(-1e9, dataType: dtype)
+        let additiveMask = graph.multiplication(illegalMask, largeNeg, name: "additive_mask")
+        let maskedLogits = graph.addition(network.policyOutput, additiveMask, name: "masked_logits")
+
         // --- Policy loss: L = mean( z * -log_softmax(logits)[a*] ) ---
         //
         // Standard outcome-weighted cross entropy. We one-hot the played
@@ -1438,13 +1462,15 @@ final class ChessTrainer: @unchecked Sendable {
             offValue: 0.0,
             name: "move_onehot"
         )
+
         let ceLossRaw = graph.softMaxCrossEntropy(
-            network.policyOutput,
+            maskedLogits,        // <-- changed from network.policyOutput
             labels: oneHot,
             axis: 1,
             reuctionType: .none,
             name: "policy_ce_raw"
         )
+
         // softMaxCrossEntropy with .none reduces the class axis, leaving
         // one loss per batch element. Reshape to [batch, 1] so it lines up
         // with z for the outcome-weighted multiply.
@@ -2167,7 +2193,7 @@ final class ChessTrainer: @unchecked Sendable {
         ops.append(contentsOf: network.bnRunningStatsAssignOps)
 
         return (
-            movePlayed, z, vBaseline,
+            movePlayed, z, vBaseline, legalMask,
             lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyScaleKTensor,
             totalLossTensor, policyLoss, valueLoss,
             policyEntropy, policyNonNegCount, gradGlobalNorm, valueMean, valueAbsMean, policyHeadWeightNormTensor,
@@ -2238,6 +2264,9 @@ final class ChessTrainer: @unchecked Sendable {
         // historically — so losses stay comparable to prior sweep runs.
         let vBaselineValues = [Float](repeating: 0, count: batchSize)
 
+        // Legal moves mask
+        let legalMaskValues = [Float](repeating: 1.0, count: batchSize * ChessNetwork.policySize)
+
         // Unbox the four Swift arrays into raw pointers and feed
         // them through the shared pointer-based `buildFeeds` /
         // `runPreparedStep` pipeline.
@@ -2245,32 +2274,36 @@ final class ChessTrainer: @unchecked Sendable {
             try moveIndices.withUnsafeBufferPointer { movesBuf in
                 try zValues.withUnsafeBufferPointer { zsBuf in
                     try vBaselineValues.withUnsafeBufferPointer { vBaseBuf in
-                        // The four arrays were allocated just above
-                        // with positive batch size, so their
-                        // `baseAddress`es are guaranteed non-nil.
-                        guard
-                            let boardsBase = boardsBuf.baseAddress,
-                            let movesBase = movesBuf.baseAddress,
-                            let zsBase = zsBuf.baseAddress,
-                            let vBaseBase = vBaseBuf.baseAddress
-                        else {
-                            preconditionFailure(
-                                "ChessTrainer.trainStep(batchSize:): non-empty inputs should have baseAddress"
+                        try legalMaskValues.withUnsafeBufferPointer { legalMasksBuf in
+                            // The arrays were allocated just above
+                            // with positive batch size, so their
+                            // `baseAddress`es are guaranteed non-nil.
+                            guard
+                                let boardsBase = boardsBuf.baseAddress,
+                                let movesBase = movesBuf.baseAddress,
+                                let zsBase = zsBuf.baseAddress,
+                                let vBaseBase = vBaseBuf.baseAddress,
+                                let legalMasksBase = legalMasksBuf.baseAddress
+                            else {
+                                preconditionFailure(
+                                    "ChessTrainer.trainStep(batchSize:): non-empty inputs should have baseAddress"
+                                )
+                            }
+                            let feeds = buildFeeds(
+                                batchSize: batchSize,
+                                boards: boardsBase,
+                                moves: movesBase,
+                                zs: zsBase,
+                                vBaselines: vBaseBase,
+                                legalMasks: legalMasksBase
+                            )
+                            let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
+                            return try runPreparedStep(
+                                feeds: feeds,
+                                prepMs: prepMs,
+                                totalStart: totalStart
                             )
                         }
-                        let feeds = buildFeeds(
-                            batchSize: batchSize,
-                            boards: boardsBase,
-                            moves: movesBase,
-                            zs: zsBase,
-                            vBaselines: vBaseBase
-                        )
-                        let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
-                        return try runPreparedStep(
-                            feeds: feeds,
-                            prepMs: prepMs,
-                            totalStart: totalStart
-                        )
                     }
                 }
             }
@@ -2417,7 +2450,8 @@ final class ChessTrainer: @unchecked Sendable {
                 let boards = self.replayBatchBoards,
                 let moves = self.replayBatchMoves,
                 let zs = self.replayBatchZs,
-                let vBaselines = self.replayBatchVBaselines
+                let vBaselines = self.replayBatchVBaselines,
+                let masks = self.replayBatchLegalMasks
             else {
                 preconditionFailure("ChessTrainer staging buffers vanished between phases")
             }
@@ -2443,12 +2477,49 @@ final class ChessTrainer: @unchecked Sendable {
                 }
             }
 
+            // NEW: populate the legal-move mask for each position in the batch.
+            let policySize = ChessNetwork.policySize
+            let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+
+            // Zero the entire mask buffer first — cheaper than zeroing per-row inside
+            // the loop, and the legal-move generator will overwrite the legal indices.
+            let totalMaskFloats = batchSize * policySize
+            masks.update(repeating: 0.0, count: totalMaskFloats)
+
+            for pos in 0..<batchSize {
+                let boardPtr = boards.advanced(by: pos * floatsPerBoard)
+                let state = BoardEncoder.decodeSynthetic(from: boardPtr)
+                let legalMoves = MoveGenerator.legalMoves(for: state)
+                let maskBase = pos * policySize
+                for move in legalMoves {
+                    let idx = PolicyEncoding.policyIndex(move, currentPlayer: .white)
+                    if idx >= 0 && idx < policySize {
+                        masks[maskBase + idx] = 1.0
+                    }
+                }
+            }
+
+            if self._completedTrainSteps == 0 {
+                for pos in 0..<min(8, batchSize) {
+                    let movedIdx = Int(moves[pos])
+                    let inLegalMask = masks[pos * ChessNetwork.policySize + movedIdx] == 1.0
+                    var legalCount: Int = 0
+                    for i in 0..<ChessNetwork.policySize {
+                        if masks[pos * ChessNetwork.policySize + i] == 1.0 { legalCount += 1 }
+                    }
+                    SessionLogger.shared.log(
+                        "[MASK CHECK] pos=\(pos) movedIdx=\(movedIdx) inLegalMask=\(inLegalMask) legalCount=\(legalCount)"
+                    )
+                }
+            }
+
             let feeds = self.buildFeeds(
                 batchSize: batchSize,
                 boards: UnsafePointer(boards),
                 moves: UnsafePointer(moves),
                 zs: UnsafePointer(zs),
-                vBaselines: UnsafePointer(vBaselines)
+                vBaselines: UnsafePointer(vBaselines),
+                legalMasks: UnsafePointer(masks)
             )
             let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
 
@@ -2752,6 +2823,11 @@ final class ChessTrainer: @unchecked Sendable {
             ptr.deinitialize(count: replayBatchCapacity)
             ptr.deallocate()
         }
+        if let ptr = replayBatchLegalMasks {                              // <-- add
+            ptr.deinitialize(count: replayBatchCapacity * ChessNetwork.policySize)
+            ptr.deallocate()
+        }
+
         if let ptr = replayBatchPlies {
             ptr.deinitialize(count: replayBatchCapacity)
             ptr.deallocate()
@@ -2794,6 +2870,11 @@ final class ChessTrainer: @unchecked Sendable {
         let newVBaselines = UnsafeMutablePointer<Float>.allocate(capacity: needed)
         newVBaselines.initialize(repeating: 0, count: needed)
         replayBatchVBaselines = newVBaselines
+
+        let maskFloats = needed * ChessNetwork.policySize                 // <-- add
+        let newMasks = UnsafeMutablePointer<Float>.allocate(capacity: maskFloats)
+        newMasks.initialize(repeating: 0, count: maskFloats)
+        replayBatchLegalMasks = newMasks
 
         let newPlies = UnsafeMutablePointer<UInt16>.allocate(capacity: needed)
         newPlies.initialize(repeating: 0, count: needed)
@@ -2854,7 +2935,8 @@ final class ChessTrainer: @unchecked Sendable {
         boards: UnsafePointer<Float>,
         moves: UnsafePointer<Int32>,
         zs: UnsafePointer<Float>,
-        vBaselines: UnsafePointer<Float>
+        vBaselines: UnsafePointer<Float>,
+        legalMasks: UnsafePointer<Float>
     ) -> [MPSGraphTensor: MPSGraphTensorData] {
         let cached = feedsForBatch(batchSize)
 
@@ -2883,7 +2965,10 @@ final class ChessTrainer: @unchecked Sendable {
             UnsafeMutableRawPointer(mutating: vBaselines),
             strideBytes: nil
         )
-
+        cached.legalMaskND.writeBytes(                     // <-- add
+            UnsafeMutableRawPointer(mutating: legalMasks),
+            strideBytes: nil
+        )
         // Write the current learning rate and weight decay into the
         // scalar feeds. Two independent multipliers can kick in on
         // the LR side: sqrt-batch scaling (matches Adam-family
@@ -2973,6 +3058,13 @@ final class ChessTrainer: @unchecked Sendable {
         let vBaselineND = MPSNDArray(device: mtlDevice, descriptor: vBaselineDesc)
         let vBaselineTD = MPSGraphTensorData(vBaselineND)
 
+        let legalMaskDesc = MPSNDArrayDescriptor(
+            dataType: dtype,
+            shape: [NSNumber(value: batchSize), NSNumber(value: ChessNetwork.policySize)]
+        )
+        let legalMaskND = MPSNDArray(device: mtlDevice, descriptor: legalMaskDesc)
+        let legalMaskTD = MPSGraphTensorData(legalMaskND)
+
         // Pre-build the feeds dictionary so `buildFeeds` can return it
         // unchanged on every subsequent call at this batch size. The
         // keys (graph placeholders) and values (tensor data wrappers)
@@ -2984,6 +3076,7 @@ final class ChessTrainer: @unchecked Sendable {
             movePlayedPlaceholder: moveTD,
             zPlaceholder: zTD,
             vBaselinePlaceholder: vBaselineTD,
+            legalMaskPlaceholder: legalMaskTD,
             lrPlaceholder: lrTensorData,
             entropyCoeffPlaceholder: entropyCoeffTensorData,
             weightDecayPlaceholder: weightDecayTensorData,
@@ -3000,6 +3093,8 @@ final class ChessTrainer: @unchecked Sendable {
             zTD: zTD,
             vBaselineND: vBaselineND,
             vBaselineTD: vBaselineTD,
+            legalMaskND: legalMaskND,
+            legalMaskTD: legalMaskTD,
             feedsDict: feedsDict
         )
         feedCache[batchSize] = feeds
