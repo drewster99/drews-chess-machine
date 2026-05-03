@@ -2802,6 +2802,8 @@ struct ContentView: View {
     @State private var arStartTauEditText: String = ""
     @State private var arFloorTauEditText: String = ""
     @State private var arDecayPerPlyEditText: String = ""
+    @State private var replayBufferCapacityEditText: String = ""
+    @State private var replayBufferMinPositionsBeforeTrainingEditText: String = ""
 
     /// Binding for the side-to-move segmented picker. Writes rebuild
     /// `editableState` with the new current-player (nothing else changes)
@@ -3199,6 +3201,12 @@ struct ContentView: View {
         }
         if arDecayPerPlyEditText.isEmpty {
             arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
+        }
+        if replayBufferCapacityEditText.isEmpty {
+            replayBufferCapacityEditText = String(trainingParams.replayBufferCapacity)
+        }
+        if replayBufferMinPositionsBeforeTrainingEditText.isEmpty {
+            replayBufferMinPositionsBeforeTrainingEditText = String(trainingParams.replayBufferMinPositionsBeforeTraining)
         }
         // Resume-sheet UX is correctly gated on the window being
         // visible — surfacing a sheet on a hidden window would do
@@ -12115,6 +12123,49 @@ extension ContentView {
                         )
                     }
                     Text("(draws → z = −penalty; 0 disables)")
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 6) {
+                    Text("  Buffer Cap:")
+                    ParameterTextField(
+                        placeholder: "Capacity",
+                        text: $replayBufferCapacityEditText,
+                        width: 100
+                    ) { typed in
+                        if let parsed = Int(typed),
+                           let range = ReplayBufferCapacity.definition.intRange,
+                           range.contains(parsed) {
+                            let prior = trainingParams.replayBufferCapacity
+                            if parsed != prior {
+                                SessionLogger.shared.log(
+                                    "[PARAM] replayBufferCapacity: \(prior) -> \(parsed) (takes effect on next session start)"
+                                )
+                            }
+                            trainingParams.replayBufferCapacity = parsed
+                        }
+                        replayBufferCapacityEditText = String(trainingParams.replayBufferCapacity)
+                    }
+                    Text("Prefill:")
+                        .foregroundStyle(.secondary)
+                    ParameterTextField(
+                        placeholder: "Prefill",
+                        text: $replayBufferMinPositionsBeforeTrainingEditText,
+                        width: 100
+                    ) { typed in
+                        if let parsed = Int(typed),
+                           let range = ReplayBufferMinPositionsBeforeTraining.definition.intRange,
+                           range.contains(parsed) {
+                            let prior = trainingParams.replayBufferMinPositionsBeforeTraining
+                            if parsed != prior {
+                                SessionLogger.shared.log(
+                                    "[PARAM] replayBufferMinPositionsBeforeTraining: \(prior) -> \(parsed) (takes effect on next session start)"
+                                )
+                            }
+                            trainingParams.replayBufferMinPositionsBeforeTraining = parsed
+                        }
+                        replayBufferMinPositionsBeforeTrainingEditText = String(trainingParams.replayBufferMinPositionsBeforeTraining)
+                    }
+                    Text("(applies on next session start)")
                         .foregroundStyle(.secondary)
                 }
             }
