@@ -8672,6 +8672,19 @@ struct ContentView: View {
                 group.addTask(priority: .userInitiated) {
                     [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController,
                      sessionTrainingBatchSize, sessionMinBufferBeforeTraining] in
+                    // Symmetric inter-call timing for the ratio
+                    // controller: track when the previous training-
+                    // side `recordTrainingBatchAndGetDelay` was called
+                    // and how long the worker subsequently slept, so
+                    // the next call can pass the EFFECTIVE inter-call
+                    // wall (`(now - lastCallAt) - lastSleptMs`). This
+                    // matches the self-play barrier-tick measurement
+                    // basis (full tick-to-tick wall) and removes the
+                    // measurement asymmetry that pulled the controller
+                    // equilibrium away from `targetRatio` whenever a
+                    // delay was injected on either side.
+                    var lastTrainingCallAt: CFAbsoluteTime? = nil
+                    var lastTrainingSleptMs: Int = 0
                     while !Task.isCancelled {
                         // Pause gate check (between steps).
                         if trainingGate.isRequestedToPause {
@@ -8740,16 +8753,33 @@ struct ContentView: View {
                         }
 
                         // Post-step pause. The replay-ratio controller
-                        // records the SGD batch time, updates its
-                        // training ms-per-move estimate, and returns
-                        // the closed-form sleep that would bring
-                        // consumption/production toward the target
-                        // ratio. When auto-adjust is off, it returns
-                        // the manual delay instead. Skip the sleep
-                        // entirely at 0 ms.
+                        // records EFFECTIVE inter-call wall (matching
+                        // the self-play side's tick-to-tick basis),
+                        // updates its training ms-per-move estimate,
+                        // and returns the closed-form sleep that would
+                        // bring consumption/production toward the
+                        // target ratio. When auto-adjust is off, it
+                        // returns the manual delay instead. Skip the
+                        // sleep entirely at 0 ms.
+                        //
+                        // Effective wall = (now - lastCallAt) - lastSleptMs.
+                        // First call (no prior) falls back to the SGD
+                        // batch's own work time as a close-enough first
+                        // sample — no sleep was applied yet, and the
+                        // SMA window quickly washes the bootstrap
+                        // value out once real measurements arrive.
+                        let nowAt = CFAbsoluteTimeGetCurrent()
+                        let effectiveElapsedMs: Double
+                        if let prior = lastTrainingCallAt {
+                            effectiveElapsedMs = (nowAt - prior) * 1000.0 - Double(lastTrainingSleptMs)
+                        } else {
+                            effectiveElapsedMs = timing.totalMs
+                        }
+                        lastTrainingCallAt = nowAt
                         let stepDelayMs = ratioController.recordTrainingBatchAndGetDelay(
-                            elapsedMs: timing.totalMs
+                            elapsedMs: effectiveElapsedMs
                         )
+                        lastTrainingSleptMs = stepDelayMs
                         if stepDelayMs > 0 {
                             try? await Task.sleep(for: .milliseconds(stepDelayMs))
                         }
