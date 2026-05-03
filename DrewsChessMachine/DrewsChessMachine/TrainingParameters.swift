@@ -365,7 +365,7 @@ public enum ReplayBufferCapacity: TrainingParameterKey {}
 @TrainingParameter(
     name: "Replay Buffer Min Positions Before Training",
     description: "Number of self-play positions accumulated before the trainer starts pulling minibatches.",
-    default: 200000,
+    default: 600000,
     range: 0...10000000,
     category: "Replay Buffer",
     liveTunable: false

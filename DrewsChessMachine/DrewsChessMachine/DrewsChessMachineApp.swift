@@ -473,7 +473,7 @@ struct DrewsChessMachineApp: App {
         // Mutual exclusion.
         if hasShow && hasCreate {
             FileHandle.standardError.write(Data("error: \(showFlag) and \(createFlag) are mutually exclusive\n".utf8))
-            Darwin.exit(2)
+            Darwin.exit(3)
         }
 
         if hasShow {
@@ -481,7 +481,7 @@ struct DrewsChessMachineApp: App {
             let allowed: Set<String> = [showFlag]
             if let bad = rawArgs.first(where: { !allowed.contains($0) }) {
                 FileHandle.standardError.write(Data("error: \(showFlag) does not accept '\(bad)' (must appear alone)\n".utf8))
-                Darwin.exit(2)
+                Darwin.exit(4)
             }
             runShowDefaultParametersAndExit()
         }
@@ -493,12 +493,12 @@ struct DrewsChessMachineApp: App {
         let allowed: Set<String> = [createFlag, forceFlag]
         if let badFlag = rawArgs.first(where: { $0.hasPrefix("--") && !allowed.contains($0) }) {
             FileHandle.standardError.write(Data("error: \(createFlag) does not accept '\(badFlag)' (only --force is allowed alongside)\n".utf8))
-            Darwin.exit(2)
+            Darwin.exit(5)
         }
         let positional = rawArgs.filter { !allowed.contains($0) }
         if positional.count > 1 {
             FileHandle.standardError.write(Data("error: \(createFlag) accepts at most one path argument; got \(positional.count)\n".utf8))
-            Darwin.exit(2)
+            Darwin.exit(6)
         }
         let path = positional.first ?? "./parameters.json"
         runCreateParametersFileAndExit(path: path, force: force)
@@ -527,7 +527,7 @@ struct DrewsChessMachineApp: App {
         let fm = FileManager.default
         if fm.fileExists(atPath: jsonURL.path) && !force {
             FileHandle.standardError.write(Data("error: \(jsonURL.path) already exists; pass --force to overwrite\n".utf8))
-            Darwin.exit(2)
+            Darwin.exit(7)
         }
 
         do {
