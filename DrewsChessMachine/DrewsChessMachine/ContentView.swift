@@ -1868,24 +1868,17 @@ struct ContentView: View {
     /// Policy-entropy floor below which the periodic stats ticker
     /// emits an `[ALARM]` log line.
     ///
-    /// Theoretical maximum is `log(policySize) ≈ 8.49` nats for the
-    /// current 4864-logit head. **However, init entropy in v2
-    /// architecture sits much lower than that** — empirically ~6.5 at
-    /// step 0 — because the new policy head is a bare 1×1 conv with
-    /// no preceding BN/ReLU, so logits have std ~2-2.5 at init
-    /// (versus std ~1 in v1 where the policy head's BN normalized the
-    /// input). Compressed softmax entropy by ~σ²/2 ≈ 2-3 nats from
-    /// uniform. The entropy regularization term (`entropy_reg = 1e-3`)
-    /// pulls entropy back up over training as the network learns; we
-    /// observe gradual rise from 6.48 → 6.51 in early steps.
+    /// Since legal-move masking (acc5340), the training graph computes
+    /// entropy over the post-mask softmax — only legal moves. The
+    /// theoretical max is now `log(avg_legal_moves)`, roughly
+    /// ln(30) ≈ 3.4 nats in typical midgame. A fresh network starts
+    /// at pEnt ≈ 1.9 nats empirically.
     ///
-    /// Threshold of 5.0 leaves a ~1.5-nat margin below the v2 init
-    /// baseline — wide enough to avoid false alarms during normal
-    /// training, narrow enough to flag genuine collapse (entropy
-    /// dropping toward 1-2 nats means the policy has concentrated on
-    /// just a handful of moves, the classic "policy collapse"
-    /// failure mode).
-    nonisolated static let policyEntropyAlarmThreshold: Double = 5.0
+    /// Threshold of 1.0 flags genuine collapse (≈ 2.7 effective legal
+    /// moves), leaving a ~0.9-nat margin below fresh-init baseline.
+    /// Normal training concentrates the policy over time, so moderate
+    /// decline from 1.9 is expected and healthy.
+    nonisolated static let policyEntropyAlarmThreshold: Double = 1.0
     /// Number of training steps at the start of a Play-and-Train
     /// session for which the `[STATS]` line fires on every step.
     /// After this many steps the STATS ticker switches to a 60 s
@@ -1896,7 +1889,8 @@ struct ContentView: View {
     nonisolated static let bootstrapStatsStepCount: Int = 500
     nonisolated static let divergenceAlarmGradNormWarningThreshold: Double = 50.0
     nonisolated static let divergenceAlarmGradNormCriticalThreshold: Double = 500.0
-    nonisolated static let divergenceAlarmEntropyCriticalThreshold: Double = 3.0
+    /// Post-mask entropy critical floor: ≈ 1.6 effective legal moves.
+    nonisolated static let divergenceAlarmEntropyCriticalThreshold: Double = 0.5
     nonisolated static let divergenceAlarmConsecutiveWarningSamples: Int = 3
     nonisolated static let divergenceAlarmConsecutiveCriticalSamples: Int = 2
     nonisolated static let divergenceAlarmRecoverySamples: Int = 10
@@ -2854,21 +2848,20 @@ struct ContentView: View {
     }
 
     private var currentOverlay: BoardOverlay {
-        // Plain-board mode short-circuits ahead of every other check —
-        // it's the new default and means "show the chess board with no
-        // overlay at all", regardless of inferenceResult or which mode
-        // we're in.
-        if selectedOverlay < 0 { return .none }
         // Outside of forward-pass / candidate-test contexts (e.g. live
         // game-run) we have no inference data to overlay; render bare.
         if !showForwardPassUI { return .none }
         guard let result = inferenceResult else { return .none }
-        if selectedOverlay == 0 {
+        // Plain-board mode (-1) and Top Moves (0) both draw the
+        // top-moves arrows. The only difference is presentational:
+        // -1 hides the "Top Moves" header label and the input tensor
+        // strip below; 0 shows both. Channel modes (>=1) overlay a
+        // single input plane instead of arrows.
+        if selectedOverlay <= 0 {
             return .topMoves(result.topMoves)
-        } else {
-            let start = (selectedOverlay - 1) * 64
-            return .channel(Array(result.inputTensor[start..<start + 64]))
         }
+        let start = (selectedOverlay - 1) * 64
+        return .channel(Array(result.inputTensor[start..<start + 64]))
     }
 
     var body: some View {
@@ -2879,9 +2872,9 @@ struct ContentView: View {
         return VStack(alignment: .leading, spacing: 8) {
             // Title bar
             HStack(spacing: 8) {
-                Text("Drew's Chess Machine")
-                    .font(.title2)
-                    .fontWeight(.semibold)
+//                Text("Drew's Chess Machine")
+//                    .font(.title2)
+//                    .fontWeight(.semibold)
                 // Build banner — bumped from .caption/.tertiary to
                 // .callout/.secondary so the build number, git hash,
                 // and date are readable at a glance instead of squinting.

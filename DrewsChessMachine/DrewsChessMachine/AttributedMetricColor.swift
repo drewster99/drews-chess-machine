@@ -23,13 +23,13 @@ enum AttributedMetricColor {
     /// bands without editing the parser.
     struct Thresholds {
         /// Policy entropy "collapse" band — below this is red.
-        /// Matches `ContentView.policyEntropyAlarmThreshold` (5.0
-        /// in-repo). Above `uniformEntropy - 0.12` reads as flat /
-        /// non-learning and gets an orange highlight, where
-        /// `uniformEntropy = ln(ChessNetwork.policySize)` — currently
-        /// ln(4864) ≈ 8.489 for the 76-channel head. The default
-        /// factory derives the flat threshold from `policySize` so
-        /// the band cannot drift if the policy width changes.
+        /// Matches `ContentView.policyEntropyAlarmThreshold` (1.0
+        /// in-repo, calibrated for post-mask / legal-only entropy).
+        /// The "flat" orange band (`entropyFlatAbove`) is currently
+        /// derived from `ln(policySize)` — an upper bound that only
+        /// applies to the unmasked logit space, so in practice the
+        /// orange band never fires for post-mask pEnt. Collapse-red
+        /// is the operative band.
         var entropyCollapseBelow: Double
         var entropyFlatAbove: Double
         /// Value-head absolute mean saturation bands. Above 0.9 is
