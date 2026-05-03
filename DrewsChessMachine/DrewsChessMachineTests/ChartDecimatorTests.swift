@@ -175,15 +175,18 @@ final class ChartDecimatorTests: XCTestCase {
         // Two samples, both fall in the same bucket. One has a known
         // min, the other a known max. Decimator should report exactly
         // those values.
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.5, policyLoss: -3.5))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.7, policyLoss: 7.25))
+        //
+        // Visible window [0, 1] with the bucket-budget floor (32)
+        // gives bucket 0 = [0, 1/32). Cluster both samples inside it.
+        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.005, policyLoss: -3.5))
+        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.020, policyLoss: 7.25))
 
         let buckets = ChartDecimator.decimateTraining(
             ring: trainingRing,
             visibleStart: 0,
             visibleEnd: 1,
-            // Force everything into one bucket. Even with the floor
-            // applied, the data only spans bucket 0.
+            // Force everything into one bucket via the floor; samples
+            // are clustered inside bucket 0 above.
             bucketBudget: 1
         )
         XCTAssertEqual(buckets.count, 1)
@@ -195,9 +198,11 @@ final class ChartDecimatorTests: XCTestCase {
 
     func testNilFieldDoesNotAffectEnvelope() {
         let trainingRing = ChartSampleRing<TrainingChartSample>()
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.5, policyLoss: nil))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.7, policyLoss: 5.0))
-        trainingRing.append(trainingSample(id: 2, elapsedSec: 0.9, policyLoss: nil))
+        // Cluster all samples inside bucket 0 = [0, 1/32) under the
+        // floor-clamped layout.
+        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.005, policyLoss: nil))
+        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.015, policyLoss: 5.0))
+        trainingRing.append(trainingSample(id: 2, elapsedSec: 0.025, policyLoss: nil))
 
         let buckets = ChartDecimator.decimateTraining(
             ring: trainingRing,
@@ -214,8 +219,9 @@ final class ChartDecimatorTests: XCTestCase {
 
     func testFieldWithNoSamplesReportsNilRange() {
         let trainingRing = ChartSampleRing<TrainingChartSample>()
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.5))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.7))
+        // Cluster inside bucket 0 = [0, 1/32) under the floor.
+        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.005))
+        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.020))
 
         let buckets = ChartDecimator.decimateTraining(
             ring: trainingRing,
@@ -235,9 +241,10 @@ final class ChartDecimatorTests: XCTestCase {
         let trainingRing = ChartSampleRing<TrainingChartSample>()
         // Three samples in one bucket; lowPowerMode flips false → true → false.
         // Last-observed semantics should report `false`.
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.1, lowPowerMode: false))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.5, lowPowerMode: true))
-        trainingRing.append(trainingSample(id: 2, elapsedSec: 0.9, lowPowerMode: false))
+        // Cluster inside bucket 0 = [0, 1/32) under the floor.
+        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.005, lowPowerMode: false))
+        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.015, lowPowerMode: true))
+        trainingRing.append(trainingSample(id: 2, elapsedSec: 0.025, lowPowerMode: false))
 
         let buckets = ChartDecimator.decimateTraining(
             ring: trainingRing,
@@ -251,9 +258,10 @@ final class ChartDecimatorTests: XCTestCase {
 
     func testThermalStateLastObservedSurvivesNilSamples() {
         let trainingRing = ChartSampleRing<TrainingChartSample>()
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.1, thermalState: .nominal))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.3, thermalState: .fair))
-        trainingRing.append(trainingSample(id: 2, elapsedSec: 0.5, thermalState: nil))
+        // Cluster inside bucket 0 = [0, 1/32) under the floor.
+        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.005, thermalState: .nominal))
+        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.015, thermalState: .fair))
+        trainingRing.append(trainingSample(id: 2, elapsedSec: 0.025, thermalState: nil))
 
         let buckets = ChartDecimator.decimateTraining(
             ring: trainingRing,
