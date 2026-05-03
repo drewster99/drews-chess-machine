@@ -1446,9 +1446,66 @@ private struct WindowAccessor: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-// MARK: - Content View
+// MARK: - Content View (composer)
 
+/// Top-level window content. Owns the shared `ChartCoordinator` and
+/// composes two sibling child views:
+///
+///   - `UpperContentView`: status, controls, board, parameter
+///     editors, alarm banners — every UI element except the chart
+///     grid. Drives the heartbeat that pushes new chart samples
+///     into the coordinator.
+///   - `LowerContentView`: the chart-zoom row + chart grid. Reads
+///     the coordinator's decimated frame and binds to its scroll
+///     position, hover, and zoom state. Mounted only while the
+///     coordinator's `isActive` flag is true (mirrored from
+///     `UpperContentView.realTraining`).
+///
+/// Carving the chart layer into a sibling view scopes its SwiftUI
+/// body invalidation: when any unrelated `UpperContentView` `@State`
+/// changes, the coordinator's chart-relevant fields don't change,
+/// so SwiftUI skips re-evaluating `LowerContentView.body` even
+/// though the parent (`ContentView`) re-ran.
 struct ContentView: View {
+    let commandHub: AppCommandHub
+    let autoTrainOnLaunch: Bool
+    let cliConfig: CliTrainingConfig?
+    let cliOutputURL: URL?
+
+    /// Single source of truth for chart-layer state. Held here
+    /// (rather than on `UpperContentView`) so it can be passed to
+    /// both child views as a shared reference. Initial allocation
+    /// happens once when SwiftUI constructs `ContentView`'s storage
+    /// — the rings inside the coordinator each pre-reserve a 24h
+    /// block, so subsequent appends stay reallocation-free.
+    @State private var chartCoordinator = ChartCoordinator()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            UpperContentView(
+                commandHub: commandHub,
+                autoTrainOnLaunch: autoTrainOnLaunch,
+                cliConfig: cliConfig,
+                cliOutputURL: cliOutputURL,
+                chartCoordinator: chartCoordinator
+            )
+            if chartCoordinator.isActive {
+                Divider()
+                LowerContentView(
+                    promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
+                    replayRatioTarget: TrainingParameters.shared.replayRatioTarget,
+                    appMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
+                    gpuMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
+                    chartCoordinator: chartCoordinator
+                )
+            }
+        }
+    }
+}
+
+// MARK: - Upper Content View
+
+struct UpperContentView: View {
     /// Menu-bar command hub. Assigned by `DrewsChessMachineApp`; the
     /// view wires its action functions into the hub's closure slots
     /// and keeps the hub's mirrored state flags synced so the
@@ -1592,26 +1649,13 @@ struct ContentView: View {
 
     /// Latest divergence-ply histogram bars mirrored from
     /// `selfPlayDiversityTracker` by the UI heartbeat, at the same
-    /// throttled cadence as `parallelStats`. The chart-grid view reads
-    /// these directly — pushing through @State (rather than reading
-    /// the tracker at render time) keeps SwiftUI's dependency graph
-    /// correct so the bar chart actually redraws as counts shift.
-    @State private var currentDiversityHistogramBars: [DiversityHistogramBar] = []
-
-    /// Completed arenas this session, tagged with their start/end
-    /// elapsed-second positions on the chart grid's X axis. Appended
-    /// to every time `runArenaParallel` finishes; reset on session
-    /// start/stop. Drives the "Arena activity" chart tile.
-    @State private var arenaChartEvents: [ArenaChartEvent] = []
-    /// Elapsed-second mark when the *current* arena started, `nil`
-    /// when no arena is in progress. Set at the top of
-    /// `runArenaParallel`, cleared when the final completed
-    /// `ArenaChartEvent` is appended. The chart tile uses this to
-    /// render a "live" band from this start up to the latest chart
-    /// sample's elapsed time — so an active arena is visible on the
-    /// chart the moment it starts, rather than only appearing at
-    /// end-of-arena when the completed band lands.
-    @State private var activeArenaStartElapsed: Double?
+    // Diversity histogram, completed arena events, and the live
+    // arena-start marker live on `chartCoordinator` (see
+    // `ChartCoordinator.swift`). Heartbeat updates them via the
+    // coordinator's `setDiversityHistogramBars(_:)`,
+    // `recordArenaCompleted(_:)`, and `recordArenaStarted(elapsedSec:)`
+    // helpers; `LowerContentView` reads them directly from the
+    // coordinator.
     /// Shared cancellation-aware flag set while an arena tournament
     /// is in flight. The Candidate test probe checks this and skips
     /// firing so probe and arena never contend on the candidate
@@ -1714,32 +1758,13 @@ struct ContentView: View {
     // time window. See `ChartZoom` for the list of stops (15m..30d)
     // and the one-hour auto-re-enable rule.
 
-    /// Current zoom-stop index. When `chartZoomAuto` is on, the
-    /// heartbeat assigns this from `ChartZoom.autoIndex(forDataSec:)`
-    /// so the visible window tracks the data's natural length.
-    /// When auto is off, the user sets it via ⌘= / ⌘- and we leave
-    /// it alone until the 1-hour idle timer flips auto back on.
-    @State private var chartZoomIdx: Int = ChartZoom.defaultIndex
-
-    /// Whether the zoom level is auto-managed. Flipped to `false`
-    /// when the user presses ⌘= or ⌘- (or toggles the Auto button
-    /// off); flipped back to `true` once an hour has elapsed with
-    /// no ⌘=/⌘- activity, or when the user explicitly clicks the
-    /// Auto button.
-    @State private var chartZoomAuto: Bool = true
-
-    /// Timestamp of the last manual ⌘= / ⌘- action. `nil` means no
-    /// manual zoom has ever happened this session. The heartbeat
-    /// re-enables auto mode once `Date().timeIntervalSince(this)`
-    /// exceeds `chartZoomAutoReengageSec`.
-    @State private var lastManualChartZoomAt: Date?
-
-    /// Idle threshold after which manual zoom reverts to auto.
-    /// One hour matches the user's spec. Small enough that a user
-    /// who forgot they bumped zoom doesn't stay stuck at the wrong
-    /// scale for a full day; large enough that inspecting history
-    /// for a solid stretch doesn't get yanked back prematurely.
-    nonisolated static let chartZoomAutoReengageSec: TimeInterval = 3600
+    // Chart-zoom state (`chartCoordinator.chartZoomIdx`, `chartCoordinator.chartZoomAuto`,
+    // `chartCoordinator.lastManualChartZoomAt`) lives on `chartCoordinator`. Manual
+    // zoom commands route through `chartCoordinator.zoomIn()` /
+    // `zoomOut()` / `setAutoZoom(_:)`; the heartbeat zoom tick
+    // calls `chartCoordinator.refreshZoomTick()`. The auto-
+    // re-engage timeout constant is also on the coordinator
+    // (`ChartCoordinator.chartZoomAutoReengageSec`).
 
     /// Composite version stamp combining both zoom-state scalars
     /// so a single `.onChange` handler can react to either. Pulled
@@ -1748,7 +1773,7 @@ struct ContentView: View {
     /// to handle without hitting the "expression too complex"
     /// ceiling.
     private var chartZoomStateVersion: Int {
-        chartZoomIdx * 2 + (chartZoomAuto ? 1 : 0)
+        chartCoordinator.chartZoomIdx * 2 + (chartCoordinator.chartZoomAuto ? 1 : 0)
     }
     /// Total number of games a single arena plays. 200 gives us enough
     /// decisive games (~26 at the current ~13% decisive rate with
@@ -1920,15 +1945,6 @@ struct ContentView: View {
     /// trace without recomputing the snapshot itself.
     @State private var realLastLegalMassSnapshot: ChessTrainer.LegalMassSnapshot?
     nonisolated static let replayBufferCapacity = 1_000_000
-    /// Don't start sampling training batches until the buffer holds at least
-    /// this many positions — the greater of a 25k-position floor and 20% of
-    /// the ring's capacity. The floor keeps small buffers from training on a
-    /// tiny, heavily-correlated warmup cohort; the 20% fraction keeps larger
-    /// buffers from starting to train before the ring has enough diversity
-    /// to produce meaningfully decorrelated minibatches. `minBufferBeforeTraining
-    /// >= trainingBatchSize` by construction, so the `ReplayBuffer.sample`
-    /// call inside the train loop can never return nil.
-    nonisolated static let minBufferBeforeTraining = max(25_000, replayBufferCapacity / 5)
     /// Default number of active self-play workers when a new
     /// Play and Train session starts. The Stepper and
     /// `trainingParams.selfPlayWorkers` (formerly `@State`) defaults to this
@@ -2043,15 +2059,15 @@ struct ContentView: View {
     /// divide by the actual wall-clock gap between samples, so
     /// heartbeat drift or a paused app don't bias the result.
     nonisolated static let usageStatsRefreshSec: Double = 5
-    /// Append-only list of progress-rate samples for the Progress
-    /// rate chart. Grows by one entry per `progressRateRefreshSec`
-    /// during a Play and Train session; cleared to `[]` at each
-    /// new session start in `startRealTraining()`.
-    @State private var progressRateSamples: [ProgressRateSample] = []
-    @State private var trainingChartSamples: [TrainingChartSample] = []
-    @State private var trainingChartNextId: Int = 0
-    /// Previous totalGpuMs reading for computing per-second GPU busy %.
-    @State private var prevChartTotalGpuMs: Double = 0
+    /// Shared chart-layer state and decimation pipeline. Owned by
+    /// `ContentView` (the composer) and forwarded to both
+    /// `UpperContentView` (heartbeat append path) and
+    /// `LowerContentView` (chart-grid render path). All
+    /// chart-related `@State` that used to live here — the rings,
+    /// decimated frame, scroll position, hover position, zoom
+    /// state, arena events, diversity bars — moved onto the
+    /// coordinator. See `ChartCoordinator.swift`.
+    let chartCoordinator: ChartCoordinator
     @State private var showingInfoPopover: Bool = false
     /// Drives the top-bar Arena countdown chip's popover. Toggled by
     /// the chip's tap action; the popover anchors below the chip on
@@ -2069,35 +2085,15 @@ struct ContentView: View {
     @State private var arenaPopoverGamesError: Bool = false
     @State private var arenaPopoverConcurrencyError: Bool = false
     @State private var arenaPopoverIntervalError: Bool = false
-    /// Wall-clock timestamp of the last progress-rate sample.
-    /// Defaults to `.distantPast` so the first heartbeat tick of
-    /// a new session always fires.
-    @State private var progressRateLastFetch: Date = .distantPast
-    /// Next `id` to assign when appending to `progressRateSamples`.
-    /// Monotonic counter, reset alongside the sample list.
-    @State private var progressRateNextId: Int = 0
-    /// Current scroll position on the Progress rate chart, in
-    /// elapsed seconds since session start. Acts as the X
-    /// coordinate that maps to the *left edge* of the visible
-    /// window (so `scrollX = 0` shows t=0..window, and
-    /// `scrollX = lastElapsed - window` shows the latest
-    /// window). Two-way bound to `.chartScrollPosition(x:)` so
-    /// `Swift Charts` handles the native scroll gestures
-    /// (trackpad two-finger scroll, scroll wheel, arrow keys)
-    /// without any custom DragGesture of our own.
-    @State private var progressRateScrollX: Double = 0
-    /// Currently-hovered elapsed-second on the large progress-rate
-    /// chart, `nil` when the mouse isn't over the chart. Drives the
-    /// crosshair + overlay readout.
-    @State private var bigProgressChartHoveredSec: Double?
-    /// Whether the chart should auto-advance `progressRateScrollX`
-    /// to keep the newest sample in view. Starts `true`; flips
-    /// to `false` when the user scrolls backward past a small
-    /// tolerance, and flips back to `true` when they scroll
-    /// forward to the right edge again. Without this, a user
-    /// scrolling back to inspect history would get yanked
-    /// forward on every 1 Hz tick.
-    @State private var progressRateFollowLatest: Bool = true
+    // Sampling cadence (`chartCoordinator.progressRateLastFetch`,
+    // `chartCoordinator.progressRateNextId`, `chartCoordinator.trainingChartNextId`,
+    // `chartCoordinator.prevChartTotalGpuMs`), chart navigation (`chartCoordinator.scrollX`,
+    // `chartCoordinator.followLatest`), and the shared cross-chart hover
+    // position (`chartCoordinator.hoveredSec`) all live on
+    // `chartCoordinator`. Reads / writes route through the
+    // coordinator's `appendProgressRate(_:)`,
+    // `appendTrainingChart(_:totalGpuMs:)`,
+    // `handleScrollChange(_:)`, and `hoveredSec` properties.
     /// Cadence for the progress-rate sampler: one sample per
     /// second. Matches the user's spec.
     nonisolated static let progressRateRefreshSec: Double = 1.0
@@ -2429,6 +2425,39 @@ struct ContentView: View {
     /// Latest snapshot from `replayRatioController`, mirrored by
     /// the heartbeat for UI display.
     @State private var replayRatioSnapshot: ReplayRatioController.RatioSnapshot?
+
+    /// Outer integral compensator for the replay-ratio controller's
+    /// per-tick overhead-subtraction bias. The inner controller's
+    /// barrier-tick overhead estimate (`D × P / G`) is dimensionally
+    /// internally consistent but observably mis-scaled relative to
+    /// the actual barrier-wall inflation under the batched
+    /// shared-evaluator architecture (workers serialize through one
+    /// barrier rather than running fully in parallel, so the per-game
+    /// sleep does not divide cleanly across the pool). Empirically the
+    /// inner controller's equilibrium settles at a `cons/prod` ratio
+    /// well below the user-configured `replayRatioTarget` (observed
+    /// ~0.78 vs target 1.10 in the failing autotrain runs). Rather
+    /// than altering the inner formula, we wrap the controller with a
+    /// slow integral compensator: each heartbeat we observe the gap
+    /// between the user's desired target (`trainingParams
+    /// .replayRatioTarget`) and the controller's reported
+    /// `currentRatio`, then nudge the controller's INTERNAL target
+    /// (`controller.targetRatio`) in the direction that closes the
+    /// gap. The user-facing parameter does not move; only the
+    /// internal control set-point drifts. Reset to the user value on
+    /// session start, on user edit of `replayRatioTarget`, and on
+    /// auto-adjust toggle.
+    ///
+    /// This is the controller's effective set-point (`T_eff` in the
+    /// derivation comments) — `nil` when no session is active so
+    /// teardown produces a clean re-seed on the next start.
+    @State private var effectiveReplayRatioTarget: Double?
+    /// Wall-clock stamp of the previous compensator tick. Drives the
+    /// dt for the integral update so the gain is expressed in
+    /// `target-units per second` rather than `per-heartbeat-tick`,
+    /// which keeps the compensator's behavior independent of any
+    /// future change to the heartbeat cadence.
+    @State private var lastReplayRatioCompensatorAt: Date?
     // The training-parameter properties formerly stored here as
     // @AppStorage / @State are now exposed by `TrainingParameters.shared`
     // and accessed via `trainingParams.<name>`. See TrainingParameters.swift
@@ -2646,6 +2675,13 @@ struct ContentView: View {
                     String(format: "[PARAM] replayRatioTarget: %.2f -> %.2f", oldValue, newValue)
                 )
                 replayRatioController?.targetRatio = newValue
+                // Reset the outer integral compensator on user edit
+                // — its accumulated drift was relative to the
+                // previous user target and is no longer meaningful.
+                // The next heartbeat tick will re-seed `T_eff` from
+                // the new user value.
+                effectiveReplayRatioTarget = nil
+                lastReplayRatioCompensatorAt = nil
             }
             .onChange(of: trainingParams.sqrtBatchScalingLR) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] sqrtBatchScalingForLR: \(oldValue) -> \(newValue)")
@@ -2665,6 +2701,18 @@ struct ContentView: View {
             .onChange(of: trainingParams.replayRatioAutoAdjust) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] replayRatioAutoAdjust: \(oldValue) -> \(newValue)")
                 replayRatioController?.autoAdjust = newValue
+                // Reset outer integral compensator on either
+                // transition. Auto-OFF: there is no SP throttle to
+                // compensate. Auto-ON: the inner controller restarts
+                // from a different equilibrium and the previous
+                // `T_eff` is stale.
+                effectiveReplayRatioTarget = nil
+                lastReplayRatioCompensatorAt = nil
+                // Also push the user's target back to the controller
+                // so the on-resume base point is the user's intent
+                // rather than wherever the prior `T_eff` had drifted
+                // to.
+                replayRatioController?.targetRatio = trainingParams.replayRatioTarget
                 if newValue {
                     // Auto ON: seed the computed delay from the current
                     // manual delay so the display doesn't jump.
@@ -2874,12 +2922,6 @@ struct ContentView: View {
         return VStack(alignment: .leading, spacing: 8) {
             // Title bar
             HStack(spacing: 8) {
-//                Text("Drew's Chess Machine")
-//                    .font(.title2)
-//                    .fontWeight(.semibold)
-                // Build banner — bumped from .caption/.tertiary to
-                // .callout/.secondary so the build number, git hash,
-                // and date are readable at a glance instead of squinting.
                 Text(BuildInfo.summary)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -3057,25 +3099,15 @@ struct ContentView: View {
                 }
             }
 
-            // Chart grid — always visible during Play and Train,
-            // showing training metrics over time.
-            if realTraining {
-                Divider()
-                chartZoomControlRow
-                TrainingChartGridView(
-                    progressRateSamples: progressRateSamples,
-                    trainingChartSamples: trainingChartSamples,
-                    diversityHistogram: currentDiversityHistogramBars,
-                    arenaEvents: arenaChartEvents,
-                    activeArenaStartElapsed: activeArenaStartElapsed,
-                    promoteThreshold: trainingParams.arenaPromoteThreshold,
-                    replayRatioTarget: trainingParams.replayRatioTarget,
-                    appMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
-                    gpuMemoryTotalGB: memoryStatsSnap.map { Double($0.gpuTotalBytes) / (1024 * 1024 * 1024) },
-                    visibleDomainSec: ChartZoom.stops[chartZoomIdx],
-                    scrollX: $progressRateScrollX
-                )
-            }
+            // The chart layer (zoom-control row + chart grid) is no
+            // longer rendered here — it lives in `LowerContentView`,
+            // which `ContentView` mounts as a sibling of
+            // `UpperContentView` when the chart coordinator's
+            // `isActive` flag is true. UpperContentView mirrors
+            // `realTraining` into `chartCoordinator.isActive` via
+            // the `.onChange` modifier below so ContentView can
+            // make that decision without observing the upper view's
+            // private state.
         }
         .padding(16)
         .frame(minWidth: 1400, minHeight: 780)
@@ -3093,9 +3125,6 @@ struct ContentView: View {
         }
         .background(menuHubSyncProbe)
         .background(controlSideEffectsProbe)
-        .onChange(of: progressRateScrollX) { _, newValue in
-            handleProgressRateScrollChange(newValue: newValue)
-        }
         .onReceive(snapshotTimer) { _ in
             // Defer every @State mutation driven by the 100 ms
             // heartbeat to the next main-actor runloop tick. The
@@ -3110,6 +3139,13 @@ struct ContentView: View {
             Task { @MainActor in
                 processSnapshotTimerTick()
             }
+        }
+        .onChange(of: realTraining) { _, newValue in
+            // Mirror `realTraining` into the coordinator so
+            // `ContentView` can decide whether to mount
+            // `LowerContentView` as a sibling without observing any
+            // of `UpperContentView`'s private @State.
+            chartCoordinator.isActive = newValue
         }
     }
 
@@ -3216,32 +3252,6 @@ struct ContentView: View {
         // confusing on top of an active session.
         if !autoTrainOnLaunch {
             maybePresentAutoResumeSheet()
-        }
-    }
-
-    /// Flip off follow-latest when the user scrolls backward.
-    /// Auto-follow writes `progressRateScrollX` to `latestScrollX`,
-    /// leaving follow on. A user-initiated backward scroll lands far
-    /// from latestScrollX and turns follow off so the 1 Hz sampler
-    /// stops dragging the chart back to the right edge.
-    ///
-    /// Driven by body's `.onChange(of: progressRateScrollX)`. Lives
-    /// on a persistent view parent rather than a custom
-    /// `Binding(get:set:)` because that binding was getting recreated
-    /// on every body render, handing Swift Charts a fresh scroll-
-    /// config each time and tripping `onChange(of:
-    /// ChartScrollPositionConfiguration) action tried to update
-    /// multiple times per frame` warnings as the histogram state
-    /// churned.
-    private func handleProgressRateScrollChange(newValue: Double) {
-        Task { @MainActor in
-            let latest = progressRateSamples.last?.elapsedSec ?? 0
-            let windowSec = ChartZoom.stops[chartZoomIdx]
-            let latestScrollX = max(0, latest - windowSec)
-            let shouldFollow = abs(newValue - latestScrollX) < 1.0
-            if progressRateFollowLatest != shouldFollow {
-                progressRateFollowLatest = shouldFollow
-            }
         }
     }
 
@@ -3366,6 +3376,21 @@ struct ContentView: View {
             if snap.autoAdjust {
                 lastAutoComputedDelayMs = snap.computedDelayMs
             }
+            // Outer integral compensator. See the doc comment on
+            // `effectiveReplayRatioTarget` for full rationale; in
+            // short, the inner controller's per-tick overhead
+            // subtraction is mis-scaled for the batched-evaluator
+            // architecture and equilibrates at a `cons/prod` ratio
+            // below the user's requested target. We close the loop
+            // here without modifying the controller: every heartbeat,
+            // observe the gap between the user's target and the
+            // reported `currentRatio`, then adjust the controller's
+            // internal `targetRatio` in the direction that moves
+            // observed-ratio toward user-target. Slow gain (≪ inner
+            // controller's 7 s SMA cadence) so the two loops don't
+            // fight; bounded so a long-tail noise spike can't drift
+            // the controller into a degenerate set-point.
+            updateReplayRatioCompensator(snap: snap)
         }
         // Diversity-histogram mirror. Read once per heartbeat off the
         // tracker's thread-safe snapshot. Only push into @State when
@@ -3385,11 +3410,11 @@ struct ContentView: View {
                     count: count
                 ))
             }
-            let changed = newBars.count != currentDiversityHistogramBars.count
-            || zip(newBars, currentDiversityHistogramBars)
+            let changed = newBars.count != chartCoordinator.currentDiversityHistogramBars.count
+            || zip(newBars, chartCoordinator.currentDiversityHistogramBars)
                 .contains { $0.0.count != $0.1.count }
             if changed {
-                currentDiversityHistogramBars = newBars
+                chartCoordinator.setDiversityHistogramBars(newBars)
             }
         }
         refreshChartZoomTick()
@@ -3429,109 +3454,48 @@ struct ContentView: View {
         }
     }
 
-    /// Drive the chart-zoom state machine once per heartbeat.
-    /// Responsibilities:
-    ///   - In `chartZoomAuto` mode, snap `chartZoomIdx` to the
-    ///     smallest stop that contains the current data span.
-    ///   - In manual mode, clamp `chartZoomIdx` down if the data
-    ///     has since shrunk past the 3-stops-past-fit ceiling.
-    ///   - Re-enable auto mode if the user hasn't touched the
-    ///     manual zoom controls for `chartZoomAutoReengageSec`.
+    /// Drive the chart-zoom state machine once per heartbeat. The
+    /// auto-snap, manual-clamp, and re-engage logic lives on the
+    /// coordinator (`refreshZoomTick()`). This wrapper resyncs the
+    /// menu command hub when the coordinator reports a state change
+    /// so the menu's enabled / disabled flags stay in step.
     private func refreshChartZoomTick() {
-        let dataSec = progressRateSamples.last?.elapsedSec
-            ?? trainingChartSamples.last?.elapsedSec
-            ?? 0
-        let priorIdx = chartZoomIdx
-        let priorAuto = chartZoomAuto
-
-        // Auto re-engage check. A manual ⌘= / ⌘- recency acts as a
-        // keep-alive; past the threshold we flip auto back on so
-        // the user isn't stuck at a stale scale across a multi-
-        // hour session. Toggling the Auto button clears the
-        // timestamp, which has the same effect.
-        if !chartZoomAuto,
-           let last = lastManualChartZoomAt,
-           Date().timeIntervalSince(last) >= Self.chartZoomAutoReengageSec {
-            chartZoomAuto = true
-            lastManualChartZoomAt = nil
-        }
-
-        if chartZoomAuto {
-            let autoIdx = ChartZoom.autoIndex(forDataSec: dataSec)
-            if chartZoomIdx != autoIdx {
-                chartZoomIdx = autoIdx
-            }
-        } else {
-            // Manual mode: only clamp when required. No-op when
-            // the current index is already legal — avoids a
-            // redraw on every tick.
-            let maxIdx = ChartZoom.maxZoomOutIndex(forDataSec: dataSec)
-            if chartZoomIdx > maxIdx {
-                chartZoomIdx = maxIdx
-            }
-        }
-
-        // Sync the command hub's zoom-availability flags when state
-        // actually changed. Done inline here (rather than via an
-        // `.onChange(of:)` modifier on `body`) to keep the body's
-        // modifier chain within SwiftUI's type-checker budget.
-        if chartZoomIdx != priorIdx || chartZoomAuto != priorAuto {
+        if chartCoordinator.refreshZoomTick() {
             syncMenuCommandHubState()
         }
     }
 
-    /// Handle a ⌘= / ⌘- / Auto-button action. Centralized so the
-    /// keyboard shortcut, the menu item, and the inline button all
-    /// share the same auto-off + recency-stamp behavior. Each
-    /// manual action stamps `lastManualChartZoomAt` so the 1-hour
-    /// re-engage timer resets; the Auto button zero case clears it
-    /// so auto turns back on immediately.
+    // ⌘= / ⌘- / Auto-button actions. Thin wrappers that route to
+    // the coordinator's zoom helpers so the keyboard shortcut, the
+    // menu item, and `LowerContentView`'s inline controls all share
+    // the same code. Each wrapper also calls `syncMenuCommandHubState`
+    // so the menu's enabled / disabled flags update immediately
+    // (the menu hub doesn't observe the coordinator directly).
+
     @MainActor
     private func chartZoomIn() {
-        let dataSec = progressRateSamples.last?.elapsedSec
-            ?? trainingChartSamples.last?.elapsedSec
-            ?? 0
-        chartZoomAuto = false
-        lastManualChartZoomAt = Date()
-        let newIdx = max(0, chartZoomIdx - 1)
-        chartZoomIdx = ChartZoom.clamp(newIdx, forDataSec: dataSec)
+        chartCoordinator.zoomIn()
         syncMenuCommandHubState()
     }
 
     @MainActor
     private func chartZoomOut() {
-        let dataSec = progressRateSamples.last?.elapsedSec
-            ?? trainingChartSamples.last?.elapsedSec
-            ?? 0
-        chartZoomAuto = false
-        lastManualChartZoomAt = Date()
-        let maxIdx = ChartZoom.maxZoomOutIndex(forDataSec: dataSec)
-        chartZoomIdx = min(chartZoomIdx + 1, maxIdx)
+        chartCoordinator.zoomOut()
         syncMenuCommandHubState()
     }
 
     @MainActor
     private func chartZoomEnableAuto() {
-        chartZoomAuto = true
-        lastManualChartZoomAt = nil
-        let dataSec = progressRateSamples.last?.elapsedSec
-            ?? trainingChartSamples.last?.elapsedSec
-            ?? 0
-        chartZoomIdx = ChartZoom.autoIndex(forDataSec: dataSec)
+        chartCoordinator.enableAutoZoom()
         syncMenuCommandHubState()
     }
 
     /// Can the user zoom in further? Used to gate the View menu
     /// item's disabled state and the Auto-row's ⌘= hint styling.
-    var canZoomChartIn: Bool { chartZoomIdx > 0 }
+    var canZoomChartIn: Bool { chartCoordinator.canZoomIn }
 
     /// Can the user zoom out further given the current data span?
-    var canZoomChartOut: Bool {
-        let dataSec = progressRateSamples.last?.elapsedSec
-            ?? trainingChartSamples.last?.elapsedSec
-            ?? 0
-        return chartZoomIdx < ChartZoom.maxZoomOutIndex(forDataSec: dataSec)
-    }
+    var canZoomChartOut: Bool { chartCoordinator.canZoomOut }
 
     /// Sample app and GPU memory at most every
     /// `memoryStatsRefreshSec` seconds, caching the result in
@@ -3603,9 +3567,11 @@ struct ContentView: View {
         // that the GPU was actively running training steps. Computed
         // from the delta of cumulative GPU ms in TrainingRunStats.
         let currentGpuMs = trainingSnap?.stats.totalGpuMs ?? 0
-        let gpuDeltaMs = max(0, currentGpuMs - prevChartTotalGpuMs)
+        let gpuDeltaMs = max(0, currentGpuMs - chartCoordinator.prevChartTotalGpuMs)
         let gpuBusy = gpuDeltaMs / 10.0 // delta ms / 1000ms * 100%
-        prevChartTotalGpuMs = currentGpuMs
+        // The coordinator's `appendTrainingChart(_:totalGpuMs:)` call
+        // below updates `prevChartTotalGpuMs` to `currentGpuMs` for
+        // the next tick — no need to write it here.
         // Power + thermal state read straight from ProcessInfo at
         // sample time. Both are cheap property reads, and both can
         // change between samples without any polling overhead on our
@@ -3614,7 +3580,7 @@ struct ContentView: View {
         // sampling on hover.
         let pi = ProcessInfo.processInfo
         let sample = TrainingChartSample(
-            id: trainingChartNextId,
+            id: chartCoordinator.trainingChartNextId,
             elapsedSec: elapsed,
             rollingPolicyLoss: trainingSnap?.rollingPolicyLoss,
             rollingValueLoss: trainingSnap?.rollingValueLoss,
@@ -3634,8 +3600,15 @@ struct ContentView: View {
             lowPowerMode: pi.isLowPowerModeEnabled,
             thermalState: pi.thermalState
         )
-        trainingChartSamples.append(sample)
-        trainingChartNextId += 1
+        // Hand the freshly-built sample to the coordinator. It
+        // owns the ring append, the id-counter bump, the GPU-ms
+        // baseline update, and the decimated-frame recompute — see
+        // `ChartCoordinator.appendTrainingChart(_:totalGpuMs:)`.
+        // Pre-evaluation of the training alarm stays here on
+        // `UpperContentView` because it mutates streak counters and
+        // surfaces the banner / sound-loop state, both of which
+        // are upper-layer concerns.
+        chartCoordinator.appendTrainingChart(sample, totalGpuMs: currentGpuMs)
         evaluateTrainingAlarm(from: sample)
     }
 
@@ -3801,30 +3774,33 @@ struct ContentView: View {
     private func refreshProgressRateIfNeeded() {
         guard realTraining else { return }
         let now = Date()
-        if now.timeIntervalSince(progressRateLastFetch) < Self.progressRateRefreshSec {
+        if now.timeIntervalSince(chartCoordinator.progressRateLastFetch) < Self.progressRateRefreshSec {
             return
         }
-        progressRateLastFetch = now
 
         guard let session = parallelStats else { return }
         let elapsed = max(0, now.timeIntervalSince(session.sessionStart))
         let curSp = session.selfPlayPositions
         let curTr = (trainingStats?.steps ?? 0) * trainingParams.trainingBatchSize
 
-        // Walk newest → oldest, recording the last sample we see
-        // that still falls inside the 3-minute window. Breaks out
-        // as soon as we hit a sample older than the cutoff — the
-        // list is timestamp-sorted, so anything older is also
-        // out of window. Bounded at ~180 iterations per call in
-        // steady state regardless of total session length.
+        // Walk newest → oldest through the coordinator's ring,
+        // recording the last sample we see that still falls inside
+        // the 3-minute window. Breaks out as soon as we hit a
+        // sample older than the cutoff — the ring is timestamp-
+        // sorted, so anything older is also out of window. Bounded
+        // at ~180 iterations per call in steady state regardless of
+        // total session length.
         let cutoff = now.addingTimeInterval(-Self.progressRateWindowSec)
         var windowStart: ProgressRateSample?
-        for sample in progressRateSamples.reversed() {
+        var i = chartCoordinator.progressRateRing.count - 1
+        while i >= 0 {
+            let sample = chartCoordinator.progressRateRing[i]
             if sample.timestamp >= cutoff {
                 windowStart = sample
             } else {
                 break
             }
+            i -= 1
         }
 
         let spRate: Double
@@ -3849,7 +3825,7 @@ struct ContentView: View {
         }
 
         let sample = ProgressRateSample(
-            id: progressRateNextId,
+            id: chartCoordinator.progressRateNextId,
             timestamp: now,
             elapsedSec: elapsed,
             selfPlayCumulativeMoves: curSp,
@@ -3857,19 +3833,11 @@ struct ContentView: View {
             selfPlayMovesPerHour: spRate,
             trainingMovesPerHour: trRate
         )
-        progressRateSamples.append(sample)
-        progressRateNextId += 1
-
-        // Auto-follow: pin the scroll position so the latest
-        // sample sits at the right edge of the visible window.
-        // Disabled when the user has manually scrolled backward
-        // (the binding on `.chartScrollPosition(x:)` flips this
-        // flag when it sees a backward jump), so inspecting
-        // history doesn't fight the 1 Hz tick.
-        if progressRateFollowLatest {
-            let windowSec = ChartZoom.stops[chartZoomIdx]
-            progressRateScrollX = max(0, sample.elapsedSec - windowSec)
-        }
+        // Coordinator's `appendProgressRate(_:)` does the ring
+        // append, the id-counter bump, the
+        // `progressRateLastFetch` timestamp update, and the
+        // auto-follow scroll-position adjustment in one shot.
+        chartCoordinator.appendProgressRate(sample)
         // Append a training chart sample at the same 1Hz cadence.
         refreshTrainingChartIfNeeded()
     }
@@ -3898,235 +3866,6 @@ struct ContentView: View {
             return String(format: "%d:%02d", m, s)
         } else {
             return String(format: "0:%02d", s)
-        }
-    }
-
-    /// The Progress rate chart. Three line series (self-play,
-    /// training, combined) plotted against elapsed session time.
-    /// Horizontal scrolling is native: `chartScrollableAxes` +
-    /// `chartXVisibleDomain` set a 10-minute visible window and
-    /// let Swift Charts handle the trackpad / mouse / keyboard
-    /// scroll gestures. `chartScrollPosition(x:)` is two-way
-    /// bound to `progressRateScrollX`; the binding's setter is
-    /// where we detect a manual scroll and pause auto-follow so
-    /// reading history doesn't fight the 1 Hz sampler tick.
-    /// Hover readout state for `progressRateChartView`. Lifted out of
-    /// the original inline closure so the chart's hover overlay can
-    /// be its own type-check unit.
-    fileprivate enum BigProgressReadout {
-        case hoveringNoData(hoveredTime: Double)
-        case hoveringWithData(time: Double, combined: Double, selfPlay: Double, training: Double)
-    }
-
-    /// Compute the current hover readout for the big progress chart.
-    /// Nearest-sample lookup is gated by
-    /// `TrainingChartGridView.hoverMatchToleranceSec` so a hover past
-    /// the last sample (or before the first one) is reported as "no
-    /// data" rather than silently snapping to the nearest boundary
-    /// sample and misleading the reader.
-    private var bigProgressHoverReadout: BigProgressReadout? {
-        guard let t = bigProgressChartHoveredSec else { return nil }
-        guard !progressRateSamples.isEmpty else {
-            return .hoveringNoData(hoveredTime: t)
-        }
-        var best = progressRateSamples[0]
-        var bestDist = Swift.abs(best.elapsedSec - t)
-        for s in progressRateSamples.dropFirst() {
-            let d = Swift.abs(s.elapsedSec - t)
-            if d < bestDist { best = s; bestDist = d }
-        }
-        if bestDist > TrainingChartGridView.hoverMatchToleranceSec {
-            return .hoveringNoData(hoveredTime: t)
-        }
-        return .hoveringWithData(
-            time: best.elapsedSec,
-            combined: best.combinedMovesPerHour,
-            selfPlay: best.selfPlayMovesPerHour,
-            training: best.trainingMovesPerHour
-        )
-    }
-
-    private var progressRateChartView: some View {
-        bigProgressChartCore
-            .chartScrollableAxes(.horizontal)
-            .chartXVisibleDomain(length: ChartZoom.stops[chartZoomIdx])
-            .chartScrollPosition(x: $progressRateScrollX)
-            .chartOverlay { proxy in
-                bigProgressChartHoverOverlay(proxy: proxy)
-            }
-            .frame(height: 320)
-    }
-
-    /// The Chart's marks. Pulled out as a `@ChartContentBuilder`
-    /// helper so the marks type-check separately from the chain of
-    /// `.chart*` modifiers in `bigProgressChartCore`.
-    ///
-    /// One ForEach per series — SwiftUI Charts only connects
-    /// LineMarks that share a single enclosing ForEach AND a single
-    /// Y value. Packing all three series into ONE ForEach made
-    /// Charts emit spurious thin lines near y=0 because it couldn't
-    /// disambiguate which LineMarks belonged to which logical series
-    /// within the shared iteration. Splitting per series restores
-    /// the canonical multi-line rendering.
-    @ChartContentBuilder
-    private var bigProgressChartMarks: some ChartContent {
-        ForEach(progressRateSamples) { sample in
-            LineMark(
-                x: .value("Elapsed", sample.elapsedSec),
-                y: .value("Moves/hr", sample.combinedMovesPerHour)
-            )
-            .foregroundStyle(by: .value("Series", "Combined"))
-        }
-        ForEach(progressRateSamples) { sample in
-            LineMark(
-                x: .value("Elapsed", sample.elapsedSec),
-                y: .value("Moves/hr", sample.selfPlayMovesPerHour)
-            )
-            .foregroundStyle(by: .value("Series", "Self-play"))
-        }
-        ForEach(progressRateSamples) { sample in
-            LineMark(
-                x: .value("Elapsed", sample.elapsedSec),
-                y: .value("Moves/hr", sample.trainingMovesPerHour)
-            )
-            .foregroundStyle(by: .value("Series", "Training"))
-        }
-        if let t = bigProgressChartHoveredSec {
-            RuleMark(x: .value("Elapsed", t))
-                .foregroundStyle(Color.gray.opacity(0.5))
-                .lineStyle(StrokeStyle(lineWidth: 1))
-        }
-    }
-
-    /// Chart + axis/legend/scale modifier chain. The marks live in
-    /// `bigProgressChartMarks` so the two pieces type-check
-    /// independently — the combined getter was 1052 ms before any
-    /// split, and 183 ms with marks inlined.
-    private var bigProgressChartCore: some View {
-        Chart { bigProgressChartMarks }
-            .chartForegroundStyleScale([
-                "Self-play": Color.blue,
-                "Training": Color.orange,
-                "Combined": Color.green
-            ])
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 6)) { value in
-                    AxisGridLine()
-                    AxisTick()
-                    AxisValueLabel {
-                        if let secs = value.as(Double.self) {
-                            Text(Self.formatElapsedAxis(secs))
-                                .monospacedDigit()
-                        }
-                    }
-                }
-            }
-            .chartYAxis {
-                AxisMarks(position: .leading, values: .automatic(desiredCount: 6)) { value in
-                    AxisGridLine()
-                    AxisTick()
-                    AxisValueLabel {
-                        if let v = value.as(Double.self) {
-                            Text(v.formatted(.number.notation(.compactName)))
-                                .monospacedDigit()
-                        }
-                    }
-                }
-            }
-            .chartXAxisLabel("Session time", position: .bottom, alignment: .center)
-            .chartYAxisLabel("Moves / hour", position: .leading, alignment: .center)
-            .chartLegend(position: .bottom, alignment: .center, spacing: 10)
-            .chartXScale(
-                domain: 0...max(
-                    progressRateSamples.last?.elapsedSec ?? 0,
-                    ChartZoom.stops[chartZoomIdx]
-                )
-            )
-    }
-
-    /// Transparent hover-capture rectangle over the plot area, with a
-    /// floating readout label in the corner. Same pattern as
-    /// `TrainingChartGridView`'s `hoverOverlay` helper but lives here
-    /// because this chart is rendered in ContentView's body.
-    @ViewBuilder
-    private func bigProgressChartHoverOverlay(proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            ZStack(alignment: .topLeading) {
-                Rectangle()
-                    .fill(Color.clear)
-                    .contentShape(Rectangle())
-                    .onContinuousHover { phase in
-                        switch phase {
-                        case .active(let point):
-                            let origin = (proxy.plotFrame.map { geo[$0].origin } ?? .zero)
-                            let xInPlot = point.x - origin.x
-                            if let sec: Double = proxy.value(atX: xInPlot) {
-                                if sec < 0 {
-                                    if bigProgressChartHoveredSec != nil {
-                                        bigProgressChartHoveredSec = nil
-                                    }
-                                    return
-                                }
-                                if bigProgressChartHoveredSec != sec {
-                                    bigProgressChartHoveredSec = sec
-                                }
-                            }
-                        case .ended:
-                            if bigProgressChartHoveredSec != nil {
-                                bigProgressChartHoveredSec = nil
-                            }
-                        }
-                    }
-                bigProgressChartHoverLabel
-                    .padding(6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color(nsColor: .windowBackgroundColor).opacity(0.92))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 4)
-                            .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
-                    )
-                    .padding(8)
-                    .allowsHitTesting(false)
-                    .opacity(bigProgressHoverReadout == nil ? 0 : 1)
-            }
-        }
-    }
-
-    /// Floating label inside the hover overlay showing either the
-    /// hovered sample's three series values or "no data" when the
-    /// cursor is outside the sampled time range.
-    @ViewBuilder
-    private var bigProgressChartHoverLabel: some View {
-        switch bigProgressHoverReadout ?? .hoveringNoData(hoveredTime: 0) {
-        case .hoveringWithData(let time, let combined, let selfPlay, let training):
-            VStack(alignment: .leading, spacing: 2) {
-                Text("t=\(Self.formatElapsedAxis(time))")
-                    .font(.caption2)
-                    .monospacedDigit()
-                Text("Combined: \(Int(combined))/hr")
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(Color.green)
-                Text("Self-play: \(Int(selfPlay))/hr")
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(Color.blue)
-                Text("Training:  \(Int(training))/hr")
-                    .font(.caption2)
-                    .monospacedDigit()
-                    .foregroundStyle(Color.orange)
-            }
-        case .hoveringNoData(let t):
-            VStack(alignment: .leading, spacing: 2) {
-                Text("t=\(Self.formatElapsedAxis(t))")
-                    .font(.caption2)
-                    .monospacedDigit()
-                Text("no data")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
@@ -5986,7 +5725,7 @@ struct ContentView: View {
         // individual extremum checks.
         commandHub.chartZoomInAvailable = realTraining && canZoomChartIn
         commandHub.chartZoomOutAvailable = realTraining && canZoomChartOut
-        commandHub.chartZoomAutoAvailable = realTraining && !chartZoomAuto
+        commandHub.chartZoomAutoAvailable = realTraining && !chartCoordinator.chartZoomAuto
     }
 
     /// True iff any operation is currently running that conflicts
@@ -6409,7 +6148,7 @@ struct ContentView: View {
         // the back-dated `currentSessionStart` would park the arena
         // band ~hours off the chart on resumed sessions.
         if let sessionStart = parallelStats?.sessionStart ?? currentSessionStart {
-            activeArenaStartElapsed = max(0, Date().timeIntervalSince(sessionStart))
+            chartCoordinator.recordArenaStarted(elapsedSec: Date().timeIntervalSince(sessionStart))
         }
 
         let totalGames = trainingParams.arenaGamesPerTournament
@@ -6801,19 +6540,23 @@ struct ContentView: View {
             // startElapsed out of (end - durationSec) after the
             // promotion work ran. Fall back to the durationSec math
             // only if the live mark is somehow nil.
-            let startElapsed = activeArenaStartElapsed
+            let startElapsed = chartCoordinator.activeArenaStartElapsed
             ?? max(0, endElapsed - durationSec)
-            arenaChartEvents.append(ArenaChartEvent(
-                id: arenaChartEvents.count,
+            // `recordArenaCompleted` appends the event AND clears
+            // the live-band marker, so the chart drops back to just
+            // the completed events on the next render.
+            chartCoordinator.recordArenaCompleted(ArenaChartEvent(
+                id: chartCoordinator.arenaChartEvents.count,
                 startElapsedSec: startElapsed,
                 endElapsedSec: endElapsed,
                 score: score,
                 promoted: promoted
             ))
+        } else {
+            // No session anchor (shouldn't happen mid-arena) — at
+            // least cancel the live band so it doesn't dangle.
+            chartCoordinator.cancelActiveArena()
         }
-        // Arena no longer active — clear the live band trigger so
-        // the chart drops back to just the completed events.
-        activeArenaStartElapsed = nil
         logArenaResult(
             record: record,
             index: tournamentHistory.count,
@@ -7271,7 +7014,7 @@ struct ContentView: View {
         // after cancellation / error paths that skipped the
         // normal append-then-clear sequence. A no-op on the happy
         // path (the append site already cleared this).
-        activeArenaStartElapsed = nil
+        chartCoordinator.cancelActiveArena()
         // Release any pending periodic-save fire that was held
         // back during the tournament. The controller decides on
         // the next `decide(now:)` call whether a (post-promotion)
@@ -8179,23 +7922,14 @@ struct ContentView: View {
         } else {
             spDiversityTracker = GameDiversityTracker(windowSize: 200)
             selfPlayDiversityTracker = spDiversityTracker
-            currentDiversityHistogramBars = []
+            chartCoordinator.setDiversityHistogramBars([])
         }
         if !continueMode {
-            arenaChartEvents = []
-            // Reset progress-rate sampler state so the new session's
-            // chart starts fresh at t=0. Leaving old samples in place
-            // would show up as a visible "step" from the previous
-            // session's trailing values to the new session's zero
-            // reading.
-            progressRateSamples = []
-            trainingChartSamples = []
-            trainingChartNextId = 0
-            prevChartTotalGpuMs = 0
-            progressRateLastFetch = .distantPast
-            progressRateNextId = 0
-            progressRateScrollX = 0
-            progressRateFollowLatest = true
+            // Fresh session — wipe every chart-layer field back to a
+            // zero state so the new session's chart starts at t=0
+            // and doesn't show a visible "step" from the previous
+            // session's trailing values.
+            chartCoordinator.reset()
         }
         // Single self-play gate. All self-play workers now share one
         // `BatchedMoveEvaluationSource` on the champion network, driven
@@ -8364,7 +8098,7 @@ struct ContentView: View {
         let sessionTournamentGames = trainingParams.arenaGamesPerTournament
         let sessionPromoteThreshold = trainingParams.arenaPromoteThreshold
 
-        realTrainingTask = Task(priority: .userInitiated) {
+        realTrainingTask = Task(priority: .high) {
             [trainer, network, buffer, box, tBox, pStatsBox, spDiversityTracker,
              selfPlayGate, trainingGate, arenaFlag, triggerBox, overrideBox, countBox,
              gameWatcher, ratioController, recorder, outputURL, cliTrainingTimeLimitSec,
@@ -8657,7 +8391,7 @@ struct ContentView: View {
                 // there is exactly one active slot; all slots
                 // contribute identically to `pStatsBox` /
                 // `spDiversityTracker`.
-                group.addTask(priority: .userInitiated) {
+                group.addTask(priority: .high) {
                     [selfPlayDriver] in
                     await selfPlayDriver.run()
                 }
@@ -8669,7 +8403,7 @@ struct ContentView: View {
                 // 30 min auto cadence elapses. Pauses at `trainingGate`
                 // so the arena coordinator can briefly snapshot
                 // trainer weights.
-                group.addTask(priority: .userInitiated) {
+                group.addTask(priority: .high) {
                     [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController,
                      sessionTrainingBatchSize, sessionMinBufferBeforeTraining] in
                     // Track the previous step's applied delay so the
@@ -8771,7 +8505,7 @@ struct ContentView: View {
                 // own loop (not the worker tasks) during arena
                 // execution. Both the 30-minute auto-fire and the
                 // Run Arena button enter here via `triggerBox.trigger()`.
-                group.addTask(priority: .userInitiated) {
+                group.addTask(priority: .utility) {
                     [trainer, network, tBox, selfPlayGate, trainingGate, arenaFlag, triggerBox, overrideBox,
                      candidateInference, arenaChampion] in
                     while !Task.isCancelled {
@@ -9375,7 +9109,7 @@ struct ContentView: View {
                 //   - session log writes have already been
                 //     flushed by SessionLogger before this point.
                 if isAutoTrainRun, let recorder, let deadlineSec = cliTrainingTimeLimitSec, deadlineSec > 0 {
-                    group.addTask(priority: .userInitiated) {
+                    group.addTask(priority: .utility) {
                         do {
                             try await Task.sleep(for: .seconds(deadlineSec))
                         } catch {
@@ -9625,9 +9359,9 @@ struct ContentView: View {
                 arenaOverrideBox = nil
                 parallelWorkerStatsBox = nil
                 parallelStats = nil
-                currentDiversityHistogramBars = []
-                arenaChartEvents = []
-                activeArenaStartElapsed = nil
+                chartCoordinator.setDiversityHistogramBars([])
+                chartCoordinator.arenaChartEvents = []
+                chartCoordinator.cancelActiveArena()
                 workerCountBox = nil
                 trainingStepDelayBox = nil
                 samplingScheduleBox = nil
@@ -9637,6 +9371,8 @@ struct ContentView: View {
                 currentSessionStart = nil
                 replayRatioController = nil
                 replayRatioSnapshot = nil
+                effectiveReplayRatioTarget = nil
+                lastReplayRatioCompensatorAt = nil
                 cliRecorder = nil
                 EarlyStopCoordinator.shared.earlyStopHandler = nil
             }
@@ -9739,7 +9475,8 @@ struct ContentView: View {
     /// One of four high-level session states surfaced as a colored
     /// chip in the top status bar. Order is the natural progression of
     /// a training session: Idle → SelfPlayPrefill (workers running but
-    /// the trainer is still waiting on `minBufferBeforeTraining`) →
+    /// the trainer is still waiting on
+    /// `trainingParams.replayBufferMinPositionsBeforeTraining`) →
     /// TrainingWarmup (trainer is taking steps but the LR-warmup
     /// multiplier is still <1) → Training (warmup complete). Outside
     /// of a Play-and-Train session we always read Idle, regardless of
@@ -9777,7 +9514,7 @@ struct ContentView: View {
     private var sessionStatusChip: SessionStatusChip {
         guard realTraining else { return .idle }
         let bufferCount = replayBuffer?.count ?? 0
-        if bufferCount < Self.minBufferBeforeTraining {
+        if bufferCount < trainingParams.replayBufferMinPositionsBeforeTraining {
             return .selfPlayPrefill
         }
         if let snap = trainerWarmupSnap, snap.inWarmup {
@@ -9904,6 +9641,145 @@ struct ContentView: View {
             .background(Color.secondary.opacity(0.10))
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
+    }
+
+    /// Outer integral compensator step. Called every heartbeat tick
+    /// from `processSnapshotTimerTick` while a session is live.
+    ///
+    /// Wraps the replay-ratio controller without modifying it. The
+    /// inner controller's per-tick overhead estimate
+    /// (`currentDelaySettingMs × positionsProduced / G`) is
+    /// dimensionally consistent on its own terms, but in the batched-
+    /// shared-evaluator architecture the per-game self-play sleep does
+    /// not parallelize cleanly across `N` workers — they serialize
+    /// through one batcher barrier — so the wall inflation per tick
+    /// is observably mis-scaled relative to what the controller
+    /// expects to subtract. The mismatch lets the controller's signed
+    /// equilibrium settle at a `cons/prod` ratio meaningfully below
+    /// (or above, depending on workload) the user-configured
+    /// `replayRatioTarget`. Empirically, with `replayRatioTarget=1.10`
+    /// and `selfPlayWorkers=48`, the inner controller settles at
+    /// `currentRatio ≈ 0.78` and stays there — well outside the R1
+    /// monitoring band `[0.90, 1.25]`.
+    ///
+    /// Mechanism: each tick, observe `gap = userTarget −
+    /// snap.currentRatio`. Move the controller's INTERNAL set-point
+    /// `T_eff` in the same sign as `gap` (positive gap means observed
+    /// is too low → push the controller to demand more SP throttling
+    /// → raise `T_eff`). Update is `T_eff += k × gap × dt` with `k`
+    /// small enough that the outer loop is much slower than the inner
+    /// 7 s SMA — typical convergence time from a 0.30-magnitude error
+    /// to within 0.05 is ~5–8 minutes, well inside the 45-minute
+    /// pre-monitoring window.
+    ///
+    /// Bounds: `T_eff ∈ [0.5, 5.0] × userTarget`. Lower bound prevents
+    /// the compensator from disabling SP throttling entirely; upper
+    /// bound prevents a transient noise spike from drifting the
+    /// controller into a degenerate set-point that would take many
+    /// minutes to recover. Both bounds are far outside any healthy
+    /// equilibrium so they only trip on pathological inputs.
+    ///
+    /// Skips:
+    ///   • `autoAdjust == false` — the controller's SP delay is
+    ///     pinned at 0 in this mode, so there is no SP throttle to
+    ///     compensate. We also reset the saved `T_eff` so the next
+    ///     auto-on transition starts fresh.
+    ///   • `currentRatio <= 0` — the controller hasn't accumulated
+    ///     enough samples for a meaningful ratio yet. Holds the
+    ///     existing `T_eff` and waits for real data.
+    ///   • `realTraining == false` — out of an abundance of caution
+    ///     even though `replayRatioController` is itself nil outside
+    ///     a session. Cheap belt-and-braces.
+    @MainActor
+    private func updateReplayRatioCompensator(
+        snap: ReplayRatioController.RatioSnapshot
+    ) {
+        guard realTraining,
+              let rc = replayRatioController else {
+            // No active session — clear state so a fresh start
+            // re-seeds. Also handles the brief window between
+            // `replayRatioController = nil` (in the session-stop
+            // teardown) and the next session's start.
+            if effectiveReplayRatioTarget != nil {
+                effectiveReplayRatioTarget = nil
+                lastReplayRatioCompensatorAt = nil
+            }
+            return
+        }
+        let userTarget = trainingParams.replayRatioTarget
+        guard userTarget > 0 else { return }
+        // Auto-adjust off: SP throttle is pinned at 0, the inner
+        // controller is in manual training-delay mode, and the outer
+        // compensator has nothing to compensate. Drop saved state so
+        // a future flip back to auto starts from `userTarget`.
+        if !snap.autoAdjust {
+            if effectiveReplayRatioTarget != nil {
+                effectiveReplayRatioTarget = nil
+                lastReplayRatioCompensatorAt = nil
+            }
+            return
+        }
+        // First post-(re)start tick: seed `T_eff` to the user value
+        // and stamp the clock. No update this tick — the next tick's
+        // `dt` will be one heartbeat (~100 ms), which is long enough
+        // to integrate against. This matches the inner controller's
+        // first-call convention (stamp only, no measurement).
+        let now = Date()
+        guard let prevTeff = effectiveReplayRatioTarget,
+              let prevAt = lastReplayRatioCompensatorAt else {
+            effectiveReplayRatioTarget = userTarget
+            lastReplayRatioCompensatorAt = now
+            // Make sure the controller's internal target matches the
+            // user value at the start of compensation, in case any
+            // prior session left it drifted. The inner controller's
+            // own onChange handler also writes this value, but doing
+            // it here is robust to ordering on the very first tick
+            // after session start.
+            rc.targetRatio = userTarget
+            return
+        }
+        // No meaningful ratio yet (insufficient samples in the
+        // 60 s rolling window). Hold state and wait. The controller
+        // returns 0 from `rollingRates` until at least one second of
+        // span is in the window, which produces `currentRatio == 0`.
+        guard snap.currentRatio > 0 else {
+            lastReplayRatioCompensatorAt = now
+            return
+        }
+        let dt = now.timeIntervalSince(prevAt)
+        // Defensive: dt should be ~0.1s on the 10 Hz heartbeat. Bound
+        // it so a long pause (e.g. waking from sleep, a UI hang, an
+        // arena-pause that still left this tick running) doesn't
+        // produce a giant integration step. 1 s is far longer than
+        // any normal heartbeat gap and still small enough that the
+        // gain math doesn't blow up.
+        let dtClamped = min(max(dt, 0.0), 1.0)
+        // Integral gain in `target-units per (ratio-unit × second)`.
+        // 0.05 means a sustained gap of 1.0 ratio-unit drives `T_eff`
+        // by 0.05 per second. With typical observed gap ~0.3 and a
+        // healthy convergence target of ~5 minutes from a cold start,
+        // this is the right order of magnitude — it is also well
+        // below 1/7s ≈ 0.14, so the outer loop's bandwidth stays
+        // below the inner controller's smoothing bandwidth and the
+        // two loops do not fight.
+        let gainPerSecond = 0.05
+        let gap = userTarget - snap.currentRatio
+        var nextTeff = prevTeff + gainPerSecond * gap * dtClamped
+        let lo = 0.5 * userTarget
+        let hi = 5.0 * userTarget
+        if nextTeff < lo { nextTeff = lo }
+        if nextTeff > hi { nextTeff = hi }
+        // Only push to the controller when the change is meaningful.
+        // A ~0.001 dead-band keeps us off the controller's serial
+        // queue when the loop is at equilibrium. The previous value
+        // we hold is the LAST PUSHED value, not the most recent
+        // unconverged compute, so this dead-band doesn't accumulate
+        // un-pushed drift.
+        if abs(nextTeff - prevTeff) > 0.001 {
+            rc.targetRatio = nextTeff
+            effectiveReplayRatioTarget = nextTeff
+        }
+        lastReplayRatioCompensatorAt = now
     }
 
     /// Replay-ratio diagnostics row. Fixed-width monospace fields so
@@ -10385,47 +10261,11 @@ struct ContentView: View {
         if !anyError { showArenaPopover = false }
     }
 
-    @ViewBuilder
-    private var chartZoomControlRow: some View {
-        // Compact row — same font size and weight for every element so
-        // it lays out as one tight cluster on the left rather than the
-        // bold-zoom + tiny-hint + far-right-Auto layout it used to be.
-        HStack(spacing: 8) {
-            Text(ChartZoom.labels[chartZoomIdx])
-                .font(.caption.bold())
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-            Text("⌘=")
-                .font(.caption)
-                .foregroundStyle(canZoomChartIn ? Color.secondary : Color.secondary.opacity(0.4))
-            Text("⌘-")
-                .font(.caption)
-                .foregroundStyle(canZoomChartOut ? Color.secondary : Color.secondary.opacity(0.4))
-            Toggle(isOn: Binding(
-                get: { chartZoomAuto },
-                set: { newValue in
-                    if newValue {
-                        chartZoomEnableAuto()
-                    } else {
-                        // Flipping Auto off from the toggle is
-                        // semantically a manual action too —
-                        // stamp the recency timer so the 1-hour
-                        // re-engage rule applies uniformly whether
-                        // the user clicked Auto-off or pressed ⌘=.
-                        chartZoomAuto = false
-                        lastManualChartZoomAt = Date()
-                    }
-                }
-            )) {
-                Text("Auto")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .toggleStyle(.checkbox)
-            Spacer()
-        }
-        .padding(.horizontal, 4)
-    }
+    // The chart-zoom control row moved to `LowerContentView`
+    // alongside the chart grid it controls. Keyboard shortcuts and
+    // menu items still route through this view's `chartZoomIn()` /
+    // `chartZoomOut()` / `chartZoomEnableAuto()` wrappers above so
+    // the menu hub plumbing stays in one place.
 
     // MARK: - Engine Diagnostics
 
@@ -10761,13 +10601,13 @@ struct ContentView: View {
 
     /// Value for the status bar's "Training rate" cell: the most
     /// recent 3-minute-rolling trainer moves/hour, or `"—"` before
-    /// any sample has been recorded this session. `progressRateSamples`
+    /// any sample has been recorded this session. `chartCoordinator.progressRateRing`
     /// is populated at 1 Hz while `realTraining == true`; after Stop
     /// the last value persists (until the next fresh Play-and-Train
     /// start clears the buffer), which matches the rest of the row's
     /// "last-known value" semantics.
     private var trainingRateStatusValue: String {
-        guard let rate = progressRateSamples.last?.trainingMovesPerHour else {
+        guard let rate = chartCoordinator.progressRateRing.last?.trainingMovesPerHour else {
             return "—"
         }
         return Self.formatMovesPerHour(rate)
@@ -11587,8 +11427,8 @@ struct ContentView: View {
 // Properties that need `$trainingParams.<name>` projections take a local
 // `@Bindable` shadow; everything else stays a plain `@ViewBuilder`. None
 // of these accept parameters — they read directly from the surrounding
-// `ContentView`'s state, mirroring how the original inline code worked.
-extension ContentView {
+// `UpperContentView`'s state, mirroring how the original inline code worked.
+extension UpperContentView {
     @ViewBuilder
     var aboutPopoverContent: some View {
         VStack(alignment: .leading, spacing: 12) {
