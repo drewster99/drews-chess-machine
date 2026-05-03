@@ -2606,6 +2606,20 @@ struct ContentView: View {
                 // for the interval probe to trigger on the new mode.
                 if newValue == .candidateTest {
                     candidateProbeDirty = true
+                    // The default mini-board overlay is -1 (plain
+                    // board) so right-arrow walks the user through
+                    // Top Moves → channel views. But a freshly-entered
+                    // Candidate-test mode is *expected* to show the
+                    // policy arrows on the board — that's the whole
+                    // point of the mode. Bump the overlay from the
+                    // plain-board default to Top Moves (0) so the
+                    // arrows render immediately. Leaves any deeper
+                    // selection alone so a user who right-arrowed
+                    // into channels and toggled CT off and on keeps
+                    // their place.
+                    if selectedOverlay < 0 {
+                        selectedOverlay = 0
+                    }
                 }
             }
             .onChange(of: probeNetworkTarget) { _, _ in
@@ -2900,19 +2914,6 @@ struct ContentView: View {
             trainingAlarmBanner
 
             cumulativeStatusBar
-
-            // Replay-ratio diagnostics strip. One fixed-width line
-            // right-aligned beneath the status bar, sitting directly
-            // above the Training column where the Trainer ID is
-            // displayed. Every field has a fixed character width via
-            // `.frame(width:)` so the row never reflows — no jitter
-            // as counts grow/shrink, no wrapping even when all values
-            // are at their widest 4-digit form. The whole row is
-            // hidden when the controller isn't running (before a
-            // session starts) so it doesn't reserve vertical space.
-            if realTraining, let snap = replayRatioSnapshot {
-                replayRatioDiagnosticsRow(snap: snap)
-            }
 
             // Status row — only renders when there's actually something
             // to show (a non-realTraining busy state, an in-flight
@@ -3618,6 +3619,7 @@ struct ContentView: View {
             rollingValueLoss: trainingSnap?.rollingValueLoss,
             rollingPolicyEntropy: trainingSnap?.rollingPolicyEntropy,
             rollingPolicyNonNegCount: trainingSnap?.rollingPolicyNonNegCount,
+            rollingPolicyNonNegIllegalCount: trainingSnap?.rollingPolicyNonNegIllegalCount,
             rollingGradNorm: trainingSnap?.rollingGradGlobalNorm,
             replayRatio: ratioSnap?.currentRatio,
             rollingPolicyLossWin: trainingSnap?.rollingPolicyLossWin,
@@ -8047,6 +8049,16 @@ struct ContentView: View {
         // panel out of the gate; single-worker sessions keep the
         // historical Game-run default.
         playAndTrainBoardMode = trainingParams.selfPlayWorkers > 1 ? .candidateTest : .gameRun
+        // Same reasoning as the .onChange handler in
+        // controlSideEffectsProbe: when this session is going to land
+        // on Candidate-test (multi-worker auto-coerce or single-
+        // worker explicit), bump the mini-board overlay from the
+        // plain-board default (-1) to Top Moves (0) so the policy
+        // arrows render on the live probe board. Single-worker
+        // sessions starting in Game-run keep the plain-board default.
+        if playAndTrainBoardMode == .candidateTest, selectedOverlay < 0 {
+            selectedOverlay = 0
+        }
         probeNetworkTarget = .candidate
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
@@ -11904,62 +11916,60 @@ extension ContentView {
                 }
                 HStack(spacing: 6) {
                     Text("  Learn Rate:")
-                    TextField("LR", text: $learningRateEditText)
-                        .monospacedDigit()
-                        .frame(width: 80)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit {
-                            if let parsed = Float(learningRateEditText),
-                               parsed > 0, parsed.isFinite {
-                                let prior = trainer?.learningRate ?? Float(Self.trainerLearningRateDefault)
-                                if abs(parsed - prior) > Float.ulpOfOne {
-                                    SessionLogger.shared.log(
-                                        String(format: "[PARAM] learningRate: %.1e -> %.1e", prior, parsed)
-                                    )
-                                }
-                                trainer?.learningRate = parsed
-                                trainingParams.learningRate = Double(parsed)
+                    ParameterTextField(
+                        placeholder: "LR",
+                        text: $learningRateEditText,
+                        width: 80
+                    ) { typed in
+                        if let parsed = Float(typed), parsed > 0, parsed.isFinite {
+                            let prior = trainer?.learningRate ?? Float(Self.trainerLearningRateDefault)
+                            if abs(parsed - prior) > Float.ulpOfOne {
+                                SessionLogger.shared.log(
+                                    String(format: "[PARAM] learningRate: %.1e -> %.1e", prior, parsed)
+                                )
                             }
-                            learningRateEditText = String(
-                                format: "%.1e",
-                                trainer?.learningRate ?? Self.trainerLearningRateDefault
-                            )
+                            trainer?.learningRate = parsed
+                            trainingParams.learningRate = Double(parsed)
                         }
+                        learningRateEditText = String(
+                            format: "%.1e",
+                            trainer?.learningRate ?? Self.trainerLearningRateDefault
+                        )
+                    }
                     Toggle("√batch", isOn: $trainingParams.sqrtBatchScalingLR)
                         .toggleStyle(.checkbox)
                         .help("Adam-style LR scaling: feed learning_rate × sqrt(batch_size / 4096) each step. At batch=4096 the multiplier is 1.0 (no-op); at batch=1024 it's 0.5, at batch=8192 it's √2. The typed LR above is always the base value at the 4096 pivot — scaling is applied when writing into the optimizer feed.")
                     Text("warmup")
                         .foregroundStyle(.secondary)
-                    TextField("Warmup", text: $lrWarmupStepsEditText)
-                        .monospacedDigit()
-                        .frame(width: 60)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit {
-                            if let parsed = Int(lrWarmupStepsEditText), parsed >= 0 {
-                                let prior = trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
-                                if parsed != prior {
-                                    SessionLogger.shared.log(
-                                        "[PARAM] lrWarmupSteps: \(prior) -> \(parsed)"
-                                    )
-                                }
-                                trainer?.lrWarmupSteps = parsed
-                                trainingParams.lrWarmupSteps = parsed
+                    ParameterTextField(
+                        placeholder: "Warmup",
+                        text: $lrWarmupStepsEditText,
+                        width: 60
+                    ) { typed in
+                        if let parsed = Int(typed), parsed >= 0 {
+                            let prior = trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
+                            if parsed != prior {
+                                SessionLogger.shared.log(
+                                    "[PARAM] lrWarmupSteps: \(prior) -> \(parsed)"
+                                )
                             }
-                            lrWarmupStepsEditText = String(
-                                trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
-                            )
+                            trainer?.lrWarmupSteps = parsed
+                            trainingParams.lrWarmupSteps = parsed
                         }
-                        .help("Linear LR warmup: for the first N SGD steps, multiply LR by min(1, completedSteps / N). 0 disables. Composes multiplicatively with √batch scaling.")
+                        lrWarmupStepsEditText = String(
+                            trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
+                        )
+                    }
+                    .help("Linear LR warmup: for the first N SGD steps, multiply LR by min(1, completedSteps / N). 0 disables. Composes multiplicatively with √batch scaling.")
                 }
                 HStack(spacing: 6) {
                     Text("  Entropy Reg:")
-                    TextField("Entropy Reg", text: $entropyRegularizationEditText)
-                    .monospacedDigit()
-                    .frame(width: 80)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        if let parsed = Double(entropyRegularizationEditText),
-                           parsed >= 0, parsed.isFinite {
+                    ParameterTextField(
+                        placeholder: "Entropy Reg",
+                        text: $entropyRegularizationEditText,
+                        width: 80
+                    ) { typed in
+                        if let parsed = Double(typed), parsed >= 0, parsed.isFinite {
                             let prior = trainingParams.entropyBonus
                             if abs(parsed - prior) > Double.ulpOfOne {
                                 SessionLogger.shared.log(
@@ -11976,131 +11986,127 @@ extension ContentView {
                     }
                     Text("clip")
                         .foregroundStyle(.secondary)
-                    TextField("Clip", text: $gradClipMaxNormEditText)
-                        .monospacedDigit()
-                        .frame(width: 70)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit {
-                            if let parsed = Double(gradClipMaxNormEditText),
-                               parsed > 0, parsed.isFinite {
-                                let prior = trainingParams.gradClipMaxNorm
-                                if abs(parsed - prior) > Double.ulpOfOne {
-                                    SessionLogger.shared.log(
-                                        String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", prior, parsed)
-                                    )
-                                }
-                                trainingParams.gradClipMaxNorm = parsed
-                                trainer?.gradClipMaxNorm = Float(parsed)
+                    ParameterTextField(
+                        placeholder: "Clip",
+                        text: $gradClipMaxNormEditText,
+                        width: 70
+                    ) { typed in
+                        if let parsed = Double(typed), parsed > 0, parsed.isFinite {
+                            let prior = trainingParams.gradClipMaxNorm
+                            if abs(parsed - prior) > Double.ulpOfOne {
+                                SessionLogger.shared.log(
+                                    String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", prior, parsed)
+                                )
                             }
-                            gradClipMaxNormEditText = String(
-                                format: "%.2f",
-                                trainingParams.gradClipMaxNorm
-                            )
+                            trainingParams.gradClipMaxNorm = parsed
+                            trainer?.gradClipMaxNorm = Float(parsed)
                         }
+                        gradClipMaxNormEditText = String(
+                            format: "%.2f",
+                            trainingParams.gradClipMaxNorm
+                        )
+                    }
                     Text("decay")
                         .foregroundStyle(.secondary)
-                    TextField("Decay", text: $weightDecayEditText)
-                        .monospacedDigit()
-                        .frame(width: 80)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit {
-                            if let parsed = Double(weightDecayEditText),
-                               parsed >= 0, parsed.isFinite {
-                                let prior = trainingParams.weightDecay
-                                if abs(parsed - prior) > Double.ulpOfOne {
-                                    SessionLogger.shared.log(
-                                        String(format: "[PARAM] weightDecayC: %.2e -> %.2e", prior, parsed)
-                                    )
-                                }
-                                trainingParams.weightDecay = parsed
-                                trainer?.weightDecayC = Float(parsed)
+                    ParameterTextField(
+                        placeholder: "Decay",
+                        text: $weightDecayEditText,
+                        width: 80
+                    ) { typed in
+                        if let parsed = Double(typed), parsed >= 0, parsed.isFinite {
+                            let prior = trainingParams.weightDecay
+                            if abs(parsed - prior) > Double.ulpOfOne {
+                                SessionLogger.shared.log(
+                                    String(format: "[PARAM] weightDecayC: %.2e -> %.2e", prior, parsed)
+                                )
                             }
-                            weightDecayEditText = String(
-                                format: "%.2e",
-                                trainingParams.weightDecay
-                            )
+                            trainingParams.weightDecay = parsed
+                            trainer?.weightDecayC = Float(parsed)
                         }
+                        weightDecayEditText = String(
+                            format: "%.2e",
+                            trainingParams.weightDecay
+                        )
+                    }
                     Text("K")
                         .foregroundStyle(.secondary)
-                    TextField("K", text: $policyScaleKEditText)
-                        .monospacedDigit()
-                        .frame(width: 60)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit {
-                            if let parsed = Double(policyScaleKEditText),
-                               parsed > 0, parsed.isFinite {
-                                let prior = trainingParams.policyScaleK
-                                if abs(parsed - prior) > Double.ulpOfOne {
-                                    SessionLogger.shared.log(
-                                        String(format: "[PARAM] policyScaleK: %.2f -> %.2f", prior, parsed)
-                                    )
-                                }
-                                trainingParams.policyScaleK = parsed
-                                trainer?.policyScaleK = Float(parsed)
+                    ParameterTextField(
+                        placeholder: "K",
+                        text: $policyScaleKEditText,
+                        width: 60
+                    ) { typed in
+                        if let parsed = Double(typed), parsed > 0, parsed.isFinite {
+                            let prior = trainingParams.policyScaleK
+                            if abs(parsed - prior) > Double.ulpOfOne {
+                                SessionLogger.shared.log(
+                                    String(format: "[PARAM] policyScaleK: %.2f -> %.2f", prior, parsed)
+                                )
                             }
-                            policyScaleKEditText = String(
-                                format: "%.2f",
-                                trainingParams.policyScaleK
-                            )
+                            trainingParams.policyScaleK = parsed
+                            trainer?.policyScaleK = Float(parsed)
                         }
+                        policyScaleKEditText = String(
+                            format: "%.2f",
+                            trainingParams.policyScaleK
+                        )
+                    }
                 }
                 HStack(spacing: 6) {
                     Text("  SP tau:")
-                    TextField("SP start", text: $spStartTauEditText)
-                        .monospacedDigit()
-                        .frame(width: 60)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { applySpTauEdit() }
+                    ParameterTextField(
+                        placeholder: "SP start",
+                        text: $spStartTauEditText,
+                        width: 60
+                    ) { _ in applySpTauEdit() }
                     Text("→")
                         .foregroundStyle(.secondary)
-                    TextField("SP floor", text: $spFloorTauEditText)
-                        .monospacedDigit()
-                        .frame(width: 60)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { applySpTauEdit() }
+                    ParameterTextField(
+                        placeholder: "SP floor",
+                        text: $spFloorTauEditText,
+                        width: 60
+                    ) { _ in applySpTauEdit() }
                     Text("decay")
                         .foregroundStyle(.secondary)
-                    TextField("SP decay", text: $spDecayPerPlyEditText)
-                        .monospacedDigit()
-                        .frame(width: 70)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { applySpTauEdit() }
+                    ParameterTextField(
+                        placeholder: "SP decay",
+                        text: $spDecayPerPlyEditText,
+                        width: 70
+                    ) { _ in applySpTauEdit() }
                     Text("/ply")
                         .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 6) {
                     Text("  Arena tau:")
-                    TextField("Ar start", text: $arStartTauEditText)
-                        .monospacedDigit()
-                        .frame(width: 60)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { applyArTauEdit() }
+                    ParameterTextField(
+                        placeholder: "Ar start",
+                        text: $arStartTauEditText,
+                        width: 60
+                    ) { _ in applyArTauEdit() }
                     Text("→")
                         .foregroundStyle(.secondary)
-                    TextField("Ar floor", text: $arFloorTauEditText)
-                        .monospacedDigit()
-                        .frame(width: 60)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { applyArTauEdit() }
+                    ParameterTextField(
+                        placeholder: "Ar floor",
+                        text: $arFloorTauEditText,
+                        width: 60
+                    ) { _ in applyArTauEdit() }
                     Text("decay")
                         .foregroundStyle(.secondary)
-                    TextField("Ar decay", text: $arDecayPerPlyEditText)
-                        .monospacedDigit()
-                        .frame(width: 70)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { applyArTauEdit() }
+                    ParameterTextField(
+                        placeholder: "Ar decay",
+                        text: $arDecayPerPlyEditText,
+                        width: 70
+                    ) { _ in applyArTauEdit() }
                     Text("/ply")
                         .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 6) {
                     Text("  Draw Penalty:")
-                    TextField("Draw Penalty", text: $drawPenaltyEditText)
-                    .monospacedDigit()
-                    .frame(width: 80)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        if let parsed = Double(drawPenaltyEditText),
-                           parsed >= 0, parsed.isFinite {
+                    ParameterTextField(
+                        placeholder: "Draw Penalty",
+                        text: $drawPenaltyEditText,
+                        width: 80
+                    ) { typed in
+                        if let parsed = Double(typed), parsed >= 0, parsed.isFinite {
                             let prior = trainingParams.drawPenalty
                             if abs(parsed - prior) > Double.ulpOfOne {
                                 SessionLogger.shared.log(

@@ -11,6 +11,7 @@ struct TrainingChartSample: Identifiable, Sendable {
     let rollingValueLoss: Double?
     let rollingPolicyEntropy: Double?
     let rollingPolicyNonNegCount: Double?
+    let rollingPolicyNonNegIllegalCount: Double?
     let rollingGradNorm: Double?
     let replayRatio: Double?
     /// Outcome-partitioned policy loss — mean over batch positions
@@ -1176,22 +1177,31 @@ struct TrainingChartGridView: View {
     // MARK: - Non-negligible count chart (fixed Y-axis 0..policySize)
 
     private var nonNegChart: some View {
-        let readout = hoverReadout(path: \.rollingPolicyNonNegCount)
+        // Header tracks the LEGAL series under the hover cursor — same
+        // primary signal as before — but the body of the chart renders
+        // both legal (mint) and illegal (red) so the user can see the
+        // mask leakage as a second curve climbing off zero.
+        let legalReadout = hoverReadout(path: \.rollingPolicyNonNegCount)
         let policyMax = ChessNetwork.policySize
         let headerText: String
-        switch readout {
+        switch legalReadout {
         case .notHovering:
-            if let lastValue = trainingChartSamples.last?.rollingPolicyNonNegCount {
-                let pct = lastValue / Double(policyMax) * 100
-                headerText = String(format: "%d / %d (%.1f%%)", Int(lastValue), policyMax, pct)
-            } else {
-                headerText = "-- / \(policyMax)"
-            }
+            let lastLegal = trainingChartSamples.last?.rollingPolicyNonNegCount
+            let lastIllegal = trainingChartSamples.last?.rollingPolicyNonNegIllegalCount
+            let legalStr = lastLegal.map { String(Int($0)) } ?? "--"
+            let illegalStr = lastIllegal.map { String(Int($0)) } ?? "--"
+            headerText = "legal \(legalStr) • illegal \(illegalStr)"
         case .hoveringNoData(let t):
             headerText = "t=\(Self.formatElapsedAxis(t)) — no data"
         case .hoveringWithData(let t, let v):
-            let pct = v / Double(policyMax) * 100
-            headerText = "t=\(Self.formatElapsedAxis(t)) \(String(format: "%d / %d (%.1f%%)", Int(v), policyMax, pct))"
+            // Look up the matching illegal value at the same hover
+            // index so both numbers in the readout came from the same
+            // sample.
+            let illegalAtHover = trainingChartSamples
+                .min(by: { abs($0.elapsedSec - t) < abs($1.elapsedSec - t) })?
+                .rollingPolicyNonNegIllegalCount
+            let illegalStr = illegalAtHover.map { String(Int($0)) } ?? "--"
+            headerText = "t=\(Self.formatElapsedAxis(t))  legal \(Int(v)) • illegal \(illegalStr)"
         }
         return chartCard {
             VStack(alignment: .leading, spacing: 1) {
@@ -1212,21 +1222,33 @@ struct TrainingChartGridView: View {
                     ForEach(trainingChartSamples) { sample in
                         LineMark(
                             x: .value("Time", sample.elapsedSec),
-                            y: .value("Count", sample.rollingPolicyNonNegCount ?? .nan)
+                            y: .value("Count", sample.rollingPolicyNonNegCount ?? .nan),
+                            series: .value("Series", "Legal")
                         )
-                        .foregroundStyle(.mint)
+                        .foregroundStyle(by: .value("Series", "Legal"))
+                        LineMark(
+                            x: .value("Time", sample.elapsedSec),
+                            y: .value("Count", sample.rollingPolicyNonNegIllegalCount ?? .nan),
+                            series: .value("Series", "Illegal")
+                        )
+                        .foregroundStyle(by: .value("Series", "Illegal"))
                     }
                     if let t = hoveredSec {
                         RuleMark(x: .value("Time", t))
                             .foregroundStyle(Color.gray.opacity(0.5))
                             .lineStyle(StrokeStyle(lineWidth: 1))
                     }
-                    if case .hoveringWithData(let t, let v) = readout {
+                    if case .hoveringWithData(let t, let v) = legalReadout {
                         PointMark(x: .value("Time", t), y: .value("Count", v))
                             .foregroundStyle(.mint)
                             .symbolSize(40)
                     }
                 }
+                .chartForegroundStyleScale([
+                    "Legal": Color.mint,
+                    "Illegal": Color.red
+                ])
+                .chartLegend(position: .bottom, alignment: .leading, spacing: 4)
                 .chartYScale(domain: 0...Double(policyMax))
                 .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
                 .chartYAxis {

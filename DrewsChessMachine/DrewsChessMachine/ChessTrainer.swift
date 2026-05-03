@@ -53,6 +53,13 @@ struct TrainStepTiming: Sendable {
     /// of policy collapse or a stuck-at-uniform learning failure.
     let policyEntropy: Float
     let policyNonNegligibleCount: Float
+    /// Mean per-position count of ILLEGAL cells whose unmasked
+    /// softmax probability exceeds 1/policySize. Healthy networks
+    /// (legal mask doing its job) push this toward 0; a rising
+    /// value signals mass leaking onto illegal cells. Pairs with
+    /// `policyNonNegligibleCount` (which counts legal cells) on the
+    /// "Above-uniform policy count" chart.
+    let policyNonNegligibleIllegalCount: Float
     /// Global L2 norm of the flattened gradient vector across every
     /// trainable variable, computed on the GPU before clipping. When
     /// the value exceeds `ChessTrainer.gradClipMaxNorm`, the update
@@ -425,6 +432,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let rollingValueLoss: Double?
         let rollingPolicyEntropy: Double?
         let rollingPolicyNonNegCount: Double?
+        let rollingPolicyNonNegIllegalCount: Double?
         let rollingGradGlobalNorm: Double?
         let rollingValueMean: Double?
         let rollingValueAbsMean: Double?
@@ -507,6 +515,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _valueLossWindow: RollingDoubleWindow
     private var _policyEntropyWindow: RollingDoubleWindow
     private var _policyNonNegWindow: RollingDoubleWindow
+    private var _policyNonNegIllegalWindow: RollingDoubleWindow
     private var _gradNormWindow: RollingDoubleWindow
     private var _valueMeanWindow: RollingDoubleWindow
     private var _valueAbsMeanWindow: RollingDoubleWindow
@@ -568,6 +577,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._valueLossWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyEntropyWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyNonNegWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._policyNonNegIllegalWindow = RollingDoubleWindow(limit: rollingWindow)
         self._gradNormWindow = RollingDoubleWindow(limit: rollingWindow)
         self._valueMeanWindow = RollingDoubleWindow(limit: rollingWindow)
         self._valueAbsMeanWindow = RollingDoubleWindow(limit: rollingWindow)
@@ -609,6 +619,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._valueLossWindow.append(Double(timing.valueLoss))
             self._policyEntropyWindow.append(Double(timing.policyEntropy))
             self._policyNonNegWindow.append(Double(timing.policyNonNegligibleCount))
+            self._policyNonNegIllegalWindow.append(Double(timing.policyNonNegligibleIllegalCount))
             self._gradNormWindow.append(Double(timing.gradGlobalNorm))
             self._valueMeanWindow.append(Double(timing.valueMean))
             self._valueAbsMeanWindow.append(Double(timing.valueAbsMean))
@@ -714,6 +725,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._valueLossWindow.removeAll()
             self._policyEntropyWindow.removeAll()
             self._policyNonNegWindow.removeAll()
+            self._policyNonNegIllegalWindow.removeAll()
             self._gradNormWindow.removeAll()
             self._valueMeanWindow.removeAll()
             self._valueAbsMeanWindow.removeAll()
@@ -746,6 +758,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingValue = _valueLossWindow.mean
             let rollingEntropy = _policyEntropyWindow.mean
             let rollingNonNeg = _policyNonNegWindow.mean
+            let rollingNonNegIllegal = _policyNonNegIllegalWindow.mean
             let rollingGradNorm = _gradNormWindow.mean
             let rollingVMean = _valueMeanWindow.mean
             let rollingVAbs = _valueAbsMeanWindow.mean
@@ -780,6 +793,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 rollingValueLoss: rollingValue,
                 rollingPolicyEntropy: rollingEntropy,
                 rollingPolicyNonNegCount: rollingNonNeg,
+                rollingPolicyNonNegIllegalCount: rollingNonNegIllegal,
                 rollingGradGlobalNorm: rollingGradNorm,
                 rollingValueMean: rollingVMean,
                 rollingValueAbsMean: rollingVAbs,
@@ -1015,7 +1029,8 @@ final class ChessTrainer: @unchecked Sendable {
     private var policyLossTensor: MPSGraphTensor        // scalar
     private var valueLossTensor: MPSGraphTensor         // scalar
     private var policyEntropyTensor: MPSGraphTensor     // scalar (diagnostic)
-    private var policyNonNegCountTensor: MPSGraphTensor // scalar (diagnostic)
+    private var policyNonNegCountTensor: MPSGraphTensor // scalar (diagnostic, legal cells)
+    private var policyNonNegIllegalCountTensor: MPSGraphTensor // scalar (diagnostic, illegal cells)
     private var gradGlobalNormTensor: MPSGraphTensor    // scalar (diagnostic)
     private var valueMeanTensor: MPSGraphTensor         // scalar (diagnostic)
     private var valueAbsMeanTensor: MPSGraphTensor      // scalar (diagnostic)
@@ -1112,7 +1127,8 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotPlayedMoveProbNegAdv: Int = 18
     private static let lossReadbackSlotPolicyLossWin: Int = 19
     private static let lossReadbackSlotPolicyLossLoss: Int = 20
-    private static let lossReadbackSlotCount: Int = 21
+    private static let lossReadbackSlotNonNegIllegal: Int = 21
+    private static let lossReadbackSlotCount: Int = 22
 
     /// Reusable host-side staging buffers for replay-buffer samples.
     /// The trainer owns these buffers so real-data training can hop
@@ -1190,6 +1206,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
         self.policyNonNegCountTensor = built.policyNonNegCount
+        self.policyNonNegIllegalCountTensor = built.policyNonNegIllegalCount
         self.gradGlobalNormTensor = built.gradGlobalNorm
         self.valueMeanTensor = built.valueMean
         self.valueAbsMeanTensor = built.valueAbsMean
@@ -1315,6 +1332,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
         self.policyNonNegCountTensor = built.policyNonNegCount
+        self.policyNonNegIllegalCountTensor = built.policyNonNegIllegalCount
         self.gradGlobalNormTensor = built.gradGlobalNorm
         self.valueMeanTensor = built.valueMean
         self.valueAbsMeanTensor = built.valueAbsMean
@@ -1380,6 +1398,7 @@ final class ChessTrainer: @unchecked Sendable {
         valueLoss: MPSGraphTensor,
         policyEntropy: MPSGraphTensor,
         policyNonNegCount: MPSGraphTensor,
+        policyNonNegIllegalCount: MPSGraphTensor,
         gradGlobalNorm: MPSGraphTensor,
         valueMean: MPSGraphTensor,
         valueAbsMean: MPSGraphTensor,
@@ -1697,6 +1716,11 @@ final class ChessTrainer: @unchecked Sendable {
             1.0 / Double(ChessNetwork.policySize),
             dataType: dtype
         )
+        // Legal-cell count: cells whose MASKED softmax is above
+        // 1/policySize. The masked softmax is renormalized over legal
+        // cells (illegals get ~0 after the -1e9 bias), so anything
+        // above 1/policySize here is necessarily a legal cell with
+        // meaningful mass.
         let aboveThreshold = graph.greaterThan(
             softmax,
             nonNegThreshold,
@@ -1716,6 +1740,46 @@ final class ChessTrainer: @unchecked Sendable {
             of: countPerPos,
             axes: [0, 1],
             name: "policy_nonneg_count"
+        )
+
+        // Illegal-cell count: cells whose UNMASKED softmax is above
+        // 1/policySize, restricted to illegal positions via the mask.
+        // A healthy network with the legal mask doing its job sees
+        // illegal mass approach 0, so this count should trend toward
+        // 0 over training. A rising illegal-above-uniform count is a
+        // direct signal that mass is leaking onto illegal cells.
+        let unmaskedSoftmax = graph.softMax(
+            with: network.policyOutput,
+            axis: 1,
+            name: "policy_softmax_unmasked"
+        )
+        let unmaskedAboveThreshold = graph.greaterThan(
+            unmaskedSoftmax,
+            nonNegThreshold,
+            name: "policy_above_thresh_unmasked"
+        )
+        let unmaskedAboveFloat = graph.cast(
+            unmaskedAboveThreshold,
+            to: dtype,
+            name: "policy_above_float_unmasked"
+        )
+        // Multiply by the illegal mask (per-position vector with 1.0
+        // at illegal indices, 0.0 at legal). Sum gives per-position
+        // count of illegal cells above uniform.
+        let illegalAboveFloat = graph.multiplication(
+            unmaskedAboveFloat,
+            illegalMask,
+            name: "policy_above_illegal_per_cell"
+        )
+        let illegalCountPerPos = graph.reductionSum(
+            with: illegalAboveFloat,
+            axis: 1,
+            name: "policy_nonneg_illegal_per_pos"
+        )
+        let policyNonNegIllegalCount = graph.mean(
+            of: illegalCountPerPos,
+            axes: [0, 1],
+            name: "policy_nonneg_illegal_count"
         )
 
         // --- Policy logit-magnitude probe (diagnostic) ---
@@ -2196,7 +2260,7 @@ final class ChessTrainer: @unchecked Sendable {
             movePlayed, z, vBaseline, legalMask,
             lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyScaleKTensor,
             totalLossTensor, policyLoss, valueLoss,
-            policyEntropy, policyNonNegCount, gradGlobalNorm, valueMean, valueAbsMean, policyHeadWeightNormTensor,
+            policyEntropy, policyNonNegCount, policyNonNegIllegalCount, gradGlobalNorm, valueMean, valueAbsMean, policyHeadWeightNormTensor,
             policyLogitAbsMax, playedMoveProbTensor,
             playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
             advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
@@ -2642,6 +2706,7 @@ final class ChessTrainer: @unchecked Sendable {
                 valueLoss: baseTiming.valueLoss,
                 policyEntropy: baseTiming.policyEntropy,
                 policyNonNegligibleCount: baseTiming.policyNonNegligibleCount,
+                policyNonNegligibleIllegalCount: baseTiming.policyNonNegligibleIllegalCount,
                 gradGlobalNorm: baseTiming.gradGlobalNorm,
                 valueMean: baseTiming.valueMean,
                 valueAbsMean: baseTiming.valueAbsMean,
@@ -3203,7 +3268,7 @@ final class ChessTrainer: @unchecked Sendable {
             feeds: feeds,
             targetTensors: [
                 totalLoss, policyLossTensor, valueLossTensor,
-                policyEntropyTensor, policyNonNegCountTensor, gradGlobalNormTensor,
+                policyEntropyTensor, policyNonNegCountTensor, policyNonNegIllegalCountTensor, gradGlobalNormTensor,
                 valueMeanTensor, valueAbsMeanTensor, policyHeadWeightNormTensor,
                 policyLogitAbsMaxTensor, playedMoveProbTensor,
                 playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
@@ -3223,6 +3288,7 @@ final class ChessTrainer: @unchecked Sendable {
             let valueData = results[valueLossTensor],
             let entropyData = results[policyEntropyTensor],
             let nonNegData = results[policyNonNegCountTensor],
+            let nonNegIllegalData = results[policyNonNegIllegalCountTensor],
             let gradNormData = results[gradGlobalNormTensor],
             let valueMeanData = results[valueMeanTensor],
             let valueAbsMeanData = results[valueAbsMeanTensor],
@@ -3266,6 +3332,11 @@ final class ChessTrainer: @unchecked Sendable {
         ChessNetwork.readFloats(
             from: nonNegData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNeg),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: nonNegIllegalData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNegIllegal),
             count: 1
         )
         ChessNetwork.readFloats(
@@ -3367,6 +3438,7 @@ final class ChessTrainer: @unchecked Sendable {
         let valueBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValue]
         let entropyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotEntropy]
         let nonNegBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotNonNeg]
+        let nonNegIllegalBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotNonNegIllegal]
         let gradNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotGradNorm]
         let valueMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueMean]
         let valueAbsMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueAbsMean]
@@ -3421,6 +3493,7 @@ final class ChessTrainer: @unchecked Sendable {
             valueLoss: valueBufValue,
             policyEntropy: entropyBufValue,
             policyNonNegligibleCount: nonNegBufValue,
+            policyNonNegligibleIllegalCount: nonNegIllegalBufValue,
             gradGlobalNorm: gradNormBufValue,
             valueMean: valueMeanBufValue,
             valueAbsMean: valueAbsMeanBufValue,
