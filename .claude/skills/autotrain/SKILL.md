@@ -337,7 +337,9 @@ While the training run is in flight, every cron / wakeup tick must do **both** o
 
    These mirror H2/H3/H4/H6 in the analyzer's hard-reject criteria. The iteration will still go through the analyzer normally and be classified `regressed` from the partial `result.json`.
 
-   Before killing, log a one-line summary to the conversation: `autotrain: early-kill on H<N> at <elapsed>s — <metric>=<value>`. Then proceed to step 7 with the partial result.
+   **Before killing, take a UI screenshot.** Call `mcp__xcode-mcp-server__take_app_screenshot` with `app_name: "Drew's Chess Machine"` (display name has spaces and an apostrophe; the binary `DrewsChessMachine` substring does NOT match — the matcher uses the AppKit display name, not the executable name). Save the returned screenshot path into the iteration folder for context — copy it to `<folder>/pre_kill_screenshot.png` so the post-mortem analyzer has it. If the screenshot call fails (app already exited, accessibility denied, etc.), log the error and proceed with the kill anyway — the screenshot is a nice-to-have, not a precondition.
+
+   Then log a one-line summary to the conversation: `autotrain: early-kill on H<N> at <elapsed>s — <metric>=<value>`. Then `kill -SIGUSR1 <pid>`. Then proceed to step 7 with the partial result.
 
 3. **Report briefly.** Even when nothing is wrong, surface the six metrics on every wakeup so trends are visible across ticks. Don't reduce these to a vague "healthy" — the user reads the line.
 
