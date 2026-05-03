@@ -13,7 +13,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUT="$SCRIPT_DIR/DrewsChessMachine/BuildInfo.swift"
+OUTPUT="$SCRIPT_DIR/DrewsChessMachine/App/BuildInfo.swift"
 COUNTER="$SCRIPT_DIR/build_counter.txt"
 REPO_ROOT="$SCRIPT_DIR/.."
 
