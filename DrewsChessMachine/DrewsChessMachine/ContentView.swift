@@ -8672,19 +8672,13 @@ struct ContentView: View {
                 group.addTask(priority: .userInitiated) {
                     [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController,
                      sessionTrainingBatchSize, sessionMinBufferBeforeTraining] in
-                    // Symmetric inter-call timing for the ratio
-                    // controller: track when the previous training-
-                    // side `recordTrainingBatchAndGetDelay` was called
-                    // and how long the worker subsequently slept, so
-                    // the next call can pass the EFFECTIVE inter-call
-                    // wall (`(now - lastCallAt) - lastSleptMs`). This
-                    // matches the self-play barrier-tick measurement
-                    // basis (full tick-to-tick wall) and removes the
-                    // measurement asymmetry that pulled the controller
-                    // equilibrium away from `targetRatio` whenever a
-                    // delay was injected on either side.
-                    var lastTrainingCallAt: CFAbsoluteTime? = nil
-                    var lastTrainingSleptMs: Int = 0
+                    // Track the previous step's applied delay so the
+                    // next `recordTrainingBatchAndGetDelay` can report
+                    // it as the current per-batch training-side delay
+                    // setting. The controller owns the inter-call
+                    // wall-clock measurement directly; the caller
+                    // just reports its current configured delay.
+                    var lastTrainingDelaySettingMs: Int = 0
                     while !Task.isCancelled {
                         // Pause gate check (between steps).
                         if trainingGate.isRequestedToPause {
@@ -8752,34 +8746,20 @@ struct ContentView: View {
                             triggerBox.trigger()
                         }
 
-                        // Post-step pause. The replay-ratio controller
-                        // records EFFECTIVE inter-call wall (matching
-                        // the self-play side's tick-to-tick basis),
-                        // updates its training ms-per-move estimate,
-                        // and returns the closed-form sleep that would
-                        // bring consumption/production toward the
-                        // target ratio. When auto-adjust is off, it
-                        // returns the manual delay instead. Skip the
-                        // sleep entirely at 0 ms.
-                        //
-                        // Effective wall = (now - lastCallAt) - lastSleptMs.
-                        // First call (no prior) falls back to the SGD
-                        // batch's own work time as a close-enough first
-                        // sample — no sleep was applied yet, and the
-                        // SMA window quickly washes the bootstrap
-                        // value out once real measurements arrive.
-                        let nowAt = CFAbsoluteTimeGetCurrent()
-                        let effectiveElapsedMs: Double
-                        if let prior = lastTrainingCallAt {
-                            effectiveElapsedMs = (nowAt - prior) * 1000.0 - Double(lastTrainingSleptMs)
-                        } else {
-                            effectiveElapsedMs = timing.totalMs
-                        }
-                        lastTrainingCallAt = nowAt
+                        // Post-step pause. Symmetric API with the
+                        // self-play barrier tick: caller reports its
+                        // currently-applied per-batch delay setting,
+                        // controller owns the wall-clock and does
+                        // the subtraction. The "current setting"
+                        // we report is whatever sleep we just
+                        // applied on the previous loop pass — that
+                        // IS the configured delay during the
+                        // controller-owned inter-call period that
+                        // ends right now.
                         let stepDelayMs = ratioController.recordTrainingBatchAndGetDelay(
-                            elapsedMs: effectiveElapsedMs
+                            currentDelaySettingMs: Double(lastTrainingDelaySettingMs)
                         )
-                        lastTrainingSleptMs = stepDelayMs
+                        lastTrainingDelaySettingMs = stepDelayMs
                         if stepDelayMs > 0 {
                             try? await Task.sleep(for: .milliseconds(stepDelayMs))
                         }

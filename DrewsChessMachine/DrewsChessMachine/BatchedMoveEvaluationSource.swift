@@ -318,13 +318,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// doesn't care about cross-batcher GPU saturation.
     private let gpuTimer: ArenaGpuTimer?
 
-    /// CFAbsoluteTime (seconds, monotonic-ish) of the previous barrier
-    /// fire, used to compute inter-tick elapsed for the ratio
-    /// controller. Nil before the first fire — skipped because there
-    /// is no prior to subtract from.
-    private var lastBarrierFireAt: CFAbsoluteTime? = nil
-
-    /// Parked submissions awaiting the next batch fire.
+/// Parked submissions awaiting the next batch fire.
     private var pending: [Pending] = []
     private var batchFireScheduled = false
 
@@ -409,13 +403,12 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         // Entering drain mode means the steady-state production
         // measurement series is interrupted — slots are being torn
         // down, fires from here until re-engagement are either
-        // stragglers or nothing at all. Clear the last-fire timestamp
-        // so the first post-resume fire is SKIPPED (no spurious
-        // multi-minute elapsed across the pause window) rather than
-        // producing a garbage ms/move sample that would swing the
-        // controller hard.
+        // stragglers or nothing at all. Tell the controller to
+        // clear its self-play wall-clock stamp so the first
+        // post-resume fire is treated as a fresh first-tick (no
+        // garbage multi-minute ms/move from the pause window).
         if n == 0 {
-            lastBarrierFireAt = nil
+            replayRatioController?.resetSelfPlayClock()
         }
         if !pending.isEmpty && (n == 0 || pending.count >= n) {
             scheduleBatchFireIfNeeded(reason: n == 0 ? .drain : .threshold)
@@ -484,12 +477,14 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// start, after the controller is built. A nil assignment
     /// disables tick reporting — the batcher otherwise has no
     /// observable effect whether or not the controller is attached.
-    /// `lastBarrierFireAt` is cleared alongside so a re-attach after
-    /// a session break doesn't report an absurd multi-minute elapsed
-    /// on the first post-reattach tick.
+    /// On every set we ask the freshly-attached (or freshly-detached
+    /// previous) controller to reset its self-play wall-clock stamp,
+    /// so a re-attach after a session break doesn't produce an
+    /// absurd multi-minute elapsed sample on the first tick.
     func setReplayRatioController(_ controller: ReplayRatioController?) {
+        replayRatioController?.resetSelfPlayClock()
         replayRatioController = controller
-        lastBarrierFireAt = nil
+        controller?.resetSelfPlayClock()
     }
 
     // MARK: - Inference
@@ -818,26 +813,25 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
 
             // Report this tick to the replay-ratio controller. One
             // barrier fire = one "measurement event" on the self-play
-            // side; the (count, elapsed) pair is an aggregate
-            // ms-per-move sample by construction. Drain-mode fires
-            // (`expectedSlotCount == 0`) are skipped — those are
-            // shutdown / arena-pause stragglers, not representative
-            // of steady-state production rate. First fire after a
-            // reattach is also skipped because `lastBarrierFireAt`
-            // is nil and the elapsed would be meaningless.
+            // side. Drain-mode fires (`expectedSlotCount == 0`) are
+            // skipped — those are shutdown / arena-pause stragglers,
+            // not representative of steady-state production rate.
+            // The controller owns its own wall-clock stamp internally
+            // and treats its first call after a reset as
+            // measurement-less (just stamps the time), so a re-attach
+            // after a session break never produces a garbage sample.
             if let controller = replayRatioController, expectedSlotCount > 0 {
-                let nowFire = CFAbsoluteTimeGetCurrent()
-                if let last = lastBarrierFireAt {
-                    let elapsedMs = (nowFire - last) * 1000.0
-                    if elapsedMs > 0 {
-                        controller.recordSelfPlayBarrierTick(
-                            positionsProduced: count,
-                            elapsedMs: elapsedMs,
-                            workerCount: expectedSlotCount
-                        )
-                    }
-                }
-                lastBarrierFireAt = nowFire
+                // Controller now owns the inter-tick wall clock
+                // directly. We just report the current per-game
+                // spDelay setting (what the driver is sleeping
+                // between games), and the controller subtracts it
+                // from its own measured wall.
+                let spDelayMs = Double(controller.computedSelfPlayDelayMs)
+                controller.recordSelfPlayBarrierTick(
+                    positionsProduced: count,
+                    currentDelaySettingMs: spDelayMs,
+                    workerCount: expectedSlotCount
+                )
             }
 
             for (i, item) in batch.enumerated() {

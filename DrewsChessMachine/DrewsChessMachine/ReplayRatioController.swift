@@ -3,31 +3,36 @@ import Foundation
 /// Event-driven replay-ratio controller. Three recording hooks —
 /// two that drive control, one that feeds metadata:
 ///
-///   • `recordSelfPlayBarrierTick(positionsProduced:elapsedMs:workerCount:)`
+///   • `recordSelfPlayBarrierTick(positionsProduced:currentDelaySettingMs:workerCount:)`
 ///     — fires every batched-evaluator barrier tick on the self-play
-///     side. One tick produces `positionsProduced` plies (equal to
-///     the number of slots that submitted) in `elapsedMs` of wall
-///     clock since the previous tick. That ratio IS the aggregate
-///     self-play ms-per-move — no per-worker division needed, the
-///     measurement is already aggregate by construction. Ticks fire
-///     at hundreds-to-thousands per second (every ply across all N
+///     side. The CONTROLLER owns the inter-tick wall measurement —
+///     it stamps `_lastSelfPlayTickAt` on every call and computes
+///     `elapsedMs = (now - _lastSelfPlayTickAt) * 1000` for the
+///     subsequent call. The caller passes only
+///     `currentDelaySettingMs`: the per-game self-play delay value
+///     it is currently configured to sleep (i.e. what the driver
+///     just looked up from `computedSelfPlayDelayMs`). The
+///     controller subtracts that from its own measured wall to
+///     recover the underlying production rate at zero injected
+///     delay. First call: stamp only, no measurement. Ticks fire at
+///     hundreds-to-thousands per second (every ply across all N
 ///     slots), giving the controller much finer measurement
 ///     granularity than the old once-per-game cadence.
 ///
-///   • `recordTrainingBatchAndGetDelay(elapsedMs:)` — fires after
-///     each SGD step. `elapsedMs` is the EFFECTIVE inter-call wall
-///     time — the controller-perspective tick-to-tick period for
-///     the training side, with the caller's previously-applied
-///     sleep ALREADY SUBTRACTED. The caller is responsible for
-///     tracking its own `lastCallTime` and `lastSleptMs` and
-///     passing `(now - lastCallTime) - lastSleptMs`. Symmetric to
-///     the self-play barrier tick which is also tick-to-tick wall;
-///     before this convention the training side passed only the
-///     pure SGD batch work time, which excluded both the just-
-///     applied sleep and any inter-call non-batch work, producing
-///     an asymmetric sp/tr measurement and pushing the controller
-///     to drift the equilibrium ratio away from `targetRatio`.
-///     Returns the sleep the worker should apply before the next step.
+///   • `recordTrainingBatchAndGetDelay(currentDelaySettingMs:)` —
+///     fires after each SGD step. Same contract as the self-play
+///     side: controller owns the wall-clock with `_lastTrainingTickAt`,
+///     caller passes only the current training-side delay setting
+///     (what it is currently configured to sleep between batches).
+///     First call: stamp only, return seeded delay. Returns the
+///     sleep the worker should apply before the next SGD step.
+///     Symmetric with sp side: both APIs are "report your current
+///     delay setting"; the controller does ALL timing and ALL
+///     subtraction in one place. Before this convention, the
+///     training side passed only the SGD batch's work time, which
+///     excluded its own sleep and any inter-call work — producing
+///     an asymmetric sp/tr measurement that pulled the equilibrium
+///     ratio away from `targetRatio`.
 ///
 ///   • `recordSelfPlayGameLength(_:)` — metadata-only. The driver
 ///     calls this once per completed game so the controller knows
@@ -114,6 +119,22 @@ final class ReplayRatioController: @unchecked Sendable {
     /// stepper mid-session. Seeded to 1 — safe floor until the first
     /// event sets the real value.
     private var _lastSelfPlayWorkerCount: Int = 1
+
+    /// Wall-clock stamp of the previous self-play barrier-tick callback.
+    /// The controller owns the inter-tick wall measurement directly so
+    /// the basis is symmetric with the training side and so the reading
+    /// captures EVERYTHING that happens between callbacks (probes, BN
+    /// syncs, queue waits, our own injected sleeps), not just whatever
+    /// slice the caller chose to time. nil before the first tick — that
+    /// first call only stamps and returns; the first usable measurement
+    /// arrives on tick #2.
+    private var _lastSelfPlayTickAt: CFAbsoluteTime? = nil
+
+    /// Wall-clock stamp of the previous `recordTrainingBatchAndGetDelay`
+    /// call. Same rationale as `_lastSelfPlayTickAt` — the controller's
+    /// own clock is the only honest accounting for one full training
+    /// "cycle" (batch work + post-step sleep + any inter-call work).
+    private var _lastTrainingTickAt: CFAbsoluteTime? = nil
 
     /// Latest raw signed delay (ms per training batch) as produced by
     /// the most recent `recomputeDelays()`. Positive = training slow;
@@ -213,56 +234,33 @@ final class ReplayRatioController: @unchecked Sendable {
     ///     normal operation equals `workerCount`, but the batcher can
     ///     fire smaller batches during slot-count transitions, so we
     ///     accept both separately.
-    ///   - elapsedMs: wall clock since the previous barrier tick.
-    ///     The full tick-to-tick period — includes one `graph.run`'s
-    ///     duration, any barrier-assembly idle time, AND the per-game
-    ///     spDelay sleep absorbed by any worker that game-ended in
-    ///     the window (the barrier waits for the slowest worker, so
-    ///     the wall reflects the longest nap). The controller
-    ///     subtracts an estimated overhead — the per-game spDelay it
-    ///     is currently asking workers to sleep, multiplied by the
-    ///     expected number of game-ends across the pool this tick
-    ///     (`positionsProduced / G`) — so what's stored as
-    ///     `_selfPlayMsPerMove` is the underlying production rate at
-    ///     ZERO injected delay. The signed-delay formula then
-    ///     converges on the configured `targetRatio` rather than
-    ///     drifting toward the current applied ratio. Negative
-    ///     effective elapsed (small-window estimator overshoots) is
-    ///     not clamped — the 7s SMA over `_delayHistory` absorbs
-    ///     transient noise.
+    ///   - currentDelaySettingMs: the per-game self-play delay the
+    ///     caller is currently configured to sleep. Controller
+    ///     subtracts it from its own measured wall before computing
+    ///     per-move rate so the formula sees the underlying
+    ///     production rate at zero injected delay. Pass 0 if the
+    ///     caller knows it is applying no throttling. Negative
+    ///     effective elapsed (small-window noise) is not clamped —
+    ///     the 7s SMA over `_delayHistory` absorbs transients.
     ///   - workerCount: currently-active slot count (`N` in the
     ///     aggregate sp-slowdown formula). Piped in each tick so the
     ///     per-game sleep calculation stays correct when the user
     ///     changes the worker stepper mid-session.
     func recordSelfPlayBarrierTick(
         positionsProduced: Int,
-        elapsedMs: Double,
+        currentDelaySettingMs: Double,
         workerCount: Int
     ) {
         queue.sync {
-            if positionsProduced > 0, elapsedMs > 0 {
-                // Estimate sp-side overhead absorbed by this tick's
-                // wall: every G plies across the pool, one worker
-                // game-ends and naps for `smoothedSelfPlayPerGameDelayMs`.
-                // Expected naps in a tick window = positionsProduced
-                // / G. Each nap inflates the barrier wall by ~spDelay
-                // (since the barrier waits for the slowest). The
-                // controller has both numbers without caller help —
-                // `smoothedSelfPlayPerGameDelayMs()` returns exactly
-                // the value the caller is currently sleeping in
-                // BatchedSelfPlayDriver, and `_lastSelfPlayPositionsPerGame`
-                // is refreshed by every `recordSelfPlayGameLength`.
-                // Subtract this estimate before computing per-move
-                // rate so the formula sees the underlying production
-                // rate, not the throttled rate.
-                let g = Double(max(1, _lastSelfPlayPositionsPerGame))
-                let spDelay = _autoAdjust ? Double(smoothedSelfPlayPerGameDelayMs()) : 0
-                let estimatedOverheadMs = spDelay * Double(positionsProduced) / g
-                let effectiveElapsedMs = elapsedMs - estimatedOverheadMs
+            let now = CFAbsoluteTimeGetCurrent()
+            if let prior = _lastSelfPlayTickAt, positionsProduced > 0 {
+                let elapsedMs = (now - prior) * 1000.0
+                let effectiveElapsedMs = elapsedMs - currentDelaySettingMs
                 _selfPlayMsPerMove = effectiveElapsedMs / Double(positionsProduced)
                 _totalSelfPlayPositions += positionsProduced
                 maybeAppendRateSample(now: Date())
             }
+            _lastSelfPlayTickAt = now
             _lastSelfPlayWorkerCount = max(1, workerCount)
             recomputeDelays()
         }
@@ -281,29 +279,33 @@ final class ReplayRatioController: @unchecked Sendable {
         }
     }
 
-    /// Called by the training worker after each SGD step. `elapsedMs`
-    /// is the EFFECTIVE inter-call wall: caller computes
-    /// `(now - lastCallTime) - lastSleptMs` and passes the
-    /// difference. This makes the training side symmetric with the
-    /// self-play side (both ultimately reflect the underlying
-    /// production rate at zero injected delay), so the signed-delay
-    /// formula converges on the configured `targetRatio` rather than
-    /// the current applied ratio. The caller is responsible for
-    /// tracking `lastCallTime` and `lastSleptMs`. On the first call
-    /// (no prior, no prior sleep) the caller can pass the SGD
-    /// batch's own work time as a close-enough first sample.
-    /// Negative `elapsedMs` from small-window estimator overshoot is
-    /// not clamped — the 7s SMA absorbs transient noise.
+    /// Called by the training worker after each SGD step. Symmetric
+    /// API with `recordSelfPlayBarrierTick`: the controller owns the
+    /// inter-call wall measurement directly (stamps
+    /// `_lastTrainingTickAt` on every call), and the caller passes
+    /// only the per-batch training-side delay it is currently
+    /// configured to sleep. The controller subtracts that from its
+    /// own measured wall to get tr_per_move at zero injected delay.
+    /// First call (no prior stamp): just stamp and return the
+    /// seeded delay; the first usable measurement arrives on call
+    /// #2. Negative effective elapsed from small-window noise is
+    /// not clamped — the 7s SMA absorbs transients.
     /// Returns the sleep the worker should apply before the next SGD
     /// step (training-side projection of the SMA signed delay over
     /// the last `historyWindowSec` seconds).
-    func recordTrainingBatchAndGetDelay(elapsedMs: Double) -> Int {
+    func recordTrainingBatchAndGetDelay(
+        currentDelaySettingMs: Double
+    ) -> Int {
         queue.sync {
-            if elapsedMs > 0 {
-                _trainingMsPerMove = elapsedMs / Double(trainingBatchSize)
+            let now = CFAbsoluteTimeGetCurrent()
+            if let prior = _lastTrainingTickAt {
+                let elapsedMs = (now - prior) * 1000.0
+                let effectiveElapsedMs = elapsedMs - currentDelaySettingMs
+                _trainingMsPerMove = effectiveElapsedMs / Double(trainingBatchSize)
                 _totalTrainingPositions += trainingBatchSize
                 maybeAppendRateSample(now: Date())
             }
+            _lastTrainingTickAt = now
             recomputeDelays()
             return _autoAdjust ? smoothedTrainingStepDelayMs() : _manualDelayMs
         }
@@ -586,6 +588,24 @@ final class ReplayRatioController: @unchecked Sendable {
                 )
             }
         }
+    }
+
+    /// Clear the self-play wall-clock stamp so the next
+    /// `recordSelfPlayBarrierTick` is treated as a fresh first-tick
+    /// (stamp only, no measurement). Used by the batched evaluator
+    /// when its slot count drops to 0 (drain mode / arena pause)
+    /// and on reattach, so a multi-minute pause window doesn't
+    /// produce one garbage ms/move sample on resume.
+    func resetSelfPlayClock() {
+        queue.sync { _lastSelfPlayTickAt = nil }
+    }
+
+    /// Clear the training-side wall-clock stamp. Symmetric with
+    /// `resetSelfPlayClock`; not currently called from the in-tree
+    /// caller, but exposed for symmetry and future use (e.g. an
+    /// arena pause that the training worker observes).
+    func resetTrainingClock() {
+        queue.sync { _lastTrainingTickAt = nil }
     }
 
     /// Self-play-side delay projection. Read-only; the controller is

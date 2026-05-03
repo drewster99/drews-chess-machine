@@ -26,3 +26,38 @@ REGRESSED when:
 Bias proposals toward aggressive extensions of `training_time_seconds` over the previous accepted run when the previous run was healthy at its full window — at least +300s, but feel free to multiply (e.g. 600s → 1800s → 3600s → 5400s). When extending, also consider the parameters whose effect is dominated by late-training dynamics — entropy_bonus, lr_warmup_steps, weight_decay, and replay_ratio_target — since those govern whether the policy stays diverse deep into a long run. Early-abort thresholds in parameters.json are intentionally not overly aggressive; trust them.
 
 Do your best!
+
+---
+
+ADDITIONAL CRITERIA (added 2026-05-03):
+
+**Replay-ratio controller stability.** With `replay_ratio_target = 1.10`, the
+observed `ratio_current` should stay within **[0.90, 1.25]** once the run is
+warmed up. Warm-up window: ignore the first 40 minutes (controller bootstrap,
+buffer fill, SMA seed). From minute 40 onward this band must hold.
+
+**Training throughput.** Training moves per hour should sit around **4,500,000**
+once warmed up. Bands:
+  - **> 4.5M/hr** → great
+  - **3.0M/hr to 4.5M/hr** → WATCH
+  - **< 3.0M/hr** → TERMINATE territory
+Same 45-minute warm-up grace period as above (ignore the first 45 minutes; from
+minute 45 onward the rule is in effect).
+
+**Mid-run early-kill rule** (separate from H1-H7 in the analyzer's
+hard-rejects, applies during in-flight monitoring only):
+
+  Once elapsed ≥ 45 minutes, if EITHER condition holds for ≥ 20 consecutive
+  minutes (≥ 4 consecutive 5-minute cron ticks):
+    (R1) `ratio_current` is outside [0.90, 1.25], OR
+    (R2) `train_rate` is below 3,000,000 positions/hour
+  Then `kill -SIGUSR1 <pid>` and the **NEXT iteration MUST be a code-change
+  iteration** aimed at the controller / throughput bug, not a parameter
+  proposal. Mark the killed iteration as REJECTED.
+
+These criteria exist because the controller has a known measurement asymmetry
+that was first observed pulling the equilibrium ratio downward (target 1.10,
+observed 0.27, train_rate sliding 3.7M → 2.5M/hr over 3h). The fix landed in
+commit 187e86c — but if any subsequent iteration regresses on EITHER axis under
+those bands, the fix is incomplete and another code-change pass is required
+before more parameter tuning continues.
