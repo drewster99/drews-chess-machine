@@ -19,7 +19,7 @@ final class TrainingParametersTests: XCTestCase {
     func test_registry_size() {
         XCTAssertEqual(
             TrainingParameters.allKeys.count,
-            29,
+            30,
             "Adding/removing a TrainingParameter requires intentionally updating this count."
         )
     }
