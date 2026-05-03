@@ -28,6 +28,13 @@ struct ContentView: View {
     let autoTrainOnLaunch: Bool
     let cliConfig: CliTrainingConfig?
     let cliOutputURL: URL?
+    /// View > Show Training Graphs preference, forwarded from
+    /// `DrewsChessMachineApp`'s `@AppStorage`. Gates the lower
+    /// chart pane independently of `chartCoordinator.isActive`
+    /// (which only reflects whether chart data is being collected),
+    /// so the user can hide the pane during training to reclaim
+    /// vertical space without stopping data capture.
+    let showTrainingGraphs: Bool
 
     /// Single source of truth for chart-layer state. Held here
     /// (rather than on `UpperContentView`) so it can be passed to
@@ -46,20 +53,21 @@ struct ContentView: View {
                 cliOutputURL: cliOutputURL,
                 chartCoordinator: chartCoordinator
             )
-            .frame(maxHeight: 600)
-            Group {
-//                if chartCoordinator.isActive {
-                    Divider()
-                    LowerContentView(
-                        promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
-                        replayRatioTarget: TrainingParameters.shared.replayRatioTarget,
-                        appMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
-                        gpuMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
-                        chartCoordinator: chartCoordinator
-                    )
-                    .frame(minHeight: 600)
-//                }
+            .frame(minHeight: 400)
+            VStack {
+                Divider()
+                LowerContentView(
+                    promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
+                    replayRatioTarget: TrainingParameters.shared.replayRatioTarget,
+                    appMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
+                    gpuMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
+                    chartCoordinator: chartCoordinator
+                )
             }
+            .opacity((showTrainingGraphs && chartCoordinator.isActive) ? 1.0 : 0.0)
+            .frame(height: !showTrainingGraphs ? 0 : (chartCoordinator.isActive ? nil : 300))
+            Spacer()
+                .frame(maxHeight: (showTrainingGraphs && chartCoordinator.isActive) ? nil : 0)
         }
     }
 }

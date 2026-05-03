@@ -1,55 +1,12 @@
 import SwiftUI
 
-/// A move to visualize on the board with an arrow and ghost piece.
-struct MoveVisualization: Sendable {
-    let fromRow: Int
-    let fromCol: Int
-    let toRow: Int
-    let toCol: Int
-    let probability: Float
-    let piece: String?
-    /// True if this move is legal in the source state. The Forward
-    /// Pass demo (and Candidate Test) shows the top-K policy cells
-    /// regardless of legality so the user can see whether the network
-    /// has learned move-validity — illegal candidates surfacing in the
-    /// top-K is a diagnostic signal that the policy hasn't yet learned
-    /// to suppress them. Defaults to `true` for callers that don't
-    /// know or care about legality (legacy code paths).
-    let isLegal: Bool
-
-    init(
-        fromRow: Int,
-        fromCol: Int,
-        toRow: Int,
-        toCol: Int,
-        probability: Float,
-        piece: String?,
-        isLegal: Bool = true
-    ) {
-        self.fromRow = fromRow
-        self.fromCol = fromCol
-        self.toRow = toRow
-        self.toCol = toCol
-        self.probability = probability
-        self.piece = piece
-        self.isLegal = isLegal
-    }
-}
-
-/// What to draw on top of the pieces.
-enum BoardOverlay {
-    case none
-    case topMoves([MoveVisualization])
-    case channel([Float])
-}
-
 /// Draws the starting chess position with a switchable overlay:
 /// - `.topMoves`: gradient arrows from source to destination + ghost pieces
 /// - `.channel`: blue highlights on active squares of a tensor channel
 struct ChessBoardView: View {
     /// 64-square flat board, indexed as row * 8 + col.
     var pieces: [Piece?] = GameState.starting.board
-    var overlay: BoardOverlay = .none
+    var overlay: Overlay = .none
 
     private static let lightSquare = Color(red: 0.94, green: 0.85, blue: 0.71)
     private static let darkSquare = Color(red: 0.71, green: 0.53, blue: 0.39)
@@ -241,5 +198,14 @@ struct ChessBoardView: View {
 
         path.closeSubpath()
         return path
+    }
+}
+
+extension ChessBoardView {
+    /// What to draw on top of the pieces.
+    enum Overlay {
+        case none
+        case topMoves([MoveVisualization])
+        case channel([Float])
     }
 }

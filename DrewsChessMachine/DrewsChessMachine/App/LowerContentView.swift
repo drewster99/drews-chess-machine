@@ -34,7 +34,7 @@ struct LowerContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            chartZoomControlRow
+            ChartZoomControlRow(coordinator: chartCoordinator)
             TrainingChartGridView(
                 frame: chartCoordinator.decimatedFrame,
                 diversityHistogram: chartCoordinator.currentDiversityHistogramBars,
@@ -61,33 +61,4 @@ struct LowerContentView: View {
         }
     }
 
-    /// Compact row — same font size and weight for every element so
-    /// it lays out as one tight cluster on the left rather than the
-    /// bold-zoom + tiny-hint + far-right-Auto layout it used to be.
-    @ViewBuilder
-    private var chartZoomControlRow: some View {
-        HStack(spacing: 8) {
-            Text(ChartZoom.labels[chartCoordinator.chartZoomIdx])
-                .font(.caption.bold())
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
-            Text("⌘=")
-                .font(.caption)
-                .foregroundStyle(chartCoordinator.canZoomIn ? Color.secondary : Color.secondary.opacity(0.4))
-            Text("⌘-")
-                .font(.caption)
-                .foregroundStyle(chartCoordinator.canZoomOut ? Color.secondary : Color.secondary.opacity(0.4))
-            Toggle(isOn: Binding(
-                get: { chartCoordinator.chartZoomAuto },
-                set: { chartCoordinator.setAutoZoom($0) }
-            )) {
-                Text("Auto")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .toggleStyle(.checkbox)
-            Spacer()
-        }
-        .padding(.horizontal, 4)
-    }
 }
