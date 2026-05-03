@@ -1568,8 +1568,16 @@ final class ChessTrainer: @unchecked Sendable {
             advantageStdForNorm,
             name: "advantage_normalized"
         )
-        let weightedCE = graph.multiplication(advantageNormalized, negLogProb, name: "adv_weighted_ce")
-        let policyLoss = graph.mean(of: weightedCE, axes: [0, 1], name: "policy_loss")
+        let weightedCE = graph.multiplication(
+            advantageNormalized,
+            negLogProb,
+            name: "adv_weighted_ce"
+        )
+        let policyLoss = graph.mean(
+            of: weightedCE,
+            axes: [0, 1],
+            name: "policy_loss"
+        )
 
         // --- Outcome-partitioned policy loss (diagnostic only) ---
         //

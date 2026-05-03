@@ -475,7 +475,8 @@ final class MPSChessPlayer: ChessPlayer {
         // future GameState refactor changes the optionality model.
         var matCount: Int = 0
         for sq in gameState.board {
-            if let piece = sq, piece.type != .pawn {
+            if let piece = sq, // only squares containing a piece
+                piece.type != .pawn {
                 matCount += 1
             }
         }
