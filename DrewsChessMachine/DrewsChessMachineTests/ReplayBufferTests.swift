@@ -56,17 +56,36 @@ final class ReplayBufferTests: XCTestCase {
         let boardFloats = makeFakeBoard(seed: 42)
         var move: Int32 = 1234
         var vBaseline: Float = 0.42
+        var ply: UInt16 = 0
+        var tau: Float = 1.0
+        var hash: UInt64 = 0xCAFE_BABE_DEAD_BEEF
+        var mat: UInt8 = 32
 
         boardFloats.withUnsafeBufferPointer { boardsBuf in
             withUnsafePointer(to: &move) { moveP in
                 withUnsafePointer(to: &vBaseline) { vP in
-                    buffer.append(
-                        boards: boardsBuf.baseAddress!,
-                        policyIndices: moveP,
-                        vBaselines: vP,
-                        outcome: 1.0,
-                        count: 1
-                    )
+                    withUnsafePointer(to: &ply) { plyP in
+                        withUnsafePointer(to: &tau) { tauP in
+                            withUnsafePointer(to: &hash) { hashP in
+                                withUnsafePointer(to: &mat) { matP in
+                                    buffer.append(
+                                        boards: boardsBuf.baseAddress!,
+                                        policyIndices: moveP,
+                                        vBaselines: vP,
+                                        plyIndices: plyP,
+                                        samplingTaus: tauP,
+                                        stateHashes: hashP,
+                                        materialCounts: matP,
+                                        gameLength: 1,
+                                        workerId: 0,
+                                        intraWorkerGameIndex: 0,
+                                        outcome: 1.0,
+                                        count: 1
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -329,16 +348,35 @@ final class ReplayBufferTests: XCTestCase {
         let boardFloats = makeFakeBoard(seed: seed)
         var move: Int32 = Int32(seed % UInt64(ChessNetwork.policySize))
         var vBaseline: Float = Float(seed % 100) / 100.0
+        var ply: UInt16 = UInt16(seed % 100)
+        var tau: Float = 1.0
+        var hash: UInt64 = seed
+        var mat: UInt8 = 32
         boardFloats.withUnsafeBufferPointer { boardsBuf in
             withUnsafePointer(to: &move) { moveP in
                 withUnsafePointer(to: &vBaseline) { vP in
-                    buffer.append(
-                        boards: boardsBuf.baseAddress!,
-                        policyIndices: moveP,
-                        vBaselines: vP,
-                        outcome: 1.0,
-                        count: 1
-                    )
+                    withUnsafePointer(to: &ply) { plyP in
+                        withUnsafePointer(to: &tau) { tauP in
+                            withUnsafePointer(to: &hash) { hashP in
+                                withUnsafePointer(to: &mat) { matP in
+                                    buffer.append(
+                                        boards: boardsBuf.baseAddress!,
+                                        policyIndices: moveP,
+                                        vBaselines: vP,
+                                        plyIndices: plyP,
+                                        samplingTaus: tauP,
+                                        stateHashes: hashP,
+                                        materialCounts: matP,
+                                        gameLength: 1,
+                                        workerId: 0,
+                                        intraWorkerGameIndex: UInt32(seed & 0xFFFF),
+                                        outcome: 1.0,
+                                        count: 1
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
