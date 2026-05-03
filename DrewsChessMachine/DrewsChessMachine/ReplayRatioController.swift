@@ -234,14 +234,31 @@ final class ReplayRatioController: @unchecked Sendable {
     ///     normal operation equals `workerCount`, but the batcher can
     ///     fire smaller batches during slot-count transitions, so we
     ///     accept both separately.
-    ///   - currentDelaySettingMs: the per-game self-play delay the
-    ///     caller is currently configured to sleep. Controller
-    ///     subtracts it from its own measured wall before computing
-    ///     per-move rate so the formula sees the underlying
-    ///     production rate at zero injected delay. Pass 0 if the
-    ///     caller knows it is applying no throttling. Negative
-    ///     effective elapsed (small-window noise) is not clamped —
-    ///     the 7s SMA over `_delayHistory` absorbs transients.
+    ///   - currentDelaySettingMs: the **per-game** self-play delay
+    ///     the caller is currently configured to sleep. Note the
+    ///     unit: the caller's sleep is per game-end (a few hundred
+    ///     ms), but a barrier tick is per-ply across the pool
+    ///     (tens of ms). The controller can NOT subtract this value
+    ///     directly from the per-tick wall — it has to convert from
+    ///     per-game units to per-tick overhead first. With G =
+    ///     `_lastSelfPlayPositionsPerGame` and `positionsProduced`
+    ///     ply-submissions in this tick, the expected number of
+    ///     game-ends across the worker pool in this tick is
+    ///     `positionsProduced / G`. Each game-end contributes a
+    ///     full per-game sleep to the slowest worker's tick (the
+    ///     barrier waits for it), so the expected per-tick wall
+    ///     inflation from injected delay is approximately
+    ///     `(positionsProduced / G) × currentDelaySettingMs`. The
+    ///     controller subtracts that per-tick estimate, NOT the
+    ///     raw per-game value, before computing per-move rate.
+    ///     Without this conversion the controller would think it
+    ///     was injecting ~10× more delay than it actually does,
+    ///     drive the smoothed self-play sleep way up, and settle on
+    ///     a steady-state ratio far above target (observed ~2.5 vs
+    ///     target 1.10 before this fix). Pass 0 if the caller
+    ///     knows it is applying no throttling. Negative effective
+    ///     elapsed (small-window noise) is not clamped — the 7s SMA
+    ///     over `_delayHistory` absorbs transients.
     ///   - workerCount: currently-active slot count (`N` in the
     ///     aggregate sp-slowdown formula). Piped in each tick so the
     ///     per-game sleep calculation stays correct when the user
@@ -255,7 +272,10 @@ final class ReplayRatioController: @unchecked Sendable {
             let now = CFAbsoluteTimeGetCurrent()
             if let prior = _lastSelfPlayTickAt, positionsProduced > 0 {
                 let elapsedMs = (now - prior) * 1000.0
-                let effectiveElapsedMs = elapsedMs - currentDelaySettingMs
+                let g = Double(max(1, _lastSelfPlayPositionsPerGame))
+                let perTickOverheadMs =
+                    currentDelaySettingMs * Double(positionsProduced) / g
+                let effectiveElapsedMs = elapsedMs - perTickOverheadMs
                 _selfPlayMsPerMove = effectiveElapsedMs / Double(positionsProduced)
                 _totalSelfPlayPositions += positionsProduced
                 maybeAppendRateSample(now: Date())

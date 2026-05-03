@@ -1,0 +1,1 @@
+ReplayRatioController unit-mismatch fix: convert per-game spDelay to per-tick overhead before subtracting from barrier-tick wall. Previous fix subtracted full per-game value (~500ms) from per-tick wall (~30ms), driving controller into the opposite overshoot (cur=2.48 vs target 1.10). Multiplying by positionsProduced/G gives correct per-tick estimate.
