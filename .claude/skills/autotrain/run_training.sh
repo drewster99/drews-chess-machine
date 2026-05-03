@@ -115,9 +115,18 @@ APP_PID=$!
 # lifecycle hook (NSApplicationDelegate didFinishLaunching or a
 # Task at app init), so the app starts whether or not its window
 # happens to be displayed.
+#
+# (2026-05-03) Single 3 s ping observed unreliable — the app launched
+# but stayed un-activated until the user clicked it manually. Spam the
+# activation a few times across the first ~30 s of launch so a slow
+# Dock/launch services warmup doesn't miss the window.
+# Match the AppKit display name "Drew's Chess Machine" exactly (binary
+# name "DrewsChessMachine" doesn't match through System Events / tell).
 (
-    sleep 3
-    /usr/bin/osascript -e 'tell application "DrewsChessMachine" to activate' >/dev/null 2>&1
+    for delay in 2 5 10 20 30; do
+        sleep "$delay"
+        /usr/bin/osascript -e 'tell application "Drew'\''s Chess Machine" to activate' >/dev/null 2>&1
+    done
 ) &
 
 (

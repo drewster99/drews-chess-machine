@@ -341,6 +341,8 @@ While the training run is in flight, every cron / wakeup tick must do **both** o
 
    Then log a one-line summary to the conversation: `autotrain: early-kill on H<N> at <elapsed>s — <metric>=<value>`. Then `kill -SIGUSR1 <pid>`. Then proceed to step 7 with the partial result.
 
+   **Manual kills outside the H1-H7 flow** (user asks "kill this run", a launcher bug like the osascript-activation failure, or any other case where you SIGUSR1 without going on to step 7's real analyzer subagent) MUST still leave the iteration in a non-IN_PROGRESS state on the dashboard. The dashboard keys IN_PROGRESS off "no `analysis.json` present" — leaving the file absent means the row sticks at IN_PROGRESS forever. After the SIGUSR1 lands and the wrapper exits, write a stub `<folder>/analysis.json` with `{"classification": "regressed", "analysis_commentary": "<one-sentence reason for the manual kill, e.g. 'user-directed kill so the new build could be tested' or 'launcher osascript activation failed; not a parameter result'>"}` and run `regen_dashboard.py`. Mark it as REJECTED so it's distinct from real analyzer rejections in the commentary text.
+
 3. **Report briefly.** Even when nothing is wrong, surface the six metrics on every wakeup so trends are visible across ticks. Don't reduce these to a vague "healthy" — the user reads the line.
 
 #### 6b. Exit-code handling

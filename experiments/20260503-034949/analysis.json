@@ -1,0 +1,4 @@
+{
+  "classification": "regressed",
+  "analysis_commentary": "Run interrupted via SIGUSR1 at ~3h elapsed. Symmetric ratio fix had not yet been built; train_rate had slid 3.7M \u2192 1.2M pos/hr over the session and replay ratio settled at ~0.27 vs target=1.10. User-directed kill so the new build (commit 187e86c symmetric controller) could be tested. No promotion across 35 arenas. Manual reject: not a real proposer iteration."
+}

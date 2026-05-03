@@ -1,0 +1,4 @@
+{
+  "classification": "regressed",
+  "analysis_commentary": "Run interrupted via SIGUSR1 at ~5min elapsed because the launcher's osascript activation did not bring the app window to the front and the user had to click manually. Killed before Play-and-Train produced any [STATS]. Wrapper now spams activate at 2/5/10/20/30s as a more reliable bandage. Manual reject: launcher reliability bug, not a parameter result."
+}
