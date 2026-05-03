@@ -521,6 +521,7 @@ final class ReplayBuffer: @unchecked Sendable {
                 if let dstTaus { dstTaus[i] = samplingTauStorage[srcIndex] }
                 if let dstHashes { dstHashes[i] = stateHashStorage[srcIndex] }
                 if let dstWorkerGameIds { dstWorkerGameIds[i] = workerGameIdStorage[srcIndex] }
+                if let dstMaterialCounts { dstMaterialCounts[i] = materialCountStorage[srcIndex] }
             }
 
             return true
