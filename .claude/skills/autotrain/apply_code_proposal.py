@@ -72,6 +72,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 ALLOWED_FILES = frozenset({
     "DrewsChessMachine/DrewsChessMachine/ChessTrainer.swift",
     "DrewsChessMachine/DrewsChessMachine/ContentView.swift",
+    "DrewsChessMachine/DrewsChessMachine/ReplayRatioController.swift",
 })
 
 # Files explicitly forbidden — we name them so an accidental allowlist

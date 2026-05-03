@@ -298,13 +298,25 @@ Invoke `run_training.sh <folder>/parameters.json <training_time> <folder>/result
 
 #### 6a. In-flight monitoring (every wakeup while the run is in flight)
 
-While the training run is in flight, every cron / wakeup tick must do **both** of these — `pgrep` alone is insufficient. The 5850s run on 2026-05-01 wasted ~35 minutes of GPU because polling only checked liveness, not health.
+**Cadence: 5-minute ticks.** While a training run is in flight, the monitoring tick MUST run on a ~5-minute cadence (use `ScheduleWakeup` with `delaySeconds` ≈ 270-300, OR a 5-minute cron, OR a tighter 60-270s wake when actively chasing a brewing R1/H1-H7 condition). 25-minute heartbeats are NOT acceptable — they let collapse signals brew into the analyzer's hard-reject zone before you see them, and they hide the trajectory shape that's the whole point of in-flight monitoring. Only stretch beyond 5 minutes if you've explicitly explained why in the wakeup `reason` (e.g. "GPU contention from second app, deferring 10 min").
 
-1. **Health check.** Read the most recent `[STATS]` line from the active session log:
+While the training run is in flight, every cron / wakeup tick must do **all** of the following — `pgrep` alone is insufficient. The 5850s run on 2026-05-01 wasted ~35 minutes of GPU because polling only checked liveness, not health.
+
+1. **Health check + full tick report.** Read the most recent `[STATS]` lines, the `[ARENA]` lines since the prior tick, and the most recent `[BATCH-STATS]` line from the active session log. Use Python (NOT eyeballing) to assemble a structured report on every tick. Sample command:
    ```bash
-   ls -t ~/Library/Logs/DrewsChessMachine/dcm_log_*.txt | head -1 | xargs grep "[STATS] elapsed=" | tail -1
+   LOG=$(ls -t ~/Library/Logs/DrewsChessMachine/dcm_log_*.txt | head -1)
+   grep -E "^[0-9:.]+  \[STATS\] elapsed" "$LOG" | tail -8
+   grep -E "^[0-9:.]+  \[ARENA\] #" "$LOG" | tail -5
+   grep -E "^[0-9:.]+  \[BATCH-STATS\]" "$LOG" | tail -1
    ```
-   Parse and report all six health metrics in one line: `pEnt`, `gNorm`, `pLogitAbsMax`, `legalMass`, `top1Legal`, `vAbs`. Don't skim — these are the same fields the analyzer keys off in step 7, so you should be able to predict the eventual classification from them.
+
+   **Every tick MUST emit, at minimum:**
+   - **Six-metric trend grid** across the last 5-10 ticks (markdown table): time, `pEnt`, `gNorm`, `pLogitAbsMax`, `legalMass`, `top1Legal`, `vAbs`, `ratio.target`, `ratio.cur`, band classification (IN/HI/LO). Trend across ticks reveals drift the analyzer keys off; a single value hides it.
+   - **Arena summary**: any `[ARENA] #N kv|kp` lines since the prior tick — verdict (kept/promoted), score, elo, draw rate, and a 5-arena rolling score trend. State explicitly when no arena fired in the window.
+   - **Throughput**: spRate moves/hr and trainRate moves/hr from the latest STATS, plus a one-line trend (e.g. "throughput steady at 1.7M/hr" or "throughput collapsed from 5M → 1.5M over last hour"). Surface spDelay and delay (compensator state) when either is non-zero.
+   - **[BATCH-STATS] digest**: from the most recent line, report `unique_pct`, `dup_max`, `phase_by_ply` distribution (open/early/mid/late/end %), `game_length` distribution, top-3 `sampling_tau` buckets, `outcome` (W/D/L%), `buffer_unique_pct`. Don't paste the raw JSON — synthesize it.
+
+   Don't skim — the six metrics here are the same fields the analyzer keys off in step 7, so you should be able to predict the eventual classification from them.
 
    **Positive-health bands** — when reporting metrics, label each as `in-band` / `watch` / `out-of-band` so trends are visible across ticks rather than a vague "healthy". For a network training from random init through self-play (no MCTS, no opening book, no human data).
 
@@ -341,9 +353,15 @@ While the training run is in flight, every cron / wakeup tick must do **both** o
 
    Then log a one-line summary to the conversation: `autotrain: early-kill on H<N> at <elapsed>s — <metric>=<value>`. Then `kill -SIGUSR1 <pid>`. Then proceed to step 7 with the partial result.
 
-   **Manual kills outside the H1-H7 flow** (user asks "kill this run", a launcher bug like the osascript-activation failure, or any other case where you SIGUSR1 without going on to step 7's real analyzer subagent) MUST still leave the iteration in a non-IN_PROGRESS state on the dashboard. The dashboard keys IN_PROGRESS off "no `analysis.json` present" — leaving the file absent means the row sticks at IN_PROGRESS forever. After the SIGUSR1 lands and the wrapper exits, write a stub `<folder>/analysis.json` with `{"classification": "regressed", "analysis_commentary": "<one-sentence reason for the manual kill, e.g. 'user-directed kill so the new build could be tested' or 'launcher osascript activation failed; not a parameter result'>"}` and run `regen_dashboard.py`. Mark it as REJECTED so it's distinct from real analyzer rejections in the commentary text.
+   **Manual kills are NOT automatically failures.** A manual SIGUSR1 (user asked, or launcher-bug recovery) shuts the run down gracefully and writes a complete `result.json` — that file deserves the same step-7 analysis treatment as a `timer_expired` run, judged against the goal. Don't reflexively stub-reject it. Two cases:
 
-3. **Report briefly.** Even when nothing is wrong, surface the six metrics on every wakeup so trends are visible across ticks. Don't reduce these to a vague "healthy" — the user reads the line.
+   1. **The run accumulated meaningful trajectory data** (≥10 min elapsed, valid `result.json` with `termination_reason: "SIGUSR1-user-requested"`, full stat trajectories present): proceed to **step 7's real analyzer subagent**. Pass the result through the same hard-reject / soft-reject / positive-signal pipeline as a normal completion. The analyzer judges on metrics-vs-goal, not on how the run ended. If it earned `improved`, accept it; `neutral`, do nothing; `regressed`, reject. The classifier will note the `SIGUSR1-user-requested` termination in commentary, but that termination alone is NOT a regression signal. **Manual termination ≠ failure** — early shutdown for code-change testing, GPU contention, or a planned pivot can still produce data that beats the baseline.
+
+   2. **The run was killed before any meaningful trajectory** (`<10 min` elapsed, `result.json` missing/corrupt, or launcher-bug recovery where the run never properly started): write a stub `<folder>/analysis.json` with `{"classification": "regressed", "analysis_commentary": "<one-sentence reason, e.g. 'launcher osascript activation failed; no training trajectory' or 'manual kill <X>s after start; insufficient data for analysis'>"}` and run `regen_dashboard.py`. Stub-reject is **only** for the no-data case — never the default for "user said stop."
+
+   Reason this matters: conflating manual kill with REGRESSED auto-counts the iteration toward the failure-streak (step 0.6) and, more importantly, throws away the run's real signal. A 6h run that the user stopped early to apply code changes might have produced 26 arenas of trajectory worth analyzing — bin it as REJECTED-by-default and you've discarded the answer to "did it accomplish the goal?"
+
+3. **Report fully every tick.** Even when nothing is wrong, emit the full report from step 1 (trend grid + arena summary + throughput + BATCH-STATS digest) on every wakeup. Don't reduce these to a one-line "healthy" — the user reads the report and uses it to spot trends I'd otherwise miss. Terse one-line summaries during a long-running session lose the shape of progress that's the entire reason monitoring exists.
 
 #### 6b. Exit-code handling
 
@@ -375,9 +393,10 @@ Spawn a general-purpose subagent with this prompt:
 
 Instructions embedded in the prompt:
 - The summaries are digests of ~1 MB JSON files. For specific details not in the summaries, use `jq` or `python3` via Bash against the paths. **Do not Read the JSON files** — they'll blow your context.
-- **`termination_reason`** is in `new_summary.termination_reason` (and `previous_summary.termination_reason`). Two values exist:
-  - `"timer_expired"` — the training run ran to the requested time limit.
+- **`termination_reason`** is in `new_summary.termination_reason` (and `previous_summary.termination_reason`). Three values exist:
+  - `"timer_expired"` — the training run ran to the requested time limit. Treat normally.
   - `"legal_mass_collapse"` — the app early-bailed because `illegal_mass_sum` stayed at ≥ `legal_mass_collapse_threshold` for `legal_mass_collapse_no_improvement_probes` consecutive 60 s probes (after a `legal_mass_collapse_grace_seconds` post-training-start grace period — currently 180 s). This is a definitive collapse — the run did NOT complete the requested window. **Always classify the new run as `regressed` when `termination_reason == "legal_mass_collapse"`**, and lead the commentary with the bail (e.g. "early-bail at <elapsed>s on legal-mass collapse"). Never call this `improved` or `neutral` no matter what other metrics look like — the run did not run long enough to be a fair comparison.
+  - `"SIGUSR1-user-requested"` — the run was shut down gracefully via SIGUSR1 (H1-H7 hard-kill, R1 trip, manual user kill, or launcher-bug recovery). Critically: **the manner of shutdown is NOT itself a regression signal**. Judge the run on its actual metrics-vs-goal trajectory exactly as you would `timer_expired`. If `training_elapsed_seconds` is healthy (e.g. ≥ 10 min) and the trajectory tells a coherent story, run the full hard-reject / soft-reject / positive-signal pipeline. The H1-H7 kill criteria, if tripped during the run, will already surface in `collapse_signals` and drive the verdict — don't double-count the SIGUSR1 itself. A short SIGUSR1 (`< 180s`) lacks signal and falls under the existing "training_elapsed_seconds < 180" rule below.
 - Judge improvement strictly against `improvement_goal`. Do not invent a different goal. If the goal isn't moving but metrics unrelated to the goal look better, that's not an improvement.
 - If `training_elapsed_seconds` is unusually short (say < 180 s) and the results are inconclusive, prefer `is_result_improved: false` and say so in the commentary — shorter runs shouldn't ratchet progress.
 - If the two summaries have **different `build_number`** values, the app code was rebuilt between runs. Flag this prominently in the commentary and lean toward `is_result_improved: false` unless the goal metric moved by a clearly-larger margin than plausible build-drift noise.
@@ -537,6 +556,6 @@ Use these patterns **proactively** on each cron tick, not just at end-of-iterati
 - Never force-push.
 - Never skip commit hooks.
 - **Standing default training time is 36000 seconds (10 hours).** There is no upper cap. Shorter windows are exceptions, not the rule.
-- Early-kill of an in-flight run uses `kill -SIGUSR1 <pid>` ONLY. Never bare `kill`. SIGUSR1 routes through `EarlyStopCoordinator` and writes a complete `result.json` before exit.
+- **EARLY SHUTDOWN OF AN IN-FLIGHT RUN — ALWAYS USE `kill -SIGUSR1 <pid>` FIRST.** This rule is universal: H1-H7 hard-kills, R1 trips, user-directed kills, launcher-bug recoveries — every shutdown path. SIGUSR1 routes through `EarlyStopCoordinator` which writes a complete `result.json` (with `termination_reason: "SIGUSR1-user-requested"`, full `training_elapsed_seconds`, full stat trajectories, complete arena history) before the app exits. Bare `kill` (SIGTERM/SIGINT) races the dispatch handler and produces a corrupted/empty `result.json` — the analyzer cannot classify it, and the run's data is lost. After sending SIGUSR1, **wait** for the process to exit (`until ! pgrep -f ... ; do sleep 2; done`); only escalate to a harder signal if it ignores SIGUSR1 for >60s, and surface that anomaly to the user.
 - Only push to the branch the user confirmed in step 0 of the current session. If branch changed mid-loop, re-confirm.
 - If `git status` shows unexpected staged changes at iteration start, stop and surface them — don't sweep them into an autotrain commit.
