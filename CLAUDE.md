@@ -30,7 +30,7 @@ The app terminal console only shows SwiftUI chart warnings and bring-up noise. A
 
 ## Training parameters
 
-All 29 tunable training parameters live in a single `@MainActor @Observable` singleton: `TrainingParameters.shared` (`DrewsChessMachine/DrewsChessMachine/TrainingParameters.swift`). Each parameter is declared via the `@TrainingParameter` macro (in the local SwiftPM package `DrewsChessMachine/Packages/TrainingParametersMacro/`) which generates the id, definition (with range + category + liveTunable flag), and typed encode/decode. Adding a parameter: write a `@TrainingParameter(...) public enum FooBar: TrainingParameterKey {}` declaration plus a stored property + collectValues / applyOne entry in `TrainingParameters`; add the type to `allKeys`.
+All 30 tunable training parameters live in a single `@MainActor @Observable` singleton: `TrainingParameters.shared` (`DrewsChessMachine/DrewsChessMachine/TrainingParameters.swift`). Each parameter is declared via the `@TrainingParameter` macro (in the local SwiftPM package `DrewsChessMachine/Packages/TrainingParametersMacro/`) which generates the id, definition (with range + category + liveTunable flag), and typed encode/decode. Adding a parameter: write a `@TrainingParameter(...) public enum FooBar: TrainingParameterKey {}` declaration plus a stored property + collectValues / applyOne entry in `TrainingParameters`; add the type to `allKeys`.
 
 Reading values:
 - **From SwiftUI views**: `@Bindable var trainingParams = TrainingParameters.shared`, then read `trainingParams.entropyBonus` or bind `$trainingParams.entropyBonus`. Re-renders fire automatically.

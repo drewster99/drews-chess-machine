@@ -69,13 +69,13 @@ import Foundation
 /// at any moment" — averaging the two branched delays separately
 /// would mix zeros-from-one-branch with nonzeros-from-the-other and
 /// produce both sides sleeping simultaneously during transitions.
-/// Smoothing over a fixed 7 s wall-clock window (not a fixed sample
+/// Smoothing over a fixed 20 s wall-clock window (not a fixed sample
 /// count) — batch cadence varies with batch size, so a count window
 /// would span wildly different durations.
 ///
 /// There is no measurement window on the input side, no Kp, no
 /// damping, no divergence boost, no deadband, no PID — only the
-/// model-inverting formula plus the 7-second output smoothing.
+/// model-inverting formula plus the 20-second output smoothing.
 ///
 /// Thread-safe via a private serial `DispatchQueue`. All accessors
 /// hop through `queue.sync`.
@@ -148,16 +148,16 @@ final class ReplayRatioController: @unchecked Sendable {
     /// Window (seconds) used for the SMA on the signed delay. Long
     /// enough that a single-batch outlier can't swing the delay hard,
     /// short enough that the controller still tracks real rate changes.
-    /// Pinned to 7 s per the user's specification; also covers the
+    /// Pinned to 20 s per the user's specification; also covers the
     /// long-tail case where a single SGD batch takes more than one
     /// second of wall clock, so the average still has ≥ several entries.
-    private let historyWindowSec: Double = 7.0
+    private let historyWindowSec: Double = 20.0
 
     /// Time-stamped history of raw signed-delay values, appended on
     /// every `recomputeDelays()` run. Entries older than
     /// `historyWindowSec` are pruned on both append and read. Typical
     /// steady-state occupancy under 32 self-play slots + 3 SGD
-    /// steps/sec is ~5-20k entries in the 7 s window — an array with
+    /// steps/sec is ~14-57k entries in the 20 s window — an array with
     /// leading-prune is still O(1) amortized because ticks arrive in
     /// time order and we only drop from the front. Reduction is
     /// linear in the window size but runs rarely (only on snapshot /
@@ -257,7 +257,7 @@ final class ReplayRatioController: @unchecked Sendable {
     ///     a steady-state ratio far above target (observed ~2.5 vs
     ///     target 1.10 before this fix). Pass 0 if the caller
     ///     knows it is applying no throttling. Negative effective
-    ///     elapsed (small-window noise) is not clamped — the 7s SMA
+    ///     elapsed (small-window noise) is not clamped — the 20s SMA
     ///     over `_delayHistory` absorbs transients.
     ///   - workerCount: currently-active slot count (`N` in the
     ///     aggregate sp-slowdown formula). Piped in each tick so the
@@ -309,7 +309,7 @@ final class ReplayRatioController: @unchecked Sendable {
     /// First call (no prior stamp): just stamp and return the
     /// seeded delay; the first usable measurement arrives on call
     /// #2. Negative effective elapsed from small-window noise is
-    /// not clamped — the 7s SMA absorbs transients.
+    /// not clamped — the 20s SMA absorbs transients.
     /// Returns the sleep the worker should apply before the next SGD
     /// step (training-side projection of the SMA signed delay over
     /// the last `historyWindowSec` seconds).
@@ -526,7 +526,7 @@ final class ReplayRatioController: @unchecked Sendable {
             // for Diag-row debug display).
             let (prodRate, consRate) = rollingRates()
             let ratio = prodRate > 0 ? consRate / prodRate : 0
-            // Applied delays are the 7s SMA — the same values the
+            // Applied delays are the 20s SMA — the same values the
             // training worker and self-play slots actually use. The
             // UI should never show a different number from what is
             // being applied, or the reader can't diagnose behavior.

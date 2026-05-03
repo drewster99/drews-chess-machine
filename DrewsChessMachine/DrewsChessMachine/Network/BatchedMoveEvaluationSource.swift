@@ -318,7 +318,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// doesn't care about cross-batcher GPU saturation.
     private let gpuTimer: ArenaGpuTimer?
 
-/// Parked submissions awaiting the next batch fire.
+    /// Parked submissions awaiting the next batch fire.
     private var pending: [Pending] = []
     private var batchFireScheduled = false
 
