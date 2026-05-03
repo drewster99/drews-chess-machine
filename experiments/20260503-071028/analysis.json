@@ -1,0 +1,4 @@
+{
+  "classification": "regressed",
+  "analysis_commentary": "User-directed kill at ~17min. Iteration shipped with old arena settings (100 games / 300s) instead of the intended 300 games / 750s \u2014 first arena fired at min 5 with insufficient precision. New controller fix verified in flight (ratio cur~1.05-1.47 vs target 1.10, train_rate 7-9M/hr) but iteration was not run with the parameter set we wanted to evaluate. Next iteration relaunches with corrected arena settings."
+}

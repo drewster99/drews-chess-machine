@@ -1,0 +1,1 @@
+Re-launch after the prior 02:06 launch failed to activate via osascript and the user killed it. Same parameter set (1M buffer, 600k prefill, 12h time limit, 1.10 ratio target). Wrapper now spams activate at 2s/5s/10s/20s/30s instead of one 3s ping.

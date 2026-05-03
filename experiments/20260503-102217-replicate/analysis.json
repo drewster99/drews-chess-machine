@@ -1,0 +1,4 @@
+{
+  "classification": "regressed",
+  "analysis_commentary": "R1 trigger fired at elapsed 1:03:01 — 18 consecutive monitoring ticks past min 45 with ratio_current outside [0.90, 1.25] (range 0.69-0.86, mean ~0.78). Identical drift pattern to prior R1-killed iteration 20260503-083522-codechange. Network otherwise healthy: pEnt 2.04/2.12legal in-band, gNorm 3.50 declining cleanly 4.66→3.50, vAbs 0.14 declining, pLogitAbsMax 7.64 in-band, no policy collapse. legalMass 0.003 (probe noise). No promotion. CONTROLLER BUG REPRODUCED — controller (build 554) cannot hold target 1.10 equilibrium; needs hand-edit of ReplayRatioController.swift."
+}

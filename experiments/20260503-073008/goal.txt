@@ -1,0 +1,63 @@
+GOAL: Increase training length perpetually without full collapse.
+
+Each iteration should push the training window longer (in 5-minute increments past the current stable point) while keeping the policy head from fully collapsing onto a single illegal move. "Full collapse" is defined by these signals in the results JSON:
+
+(1) candidate_tests[].policy_head.policy_stats.illegal_mass_sum sustained ≥ 0.99 (essentially all probability mass on illegal moves) at the END of the run
+(2) candidate_tests[].policy_head.policy_stats.max sustained ≥ 0.99 (one-hot collapse) at the END of the run
+(3) candidate_tests[].policy_head.top1_legal_ever_positive == FALSE for the entire run (the network never put non-trivial mass on any legal move)
+
+A run is acceptable as long as it does not exhibit full collapse by the end of its window. Partial illegal_mass_sum or partial max_prob during the run is fine — what matters is that the network has not flatlined.
+
+There is **NO upper limit on training time**. The whole point is longer and longer runtimes. Aggressive jumps are encouraged: if the prior run was healthy, jumping straight to 60 minutes (3600 s), 90 minutes (5400 s), or longer is fine.
+
+ACCEPT a proposal when:
+- The run completed its full requested window without legal_mass_collapse early-bail, AND
+- It did not show full collapse by the three definitions above, AND
+- Either the training window is longer than the previous baseline's window with no full-collapse, OR the training window matches and end-of-run illegal_mass_sum / max_prob are at least as good as baseline.
+
+NEUTRAL when:
+- Same window, similar end-of-run health metrics. Baseline holds.
+
+REGRESSED when:
+- Early-bail on legal_mass_collapse, OR
+- End-of-run full collapse signals (illegal_mass_sum ≥ 0.99 AND max ≥ 0.99 AND top1_legal_ever_positive == FALSE), OR
+- Window shrank below baseline.
+
+Bias proposals toward aggressive extensions of `training_time_seconds` over the previous accepted run when the previous run was healthy at its full window — at least +300s, but feel free to multiply (e.g. 600s → 1800s → 3600s → 5400s). When extending, also consider the parameters whose effect is dominated by late-training dynamics — entropy_bonus, lr_warmup_steps, weight_decay, and replay_ratio_target — since those govern whether the policy stays diverse deep into a long run. Early-abort thresholds in parameters.json are intentionally not overly aggressive; trust them.
+
+Do your best!
+
+---
+
+ADDITIONAL CRITERIA (added 2026-05-03):
+
+**Replay-ratio controller stability.** With `replay_ratio_target = 1.10`, the
+observed `ratio_current` should stay within **[0.90, 1.25]** once the run is
+warmed up. Warm-up window: ignore the first 40 minutes (controller bootstrap,
+buffer fill, SMA seed). From minute 40 onward this band must hold.
+
+**Training throughput.** Training moves per hour should sit around **4,500,000**
+once warmed up. Bands:
+  - **> 4.5M/hr** → great
+  - **3.0M/hr to 4.5M/hr** → WATCH
+  - **< 3.0M/hr** → TERMINATE territory
+Same 45-minute warm-up grace period as above (ignore the first 45 minutes; from
+minute 45 onward the rule is in effect).
+
+**Mid-run early-kill rule** (separate from H1-H7 in the analyzer's
+hard-rejects, applies during in-flight monitoring only):
+
+  Once elapsed ≥ 45 minutes, if EITHER condition holds for ≥ 20 consecutive
+  minutes (≥ 4 consecutive 5-minute cron ticks):
+    (R1) `ratio_current` is outside [0.90, 1.25], OR
+    (R2) `train_rate` is below 3,000,000 positions/hour
+  Then `kill -SIGUSR1 <pid>` and the **NEXT iteration MUST be a code-change
+  iteration** aimed at the controller / throughput bug, not a parameter
+  proposal. Mark the killed iteration as REJECTED.
+
+These criteria exist because the controller has a known measurement asymmetry
+that was first observed pulling the equilibrium ratio downward (target 1.10,
+observed 0.27, train_rate sliding 3.7M → 2.5M/hr over 3h). The fix landed in
+commit 187e86c — but if any subsequent iteration regresses on EITHER axis under
+those bands, the fix is incomplete and another code-change pass is required
+before more parameter tuning continues.

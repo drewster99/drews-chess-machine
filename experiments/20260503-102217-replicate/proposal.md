@@ -1,0 +1,1 @@
+Replicate mode — re-run current parameters verbatim. Prior R1-killed run had healthy training (gNorm/vAbs trending down) but unstable controller. This iteration probes reproducibility without modifying user-set params.

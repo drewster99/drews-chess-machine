@@ -1,0 +1,1 @@
+Restart iteration: legal-mask training (build 549) is itself the new variable vs. build-512 baseline. Hold all 30 parameters identical and only extend training_time_limit to 10 h so we measure the algorithm change on a known param set before tuning any single knob.

@@ -1,0 +1,1 @@
+Re-launch with corrected arena settings: 300 games per tournament (was 100) + 750s auto-interval (was 300) for cleaner promotion signal. Otherwise identical to 071028 (1M buffer, 600k prefill, 12h time, 1.10 ratio target, symmetric controller fix in build).

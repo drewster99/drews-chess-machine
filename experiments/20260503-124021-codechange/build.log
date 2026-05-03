@@ -1,0 +1,12 @@
+eyJibHVlcHJpbnRfYmx1ZXByaW50SWRlbnRpZmllciI6IlRyYWluaW5nUGFyYW1ldGVyc01hY3JvU3VwcG9ydCIsImJsdWVwcmludF9wcm92aWRlckZpbGVQYXRoU3RyaW5nIjoiXC9Vc2Vyc1wvYW5kcmV3XC9jdXJzb3JcL2RyZXdzLWNoZXNzLW1hY2hpbmVcL0RyZXdzQ2hlc3NNYWNoaW5lXC9QYWNrYWdlc1wvVHJhaW5pbmdQYXJhbWV0ZXJzTWFjcm8iLCJ0eXBlIjp7ImJsdWVwcmludCI6e319fQ==
+/Users/andrew/cursor/drews-chess-machine/DrewsChessMachine/DrewsChessMachine/ContentView.swift:7819:18: warning: instance method 'startRealTraining(mode:)' took 170ms to type-check (limit: 100ms)
+    private func startRealTraining(mode: TrainingStartMode = .freshOrFromLoadedSession) {
+                 ^
+eyJibHVlcHJpbnRfYmx1ZXByaW50SWRlbnRpZmllciI6IlRyYWluaW5nUGFyYW1ldGVyc01hY3JvU3VwcG9ydCIsImJsdWVwcmludF9wcm92aWRlckZpbGVQYXRoU3RyaW5nIjoiXC9Vc2Vyc1wvYW5kcmV3XC9jdXJzb3JcL2RyZXdzLWNoZXNzLW1hY2hpbmVcL0RyZXdzQ2hlc3NNYWNoaW5lXC9QYWNrYWdlc1wvVHJhaW5pbmdQYXJhbWV0ZXJzTWFjcm8iLCJ0eXBlIjp7ImJsdWVwcmludCI6e319fQ==
+note: Run script build phase 'Generate BuildInfo.swift' will be run during every build because the option to run the script phase "Based on dependency analysis" is unchecked. (in target 'DrewsChessMachine' from project 'DrewsChessMachine')
+
+--- stderr ---
+--- xcodebuild: WARNING: Using the first of multiple matching destinations:
+{ platform:macOS, arch:arm64, id:00006040-000661D13C7A801C, name:My Mac }
+{ platform:macOS, arch:x86_64, id:00006040-000661D13C7A801C, name:My Mac }
+{ platform:macOS, name:Any Mac }

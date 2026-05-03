@@ -1,0 +1,3 @@
+run_training.sh: launching DrewsChessMachine (limit=43200s, params=/Users/andrew/cursor/drews-chess-machine/experiments/20260503-070621/parameters.json, out=/Users/andrew/cursor/drews-chess-machine/experiments/20260503-070621/result.json)
+run_latest.sh: launching /Users/andrew/Library/Developer/Xcode/DerivedData/DrewsChessMachine-eyigcdvyyrcsakaqcybzcfgsurbr/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine
+run_training.sh: run complete, output at /Users/andrew/cursor/drews-chess-machine/experiments/20260503-070621/result.json

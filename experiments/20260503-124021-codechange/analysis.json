@@ -1,0 +1,4 @@
+{
+  "classification": "regressed",
+  "analysis_commentary": "User-directed early kill at elapsed ~5:56 to apply code changes; not a parameter result. Training was healthy throughout (six metrics in-band, 26 arenas all kept with no promotions, throughput decayed from 9.3M→1.6M moves/hr over the run). REJECTED so it doesn't ratchet baseline."
+}

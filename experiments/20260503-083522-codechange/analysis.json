@@ -1,0 +1,4 @@
+{
+  "classification": "regressed",
+  "analysis_commentary": "R1 trigger fired at elapsed 1:07:05 — 22 consecutive monitoring ticks past min 45 with ratio_current outside [0.90, 1.25] (range 0.65-0.84, mean ~0.78). Controller (ad8e4e9 unit-fix) cannot establish target equilibrium 1.10. Training otherwise healthy: pEnt 1.82/1.82legal in-band, gNorm 3.64 (declining 3.97→3.64 over 67min), vAbs 0.19 declining, pLogitAbsMax 8.11 in-band, no policy collapse. legalMass 0.005 (max single spike 0.021 was probe noise). No promotion. Per goal.txt R1 rule: NEXT iteration MUST be code-change targeting controller equilibrium."
+}

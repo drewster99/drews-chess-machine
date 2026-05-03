@@ -1,0 +1,1 @@
+Post-controller-fix iteration: 1M replay buffer (was 500k) + 600k prefill threshold + 12h time limit, validating that the symmetric ms-per-move measurement (commits 187e86c, 8716fbd) holds the configured replay_ratio_target=1.10 in flight.

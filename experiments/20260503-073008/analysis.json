@@ -1,0 +1,4 @@
+{
+  "classification": "regressed",
+  "analysis_commentary": "Early-kill at 58m44s on goal.txt R1: ratio_current outside [0.90, 1.25] for 4 consecutive 5-min ticks (1.96, 2.80, 2.39, 2.48) past the 40-min warm-up gate. Symmetric controller fix (commit 8716fbd) overshot in the opposite direction from the original asymmetry \u2014 ratio settles ~2.4 vs target 1.10 with sp_rate ~2.2M/hr (heavily throttled) while train_rate stays ~5.5M/hr (above 3M, so R2 clear). Underlying training was producing useful gradients (legalMass=0.06, top1Legal=0.06 climbing, arenas 0.51-0.52, decisive games trending up to 19%). 4 arenas, no promotion. Per goal.txt rule: NEXT iteration MUST be code-change pass on the controller."
+}

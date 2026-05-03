@@ -1,0 +1,59 @@
+run_training.sh: launching DrewsChessMachine (limit=43200s, params=/Users/andrew/cursor/drews-chess-machine/experiments/20260503-073008/parameters.json, out=/Users/andrew/cursor/drews-chess-machine/experiments/20260503-073008/result.json)
+run_latest.sh: launching /Users/andrew/Library/Developer/Xcode/DerivedData/DrewsChessMachine-eyigcdvyyrcsakaqcybzcfgsurbr/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine
+[APP] session log: /Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20260503-023020.txt
+[ARENA] #1 Candidate vs Champion @ step 418
+[ARENA]     Games: 300/300
+[ARENA]     Result: 24W / 263D / 13L
+[ARENA]     Score: 51.8% [49.9%, 53.8%]
+[ARENA]     Elo diff: +13 [-1, +27]
+[ARENA]     Draw rate: 87.7%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 52.0%  (11W/134D/5L, n=150)
+[ARENA]       Candidate as black: 51.7%  (13W/129D/8L, n=150)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=300 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=553
+[ARENA]     candidate=20260503-25-5hax-1  champion=20260503-25-5hax  trainer=20260503-25-5hax-1
+[ARENA]     diversity: unique=300/300 (100%) avgDiverge=3.7
+[ARENA]     Verdict: kept    dur=0:40
+[ARENA] #1 kv step=418 games=300 w=24 d=263 l=13 score=0.5183 elo=+13 elo_lo=-1 elo_hi=+27 draw_rate=0.8767 cand_white_w=11 cand_white_d=134 cand_white_l=5 cand_black_w=13 cand_black_d=129 cand_black_l=8 cand_white_score=0.5200 cand_black_score=0.5167 promoted=0 kind=none dur_sec=40.6 build=553 candidate=20260503-25-5hax-1 champion=20260503-25-5hax trainer=20260503-25-5hax-1
+[ARENA] #2 Candidate vs Champion @ step 842
+[ARENA]     Games: 300/300
+[ARENA]     Result: 26W / 255D / 19L
+[ARENA]     Score: 51.2% [49.0%, 53.4%]
+[ARENA]     Elo diff: +8 [-7, +23]
+[ARENA]     Draw rate: 85.0%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 52.3%  (17W/123D/10L, n=150)
+[ARENA]       Candidate as black: 50.0%  (9W/132D/9L, n=150)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=300 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=553
+[ARENA]     candidate=20260503-25-5hax-1  champion=20260503-25-5hax  trainer=20260503-25-5hax-1
+[ARENA]     diversity: unique=300/300 (100%) avgDiverge=4.2
+[ARENA]     Verdict: kept    dur=0:37
+[ARENA] #2 kv step=842 games=300 w=26 d=255 l=19 score=0.5117 elo=+8 elo_lo=-7 elo_hi=+23 draw_rate=0.8500 cand_white_w=17 cand_white_d=123 cand_white_l=10 cand_black_w=9 cand_black_d=132 cand_black_l=9 cand_white_score=0.5233 cand_black_score=0.5000 promoted=0 kind=none dur_sec=37.3 build=553 candidate=20260503-25-5hax-1 champion=20260503-25-5hax trainer=20260503-25-5hax-1
+[ARENA] #3 Candidate vs Champion @ step 1221
+[ARENA]     Games: 300/300
+[ARENA]     Result: 24W / 259D / 17L
+[ARENA]     Score: 51.2% [49.1%, 53.3%]
+[ARENA]     Elo diff: +8 [-6, +23]
+[ARENA]     Draw rate: 86.3%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 50.0%  (11W/128D/11L, n=150)
+[ARENA]       Candidate as black: 52.3%  (13W/131D/6L, n=150)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=300 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=553
+[ARENA]     candidate=20260503-25-5hax-1  champion=20260503-25-5hax  trainer=20260503-25-5hax-1
+[ARENA]     diversity: unique=300/300 (100%) avgDiverge=4.2
+[ARENA]     Verdict: kept    dur=0:37
+[ARENA] #3 kv step=1221 games=300 w=24 d=259 l=17 score=0.5117 elo=+8 elo_lo=-6 elo_hi=+23 draw_rate=0.8633 cand_white_w=11 cand_white_d=128 cand_white_l=11 cand_black_w=13 cand_black_d=131 cand_black_l=6 cand_white_score=0.5000 cand_black_score=0.5233 promoted=0 kind=none dur_sec=38.0 build=553 candidate=20260503-25-5hax-1 champion=20260503-25-5hax trainer=20260503-25-5hax-1
+[ARENA] #4 Candidate vs Champion @ step 1566
+[ARENA]     Games: 300/300
+[ARENA]     Result: 35W / 242D / 23L
+[ARENA]     Score: 52.0% [49.5%, 54.5%]
+[ARENA]     Elo diff: +14 [-3, +31]
+[ARENA]     Draw rate: 80.7%
+[ARENA]     By side:
+[ARENA]       Candidate as white: 52.0%  (16W/124D/10L, n=150)
+[ARENA]       Candidate as black: 52.0%  (19W/118D/13L, n=150)
+[ARENA]     batch=4096 lr=5.0e-05 promote>=0.55 games=300 sp.tau=2.00/0.80/0.015 ar.tau=2.00/0.50/0.015 workers=48 build=553
+[ARENA]     candidate=20260503-25-5hax-1  champion=20260503-25-5hax  trainer=20260503-25-5hax-1
+[ARENA]     diversity: unique=300/300 (100%) avgDiverge=3.8
+[ARENA]     Verdict: kept    dur=0:39
+[ARENA] #4 kv step=1566 games=300 w=35 d=242 l=23 score=0.5200 elo=+14 elo_lo=-3 elo_hi=+31 draw_rate=0.8067 cand_white_w=16 cand_white_d=124 cand_white_l=10 crun_training.sh: run complete, output at /Users/andrew/cursor/drews-chess-machine/experiments/20260503-073008/result.json
