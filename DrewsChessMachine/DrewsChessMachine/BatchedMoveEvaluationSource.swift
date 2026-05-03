@@ -558,8 +558,8 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             // cancelPending finds nothing and no-ops; if cancelPending
             // ran first, fireBatch's snapshot of `pending` won't
             // include this entry. No double-resume in either order.
-            Task {
-                await self.cancelPending(token: token)
+            Task { [weak self] in
+                await self?.cancelPending(token: token)
             }
         }
     }
@@ -607,8 +607,8 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         // fire (modulo the cancellation race that lands an empty
         // batch, which we still want to count as a schedule).
         fireReasonCounts[reason, default: 0] += 1
-        Task {
-            await self.fireBatch()
+        Task { [weak self] in
+            await self?.fireBatch()
         }
     }
 

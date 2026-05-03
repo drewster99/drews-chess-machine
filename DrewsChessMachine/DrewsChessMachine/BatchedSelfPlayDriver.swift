@@ -122,7 +122,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                     // deallocated under the slot. Bind through a
                     // local so the capture is unambiguously strong.
                     let driverSelf: BatchedSelfPlayDriver = self
-                    let slot = Task(priority: .userInitiated) {
+                    let slot = Task(priority: .high) {
                         await driverSelf.slotLoop(id: slotID)
                     }
                     slots.append((id: slotID, task: slot))
