@@ -1656,7 +1656,7 @@ final class ChessTrainer: @unchecked Sendable {
         // (max-subtract needs reductionMaximum → no gradient) remain
         // closed off; the ε-bumped form is the available mitigation.
         let softmax = graph.softMax(
-            with: network.policyOutput,
+            with: maskedLogits,
             axis: 1,
             name: "policy_softmax"
         )
@@ -2231,6 +2231,33 @@ final class ChessTrainer: @unchecked Sendable {
     var completedTrainSteps: Int {
         get { executionQueue.sync { _completedTrainSteps } }
         set { executionQueue.async { self._completedTrainSteps = max(0, newValue) } }
+    }
+
+    /// Effective learning rate that the optimizer is currently being
+    /// fed, given the active warmup multiplier and (optionally) the
+    /// sqrt-batch scaling rule. Mirrors the in-graph math at
+    /// `buildFeeds` step time so a status-bar readout matches what the
+    /// training step is actually applying. Reads `_completedTrainSteps`
+    /// through the executionQueue so the value is consistent with the
+    /// observable step count.
+    func effectiveLearningRate(forBatchSize batchSize: Int) -> Float {
+        let steps = executionQueue.sync { _completedTrainSteps }
+        let warmupMul: Float
+        if lrWarmupSteps > 0 {
+            warmupMul = Float(min(1.0, Double(steps) / Double(lrWarmupSteps)))
+        } else {
+            warmupMul = 1.0
+        }
+        var lr: Float
+        if sqrtBatchScalingForLR {
+            let sqrtBatchScale: Float = Float(
+                sqrt(Double(batchSize) / Double(Self.sqrtScaleBaseBatchSize))
+            )
+            lr = learningRate * sqrtBatchScale
+        } else {
+            lr = learningRate
+        }
+        return lr * warmupMul
     }
 
     private func internalTrainStep(batchSize: Int) throws -> TrainStepTiming {

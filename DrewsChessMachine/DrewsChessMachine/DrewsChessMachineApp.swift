@@ -425,6 +425,8 @@ struct DrewsChessMachineApp: App {
                 Divider()
                 Button("Run Engine Diagnostics") { commandHub.runEngineDiagnostics() }
                     .disabled(commandHub.isBusy)
+                Button("Run Policy-Conditioning Probe") { commandHub.runPolicyConditioningDiagnostic() }
+                    .disabled(commandHub.isBusy)
                 Divider()
                 Button("Open Session Log") {
                     if let path = SessionLogger.shared.activeLogPath {

@@ -103,6 +103,15 @@ final class AppCommandHub {
     /// output goes to the session log with `[DIAG]` prefix. Suitable
     /// for one-shot health checks after major code changes.
     var runEngineDiagnostics: () -> Void = {}
+    /// One-shot probe: feed two distinctly different positions through
+    /// the live champion network, log the L1 distance / max per-cell
+    /// |Δ| / value-head Δ between their policy outputs, and pass/fail
+    /// based on whether the outputs are meaningfully position-conditional
+    /// or essentially identical (the latter would indicate the policy
+    /// head has collapsed to a position-agnostic constant). Output is
+    /// logged with `[DIAG]` prefix, same pattern as
+    /// `runEngineDiagnostics`.
+    var runPolicyConditioningDiagnostic: () -> Void = {}
 
     // Chart-zoom actions. Wired to the View menu's ⌘= / ⌘- items
     // and the Auto toggle. A manual in/out press flips auto off

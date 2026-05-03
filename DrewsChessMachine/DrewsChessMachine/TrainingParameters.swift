@@ -398,7 +398,7 @@ public enum ArenaGamesPerTournament: TrainingParameterKey {}
     default: 1800.0,
     range: 60.0...86400.0,
     category: "Arena",
-    liveTunable: false
+    liveTunable: true
 )
 public enum ArenaAutoIntervalSec: TrainingParameterKey {}
 

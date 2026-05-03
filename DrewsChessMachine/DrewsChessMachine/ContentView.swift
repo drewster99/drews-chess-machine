@@ -1016,6 +1016,14 @@ final class ArenaTriggerBox: @unchecked Sendable {
     var isPending: Bool {
         queue.sync { _pending }
     }
+
+    /// Wall-clock time of the most recent arena boundary. Read-only
+    /// for UI consumers (the status-bar countdown does
+    /// `interval - (now - lastArenaTime)`). The internal mutator is
+    /// `recordArenaCompleted()`; this accessor only reads.
+    var lastArenaTime: Date {
+        queue.sync { _lastArenaTime }
+    }
 }
 
 /// Lock-protected user-override inbox for an in-flight arena
@@ -1626,7 +1634,12 @@ struct ContentView: View {
     // Inference
     @State private var inferenceResult: EvaluationResult?
     @State private var isEvaluating = false
-    @State private var selectedOverlay = 0
+    /// Mini-board view mode index. `-1` = plain chess board, no
+    /// overlay and no channel-strip selection (the new default — just
+    /// show the board). `0` = Top Moves overlay (policy arrows). `1...
+    /// inputPlanes` = the matching channel of the input tensor.
+    /// Right-paging walks left → right through that ordering.
+    @State private var selectedOverlay = -1
     /// The position the forward-pass demo is evaluating. Seeded to the
     /// starting position on launch and NEVER auto-reset — free-placement
     /// edits persist across Build Network, mode switches, and re-runs, so
@@ -1833,6 +1846,20 @@ struct ContentView: View {
     /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
     /// count has actually advanced.
     @State private var trainingBox: TrainingLiveStatsBox?
+
+    /// Mirror of the trainer's warmup-relevant state, refreshed by the
+    /// snapshot timer. Captures the data the top-bar Training Status
+    /// chip and the LR Warm-up status cell need without touching the
+    /// trainer from inside `body`. `effectiveLR` is the same value the
+    /// optimizer is being fed this step (warmup × sqrt-batch × base).
+    private struct TrainerWarmupSnapshot: Equatable {
+        var completedSteps: Int
+        var warmupSteps: Int
+        var effectiveLR: Float
+        var inWarmup: Bool { warmupSteps > 0 && completedSteps < warmupSteps }
+    }
+    @State private var trainerWarmupSnap: TrainerWarmupSnapshot?
+
     nonisolated static let trainerLearningRateDefault: Float = 5e-5
     nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-3
     nonisolated static let drawPenaltyDefault: Float = 0.1
@@ -2032,6 +2059,22 @@ struct ContentView: View {
     /// Previous totalGpuMs reading for computing per-second GPU busy %.
     @State private var prevChartTotalGpuMs: Double = 0
     @State private var showingInfoPopover: Bool = false
+    /// Drives the top-bar Arena countdown chip's popover. Toggled by
+    /// the chip's tap action; the popover anchors below the chip on
+    /// `.top` arrow edge so it reads as a menu-style overlay.
+    @State private var showArenaPopover: Bool = false
+    /// Edit-text mirrors used by the Arena popover form. Seeded from
+    /// `trainingParams` when the popover opens (via the form's
+    /// `.onAppear`) and validated on Save before being written back to
+    /// `trainingParams`. Kept here on the parent view rather than
+    /// inside the popover view so a parse error doesn't cause SwiftUI
+    /// to throw away in-progress text on a re-render.
+    @State private var arenaPopoverGamesText: String = ""
+    @State private var arenaPopoverConcurrencyText: String = ""
+    @State private var arenaPopoverIntervalText: String = ""
+    @State private var arenaPopoverGamesError: Bool = false
+    @State private var arenaPopoverConcurrencyError: Bool = false
+    @State private var arenaPopoverIntervalError: Bool = false
     /// Wall-clock timestamp of the last progress-rate sample.
     /// Defaults to `.distantPast` so the first heartbeat tick of
     /// a new session always fires.
@@ -2481,7 +2524,16 @@ struct ContentView: View {
     /// pass UI" decision so every site that needs to branch on it reads
     /// the same condition.
     private var isCandidateTestActive: Bool {
-        realTraining && playAndTrainBoardMode == .candidateTest
+        guard realTraining else { return false }
+        // Game-run mode with N > 1 self-play workers is a placeholder
+        // ("N concurrent games / Live board hidden"), and the
+        // Game-run / Candidate-test picker is hidden in that case
+        // anyway, so the user has no way to switch out. Treat the
+        // multi-worker case as Candidate-test active regardless of
+        // what the persisted mode setting happens to be — that's the
+        // only mode that produces useful left-side output here.
+        if trainingParams.selfPlayWorkers > 1 { return true }
+        return playAndTrainBoardMode == .candidateTest
     }
 
     /// True when the Play and Train Board picker is currently on the
@@ -2571,6 +2623,15 @@ struct ContentView: View {
                 // @State and take effect on the next session start.
                 SessionLogger.shared.log("[PARAM] selfPlayWorkers: \(oldValue) -> \(newValue)")
                 workerCountBox?.set(newValue)
+                // Game-run mode is a placeholder card with N > 1 (the
+                // live board hides itself behind a "N concurrent games"
+                // overlay), and the Game-run / Candidate-test picker is
+                // hidden in that case — so silently switch the mode to
+                // Candidate test on the transition into multi-worker
+                // mode. The user can switch back when they drop to N=1.
+                if newValue > 1, oldValue <= 1, playAndTrainBoardMode == .gameRun {
+                    playAndTrainBoardMode = .candidateTest
+                }
             }
             .onChange(of: trainingParams.replayRatioTarget) { oldValue, newValue in
                 SessionLogger.shared.log(
@@ -2773,14 +2834,19 @@ struct ContentView: View {
     }
 
     private var overlayLabel: String {
+        if selectedOverlay < 0 { return "" }
         if selectedOverlay == 0 { return "Top Moves" }
         return "Channel \(selectedOverlay - 1): \(TensorChannelNames.names[selectedOverlay - 1])"
     }
 
     private var currentOverlay: BoardOverlay {
-        // Candidate test mode overrides the game-mode blackout: we want
-        // to see the forward-pass arrows/channels on the edit board even
-        // though a game is running in the background.
+        // Plain-board mode short-circuits ahead of every other check —
+        // it's the new default and means "show the chess board with no
+        // overlay at all", regardless of inferenceResult or which mode
+        // we're in.
+        if selectedOverlay < 0 { return .none }
+        // Outside of forward-pass / candidate-test contexts (e.g. live
+        // game-run) we have no inference data to overlay; render bare.
         if !showForwardPassUI { return .none }
         guard let result = inferenceResult else { return .none }
         if selectedOverlay == 0 {
@@ -2848,23 +2914,38 @@ struct ContentView: View {
                 replayRatioDiagnosticsRow(snap: snap)
             }
 
-            // Status row — the action controls previously lived here
-            // but have all moved to the File / Train / Debug menus at
-            // the top of the screen. This row now just shows the busy
-            // progress indicator and any ephemeral checkpoint status
-            // message. Kept as a view so the `.fileImporter` modifiers
-            // below (driven by `showingLoadSessionImporter` /
-            // `showingLoadModelImporter`, which the menu Load items
-            // toggle) have a stable parent to attach to.
-            HStack(spacing: 8) {
-                if isBusy {
-                    ProgressView().controlSize(.small)
-                    busyLabelView
+            // Status row — only renders when there's actually something
+            // to show (a non-realTraining busy state, an in-flight
+            // tournament, or a checkpoint status message). Wrapped in a
+            // Group so the `.fileImporter` / `.alert` /
+            // `.confirmationDialog` modifiers below have a stable
+            // anchor even when the inner HStack collapses; an empty
+            // Group contributes no height or VStack spacing, freeing
+            // up the vertical band that used to sit empty between the
+            // top status bar and the board.
+            let showsBusyContent: Bool = {
+                if let _ = checkpointStatusMessage { return true }
+                guard isBusy else { return false }
+                if !realTraining { return true }
+                return tournamentProgress != nil
+            }()
+            Group {
+                if showsBusyContent {
+                    HStack(spacing: 8) {
+                        if isBusy {
+                            if !realTraining {
+                                ProgressView().controlSize(.small)
+                                busyLabelView
+                            } else if tournamentProgress != nil {
+                                busyLabelView
+                            }
+                        }
+                        if let msg = checkpointStatusMessage {
+                            checkpointStatusLine(message: msg)
+                        }
+                        Spacer(minLength: 0)
+                    }
                 }
-                if let msg = checkpointStatusMessage {
-                    checkpointStatusLine(message: msg)
-                }
-                Spacer(minLength: 0)
             }
             .fileImporter(
                 isPresented: $showingLoadModelImporter,
@@ -2948,8 +3029,13 @@ struct ContentView: View {
             }
             .layoutPriority(1)
 
-            // Input tensor channel strip
-            if let result = inferenceResult, showForwardPassUI {
+            // Input tensor channel strip — hidden in plain-board mode
+            // (`selectedOverlay < 0`, the new -1 default). Right-paging
+            // off the plain board reveals the strip; right-arrow moves
+            // selection through it. Divider is gated on the same
+            // condition so collapsing the strip also drops its top
+            // separator.
+            if let result = inferenceResult, showForwardPassUI, selectedOverlay >= 0 {
                 Divider()
                 HStack(spacing: 2) {
                     ForEach(0..<ChessNetwork.inputPlanes, id: \.self) { channel in
@@ -3203,6 +3289,24 @@ struct ContentView: View {
             if let err = snap.error, trainingError == nil {
                 trainingError = err
             }
+        }
+        // Mirror the trainer's warmup state into @State so the status
+        // chip and the LR Warm-up status cell read from a snapshot
+        // rather than touching the trainer's executionQueue from inside
+        // `body`. Only published while a trainer exists; a missing
+        // trainer yields nil so the Idle chip path doesn't accidentally
+        // surface stale warmup numbers from a prior session.
+        if let trainer {
+            let next = TrainerWarmupSnapshot(
+                completedSteps: trainer.completedTrainSteps,
+                warmupSteps: trainer.lrWarmupSteps,
+                effectiveLR: trainer.effectiveLearningRate(
+                    forBatchSize: trainingParams.trainingBatchSize
+                )
+            )
+            if next != trainerWarmupSnap { trainerWarmupSnap = next }
+        } else if trainerWarmupSnap != nil {
+            trainerWarmupSnap = nil
         }
         // Arena progress mirror — cheap lock read, only updates the
         // @State when the game index has advanced (or transitioned
@@ -4115,58 +4219,13 @@ struct ContentView: View {
     private var busyLabel: String {
         if isBuilding { return "Building network..." }
         if realTraining {
-            // Play and Train (no arena): show total session time
-            // and a memory-usage line. The detailed self-play and
-            // training rates that used to live here have moved
-            // into the Self Play and Training panels below; the
-            // top row's job now is "how long has this session
-            // been running, and is memory healthy."
-            //
-            // The session time uses wall clock since
-            // `parallelStats.sessionStart`, formatted as HH:MM:SS
-            // for legibility (this is the same denominator the
-            // panels use, so the user can correlate). The memory
-            // stats are sampled out-of-band by
-            // `refreshMemoryStatsIfNeeded()` at ~10 s intervals
-            // and read here from `memoryStatsSnap`. Missing
-            // (nil) memory snapshot just renders without that
-            // section so the line still shows session time
-            // immediately on startup.
-            let timeStr: String
-            if let ps = parallelStats {
-                let elapsed = max(0, Date().timeIntervalSince(ps.sessionStart))
-                timeStr = "Total session time: \(GameWatcher.Snapshot.formatHMS(seconds: elapsed))"
-            } else {
-                timeStr = "Total session time: --"
-            }
-            let memLine: String
-            if let mem = memoryStatsSnap {
-                // App memory lives in the chart grid now (App memory
-                // tile), so it's been dropped from the header line
-                // here to reduce duplication.
-                let gpuGB = Self.bytesToGB(mem.gpuAllocatedBytes)
-                let gpuMaxGB = Self.bytesToGB(mem.gpuMaxTargetBytes)
-                let gpuTotalGB = Self.bytesToGB(mem.gpuTotalBytes)
-                let gpuPct = mem.gpuMaxTargetBytes > 0
-                ? Int((Double(mem.gpuAllocatedBytes) / Double(mem.gpuMaxTargetBytes) * 100).rounded())
-                : 0
-                memLine = String(
-                    format: "%@  ·  GPU RAM: %.2f / %.2f GB (%d%%)  ·  Total: %.1f GB",
-                    timeStr, gpuGB, gpuMaxGB, gpuPct, gpuTotalGB
-                )
-            } else {
-                memLine = timeStr
-            }
-            // Second line: %CPU and %GPU time utilisation since the
-            // previous usage sample. "GPU" here is the GPU-time
-            // percentage (different from "GPU RAM" on line 1, which
-            // is the unified-memory working set). `%4.0f%%` pads to
-            // 5 characters so values from "   0%" through "1600%"
-            // align under the monospacedDigit() renderer.
-            let cpuStr = cpuPercent.map { String(format: "%4.0f%%", $0) } ?? "  --%"
-            let gpuUsageStr = gpuPercent.map { String(format: "%4.0f%%", $0) } ?? "  --%"
-            let usageLine = "CPU: \(cpuStr)  ·  GPU: \(gpuUsageStr)"
-            return "\(memLine)\n\(usageLine)"
+            // The session time / GPU RAM / CPU / GPU block that used to
+            // live here moved into the top-bar status chip + chart-grid
+            // tiles (App memory, GPU, CPU) once those existed. Real
+            // training intentionally returns empty here so the busy row
+            // collapses to nothing during a session — the chip carries
+            // the "what is happening?" information now.
+            return ""
         }
         if gameSnapshot.isPlaying { return "Game \(gameSnapshot.totalGames + 1), move \(gameSnapshot.moveCount)..." }
         if sweepRunning {
@@ -4186,9 +4245,14 @@ struct ContentView: View {
     // MARK: - Navigation
 
     private func navigateOverlay(_ direction: Int) {
-        guard inferenceResult != nil, !isGameMode else { return }
+        // -1 = plain board (always available, even when no inference
+        // result is available — it's just the live chess board with
+        // no overlay). 0 = Top Moves; 1..inputPlanes = channel views,
+        // both of which require an inferenceResult to render.
         let next = selectedOverlay + direction
-        if next >= 0, next <= ChessNetwork.inputPlanes { selectedOverlay = next }
+        if next < -1 || next > ChessNetwork.inputPlanes { return }
+        if next >= 0 && inferenceResult == nil { return }
+        selectedOverlay = next
     }
 
     // MARK: - Actions
@@ -5855,6 +5919,7 @@ struct ContentView: View {
             arenaTriggerBox?.trigger()
         }
         commandHub.runEngineDiagnostics = { runEngineDiagnostics() }
+        commandHub.runPolicyConditioningDiagnostic = { runPolicyConditioningDiagnostic() }
         commandHub.abortArena = {
             SessionLogger.shared.log("[BUTTON] Abort Arena")
             arenaOverrideBox?.abort()
@@ -7974,7 +8039,14 @@ struct ContentView: View {
             }
             trainingStats = initialTrainingStats
         }
-        playAndTrainBoardMode = .gameRun
+        // Game-run mode is meaningless with N > 1 self-play workers
+        // (the live board hides itself behind a "N concurrent games"
+        // overlay) and the Game-run / Candidate-test picker is hidden
+        // in that case anyway. Default the mode to Candidate test in
+        // multi-worker sessions so the user gets a usable left-side
+        // panel out of the gate; single-worker sessions keep the
+        // historical Game-run default.
+        playAndTrainBoardMode = trainingParams.selfPlayWorkers > 1 ? .candidateTest : .gameRun
         probeNetworkTarget = .candidate
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
@@ -8276,7 +8348,6 @@ struct ContentView: View {
         // is safe and keeps the Task-side code MainActor-free.
         let sessionTrainingBatchSize = trainingParams.trainingBatchSize
         let sessionMinBufferBeforeTraining = trainingParams.replayBufferMinPositionsBeforeTraining
-        let sessionAutoArenaIntervalSec = trainingParams.arenaAutoIntervalSec
         let sessionTournamentGames = trainingParams.arenaGamesPerTournament
         let sessionPromoteThreshold = trainingParams.arenaPromoteThreshold
 
@@ -8286,7 +8357,7 @@ struct ContentView: View {
              gameWatcher, ratioController, recorder, outputURL, cliTrainingTimeLimitSec,
              isAutoTrainRun,
              sessionTrainingBatchSize, sessionMinBufferBeforeTraining,
-             sessionAutoArenaIntervalSec, sessionTournamentGames, sessionPromoteThreshold] in
+             sessionTournamentGames, sessionPromoteThreshold] in
 
             // --- Setup: build any missing networks, reset the trainer ---
 
@@ -8587,7 +8658,7 @@ struct ContentView: View {
                 // trainer weights.
                 group.addTask(priority: .userInitiated) {
                     [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController,
-                     sessionTrainingBatchSize, sessionMinBufferBeforeTraining, sessionAutoArenaIntervalSec] in
+                     sessionTrainingBatchSize, sessionMinBufferBeforeTraining] in
                     while !Task.isCancelled {
                         // Pause gate check (between steps).
                         if trainingGate.isRequestedToPause {
@@ -8642,10 +8713,16 @@ struct ContentView: View {
                         // is due or when the arena is running.
                         await fireCandidateProbeIfNeeded()
 
-                        // Auto-trigger the arena on the 30-min cadence.
-                        // Fires the trigger inbox; the arena coordinator
-                        // task picks it up and runs the tournament.
-                        if triggerBox.shouldAutoTrigger(interval: sessionAutoArenaIntervalSec) {
+                        // Auto-trigger the arena on the configured
+                        // cadence. Fires the trigger inbox; the arena
+                        // coordinator task picks it up and runs the
+                        // tournament. Reads `arenaAutoIntervalSec` live
+                        // (the parameter is `liveTunable: true`) so the
+                        // status-bar Arena popover's Save edits take
+                        // effect on the next poll without restarting
+                        // the session.
+                        let liveInterval = await TrainingParameters.shared.snapshot().arenaAutoIntervalSec
+                        if triggerBox.shouldAutoTrigger(interval: liveInterval) {
                             triggerBox.trigger()
                         }
 
@@ -9636,6 +9713,56 @@ struct ContentView: View {
         )
     }
 
+    /// One of four high-level session states surfaced as a colored
+    /// chip in the top status bar. Order is the natural progression of
+    /// a training session: Idle → SelfPlayPrefill (workers running but
+    /// the trainer is still waiting on `minBufferBeforeTraining`) →
+    /// TrainingWarmup (trainer is taking steps but the LR-warmup
+    /// multiplier is still <1) → Training (warmup complete). Outside
+    /// of a Play-and-Train session we always read Idle, regardless of
+    /// transient single-shot operations like Build or Forward Pass —
+    /// those have their own busy indicators and don't merit a "what
+    /// is this session doing?" chip.
+    private enum SessionStatusChip {
+        case idle
+        case selfPlayPrefill
+        case trainingWarmup
+        case training
+
+        var background: Color {
+            switch self {
+            case .idle: return Color.gray.opacity(0.25)
+            case .selfPlayPrefill: return Color.orange.opacity(0.85)
+            case .trainingWarmup: return Color.blue.opacity(0.85)
+            case .training: return Color.green.opacity(0.85)
+            }
+        }
+        var foreground: Color {
+            switch self {
+            case .idle: return .secondary
+            default: return .white
+            }
+        }
+    }
+
+    /// Derives the current chip state from session state. Order matters:
+    /// the prefill check must come before the warmup check, since the
+    /// trainer is waiting on the buffer in that window and has not
+    /// taken a step yet (so `completedTrainSteps == 0`, which would
+    /// otherwise look like the very first warmup step). Outside of a
+    /// Play-and-Train session this always returns `.idle`.
+    private var sessionStatusChip: SessionStatusChip {
+        guard realTraining else { return .idle }
+        let bufferCount = replayBuffer?.count ?? 0
+        if bufferCount < Self.minBufferBeforeTraining {
+            return .selfPlayPrefill
+        }
+        if let snap = trainerWarmupSnap, snap.inWarmup {
+            return .trainingWarmup
+        }
+        return .training
+    }
+
     /// Total active training wall-time across all segments, including
     /// the currently-running one if any. Excludes any time when
     /// training was stopped — sum of segment durations only.
@@ -9696,6 +9823,17 @@ struct ContentView: View {
                         label: "Active training time",
                         value: GameWatcher.Snapshot.formatHMS(seconds: activeSec)
                     )
+                    // LR Warm-up cell — only visible while the trainer is
+                    // actively in its warmup window. Effective LR here is
+                    // exactly what the optimizer is being fed this step
+                    // (base × sqrt-batch × warmupMul), straight from
+                    // `ChessTrainer.effectiveLearningRate(forBatchSize:)`.
+                    if let snap = trainerWarmupSnap, snap.inWarmup {
+                        StatusBarCell(
+                            label: "LR effective",
+                            value: String(format: "%.2e", snap.effectiveLR)
+                        )
+                    }
                     StatusBarCell(
                         label: "Training steps",
                         value: Int(totalSteps).formatted()
@@ -9723,45 +9861,20 @@ struct ContentView: View {
                     scoreStatusBarCell
                 }
                 Spacer()
-                // Arena concurrency Stepper. Always visible (so the
-                // user can see and adjust the value even between
-                // arenas), but disabled while an arena is running so
-                // the value can't shift mid-tournament. Same disable
-                // convention as the existing tournament-games settings.
-                HStack(spacing: 4) {
-                    Text("Arena ×")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Text("\(trainingParams.arenaConcurrency)")
-                        .font(.callout)
-                        .monospacedDigit()
-                        .frame(minWidth: 32, alignment: .trailing)
-                    Stepper(
-                        "Arena concurrency",
-                        value: $trainingParams.arenaConcurrency,
-                        in: 1...Self.absoluteMaxArenaConcurrency
-                    )
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .disabled(isArenaRunning)
-                }
-                if canRunArena {
-                    Button {
-                        // Defensive guard mirroring the menu's runArena
-                        // closure (line ~4125) — the parent view hides
-                        // this button when isArenaRunning=true, but a
-                        // rapid double-click could still slip through
-                        // before SwiftUI re-evaluates. Guard makes
-                        // double-fire a no-op.
-                        guard !isArenaRunning else { return }
-                        SessionLogger.shared.log("[BUTTON] Run Arena (status-bar)")
-                        arenaTriggerBox?.trigger()
-                    } label: {
-                        Label("Run Arena Now", systemImage: "flag.checkered")
-                            .font(.callout)
-                    }
-                    .controlSize(.small)
-                }
+                // Session status chip — the spinner-and-text block
+                // formerly under the busy label is now compressed into
+                // this single colored chip in the top bar. Order of
+                // checks (prefill before warmup before training) lives
+                // in `sessionStatusChip` so the chip and any future
+                // consumers stay in lockstep.
+                sessionStatusChipView
+                // Arena countdown chip — replaces the previous
+                // Concurrency × Stepper + "Run Arena Now" button. Shows
+                // a live HH:MM:SS countdown to the next auto-arena and
+                // opens a popover with full editor (#games / concurrency
+                // / interval) plus a Run-Arena-Now button. See
+                // `arenaCountdownChip` / `arenaSettingsPopover`.
+                arenaCountdownChip
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -9919,19 +10032,352 @@ struct ContentView: View {
     /// indicator text is heavier than the chart tile titles
     /// (`.title3.weight(.bold)` vs `.caption2` per tile) so the eye
     /// picks it up as the row's left anchor.
+    /// Display label for the session status chip. The Idle / Self-play
+    /// prefill / Training entries are static; the warm-up entry tacks
+    /// `NN%` onto the end so the user can see warmup progress at a
+    /// glance. Lives outside the enum because the percent depends on
+    /// `trainerWarmupSnap`, which is view-state, not enum-intrinsic.
+    private func sessionStatusChipLabel(chip: SessionStatusChip) -> String {
+        switch chip {
+        case .idle:            return "Idle"
+        case .selfPlayPrefill: return "Self-play prefill"
+        case .training:        return "Training"
+        case .trainingWarmup:
+            guard let snap = trainerWarmupSnap, snap.warmupSteps > 0 else {
+                return "Training: LR warm-up"
+            }
+            // Clamp to 0…99: 100% means warmup is complete and the
+            // chip should already have transitioned to .training, so
+            // capping here avoids a 100% flash on the boundary tick.
+            let raw = Double(snap.completedSteps) / Double(snap.warmupSteps) * 100.0
+            let pct = min(99, max(0, Int(raw.rounded())))
+            return "Training: LR warm-up \(pct)%"
+        }
+    }
+
+    /// Pill-shaped status chip rendered in the top status bar. Color
+    /// + label come from `sessionStatusChip` / `sessionStatusChipLabel`.
+    /// A small spinner is rendered to the left of the label in any
+    /// active state so motion is visible even when the text doesn't
+    /// change for stretches at a time. Idle stays static (no spinner).
+    @ViewBuilder
+    private var sessionStatusChipView: some View {
+        let chip = sessionStatusChip
+        HStack(spacing: 6) {
+            if chip != .idle {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+                    .frame(width: 12, height: 12)
+                    .tint(chip.foreground)
+            }
+            Text(sessionStatusChipLabel(chip: chip))
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(chip.foreground)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(chip.background)
+        )
+    }
+
+    // MARK: - Arena countdown chip
+
+    /// Seconds remaining until the next auto-arena fires, evaluated at
+    /// `now`. Returns nil when there is no active session or no
+    /// trigger box yet — the chip then renders `--:--:--`. Returns 0
+    /// when the configured interval has already elapsed (the box will
+    /// fire on its next poll and the countdown will reset).
+    ///
+    /// `now` is taken as a parameter rather than read from `Date()`
+    /// inside so the `TimelineView` schedule below can drive updates
+    /// off `context.date` deterministically.
+    private func secondsUntilNextArena(at now: Date) -> Double? {
+        guard let box = arenaTriggerBox, realTraining else { return nil }
+        let elapsed = now.timeIntervalSince(box.lastArenaTime)
+        return max(0, trainingParams.arenaAutoIntervalSec - elapsed)
+    }
+
+    /// Renderable label for the arena countdown chip. `--:--:--` when
+    /// no session is active or the trigger box hasn't been built yet.
+    private func arenaCountdownText(at now: Date) -> String {
+        guard let secs = secondsUntilNextArena(at: now) else { return "--:--:--" }
+        return GameWatcher.Snapshot.formatHMS(seconds: secs)
+    }
+
+    /// Parse a duration spec of the form `<number>[s|m|h|d]`. Whitespace
+    /// trimmed, case-insensitive on the suffix. An unqualified number
+    /// is taken as seconds. Returns nil on any parse failure or
+    /// non-positive result; consumers surface the parse error via the
+    /// red-overlay-on-the-field pattern in the Arena popover form.
+    static func parseDurationSpec(_ raw: String) -> Double? {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !s.isEmpty else { return nil }
+        let suffixes: [(suffix: Character, mul: Double)] = [
+            ("s", 1), ("m", 60), ("h", 3600), ("d", 86400)
+        ]
+        if let last = s.last, last.isLetter {
+            guard let entry = suffixes.first(where: { $0.suffix == last }) else { return nil }
+            let numericPart = String(s.dropLast())
+            guard let n = Double(numericPart), n > 0, n.isFinite else { return nil }
+            return n * entry.mul
+        } else {
+            guard let n = Double(s), n > 0, n.isFinite else { return nil }
+            return n
+        }
+    }
+
+    /// Format `seconds` back to the largest unit that divides cleanly,
+    /// so a `1800`-second interval reads back as `30m` rather than
+    /// `1800s` when the popover seeds its Interval text field.
+    static func formatDurationSpec(_ seconds: Double) -> String {
+        let s = max(0, seconds)
+        if s >= 86400, s.truncatingRemainder(dividingBy: 86400) == 0 {
+            return "\(Int(s / 86400))d"
+        }
+        if s >= 3600, s.truncatingRemainder(dividingBy: 3600) == 0 {
+            return "\(Int(s / 3600))h"
+        }
+        if s >= 60, s.truncatingRemainder(dividingBy: 60) == 0 {
+            return "\(Int(s / 60))m"
+        }
+        return "\(Int(s))s"
+    }
+
+    /// Top-bar chip showing the live HH:MM:SS countdown to the next
+    /// auto-arena. Tapping opens the Arena popover with full editor
+    /// (#games / concurrency / interval + Run Arena Now). The label
+    /// updates on its own 1 Hz `TimelineView` schedule so the rest of
+    /// the status bar isn't forced to invalidate every second.
+    @ViewBuilder
+    private var arenaCountdownChip: some View {
+        Button {
+            if !isArenaRunning { showArenaPopover.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "flag.checkered")
+                TimelineView(.periodic(from: .now, by: 1.0)) { context in
+                    Text(arenaCountdownText(at: context.date))
+                        .font(.callout)
+                        .monospacedDigit()
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.secondary.opacity(0.12))
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isArenaRunning)
+        .popover(isPresented: $showArenaPopover, arrowEdge: .top) {
+            arenaSettingsPopover
+        }
+    }
+
+    /// Two-section editor opened from the countdown chip. Top section
+    /// shows the next-arena timestamp + Run Arena Now button. Bottom
+    /// section edits the three arena knobs (#games, concurrency, and
+    /// interval — interval accepts 15m/500s/7d/etc.). Cancel discards
+    /// edits; Save validates all three and writes them back to
+    /// `trainingParams`.
+    @ViewBuilder
+    private var arenaSettingsPopover: some View {
+        let dateFmt: DateFormatter = {
+            let f = DateFormatter()
+            f.dateStyle = .short
+            f.timeStyle = .medium
+            return f
+        }()
+
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Arena")
+                .font(.headline)
+
+            // --- Next Arena section ---
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Next Arena")
+                    .font(.subheadline.weight(.semibold))
+                HStack {
+                    if let box = arenaTriggerBox, realTraining {
+                        let next = box.lastArenaTime.addingTimeInterval(trainingParams.arenaAutoIntervalSec)
+                        Text(dateFmt.string(from: next))
+                            .font(.system(.body, design: .monospaced))
+                    } else {
+                        Text("Next session")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        guard !isArenaRunning, realTraining else { return }
+                        SessionLogger.shared.log("[BUTTON] Run Arena (popover)")
+                        arenaTriggerBox?.trigger()
+                        showArenaPopover = false
+                    } label: {
+                        Label("Run Arena Now", systemImage: "flag.checkered")
+                    }
+                    .disabled(isArenaRunning || !realTraining)
+                }
+                Text("(countdown is shown in the chip above)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
+            // --- Options section ---
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Options")
+                    .font(.subheadline.weight(.semibold))
+                arenaPopoverField(
+                    label: "# of games:",
+                    text: $arenaPopoverGamesText,
+                    error: arenaPopoverGamesError,
+                    placeholder: "200",
+                    width: 100
+                )
+                arenaPopoverField(
+                    label: "Concurrency:",
+                    text: $arenaPopoverConcurrencyText,
+                    error: arenaPopoverConcurrencyError,
+                    placeholder: "200",
+                    width: 100
+                )
+                arenaPopoverField(
+                    label: "Interval:",
+                    text: $arenaPopoverIntervalText,
+                    error: arenaPopoverIntervalError,
+                    placeholder: "15m",
+                    width: 100,
+                    hint: "(e.g. 15m, 500s, 7d, 90)"
+                )
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    showArenaPopover = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    arenaPopoverSave()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 360)
+        .onAppear { arenaPopoverSeedFromParams() }
+    }
+
+    /// One row of the popover Options section. Centralized so the three
+    /// fields read identically: aligned label on the left, fixed-width
+    /// text field, optional hint on the right, and an inline red
+    /// rounded-rect overlay when the field's parse failed on the last
+    /// Save attempt.
+    @ViewBuilder
+    private func arenaPopoverField(
+        label: String,
+        text: Binding<String>,
+        error: Bool,
+        placeholder: String,
+        width: CGFloat,
+        hint: String? = nil
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .frame(width: 110, alignment: .trailing)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: width)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.red, lineWidth: error ? 2 : 0)
+                )
+            if let hint {
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    /// Seed the popover edit-text mirrors from the current
+    /// `trainingParams` values. Called from the form's `.onAppear`,
+    /// so opening the popover always reflects the live state, even if
+    /// the user edited a parameter elsewhere (CLI, params file) since
+    /// the last open.
+    private func arenaPopoverSeedFromParams() {
+        arenaPopoverGamesText = String(trainingParams.arenaGamesPerTournament)
+        arenaPopoverConcurrencyText = String(trainingParams.arenaConcurrency)
+        arenaPopoverIntervalText = Self.formatDurationSpec(trainingParams.arenaAutoIntervalSec)
+        arenaPopoverGamesError = false
+        arenaPopoverConcurrencyError = false
+        arenaPopoverIntervalError = false
+    }
+
+    /// Validate all three popover fields against their parameter
+    /// ranges and write valid values back to `trainingParams`. On any
+    /// parse failure the field's red-overlay flag is set and the
+    /// popover stays open. On full success the popover dismisses.
+    private func arenaPopoverSave() {
+        var anyError = false
+
+        let parsedGames = Int(arenaPopoverGamesText.trimmingCharacters(in: .whitespaces))
+        if let g = parsedGames, g >= 4, g <= 10000 {
+            arenaPopoverGamesError = false
+            if g != trainingParams.arenaGamesPerTournament {
+                trainingParams.arenaGamesPerTournament = g
+            }
+        } else {
+            arenaPopoverGamesError = true
+            anyError = true
+        }
+
+        let parsedConcurrency = Int(arenaPopoverConcurrencyText.trimmingCharacters(in: .whitespaces))
+        if let c = parsedConcurrency, c >= 1, c <= Self.absoluteMaxArenaConcurrency {
+            arenaPopoverConcurrencyError = false
+            if c != trainingParams.arenaConcurrency {
+                trainingParams.arenaConcurrency = c
+            }
+        } else {
+            arenaPopoverConcurrencyError = true
+            anyError = true
+        }
+
+        if let secs = Self.parseDurationSpec(arenaPopoverIntervalText), secs >= 60, secs <= 86400 {
+            arenaPopoverIntervalError = false
+            if secs != trainingParams.arenaAutoIntervalSec {
+                trainingParams.arenaAutoIntervalSec = secs
+            }
+        } else {
+            arenaPopoverIntervalError = true
+            anyError = true
+        }
+
+        if !anyError { showArenaPopover = false }
+    }
+
     @ViewBuilder
     private var chartZoomControlRow: some View {
-        HStack(spacing: 12) {
+        // Compact row — same font size and weight for every element so
+        // it lays out as one tight cluster on the left rather than the
+        // bold-zoom + tiny-hint + far-right-Auto layout it used to be.
+        HStack(spacing: 8) {
             Text(ChartZoom.labels[chartZoomIdx])
-                .font(.title3.weight(.bold))
+                .font(.caption.bold())
                 .monospacedDigit()
+                .foregroundStyle(.secondary)
             Text("⌘=")
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(canZoomChartIn ? Color.secondary : Color.secondary.opacity(0.4))
             Text("⌘-")
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(canZoomChartOut ? Color.secondary : Color.secondary.opacity(0.4))
-            Spacer()
             Toggle(isOn: Binding(
                 get: { chartZoomAuto },
                 set: { newValue in
@@ -9950,8 +10396,10 @@ struct ContentView: View {
             )) {
                 Text("Auto")
                     .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .toggleStyle(.checkbox)
+            Spacer()
         }
         .padding(.horizontal, 4)
     }
@@ -10105,6 +10553,154 @@ struct ContentView: View {
         }
 
         SessionLogger.shared.log("[DIAG] === Engine diagnostics done: \(ran - failed)/\(ran) passed ===")
+    }
+
+    /// Run a one-shot "is the policy head producing position-conditional
+    /// output?" probe. Two very different positions go through the live
+    /// champion network in inference mode; the policy outputs are
+    /// compared for L1 distance, max single-cell |Δ|, and value-head Δ.
+    /// If the policy outputs are essentially identical (avg per-cell
+    /// |Δ| < 1e-4) the policy head has collapsed to a position-agnostic
+    /// constant — that's the symptom we've been chasing in the masked
+    /// CE / entropy debugging. Healthy networks emit meaningfully
+    /// different policies for unrelated boards.
+    private func runPolicyConditioningDiagnostic() {
+        SessionLogger.shared.log("[BUTTON] Policy Conditioning Probe")
+        let networkRef = network
+        Task {
+            await runPolicyConditioningDiagnosticAsync(net: networkRef)
+        }
+    }
+
+    private func runPolicyConditioningDiagnosticAsync(net: ChessMPSNetwork?) async {
+        SessionLogger.shared.log("[DIAG] === Policy-conditioning probe begin ===")
+        guard let net else {
+            SessionLogger.shared.log("[DIAG] SKIP  No network built yet")
+            SessionLogger.shared.log("[DIAG] === Policy-conditioning probe done ===")
+            return
+        }
+
+        // Position 1: white-to-move starting position. Plain, common,
+        // policy is well-defined.
+        let pos1 = GameState.starting
+
+        // Position 2: a midgame-ish black-to-move position with very
+        // different piece layout — different side to move, different
+        // material, different square occupancies — so every input plane
+        // looks different from pos1.
+        var midboard: [Piece?] = Array(repeating: nil, count: 64)
+        midboard[0 * 8 + 4] = Piece(type: .king, color: .black)
+        midboard[7 * 8 + 4] = Piece(type: .king, color: .white)
+        midboard[3 * 8 + 3] = Piece(type: .queen, color: .black)
+        midboard[4 * 8 + 5] = Piece(type: .knight, color: .white)
+        midboard[2 * 8 + 6] = Piece(type: .rook, color: .white)
+        midboard[5 * 8 + 1] = Piece(type: .bishop, color: .black)
+        let pos2 = GameState(
+            board: midboard, currentPlayer: .black,
+            whiteKingsideCastle: false, whiteQueensideCastle: false,
+            blackKingsideCastle: false, blackQueensideCastle: false,
+            enPassantSquare: nil, halfmoveClock: 0
+        )
+
+        do {
+            let board1 = BoardEncoder.encode(pos1)
+            let board2 = BoardEncoder.encode(pos2)
+            let (policy1, value1) = try await net.evaluate(board: board1)
+            let (policy2, value2) = try await net.evaluate(board: board2)
+
+            guard policy1.count == policy2.count else {
+                SessionLogger.shared.log(
+                    "[DIAG] FAIL  policy length mismatch: \(policy1.count) vs \(policy2.count)"
+                )
+                SessionLogger.shared.log("[DIAG] === Policy-conditioning probe done ===")
+                return
+            }
+
+            // Per-position summary stats.
+            let mean1 = policy1.reduce(Float(0), +) / Float(policy1.count)
+            let mean2 = policy2.reduce(Float(0), +) / Float(policy2.count)
+            var var1: Float = 0
+            var var2: Float = 0
+            for v in policy1 { var1 += (v - mean1) * (v - mean1) }
+            for v in policy2 { var2 += (v - mean2) * (v - mean2) }
+            let std1 = (var1 / Float(policy1.count)).squareRoot()
+            let std2 = (var2 / Float(policy2.count)).squareRoot()
+
+            // L1 distance + max single-cell |Δ| + per-cell average.
+            var l1: Double = 0
+            var maxAbsDiff: Double = 0
+            var maxAbsIdx: Int = 0
+            for i in 0..<policy1.count {
+                let d = Double(abs(policy1[i] - policy2[i]))
+                l1 += d
+                if d > maxAbsDiff {
+                    maxAbsDiff = d
+                    maxAbsIdx = i
+                }
+            }
+            let avgPerCellDiff = l1 / Double(policy1.count)
+
+            SessionLogger.shared.log(
+                String(
+                    format: "[DIAG]   pos1: mean=%+0.4f std=%.4f, pos2: mean=%+0.4f std=%.4f",
+                    mean1, std1, mean2, std2
+                )
+            )
+            SessionLogger.shared.log(
+                String(
+                    format: "[DIAG]   policy Δ: L1=%.3f, maxAbs=%.4f at idx=%d, avg per-cell |Δ|=%.6f",
+                    l1, maxAbsDiff, maxAbsIdx, avgPerCellDiff
+                )
+            )
+            SessionLogger.shared.log(
+                String(
+                    format: "[DIAG]   value Δ: pos1=%+0.4f, pos2=%+0.4f, Δ=%+0.4f",
+                    value1, value2, value1 - value2
+                )
+            )
+
+            // Pass criterion: avg per-cell |Δ| above the noise floor
+            // (1e-4 is generous — a randomly-initialized network with
+            // logit std ~2.5 should easily produce avg |Δ| ≈ 1.0+ on
+            // unrelated inputs). Below 1e-4 means the policy head's
+            // output is effectively independent of the input — exactly
+            // the failure mode we've been hypothesizing.
+            let policyConditional = avgPerCellDiff >= 1e-4
+            if policyConditional {
+                SessionLogger.shared.log(
+                    String(
+                        format: "[DIAG] PASS  Policy head is position-conditional (avg per-cell |Δ| = %.6f, threshold ≥ 1e-4)",
+                        avgPerCellDiff
+                    )
+                )
+            } else {
+                SessionLogger.shared.log(
+                    String(
+                        format: "[DIAG] FAIL  Policy head appears position-AGNOSTIC (avg per-cell |Δ| = %.6f, < 1e-4 threshold) — outputs are effectively the same regardless of input",
+                        avgPerCellDiff
+                    )
+                )
+            }
+
+            // Also probe the value head: a healthy value head should
+            // give meaningfully different scalars for two unrelated
+            // positions. A pinned-to-zero value head would give |Δ|≈0.
+            let valueDelta = abs(Double(value1 - value2))
+            if valueDelta < 1e-4 {
+                SessionLogger.shared.log(
+                    String(
+                        format: "[DIAG] WARN  Value head also looks position-agnostic (|Δ|=%.6f)",
+                        valueDelta
+                    )
+                )
+            }
+        } catch {
+            SessionLogger.shared.log(
+                "[DIAG] FAIL  Policy probe error: \(error.localizedDescription)"
+            )
+        }
+
+        SessionLogger.shared.log("[DIAG] === Policy-conditioning probe done ===")
     }
 
     /// Compact human-readable count: 12,345 → "12.3K", 1,234,567 →
@@ -10923,9 +11519,11 @@ struct ContentView: View {
                         && inference.policy[idx] > legalUniformThreshold
                 }
                 .count
-            lines.append(String(format: "  Above uniform: %d / %d legal  (threshold = 1/%d = %.3f%%)",
-                                abovePerLegalCount, nLegal, nLegal,
-                                Double(legalUniformThreshold) * 100))
+            lines.append(String(
+                format: "  Legal moves above uniform (%.3f%%): %d / %d  (threshold = 1/legalCount = 1/%d)",
+                Double(legalUniformThreshold) * 100,
+                abovePerLegalCount, nLegal, nLegal
+            ))
             // Total mass on legal moves vs illegal — at training
             // convergence, mass-on-illegal should approach zero since
             // illegal cells never appear as one-hot training targets.
@@ -11043,7 +11641,12 @@ extension ContentView {
     @ViewBuilder
     var liveBoardWithNavigationView: some View {
         HStack(spacing: 8) {
-            let leftDisabled = inferenceResult == nil || selectedOverlay == 0 || !showForwardPassUI
+            // Left chevron is enabled whenever we can step toward a
+            // lower-index mode. -1 (plain board) is the floor and is
+            // always reachable — independent of inferenceResult and
+            // showForwardPassUI — so we only gate left when we're
+            // already at the floor.
+            let leftDisabled = selectedOverlay <= -1
             Button(
                 action: { navigateOverlay(-1) },
                 label: {
@@ -11110,7 +11713,11 @@ extension ContentView {
                     }
                 }
 
-            let rightDisabled = inferenceResult == nil || selectedOverlay == ChessNetwork.inputPlanes || !showForwardPassUI
+            // Right chevron walks up through Top Moves / channels. Both
+            // of those require an inferenceResult to render meaningful
+            // content, so right is disabled either when we are at the
+            // ceiling or when there is no inference data to step into.
+            let rightDisabled = inferenceResult == nil || selectedOverlay >= ChessNetwork.inputPlanes
             Button(
                 action: { navigateOverlay(1) },
                 label: {
@@ -11125,48 +11732,60 @@ extension ContentView {
 
     @ViewBuilder
     var boardSideView: some View {
-        VStack(spacing: 6) {
-            if realTraining {
+        // Game-run mode is only meaningful with a single self-play
+        // worker (multi-worker sessions can't show one canonical "live
+        // game" — Game-run is a placeholder card in that mode). When
+        // workers > 1 we hide both the Board picker (Game run vs
+        // Candidate test) and the inline side-to-move / Probe row
+        // entirely, since Candidate test becomes the only meaningful
+        // mode and there's no need to switch into it. This reclaims
+        // two rows of vertical space for the actual board.
+        let showBoardPicker = realTraining && trainingParams.selfPlayWorkers <= 1
+        VStack(spacing: 4) {
+            if showBoardPicker {
                 Picker("Board", selection: $playAndTrainBoardMode) {
                     Text("Game run").tag(PlayAndTrainBoardMode.gameRun)
                     Text("Candidate test").tag(PlayAndTrainBoardMode.candidateTest)
-                    Text("Progress rate").tag(PlayAndTrainBoardMode.progressRate)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 360)
+                .frame(maxWidth: 240)
             }
 
-            if inferenceResult != nil, showForwardPassUI {
-                Text(overlayLabel)
-                    .font(.system(.subheadline, design: .monospaced))
-            }
-
-            if forwardPassEditable {
-                Picker("To move", selection: sideToMoveBinding) {
-                    Text("White").tag(PieceColor.white)
-                    Text("Black").tag(PieceColor.black)
+            // Overlay label + side-to-move + Probe target on a single
+            // horizontal row to reclaim vertical space. Each element is
+            // independently conditional, so the row collapses to just
+            // what is currently relevant (e.g. Game-run mode shows
+            // nothing; pure forward-pass shows label + side; candidate
+            // test in Play-and-Train shows label + Probe).
+            HStack(spacing: 12) {
+                if inferenceResult != nil, showForwardPassUI {
+                    Text(overlayLabel)
+                        .font(.system(.caption, design: .monospaced))
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 160)
-            }
-
-            if isCandidateTestActive {
-                Picker("Probe", selection: $probeNetworkTarget) {
-                    Text("Candidate").tag(ProbeNetworkTarget.candidate)
-                    Text("Champion").tag(ProbeNetworkTarget.champion)
+                if forwardPassEditable {
+                    Picker("To move", selection: sideToMoveBinding) {
+                        Text("White").tag(PieceColor.white)
+                        Text("Black").tag(PieceColor.black)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(maxWidth: 110)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(maxWidth: 220)
+                if isCandidateTestActive {
+                    Picker("Probe", selection: $probeNetworkTarget) {
+                        Text("Candidate").tag(ProbeNetworkTarget.candidate)
+                        Text("Champion").tag(ProbeNetworkTarget.champion)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .controlSize(.small)
+                    .frame(maxWidth: 150)
+                }
             }
 
-            if isProgressRateActive {
-                progressRateChartView
-            } else {
-                liveBoardWithNavigationView
-            }
+            liveBoardWithNavigationView
         }
         .frame(minWidth: 320, maxWidth: 420)
     }
