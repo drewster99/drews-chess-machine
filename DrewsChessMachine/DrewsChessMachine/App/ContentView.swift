@@ -62,7 +62,7 @@ struct ContentView: View {
                 )
             }
             .opacity((showTrainingGraphs && chartCoordinator.isActive) ? 1.0 : 0.0)
-            .frame(height: !showTrainingGraphs ? 0 : (chartCoordinator.isActive ? nil : 300))
+            .frame(height: !showTrainingGraphs ? 0 : (chartCoordinator.isActive ? nil : 250))
             Spacer()
                 .frame(maxHeight: (showTrainingGraphs && chartCoordinator.isActive) ? nil : 0)
         }
