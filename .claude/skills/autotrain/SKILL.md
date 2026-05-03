@@ -277,11 +277,11 @@ Instructions embedded in the prompt:
   - `lr_warmup_steps` must be **≤ ⅓ of `training_steps`** from the latest run's summary (see `derived_budget.recommended_lr_warmup_max`). Above that the lr ramp never finishes in a 10-minute window, so the configured `learning_rate` is never actually exercised and the result looks like stalled learning even when the parameters are otherwise fine. The validator hard-caps at 50% of `training_steps`.
   - `replay_buffer_min_positions_before_training` eats wall-clock before any SGD step — larger values delay the first probe and reduce the number of training steps that fit in the window. Don't raise it unless you have a specific reason related to replay diversity.
   - `{training_batch_size, learning_rate, weight_decay}` are coupled through SGD noise and update magnitude. Scaling batch requires scaling lr in the same direction (linear for SGD, √-batch for Adam); `weight_decay` per-epoch also couples via the number of update steps per epoch. Don't change batch alone. The repo has `sqrt_batch_scaling_lr` which the app can apply automatically — keep that flag on unless you've thought hard about why not.
-- **There is no upper cap on `training_time_seconds`.** The goal is to perpetually extend training length without full collapse. Bias every proposal toward a window **at least 300 s longer** than the previous accepted run when that run was healthy at its full window — and feel free to jump aggressively (e.g. straight to 3600 s / 60 min, or longer) when the prior trajectory looks stable. The default of 900 s only applies when there is no prior accepted window or you have a specific reason to test something at short range. Include a brief `training_time_rationale` naming the reason.
+- **There is no upper cap on `training_time_seconds`.** The user's standing instruction is **10-hour sessions** (`training_time_seconds: 36000`). Default to 36000 for every proposal unless you have a specific short-range reason (e.g. testing a parameter that historically collapses fast — then 5400–7200s is acceptable). The autotrain monitoring loop is built to ride alongside long sessions: a 5-minute cron polls `[STATS]` health and only intervenes if a hard-reject criterion has been firmly tripped for ≥2 consecutive ticks. Short windows starve the analyzer of late-trajectory data. Include a brief `training_time_rationale` whenever you go below 36000s.
 
 **After** the subagent returns:
 1. Parse the JSON. If parsing fails or required keys (`change_details`, `parameters`) are missing, retry once with a terser reminder of the schema. If the retry also fails, write a stub `analysis.json` with `{"is_result_improved": false, "analysis_commentary": "proposer returned invalid JSON twice — skipping iteration"}`, run `regen_dashboard.py`, and jump to step 8 (reject).
-2. If `training_time_seconds` is present, clamp to a minimum of 60 (no upper bound). If absent, use 900 (the default).
+2. If `training_time_seconds` is present, clamp to a minimum of 60 (no upper bound). If absent, use **36000** (10 hours, the standing default).
 3. Save the full raw JSON response to `<folder>/proposal.json`.
 4. Write `change_details` to `<folder>/proposal.md`.
 5. Write the `parameters` object to `<folder>/parameters.json`.
@@ -292,7 +292,7 @@ Then run `regen_dashboard.py` so the dashboard shows this iteration as `IN_PROGR
 
 ### 6. Run training
 
-Read the training time from `<folder>/training_time.txt` (fall back to 600 if the file is missing, e.g. during the seed path).
+Read the training time from `<folder>/training_time.txt` (fall back to 600 if the file is missing, e.g. during the seed path; the standing default for actual iterations is 36000 = 10 hours).
 
 Invoke `run_training.sh <folder>/parameters.json <training_time> <folder>/result.json <folder>/run.log`. There is **no upper cap** on training time — the wrapper passes whatever value you give it through to the app.
 
@@ -306,15 +306,17 @@ While the training run is in flight, every cron / wakeup tick must do **both** o
    ```
    Parse and report all six health metrics in one line: `pEnt`, `gNorm`, `pLogitAbsMax`, `legalMass`, `top1Legal`, `vAbs`. Don't skim — these are the same fields the analyzer keys off in step 7, so you should be able to predict the eventual classification from them.
 
-   **Positive-health bands** — when reporting metrics, label each as `in-band` / `watch` / `out-of-band` so trends are visible across ticks rather than a vague "healthy". For a network training from random init through self-play (no MCTS, no opening book, no human data):
+   **Positive-health bands** — when reporting metrics, label each as `in-band` / `watch` / `out-of-band` so trends are visible across ticks rather than a vague "healthy". For a network training from random init through self-play (no MCTS, no opening book, no human data).
+
+   **NOTE on `pEnt` after the legal-mask change (commit acc5340 + threshold recal 2f95f21):** `pEnt` in `[STATS]` is now computed over the **post-mask softmax — legal moves only**. Theoretical max is `log(legal_count)`, which averages ~3.4 nats (ln(30) ≈ 3.4) over a typical chess game; uniform-random init lands near that ceiling. The in-repo alarm floor is now **1.0** (≈ 2.7 effective legal moves), and the critical floor is **0.5** (≈ 1.6 effective). The old "5.0 floor" derived from the unmasked log(4864) ≈ 8.49 ceiling is OBSOLETE — do not use it.
 
    | Metric | In-band | Watch | Out-of-band |
    |---|---|---|---|
-   | `pEnt` | 5.5–8.5 (random init = log(4864) ≈ 8.49) | 5.0–5.5 trending down | < 5.0 (alarm floor) |
+   | `pEnt` (post-mask, legal-only) | 1.5–3.4 (ceiling ≈ ln(legal_count)) | 1.0–1.5 trending down | < 1.0 (alarm floor; < 0.5 = critical) |
    | `gNorm` median | 20–60 | 60–100 | sustained > 100, OR trajectory monotone-rising over ≥3 ticks |
    | `pLogitAbsMax` | 5–25 | 25–40 | > 40 (>50 = severe blowup, hard kill) |
-   | `legalMass` | rising over time, ≥0.05 by 30min | flat at 0.002–0.005 | < 0.002 with `top1Legal=0` past 30min |
-   | `top1Legal` | rising, ≥0.05 by mid-run | 0 still at mid-run | 0 throughout late run AND legalMass < 0.005 |
+   | `legalMass` | rising over time, ≥0.05 by 30min, ≥0.20 by 2h | flat at 0.002–0.005 past 30min | < 0.002 with `top1Legal=0` past 60min |
+   | `top1Legal` | rising, ≥0.05 by 1h | 0 still at 1h–2h | 0 throughout 2h+ run AND legalMass < 0.005 |
    | `vAbs` | 0.15–0.50 | 0.50–0.85 | > 0.85 (tanh saturated) OR < 0.05 throughout |
 
    Also surface (when present in the line):
@@ -324,14 +326,16 @@ While the training run is in flight, every cron / wakeup tick must do **both** o
 
    Across ticks, the **shape of progress** matters more than any single value: pEnt should drift down monotonically without cliffs, gNorm should trend down (not up) as the loss landscape smooths, legalMass should rise.
 
-2. **Early-kill if any hard-reject signal trips mid-run.** Compute these from the `[STATS]` line; kill the run with `kill <pid>` (the run wrapper will then write `result.json` cleanly via the app's shutdown handler) if **any** of:
+2. **Early-kill if any hard-reject signal trips mid-run.** Compute these from the `[STATS]` line; kill the run with `kill -SIGUSR1 <pid>` (NOT bare `kill` — bare SIGTERM races the dispatch handler; SIGUSR1 routes through `EarlyStopCoordinator` and writes a complete `result.json` with `termination_reason: "SIGUSR1-user-requested"` before exit). The user's instruction is **explicit** on this — never use bare `kill`. Hard-reject criteria (any one ⇒ kill):
 
    - `pLogitAbsMax > 50` — softmax has crystallized; nothing recoverable.
-   - `pEnt < 5.0` AND elapsed > 30 min — past warmup, policy is below alarm floor.
-   - `legalMass < 0.005` AND `top1Legal == 0` AND elapsed > 30 min — equivalent of the Forward Pass demo showing 100% mass on illegals.
+   - `pEnt < 1.0` (post-mask alarm floor) AND elapsed > 60 min — long past warmup, legal-only entropy is below the alarm.
+   - `legalMass < 0.005` AND `top1Legal == 0` AND elapsed > 60 min — equivalent of the Forward Pass demo showing 100% mass on illegals.
    - `gNorm > 300` for two consecutive checks — gradient norm is in runaway, not transient.
 
-   These mirror H2/H3/H4/H6 in the analyzer's hard-reject criteria. Killing early saves ~10–90 minutes of wasted GPU per bad iteration; the iteration will still go through the analyzer normally and be classified `regressed` from the partial `result.json`.
+   **Be conservative on long sessions.** The user has explicitly directed: "DO NOT terminate any session unless you are CERTAIN it is unrecoverable." For a 10-hour session, a slow legal-mass climb at 90 min is not grounds to kill — let the run breathe. Only fire if a criterion is unambiguously tripped AND has been tripped for at least 2 consecutive 5-minute ticks. Killing early saves GPU per bad iteration; killing too early throws away potentially-useful trajectory data.
+
+   These mirror H2/H3/H4/H6 in the analyzer's hard-reject criteria. The iteration will still go through the analyzer normally and be classified `regressed` from the partial `result.json`.
 
    Before killing, log a one-line summary to the conversation: `autotrain: early-kill on H<N> at <elapsed>s — <metric>=<value>`. Then proceed to step 7 with the partial result.
 
@@ -511,12 +515,24 @@ The canonical defaults live in code, not in this file. To produce a fresh `param
 
 The source-of-truth for the parameter schema is `DrewsChessMachine/DrewsChessMachine/TrainingParameters.swift` (the registry + per-key `@TrainingParameter` declarations).
 
+## Analysis discipline (long-session-aware)
+
+Long sessions (10 h default) produce ~50–200 MB session logs and large `result.json` files. **Prefer Python over eyeballing.**
+
+- For `[STATS]` trajectories: `python3 -c "..."` to parse the session log and compute per-tick deltas, rolling means, monotonicity, and inflection points. Do this on every 5-minute cron tick rather than scrolling tails.
+- For `result.json` deep-dives beyond what `summarize_results.py` produces: write a one-off Python script in `/tmp/` (e.g. `/tmp/analyze_<timestamp>.py`), run it, paste its (small) summary back. Never `Read` the full ~1 MB result.json.
+- For `.dcmsession` autosaves (under `~/Library/Application Support/DrewsChessMachine/Sessions/`): each save bundles weights + config + checkpoint metadata. The autotrain skill does NOT need to load the weights to make decisions, but if the user asks for cross-session comparison, parse `metadata.json` inside each `.dcmsession` directory with Python — it carries the ModelID lineage, arena history, and the `[STATS]`-equivalent counters at save time. Sessions are saved every 4 h while Play-and-Train is active, plus after every arena promotion. Multiple saves from the same run let you reconstruct trajectory across the entire session even if the run later crashes.
+- For arena promotion progression: grep `[ARENA]` and `[CHECKPOINT]` lines from the session log and pipe through Python — count promotions per hour, score progression, kept-vs-promoted candidate IDs.
+
+Use these patterns **proactively** on each cron tick, not just at end-of-iteration. The user has explicitly authorized "TAKE ALL THE TIME you need to ANALYZE" — favor a deeper Python-driven look over a quick eyeball.
+
 ## Invariants
 
 - Never modify tests.
 - Never run `git reset`, `git stash`, or `git rebase`.
 - Never force-push.
 - Never skip commit hooks.
-- There is **no upper cap** on per-iteration training time. The default when the proposer doesn't specify is 5400 seconds, but the proposer is encouraged to extend perpetually (60-minute runs and beyond are fine).
+- **Standing default training time is 36000 seconds (10 hours).** There is no upper cap. Shorter windows are exceptions, not the rule.
+- Early-kill of an in-flight run uses `kill -SIGUSR1 <pid>` ONLY. Never bare `kill`. SIGUSR1 routes through `EarlyStopCoordinator` and writes a complete `result.json` before exit.
 - Only push to the branch the user confirmed in step 0 of the current session. If branch changed mid-loop, re-confirm.
 - If `git status` shows unexpected staged changes at iteration start, stop and surface them — don't sweep them into an autotrain commit.
