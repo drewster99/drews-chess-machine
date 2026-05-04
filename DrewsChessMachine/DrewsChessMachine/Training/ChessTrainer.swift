@@ -995,14 +995,24 @@ final class ChessTrainer: @unchecked Sendable {
     var drawPenalty: Float
     /// Count of successfully-completed SGD steps this trainer has
     /// run since construction (or since a session-resume `seed`).
-    /// Mutated only inside `executionQueue`-serialized contexts
-    /// (inside `runPreparedStep`) after a graph run returns without
-    /// throwing. Read by `buildFeeds` to compute the warmup
-    /// multiplier before each step is fed. Exposed to callers via
-    /// `completedTrainSteps` so a session resume can pre-seed it
-    /// to the persisted `trainingSteps` value — warmup then picks
-    /// up mid-session instead of restarting from zero.
-    private var _completedTrainSteps: Int = 0
+    /// Read by `buildFeeds` to compute the warmup multiplier before
+    /// each step is fed and incremented by `runPreparedStep` after a
+    /// graph run returns without throwing. Exposed to callers via
+    /// `completedTrainSteps` so a session resume can pre-seed it to
+    /// the persisted `trainingSteps` value — warmup then picks up
+    /// mid-session instead of restarting from zero.
+    ///
+    /// Stored in a `SyncBox` (os_unfair_lock) rather than as a plain
+    /// `Int` guarded by `executionQueue` so UI readers
+    /// (`__processSnapshotTimerTick` at 10 Hz) don't have to `.sync`
+    /// onto the trainer's worker queue and wait for an in-flight
+    /// SGD step — that pattern was producing 1–3 s main-thread
+    /// stalls. The lock is held only across a scalar read/RMW so
+    /// contention between the trainer thread and UI thread is
+    /// effectively free. The lock-protected `+= 1` in
+    /// `runPreparedStep` keeps the read-modify-write atomic on its
+    /// own, no longer dependent on the queue invariant.
+    private let _completedTrainSteps = SyncBox<Int>(0)
     private let executionQueue = DispatchQueue(label: "drewschess.chesstrainer.serial")
 
     /// Optional stable identity for the trainer's internal network.
@@ -2294,26 +2304,28 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
-    /// Observed / seeded completed-step count. Getter hops through
-    /// `executionQueue.sync` so a UI or session-save-path reader
-    /// sees the atomic, post-increment value. Setter is the session-
-    /// resume path: assigning a non-negative value overwrites the
-    /// counter so warmup scaling resumes mid-session. Writes while
-    /// a training step is running are serialized by the queue.
+    /// Observed / seeded completed-step count. Getter and setter
+    /// both go through the underlying `SyncBox` (os_unfair_lock):
+    /// the read returns whatever the most recent training-step
+    /// increment published; the setter is the session-resume path,
+    /// where assigning a non-negative value overwrites the counter
+    /// so warmup scaling resumes mid-session. Reading does NOT
+    /// touch `executionQueue`, so a UI poll never blocks on an
+    /// in-flight SGD step.
     var completedTrainSteps: Int {
-        get { executionQueue.sync { _completedTrainSteps } }
-        set { executionQueue.async { self._completedTrainSteps = max(0, newValue) } }
+        get { _completedTrainSteps.value }
+        set { _completedTrainSteps.value = max(0, newValue) }
     }
 
     /// Effective learning rate that the optimizer is currently being
     /// fed, given the active warmup multiplier and (optionally) the
     /// sqrt-batch scaling rule. Mirrors the in-graph math at
     /// `buildFeeds` step time so a status-bar readout matches what the
-    /// training step is actually applying. Reads `_completedTrainSteps`
-    /// through the executionQueue so the value is consistent with the
-    /// observable step count.
+    /// training step is actually applying. Reads the step count from
+    /// the `SyncBox`, not the `executionQueue`, so a status-bar
+    /// readout never blocks on an in-flight SGD step.
     func effectiveLearningRate(forBatchSize batchSize: Int) -> Float {
-        let steps = executionQueue.sync { _completedTrainSteps }
+        let steps = _completedTrainSteps.value
         let warmupMul: Float
         if lrWarmupSteps > 0 {
             warmupMul = Float(min(1.0, Double(steps) / Double(lrWarmupSteps)))
@@ -2473,7 +2485,7 @@ final class ChessTrainer: @unchecked Sendable {
             // takes effect immediately on the next step without
             // racing the in-flight one.
             let interval = self.batchStatsInterval
-            let nextStep = self._completedTrainSteps + 1
+            let nextStep = self._completedTrainSteps.value + 1
             let isStatsStep = interval > 0 && nextStep % interval == 0
             let didSample = replayBuffer.sample(
                 count: batchSize,
@@ -2603,7 +2615,7 @@ final class ChessTrainer: @unchecked Sendable {
                 }
             }
 
-            if self._completedTrainSteps == 0 {
+            if self._completedTrainSteps.value == 0 {
                 for pos in 0..<min(8, batchSize) {
                     let movedIdx = Int(moves[pos])
                     let inLegalMask = masks[pos * ChessNetwork.policySize + movedIdx] == 1.0
@@ -2616,53 +2628,53 @@ final class ChessTrainer: @unchecked Sendable {
                     )
                 }
             }
-
-            // One-shot at step 200: confirm the additive -1e9 mask is
-            // actually wiping illegal-cell mass. Computes
-            // `softmax(maskedLogits)` for the first batch position
-            // (using the same -1e9 constant the graph uses) and reports
-            // the summed mass over legal vs. illegal indices. A healthy
-            // run shows legal_sum ≈ 1.0 and illegal_sum ≈ 0.0; a non-
-            // zero illegal_sum here would mean the mask isn't reaching
-            // the loss path. Uses `freshPolicy` (raw logits captured
-            // from the phase-2 forward pass) so no extra GPU work is
-            // spent on the probe.
-            if self._completedTrainSteps == 200 {
-                let policySize = ChessNetwork.policySize
-                let largeNeg: Float = -1e9
-                let logitsBase = 0 // first batch position
-                let maskBase = 0
-                var maxMaskedLogit: Float = -.infinity
-                for i in 0..<policySize {
-                    let mask = masks[maskBase + i]
-                    let masked = freshPolicy[logitsBase + i] + (1 - mask) * largeNeg
-                    if masked > maxMaskedLogit { maxMaskedLogit = masked }
-                }
-                var expSum: Double = 0
-                var legalExpSum: Double = 0
-                var illegalExpSum: Double = 0
-                var legalCount: Int = 0
-                for i in 0..<policySize {
-                    let mask = masks[maskBase + i]
-                    let masked = freshPolicy[logitsBase + i] + (1 - mask) * largeNeg
-                    let e = Double(expf(masked - maxMaskedLogit))
-                    expSum += e
-                    if mask == 1.0 {
-                        legalExpSum += e
-                        legalCount += 1
-                    } else {
-                        illegalExpSum += e
-                    }
-                }
-                let legalSum = expSum > 0 ? legalExpSum / expSum : 0
-                let illegalSum = expSum > 0 ? illegalExpSum / expSum : 0
-                SessionLogger.shared.log(
-                    String(
-                        format: "[MASKED-SOFTMAX] step=200 pos=0 legalCount=%d legal_sum=%.6e illegal_sum=%.6e",
-                        legalCount, legalSum, illegalSum
-                    )
-                )
-            }
+//
+//            // One-shot at step 200: confirm the additive -1e9 mask is
+//            // actually wiping illegal-cell mass. Computes
+//            // `softmax(maskedLogits)` for the first batch position
+//            // (using the same -1e9 constant the graph uses) and reports
+//            // the summed mass over legal vs. illegal indices. A healthy
+//            // run shows legal_sum ≈ 1.0 and illegal_sum ≈ 0.0; a non-
+//            // zero illegal_sum here would mean the mask isn't reaching
+//            // the loss path. Uses `freshPolicy` (raw logits captured
+//            // from the phase-2 forward pass) so no extra GPU work is
+//            // spent on the probe.
+//            if self._completedTrainSteps == 200 {
+//                let policySize = ChessNetwork.policySize
+//                let largeNeg: Float = -1e9
+//                let logitsBase = 0 // first batch position
+//                let maskBase = 0
+//                var maxMaskedLogit: Float = -.infinity
+//                for i in 0..<policySize {
+//                    let mask = masks[maskBase + i]
+//                    let masked = freshPolicy[logitsBase + i] + (1 - mask) * largeNeg
+//                    if masked > maxMaskedLogit { maxMaskedLogit = masked }
+//                }
+//                var expSum: Double = 0
+//                var legalExpSum: Double = 0
+//                var illegalExpSum: Double = 0
+//                var legalCount: Int = 0
+//                for i in 0..<policySize {
+//                    let mask = masks[maskBase + i]
+//                    let masked = freshPolicy[logitsBase + i] + (1 - mask) * largeNeg
+//                    let e = Double(expf(masked - maxMaskedLogit))
+//                    expSum += e
+//                    if mask == 1.0 {
+//                        legalExpSum += e
+//                        legalCount += 1
+//                    } else {
+//                        illegalExpSum += e
+//                    }
+//                }
+//                let legalSum = expSum > 0 ? legalExpSum / expSum : 0
+//                let illegalSum = expSum > 0 ? illegalExpSum / expSum : 0
+//                SessionLogger.shared.log(
+//                    String(
+//                        format: "[MASKED-SOFTMAX] step=200 pos=0 legalCount=%d legal_sum=%.6e illegal_sum=%.6e",
+//                        legalCount, legalSum, illegalSum
+//                    )
+//                )
+//            }
 
             let feeds = self.buildFeeds(
                 batchSize: batchSize,
@@ -2690,12 +2702,15 @@ final class ChessTrainer: @unchecked Sendable {
             // `runPreparedStep` too, but warmup there would consume
             // the ramp-up against meaningless random labels, leaving
             // real Play-and-Train starting with a post-warmup LR.
-            // This increment is inside the same `enqueue { ... }`
-            // block as `runPreparedStep` above, so it's serialized
-            // on `executionQueue` — no race with the `buildFeeds`
-            // read at the top of the block or the public
-            // `completedTrainSteps` accessor.
-            self._completedTrainSteps += 1
+            //
+            // `modify` makes the read-modify-write atomic under the
+            // SyncBox's os_unfair_lock. Even though this site only
+            // runs from inside an `enqueue { ... }` block today, an
+            // off-queue `+= 1` would race with the public setter
+            // (which writes through the same SyncBox) — the lock
+            // protects the increment in its own right rather than
+            // relying on the queue invariant.
+            self._completedTrainSteps.modify { $0 += 1 }
 
             return TrainStepTiming(
                 dataPrepMs: baseTiming.dataPrepMs,
@@ -3126,7 +3141,7 @@ final class ChessTrainer: @unchecked Sendable {
         // the LR side: sqrt-batch scaling (matches Adam-family
         // batch-size rules around the 4096 pivot) and linear warmup
         // over `lrWarmupSteps` steps (LR lerps from 0 → base over
-        // that count, evaluated against `_completedTrainSteps`).
+        // that count, evaluated against `_completedTrainSteps.value`).
         // They compose multiplicatively — e.g. step 250 with a 500-
         // step warmup at batch=2048 is `lr * 0.707 * 0.5 = lr * 0.354`.
         //
@@ -3137,7 +3152,7 @@ final class ChessTrainer: @unchecked Sendable {
         // at write time only, never persisted back.
         let warmupMul: Float
         if lrWarmupSteps > 0 {
-            warmupMul = Float(min(1.0, Double(_completedTrainSteps) / Double(lrWarmupSteps)))
+            warmupMul = Float(min(1.0, Double(_completedTrainSteps.value) / Double(lrWarmupSteps)))
         } else {
             warmupMul = 1.0
         }
@@ -3269,7 +3284,7 @@ final class ChessTrainer: @unchecked Sendable {
         // massive VM-range allocations (seen as ~420 GB virtual vs
         // ~5 GB resident) and the main thread spends progressively
         // more time in deferred Obj-C releases.
-        return try autoreleasepool {
+//        return try autoreleasepool {
         let gpuStart = CFAbsoluteTimeGetCurrent()
         let results = network.graph.run(
             with: network.commandQueue,
@@ -3525,7 +3540,7 @@ final class ChessTrainer: @unchecked Sendable {
             policyLossWin: policyLossWinBufValue.isFinite ? policyLossWinBufValue : nil,
             policyLossLoss: policyLossLossBufValue.isFinite ? policyLossLossBufValue : nil
         )
-        }  // autoreleasepool
+//        }  // autoreleasepool
     }
 
     // MARK: - Batch Size Sweep

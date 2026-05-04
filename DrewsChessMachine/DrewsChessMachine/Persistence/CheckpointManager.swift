@@ -462,8 +462,14 @@ enum CheckpointManager {
             throw CheckpointManagerError.targetAlreadyExists(finalDirURL)
         }
 
-        // Encode everything up front so we don't leave a half-filled
-        // tmp directory around on an encoding failure.
+        // Encode the model files up front (their inputs are already
+        // resolved) so an encoding failure aborts before we touch the
+        // filesystem. session.json is encoded LATER — after the
+        // replay buffer has been written — so its
+        // `replayBuffer*` counters can be derived from the snapshot
+        // the buffer write captured atomically under its own lock,
+        // rather than from a stale snapshot the caller took before
+        // self-play paused. See the writtenSnap section below.
         let championFile = ModelCheckpointFile(
             modelID: championID,
             createdAtUnix: championCreatedAtUnix,
@@ -479,8 +485,6 @@ enum CheckpointManager {
             weights: trainerWeights
         )
         let trainerEncoded = try trainerFile.encode()
-
-        let stateEncoded = try state.encode()
 
         // Build the staging directory, write the three files, verify.
         let fm = FileManager.default
@@ -503,7 +507,6 @@ enum CheckpointManager {
         do {
             try championEncoded.write(to: championTmpURL, options: [.atomic])
             try trainerEncoded.write(to: trainerTmpURL, options: [.atomic])
-            try stateEncoded.write(to: stateTmpURL, options: [.atomic])
         } catch {
             cleanupTmp()
             throw CheckpointManagerError.writeFailed(tmpDirURL, error)
@@ -519,12 +522,24 @@ enum CheckpointManager {
         // drive-cache-bypass durability.
         //
         // The returned `writtenSnap` captures the ring state that
-        // was actually serialized into the file (captured atomically
-        // under the write lock). We save it for the post-fsync
-        // verification phase below because concurrent self-play
-        // appends may advance the live ring past that state between
-        // now and then, and the verify needs ground truth from the
-        // moment of write, not the current live moment.
+        // was actually serialized into the file, captured atomically
+        // under the buffer's write lock. We use it twice below:
+        //
+        // 1. To override the caller-supplied `state.replayBuffer*`
+        //    counters before encoding session.json. The caller
+        //    captures those fields BEFORE self-play is paused (and
+        //    well before this function runs); self-play continues
+        //    appending positions in that window, so a separate
+        //    `stateSnapshot()` would diverge from the file we just
+        //    wrote. ReplayBuffer.write's contract specifically
+        //    requires using its return value for downstream
+        //    consistency checks for exactly this reason. Without
+        //    this override, restore-time `verifyReplayBufferMatchesSession`
+        //    would (correctly) reject the session as mismatched.
+        //
+        // 2. As ground truth for the post-fsync round-trip verify
+        //    further down — concurrent self-play appends may have
+        //    already advanced the live ring past that state by then.
         var writtenSnap: ReplayBuffer.StateSnapshot? = nil
         if let replayBuffer, wantsReplayBuffer {
             do {
@@ -533,6 +548,30 @@ enum CheckpointManager {
                 cleanupTmp()
                 throw CheckpointManagerError.writeFailed(bufferTmpURL, error)
             }
+        }
+
+        // Now encode and write session.json. If we wrote a buffer,
+        // its post-write snapshot supersedes the caller's pre-pause
+        // numbers so the two files match bit-for-bit on the
+        // `totalPositionsAdded` cross-check at load time.
+        var effectiveState = state
+        if let writtenSnap {
+            effectiveState.replayBufferStoredCount = writtenSnap.storedCount
+            effectiveState.replayBufferCapacity = writtenSnap.capacity
+            effectiveState.replayBufferTotalPositionsAdded = writtenSnap.totalPositionsAdded
+        }
+        let stateEncoded: Data
+        do {
+            stateEncoded = try effectiveState.encode()
+        } catch {
+            cleanupTmp()
+            throw error
+        }
+        do {
+            try stateEncoded.write(to: stateTmpURL, options: [.atomic])
+        } catch {
+            cleanupTmp()
+            throw CheckpointManagerError.writeFailed(tmpDirURL, error)
         }
 
         // F_FULLFSYNC every file we just wrote. `Data.write(...,
@@ -565,9 +604,13 @@ enum CheckpointManager {
             // Round-trip session.json: decode the bytes we just wrote
             // and confirm they reproduce the struct. Catches JSON
             // encoder/decoder asymmetries (e.g. Float precision).
+            // Compare against `effectiveState` (the struct we actually
+            // serialized), not the caller-supplied `state` — the two
+            // differ when a replay-buffer save updated the
+            // `replayBuffer*` counters from the post-write snapshot.
             let writtenStateData = try Data(contentsOf: stateTmpURL)
             let writtenState = try SessionCheckpointState.decode(writtenStateData)
-            guard writtenState == state else {
+            guard writtenState == effectiveState else {
                 throw CheckpointManagerError.sessionWriteFailed(
                     "session.json round-trip decoded to a different struct"
                 )

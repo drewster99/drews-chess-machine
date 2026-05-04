@@ -2,7 +2,9 @@ import AppKit
 import Charts
 import SwiftUI
 import UniformTypeIdentifiers
+import OSLog
 
+private let logger = Logger(subsystem: "Foo", category: "Bar")
 // MARK: - Upper Content View
 
 struct UpperContentView: View {
@@ -985,7 +987,7 @@ struct UpperContentView: View {
     /// publisher is created when the view struct is initialized and SwiftUI
     /// manages the subscription lifecycle via `.onReceive` below.
     private let snapshotTimer = Timer.publish(
-        every: 1.0/10.0, on: .main, in: .common
+        every: 4.0, on: .main, in: .common
     ).autoconnect()
 
     /// Default on/off toggle for "autosave the full session after
@@ -1682,6 +1684,13 @@ struct UpperContentView: View {
         }
     }
 
+    @MainActor
+    private func processSnapshotTimerTick() {
+        let start = Date()
+        __processSnapshotTimerTick()
+        let elapsed = Date().timeIntervalSince(start)
+        print("processSnapshotTimerTicket: \(elapsed)")
+    }
     /// Body of the 100 ms heartbeat. Pulls every cross-thread state
     /// box (game, sweep, training, arena, parallel-worker counters,
     /// replay-ratio controller, diversity tracker) into the matching
@@ -1692,11 +1701,18 @@ struct UpperContentView: View {
     /// dragged the whole modifier chain past the
     /// `-warn-long-expression-type-checking` budget.
     @MainActor
-    private func processSnapshotTimerTick() {
+    private func __processSnapshotTimerTick() {
         // Pull the latest game state into @State at most every 100ms.
         // Cheap (single locked struct copy) and bounds UI work even
         // when the game loop is doing hundreds of moves per second.
+        let start = Date()
+        func elap(_ s: String) {
+            let elapsed = Date().timeIntervalSince(start)
+            logger.log(">> \(s): \(elapsed)")
+        }
+        elap("start")
         gameSnapshot = gameWatcher.snapshot()
+        elap("after gameWatcher")
         // Same heartbeat pulls the sweep's worker-thread progress and
         // any newly-completed rows into @State so the table grows live.
         if sweepRunning, let box = sweepCancelBox {
@@ -1710,6 +1726,7 @@ struct UpperContentView: View {
             if rows.count != sweepResults.count {
                 sweepResults = rows
             }
+            elap("after sweepsom")
         }
         // Same heartbeat pulls live training stats out of the
         // lock-protected box the background training task is writing
@@ -1728,6 +1745,7 @@ struct UpperContentView: View {
             if let err = snap.error, trainingError == nil {
                 trainingError = err
             }
+            elap("after 3")
         }
         // Mirror the trainer's warmup state into @State so the status
         // chip and the LR Warm-up status cell read from a snapshot
@@ -1736,17 +1754,23 @@ struct UpperContentView: View {
         // trainer yields nil so the Idle chip path doesn't accidentally
         // surface stale warmup numbers from a prior session.
         if let trainer {
+            let completedTrainSteps = trainer.completedTrainSteps // SyncBox os_unfair_lock read
+            elap("after 3.1")
+            let effectiveLR = trainer.effectiveLearningRate(
+                forBatchSize: trainingParams.trainingBatchSize
+            ) // reads SyncBox a 2nd time — also a non-blocking lock read
+            elap("after 3.2")
             let next = TrainerWarmupSnapshot(
-                completedSteps: trainer.completedTrainSteps,
+                completedSteps: completedTrainSteps,
                 warmupSteps: trainer.lrWarmupSteps,
-                effectiveLR: trainer.effectiveLearningRate(
-                    forBatchSize: trainingParams.trainingBatchSize
-                )
+                effectiveLR: effectiveLR
             )
+            elap("after 3.3")
             if next != trainerWarmupSnap { trainerWarmupSnap = next }
         } else if trainerWarmupSnap != nil {
             trainerWarmupSnap = nil
         }
+        elap("after 4")
         // Arena progress mirror — cheap lock read, only updates the
         // @State when the game index has advanced (or transitioned
         // between non-running and running), so no redundant view
@@ -1758,6 +1782,7 @@ struct UpperContentView: View {
                 tournamentProgress = snap
             }
         }
+        elap("after 5")
         // Parallel worker counters mirror — only updates @State when
         // totals have actually advanced so the body isn't re-evaluated
         // when nothing's changed. The sessionStart timestamp is
@@ -1781,19 +1806,23 @@ struct UpperContentView: View {
                 parallelStats = snap
             }
         }
+        elap("after 6")
         // Memory stats refresh. Throttled internally to
         // `memoryStatsRefreshSec` so this is a cheap timestamp compare
         // on most heartbeats.
         refreshMemoryStatsIfNeeded()
+        elap("after 7")
         // Process %CPU / %GPU refresh — separate (5 s) cadence from
         // memory stats (10 s) so the utilisation line updates twice as
         // often without dragging the heavier Metal property reads
         // along with it.
         refreshUsagePercentsIfNeeded()
+        elap("after 8")
         // Progress-rate chart sampler. 1 Hz during Play and Train;
         // each sample carries the moves/hr averaged over the last 3
         // minutes of work. No-op outside of realTraining.
         refreshProgressRateIfNeeded()
+        elap("after 9")
         // Replay-ratio snapshot for the UI. Persist the auto-computed
         // delay so the next session starts from where the adjuster
         // left off.
@@ -1821,6 +1850,7 @@ struct UpperContentView: View {
             // degenerate set-point.
             updateReplayRatioCompensator(snap: snap)
         }
+        elap("after 10")
         // Diversity-histogram mirror. Read once per heartbeat off the
         // tracker's thread-safe snapshot. Only push into @State when
         // the bucket totals actually change (or the bar array is
@@ -1846,8 +1876,11 @@ struct UpperContentView: View {
                 chartCoordinator.setDiversityHistogramBars(newBars)
             }
         }
+        elap("after 11")
         refreshChartZoomTick()
+        elap("after 12")
         periodicSaveTick()
+        elap("after LAST")
     }
 
     /// Per-heartbeat tick that asks the periodic-save scheduler

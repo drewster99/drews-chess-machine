@@ -632,7 +632,7 @@ final class ChessNetwork: @unchecked Sendable {
         // site in the app (roughly once per barrier cycle at ~20-40
         // Hz across concurrent slots), so a missed pool drain here
         // dominates the long-session VM bloat.
-        return try autoreleasepool {
+//        return try autoreleasepool {
             Self.writeInferenceInput(batchBoards, into: entry.ndArray)
 
             let results = graph.run(
@@ -656,7 +656,7 @@ final class ChessNetwork: @unchecked Sendable {
                 policy: UnsafeBufferPointer(start: policyPtr, count: count * Self.policySize),
                 values: UnsafeBufferPointer(start: valuePtr, count: count)
             )
-        }
+//        }
     }
 
     private func internalEvaluate(
