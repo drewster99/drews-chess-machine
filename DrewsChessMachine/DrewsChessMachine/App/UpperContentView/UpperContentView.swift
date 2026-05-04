@@ -1590,7 +1590,7 @@ struct UpperContentView: View {
             }
         ))
         .onReceive(snapshotTimer) { _ in
-            // Defer every @State mutation driven by the 100 ms
+            // Defer every @State mutation driven by the
             // heartbeat to the next main-actor runloop tick. The
             // timer publisher fires on the main thread and SwiftUI
             // flags "update multiple times per frame" warnings (and
