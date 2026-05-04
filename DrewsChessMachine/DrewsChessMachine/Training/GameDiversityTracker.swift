@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Tracks the diversity of games in a rolling window by comparing
 /// move sequences. Designed for use in self-play (shared across
@@ -12,8 +13,8 @@ import Foundation
 ///   means games branch early (high diversity); a high value means
 ///   games follow similar lines deep into the middlegame or endgame.
 ///
-/// Thread-safe via a private serial `DispatchQueue`. All stored data
-/// is bounded by the window size.
+/// Thread-safe via a private `OSAllocatedUnfairLock`. All stored
+/// data is bounded by the window size.
 final class GameDiversityTracker: @unchecked Sendable {
 
     /// Divergence-ply bucket upper bounds (inclusive). A game's
@@ -53,7 +54,7 @@ final class GameDiversityTracker: @unchecked Sendable {
     }
 
     private let windowSize: Int
-    private let queue = DispatchQueue(label: "drewschess.gamediversitytracker.serial")
+    private let lock = OSAllocatedUnfairLock()
 
     // Circular buffers — pre-allocated at init, indexed by writeIndex.
     private var sequences: [[Int16]]      // policy-index per move
@@ -88,8 +89,7 @@ final class GameDiversityTracker: @unchecked Sendable {
         }
         let hash = Self.fnv1a(indices)
 
-        queue.async { [weak self] in
-            guard let self else { return }
+        lock.withLock {
             self.sequences[self.writeIndex] = indices
             self.hashes[self.writeIndex] = hash
             self.writeIndex = (self.writeIndex + 1) % self.windowSize
@@ -108,7 +108,7 @@ final class GameDiversityTracker: @unchecked Sendable {
     /// O(n²) in window size; with n=200 and ~150-ply games it's well
     /// under a millisecond on Apple Silicon.
     func snapshot() -> Snapshot {
-        queue.sync {
+        lock.withLock {
             guard stored > 0 else {
                 return Snapshot(
                     gamesInWindow: 0,
@@ -171,8 +171,7 @@ final class GameDiversityTracker: @unchecked Sendable {
     /// new arena tournament starts so its diversity stats are
     /// isolated from the previous tournament.
     func reset() {
-        queue.async { [weak self] in
-            guard let self else { return }
+        lock.withLock {
             for i in 0..<self.stored { self.sequences[i] = [] }
             self.stored = 0
             self.writeIndex = 0

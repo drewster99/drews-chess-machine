@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Holds live game state mutated by the ChessMachine delegate queue.
 ///
@@ -46,44 +47,38 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         var threefoldRepetitionDraws = 0
     }
 
-    private let queue = DispatchQueue(label: "drewschess.gamewatcher.serial")
-    private var s = Snapshot()
+    private let lock = OSAllocatedUnfairLock<Snapshot>(initialState: Snapshot())
 
     func snapshot() -> Snapshot {
-        queue.sync { s }
+        lock.withLock { $0 }
     }
 
     func resetCurrentGame() {
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.s.state = .starting
-            self.s.result = nil
-            self.s.moveCount = 0
+        lock.withLock { s in
+            s.state = .starting
+            s.result = nil
+            s.moveCount = 0
             // Keep lastGameStats — show previous game until the next one ends
         }
     }
 
     func resetAll() {
-        queue.async { [weak self] in
-            self?.s = Snapshot()
-        }
+        lock.withLock { $0 = Snapshot() }
     }
 
     func markPlaying(_ playing: Bool) {
         let now = CFAbsoluteTimeGetCurrent()
-        queue.async { [weak self] in
-            self?.setPlayingOnQueue(playing, now: now)
+        lock.withLock { s in
+            Self.setPlayingLocked(&s, playing: playing, now: now)
         }
     }
 
     /// Toggle isPlaying and update the active-play stopwatch. Caller
-    /// must already be executing on `queue` and must pass a `now`
-    /// value captured at the original call site — the async hop onto
-    /// `queue` may land microseconds later, and the stopwatch needs
-    /// to reflect the moment the caller decided to start/stop play,
-    /// not when the queue got to the closure. Idempotent: calling
-    /// with the same value twice is a no-op for the stopwatch.
-    private func setPlayingOnQueue(_ playing: Bool, now: CFAbsoluteTime) {
+    /// must already hold the lock and pass a `now` value captured at
+    /// the original call site — the per-call timestamp reflects the
+    /// moment the caller decided to start/stop play. Idempotent:
+    /// calling with the same value twice is a no-op for the stopwatch.
+    private static func setPlayingLocked(_ s: inout Snapshot, playing: Bool, now: CFAbsoluteTime) {
         if playing {
             if s.currentPlayStartTime == nil {
                 s.currentPlayStartTime = now
@@ -98,10 +93,9 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     // MARK: - Delegate (called on ChessMachine.delegateQueue, never main)
 
     func chessMachine(_ machine: ChessMachine, didApplyMove move: ChessMove, newState: GameState) {
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.s.state = newState
-            self.s.moveCount += 1
+        lock.withLock { s in
+            s.state = newState
+            s.moveCount += 1
         }
     }
 
@@ -112,46 +106,45 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         stats: GameStats
     ) {
         let now = CFAbsoluteTimeGetCurrent()
-        queue.async { [weak self] in
-            guard let self else { return }
-            self.s.result = result
-            self.s.state = finalState
-            self.s.lastGameStats = stats
-            self.setPlayingOnQueue(false, now: now)
+        lock.withLock { s in
+            s.result = result
+            s.state = finalState
+            s.lastGameStats = stats
+            Self.setPlayingLocked(&s, playing: false, now: now)
 
-            self.s.totalGames += 1
-            self.s.totalMoves += stats.totalMoves
-            self.s.totalGameTimeMs += stats.totalGameTimeMs
-            self.s.totalWhiteThinkMs += stats.whiteThinkingTimeMs
-            self.s.totalBlackThinkMs += stats.blackThinkingTimeMs
+            s.totalGames += 1
+            s.totalMoves += stats.totalMoves
+            s.totalGameTimeMs += stats.totalGameTimeMs
+            s.totalWhiteThinkMs += stats.whiteThinkingTimeMs
+            s.totalBlackThinkMs += stats.blackThinkingTimeMs
             // Move counting handed off to totalMoves; zero the per-game counter
             // atomically so display helpers using `totalMoves + moveCount` don't
             // double-count between gameEnded and the next resetCurrentGame call.
-            self.s.moveCount = 0
+            s.moveCount = 0
 
             switch result {
             case .checkmate(let winner):
                 if winner == .white {
-                    self.s.whiteCheckmates += 1
+                    s.whiteCheckmates += 1
                 } else {
-                    self.s.blackCheckmates += 1
+                    s.blackCheckmates += 1
                 }
             case .stalemate:
-                self.s.stalemates += 1
+                s.stalemates += 1
             case .drawByFiftyMoveRule:
-                self.s.fiftyMoveDraws += 1
+                s.fiftyMoveDraws += 1
             case .drawByInsufficientMaterial:
-                self.s.insufficientMaterialDraws += 1
+                s.insufficientMaterialDraws += 1
             case .drawByThreefoldRepetition:
-                self.s.threefoldRepetitionDraws += 1
+                s.threefoldRepetitionDraws += 1
             }
         }
     }
 
     func chessMachine(_ machine: ChessMachine, playerErrored player: any ChessPlayer, error: any Error) {
         let now = CFAbsoluteTimeGetCurrent()
-        queue.async { [weak self] in
-            self?.setPlayingOnQueue(false, now: now)
+        lock.withLock { s in
+            Self.setPlayingLocked(&s, playing: false, now: now)
         }
     }
 }

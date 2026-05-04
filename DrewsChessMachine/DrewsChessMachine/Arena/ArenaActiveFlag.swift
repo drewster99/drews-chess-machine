@@ -4,19 +4,21 @@ import Foundation
 /// in progress. Used to mutually exclude the Candidate test probe
 /// from the arena, since both touch the candidate inference network
 /// and the probe can't write while the arena is reading.
+///
+/// Backed by `SyncBox<Bool>` (an `OSAllocatedUnfairLock`); reads
+/// and writes are sub-microsecond.
 final class ArenaActiveFlag: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "drewschess.arenaactiveflag.serial")
-    private var _active = false
+    private let _active = SyncBox<Bool>(false)
 
     var isActive: Bool {
-        queue.sync { _active }
+        _active.value
     }
 
     func set() {
-        queue.async { [weak self] in self?._active = true }
+        _active.value = true
     }
 
     func clear() {
-        queue.async { [weak self] in self?._active = false }
+        _active.value = false
     }
 }

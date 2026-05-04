@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 
 /// Thread-safe fixed-capacity ring of labeled self-play positions.
 ///
@@ -7,7 +8,7 @@ import Foundation
 /// once each game ends and outcomes are known. The trainer pulls out
 /// minibatches via `sample(count:intoBoards:moves:zs:vBaselines:)`.
 /// Both sides run on background tasks; access is serialized by a
-/// private serial `DispatchQueue` so the buffer is safe to share
+/// private `OSAllocatedUnfairLock` so the buffer is safe to share
 /// across tasks.
 ///
 /// **Storage layout.** Positions are stored in three flat contiguous
@@ -18,8 +19,8 @@ import Foundation
 /// directly from contiguous source slots into trainer-owned staging
 /// buffers.
 ///
-/// Marked `@unchecked Sendable` because the serial queue serializes
-/// all mutable state access.
+/// Marked `@unchecked Sendable` because the lock serializes all
+/// mutable state access. The lock is never held across an `await`.
 final class ReplayBuffer: @unchecked Sendable {
     /// Number of floats required to hold one encoded board position
     /// (`inputPlanes` × 8 × 8 — currently 20 × 64 = 1280 with the v2
@@ -32,7 +33,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// in FIFO order once the buffer is full.
     let capacity: Int
 
-    private let queue = DispatchQueue(label: "drewschess.replaybuffer.serial")
+    private let lock = OSAllocatedUnfairLock()
 
     // MARK: - Ring storage
 
@@ -203,7 +204,7 @@ final class ReplayBuffer: @unchecked Sendable {
 
     /// Current number of positions stored (up to `capacity`).
     var count: Int {
-        queue.sync { storedCount }
+        lock.withLock { storedCount }
     }
 
     /// Monotonically increasing count of all positions ever appended
@@ -214,7 +215,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// training worker.
     private var _totalPositionsAdded: Int = 0
     var totalPositionsAdded: Int {
-        queue.sync { _totalPositionsAdded }
+        lock.withLock { _totalPositionsAdded }
     }
 
     /// Per-position storage cost in bytes: board floats + move int32 +
@@ -283,7 +284,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// counters. Used by the session-checkpoint path to populate
     /// `hasReplayBuffer*` fields in `SessionCheckpointState`.
     func stateSnapshot() -> StateSnapshot {
-        queue.sync {
+        lock.withLock {
             StateSnapshot(
                 storedCount: storedCount,
                 capacity: capacity,
@@ -304,7 +305,7 @@ final class ReplayBuffer: @unchecked Sendable {
     ///
     /// The caller owns the input buffers — they are not retained past
     /// the call, so this method synchronously copies the input bytes
-    /// into the ring storage on the serial queue before returning.
+    /// into the ring storage under the buffer's lock before returning.
     func append(
         boards: UnsafePointer<Float>,
         policyIndices: UnsafePointer<Int32>,
@@ -329,7 +330,11 @@ final class ReplayBuffer: @unchecked Sendable {
         let isWin: Bool = outcome > 0.5
         let isLoss: Bool = outcome < -0.5
 
-        queue.sync {
+        // `UnsafePointer`/`UnsafeMutablePointer` aren't Sendable, but this
+        // closure runs synchronously under the lock and doesn't outlive
+        // the call — `withLockUnchecked` is the documented escape hatch
+        // for that case (see Apple's `OSAllocatedUnfairLock` reference).
+        lock.withLockUnchecked {
             let floatsPerBoard = Self.floatsPerBoard
 
             // The incoming positions may straddle the ring's wraparound
@@ -430,7 +435,7 @@ final class ReplayBuffer: @unchecked Sendable {
         }
     }
 
-    // MARK: - Hash dict mutation (must be called under queue.sync)
+    // MARK: - Hash dict mutation (must be called while holding `lock`)
 
     @inline(__always)
     private func incrementHashStat(hash: UInt64, isWin: Bool, isLoss: Bool) {
@@ -462,7 +467,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// in the buffer. Read under the lock so it's atomic with respect
     /// to in-flight appends. Cheap (just dict.count).
     var uniquePositionCount: Int {
-        queue.sync { hashStats.count }
+        lock.withLock { hashStats.count }
     }
 
     /// Look up the WLD counts for a specific hash. Returns nil if no
@@ -470,7 +475,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// per-batch summarizer to distinguish pure dups from
     /// outcome-diverse dups.
     func bufferedPositionStats(forHash hash: UInt64) -> BufferedPositionStats? {
-        queue.sync { hashStats[hash] }
+        lock.withLock { hashStats[hash] }
     }
 
     // MARK: - Sample
@@ -501,7 +506,9 @@ final class ReplayBuffer: @unchecked Sendable {
         materialCounts dstMaterialCounts: UnsafeMutablePointer<UInt8>? = nil
     ) -> Bool {
         precondition(sampleCount > 0, "Sample count must be positive")
-        return queue.sync {
+        // `UnsafeMutablePointer` isn't Sendable; the closure runs
+        // synchronously under the lock and doesn't outlive the call.
+        return lock.withLockUnchecked {
             let held = storedCount
             guard held >= sampleCount else { return false }
 
@@ -733,7 +740,7 @@ final class ReplayBuffer: @unchecked Sendable {
 
         // Snapshot buffer-global counters under the lock so the
         // summary reflects a single consistent view.
-        let (uniqBuf, storedBuf) = queue.sync { (hashStats.count, storedCount) }
+        let (uniqBuf, storedBuf) = lock.withLock { (hashStats.count, storedCount) }
 
         return BatchStatsSummary(
             step: step,
@@ -841,7 +848,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Write the buffer's current contents to `url` in oldest-first
     /// order. On-disk size is proportional to `storedCount` (not
     /// `capacity`), so partially-filled rings serialize to a smaller
-    /// file. Thread-safe — runs on the serial queue for the duration
+    /// file. Thread-safe — holds the buffer's lock for the duration
     /// of the write, which pauses appends and samples until the write
     /// finishes.
     ///
@@ -856,7 +863,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// fire-and-forget saves) compile unchanged.
     @discardableResult
     func write(to url: URL) throws -> StateSnapshot {
-        try queue.sync {
+        try lock.withLock {
             try _writeLocked(to: url)
             // Captured under the same lock that serializes the write,
             // so the returned snapshot reflects exactly the state
@@ -1114,8 +1121,8 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Serialize a contiguous logical range of the ring starting at
     /// `start` with length `total`, handling wraparound. The array
     /// is identified by `basePtr` (raw pointer to its element 0) and
-    /// `slotSize` bytes per ring slot. Caller must be executing on
-    /// the serial `queue` (e.g. from inside `_writeLocked`).
+    /// `slotSize` bytes per ring slot. Caller must already hold the
+    /// buffer's `lock` (e.g. from inside `_writeLocked`).
     ///
     /// Every byte written is also fed into `hasher` — the streaming
     /// SHA-256 hasher whose final digest becomes the file's integrity
@@ -1195,9 +1202,9 @@ final class ReplayBuffer: @unchecked Sendable {
     ///    content bytes before any state is mutated.
     ///
     /// Only after all eight pass does the function mutate any live
-    /// state (locking `queue.sync`, resetting counters, re-seeking
-    /// to the header end, and reading the four sections into the
-    /// ring storage).
+    /// state (taking the buffer's `lock`, resetting counters,
+    /// re-seeking to the header end, and reading the four sections
+    /// into the ring storage).
     func restore(from url: URL) throws {
         let handle: FileHandle
         do {
@@ -1404,7 +1411,7 @@ final class ReplayBuffer: @unchecked Sendable {
         let target = min(fileStored, capacity)
         let skip = fileStored - target  // oldest-first file entries to discard
 
-        try queue.sync {
+        try lock.withLock {
             // Reset live state before filling.
             storedCount = 0
             writeIndex = 0

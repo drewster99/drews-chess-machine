@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Event-driven replay-ratio controller. Three recording hooks —
 /// two that drive control, one that feeds metadata:
@@ -77,16 +78,28 @@ import Foundation
 /// damping, no divergence boost, no deadband, no PID — only the
 /// model-inverting formula plus the 20-second output smoothing.
 ///
-/// Thread-safe via a private serial `DispatchQueue`. All accessors
-/// hop through `queue.sync`.
+/// Thread-safe via a private `OSAllocatedUnfairLock`. All accessors
+/// hop through `lock.withLock`. The lock is never held across an
+/// `await`, and inner helpers like `recomputeDelays`,
+/// `pruneDelayHistory`, `pruneRateSamples`, `maybeAppendRateSample`,
+/// and the `smoothed*` projections assume the caller already holds
+/// the lock — they must never re-enter `withLock` (that would trap;
+/// `OSAllocatedUnfairLock` isn't recursive).
 final class ReplayRatioController: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "drewschess.replayratiocontroller.serial")
+    private let lock = OSAllocatedUnfairLock()
 
     // MARK: - Configuration
 
     private var _targetRatio: Double
     private var _autoAdjust: Bool
     private var _manualDelayMs: Int
+    /// User-set per-game-per-worker self-play delay used when
+    /// `_autoAdjust == false`. Mirrors `_manualDelayMs` for the
+    /// training side. When auto is on this value is dormant; the
+    /// controller's own SP-side smoothing drives the worker sleep.
+    /// Seeded to 0 so a fresh controller in manual mode runs SP
+    /// unthrottled until the user dials in a non-zero value.
+    private var _manualSelfPlayDelayMs: Int = 0
     /// Size of one SGD training batch, in positions. Used to convert
     /// per-move deltas into per-batch sleep durations.
     let trainingBatchSize: Int
@@ -268,7 +281,7 @@ final class ReplayRatioController: @unchecked Sendable {
         currentDelaySettingMs: Double,
         workerCount: Int
     ) {
-        queue.sync {
+        lock.withLock {
             let now = CFAbsoluteTimeGetCurrent()
             if let prior = _lastSelfPlayTickAt, positionsProduced > 0 {
                 let elapsedMs = (now - prior) * 1000.0
@@ -293,7 +306,7 @@ final class ReplayRatioController: @unchecked Sendable {
     /// recompute here so a freshly-updated `G` is reflected in the
     /// self-play sleep the next time signed < 0.
     func recordSelfPlayGameLength(_ plies: Int) {
-        queue.sync {
+        lock.withLock {
             _lastSelfPlayPositionsPerGame = max(1, plies)
             recomputeDelays()
         }
@@ -316,7 +329,7 @@ final class ReplayRatioController: @unchecked Sendable {
     func recordTrainingBatchAndGetDelay(
         currentDelaySettingMs: Double
     ) -> Int {
-        queue.sync {
+        lock.withLock {
             let now = CFAbsoluteTimeGetCurrent()
             if let prior = _lastTrainingTickAt {
                 let elapsedMs = (now - prior) * 1000.0
@@ -517,7 +530,7 @@ final class ReplayRatioController: @unchecked Sendable {
     }
 
     func snapshot() -> RatioSnapshot {
-        queue.sync {
+        lock.withLock {
             // Production / consumption rates use the 60-s rolling
             // window — what the UI, [STATS] log line, and JSON
             // output all call the "1m" rates. Derived from cumulative
@@ -543,7 +556,7 @@ final class ReplayRatioController: @unchecked Sendable {
                 // matches what self-play workers actually see from
                 // `computedSelfPlayDelayMs`. Internal state is kept so
                 // re-enabling auto resumes from the last equilibrium.
-                computedSelfPlayDelayMs: _autoAdjust ? spSmoothed : 0,
+                computedSelfPlayDelayMs: _autoAdjust ? spSmoothed : _manualSelfPlayDelayMs,
                 selfPlayMsPerMove: _selfPlayMsPerMove,
                 trainingMsPerMove: _trainingMsPerMove,
                 workerCount: _lastSelfPlayWorkerCount
@@ -554,9 +567,9 @@ final class ReplayRatioController: @unchecked Sendable {
     // MARK: - UI setters
 
     var targetRatio: Double {
-        get { queue.sync { _targetRatio } }
+        get { lock.withLock { _targetRatio } }
         set {
-            queue.async {
+            lock.withLock {
                 self._targetRatio = newValue
                 self.recomputeDelays()
             }
@@ -564,9 +577,9 @@ final class ReplayRatioController: @unchecked Sendable {
     }
 
     var autoAdjust: Bool {
-        get { queue.sync { _autoAdjust } }
+        get { lock.withLock { _autoAdjust } }
         set {
-            queue.async {
+            lock.withLock {
                 self._autoAdjust = newValue
                 self.recomputeDelays()
             }
@@ -574,8 +587,16 @@ final class ReplayRatioController: @unchecked Sendable {
     }
 
     var manualDelayMs: Int {
-        get { queue.sync { _manualDelayMs } }
-        set { queue.async { self._manualDelayMs = max(0, min(self.maxTrainingStepDelayMs, newValue)) } }
+        get { lock.withLock { _manualDelayMs } }
+        set { lock.withLock { self._manualDelayMs = max(0, min(self.maxTrainingStepDelayMs, newValue)) } }
+    }
+
+    /// Per-game-per-worker self-play sleep used when `_autoAdjust ==
+    /// false`. Symmetric with `manualDelayMs` on the training side.
+    /// Clamped to `[0, maxSelfPlayDelayMs]`.
+    var manualSelfPlayDelayMs: Int {
+        get { lock.withLock { _manualSelfPlayDelayMs } }
+        set { lock.withLock { self._manualSelfPlayDelayMs = max(0, min(self.maxSelfPlayDelayMs, newValue)) } }
     }
 
     /// Training-side delay projection. Always returns the smoothed
@@ -590,10 +611,10 @@ final class ReplayRatioController: @unchecked Sendable {
     /// bookkeeping.
     var computedDelayMs: Int {
         get {
-            queue.sync { smoothedTrainingStepDelayMs() }
+            lock.withLock { smoothedTrainingStepDelayMs() }
         }
         set {
-            queue.async {
+            lock.withLock {
                 let clamped = max(0, min(self.maxTrainingStepDelayMs, newValue))
                 // Seed BOTH the raw signed latch AND the history so
                 // an immediate read returns this value (not an
@@ -617,7 +638,7 @@ final class ReplayRatioController: @unchecked Sendable {
     /// and on reattach, so a multi-minute pause window doesn't
     /// produce one garbage ms/move sample on resume.
     func resetSelfPlayClock() {
-        queue.sync { _lastSelfPlayTickAt = nil }
+        lock.withLock { _lastSelfPlayTickAt = nil }
     }
 
     /// Clear the training-side wall-clock stamp. Symmetric with
@@ -625,17 +646,28 @@ final class ReplayRatioController: @unchecked Sendable {
     /// caller, but exposed for symmetry and future use (e.g. an
     /// arena pause that the training worker observes).
     func resetTrainingClock() {
-        queue.sync { _lastTrainingTickAt = nil }
+        lock.withLock { _lastTrainingTickAt = nil }
     }
 
-    /// Self-play-side delay projection. Read-only; the controller is
-    /// the only writer via `recomputeDelays()`. When auto-adjust is
-    /// off, returns 0 — the user is managing training delay manually
-    /// in that mode and self-play is expected to run unthrottled. The
-    /// underlying history still holds the last auto-computed values,
-    /// so flipping auto back on resumes from the previous equilibrium
-    /// point without a jump.
+    /// Self-play-side delay projection. When auto-adjust is on,
+    /// returns the smoothed controller-computed sleep. When off,
+    /// returns the user-set `_manualSelfPlayDelayMs` so the SP delay
+    /// stepper has the same manual override authority the training-
+    /// step delay stepper has on its side. The internal smoothing
+    /// history is preserved across the toggle so flipping auto back
+    /// on resumes from the previous equilibrium point.
     var computedSelfPlayDelayMs: Int {
-        queue.sync { _autoAdjust ? smoothedSelfPlayPerGameDelayMs() : 0 }
+        lock.withLock { _autoAdjust ? smoothedSelfPlayPerGameDelayMs() : _manualSelfPlayDelayMs }
+    }
+
+    /// Always returns the smoothed (SMA) self-play sleep regardless
+    /// of `_autoAdjust`, symmetric with `computedDelayMs` on the
+    /// training side. Used by the auto-OFF transition to inherit the
+    /// last auto-computed value into the manual slot (where reading
+    /// `computedSelfPlayDelayMs` after the toggle would already see
+    /// the new manual value and defeat the inherit). Not for routine
+    /// worker use — the worker reads `computedSelfPlayDelayMs`.
+    var smoothedSelfPlayDelayMs: Int {
+        lock.withLock { smoothedSelfPlayPerGameDelayMs() }
     }
 }

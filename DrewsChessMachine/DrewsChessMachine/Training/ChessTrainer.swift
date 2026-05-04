@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Metal
 import MetalPerformanceShadersGraph
+import os
 
 // MARK: - Errors
 
@@ -508,7 +509,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let error: String?
     }
 
-    private let queue = DispatchQueue(label: "drewschess.traininglivestatsbox.serial")
+    private let lock = OSAllocatedUnfairLock()
     private var _stats = TrainingRunStats()
     private var _lastTiming: TrainStepTiming?
     private var _policyLossWindow: RollingDoubleWindow
@@ -547,7 +548,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// window of recent steps. Capped at `advRawRingMaxCapacity`
     /// floats (see the constant for the full rationale). `snapshot()`
     /// sorts the live set for percentile extraction, and that sort
-    /// runs on main via the UI heartbeat's `queue.sync` — a larger
+    /// runs on main via the UI heartbeat's `lock.withLock` — a larger
     /// ring was blocking main for ~150 ms per snapshot at 10 Hz,
     /// starving `fireCandidateProbeIfNeeded`'s MainActor hop and
     /// collapsing training throughput to ~300 moves/sec from a
@@ -602,17 +603,17 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// Seed the stats with values from a resumed session so the
     /// step counter and other totals don't restart from zero.
     func seed(_ stats: TrainingRunStats) {
-        queue.async {
+        lock.withLock {
             self._stats = stats
         }
     }
 
     /// Record one completed training step. Called from the background
-    /// training task. Dispatches the rolling-window bookkeeping to the
-    /// serial queue asynchronously so the training worker never waits
-    /// on the UI heartbeat's `snapshot()` read.
+    /// training task. The lock acquisition is sub-microsecond and the
+    /// rolling-window bookkeeping runs synchronously under it; the UI
+    /// heartbeat's `snapshot()` read takes the same lock briefly.
     func recordStep(_ timing: TrainStepTiming) {
-        queue.async {
+        lock.withLock {
             self._stats.record(timing)
             self._lastTiming = timing
             self._policyLossWindow.append(Double(timing.policyLoss))
@@ -672,10 +673,10 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     }
 
     /// Push a batch's raw advantage values into the percentile ring.
-    /// Called from within `recordStep`'s queue-async closure, so no
-    /// additional serialization is needed. Capacity is grown on first
-    /// use (and whenever `rollingWindow * batchSize` changes) to avoid
-    /// reallocating in steady state.
+    /// Called from within `recordStep`'s `lock.withLock` closure, so
+    /// no additional serialization is needed. Capacity is grown on
+    /// first use (and whenever `rollingWindow * batchSize` changes)
+    /// to avoid reallocating in steady state.
     private func pushAdvRaw(_ batch: [Float]) {
         let desiredCapacity = min(
             self.rollingWindow * batch.count,
@@ -708,7 +709,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// The first error wins — subsequent calls are ignored so a
     /// follow-on error doesn't clobber the original cause.
     func recordError(_ message: String) {
-        queue.async {
+        lock.withLock {
             if self._error == nil { self._error = message }
         }
     }
@@ -719,7 +720,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// aligned trainer/champion regime instead of inheriting the
     /// pre-promotion averages.
     func resetRollingWindows() {
-        queue.async {
+        lock.withLock {
             self._lastTiming = nil
             self._policyLossWindow.removeAll()
             self._valueLossWindow.removeAll()
@@ -753,7 +754,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
 
     /// Snapshot all fields atomically for the UI poller.
     func snapshot() -> Snapshot {
-        queue.sync {
+        lock.withLock {
             let rollingPolicy = _policyLossWindow.mean
             let rollingValue = _valueLossWindow.mean
             let rollingEntropy = _policyEntropyWindow.mean

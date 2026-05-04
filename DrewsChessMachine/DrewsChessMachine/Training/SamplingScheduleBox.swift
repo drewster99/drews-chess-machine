@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Lock-protected holder for the current self-play and arena
 /// `SamplingSchedule` objects. Written by the SwiftUI edit fields
@@ -9,29 +10,33 @@ import Foundation
 /// player is reused across games within a slot, edits take effect
 /// on newly-constructed players — i.e. at the next game-boundary
 /// within the driver's slotLoop, not mid-game.
+///
+/// State protected by `OSAllocatedUnfairLock<State>`; each public
+/// access is a single short critical section.
 final class SamplingScheduleBox: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "drewschess.samplingschedulebox.serial")
-    private var _selfPlay: SamplingSchedule
-    private var _arena: SamplingSchedule
+    private struct State {
+        var selfPlay: SamplingSchedule
+        var arena: SamplingSchedule
+    }
+    private let lock: OSAllocatedUnfairLock<State>
 
     init(selfPlay: SamplingSchedule, arena: SamplingSchedule) {
-        self._selfPlay = selfPlay
-        self._arena = arena
+        self.lock = OSAllocatedUnfairLock(initialState: State(selfPlay: selfPlay, arena: arena))
     }
 
     var selfPlay: SamplingSchedule {
-        queue.sync { _selfPlay }
+        lock.withLock { $0.selfPlay }
     }
 
     var arena: SamplingSchedule {
-        queue.sync { _arena }
+        lock.withLock { $0.arena }
     }
 
     func setSelfPlay(_ s: SamplingSchedule) {
-        queue.sync { _selfPlay = s }
+        lock.withLock { $0.selfPlay = s }
     }
 
     func setArena(_ s: SamplingSchedule) {
-        queue.sync { _arena = s }
+        lock.withLock { $0.arena = s }
     }
 }

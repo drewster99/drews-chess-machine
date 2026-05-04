@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Lock-protected rolling counters for the parallel self-play and
 /// training workers. Each worker increments its own counters after
@@ -26,7 +27,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         let durationMs: Double
     }
 
-    private let queue = DispatchQueue(label: "drewschess.parallelworkerstatsbox.serial")
+    private let lock = OSAllocatedUnfairLock()
     private var _totalGames: Int = 0
     private var _totalMoves: Int = 0
     private var _totalGameWallMs: Double = 0
@@ -94,13 +95,12 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// is spawned, so that rate denominators only cover the window
     /// in which workers are actually running. Captures `Date()` at
     /// the call site (not inside the closure) so the timestamp
-    /// reflects the moment the caller invoked this method — the
-    /// async dispatch may land microseconds later once any queued
-    /// stats writes drain.
+    /// reflects the moment the caller invoked this method, not the
+    /// moment the lock acquisition lands.
     func markWorkersStarted() {
         let now = Date()
-        queue.async { [weak self] in
-            self?._sessionStart = now
+        lock.withLock {
+            self._sessionStart = now
         }
     }
 
@@ -109,8 +109,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// Training step count and sessionStart are NOT reset so
     /// training-rate display stays continuous.
     func resetGameStats() {
-        queue.async { [weak self] in
-            guard let self else { return }
+        lock.withLock {
             self._totalGames = 0
             self._totalMoves = 0
             self._totalGameWallMs = 0
@@ -130,14 +129,13 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// at game-end with the game's total moves, wall-clock duration,
     /// and final result. Bumps lifetime totals, the per-outcome
     /// counters, and the rolling 10-minute window. Thread-safe via
-    /// the box's serial queue. `Date()` is captured at the call site
-    /// — the game-end timestamp feeds the rolling-window rate stats,
-    /// so it must reflect when the game actually finished rather
-    /// than when the queue got around to processing the write.
+    /// the box's lock. `Date()` is captured at the call site — the
+    /// game-end timestamp feeds the rolling-window rate stats, so
+    /// it must reflect when the game actually finished rather than
+    /// when the lock acquisition lands.
     func recordCompletedGame(moves: Int, durationMs: Double, result: GameResult) {
         let now = Date()
-        queue.async { [weak self] in
-            guard let self else { return }
+        lock.withLock {
             self._totalGames += 1
             self._totalMoves += moves
             self._totalGameWallMs += durationMs
@@ -160,7 +158,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             }
 
             self._recentGames.append(GameRecord(timestamp: now, moves: moves, durationMs: durationMs))
-            self.pruneRecentOnQueue(now: now)
+            self.pruneRecentLocked(now: now)
 
             // Percentile ring. Pre-sized lazily; FIFO overwrite once
             // full. `moves` is plies (not half-moves pairs), matching
@@ -175,16 +173,16 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     }
 
     func recordTrainingStep() {
-        queue.async { [weak self] in
-            self?._trainingSteps += 1
+        lock.withLock {
+            self._trainingSteps += 1
         }
     }
 
     /// Drop rolling-window entries older than `now - recentWindow`.
-    /// Caller must already be executing on `queue`. Records are
-    /// appended in monotonic timestamp order so this is a prefix
-    /// removal — O(k) where k is the expired count.
-    private func pruneRecentOnQueue(now: Date) {
+    /// Caller must already hold `lock`. Records are appended in
+    /// monotonic timestamp order so this is a prefix removal —
+    /// O(k) where k is the expired count.
+    private func pruneRecentLocked(now: Date) {
         let cutoff = now.addingTimeInterval(-Self.recentWindow)
         while let first = _recentGames.first, first.timestamp < cutoff {
             _recentGames.removeFirst()
@@ -222,9 +220,9 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     }
 
     func snapshot() -> Snapshot {
-        queue.sync {
+        lock.withLock {
             let now = Date()
-            pruneRecentOnQueue(now: now)
+            pruneRecentLocked(now: now)
 
             var recentMoves = 0
             var recentGameWallMs: Double = 0

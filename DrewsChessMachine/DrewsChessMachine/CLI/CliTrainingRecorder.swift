@@ -1,13 +1,15 @@
 import Foundation
+import os
 
 /// Thread-safe accumulator for the per-run events the `--output`
 /// JSON snapshot needs: one entry per `[STATS]` line, one entry per
 /// completed arena, one entry per 15-second candidate-test probe.
 /// All append paths fire from the training TaskGroup's various
 /// background tasks (stats logger, arena coordinator, training
-/// worker), so mutation is serialized through a private `NSLock` —
-/// same lock-protected-class pattern the rest of this codebase
-/// uses (ReplayBuffer, ParallelWorkerStatsBox, etc.).
+/// worker), so mutation is serialized through a private
+/// `OSAllocatedUnfairLock<State>` — same lock-protected-class
+/// pattern the rest of this codebase uses (ReplayBuffer,
+/// ParallelWorkerStatsBox, etc.).
 ///
 /// The recorder is allocated once per Play-and-Train session when
 /// `--output` is active; the app holds it through `ContentView`
@@ -15,78 +17,73 @@ import Foundation
 /// time-limit expiry (or any other flush point) `finalize(...)`
 /// assembles the Codable root struct and writes the JSON to disk.
 final class CliTrainingRecorder: @unchecked Sendable {
-    private let lock = NSLock()
-    private var arenas: [Arena] = []
-    private var stats: [StatsLine] = []
-    private var probes: [CandidateTest] = []
-
-    /// Session ID captured at first append for inclusion in the
-    /// top-level JSON. Written through `setSessionID(_:)` so the
-    /// recorder doesn't have to read the main-actor-isolated
-    /// `currentSessionID` directly.
-    private var sessionID: String?
-
-    /// Termination reason captured by the writing path (timer task
-    /// or collapse detector). Readers should call
-    /// `setTerminationReason(_:)` before `writeJSON(...)`.
-    private var terminationReason: TerminationReason?
+    private struct State {
+        var arenas: [Arena] = []
+        var stats: [StatsLine] = []
+        var probes: [CandidateTest] = []
+        /// Session ID captured at first append for inclusion in the
+        /// top-level JSON. Written through `setSessionID(_:)` so the
+        /// recorder doesn't have to read the main-actor-isolated
+        /// `currentSessionID` directly.
+        var sessionID: String?
+        /// Termination reason captured by the writing path (timer task
+        /// or collapse detector). Readers should call
+        /// `setTerminationReason(_:)` before `writeJSON(...)`.
+        var terminationReason: TerminationReason?
+    }
+    private let lock = OSAllocatedUnfairLock<State>(initialState: State())
 
     init() {}
 
     func setSessionID(_ id: String?) {
-        lock.lock(); defer { lock.unlock() }
-        sessionID = id
+        lock.withLock { $0.sessionID = id }
     }
 
     /// Record how the run ended. Safe to call from any thread — the
     /// value is included in the next snapshot write.
     func setTerminationReason(_ reason: TerminationReason) {
-        lock.lock(); defer { lock.unlock() }
-        terminationReason = reason
+        lock.withLock { $0.terminationReason = reason }
     }
 
     func appendArena(_ a: Arena) {
-        lock.lock(); defer { lock.unlock() }
-        arenas.append(a)
+        lock.withLock { $0.arenas.append(a) }
     }
 
     func appendStats(_ s: StatsLine) {
-        lock.lock(); defer { lock.unlock() }
-        stats.append(s)
+        lock.withLock { $0.stats.append(s) }
     }
 
     func appendCandidateTest(_ p: CandidateTest) {
-        lock.lock(); defer { lock.unlock() }
-        probes.append(p)
+        lock.withLock { $0.probes.append(p) }
     }
 
     /// Cheap lock-protected counts used by the post-write log line
     /// so the caller doesn't have to inspect the JSON file after
     /// writing it to confirm how many events were captured.
     func countsSnapshot() -> (arenas: Int, stats: Int, probes: Int) {
-        lock.lock(); defer { lock.unlock() }
-        return (arenas.count, stats.count, probes.count)
+        lock.withLock { ($0.arenas.count, $0.stats.count, $0.probes.count) }
     }
 
     /// Encode the Codable snapshot to `Data`. Shared back-end of
     /// `writeJSON(to:)` and `writeJSONToStdout(...)` so both paths
     /// emit byte-identical output. Holds the lock only for the
-    /// array copies and releases it before the JSON encode step,
-    /// which doesn't need the recorder's state.
+    /// array copies (assembling the Snapshot value) and releases it
+    /// before the JSON encode step, which doesn't need the
+    /// recorder's state.
     func encodedJSONData(totalTrainingSeconds: Double) throws -> Data {
-        lock.lock()
-        let snapshot = Snapshot(
-            totalTrainingSeconds: totalTrainingSeconds,
-            trainingElapsedSeconds: totalTrainingSeconds,
-            terminationReason: terminationReason,
-            sessionID: sessionID,
-            trainingSteps: stats.last?.steps,
-            positionsTrained: stats.last?.positionsTrained,
-            arenaResults: arenas,
-            stats: stats,
-            candidateTests: probes
-        )
-        lock.unlock()
+        let snapshot = lock.withLock { state in
+            Snapshot(
+                totalTrainingSeconds: totalTrainingSeconds,
+                trainingElapsedSeconds: totalTrainingSeconds,
+                terminationReason: state.terminationReason,
+                sessionID: state.sessionID,
+                trainingSteps: state.stats.last?.steps,
+                positionsTrained: state.stats.last?.positionsTrained,
+                arenaResults: state.arenas,
+                stats: state.stats,
+                candidateTests: state.probes
+            )
+        }
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

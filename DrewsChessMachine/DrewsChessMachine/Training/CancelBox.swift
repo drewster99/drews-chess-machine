@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Lock-protected holder for the sweep's shared state across the worker
 /// thread and the SwiftUI main thread. The worker writes (progress, row
@@ -8,35 +9,40 @@ import Foundation
 /// `Task { }` doesn't inherit cancellation, so leaning on Task.isCancelled
 /// inside a worker spawned from inside another Task is unreliable.
 /// A locked Bool that the worker polls between steps is simpler and works.
+///
+/// State protected by `OSAllocatedUnfairLock<State>`; each method
+/// holds the lock briefly and never across an `await`.
 final class CancelBox: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "drewschess.cancelbox.serial")
-    private var _cancelled = false
-    private var _progress: SweepProgress?
-    private var _completedRows: [SweepRow] = []
-    private var _rowPeakBytes: UInt64 = 0
+    private struct State {
+        var cancelled: Bool = false
+        var progress: SweepProgress?
+        var completedRows: [SweepRow] = []
+        var rowPeakBytes: UInt64 = 0
+    }
+    private let lock = OSAllocatedUnfairLock<State>(initialState: State())
 
     var isCancelled: Bool {
-        queue.sync { _cancelled }
+        lock.withLock { $0.cancelled }
     }
 
     func cancel() {
-        queue.async { [weak self] in self?._cancelled = true }
+        lock.withLock { $0.cancelled = true }
     }
 
     func updateProgress(_ p: SweepProgress) {
-        queue.async { [weak self] in self?._progress = p }
+        lock.withLock { $0.progress = p }
     }
 
     var latestProgress: SweepProgress? {
-        queue.sync { _progress }
+        lock.withLock { $0.progress }
     }
 
     func appendRow(_ r: SweepRow) {
-        queue.async { [weak self] in self?._completedRows.append(r) }
+        lock.withLock { $0.completedRows.append(r) }
     }
 
     var completedRows: [SweepRow] {
-        queue.sync { _completedRows }
+        lock.withLock { $0.completedRows }
     }
 
     /// Update the per-row peak with a new sample. The sweep's worker
@@ -45,18 +51,17 @@ final class CancelBox: @unchecked Sendable {
     /// trainer at row boundaries — whichever produces the higher value
     /// wins for that row.
     func recordPeakSample(_ bytes: UInt64) {
-        queue.async { [weak self] in
-            guard let self else { return }
-            if bytes > self._rowPeakBytes { self._rowPeakBytes = bytes }
+        lock.withLock { state in
+            if bytes > state.rowPeakBytes { state.rowPeakBytes = bytes }
         }
     }
 
     /// Read the peak observed during the just-finished row and reset the
     /// accumulator for the next one.
     func takeRowPeak() -> UInt64 {
-        queue.sync {
-            let peak = _rowPeakBytes
-            _rowPeakBytes = 0
+        lock.withLock { state in
+            let peak = state.rowPeakBytes
+            state.rowPeakBytes = 0
             return peak
         }
     }

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Request/ack gate used to briefly pause one of the parallel Play and
 /// Train workers (self-play or training) while another task needs
@@ -14,31 +15,32 @@ import Foundation
 ///
 /// Cancellation-safe: the worker's spin-wait checks `Task.isCancelled`
 /// on every iteration so clicking Stop during a pause exits the
-/// wait loop immediately. Lock-protected state, `@unchecked Sendable`.
+/// wait loop immediately. State protected by `OSAllocatedUnfairLock`,
+/// `@unchecked Sendable`. Each public method holds the lock for
+/// nanoseconds and never across an `await` (the polling loops in
+/// `pauseAndWait` sleep OUTSIDE the lock).
 final class WorkerPauseGate: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "drewschess.workerpausegate.serial")
-    private var _requested = false
-    private var _isWaiting = false
+    private struct State {
+        var requested: Bool = false
+        var isWaiting: Bool = false
+    }
+    private let lock = OSAllocatedUnfairLock<State>(initialState: State())
 
     /// Polled by the worker at each iteration boundary.
     var isRequestedToPause: Bool {
-        queue.sync { _requested }
+        lock.withLock { $0.requested }
     }
 
     /// Called by the worker when it enters its spin-wait state, so
     /// the coordinator knows it's safe to start the protected work.
-    /// Uses `queue.sync` to publish the flag before the worker starts
-    /// polling — coordinators spin on `readIsWaiting()` and must see
-    /// the acknowledgement as soon as the worker returns from this
-    /// method.
     func markWaiting() {
-        queue.sync { _isWaiting = true }
+        lock.withLock { $0.isWaiting = true }
     }
 
     /// Called by the worker when it leaves its spin-wait state and
     /// resumes normal iteration.
     func markRunning() {
-        queue.sync { _isWaiting = false }
+        lock.withLock { $0.isWaiting = false }
     }
 
     /// Coordinator: flip the pause request and spin-wait until the
@@ -78,19 +80,19 @@ final class WorkerPauseGate: @unchecked Sendable {
     }
 
     /// Synchronous helpers so `pauseAndWait()` doesn't hold a lock
-    /// across an `await` — the `queue.sync` hop is a bounded,
+    /// across an `await` — each `withLock` is a bounded,
     /// contention-free critical section that returns immediately.
     private func setRequested(_ value: Bool) {
-        queue.sync { _requested = value }
+        lock.withLock { $0.requested = value }
     }
 
     private func readIsWaiting() -> Bool {
-        queue.sync { _isWaiting }
+        lock.withLock { $0.isWaiting }
     }
 
     /// Coordinator: release the worker. Clears the request flag so
     /// the worker's next spin-wait iteration sees it and resumes.
     func resume() {
-        queue.sync { _requested = false }
+        lock.withLock { $0.requested = false }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - Batched Self-Play Driver
 
@@ -319,24 +320,21 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
 }
 
 private final class LiveSlotSet: @unchecked Sendable {
-    private let lock = NSLock()
-    private var ids: Set<Int> = []
+    private let lock = OSAllocatedUnfairLock<Set<Int>>(initialState: [])
 
     func insert(_ id: Int) {
-        lock.lock()
-        ids.insert(id)
-        lock.unlock()
+        lock.withLock { state in
+            _ = state.insert(id)
+        }
     }
 
     func remove(_ id: Int) {
-        lock.lock()
-        ids.remove(id)
-        lock.unlock()
+        lock.withLock { state in
+            _ = state.remove(id)
+        }
     }
 
     func contains(_ id: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return ids.contains(id)
+        lock.withLock { $0.contains(id) }
     }
 }
