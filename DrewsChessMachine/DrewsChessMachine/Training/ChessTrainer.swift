@@ -2322,11 +2322,17 @@ final class ChessTrainer: @unchecked Sendable {
     /// fed, given the active warmup multiplier and (optionally) the
     /// sqrt-batch scaling rule. Mirrors the in-graph math at
     /// `buildFeeds` step time so a status-bar readout matches what the
-    /// training step is actually applying. Reads the step count from
-    /// the `SyncBox`, not the `executionQueue`, so a status-bar
-    /// readout never blocks on an in-flight SGD step.
-    func effectiveLearningRate(forBatchSize batchSize: Int) -> Float {
-        let steps = _completedTrainSteps.value
+    /// training step is actually applying. When `completedSteps` is
+    /// nil the function reads the step count from the `SyncBox` (still
+    /// not from `executionQueue`, so a status-bar readout never blocks
+    /// on an in-flight SGD step). Pass an explicit value when the
+    /// caller already has a snapshot of the step count and wants both
+    /// the count and the LR to reflect the same observation — e.g.
+    /// the UI heartbeat that publishes `TrainerWarmupSnapshot`, where
+    /// reading the SyncBox twice would otherwise let the count and LR
+    /// disagree by one training step.
+    func effectiveLearningRate(forBatchSize batchSize: Int, completedSteps: Int? = nil) -> Float {
+        let steps = completedSteps ?? _completedTrainSteps.value
         let warmupMul: Float
         if lrWarmupSteps > 0 {
             warmupMul = Float(min(1.0, Double(steps) / Double(lrWarmupSteps)))
@@ -3285,7 +3291,7 @@ final class ChessTrainer: @unchecked Sendable {
         // massive VM-range allocations (seen as ~420 GB virtual vs
         // ~5 GB resident) and the main thread spends progressively
         // more time in deferred Obj-C releases.
-//        return try autoreleasepool {
+        return try autoreleasepool {
         let gpuStart = CFAbsoluteTimeGetCurrent()
         let results = network.graph.run(
             with: network.commandQueue,
@@ -3541,7 +3547,7 @@ final class ChessTrainer: @unchecked Sendable {
             policyLossWin: policyLossWinBufValue.isFinite ? policyLossWinBufValue : nil,
             policyLossLoss: policyLossLossBufValue.isFinite ? policyLossLossBufValue : nil
         )
-//        }  // autoreleasepool
+        }  // autoreleasepool
     }
 
     // MARK: - Batch Size Sweep

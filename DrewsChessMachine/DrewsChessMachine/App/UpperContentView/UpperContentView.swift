@@ -496,6 +496,36 @@ struct UpperContentView: View {
     /// `trainingStepDelayBinding`.
     nonisolated static let stepDelayLadder: [Int] =
     [0, 5, 10, 15, 20] + Array(stride(from: 25, through: Self.stepDelayMaxMs, by: 25))
+
+    /// Snap a Stepper write onto `stepDelayLadder`. The Stepper is
+    /// configured with `step: 1` over the full integer range, but
+    /// only the discrete ladder rungs are valid; this helper translates
+    /// the raw `current ± 1` write into "advance / retreat one rung".
+    /// If `current` isn't already a ladder rung (e.g. inherited from
+    /// the auto-adjuster which produces arbitrary ms values), it's
+    /// snapped to the nearest rung first and then walked from there.
+    /// Shared by `trainingStepDelayBinding` and
+    /// `selfPlayStepDelayBinding` since both speak the same ladder.
+    nonisolated static func snappedNextDelayRung(current: Int, requested: Int) -> Int {
+        let ladder = stepDelayLadder
+        let currentIdx: Int
+        if let exact = ladder.firstIndex(of: current) {
+            currentIdx = exact
+        } else {
+            currentIdx = ladder.enumerated().min(by: {
+                abs($0.element - current) < abs($1.element - current)
+            })?.offset ?? 0
+        }
+        let nextIdx: Int
+        if requested > current {
+            nextIdx = min(currentIdx + 1, ladder.count - 1)
+        } else if requested < current {
+            nextIdx = max(currentIdx - 1, 0)
+        } else {
+            nextIdx = currentIdx
+        }
+        return ladder[nextIdx]
+    }
     /// Current training-step delay in milliseconds, written by
     /// the Stepper via `trainingStepDelayBinding` and mirrored into
     /// `trainingStepDelayBox` so the training worker task reads
@@ -987,7 +1017,7 @@ struct UpperContentView: View {
     /// publisher is created when the view struct is initialized and SwiftUI
     /// manages the subscription lifecycle via `.onReceive` below.
     private let snapshotTimer = Timer.publish(
-        every: 4.0, on: .main, in: .common
+        every: 0.500, on: .main, in: .common
     ).autoconnect()
 
     /// Default on/off toggle for "autosave the full session after
@@ -1154,29 +1184,8 @@ struct UpperContentView: View {
         Binding(
             get: { trainingParams.trainingStepDelayMs },
             set: { newValue in
-                let ladder = Self.stepDelayLadder
                 let current = trainingParams.trainingStepDelayMs
-                // Find the current value in the ladder. If it's not
-                // an exact rung (e.g. inherited from the auto-adjuster
-                // which computes arbitrary ms values), snap to the
-                // nearest rung before stepping up or down.
-                let currentIdx: Int
-                if let exact = ladder.firstIndex(of: current) {
-                    currentIdx = exact
-                } else {
-                    currentIdx = ladder.enumerated().min(by: {
-                        abs($0.element - current) < abs($1.element - current)
-                    })?.offset ?? 0
-                }
-                let nextIdx: Int
-                if newValue > current {
-                    nextIdx = min(currentIdx + 1, ladder.count - 1)
-                } else if newValue < current {
-                    nextIdx = max(currentIdx - 1, 0)
-                } else {
-                    nextIdx = currentIdx
-                }
-                let snapped = ladder[nextIdx]
+                let snapped = Self.snappedNextDelayRung(current: current, requested: newValue)
                 if snapped != current {
                     SessionLogger.shared.log("[PARAM] stepDelayMs (manual): \(current) -> \(snapped)")
                 }
@@ -1202,25 +1211,8 @@ struct UpperContentView: View {
         Binding(
             get: { trainingParams.selfPlayDelayMs },
             set: { newValue in
-                let ladder = Self.stepDelayLadder
                 let current = trainingParams.selfPlayDelayMs
-                let currentIdx: Int
-                if let exact = ladder.firstIndex(of: current) {
-                    currentIdx = exact
-                } else {
-                    currentIdx = ladder.enumerated().min(by: {
-                        abs($0.element - current) < abs($1.element - current)
-                    })?.offset ?? 0
-                }
-                let nextIdx: Int
-                if newValue > current {
-                    nextIdx = min(currentIdx + 1, ladder.count - 1)
-                } else if newValue < current {
-                    nextIdx = max(currentIdx - 1, 0)
-                } else {
-                    nextIdx = currentIdx
-                }
-                let snapped = ladder[nextIdx]
+                let snapped = Self.snappedNextDelayRung(current: current, requested: newValue)
                 if snapped != current {
                     SessionLogger.shared.log("[PARAM] selfPlayDelayMs (manual): \(current) -> \(snapped)")
                 }
@@ -1799,9 +1791,15 @@ struct UpperContentView: View {
         if let trainer {
             let completedTrainSteps = trainer.completedTrainSteps // SyncBox os_unfair_lock read
             elap("after 3.1")
+            // Pass the locally-snapshotted step count so the LR uses the
+            // same observation rather than re-acquiring the SyncBox; the
+            // count and LR in the published snapshot are then guaranteed
+            // consistent (they were previously two independent reads with
+            // a one-step disagreement window).
             let effectiveLR = trainer.effectiveLearningRate(
-                forBatchSize: trainingParams.trainingBatchSize
-            ) // reads SyncBox a 2nd time — also a non-blocking lock read
+                forBatchSize: trainingParams.trainingBatchSize,
+                completedSteps: completedTrainSteps
+            )
             elap("after 3.2")
             let next = TrainerWarmupSnapshot(
                 completedSteps: completedTrainSteps,
