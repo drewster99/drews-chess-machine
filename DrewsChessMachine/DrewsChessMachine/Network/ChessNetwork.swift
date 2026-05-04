@@ -277,6 +277,8 @@ final class ChessNetwork: @unchecked Sendable {
             throw ChessNetworkError.commandQueueCreationFailed
         }
 
+        let infOrTrain = bnMode == .inference ? "inf" : "train"
+        cmdQueue.label = "init - \(infOrTrain)"
         metalDevice = mtlDevice
         commandQueue = cmdQueue
         graphDevice = MPSGraphDevice(mtlDevice: mtlDevice)
@@ -436,11 +438,13 @@ final class ChessNetwork: @unchecked Sendable {
             shape: [1, NSNumber(value: Self.inputPlanes), 8, 8]
         )
         let inputND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
+        inputND.label = "inputND"
         inferenceInputNDArray = inputND
         inferenceInputTensorData = MPSGraphTensorData(inputND)
 
         // Zero-filled dummy input shared by exportWeights / loadWeights.
         let dummyND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
+        dummyND.label = "dummyND"
         Self.writeFloats(
             [Float](repeating: 0, count: 1 * Self.inputPlanes * Self.boardSize * Self.boardSize),
             into: dummyND
@@ -677,6 +681,7 @@ final class ChessNetwork: @unchecked Sendable {
             shape: [NSNumber(value: count), NSNumber(value: Self.inputPlanes), 8, 8]
         )
         let nda = MPSNDArray(device: metalDevice, descriptor: desc)
+        nda.label = "nda"
         let tensorData = MPSGraphTensorData(nda)
         let feeds: [MPSGraphTensor: MPSGraphTensorData] = [inputPlaceholder: tensorData]
         let entry = BatchInputEntry(ndArray: nda, tensorData: tensorData, feeds: feeds)

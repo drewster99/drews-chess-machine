@@ -1,5 +1,6 @@
 import AppKit
 import Charts
+import Metal
 import SwiftUI
 import UniformTypeIdentifiers
 import OSLog
@@ -1600,8 +1601,16 @@ struct UpperContentView: View {
             // single render pass. The body of the tick is hoisted
             // into `processSnapshotTimerTick()` so this closure stays
             // small enough for the type-checker not to choke.
+            //
+            // Capture timestamp at dispatch so the inner closure can
+            // measure how long the main actor took to begin executing
+            // it. A growing gap between dispatch and execution means
+            // the main actor is being starved by other work — the
+            // primary mechanism behind UI stalls during long sessions.
+            let dispatchedAt = CFAbsoluteTimeGetCurrent()
             Task { @MainActor in
-                processSnapshotTimerTick()
+                let enqueueWaitMs = (CFAbsoluteTimeGetCurrent() - dispatchedAt) * 1000
+                processSnapshotTimerTick(mainActorEnqueueWaitMs: enqueueWaitMs)
             }
         }
         .onChange(of: realTraining) { _, newValue in
@@ -1720,12 +1729,48 @@ struct UpperContentView: View {
     }
 
     @MainActor
-    private func processSnapshotTimerTick() {
-        let start = Date()
+    private func processSnapshotTimerTick(mainActorEnqueueWaitMs: Double) {
+        let start = CFAbsoluteTimeGetCurrent()
         __processSnapshotTimerTick()
-        let elapsed = Date().timeIntervalSince(start)
-        print("processSnapshotTimerTicket: \(elapsed)")
+        let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+
+        // Throttled session-log emit so a slow tick (or growing main-
+        // actor wait) is visible in the session log without spamming
+        // it with one line per 100 ms heartbeat. Emits at most once
+        // per `Self.snapshotTickLogIntervalSec` seconds and ALWAYS on
+        // any tick whose tick body or main-actor enqueue wait exceeds
+        // the alarm threshold — those are the events worth seeing
+        // even if a recent throttled emit just landed.
+        let now = Date()
+        let shouldEmitPeriodic = snapshotTickLastLogAt == nil
+            || now.timeIntervalSince(snapshotTickLastLogAt!) >= Self.snapshotTickLogIntervalSec
+        let isAnomalous = elapsedMs >= Self.snapshotTickAlarmMs
+            || mainActorEnqueueWaitMs >= Self.snapshotTickAlarmMs
+        if shouldEmitPeriodic || isAnomalous {
+            let prefix = isAnomalous && !shouldEmitPeriodic ? "[TICK-SLOW]" : "[TICK]"
+            SessionLogger.shared.log(String(
+                format: "%@ tickMs=%.2f mainActorEnqueueWaitMs=%.2f",
+                prefix, elapsedMs, mainActorEnqueueWaitMs
+            ))
+            snapshotTickLastLogAt = now
+        }
     }
+
+    /// Throttling clock for the periodic `[TICK]` emit. Reset every
+    /// time a periodic or anomalous emit fires.
+    @State private var snapshotTickLastLogAt: Date? = nil
+
+    /// Cadence for the periodic snapshot-tick log emit. 30 s gives a
+    /// readable log file at steady state while the anomaly threshold
+    /// (`snapshotTickAlarmMs`) makes sure any genuine stall surfaces
+    /// promptly even between the periodic emits.
+    nonisolated static let snapshotTickLogIntervalSec: TimeInterval = 30
+
+    /// Threshold above which a snapshot-tick wall or its main-actor
+    /// enqueue wait is logged immediately (out-of-band) rather than
+    /// waiting for the next periodic emit. 50 ms is half the
+    /// heartbeat period — anything past that is a meaningful blip.
+    nonisolated static let snapshotTickAlarmMs: Double = 50
     /// Body of the 100 ms heartbeat. Pulls every cross-thread state
     /// box (game, sweep, training, arena, parallel-worker counters,
     /// replay-ratio controller, diversity tracker) into the matching
@@ -1740,11 +1785,20 @@ struct UpperContentView: View {
         // Pull the latest game state into @State at most every 100ms.
         // Cheap (single locked struct copy) and bounds UI work even
         // when the game loop is doing hundreds of moves per second.
-        let start = Date()
+        //
+        // `elap(_:)` is the per-stage trace probe that was used to
+        // attribute a UI stall to a specific block of this tick.
+        // Left as a stub — call sites stay so the next investigation
+        // can re-enable it by uncommenting the body — but disabled by
+        // default so the snapshot tick stays as cheap as possible
+        // (Date() per call + an os_log emit at every site adds up
+        // when we're at 10 Hz and chasing main-actor latency in this
+        // very tick).
         func elap(_ s: String) {
-            let elapsed = Date().timeIntervalSince(start)
-            logger.log(">> \(s): \(elapsed)")
+            // logger.log(">> \(s): \(Date().timeIntervalSince(start))")
         }
+        let start = Date()
+        _ = start
         elap("start")
         gameSnapshot = gameWatcher.snapshot()
         elap("after gameWatcher")
@@ -5200,6 +5254,7 @@ struct UpperContentView: View {
             SessionLogger.shared.log(
                 "[ARENA] validation skipped\(suffix): tournament was cancelled mid-run"
             )
+            emitArenaPostStatsLine(trainingBox: trainingBox, suffix: suffix)
             return
         }
 
@@ -5216,6 +5271,50 @@ struct UpperContentView: View {
             )
             trainingBox?.recordError("Arena validation failed: \(detail)")
         }
+
+        emitArenaPostStatsLine(trainingBox: trainingBox, suffix: suffix)
+    }
+
+    /// One-line stats snapshot taken at the moment an arena ends.
+    /// Captures rolling per-step trainer timing means + RSS + VM
+    /// region count, so a reader scanning the session log can see
+    /// whether each arena boundary corresponds to a step-up in
+    /// per-step `gpu`/`step` time, RSS, or IOAccelerator-tagged
+    /// VM region count. Emitted from every `emitArenaPostRunTelemetry`
+    /// exit path (success, cancel, error) so a slowdown investigation
+    /// has a per-arena trace independent of the 60 s [STATS] cadence.
+    private func emitArenaPostStatsLine(
+        trainingBox: TrainingLiveStatsBox?,
+        suffix: String
+    ) {
+        let trainingSnap = trainingBox?.snapshot()
+        let timingStr: String
+        if let snap = trainingSnap, let stepMs = snap.recentStepMs {
+            timingStr = String(
+                format: "step=%.1f gpu=%.1f prep=%.2f read=%.2f wait=%.2f n=%d",
+                stepMs,
+                snap.recentGpuRunMs ?? 0,
+                snap.recentDataPrepMs ?? 0,
+                snap.recentReadbackMs ?? 0,
+                snap.recentQueueWaitMs ?? 0,
+                snap.recentTimingSamples
+            )
+        } else {
+            timingStr = "n=0"
+        }
+        let rssBytes = DiagSampler.currentResidentBytes()
+        let memStr = String(
+            format: "rss=%.2fGB",
+            Double(rssBytes) / 1024.0 / 1024.0 / 1024.0
+        )
+        let vm = DiagSampler.currentVMRegionCount()
+        let vmStr = String(
+            format: "total=%u ioAccel=%u",
+            vm.total, vm.ioAccelerator
+        )
+        SessionLogger.shared.log(
+            "[STATS-ARENA-END]\(suffix) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr))"
+        )
     }
 
     /// Emit one `[ARENA] timing` line for a single batcher. Wall /
@@ -6357,6 +6456,7 @@ struct UpperContentView: View {
                     let built = try await Task.detached(priority: .userInitiated) {
                         try ChessMPSNetwork(.randomWeights)
                     }.value
+                    built.network.commandQueue.label = "startrealTraining candidate Inference"
                     await MainActor.run {
                         candidateInferenceNetwork = built
                     }
@@ -6376,6 +6476,7 @@ struct UpperContentView: View {
                     let built = try await Task.detached(priority: .userInitiated) {
                         try ChessMPSNetwork(.randomWeights)
                     }.value
+                    built.network.commandQueue.label = "startrealTraining probe Inference"
                     await MainActor.run {
                         probeInferenceNetwork = built
                         probeRunner = ChessRunner(network: built)
@@ -6396,6 +6497,7 @@ struct UpperContentView: View {
                     let built = try await Task.detached(priority: .userInitiated) {
                         try ChessMPSNetwork(.randomWeights)
                     }.value
+                    built.network.commandQueue.label = "startrealTraining arena champion"
                     await MainActor.run {
                         arenaChampionNetwork = built
                     }
@@ -6466,6 +6568,43 @@ struct UpperContentView: View {
                     realTrainingTask = nil
                 }
                 return
+            }
+
+            // Dump every live MTLCommandQueue's (label, address) pair
+            // so subsequent Metal-trace captures can be matched back
+            // to the network they came from. The address printed here
+            // is what Xcode's Metal frame-capture UI shows under
+            // "Command Queues" on the trace selection sheet — pick by
+            // label, then verify by address. Emitted once per session
+            // start; queues persist for the app lifetime so this is
+            // accurate for every later capture in the same launch.
+            do {
+                let candidateQ = await MainActor.run {
+                    candidateInferenceNetwork?.network.commandQueue
+                }
+                let probeQ = await MainActor.run {
+                    probeInferenceNetwork?.network.commandQueue
+                }
+                let arenaChampionQ = await MainActor.run {
+                    arenaChampionNetwork?.network.commandQueue
+                }
+                let championQ = network.network.commandQueue
+                let trainerQ = trainer.network.commandQueue
+                func desc(_ label: String, _ q: MTLCommandQueue?) -> String {
+                    guard let q else { return "\(label)=<not built>" }
+                    // Pointer that matches the address Xcode's Metal
+                    // frame-capture UI shows in the queue selector.
+                    let opaque = Unmanaged.passUnretained(q as AnyObject).toOpaque()
+                    let addr = String(format: "0x%016lx", UInt(bitPattern: opaque))
+                    return "\(label)=\(q.label ?? "<no-label>") @ \(addr)"
+                }
+                SessionLogger.shared.log(
+                    "[QUEUES] champion: \(desc("champion", championQ)); "
+                    + "trainer: \(desc("trainer", trainerQ)); "
+                    + "candidate: \(desc("candidate", candidateQ)); "
+                    + "probe: \(desc("probe", probeQ)); "
+                    + "arenaChampion: \(desc("arenaChampion", arenaChampionQ))"
+                )
             }
 
             // Restore replay buffer before any self-play worker or
@@ -6821,6 +6960,15 @@ struct UpperContentView: View {
                     // runs serially on this task.
                     var pwNormBaseline: Double? = nil
 
+                    // Carried across [STATS] emits so each line can
+                    // report the delta since the previous tick. nil
+                    // until the first sample lands; the very first emit
+                    // shows `drss=+0` etc., which is fine — the deltas
+                    // are only meaningful from the second tick onward.
+                    var prevRssBytes: UInt64 = 0
+                    var prevVmTotal: UInt32 = 0
+                    var prevVmIoAccel: UInt32 = 0
+
                     func logOne(elapsedTarget: TimeInterval, legalMassOverride: ChessTrainer.LegalMassSnapshot?) async {
                         let trainingSnap = box.snapshot()
                         let parallelSnap = pStatsBox.snapshot()
@@ -7089,7 +7237,71 @@ struct UpperContentView: View {
                         } else {
                             bufUniqStr = "--"
                         }
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        // Per-step timing means over the rolling timing
+                        // window. Splits `recentStepMs` into prep/gpu/
+                        // read/queueWait/step so a slowdown can be
+                        // attributed to one component (CPU prep, GPU
+                        // compute, readback marshalling, executor
+                        // queue backlog, or unaccounted overhead).
+                        let timingStr: String
+                        if let stepMs = trainingSnap.recentStepMs {
+                            let prep = trainingSnap.recentDataPrepMs ?? 0
+                            let gpu = trainingSnap.recentGpuRunMs ?? 0
+                            let read = trainingSnap.recentReadbackMs ?? 0
+                            let wait = trainingSnap.recentQueueWaitMs ?? 0
+                            timingStr = String(
+                                format: "step=%.1f gpu=%.1f prep=%.2f read=%.2f wait=%.2f n=%d",
+                                stepMs, gpu, prep, read, wait, trainingSnap.recentTimingSamples
+                            )
+                        } else {
+                            timingStr = "n=0"
+                        }
+
+                        // Process resident memory + delta since previous
+                        // [STATS] tick. The delta lets a reader see
+                        // sustained leak rate (e.g. "+8 MB / minute")
+                        // at a glance rather than having to diff two
+                        // log lines mentally.
+                        let rssBytes = DiagSampler.currentResidentBytes()
+                        let drss: Int64 = prevRssBytes == 0
+                            ? 0
+                            : Int64(rssBytes) - Int64(prevRssBytes)
+                        prevRssBytes = rssBytes
+                        let memStr = String(
+                            format: "rss=%.2fGB drss=%+.1fMB",
+                            Double(rssBytes) / 1024.0 / 1024.0 / 1024.0,
+                            Double(drss) / 1024.0 / 1024.0
+                        )
+
+                        // VM region count + IOAccelerator-tagged
+                        // subset. Cost ~1-3 ms per call; safe at this
+                        // 60 s cadence. Each AGX-mapped GPU buffer
+                        // shows up as one IOAccelerator region, so
+                        // `vmAccel` growing in step with `trMs` is
+                        // direct evidence that the per-`commit` cost
+                        // is climbing in the kernel's residency walk.
+                        let vm = DiagSampler.currentVMRegionCount()
+                        let dvmTotal = prevVmTotal == 0
+                            ? 0
+                            : Int64(vm.total) - Int64(prevVmTotal)
+                        let dvmAccel = prevVmIoAccel == 0
+                            ? 0
+                            : Int64(vm.ioAccelerator) - Int64(prevVmIoAccel)
+                        prevVmTotal = vm.total
+                        prevVmIoAccel = vm.ioAccelerator
+                        let vmStr = String(
+                            format: "total=%u dtotal=%+d ioAccel=%u dioAccel=%+d",
+                            vm.total, dvmTotal, vm.ioAccelerator, dvmAccel
+                        )
+
+                        // Trainer feed-cache size. Stable at 1 means
+                        // the trainer is calling MPSGraph with one
+                        // feed shape (so any pipeline accumulation in
+                        // MPSGraph is not because we're varying our
+                        // inputs).
+                        let shapesStr = "feedCache=\(trainer.feedCacheCount)"
+
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // CLI `--output` capture: one StatsLine per

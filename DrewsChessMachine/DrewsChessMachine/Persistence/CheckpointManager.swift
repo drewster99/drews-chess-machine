@@ -834,6 +834,7 @@ enum CheckpointManager {
         let scratch: ChessMPSNetwork
         do {
             scratch = try ChessMPSNetwork(.randomWeights)
+            scratch.network.commandQueue.label = "verifyModelFile scratch"
         } catch {
             throw CheckpointManagerError.verificationScratchBuildFailed(error)
         }

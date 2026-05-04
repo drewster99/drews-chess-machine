@@ -85,6 +85,7 @@ final class ChessMPSNetwork: @unchecked Sendable {
         switch mode {
         case .randomWeights:
             let net = try ChessNetwork()
+            net.commandQueue.label = "ChessMPSNetwork.net(init)"
             try Self.calibrateBNRunningStats(into: net)
             network = net
 
@@ -151,6 +152,7 @@ final class ChessMPSNetwork: @unchecked Sendable {
         // weight realization (different random seed → different
         // activation distribution → different needed running stats).
         let trainingNet = try ChessNetwork(bnMode: .training)
+        trainingNet.commandQueue.label = "calibrateBNRunningStats trainingNet"
         let boards = warmupBatch()
 
         // Bridge async → sync via a semaphore + a Sendable holder for

@@ -33,6 +33,13 @@ struct TrainStepTiming: Sendable {
     let gpuRunMs: Double
     /// CPU work to read the loss scalars back from the tensor results.
     let readbackMs: Double
+    /// Wall time the public `trainStep(...)` call sat between
+    /// "caller invoked it" and "the work began running on
+    /// `executionQueue`". Captures backlog on the trainer's serial
+    /// dispatch queue. Healthy sessions sit near 0; a growing value
+    /// means something else is dispatching to the same queue and the
+    /// trainer is queueing behind it. Diagnostic only.
+    let queueWaitMs: Double
     /// Total wall-clock time for the whole step.
     let totalMs: Double
     /// Total loss (policy + value) reported by the graph — what SGD minimizes.
@@ -506,6 +513,22 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         /// Rolling-window mean policy loss restricted to loss-outcome
         /// batch positions (z < -0.5).
         let rollingPolicyLossLoss: Double?
+        /// Rolling-window means of `TrainStepTiming` timing fields,
+        /// over the last `rollingTimingWindow` steps. These intentionally
+        /// shadow `TrainingRunStats.avgGpuMs` (which is cumulative across
+        /// the whole session): the rolling values will track per-step
+        /// degradation in real time, while the cumulative mean smears
+        /// any later slowdown into the early-session average. Nil
+        /// before the first step.
+        let recentDataPrepMs: Double?
+        let recentGpuRunMs: Double?
+        let recentReadbackMs: Double?
+        let recentQueueWaitMs: Double?
+        let recentStepMs: Double?
+        /// Number of training-step samples currently in the timing
+        /// rolling window — denominator the reader should mentally
+        /// divide by when interpreting the means above.
+        let recentTimingSamples: Int
         let error: String?
     }
 
@@ -544,6 +567,15 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _advFracSmallWindow: RollingDoubleWindow
     private var _policyLossWinWindow: RollingDoubleWindow
     private var _policyLossLossWindow: RollingDoubleWindow
+    /// Rolling per-step timing windows. Sized independently of
+    /// `rollingWindow` because the right horizon for "is the trainer
+    /// slowing down?" is hundreds of steps, not the much smaller window
+    /// the diagnostic-loss windows use. See `Self.rollingTimingWindow`.
+    private var _dataPrepMsWindow: RollingDoubleWindow
+    private var _gpuRunMsWindow: RollingDoubleWindow
+    private var _readbackMsWindow: RollingDoubleWindow
+    private var _queueWaitMsWindow: RollingDoubleWindow
+    private var _stepMsWindow: RollingDoubleWindow
     /// Ring of raw per-position advantage values across the rolling
     /// window of recent steps. Capped at `advRawRingMaxCapacity`
     /// floats (see the constant for the full rationale). `snapshot()`
@@ -570,6 +602,16 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// advantages; at smaller batches the ring is effectively the
     /// `rollingWindow` * batchSize product anyway.
     private static let advRawRingMaxCapacity: Int = 32_768
+
+    /// Rolling-window length for per-step timing means
+    /// (`recentDataPrepMs`, `recentGpuRunMs`, etc.). 512 steps at
+    /// typical Play-and-Train throughput (~30 steps/min on the M-series
+    /// dev machine) is ~17 minutes of history — long enough to smooth
+    /// out per-step jitter, short enough that a slowdown beginning at
+    /// the most recent arena boundary is visible within one [STATS]
+    /// emit (60 s) rather than being washed out by hours of fast
+    /// early-session steps.
+    static let rollingTimingWindow: Int = 512
 
     init(rollingWindow: Int) {
         precondition(rollingWindow > 0, "Rolling window must be positive")
@@ -598,6 +640,11 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._advFracSmallWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyLossWinWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyLossLossWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._dataPrepMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
+        self._gpuRunMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
+        self._readbackMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
+        self._queueWaitMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
+        self._stepMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
     }
 
     /// Seed the stats with values from a resumed session so the
@@ -669,6 +716,11 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             if let raw = timing.advantageRaw, !raw.isEmpty {
                 self.pushAdvRaw(raw)
             }
+            self._dataPrepMsWindow.append(timing.dataPrepMs)
+            self._gpuRunMsWindow.append(timing.gpuRunMs)
+            self._readbackMsWindow.append(timing.readbackMs)
+            self._queueWaitMsWindow.append(timing.queueWaitMs)
+            self._stepMsWindow.append(timing.totalMs)
         }
     }
 
@@ -746,6 +798,11 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._advFracSmallWindow.removeAll()
             self._policyLossWinWindow.removeAll()
             self._policyLossLossWindow.removeAll()
+            self._dataPrepMsWindow.removeAll()
+            self._gpuRunMsWindow.removeAll()
+            self._readbackMsWindow.removeAll()
+            self._queueWaitMsWindow.removeAll()
+            self._stepMsWindow.removeAll()
             self._advRawRingHead = 0
             self._advRawRingFilled = 0
             // Keep _advRawRing capacity allocated — next push reuses it.
@@ -818,6 +875,12 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 advantageP95: advP95,
                 rollingPolicyLossWin: rollingPLossWin,
                 rollingPolicyLossLoss: rollingPLossLoss,
+                recentDataPrepMs: _dataPrepMsWindow.mean,
+                recentGpuRunMs: _gpuRunMsWindow.mean,
+                recentReadbackMs: _readbackMsWindow.mean,
+                recentQueueWaitMs: _queueWaitMsWindow.mean,
+                recentStepMs: _stepMsWindow.mean,
+                recentTimingSamples: _stepMsWindow.size,
                 error: _error
             )
         }
@@ -1108,6 +1171,15 @@ final class ChessTrainer: @unchecked Sendable {
         let feedsDict: [MPSGraphTensor: MPSGraphTensorData]
     }
     private var feedCache: [Int: BatchFeeds] = [:]
+    /// Mirror of `feedCache.count` updated on every cache mutation so a
+    /// reader on a different queue can observe the size without
+    /// touching the dictionary itself. Exposed via `feedCacheCount`
+    /// for the periodic `[STATS]` line — a stable count of 1 across a
+    /// session means the trainer is calling MPSGraph with one feed
+    /// shape (i.e. shape-variance is not the cause of any pipeline
+    /// re-specialization MPSGraph is doing).
+    private let _feedCacheCount = SyncBox<Int>(0)
+    var feedCacheCount: Int { _feedCacheCount.value }
 
     /// Readback scratch for the per-step scalar outputs (`totalLoss`,
     /// `policyLoss`, `valueLoss`, and the diagnostic `policyEntropy`).
@@ -1201,6 +1273,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         self.lrWarmupSteps = lrWarmupSteps
         let net = try ChessNetwork(bnMode: .training)
+        net.commandQueue.label = "ChessTrainer.net(init)"
         self.network = net
         let built = try Self.buildTrainingOps(network: net)
         self.movePlayedPlaceholder = built.movePlayed
@@ -1243,18 +1316,23 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [1]
         )
         let lrND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        lrND.label = "lrND"
         self.lrNDArray = lrND
         self.lrTensorData = MPSGraphTensorData(lrND)
         let entropyND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        entropyND.label = "entropyND"
         self.entropyCoeffNDArray = entropyND
         self.entropyCoeffTensorData = MPSGraphTensorData(entropyND)
         let weightDecayND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        weightDecayND.label = "weightDecayND"
         self.weightDecayNDArray = weightDecayND
         self.weightDecayTensorData = MPSGraphTensorData(weightDecayND)
         let gradClipND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        gradClipND.label = "gradClipND"
         self.gradClipMaxNormNDArray = gradClipND
         self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipND)
         let policyScaleKND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        policyScaleKND.label = "policyScaleKND"
         self.policyScaleKNDArray = policyScaleKND
         self.policyScaleKTensorData = MPSGraphTensorData(policyScaleKND)
 
@@ -1327,6 +1405,7 @@ final class ChessTrainer: @unchecked Sendable {
 
     private func internalResetNetwork() throws {
         let net = try ChessNetwork(bnMode: .training)
+        net.commandQueue.label = "ChessTrainer.net(reset)"
         self.network = net
         let built = try Self.buildTrainingOps(network: net)
         self.movePlayedPlaceholder = built.movePlayed
@@ -1369,20 +1448,26 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [1]
         )
         self.lrNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.lrNDArray.label = "trainer.scalar.lr (reset)"
         self.lrTensorData = MPSGraphTensorData(lrNDArray)
         self.entropyCoeffNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.entropyCoeffNDArray.label = "trainer.scalar.entropyCoeff (reset)"
         self.entropyCoeffTensorData = MPSGraphTensorData(entropyCoeffNDArray)
         self.weightDecayNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.weightDecayNDArray.label = "trainer.scalar.weightDecay (reset)"
         self.weightDecayTensorData = MPSGraphTensorData(weightDecayNDArray)
         self.gradClipMaxNormNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.gradClipMaxNormNDArray.label = "trainer.scalar.gradClipMaxNorm (reset)"
         self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipMaxNormNDArray)
         self.policyScaleKNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.policyScaleKNDArray.label = "trainer.scalar.policyScaleK (reset)"
         self.policyScaleKTensorData = MPSGraphTensorData(policyScaleKNDArray)
         // The cached ND arrays were allocated against the old network's
         // device and are keyed by batch size against the old graph's
         // placeholders. Drop the cache so the first trainStep after
         // reset rebuilds against the fresh network.
         feedCache.removeAll()
+        _feedCacheCount.value = 0
     }
 
     /// Build the training subgraph (loss + gradients + SGD assigns) on top
@@ -2300,8 +2385,10 @@ final class ChessTrainer: @unchecked Sendable {
     /// internal network is **not** the inference network, so these updates
     /// don't affect Play Game or Forward Pass.
     func trainStep(batchSize: Int) async throws -> TrainStepTiming {
-        try await enqueue {
-            try self.internalTrainStep(batchSize: batchSize)
+        let dispatchedAt = CFAbsoluteTimeGetCurrent()
+        return try await enqueue {
+            let queueWaitMs = (CFAbsoluteTimeGetCurrent() - dispatchedAt) * 1000
+            return try self.internalTrainStep(batchSize: batchSize, queueWaitMs: queueWaitMs)
         }
     }
 
@@ -2351,7 +2438,7 @@ final class ChessTrainer: @unchecked Sendable {
         return lr * warmupMul
     }
 
-    private func internalTrainStep(batchSize: Int) throws -> TrainStepTiming {
+    private func internalTrainStep(batchSize: Int, queueWaitMs: Double = 0) throws -> TrainStepTiming {
         let totalStart = CFAbsoluteTimeGetCurrent()
 
         // --- Data prep: synthesize random boards, moves, outcomes ---
@@ -2422,6 +2509,7 @@ final class ChessTrainer: @unchecked Sendable {
                             return try runPreparedStep(
                                 feeds: feeds,
                                 prepMs: prepMs,
+                                queueWaitMs: queueWaitMs,
                                 totalStart: totalStart
                             )
                         }
@@ -2563,7 +2651,9 @@ final class ChessTrainer: @unchecked Sendable {
         // graph. Same flow as the pre-fresh-baseline implementation,
         // just with vBaselines now containing current-trainer values
         // instead of replay-buffer-frozen values.
-        return try await enqueue { [batchSize, freshValues, freshPolicy, freshBaselineMs, meanAbsDelta] in
+        let dispatchedAtPhase3 = CFAbsoluteTimeGetCurrent()
+        return try await enqueue { [batchSize, freshValues, freshPolicy, freshBaselineMs, meanAbsDelta, dispatchedAtPhase3] in
+            let phase3QueueWaitMs = (CFAbsoluteTimeGetCurrent() - dispatchedAtPhase3) * 1000
             let totalStart = CFAbsoluteTimeGetCurrent()
             let prepStart = CFAbsoluteTimeGetCurrent()
 
@@ -2698,6 +2788,7 @@ final class ChessTrainer: @unchecked Sendable {
             let baseTiming = try self.runPreparedStep(
                 feeds: feeds,
                 prepMs: prepMs,
+                queueWaitMs: phase3QueueWaitMs,
                 totalStart: totalStart
             )
 
@@ -2723,6 +2814,7 @@ final class ChessTrainer: @unchecked Sendable {
                 dataPrepMs: baseTiming.dataPrepMs,
                 gpuRunMs: baseTiming.gpuRunMs,
                 readbackMs: baseTiming.readbackMs,
+                queueWaitMs: baseTiming.queueWaitMs,
                 // Include the fresh-baseline forward-pass time so the
                 // replay-ratio controller (and any downstream throughput
                 // calculation) sees the true wall-clock cost of one
@@ -3208,6 +3300,12 @@ final class ChessTrainer: @unchecked Sendable {
             ]
         )
         let boardND = MPSNDArray(device: mtlDevice, descriptor: boardDesc)
+        // Label every NDArray we hand to MPSGraph so subsequent Metal-
+        // trace captures can identify which buffer is which by name.
+        // Without these, Xcode's trace UI just shows hex addresses
+        // for each `setBuffer:` call, which is unreadable when chasing
+        // "which feed is the source of the late MTLBuffer creation?"
+        boardND.label = "trainer.feed.board[\(batchSize)] (reset)"
         let boardTD = MPSGraphTensorData(boardND)
 
         let moveDesc = MPSNDArrayDescriptor(
@@ -3215,6 +3313,7 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [NSNumber(value: batchSize)]
         )
         let moveND = MPSNDArray(device: mtlDevice, descriptor: moveDesc)
+        moveND.label = "trainer.feed.movePlayed[\(batchSize)] (reset)"
         let moveTD = MPSGraphTensorData(moveND)
 
         let zDesc = MPSNDArrayDescriptor(
@@ -3222,6 +3321,7 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [NSNumber(value: batchSize), 1]
         )
         let zND = MPSNDArray(device: mtlDevice, descriptor: zDesc)
+        zND.label = "trainer.feed.z[\(batchSize)] (reset)"
         let zTD = MPSGraphTensorData(zND)
 
         // vBaseline ND array — same shape as z, one scalar per row.
@@ -3230,6 +3330,7 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [NSNumber(value: batchSize), 1]
         )
         let vBaselineND = MPSNDArray(device: mtlDevice, descriptor: vBaselineDesc)
+        vBaselineND.label = "trainer.feed.vBaseline[\(batchSize)] (reset)"
         let vBaselineTD = MPSGraphTensorData(vBaselineND)
 
         let legalMaskDesc = MPSNDArrayDescriptor(
@@ -3237,6 +3338,7 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [NSNumber(value: batchSize), NSNumber(value: ChessNetwork.policySize)]
         )
         let legalMaskND = MPSNDArray(device: mtlDevice, descriptor: legalMaskDesc)
+        legalMaskND.label = "trainer.feed.legalMask[\(batchSize)] (reset)"
         let legalMaskTD = MPSGraphTensorData(legalMaskND)
 
         // Pre-build the feeds dictionary so `buildFeeds` can return it
@@ -3272,6 +3374,7 @@ final class ChessTrainer: @unchecked Sendable {
             feedsDict: feedsDict
         )
         feedCache[batchSize] = feeds
+        _feedCacheCount.value = feedCache.count
         return feeds
     }
 
@@ -3281,6 +3384,7 @@ final class ChessTrainer: @unchecked Sendable {
     private func runPreparedStep(
         feeds: [MPSGraphTensor: MPSGraphTensorData],
         prepMs: Double,
+        queueWaitMs: Double,
         totalStart: CFAbsoluteTime
     ) throws -> TrainStepTiming {
         // Wrap the graph.run + readback in an autoreleasepool so the
@@ -3517,6 +3621,7 @@ final class ChessTrainer: @unchecked Sendable {
             dataPrepMs: prepMs,
             gpuRunMs: gpuMs,
             readbackMs: readbackMs,
+            queueWaitMs: queueWaitMs,
             totalMs: totalMs,
             loss: totalBufValue,
             policyLoss: policyBufValue,
