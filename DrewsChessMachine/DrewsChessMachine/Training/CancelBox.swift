@@ -37,12 +37,34 @@ final class CancelBox: @unchecked Sendable {
         lock.withLock { $0.progress }
     }
 
+    /// Off-main async getter for `latestProgress`. Lock acquisition
+    /// runs on a global executor so the awaiter is never synchronously
+    /// blocked.
+    func asyncLatestProgress() async -> SweepProgress? {
+        await withCheckedContinuation { (cont: CheckedContinuation<SweepProgress?, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.latestProgress)
+            }
+        }
+    }
+
     func appendRow(_ r: SweepRow) {
         lock.withLock { $0.completedRows.append(r) }
     }
 
     var completedRows: [SweepRow] {
         lock.withLock { $0.completedRows }
+    }
+
+    /// Off-main async getter for `completedRows`. Lock acquisition
+    /// runs on a global executor so the awaiter is never synchronously
+    /// blocked.
+    func asyncCompletedRows() async -> [SweepRow] {
+        await withCheckedContinuation { (cont: CheckedContinuation<[SweepRow], Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.completedRows)
+            }
+        }
     }
 
     /// Update the per-row peak with a new sample. The sweep's worker
@@ -53,6 +75,19 @@ final class CancelBox: @unchecked Sendable {
     func recordPeakSample(_ bytes: UInt64) {
         lock.withLock { state in
             if bytes > state.rowPeakBytes { state.rowPeakBytes = bytes }
+        }
+    }
+
+    /// Off-main async variant of `recordPeakSample(_:)`. Lock acquisition
+    /// runs on a global executor so the awaiter is never synchronously
+    /// blocked. Fire-and-forget semantics from the caller's perspective —
+    /// awaiting only guarantees the update has been applied.
+    func asyncRecordPeakSample(_ bytes: UInt64) async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                self.recordPeakSample(bytes)
+                cont.resume()
+            }
         }
     }
 

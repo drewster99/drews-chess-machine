@@ -809,6 +809,17 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         }
     }
 
+    /// Off-main async variant of `snapshot()`. Lock acquisition runs
+    /// on a global executor so the awaiter (typically the main actor)
+    /// is never synchronously blocked on `lock.withLock`.
+    func asyncSnapshot() async -> Snapshot {
+        await withCheckedContinuation { (cont: CheckedContinuation<Snapshot, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.snapshot())
+            }
+        }
+    }
+
     /// Snapshot all fields atomically for the UI poller.
     func snapshot() -> Snapshot {
         lock.withLock {
@@ -2405,6 +2416,31 @@ final class ChessTrainer: @unchecked Sendable {
         set { _completedTrainSteps.value = max(0, newValue) }
     }
 
+    /// Off-main async getter for `completedTrainSteps`. The lock read
+    /// runs on a global executor so the awaiter (typically the main
+    /// actor) is never synchronously blocked.
+    func asyncCompletedTrainSteps() async -> Int {
+        await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self._completedTrainSteps.value)
+            }
+        }
+    }
+
+    /// Off-main async variant of `effectiveLearningRate(forBatchSize:completedSteps:)`.
+    /// The (potential) lock read runs on a global executor so the
+    /// awaiter is never synchronously blocked.
+    func asyncEffectiveLearningRate(forBatchSize batchSize: Int, completedSteps: Int? = nil) async -> Float {
+        await withCheckedContinuation { (cont: CheckedContinuation<Float, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.effectiveLearningRate(
+                    forBatchSize: batchSize,
+                    completedSteps: completedSteps
+                ))
+            }
+        }
+    }
+
     /// Effective learning rate that the optimizer is currently being
     /// fed, given the active warmup multiplier and (optionally) the
     /// sqrt-batch scaling rule. Mirrors the in-graph math at
@@ -3902,6 +3938,18 @@ final class ChessTrainer: @unchecked Sendable {
     /// than throwing — the caller is sampling on a hot path and a missed
     /// reading is recoverable, while throwing would force exception
     /// handling around every UI tick.
+    /// Off-main async variant of `currentPhysFootprintBytes()`. The
+    /// `task_info` kernel call runs on a global executor so the
+    /// awaiter (typically the main actor) is never synchronously
+    /// blocked.
+    static func asyncCurrentPhysFootprintBytes() async -> UInt64 {
+        await withCheckedContinuation { (cont: CheckedContinuation<UInt64, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: Self.currentPhysFootprintBytes())
+            }
+        }
+    }
+
     static func currentPhysFootprintBytes() -> UInt64 {
         var info = task_vm_info_data_t()
         var count = mach_msg_type_number_t(
@@ -3948,6 +3996,18 @@ final class ChessTrainer: @unchecked Sendable {
         )
         return t
     }()
+
+    /// Off-main async variant of `sampleCurrentProcessUsage()`. Both
+    /// `task_info` kernel calls run on a global executor so the
+    /// awaiter (typically the main actor) is never synchronously
+    /// blocked.
+    static func asyncSampleCurrentProcessUsage() async -> ProcessUsageSample? {
+        await withCheckedContinuation { (cont: CheckedContinuation<ProcessUsageSample?, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: Self.sampleCurrentProcessUsage())
+            }
+        }
+    }
 
     static func sampleCurrentProcessUsage() -> ProcessUsageSample? {
         // CPU time: use TASK_ABSOLUTETIME_INFO, which exposes
@@ -4010,6 +4070,17 @@ final class ChessTrainer: @unchecked Sendable {
             cpuNs: cpuNs,
             gpuNs: power.gpu_energy.task_gpu_utilisation
         )
+    }
+
+    /// Off-main async variant of `deviceMemoryCaps()`. The Metal
+    /// property reads run on a global executor so the awaiter
+    /// (typically the main actor) is never synchronously blocked.
+    func asyncDeviceMemoryCaps() async -> DeviceMemoryCaps {
+        await withCheckedContinuation { (cont: CheckedContinuation<DeviceMemoryCaps, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.deviceMemoryCaps())
+            }
+        }
     }
 
     /// Snapshot the device's memory caps right now. Read once at the start

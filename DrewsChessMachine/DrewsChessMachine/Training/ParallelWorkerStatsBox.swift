@@ -219,6 +219,17 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         let gameLenP95: Int?
     }
 
+    /// Off-main async variant of `snapshot()`. Lock acquisition runs
+    /// on a global executor so the awaiter (typically the main actor)
+    /// is never synchronously blocked on `lock.withLock`.
+    func asyncSnapshot() async -> Snapshot {
+        await withCheckedContinuation { (cont: CheckedContinuation<Snapshot, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.snapshot())
+            }
+        }
+    }
+
     func snapshot() -> Snapshot {
         lock.withLock {
             let now = Date()

@@ -107,6 +107,17 @@ final class GameDiversityTracker: @unchecked Sendable {
     /// drift out of sync with the live window. The pairwise scan is
     /// O(n²) in window size; with n=200 and ~150-ply games it's well
     /// under a millisecond on Apple Silicon.
+    /// Off-main async variant of `snapshot()`. The pairwise scan runs
+    /// on a global executor so the awaiter (typically the main actor)
+    /// is never synchronously blocked on the lock.
+    func asyncSnapshot() async -> Snapshot {
+        await withCheckedContinuation { (cont: CheckedContinuation<Snapshot, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.snapshot())
+            }
+        }
+    }
+
     func snapshot() -> Snapshot {
         lock.withLock {
             guard stored > 0 else {

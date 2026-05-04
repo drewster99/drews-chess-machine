@@ -558,7 +558,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             // cancelPending finds nothing and no-ops; if cancelPending
             // ran first, fireBatch's snapshot of `pending` won't
             // include this entry. No double-resume in either order.
-            Task { [weak self] in
+            Task.detached { [weak self] in
                 await self?.cancelPending(token: token)
             }
         }
@@ -607,7 +607,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         // fire (modulo the cancellation race that lands an empty
         // batch, which we still want to count as a schedule).
         fireReasonCounts[reason, default: 0] += 1
-        Task { [weak self] in
+        Task.detached { [weak self] in
             await self?.fireBatch()
         }
     }
@@ -620,7 +620,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// `maxBatchWaitMs > 0` and only on the 0→1 pending transition.
     private func scheduleBatchWaitTimer(forGeneration generation: Int) {
         let waitNs = UInt64((maxBatchWaitMs * 1_000_000.0).rounded())
-        Task { [weak self] in
+        Task.detached { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: waitNs)
             } catch {

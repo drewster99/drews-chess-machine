@@ -1591,26 +1591,25 @@ struct UpperContentView: View {
             }
         ))
         .onReceive(snapshotTimer) { _ in
-            // Defer every @State mutation driven by the
-            // heartbeat to the next main-actor runloop tick. The
-            // timer publisher fires on the main thread and SwiftUI
-            // flags "update multiple times per frame" warnings (and
-            // measurable hangs) when onReceive synchronously pushes
-            // several dozen state-change notifications inline. A
-            // `Task { @MainActor in }` wrap coalesces the work into a
-            // single render pass. The body of the tick is hoisted
-            // into `processSnapshotTimerTick()` so this closure stays
-            // small enough for the type-checker not to choke.
+            // Defer every @State mutation driven by the heartbeat
+            // to a fresh main-actor runloop tick. The timer publisher
+            // fires on the main thread, and SwiftUI flags "update
+            // multiple times per frame" warnings (and measurable
+            // hangs) when onReceive synchronously pushes several
+            // dozen state-change notifications inline. The Task wrap
+            // coalesces the work into a single render pass. Detached
+            // so the surrounding SwiftUI tick context isn't inherited
+            // (priority, task locals); the awaited call hops onto
+            // the main actor where the tick body actually runs.
             //
-            // Capture timestamp at dispatch so the inner closure can
+            // Capture timestamp at dispatch so the tick body can
             // measure how long the main actor took to begin executing
             // it. A growing gap between dispatch and execution means
             // the main actor is being starved by other work — the
             // primary mechanism behind UI stalls during long sessions.
             let dispatchedAt = CFAbsoluteTimeGetCurrent()
-            Task { @MainActor in
-                let enqueueWaitMs = (CFAbsoluteTimeGetCurrent() - dispatchedAt) * 1000
-                processSnapshotTimerTick(mainActorEnqueueWaitMs: enqueueWaitMs)
+            Task.detached {
+                await processSnapshotTimerTick(dispatchedAt: dispatchedAt)
             }
         }
         .onChange(of: realTraining) { _, newValue in
@@ -1728,10 +1727,10 @@ struct UpperContentView: View {
         }
     }
 
-    @MainActor
-    private func processSnapshotTimerTick(mainActorEnqueueWaitMs: Double) {
+    private func processSnapshotTimerTick(dispatchedAt: CFAbsoluteTime) async {
+        let mainActorEnqueueWaitMs = (CFAbsoluteTimeGetCurrent() - dispatchedAt) * 1000
         let start = CFAbsoluteTimeGetCurrent()
-        __processSnapshotTimerTick()
+        await __processSnapshotTimerTick()
         let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
 
         // Throttled session-log emit so a slow tick (or growing main-
@@ -1780,8 +1779,7 @@ struct UpperContentView: View {
     /// type-check stays cheap — the closure used to be ~140 lines and
     /// dragged the whole modifier chain past the
     /// `-warn-long-expression-type-checking` budget.
-    @MainActor
-    private func __processSnapshotTimerTick() {
+    private func __processSnapshotTimerTick() async {
         // Pull the latest game state into @State at most every 100ms.
         // Cheap (single locked struct copy) and bounds UI work even
         // when the game loop is doing hundreds of moves per second.
@@ -1800,18 +1798,19 @@ struct UpperContentView: View {
         let start = Date()
         _ = start
         elap("start")
-        gameSnapshot = gameWatcher.snapshot()
+        gameSnapshot = await gameWatcher.asyncSnapshot()
         elap("after gameWatcher")
         // Same heartbeat pulls the sweep's worker-thread progress and
         // any newly-completed rows into @State so the table grows live.
         if sweepRunning, let box = sweepCancelBox {
-            sweepProgress = box.latestProgress
+            sweepProgress = await box.asyncLatestProgress()
             // Sample process resident memory and feed it into the
             // sweep's per-row peak. The trainer also samples at row
             // boundaries — we just contribute extra samples while a
             // row is in flight so we don't miss mid-step spikes.
-            box.recordPeakSample(ChessTrainer.currentPhysFootprintBytes())
-            let rows = box.completedRows
+            let phys = await ChessTrainer.asyncCurrentPhysFootprintBytes()
+            await box.asyncRecordPeakSample(phys)
+            let rows = await box.asyncCompletedRows()
             if rows.count != sweepResults.count {
                 sweepResults = rows
             }
@@ -1824,7 +1823,7 @@ struct UpperContentView: View {
         // useless redraw — and an idle box (after Stop or before
         // first step) stays silent.
         if let box = trainingBox {
-            let snap = box.snapshot()
+            let snap = await box.asyncSnapshot()
             if snap.stats.steps != (trainingStats?.steps ?? -1) {
                 trainingStats = snap.stats
                 lastTrainStep = snap.lastTiming
@@ -1843,14 +1842,14 @@ struct UpperContentView: View {
         // trainer yields nil so the Idle chip path doesn't accidentally
         // surface stale warmup numbers from a prior session.
         if let trainer {
-            let completedTrainSteps = trainer.completedTrainSteps // SyncBox os_unfair_lock read
+            let completedTrainSteps = await trainer.asyncCompletedTrainSteps()
             elap("after 3.1")
             // Pass the locally-snapshotted step count so the LR uses the
             // same observation rather than re-acquiring the SyncBox; the
             // count and LR in the published snapshot are then guaranteed
             // consistent (they were previously two independent reads with
             // a one-step disagreement window).
-            let effectiveLR = trainer.effectiveLearningRate(
+            let effectiveLR = await trainer.asyncEffectiveLearningRate(
                 forBatchSize: trainingParams.trainingBatchSize,
                 completedSteps: completedTrainSteps
             )
@@ -1871,7 +1870,7 @@ struct UpperContentView: View {
         // between non-running and running), so no redundant view
         // invalidations between tournament games.
         if let tBox = tournamentBox {
-            let snap = tBox.snapshot()
+            let snap = await tBox.asyncSnapshot()
             if snap?.currentGame != tournamentProgress?.currentGame
                 || (snap == nil) != (tournamentProgress == nil) {
                 tournamentProgress = snap
@@ -1887,7 +1886,7 @@ struct UpperContentView: View {
         // events; if either has changed (or the rolling-window count
         // has shifted because an entry aged out), push a new snapshot.
         if let pBox = parallelWorkerStatsBox {
-            let snap = pBox.snapshot()
+            let snap = await pBox.asyncSnapshot()
             let prev = parallelStats
             // `sessionStart` is included in the dirty check so the
             // one-time shift performed by `markWorkersStarted()` lands
@@ -1905,24 +1904,24 @@ struct UpperContentView: View {
         // Memory stats refresh. Throttled internally to
         // `memoryStatsRefreshSec` so this is a cheap timestamp compare
         // on most heartbeats.
-        refreshMemoryStatsIfNeeded()
+        await refreshMemoryStatsIfNeeded()
         elap("after 7")
         // Process %CPU / %GPU refresh — separate (5 s) cadence from
         // memory stats (10 s) so the utilisation line updates twice as
         // often without dragging the heavier Metal property reads
         // along with it.
-        refreshUsagePercentsIfNeeded()
+        await refreshUsagePercentsIfNeeded()
         elap("after 8")
         // Progress-rate chart sampler. 1 Hz during Play and Train;
         // each sample carries the moves/hr averaged over the last 3
         // minutes of work. No-op outside of realTraining.
-        refreshProgressRateIfNeeded()
+        await refreshProgressRateIfNeeded()
         elap("after 9")
         // Replay-ratio snapshot for the UI. Persist the auto-computed
         // delay so the next session starts from where the adjuster
         // left off.
         if let rc = replayRatioController {
-            let snap = rc.snapshot()
+            let snap = await rc.asyncSnapshot()
             replayRatioSnapshot = snap
             if snap.autoAdjust {
                 lastAutoComputedDelayMs = snap.computedDelayMs
@@ -1952,7 +1951,7 @@ struct UpperContentView: View {
         // currently empty) so SwiftUI doesn't invalidate the chart
         // every tick for a stable reading.
         if let tracker = selfPlayDiversityTracker {
-            let divSnap = tracker.snapshot()
+            let divSnap = await tracker.asyncSnapshot()
             let labels = GameDiversityTracker.histogramLabels
             var newBars: [DiversityHistogramBar] = []
             newBars.reserveCapacity(divSnap.divergenceHistogram.count)
@@ -2061,13 +2060,18 @@ struct UpperContentView: View {
     /// from the 10 Hz heartbeat. The actual sampling reads
     /// `task_info` and a couple of `MTLDevice` properties via
     /// the trainer's existing helpers.
-    private func refreshMemoryStatsIfNeeded() {
+    private func refreshMemoryStatsIfNeeded() async {
         let now = Date()
         if now.timeIntervalSince(memoryStatsLastFetch) < Self.memoryStatsRefreshSec {
             return
         }
-        let app = ChessTrainer.currentPhysFootprintBytes()
-        let caps = trainer?.deviceMemoryCaps()
+        let app = await ChessTrainer.asyncCurrentPhysFootprintBytes()
+        let caps: DeviceMemoryCaps?
+        if let trainer {
+            caps = await trainer.asyncDeviceMemoryCaps()
+        } else {
+            caps = nil
+        }
         memoryStatsSnap = MemoryStatsSnapshot(
             appFootprintBytes: app,
             gpuAllocatedBytes: caps?.currentAllocated ?? 0,
@@ -2100,7 +2104,7 @@ struct UpperContentView: View {
     /// with rolling loss, entropy, ratio, and non-neg count.
     /// Append a training chart sample. Called from inside
     /// `refreshProgressRateIfNeeded` at the same 1Hz cadence.
-    private func refreshTrainingChartIfNeeded() {
+    private func refreshTrainingChartIfNeeded() async {
         let now = Date()
         // Use the parallel-worker stats box's `sessionStart` (fresh
         // `Date()` at Play-and-Train start, including after a resume)
@@ -2115,7 +2119,12 @@ struct UpperContentView: View {
         // outside the visible window on resumed sessions.
         let sessionStart = parallelStats?.sessionStart ?? currentSessionStart ?? now
         let elapsed = max(0, now.timeIntervalSince(sessionStart))
-        let trainingSnap = trainingBox?.snapshot()
+        let trainingSnap: TrainingLiveStatsBox.Snapshot?
+        if let trainingBox {
+            trainingSnap = await trainingBox.asyncSnapshot()
+        } else {
+            trainingSnap = nil
+        }
         let ratioSnap = replayRatioSnapshot
 
         let appMemMB = memoryStatsSnap.map { Double($0.appFootprintBytes) / (1024 * 1024) }
@@ -2328,7 +2337,7 @@ struct UpperContentView: View {
         }
     }
 
-    private func refreshProgressRateIfNeeded() {
+    private func refreshProgressRateIfNeeded() async {
         guard realTraining else { return }
         let now = Date()
         if now.timeIntervalSince(chartCoordinator.progressRateLastFetch) < Self.progressRateRefreshSec {
@@ -2396,7 +2405,7 @@ struct UpperContentView: View {
         // auto-follow scroll-position adjustment in one shot.
         chartCoordinator.appendProgressRate(sample)
         // Append a training chart sample at the same 1Hz cadence.
-        refreshTrainingChartIfNeeded()
+        await refreshTrainingChartIfNeeded()
     }
 
     /// Format a number of elapsed seconds for the Progress rate
@@ -2437,13 +2446,13 @@ struct UpperContentView: View {
     /// while — the previous sample is discarded rather than used,
     /// because an interval much larger than the polling window is
     /// usually not what the user wants averaged over.
-    private func refreshUsagePercentsIfNeeded() {
+    private func refreshUsagePercentsIfNeeded() async {
         let now = Date()
         if now.timeIntervalSince(usageStatsLastFetch) < Self.usageStatsRefreshSec {
             return
         }
         usageStatsLastFetch = now
-        guard let sample = ChessTrainer.sampleCurrentProcessUsage() else {
+        guard let sample = await ChessTrainer.asyncSampleCurrentProcessUsage() else {
             return
         }
         if let prev = lastUsageSample {
@@ -2588,7 +2597,6 @@ struct UpperContentView: View {
     /// enough for the user to glance up and confirm the save
     /// actually landed — versus 6 s for progress lines and 12 s
     /// for errors.
-    @MainActor
     private func setCheckpointStatus(_ message: String, kind: CheckpointStatusKind) {
         checkpointStatusMessage = message
         checkpointStatusKind = kind
@@ -2615,7 +2623,7 @@ struct UpperContentView: View {
         case .success: lifetimeSeconds = 20
         case .error: lifetimeSeconds = 12
         }
-        Task {
+        Task { @MainActor in
             try? await Task.sleep(for: .seconds(lifetimeSeconds))
             if checkpointStatusMessage == snapshotMessage {
                 checkpointStatusMessage = nil

@@ -16,6 +16,17 @@ final class TournamentLiveBox: @unchecked Sendable {
         _progress.value
     }
 
+    /// Off-main async variant of `snapshot()`. Lock acquisition runs
+    /// on a global executor so the awaiter is never synchronously
+    /// blocked on `_progress.value`.
+    func asyncSnapshot() async -> TournamentProgress? {
+        await withCheckedContinuation { (cont: CheckedContinuation<TournamentProgress?, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.snapshot())
+            }
+        }
+    }
+
     func clear() {
         _progress.value = nil
     }

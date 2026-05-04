@@ -62,7 +62,7 @@ final class EarlyStopCoordinator {
             // DispatchSource handlers on `.main` ARE on the main run
             // loop, but Swift concurrency doesn't know that — wrap in
             // a Task @MainActor to satisfy isolation.
-            Task { @MainActor in
+            Task.detached { @MainActor in
                 EarlyStopCoordinator.shared.requestEarlyStop(reason: .sigusr1Requested)
             }
         }
@@ -71,7 +71,7 @@ final class EarlyStopCoordinator {
 
         let hup = DispatchSource.makeSignalSource(signal: SIGHUP, queue: .main)
         hup.setEventHandler {
-            Task { @MainActor in
+            Task.detached { @MainActor in
                 EarlyStopCoordinator.shared.requestEarlyStop(reason: .sighupReceived)
             }
         }

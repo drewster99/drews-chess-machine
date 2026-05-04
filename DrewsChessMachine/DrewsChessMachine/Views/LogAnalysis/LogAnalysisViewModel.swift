@@ -51,7 +51,7 @@ final class LogAnalysisViewModel: ObservableObject {
         claudeResponse = ""
         let capturedPath = logPath
         let capturedClaude = claudePath
-        analysisTask = Task { [weak self] in
+        analysisTask = Task.detached { [weak self] in
             await self?.runAnalysis(
                 logPath: capturedPath,
                 claudePath: capturedClaude

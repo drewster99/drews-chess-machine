@@ -53,6 +53,19 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         lock.withLock { $0 }
     }
 
+    /// Off-main async variant of `snapshot()`. Lock acquisition runs on
+    /// a global executor so the awaiter (typically the main actor) is
+    /// never synchronously blocked on `lock.withLock`. The continuation
+    /// is checked rather than unsafe so a buggy refactor surfaces a
+    /// runtime warning instead of a silent hang.
+    func asyncSnapshot() async -> Snapshot {
+        await withCheckedContinuation { (cont: CheckedContinuation<Snapshot, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.snapshot())
+            }
+        }
+    }
+
     func resetCurrentGame() {
         lock.withLock { s in
             s.state = .starting

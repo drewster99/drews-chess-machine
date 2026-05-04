@@ -529,6 +529,17 @@ final class ReplayRatioController: @unchecked Sendable {
         let workerCount: Int
     }
 
+    /// Off-main async variant of `snapshot()`. Lock acquisition runs
+    /// on a global executor so the awaiter (typically the main actor)
+    /// is never synchronously blocked on `lock.withLock`.
+    func asyncSnapshot() async -> RatioSnapshot {
+        await withCheckedContinuation { (cont: CheckedContinuation<RatioSnapshot, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.snapshot())
+            }
+        }
+    }
+
     func snapshot() -> RatioSnapshot {
         lock.withLock {
             // Production / consumption rates use the 60-s rolling
