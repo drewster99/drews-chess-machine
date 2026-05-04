@@ -301,12 +301,10 @@ extension GameWatcher.Snapshot {
     }
 
     static func formatHMS(seconds: Double) -> String {
-        let totalTenths = Int((seconds * 10).rounded())
-        let tenths = totalTenths % 10
-        let totalSeconds = totalTenths / 10
+        let totalSeconds = Int(seconds.rounded(.down))
         let h = totalSeconds / 3600
         let m = (totalSeconds % 3600) / 60
         let s = totalSeconds % 60
-        return String(format: "%02d:%02d:%02d.%d", h, m, s, tenths)
+        return String(format: "%02d:%02d:%02d", h, m, s)
     }
 }
