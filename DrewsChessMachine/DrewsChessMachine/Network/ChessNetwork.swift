@@ -628,7 +628,7 @@ final class ChessNetwork: @unchecked Sendable {
         let valuePtr = ensureBatchValueScratch(count: count)
 
         // Same autoreleasepool discipline as `evaluate(board:)` — the
-        // self-play batched path is the highest-frequency graph.run
+        // self-play batched  path is the highest-frequency graph.run
         // site in the app (roughly once per barrier cycle at ~20-40
         // Hz across concurrent slots), so a missed pool drain here
         // dominates the long-session VM bloat.

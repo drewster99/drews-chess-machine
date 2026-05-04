@@ -1419,6 +1419,20 @@ struct UpperContentView: View {
                 }
             )
 
+            // Always-visible Concurrency control. The Stepper used to
+            // live inside `SelfPlayStatsColumn`, but that column is
+            // hidden whenever `isCandidateTestActive` is true (forced
+            // on for `selfPlayWorkers > 1`), making the only knob for
+            // adjusting worker count unreachable in the common case.
+            // Pulled out into a top row so it's always available
+            // during real training regardless of board mode.
+            if realTraining {
+                ConcurrencyStepperRow(
+                    trainingParams: trainingParams,
+                    maxWorkers: Self.absoluteMaxSelfPlayWorkers
+                )
+            }
+
             // Board + text side by side
             HStack(alignment: .top, spacing: 24) {
                 BoardSideView(
@@ -9291,8 +9305,6 @@ extension UpperContentView {
             fallbackText: gameSnapshot.statsText(
                 continuousPlay: continuousPlay || realTraining
             ),
-            trainingParams: trainingParams,
-            maxWorkers: Self.absoluteMaxSelfPlayWorkers,
             colorize: { colorizedPanelBody($0) }
         )
     }
