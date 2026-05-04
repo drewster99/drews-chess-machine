@@ -32,6 +32,15 @@ struct ContentView: View {
     /// so the user can hide the pane during training to reclaim
     /// vertical space without stopping data capture.
     let showTrainingGraphs: Bool
+    /// View > Collect Chart Data preference, forwarded from
+    /// `DrewsChessMachineApp`'s `@AppStorage`. When `false`, the
+    /// coordinator drops every per-tick sample on the floor and the
+    /// underlying ring buffers stay at zero element storage —
+    /// intended for clean perf-isolation runs where chart bookkeeping
+    /// must not perturb the training hot path. Also force-hides the
+    /// lower pane regardless of `showTrainingGraphs`, since rendering
+    /// an empty axis with no data is just visual noise.
+    let chartCollectionEnabled: Bool
 
     /// Single source of truth for chart-layer state. Held here
     /// (rather than on `UpperContentView`) so it can be passed to
@@ -61,11 +70,33 @@ struct ContentView: View {
                     chartCoordinator: chartCoordinator
                 )
             }
-            .opacity((showTrainingGraphs && chartCoordinator.isActive) ? 1.0 : 0.0)
-            .frame(height: !showTrainingGraphs ? 0 : (chartCoordinator.isActive ? nil : 250))
+            .opacity((effectiveShowTrainingGraphs && chartCoordinator.isActive) ? 1.0 : 0.0)
+            .frame(height: !effectiveShowTrainingGraphs ? 0 : (chartCoordinator.isActive ? nil : 250))
             Spacer()
-                .frame(maxHeight: (showTrainingGraphs && chartCoordinator.isActive) ? nil : 0)
+                .frame(maxHeight: (effectiveShowTrainingGraphs && chartCoordinator.isActive) ? nil : 0)
         }
+        .onAppear {
+            // Bootstrap the coordinator's gate from the @AppStorage
+            // value at first appearance — the coordinator's init also
+            // reads UserDefaults directly, but mirroring here keeps
+            // the two sources of truth aligned even on the first frame.
+            chartCoordinator.collectionEnabled = chartCollectionEnabled
+        }
+        .onChange(of: chartCollectionEnabled) { _, newValue in
+            // Live-tunable: flipping off mid-run stops new appends
+            // immediately; flipping on resumes from the next tick.
+            // Existing samples in the rings (if any) are left alone
+            // so a brief perf-isolation toggle doesn't lose history.
+            chartCoordinator.collectionEnabled = newValue
+        }
+    }
+
+    /// `showTrainingGraphs` AND-ed with `chartCollectionEnabled`:
+    /// rendering the lower pane with no data flowing into it is just
+    /// noise, so a disabled-collection state implies a hidden pane
+    /// regardless of the user's Show Training Graphs preference.
+    private var effectiveShowTrainingGraphs: Bool {
+        showTrainingGraphs && chartCollectionEnabled
     }
 }
 
@@ -75,6 +106,7 @@ struct ContentView: View {
         autoTrainOnLaunch: false,
         cliConfig: nil,
         cliOutputURL: nil,
-        showTrainingGraphs: true
+        showTrainingGraphs: true,
+        chartCollectionEnabled: true
     )
 }

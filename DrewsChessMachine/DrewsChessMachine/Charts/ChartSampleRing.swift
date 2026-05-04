@@ -42,21 +42,26 @@ final class ChartSampleRing<Element> {
     private(set) var count: Int = 0
 
     /// Backing storage. `blocks[i]` holds the elements at linear
-    /// indices `[i * blockSize, (i+1) * blockSize)`. Always
-    /// non-empty after `init`. `blocks[0]`'s reserved capacity is
-    /// retained across `reset()` calls.
+    /// indices `[i * blockSize, (i+1) * blockSize)`. Empty after
+    /// `init` — the first block is reserved lazily on the first
+    /// `append`, so a ring that's never written to (e.g. the user
+    /// has chart collection turned off) holds zero element storage.
+    /// `blocks[0]`'s reserved capacity is retained across `reset()`
+    /// calls once it exists.
     private var blocks: [[Element]] = []
 
-    init() {
-        var first: [Element] = []
-        first.reserveCapacity(Self.blockSize)
-        blocks.append(first)
-    }
+    init() {}
 
     /// Append a single element. O(1) amortized. Never reallocates an
     /// existing block; allocates a fresh block (with the full
-    /// `blockSize` reserved capacity) when the current block fills.
+    /// `blockSize` reserved capacity) when the current block fills,
+    /// or on the very first append when no block exists yet.
     func append(_ element: Element) {
+        if blocks.isEmpty {
+            var first: [Element] = []
+            first.reserveCapacity(Self.blockSize)
+            blocks.append(first)
+        }
         var lastIdx = blocks.count - 1
         if blocks[lastIdx].count >= Self.blockSize {
             var fresh: [Element] = []
@@ -95,13 +100,15 @@ final class ChartSampleRing<Element> {
 
     /// Drop every appended element. Retains the first block's
     /// reserved capacity so the next session reuses the existing
-    /// allocation; releases all subsequent blocks.
+    /// allocation; releases all subsequent blocks. No-op (and no
+    /// allocation) when the ring was never written to.
     func reset() {
+        count = 0
+        if blocks.isEmpty { return }
         if blocks.count > 1 {
             blocks.removeLast(blocks.count - 1)
         }
         blocks[0].removeAll(keepingCapacity: true)
-        count = 0
     }
 
     /// Binary-search the smallest index `i` whose

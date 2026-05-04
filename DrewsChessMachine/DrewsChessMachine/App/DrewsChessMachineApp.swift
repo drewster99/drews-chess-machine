@@ -22,6 +22,15 @@ struct DrewsChessMachineApp: App {
     /// vertical space without stopping data capture.
     @AppStorage("showTrainingGraphs") private var showTrainingGraphs: Bool = true
 
+    /// View > Collect Chart Data preference. Persisted across launches
+    /// via UserDefaults. When `false`, every chart-collection entry
+    /// point on `ChartCoordinator` becomes a no-op AND the underlying
+    /// ring buffers stay at zero element storage (lazy first-block
+    /// allocation in `ChartSampleRing`). Intended for clean perf-
+    /// isolation runs where chart bookkeeping must not perturb the
+    /// training hot path.
+    @AppStorage("chartCollectionEnabled") private var chartCollectionEnabled: Bool = true
+
     /// True iff the process was launched with `--train` on the
     /// command line. When set, `ContentView` skips the Resume-from-
     /// Autosave sheet on first appearance and instead chains
@@ -248,6 +257,14 @@ struct DrewsChessMachineApp: App {
         if autoTrainOnLaunch {
             SessionLogger.shared.log("[APP] --train flag detected; will build fresh network and start Play-and-Train on first appear")
         }
+        // Reflect the chart-collection gate at launch so a perf
+        // isolation run is unambiguously identifiable in the session
+        // log. Reads UserDefaults directly here (the @AppStorage on
+        // `self` isn't usable from `init`).
+        let chartsEnabledAtLaunch = UserDefaults.standard.object(forKey: "chartCollectionEnabled") as? Bool ?? true
+        if !chartsEnabledAtLaunch {
+            SessionLogger.shared.log("[APP] chart data collection: DISABLED (View > Collect Chart Data)")
+        }
         if let override = trainingTimeLimitCliOverride {
             SessionLogger.shared.log("[APP] --training-time-limit=\(override)s (overrides any value in --parameters)")
         }
@@ -272,7 +289,8 @@ struct DrewsChessMachineApp: App {
                 autoTrainOnLaunch: autoTrainOnLaunch,
                 cliConfig: cliConfig,
                 cliOutputURL: cliOutputURL,
-                showTrainingGraphs: showTrainingGraphs
+                showTrainingGraphs: showTrainingGraphs,
+                chartCollectionEnabled: chartCollectionEnabled
             )
         }
         .commands {
@@ -344,6 +362,7 @@ struct DrewsChessMachineApp: App {
             CommandGroup(after: .sidebar) {
                 Divider()
                 Toggle("Show Training Graphs", isOn: $showTrainingGraphs)
+                Toggle("Collect Chart Data", isOn: $chartCollectionEnabled)
                 Divider()
                 Button("Zoom In Charts") { commandHub.chartZoomIn() }
                     .keyboardShortcut("=", modifiers: .command)

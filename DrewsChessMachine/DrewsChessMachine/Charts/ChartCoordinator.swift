@@ -103,6 +103,25 @@ final class ChartCoordinator {
     /// as the second child of its root `VStack`.
     var isActive: Bool = false
 
+    // MARK: - Hard-disable switch
+
+    /// When `false`, every collection entry point on this coordinator
+    /// (`appendProgressRate`, `appendTrainingChart`, the arena hooks,
+    /// the diversity-bar latch) becomes a no-op and the underlying
+    /// ring buffers stay empty (and, thanks to lazy block allocation
+    /// in `ChartSampleRing`, hold zero element storage). Backed by
+    /// the `chartCollectionEnabled` UserDefaults key, written from
+    /// the View > Collect Chart Data menu toggle. Bootstrapped from
+    /// UserDefaults at init so the first `appendTrainingChart` call
+    /// — which can fire before any SwiftUI `.onChange` from
+    /// `@AppStorage` propagates — already sees the user's choice.
+    /// Reactive thereafter: ContentView mirrors the @AppStorage
+    /// value into this property via `.onChange`, so a mid-run flip
+    /// stops/resumes data capture immediately.
+    var collectionEnabled: Bool = (
+        UserDefaults.standard.object(forKey: "chartCollectionEnabled") as? Bool ?? true
+    )
+
     // MARK: - Constants
 
     nonisolated static let chartZoomAutoReengageSec: TimeInterval = 3600
@@ -118,6 +137,7 @@ final class ChartCoordinator {
     /// is called immediately after on the same heartbeat tick and
     /// triggers the recompute.
     func appendProgressRate(_ sample: ProgressRateSample) {
+        guard collectionEnabled else { return }
         progressRateRing.append(sample)
         progressRateNextId += 1
         progressRateLastFetch = sample.timestamp
@@ -132,6 +152,7 @@ final class ChartCoordinator {
     /// will diff against, and recompute the decimated frame so the
     /// chart picks up the new sample on this same tick.
     func appendTrainingChart(_ sample: TrainingChartSample, totalGpuMs: Double) {
+        guard collectionEnabled else { return }
         trainingRing.append(sample)
         trainingChartNextId += 1
         prevChartTotalGpuMs = totalGpuMs
@@ -205,12 +226,14 @@ final class ChartCoordinator {
     /// Called when an arena tournament starts. Drives the live
     /// blue band on the arena-activity chart.
     func recordArenaStarted(elapsedSec: Double) {
+        guard collectionEnabled else { return }
         activeArenaStartElapsed = max(0, elapsedSec)
     }
 
     /// Called when an arena tournament finishes. Clears the live
     /// band marker and appends a completed-arena bar to the chart.
     func recordArenaCompleted(_ event: ArenaChartEvent) {
+        guard collectionEnabled else { return }
         arenaChartEvents.append(event)
         activeArenaStartElapsed = nil
     }
@@ -218,6 +241,7 @@ final class ChartCoordinator {
     /// Cancel an in-progress live band without recording a
     /// completion (e.g. arena task cancelled mid-run).
     func cancelActiveArena() {
+        guard collectionEnabled else { return }
         activeArenaStartElapsed = nil
     }
 
@@ -226,6 +250,7 @@ final class ChartCoordinator {
     /// changed before calling so SwiftUI doesn't invalidate on a
     /// stable reading.
     func setDiversityHistogramBars(_ bars: [DiversityHistogramBar]) {
+        guard collectionEnabled else { return }
         currentDiversityHistogramBars = bars
     }
 
