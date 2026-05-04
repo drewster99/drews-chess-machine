@@ -7787,6 +7787,12 @@ struct UpperContentView: View {
                     value: trainingRateStatusValue
                 )
                 StatusBarCell(
+                    label: "Legal mass",
+                    value: realLastLegalMassSnapshot.map {
+                        String(format: "%.4f%%", Double($0.legalMass) * 100)
+                    } ?? "--"
+                )
+                StatusBarCell(
                     label: "Runs",
                     value: "\(cumulativeRunCount)"
                 )
