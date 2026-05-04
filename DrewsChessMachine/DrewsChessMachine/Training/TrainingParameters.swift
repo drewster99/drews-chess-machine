@@ -343,6 +343,16 @@ public enum SelfPlayWorkers: TrainingParameterKey {}
 public enum TrainingStepDelayMs: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Self-Play Delay (ms)",
+    description: "Per-game-per-worker delay between self-play games in milliseconds. Used only when replay-ratio auto-adjust is OFF; auto-adjust on lets the controller manage it.",
+    default: 0,
+    range: 0...10000,
+    category: "Training Window",
+    liveTunable: true
+)
+public enum SelfPlayDelayMs: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Training Batch Size",
     description: "SGD minibatch size. Couples with learning_rate (scaled via sqrt_batch_scaling_lr) and weight_decay.",
     default: 4096,
@@ -509,6 +519,7 @@ public extension TrainingParametersSnapshot {
     var replayRatioAutoAdjust: Bool { value(for: ReplayRatioAutoAdjust.self) }
     var selfPlayWorkers: Int { value(for: SelfPlayWorkers.self) }
     var trainingStepDelayMs: Int { value(for: TrainingStepDelayMs.self) }
+    var selfPlayDelayMs: Int { value(for: SelfPlayDelayMs.self) }
     var trainingBatchSize: Int { value(for: TrainingBatchSize.self) }
     var replayBufferCapacity: Int { value(for: ReplayBufferCapacity.self) }
     var replayBufferMinPositionsBeforeTraining: Int { value(for: ReplayBufferMinPositionsBeforeTraining.self) }
@@ -550,6 +561,7 @@ public final class TrainingParameters {
     public var replayRatioAutoAdjust: Bool { didSet { Self.persist(ReplayRatioAutoAdjust.self, value: replayRatioAutoAdjust) } }
     public var selfPlayWorkers: Int { didSet { Self.persist(SelfPlayWorkers.self, value: selfPlayWorkers) } }
     public var trainingStepDelayMs: Int { didSet { Self.persist(TrainingStepDelayMs.self, value: trainingStepDelayMs) } }
+    public var selfPlayDelayMs: Int { didSet { Self.persist(SelfPlayDelayMs.self, value: selfPlayDelayMs) } }
     public var trainingBatchSize: Int { didSet { Self.persist(TrainingBatchSize.self, value: trainingBatchSize) } }
     public var replayBufferCapacity: Int { didSet { Self.persist(ReplayBufferCapacity.self, value: replayBufferCapacity) } }
     public var replayBufferMinPositionsBeforeTraining: Int { didSet { Self.persist(ReplayBufferMinPositionsBeforeTraining.self, value: replayBufferMinPositionsBeforeTraining) } }
@@ -584,6 +596,7 @@ public final class TrainingParameters {
         self.replayRatioAutoAdjust = Self.read(ReplayRatioAutoAdjust.self)
         self.selfPlayWorkers = Self.read(SelfPlayWorkers.self)
         self.trainingStepDelayMs = Self.read(TrainingStepDelayMs.self)
+        self.selfPlayDelayMs = Self.read(SelfPlayDelayMs.self)
         self.trainingBatchSize = Self.read(TrainingBatchSize.self)
         self.replayBufferCapacity = Self.read(ReplayBufferCapacity.self)
         self.replayBufferMinPositionsBeforeTraining = Self.read(ReplayBufferMinPositionsBeforeTraining.self)
@@ -624,6 +637,7 @@ public final class TrainingParameters {
         v[ReplayRatioAutoAdjust.id] = ReplayRatioAutoAdjust.encode(replayRatioAutoAdjust)
         v[SelfPlayWorkers.id] = SelfPlayWorkers.encode(selfPlayWorkers)
         v[TrainingStepDelayMs.id] = TrainingStepDelayMs.encode(trainingStepDelayMs)
+        v[SelfPlayDelayMs.id] = SelfPlayDelayMs.encode(selfPlayDelayMs)
         v[TrainingBatchSize.id] = TrainingBatchSize.encode(trainingBatchSize)
         v[ReplayBufferCapacity.id] = ReplayBufferCapacity.encode(replayBufferCapacity)
         v[ReplayBufferMinPositionsBeforeTraining.id] = ReplayBufferMinPositionsBeforeTraining.encode(replayBufferMinPositionsBeforeTraining)
@@ -688,6 +702,8 @@ public final class TrainingParameters {
             try SelfPlayWorkers.definition.validate(raw); selfPlayWorkers = try SelfPlayWorkers.decode(raw)
         case TrainingStepDelayMs.id:
             try TrainingStepDelayMs.definition.validate(raw); trainingStepDelayMs = try TrainingStepDelayMs.decode(raw)
+        case SelfPlayDelayMs.id:
+            try SelfPlayDelayMs.definition.validate(raw); selfPlayDelayMs = try SelfPlayDelayMs.decode(raw)
         case TrainingBatchSize.id:
             try TrainingBatchSize.definition.validate(raw); trainingBatchSize = try TrainingBatchSize.decode(raw)
         case ReplayBufferCapacity.id:
@@ -794,6 +810,7 @@ public final class TrainingParameters {
         ReplayRatioAutoAdjust.self,
         SelfPlayWorkers.self,
         TrainingStepDelayMs.self,
+        SelfPlayDelayMs.self,
         TrainingBatchSize.self,
         ReplayBufferCapacity.self,
         ReplayBufferMinPositionsBeforeTraining.self,

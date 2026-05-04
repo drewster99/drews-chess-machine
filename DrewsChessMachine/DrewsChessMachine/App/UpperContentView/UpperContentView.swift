@@ -1187,6 +1187,49 @@ struct UpperContentView: View {
         )
     }
 
+    /// Binding for the self-play delay Stepper. Mirrors the training-
+    /// step delay binding: walks the same ladder, snaps the value,
+    /// writes through to `trainingParams.selfPlayDelayMs` (for
+    /// persistence and SwiftUI re-render) and to
+    /// `replayRatioController?.manualSelfPlayDelayMs` (so the value
+    /// takes effect on the next self-play game without waiting for a
+    /// session restart). The Stepper is meaningful only when
+    /// auto-adjust is OFF; when auto is on the controller drives the
+    /// SP delay directly. We still write through unconditionally so
+    /// the manual slot stays current and re-engages immediately when
+    /// auto flips off.
+    private var selfPlayStepDelayBinding: Binding<Int> {
+        Binding(
+            get: { trainingParams.selfPlayDelayMs },
+            set: { newValue in
+                let ladder = Self.stepDelayLadder
+                let current = trainingParams.selfPlayDelayMs
+                let currentIdx: Int
+                if let exact = ladder.firstIndex(of: current) {
+                    currentIdx = exact
+                } else {
+                    currentIdx = ladder.enumerated().min(by: {
+                        abs($0.element - current) < abs($1.element - current)
+                    })?.offset ?? 0
+                }
+                let nextIdx: Int
+                if newValue > current {
+                    nextIdx = min(currentIdx + 1, ladder.count - 1)
+                } else if newValue < current {
+                    nextIdx = max(currentIdx - 1, 0)
+                } else {
+                    nextIdx = currentIdx
+                }
+                let snapped = ladder[nextIdx]
+                if snapped != current {
+                    SessionLogger.shared.log("[PARAM] selfPlayDelayMs (manual): \(current) -> \(snapped)")
+                }
+                trainingParams.selfPlayDelayMs = snapped
+                replayRatioController?.manualSelfPlayDelayMs = snapped
+            }
+        )
+    }
+
     /// Scratch string for the learning rate text field. Seeded from
     /// the trainer's current LR when Play-and-Train starts; the user
     /// edits freely without the binding reformatting mid-keystroke.
@@ -6000,16 +6043,6 @@ struct UpperContentView: View {
         // panel out of the gate; single-worker sessions keep the
         // historical Game-run default.
         playAndTrainBoardMode = trainingParams.selfPlayWorkers > 1 ? .candidateTest : .gameRun
-        // Same reasoning as the .onChange handler in
-        // controlSideEffectsProbe: when this session is going to land
-        // on Candidate-test (multi-worker auto-coerce or single-
-        // worker explicit), bump the mini-board overlay from the
-        // plain-board default (-1) to Top Moves (0) so the policy
-        // arrows render on the live probe board. Single-worker
-        // sessions starting in Game-run keep the plain-board default.
-        if playAndTrainBoardMode == .candidateTest, selectedOverlay < 0 {
-            selectedOverlay = 0
-        }
         probeNetworkTarget = .candidate
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
@@ -6180,6 +6213,11 @@ struct UpperContentView: View {
             maxTrainingStepDelayMs: Self.stepDelayMaxMs,
             maxSelfPlayDelayMs: Self.selfPlayDelayMaxMs
         )
+        // Seed the controller's manual SP-delay slot from the
+        // persisted training parameter so a session that starts in
+        // manual mode inherits whatever the user last left in the
+        // SP-delay stepper, instead of falling back to 0.
+        ratioController.manualSelfPlayDelayMs = trainingParams.selfPlayDelayMs
         replayRatioController = ratioController
         let trainingGate = WorkerPauseGate()
         let arenaFlag = ArenaActiveFlag()
@@ -9375,6 +9413,28 @@ extension UpperContentView {
                         "Step Delay",
                         value: trainingStepDelayBinding,
                         in: 0...Self.stepDelayMaxMs
+                    )
+                    .labelsHidden()
+                    .disabled(trainingParams.replayRatioAutoAdjust)
+                }
+                HStack(spacing: 6) {
+                    Text("  SP Delay:")
+                    if let snap = replayRatioSnapshot, snap.autoAdjust {
+                        Text("\(snap.computedSelfPlayDelayMs)")
+                            .monospacedDigit()
+                            .frame(minWidth: 32, alignment: .trailing)
+                        Text("ms (auto)")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("\(trainingParams.selfPlayDelayMs)")
+                            .monospacedDigit()
+                            .frame(minWidth: 32, alignment: .trailing)
+                        Text("ms")
+                    }
+                    Stepper(
+                        "SP Delay",
+                        value: selfPlayStepDelayBinding,
+                        in: 0...Self.selfPlayDelayMaxMs
                     )
                     .labelsHidden()
                     .disabled(trainingParams.replayRatioAutoAdjust)

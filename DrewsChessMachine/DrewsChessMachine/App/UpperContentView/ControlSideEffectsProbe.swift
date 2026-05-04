@@ -41,20 +41,6 @@ struct ControlSideEffectsProbe: View {
                 // for the interval probe to trigger on the new mode.
                 if newValue == .candidateTest {
                     candidateProbeDirty = true
-                    // The default mini-board overlay is -1 (plain
-                    // board) so right-arrow walks the user through
-                    // Top Moves → channel views. But a freshly-entered
-                    // Candidate-test mode is *expected* to show the
-                    // policy arrows on the board — that's the whole
-                    // point of the mode. Bump the overlay from the
-                    // plain-board default to Top Moves (0) so the
-                    // arrows render immediately. Leaves any deeper
-                    // selection alone so a user who right-arrowed
-                    // into channels and toggled CT off and on keeps
-                    // their place.
-                    if selectedOverlay < 0 {
-                        selectedOverlay = 0
-                    }
                 }
             }
             .onChange(of: probeNetworkTarget) { _, _ in
@@ -138,6 +124,24 @@ struct ControlSideEffectsProbe: View {
                     let snapped = snapDelayToLadder(lastAuto)
                     trainingParams.trainingStepDelayMs = snapped
                     replayRatioController?.manualDelayMs = snapped
+                    // Symmetric inherit on the SP side: pick up the
+                    // last auto-computed SP per-game delay (the value
+                    // the controller was about to apply at the moment
+                    // of toggle), snap to the ladder, and write it
+                    // through to both the training parameter (for
+                    // persistence + Stepper display) and the
+                    // controller's manual slot (so the worker sees the
+                    // new value on its next game without waiting for a
+                    // session restart). If the controller hadn't
+                    // produced a non-zero auto sp delay yet (e.g.
+                    // training was the slow side) we fall back to the
+                    // user's prior `selfPlayDelayMs` setting rather
+                    // than collapsing to 0.
+                    let priorSP = trainingParams.selfPlayDelayMs
+                    let lastAutoSP = replayRatioController?.smoothedSelfPlayDelayMs ?? priorSP
+                    let snappedSP = snapDelayToLadder(lastAutoSP > 0 ? lastAutoSP : priorSP)
+                    trainingParams.selfPlayDelayMs = snappedSP
+                    replayRatioController?.manualSelfPlayDelayMs = snappedSP
                 }
             }
     }
