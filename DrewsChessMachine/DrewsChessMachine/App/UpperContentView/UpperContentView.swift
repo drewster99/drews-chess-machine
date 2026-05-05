@@ -618,11 +618,19 @@ struct UpperContentView: View {
     @State private var arenaPopoverGamesError: Bool = false
     @State private var arenaPopoverConcurrencyError: Bool = false
     @State private var arenaPopoverIntervalError: Bool = false
+    @State private var arenaPopoverTauStartError: Bool = false
+    @State private var arenaPopoverTauDecayError: Bool = false
+    @State private var arenaPopoverTauFloorError: Bool = false
     /// Drives the Arena History sheet. Set true when the user clicks
     /// "History" in the Arena popover; the popover dismisses itself
     /// before flipping this flag so the sheet doesn't anchor to a
     /// dying popover.
     @State private var showArenaHistorySheet: Bool = false
+    /// Set true while a one-shot log-scan recovery pass is
+    /// running. Disables the "Recover from logs" button so the
+    /// user can't trigger overlapping scans, and shows a small
+    /// spinner in the sheet header.
+    @State private var arenaRecoveryInProgress: Bool = false
     // Sampling cadence (`chartCoordinator.progressRateLastFetch`,
     // `chartCoordinator.progressRateNextId`, `chartCoordinator.trainingChartNextId`,
     // `chartCoordinator.prevChartTotalGpuMs`), chart navigation (`chartCoordinator.scrollX`,
@@ -1170,7 +1178,8 @@ struct UpperContentView: View {
             gameIsPlaying: gameSnapshot.isPlaying,
             hasNetwork: network != nil,
             hasPendingLoadedSession: pendingLoadedSession != nil,
-            autoResumeStateVersion: autoResumeStateVersion
+            autoResumeStateVersion: autoResumeStateVersion,
+            arenaRecoveryInProgress: arenaRecoveryInProgress
         )
     }
 
@@ -1248,6 +1257,22 @@ struct UpperContentView: View {
     @State private var arDecayPerPlyEditText: String = ""
     @State private var replayBufferCapacityEditText: String = ""
     @State private var replayBufferMinPositionsBeforeTrainingEditText: String = ""
+    /// Edit-text + transactional checkbox state backing the new
+    /// `TrainingSettingsPopover`. The momentum and √batch fields
+    /// have no inline UI today, so this is where their first edit-
+    /// surfaces live. Error flags pair with each text field; they
+    /// drive the red-overlay on parse failure during Save.
+    @State private var momentumCoeffEditText: String = ""
+    @State private var sqrtBatchScalingEditValue: Bool = true
+    @State private var trainingPopoverLRError: Bool = false
+    @State private var trainingPopoverWarmupError: Bool = false
+    @State private var trainingPopoverMomentumError: Bool = false
+    @State private var trainingPopoverEntropyError: Bool = false
+    @State private var trainingPopoverGradClipError: Bool = false
+    @State private var trainingPopoverWeightDecayError: Bool = false
+    @State private var trainingPopoverPolicyKError: Bool = false
+    @State private var trainingPopoverDrawPenaltyError: Bool = false
+    @State private var showTrainingPopover: Bool = false
 
     /// Binding for the side-to-move segmented picker. Writes rebuild
     /// `editableState` with the new current-player (nothing else changes)
@@ -1461,20 +1486,6 @@ struct UpperContentView: View {
                     Text(startTrainingDialogMessage())
                 }
             )
-
-            // Always-visible Concurrency control. The Stepper used to
-            // live inside `SelfPlayStatsColumn`, but that column is
-            // hidden whenever `isCandidateTestActive` is true (forced
-            // on for `selfPlayWorkers > 1`), making the only knob for
-            // adjusting worker count unreachable in the common case.
-            // Pulled out into a top row so it's always available
-            // during real training regardless of board mode.
-            if realTraining {
-                ConcurrencyStepperRow(
-                    trainingParams: trainingParams,
-                    maxWorkers: Self.absoluteMaxSelfPlayWorkers
-                )
-            }
 
             // Board + text side by side
             HStack(alignment: .top, spacing: 24) {
@@ -3991,6 +4002,7 @@ struct UpperContentView: View {
         }
         commandHub.runEngineDiagnostics = { runEngineDiagnostics() }
         commandHub.runPolicyConditioningDiagnostic = { runPolicyConditioningDiagnostic() }
+        commandHub.recoverArenaHistoryFromLogs = { runArenaHistoryRecovery() }
         commandHub.abortArena = {
             SessionLogger.shared.log("[BUTTON] Abort Arena")
             arenaOverrideBox?.abort()
@@ -4049,6 +4061,7 @@ struct UpperContentView: View {
         commandHub.checkpointSaveInFlight = checkpointSaveInFlight
         commandHub.pendingLoadedSessionExists = pendingLoadedSession != nil
         commandHub.canResumeFromAutosave = canResumeFromAutosave
+        commandHub.arenaRecoveryInProgress = arenaRecoveryInProgress
         // Zoom: the chart grid only renders during Play-and-Train, so
         // the View menu items follow the same gate plus their
         // individual extremum checks.
@@ -8123,6 +8136,32 @@ struct UpperContentView: View {
                     warmupCompletedSteps: trainerWarmupSnap?.completedSteps,
                     warmupTotalSteps: trainerWarmupSnap?.warmupSteps
                 )
+                TrainingSettingsChip(showPopover: $showTrainingPopover) {
+                    TrainingSettingsPopover(
+                        modelID: trainer?.identifier?.description ?? "—",
+                        sessionStart: currentSessionStart ?? Date(),
+                        lrText: $learningRateEditText,
+                        warmupText: $lrWarmupStepsEditText,
+                        momentumText: $momentumCoeffEditText,
+                        sqrtBatchScalingValue: $sqrtBatchScalingEditValue,
+                        entropyText: $entropyRegularizationEditText,
+                        gradClipText: $gradClipMaxNormEditText,
+                        weightDecayText: $weightDecayEditText,
+                        policyKText: $policyScaleKEditText,
+                        drawPenaltyText: $drawPenaltyEditText,
+                        lrError: trainingPopoverLRError,
+                        warmupError: trainingPopoverWarmupError,
+                        momentumError: trainingPopoverMomentumError,
+                        entropyError: trainingPopoverEntropyError,
+                        gradClipError: trainingPopoverGradClipError,
+                        weightDecayError: trainingPopoverWeightDecayError,
+                        policyKError: trainingPopoverPolicyKError,
+                        drawPenaltyError: trainingPopoverDrawPenaltyError,
+                        onCancel: { showTrainingPopover = false },
+                        onSave: { trainingPopoverSave() },
+                        onAppearSeed: { trainingPopoverSeedFromParams() }
+                    )
+                }
                 ArenaCountdownChip(
                     isArenaRunning: isArenaRunning,
                     countdownText: { now in arenaCountdownText(at: now) },
@@ -8138,9 +8177,15 @@ struct UpperContentView: View {
                         gamesText: $arenaPopoverGamesText,
                         concurrencyText: $arenaPopoverConcurrencyText,
                         intervalText: $arenaPopoverIntervalText,
+                        tauStartText: $arStartTauEditText,
+                        tauDecayText: $arDecayPerPlyEditText,
+                        tauFloorText: $arFloorTauEditText,
                         gamesError: arenaPopoverGamesError,
                         concurrencyError: arenaPopoverConcurrencyError,
                         intervalError: arenaPopoverIntervalError,
+                        tauStartError: arenaPopoverTauStartError,
+                        tauDecayError: arenaPopoverTauDecayError,
+                        tauFloorError: arenaPopoverTauFloorError,
                         onRunNow: {
                             SessionLogger.shared.log("[BUTTON] Run Arena (popover)")
                             arenaTriggerBox?.trigger()
@@ -8433,9 +8478,18 @@ struct UpperContentView: View {
         arenaPopoverGamesText = String(trainingParams.arenaGamesPerTournament)
         arenaPopoverConcurrencyText = String(trainingParams.arenaConcurrency)
         arenaPopoverIntervalText = Self.formatDurationSpec(trainingParams.arenaAutoIntervalSec)
+        // Reuse the same edit-text @State that backs the inline
+        // stats-panel tau row (now removed) so a single edit
+        // location keeps `trainingParams` and `@State` in sync.
+        arStartTauEditText = String(format: "%.2f", trainingParams.arenaStartTau)
+        arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
+        arFloorTauEditText = String(format: "%.2f", trainingParams.arenaTargetTau)
         arenaPopoverGamesError = false
         arenaPopoverConcurrencyError = false
         arenaPopoverIntervalError = false
+        arenaPopoverTauStartError = false
+        arenaPopoverTauDecayError = false
+        arenaPopoverTauFloorError = false
     }
 
     /// Validate all three popover fields against their parameter
@@ -8477,7 +8531,331 @@ struct UpperContentView: View {
             anyError = true
         }
 
+        // tau Start — same range as the inline stats-panel
+        // editor it replaced: (0, 10].
+        if let v = Double(arStartTauEditText.trimmingCharacters(in: .whitespaces)),
+           v > 0, v.isFinite, v <= 10 {
+            arenaPopoverTauStartError = false
+            if abs(v - trainingParams.arenaStartTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] ar.startTau: %.3f -> %.3f", trainingParams.arenaStartTau, v)
+                )
+                trainingParams.arenaStartTau = v
+            }
+        } else {
+            arenaPopoverTauStartError = true
+            anyError = true
+        }
+
+        // tau Decay — [0, 1].
+        if let v = Double(arDecayPerPlyEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0, v.isFinite, v <= 1 {
+            arenaPopoverTauDecayError = false
+            if abs(v - trainingParams.arenaTauDecayPerPly) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] ar.decayPerPly: %.4f -> %.4f", trainingParams.arenaTauDecayPerPly, v)
+                )
+                trainingParams.arenaTauDecayPerPly = v
+            }
+        } else {
+            arenaPopoverTauDecayError = true
+            anyError = true
+        }
+
+        // tau Floor — same range as Start: (0, 10].
+        if let v = Double(arFloorTauEditText.trimmingCharacters(in: .whitespaces)),
+           v > 0, v.isFinite, v <= 10 {
+            arenaPopoverTauFloorError = false
+            if abs(v - trainingParams.arenaTargetTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] ar.floorTau: %.3f -> %.3f", trainingParams.arenaTargetTau, v)
+                )
+                trainingParams.arenaTargetTau = v
+            }
+        } else {
+            arenaPopoverTauFloorError = true
+            anyError = true
+        }
+
         if !anyError { showArenaPopover = false }
+    }
+
+    /// Seed the `TrainingSettingsPopover`'s edit-text bindings from
+    /// the live `trainingParams` snapshot. Called from
+    /// `onAppearSeed` so the user always sees the current values
+    /// when the popover opens, even if a CLI / parameters-file
+    /// override edited them since the last open.
+    private func trainingPopoverSeedFromParams() {
+        learningRateEditText = String(format: "%.2e", trainingParams.learningRate)
+        lrWarmupStepsEditText = String(trainingParams.lrWarmupSteps)
+        momentumCoeffEditText = String(format: "%.3f", trainingParams.momentumCoeff)
+        sqrtBatchScalingEditValue = trainingParams.sqrtBatchScalingLR
+        entropyRegularizationEditText = String(format: "%.2e", trainingParams.entropyBonus)
+        gradClipMaxNormEditText = String(format: "%.1f", trainingParams.gradClipMaxNorm)
+        weightDecayEditText = String(format: "%.2e", trainingParams.weightDecay)
+        policyScaleKEditText = String(format: "%.2f", trainingParams.policyScaleK)
+        drawPenaltyEditText = String(format: "%.3f", trainingParams.drawPenalty)
+        trainingPopoverLRError = false
+        trainingPopoverWarmupError = false
+        trainingPopoverMomentumError = false
+        trainingPopoverEntropyError = false
+        trainingPopoverGradClipError = false
+        trainingPopoverWeightDecayError = false
+        trainingPopoverPolicyKError = false
+        trainingPopoverDrawPenaltyError = false
+    }
+
+    /// Validate every `TrainingSettingsPopover` field against its
+    /// parameter range and write valid values back to
+    /// `trainingParams` (and mirror to the live `trainer` for the
+    /// optimizer-touching params). On any parse failure the
+    /// affected field's red-overlay flag is set and the popover
+    /// stays open. On full success the popover dismisses.
+    ///
+    /// Mirrors `arenaPopoverSave()`: `[PARAM] name: old -> new`
+    /// log line on every actual change, no log when value is
+    /// unchanged. Trainer side-write uses `Float(parsed)` for the
+    /// optimizer floats, matching the inline-row pattern that this
+    /// popover replaces.
+    private func trainingPopoverSave() {
+        var anyError = false
+
+        // LR — Double in [1e-7, 1.0].
+        if let v = Double(learningRateEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 1e-7, v <= 1.0, v.isFinite {
+            trainingPopoverLRError = false
+            if abs(v - trainingParams.learningRate) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] learningRate: %.3e -> %.3e", trainingParams.learningRate, v)
+                )
+                trainingParams.learningRate = v
+                trainer?.learningRate = Float(v)
+            }
+        } else {
+            trainingPopoverLRError = true
+            anyError = true
+        }
+
+        // LR Warmup steps — Int in [0, 100_000].
+        if let n = Int(lrWarmupStepsEditText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 100_000 {
+            trainingPopoverWarmupError = false
+            if n != trainingParams.lrWarmupSteps {
+                SessionLogger.shared.log(
+                    "[PARAM] lrWarmupSteps: \(trainingParams.lrWarmupSteps) -> \(n)"
+                )
+                trainingParams.lrWarmupSteps = n
+                trainer?.lrWarmupSteps = n
+            }
+        } else {
+            trainingPopoverWarmupError = true
+            anyError = true
+        }
+
+        // Momentum — Double in [0, 0.99]. No inline UI before this
+        // popover, so this is the only edit surface.
+        if let v = Double(momentumCoeffEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.99, v.isFinite {
+            trainingPopoverMomentumError = false
+            if abs(v - trainingParams.momentumCoeff) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] momentumCoeff: %.3f -> %.3f", trainingParams.momentumCoeff, v)
+                )
+                trainingParams.momentumCoeff = v
+                trainer?.momentumCoeff = Float(v)
+            }
+        } else {
+            trainingPopoverMomentumError = true
+            anyError = true
+        }
+
+        // √batch scaling toggle — Bool, cannot fail to parse.
+        if sqrtBatchScalingEditValue != trainingParams.sqrtBatchScalingLR {
+            SessionLogger.shared.log(
+                "[PARAM] sqrtBatchScalingLR: \(trainingParams.sqrtBatchScalingLR) -> \(sqrtBatchScalingEditValue)"
+            )
+            trainingParams.sqrtBatchScalingLR = sqrtBatchScalingEditValue
+        }
+
+        // Entropy regularization — Double in [0, 0.1].
+        if let v = Double(entropyRegularizationEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.1, v.isFinite {
+            trainingPopoverEntropyError = false
+            if abs(v - trainingParams.entropyBonus) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] entropyBonus: %.3e -> %.3e", trainingParams.entropyBonus, v)
+                )
+                trainingParams.entropyBonus = v
+                trainer?.entropyRegularizationCoeff = Float(v)
+            }
+        } else {
+            trainingPopoverEntropyError = true
+            anyError = true
+        }
+
+        // Grad clip — Double in [0.1, 1000].
+        if let v = Double(gradClipMaxNormEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.1, v <= 1000.0, v.isFinite {
+            trainingPopoverGradClipError = false
+            if abs(v - trainingParams.gradClipMaxNorm) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", trainingParams.gradClipMaxNorm, v)
+                )
+                trainingParams.gradClipMaxNorm = v
+                trainer?.gradClipMaxNorm = Float(v)
+            }
+        } else {
+            trainingPopoverGradClipError = true
+            anyError = true
+        }
+
+        // Weight decay — Double in [0, 0.1].
+        if let v = Double(weightDecayEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.1, v.isFinite {
+            trainingPopoverWeightDecayError = false
+            if abs(v - trainingParams.weightDecay) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] weightDecay: %.3e -> %.3e", trainingParams.weightDecay, v)
+                )
+                trainingParams.weightDecay = v
+                trainer?.weightDecayC = Float(v)
+            }
+        } else {
+            trainingPopoverWeightDecayError = true
+            anyError = true
+        }
+
+        // Policy scale K — Double in [0.1, 20].
+        if let v = Double(policyScaleKEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.1, v <= 20.0, v.isFinite {
+            trainingPopoverPolicyKError = false
+            if abs(v - trainingParams.policyScaleK) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] policyScaleK: %.2f -> %.2f", trainingParams.policyScaleK, v)
+                )
+                trainingParams.policyScaleK = v
+                trainer?.policyScaleK = Float(v)
+            }
+        } else {
+            trainingPopoverPolicyKError = true
+            anyError = true
+        }
+
+        // Draw penalty — Double in [-1, 1].
+        if let v = Double(drawPenaltyEditText.trimmingCharacters(in: .whitespaces)),
+           v >= -1.0, v <= 1.0, v.isFinite {
+            trainingPopoverDrawPenaltyError = false
+            if abs(v - trainingParams.drawPenalty) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] drawPenalty: %.3f -> %.3f", trainingParams.drawPenalty, v)
+                )
+                trainingParams.drawPenalty = v
+                trainer?.drawPenalty = Float(v)
+            }
+        } else {
+            trainingPopoverDrawPenaltyError = true
+            anyError = true
+        }
+
+        if !anyError { showTrainingPopover = false }
+    }
+
+    /// Backfill `finishedAt` / `candidateID` / `championID` on
+    /// any `tournamentHistory` entries that lack them, by scanning
+    /// the per-launch session logs at
+    /// `~/Library/Logs/DrewsChessMachine/`. Triggered by the
+    /// "Recover from logs" button in `ArenaHistoryView`.
+    ///
+    /// Match strategy: each `[ARENA] #N kv step=…` log line is
+    /// keyed by training-step. We accept a recovery if and only
+    /// if the log line's W/D/L counts match the saved record's
+    /// — same step but different counts means the saved record
+    /// belongs to a different arena run (e.g. a re-run after a
+    /// crash that didn't survive the next save), and silently
+    /// merging would corrupt history.
+    ///
+    /// The scan runs on a detached background task. After a
+    /// successful merge the in-memory `tournamentHistory` is
+    /// replaced with the recovered version and a save-button log
+    /// line is emitted; the user can hit Save Session (or wait
+    /// for the periodic autosave) to persist. We deliberately
+    /// don't auto-save here so the recovery is reversible from
+    /// the user's perspective until they confirm.
+    @MainActor
+    private func runArenaHistoryRecovery() {
+        guard !arenaRecoveryInProgress else { return }
+        arenaRecoveryInProgress = true
+        SessionLogger.shared.log("[BUTTON] Recover Arena History from logs (start)")
+
+        Task.detached(priority: .userInitiated) { [tournamentHistory] in
+            let logsDir: URL
+            do {
+                logsDir = try ArenaLogRecovery.defaultLogsDirectory()
+            } catch {
+                await MainActor.run {
+                    SessionLogger.shared.log(
+                        "[RECOVER] failed: cannot resolve logs directory: \(error.localizedDescription)"
+                    )
+                    self.arenaRecoveryInProgress = false
+                }
+                return
+            }
+            let recovered = ArenaLogRecovery.scan(logsDirectory: logsDir)
+
+            // Merge in-place on a copy; only adopt the new array
+            // if at least one record actually changed.
+            var updated = tournamentHistory
+            var changedCount = 0
+            for (i, record) in tournamentHistory.enumerated() {
+                guard let hit = recovered[record.finishedAtStep] else { continue }
+                guard hit.candidateWins == record.candidateWins,
+                      hit.draws == record.draws,
+                      hit.championWins == record.championWins else {
+                    continue
+                }
+                let newFinishedAt = record.finishedAt ?? hit.finishedAt
+                let newCandidateID = record.candidateID
+                    ?? hit.candidateID.map { ModelID(value: $0) }
+                let newChampionID = record.championID
+                    ?? hit.championID.map { ModelID(value: $0) }
+                if newFinishedAt != record.finishedAt
+                    || newCandidateID != record.candidateID
+                    || newChampionID != record.championID {
+                    updated[i] = TournamentRecord(
+                        finishedAtStep: record.finishedAtStep,
+                        finishedAt: newFinishedAt,
+                        candidateID: newCandidateID,
+                        championID: newChampionID,
+                        gamesPlayed: record.gamesPlayed,
+                        candidateWins: record.candidateWins,
+                        championWins: record.championWins,
+                        draws: record.draws,
+                        score: record.score,
+                        promoted: record.promoted,
+                        promotionKind: record.promotionKind,
+                        promotedID: record.promotedID,
+                        durationSec: record.durationSec,
+                        candidateWinsAsWhite: record.candidateWinsAsWhite,
+                        candidateWinsAsBlack: record.candidateWinsAsBlack,
+                        candidateLossesAsWhite: record.candidateLossesAsWhite,
+                        candidateLossesAsBlack: record.candidateLossesAsBlack,
+                        candidateDrawsAsWhite: record.candidateDrawsAsWhite,
+                        candidateDrawsAsBlack: record.candidateDrawsAsBlack
+                    )
+                    changedCount += 1
+                }
+            }
+
+            await MainActor.run {
+                if changedCount > 0 {
+                    self.tournamentHistory = updated
+                }
+                SessionLogger.shared.log(
+                    "[RECOVER] Arena history scan: \(recovered.count) kv lines mapped, \(changedCount) records updated (of \(tournamentHistory.count) total). Save the session to persist."
+                )
+                self.arenaRecoveryInProgress = false
+            }
+        }
     }
 
     // The chart-zoom control row moved to `LowerContentView`
@@ -9711,143 +10089,12 @@ extension UpperContentView {
                     Toggle("Auto", isOn: $trainingParams.replayRatioAutoAdjust)
                         .toggleStyle(.checkbox)
                 }
-                HStack(spacing: 6) {
-                    Text("  Learn Rate:")
-                    ParameterTextField(
-                        placeholder: "LR",
-                        text: $learningRateEditText,
-                        width: 80
-                    ) { typed in
-                        if let parsed = Float(typed), parsed > 0, parsed.isFinite {
-                            let prior = trainer?.learningRate ?? Float(Self.trainerLearningRateDefault)
-                            if abs(parsed - prior) > Float.ulpOfOne {
-                                SessionLogger.shared.log(
-                                    String(format: "[PARAM] learningRate: %.1e -> %.1e", prior, parsed)
-                                )
-                            }
-                            trainer?.learningRate = parsed
-                            trainingParams.learningRate = Double(parsed)
-                        }
-                        learningRateEditText = String(
-                            format: "%.1e",
-                            trainer?.learningRate ?? Self.trainerLearningRateDefault
-                        )
-                    }
-                    Toggle("√batch", isOn: $trainingParams.sqrtBatchScalingLR)
-                        .toggleStyle(.checkbox)
-                        .help("Adam-style LR scaling: feed learning_rate × sqrt(batch_size / 4096) each step. At batch=4096 the multiplier is 1.0 (no-op); at batch=1024 it's 0.5, at batch=8192 it's √2. The typed LR above is always the base value at the 4096 pivot — scaling is applied when writing into the optimizer feed.")
-                    Text("warmup")
-                        .foregroundStyle(.secondary)
-                    ParameterTextField(
-                        placeholder: "Warmup",
-                        text: $lrWarmupStepsEditText,
-                        width: 60
-                    ) { typed in
-                        if let parsed = Int(typed), parsed >= 0 {
-                            let prior = trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
-                            if parsed != prior {
-                                SessionLogger.shared.log(
-                                    "[PARAM] lrWarmupSteps: \(prior) -> \(parsed)"
-                                )
-                            }
-                            trainer?.lrWarmupSteps = parsed
-                            trainingParams.lrWarmupSteps = parsed
-                        }
-                        lrWarmupStepsEditText = String(
-                            trainer?.lrWarmupSteps ?? trainingParams.lrWarmupSteps
-                        )
-                    }
-                    .help("Linear LR warmup: for the first N SGD steps, multiply LR by min(1, completedSteps / N). 0 disables. Composes multiplicatively with √batch scaling.")
-                }
-                HStack(spacing: 6) {
-                    Text("  Entropy Reg:")
-                    ParameterTextField(
-                        placeholder: "Entropy Reg",
-                        text: $entropyRegularizationEditText,
-                        width: 80
-                    ) { typed in
-                        if let parsed = Double(typed), parsed >= 0, parsed.isFinite {
-                            let prior = trainingParams.entropyBonus
-                            if abs(parsed - prior) > Double.ulpOfOne {
-                                SessionLogger.shared.log(
-                                    String(format: "[PARAM] entropyReg: %.2e -> %.2e", prior, parsed)
-                                )
-                            }
-                            trainingParams.entropyBonus = parsed
-                            trainer?.entropyRegularizationCoeff = Float(parsed)
-                        }
-                        entropyRegularizationEditText = String(
-                            format: "%.2e",
-                            trainingParams.entropyBonus
-                        )
-                    }
-                    Text("clip")
-                        .foregroundStyle(.secondary)
-                    ParameterTextField(
-                        placeholder: "Clip",
-                        text: $gradClipMaxNormEditText,
-                        width: 70
-                    ) { typed in
-                        if let parsed = Double(typed), parsed > 0, parsed.isFinite {
-                            let prior = trainingParams.gradClipMaxNorm
-                            if abs(parsed - prior) > Double.ulpOfOne {
-                                SessionLogger.shared.log(
-                                    String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", prior, parsed)
-                                )
-                            }
-                            trainingParams.gradClipMaxNorm = parsed
-                            trainer?.gradClipMaxNorm = Float(parsed)
-                        }
-                        gradClipMaxNormEditText = String(
-                            format: "%.2f",
-                            trainingParams.gradClipMaxNorm
-                        )
-                    }
-                    Text("decay")
-                        .foregroundStyle(.secondary)
-                    ParameterTextField(
-                        placeholder: "Decay",
-                        text: $weightDecayEditText,
-                        width: 80
-                    ) { typed in
-                        if let parsed = Double(typed), parsed >= 0, parsed.isFinite {
-                            let prior = trainingParams.weightDecay
-                            if abs(parsed - prior) > Double.ulpOfOne {
-                                SessionLogger.shared.log(
-                                    String(format: "[PARAM] weightDecayC: %.2e -> %.2e", prior, parsed)
-                                )
-                            }
-                            trainingParams.weightDecay = parsed
-                            trainer?.weightDecayC = Float(parsed)
-                        }
-                        weightDecayEditText = String(
-                            format: "%.2e",
-                            trainingParams.weightDecay
-                        )
-                    }
-                    Text("K")
-                        .foregroundStyle(.secondary)
-                    ParameterTextField(
-                        placeholder: "K",
-                        text: $policyScaleKEditText,
-                        width: 60
-                    ) { typed in
-                        if let parsed = Double(typed), parsed > 0, parsed.isFinite {
-                            let prior = trainingParams.policyScaleK
-                            if abs(parsed - prior) > Double.ulpOfOne {
-                                SessionLogger.shared.log(
-                                    String(format: "[PARAM] policyScaleK: %.2f -> %.2f", prior, parsed)
-                                )
-                            }
-                            trainingParams.policyScaleK = parsed
-                            trainer?.policyScaleK = Float(parsed)
-                        }
-                        policyScaleKEditText = String(
-                            format: "%.2f",
-                            trainingParams.policyScaleK
-                        )
-                    }
-                }
+                // Learn Rate / Entropy / Clip / Decay / K rows moved
+                // to `TrainingSettingsPopover` (opened from the
+                // top-bar Training chip). Single edit location keeps
+                // `trainingParams`, `trainer.*`, and the @State edit-
+                // text in sync without the dual binding the inline
+                // rows used to maintain.
                 HStack(spacing: 6) {
                     Text("  SP tau:")
                     ParameterTextField(
@@ -9872,55 +10119,11 @@ extension UpperContentView {
                     Text("/ply")
                         .foregroundStyle(.secondary)
                 }
-                HStack(spacing: 6) {
-                    Text("  Arena tau:")
-                    ParameterTextField(
-                        placeholder: "Ar start",
-                        text: $arStartTauEditText,
-                        width: 60
-                    ) { _ in applyArTauEdit() }
-                    Text("→")
-                        .foregroundStyle(.secondary)
-                    ParameterTextField(
-                        placeholder: "Ar floor",
-                        text: $arFloorTauEditText,
-                        width: 60
-                    ) { _ in applyArTauEdit() }
-                    Text("decay")
-                        .foregroundStyle(.secondary)
-                    ParameterTextField(
-                        placeholder: "Ar decay",
-                        text: $arDecayPerPlyEditText,
-                        width: 70
-                    ) { _ in applyArTauEdit() }
-                    Text("/ply")
-                        .foregroundStyle(.secondary)
-                }
-                HStack(spacing: 6) {
-                    Text("  Draw Penalty:")
-                    ParameterTextField(
-                        placeholder: "Draw Penalty",
-                        text: $drawPenaltyEditText,
-                        width: 80
-                    ) { typed in
-                        if let parsed = Double(typed), parsed >= 0, parsed.isFinite {
-                            let prior = trainingParams.drawPenalty
-                            if abs(parsed - prior) > Double.ulpOfOne {
-                                SessionLogger.shared.log(
-                                    String(format: "[PARAM] drawPenalty: %.3f -> %.3f", prior, parsed)
-                                )
-                            }
-                            trainingParams.drawPenalty = parsed
-                            trainer?.drawPenalty = Float(parsed)
-                        }
-                        drawPenaltyEditText = String(
-                            format: "%.3f",
-                            trainingParams.drawPenalty
-                        )
-                    }
-                    Text("(draws → z = −penalty; 0 disables)")
-                        .foregroundStyle(.secondary)
-                }
+                // Arena tau editor moved to the Arena Settings
+                // popover (Match temperature section). Single edit
+                // location avoids drift between inline panel and
+                // popover bindings.
+                // Draw Penalty row moved to `TrainingSettingsPopover`.
                 HStack(spacing: 6) {
                     Text("  Buffer Cap:")
                     ParameterTextField(

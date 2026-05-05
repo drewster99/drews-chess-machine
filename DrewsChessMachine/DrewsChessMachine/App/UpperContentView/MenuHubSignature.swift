@@ -22,4 +22,8 @@ struct MenuHubSignature: Equatable {
     var hasNetwork: Bool
     var hasPendingLoadedSession: Bool
     var autoResumeStateVersion: Int
+    /// Mirrors `arenaRecoveryInProgress` — fires the menu sync
+    /// when the Tools menu's "Recover Arena History from Logs"
+    /// item should toggle its disabled state.
+    var arenaRecoveryInProgress: Bool
 }

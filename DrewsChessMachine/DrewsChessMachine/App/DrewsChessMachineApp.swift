@@ -468,6 +468,17 @@ struct DrewsChessMachineApp: App {
                 }
                 .disabled(SessionLogger.shared.activeLogPath == nil)
             }
+
+            // Tools menu — Debug builds only. Houses one-shot
+            // maintenance utilities like the Arena History
+            // log-recovery scan that aren't part of the day-to-day
+            // training loop.
+            CommandMenu("Tools") {
+                Button("Recover Arena History from Logs") {
+                    commandHub.recoverArenaHistoryFromLogs()
+                }
+                .disabled(commandHub.arenaRecoveryInProgress)
+            }
         }
     }
 

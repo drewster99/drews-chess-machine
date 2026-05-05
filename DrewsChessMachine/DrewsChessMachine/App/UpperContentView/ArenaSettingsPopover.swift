@@ -26,9 +26,15 @@ struct ArenaSettingsPopover: View {
     @Binding var gamesText: String
     @Binding var concurrencyText: String
     @Binding var intervalText: String
+    @Binding var tauStartText: String
+    @Binding var tauDecayText: String
+    @Binding var tauFloorText: String
     let gamesError: Bool
     let concurrencyError: Bool
     let intervalError: Bool
+    let tauStartError: Bool
+    let tauDecayError: Bool
+    let tauFloorError: Bool
     let onRunNow: () -> Void
     let onShowHistory: () -> Void
     let onCancel: () -> Void
@@ -77,12 +83,13 @@ struct ArenaSettingsPopover: View {
 
             // --- Last Arena section ---
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
+                HStack(alignment: .firstTextBaseline) {
                     Text("Last Arena")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
-                    Button("More", action: onShowHistory)
+                    Button("More history", action: onShowHistory)
                         .buttonStyle(.link)
+                        .font(.subheadline)
                         .disabled(lastArena == nil)
                 }
                 if let lastArena {
@@ -91,6 +98,43 @@ struct ArenaSettingsPopover: View {
                     Text("No arenas yet")
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            Divider()
+
+            // --- Match temperature section ---
+            //
+            // tau (τ) schedule controls the per-ply softmax temperature
+            // for arena games. Linear decay: tau(ply) = max(floor,
+            // start - decay * ply). The "reached at N plies" hint
+            // shows when the floor first activates, computed live
+            // from whatever the user has typed so far.
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Match temperature (τ)")
+                    .font(.subheadline.weight(.semibold))
+                ArenaPopoverField(
+                    label: "Start of game:",
+                    text: $tauStartText,
+                    error: tauStartError,
+                    placeholder: "2.00",
+                    width: 100
+                )
+                ArenaPopoverField(
+                    label: "Decay:",
+                    text: $tauDecayText,
+                    error: tauDecayError,
+                    placeholder: "0.015",
+                    width: 100,
+                    hint: "per ply"
+                )
+                ArenaPopoverField(
+                    label: "Floor:",
+                    text: $tauFloorText,
+                    error: tauFloorError,
+                    placeholder: "0.50",
+                    width: 100,
+                    hint: tauReachedAtHint
+                )
             }
 
             Divider()
@@ -134,6 +178,23 @@ struct ArenaSettingsPopover: View {
         .padding(16)
         .frame(width: 380)
         .onAppear { onAppearSeed() }
+    }
+
+    /// Live "reached at N plies" hint for the floor field. Reads
+    /// the *current* parsed values of all three tau fields and
+    /// recomputes on every render — typing into any field updates
+    /// the hint immediately. Returns "—" when any field is invalid
+    /// or the math is degenerate (decay = 0, floor >= start).
+    private var tauReachedAtHint: String {
+        guard let start = Double(tauStartText), start > 0,
+              let decay = Double(tauDecayText), decay >= 0,
+              let floor = Double(tauFloorText), floor > 0 else {
+            return "(reached at —)"
+        }
+        guard decay > 0 else { return "(no decay; floor unreached)" }
+        guard floor < start else { return "(reached at ply 0)" }
+        let plies = Int(((start - floor) / decay).rounded(.up))
+        return "(reached at ply \(plies))"
     }
 
     /// Two-row last-arena summary. Extracted into a `@ViewBuilder`

@@ -112,6 +112,15 @@ final class AppCommandHub {
     /// logged with `[DIAG]` prefix, same pattern as
     /// `runEngineDiagnostics`.
     var runPolicyConditioningDiagnostic: () -> Void = {}
+    /// Tools menu (Debug builds only) > Recover Arena History
+    /// from Logs. Walks `~/Library/Logs/DrewsChessMachine/` and
+    /// backfills `finishedAt` / `candidateID` / `championID` on
+    /// any `tournamentHistory` entries that lack them. Disabled
+    /// while a recovery scan is in flight.
+    var recoverArenaHistoryFromLogs: () -> Void = {}
+    /// Mirrors `arenaRecoveryInProgress` so the Tools menu item
+    /// can disable itself while a recovery scan is running.
+    var arenaRecoveryInProgress: Bool = false
 
     // Chart-zoom actions. Wired to the View menu's ⌘= / ⌘- items
     // and the Auto toggle. A manual in/out press flips auto off
