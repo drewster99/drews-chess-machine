@@ -2,77 +2,104 @@
 
 Long-term goals, deferred work, and notes on decisions.
 
-## Future improvements
+**Validated against implementation on 2026-05-05.** This roadmap was reconciled
+against the actual Swift code under `DrewsChessMachine/DrewsChessMachine/` rather
+than against comments or old roadmap assumptions. Items that were implemented
+have been moved out of Future Improvements. Items that were rejected or made
+obsolete are kept with context in Decisions Not Pursued / Historical Notes so the
+original rationale is not lost.
 
-- **`BatchFeedsInput` struct for `ChessTrainer.buildFeeds`.** The
-  current call site takes six positional pointer arguments
-  (`boards`, `moves`, `zs`, `vBaselines`, `legalMasks`, plus
-  `batchSize`), three of which are `UnsafePointer<Float>`. Easy
-  to silently swap two same-typed pointers in a future refactor
-  and produce a wrong-but-shaped batch. Wrap them in a small
-  `struct BatchFeedsInput` with named fields so the compiler
-  enforces the binding by name rather than position. No
-  behavioral change; pure call-site safety. Apply at the same
-  time to `runPreparedStep` if it grows similarly.
+## Future improvements (validated open)
 
-- **Autosave retention pruning.** Today every `.dcmsession` autosave
-  (post-promotion and the new 4-hour periodic save) is kept forever
-  per the project-wide "nothing is ever overwritten" invariant. A
-  long-running session therefore accumulates on the order of 6
-  periodic saves per day plus one per promotion, each carrying the
-  full replay buffer (can be multi-GB). Add a retention policy that
-  prunes autosaves older than the last N, where:
-  - Manual saves are always preserved (user explicitly asked for
-    them; they are authoritative history).
-  - Post-promotion autosaves are pruned beyond the last N
-    (configurable, default on the order of 20).
-  - Periodic autosaves are pruned beyond the last N, same knob or
-    a separate knob — decide at implementation time based on how
-    users actually use them.
-  - Pruning should run lazily (e.g. after each successful save) so
-    there is never a dedicated sweep pass that could race with
-    other save/load activity.
-  - UI surface: a "Manage Autosaves" item in the File menu that
-    shows total disk footprint, counts per trigger, and a
-    "Trim to last N" button. Not critical for v2.
-  - Deferred until users report the disk-footprint problem in
-    practice — the "never overwrite" invariant stays in force
-    for now so no existing save is at risk.
+- **`BatchFeedsInput` struct for `ChessTrainer.buildFeeds`.** Still open.
+  Current implementation evidence: `ChessTrainer.buildFeeds(batchSize:boards:moves:zs:vBaselines:legalMasks:)`
+  in `Training/ChessTrainer.swift` still takes six positional arguments:
+  `batchSize`, `UnsafePointer<Float>` boards, `UnsafePointer<Int32>` moves,
+  `UnsafePointer<Float>` z outcomes, `UnsafePointer<Float>` value baselines,
+  and `UnsafePointer<Float>` legal masks. The same call sites still pass nested
+  `withUnsafeBufferPointer` base addresses from random-data sweep code and real
+  replay-buffer sample code. The original safety concern is still valid: three
+  same-typed `UnsafePointer<Float>` inputs can be silently swapped by a future
+  refactor and still produce a shaped batch.
 
-- **Human-vs-model play.** Let a human play a game against either
-  the champion or a trainer snapshot from the UI. Two motivating
-  cases: (1) sanity-checking the champion's actual play quality
-  outside arena numbers — does its play feel reasonable, does it
-  blunder obviously, does it understand basic tactics? (2) comparing
-  a mid-training trainer's behavior against its parent champion to
-  decide whether to force a promotion or keep training. Design
-  sketch:
-  - Move selection already goes through `MPSChessPlayer` /
-    `DirectMoveEvaluationSource`; the engine side needs no new
-    primitives.
-  - UI: extend the existing Play Game path to accept a slot picker
-    (champion / candidate / arbitrary trainer snapshot) plus a
+  Planned shape remains unchanged: wrap the inputs in a small `BatchFeedsInput`
+  struct with named fields so the compiler binds by name rather than position.
+  No behavioral change; pure call-site safety. Re-check `runPreparedStep` at the
+  same time if it grows beyond its current `feeds`, `prepMs`, `queueWaitMs`, and
+  `totalStart` argument list.
+
+- **Autosave retention pruning.** Still open, with corrected current-state
+  details. The old roadmap text was directionally right that autosaves are kept
+  indefinitely, but it understated the current persistence payload: modern
+  `.dcmsession` directories can include `replay_buffer.bin`, and the current
+  replay-buffer file format is v6, so disk growth can be larger than the older
+  "model + session.json only" session plan implied.
+
+  Current implementation evidence:
+  - `UpperContentView.periodicSaveIntervalSec` is `4 * 60 * 60`, and
+    `PeriodicSaveController` schedules 4-hour saves while Play-and-Train is
+    armed. The controller defers during arenas and resets its deadline after any
+    successful manual, post-promotion, or periodic save.
+  - Post-promotion autosave is enabled by `UpperContentView.autosaveSessionsOnPromote = true`.
+  - `CheckpointPaths.makeSessionDirectoryName` generates unique names of the
+    form `YYYYMMDD-HHMMSS-<sessionID>-<trigger>.dcmsession`; `CheckpointManager`
+    refuses to overwrite existing targets.
+  - No code path or menu item named "Manage Autosaves", "Trim to last N", or
+    equivalent pruning UI was found. The File menu currently exposes "Resume
+    Training from Autosave" and "Open Data Folder in Finder", not autosave
+    retention management.
+
+  Desired policy remains: manual saves are always preserved; post-promotion and
+  periodic autosaves may be pruned beyond the last N (configurable, default on
+  the order of 20); pruning should run lazily after successful saves so there is
+  no dedicated sweep racing save/load; optional UI can show total disk footprint,
+  counts per trigger, and a "Trim to last N" action. Deferred until disk
+  footprint is a demonstrated problem; the "never overwrite" invariant remains
+  in force until retention is explicitly implemented.
+
+- **Human-vs-model play.** Still open, but the current UI state needed
+  correction. The existing File/View command "Play Game" is not human-vs-model:
+  `UpperContentView.playSingleGame()` constructs one `ChessMachine`, creates a
+  `DirectMoveEvaluationSource(network: network)`, then creates both White and
+  Black as `MPSChessPlayer` instances pointing at the same champion network.
+  `startContinuousPlay()` does the same in a loop. A search found no `HumanPlayer`,
+  user-move player, slot picker, side-to-play picker, or UI path that lets a
+  human supply moves.
+
+  The original design goal remains valid: let a human play against either the
+  champion or a trainer/candidate snapshot from the UI, for sanity-checking play
+  quality and comparing a mid-training trainer against its parent champion.
+  Implementation sketch, corrected against current code:
+  - Engine side can reuse `ChessMachine`, `ChessGameEngine`, `ChessPlayer`,
+    `MPSChessPlayer`, and `DirectMoveEvaluationSource`; a new human-controlled
+    `ChessPlayer` implementation or a UI-driven move bridge is still needed.
+  - Extend the current Play Game command/path with a model slot picker
+    (champion / candidate inference network / frozen trainer snapshot) and a
     side-to-play picker.
-  - Trainer snapshot handling: since the trainer's weights change
-    every SGD step, "play against the current trainer" needs to
-    copy trainer weights into the candidate inference network at
-    game start (the same `exportWeights → loadWeights` path the
-    arena uses). If the user wants to freeze a specific mid-training
-    snapshot for longer play, expose a "Freeze Trainer Snapshot"
-    button that saves weights into a named slot.
-  - Must not block Play-and-Train: human-vs-model play uses the
-    persistent `candidateInferenceNetwork` (or a new dedicated
-    slot), not `trainer.network` directly, so SGD keeps running
-    while the human thinks.
-  - Not yet implemented — listed here as an active item so that
-    subsequent infrastructure changes (slot picker, named-snapshot
-    persistence, game-view plumbing) consider it.
+  - For trainer snapshots, copy trainer weights into an inference network using
+    the existing `exportWeights` → `loadWeights` path. The arena already uses
+    this pattern for candidate/champion snapshots, and `ChessNetwork.loadWeights`
+    validates tensor count and shape before assignment.
+  - Do not block Play-and-Train: human-vs-model should use
+    `candidateInferenceNetwork` or a dedicated inference slot, never call
+    `trainer.network` directly while SGD continues.
+  - If the user wants to preserve a mid-training opponent, expose a named
+    snapshot/freeze action rather than tying the game to continually-mutating
+    trainer weights.
 
-- **Adaptive learning-rate schedule.** Currently `learnRate` is a static
-  hyperparameter (default 5e-5) that the user adjusts manually via the
-  UI. Real-world deep-RL training benefits from LR scheduling — high LR
-  early to make fast progress on raw signal, then decay as the network
-  converges so late-stage updates don't oscillate.
+- **Adaptive learning-rate schedule.** Still open, with important corrections.
+  Current implementation is not a full schedule. `TrainingParameters.LearningRate`
+  defaults to `5e-5` and is live-tunable/persisted. `ChessTrainer.buildFeeds`
+  feeds the effective LR each step after applying two local multipliers: optional
+  `sqrtBatchScalingForLR` and linear warmup over `lrWarmupSteps`. The UI lets the
+  user edit learning rate and warmup; `[PARAM] learningRate` and
+  `[PARAM] lrWarmupSteps` logs are emitted on manual changes. Session restore
+  persists/restores `learningRate`, `lrWarmupSteps`, and `sqrtBatchScalingForLR`.
+
+  Not implemented: no `lr_init`, positions-per-decay `τ`, exponential decay,
+  promotion multiplier, LR floor, auto/off schedule toggle, schedule read-only
+  slider mode, or schedule persistence fields were found. `trainingPositionsSeen`
+  exists in `SessionCheckpointState`/logs but is not used to compute LR.
 
   ### Candidate trigger families (surveyed)
 
@@ -155,10 +182,11 @@ Long-term goals, deferred work, and notes on decisions.
   Batches cluster at 2,048 (AGZ, lc0, MuZero), with AZ doubling to
   4,096 and KataGo going small at 256. Outliers: KataGo in *shape*
   (mostly flat + late drop + EMA), MuZero in *mechanism* (continuous
-  exponential vs. discrete drops). At our current `learnRate = 5e-5`
-  we're roughly at KataGo's paper per-sample scale.
+  exponential vs. discrete drops). At current `learningRate = 5e-5`,
+  the project is roughly at KataGo's paper per-sample scale before any
+  future schedule overlay.
 
-  ### Chosen design
+  ### Chosen design (not yet implemented)
 
   MuZero-style continuous exponential decay keyed to
   `trainingPositionsSeen` (an invariant under live batch-size
@@ -173,8 +201,9 @@ Long-term goals, deferred work, and notes on decisions.
     non-increasing — no upward bumps on arena failure. Per the
     rejection above, failure-upward is more likely to hurt than help.
   - **Floor**: 1e-7 so long runs don't collapse to zero.
-  - **Optional warmup**: linear ramp from 0 → `lr_init` over first
-    ~2K steps, added only if early-training instability shows up.
+  - **Warmup interaction**: linear warmup already exists today via
+    `lrWarmupSteps` and should compose multiplicatively with the scheduled
+    LR if/when the schedule is added.
   - **Manual UI override wins**: "Schedule: auto / off" toggle; with
     off, the slider is authoritative and the schedule is paused
     (preserves the current auto value so re-enabling doesn't snap).
@@ -183,155 +212,228 @@ Long-term goals, deferred work, and notes on decisions.
     `[PARAM] learningRate <old>→<new> reason=<decay|promotion|warmup>`
     so change history lives alongside `[STATS]` in the session log.
   - **Persistence**: `lr_init`, `τ`, `γ_promotion`, schedule on/off,
-    and the last-computed LR all live in `session.json` so a reload
+    and the last-computed LR should live in `session.json` so a reload
     resumes at the same scheduled value rather than jumping.
 
   Deliberately *not* doing: step-milestone decay (operates on
-  training steps, which our live-tunable batch size makes
-  non-invariant), plateau-on-loss (our `pLoss` is outcome-weighted
-  and unbounded — unreliable plateau signal), replay-ratio aware
-  (the `ReplayRatioController` already handles cons/prod; doubling
-  up couples two control loops with no clear benefit), cosine/SGDR
-  (no natural epoch in self-play; adds a tunable without a
-  principled way to set it).
+  training steps, which live-tunable batch size makes non-invariant),
+  plateau-on-loss (`pLoss` is outcome-weighted and unbounded — unreliable
+  plateau signal), replay-ratio aware (the `ReplayRatioController` already
+  handles cons/prod; doubling up couples two control loops with no clear
+  benefit), cosine/SGDR (no natural epoch in self-play; adds a tunable
+  without a principled way to set it).
 
-- **Model and session save/load.** Today nothing persists across app
-  launches — quit mid-training and you lose the champion, the trainer,
-  every accumulated counter, and the replay buffer. Two file formats,
-  one underlying primitive.
+- **Compiled `MPSGraphExecutable`.** Still open. `ChessNetwork.evaluate`,
+  `ChessNetwork.evaluate(batchBoards:count:)`, export/load helpers, BN stats,
+  and `ChessTrainer.runPreparedStep` still call `graph.run(...)` directly.
+  `ChessMPSNetwork.NetworkInitMode.package(URL)` still throws
+  `ChessMPSNetworkError.packageLoadingNotImplemented`, so package loading is not
+  implemented. Pre-compiling via `graph.compile(...)` may still remove per-call
+  executable-cache lookup and provide a reusable serialized executable for the
+  package path, but this should be revisited only after measuring current
+  steady-state `graph.run` overhead.
 
-  **Single model — `.dcmmodel` (flat binary file).** Wraps one network's
-  weights plus identity and metadata. Fixed binary header, then the 37
-  tensors that come out of `ChessMPSNetwork.exportWeights()` in declared
-  order, then a trailing 32-byte SHA-256 over all preceding bytes for
-  integrity. Header carries: magic `"DCMMODEL"`, format version,
-  `archHash` (hash of filters / blocks / input channels / policy dim —
-  hard-refuses to load on mismatch, no migration), `numTensors`
-  sanity-check, creation wall-clock time, `ModelID`, parent `ModelID` at
-  time of save, and a JSON metadata blob (arena stats at mint,
+## Completed / corrected from older Future entries
+
+- **Model and session save/load — implemented, with scope expanded beyond the
+  original future plan.** The old Future entry said "Today nothing persists
+  across app launches — quit mid-training and you lose the champion, the trainer,
+  every accumulated counter, and the replay buffer." That statement is now
+  historical, not current. The original design context is preserved below, with
+  corrections against current code.
+
+  **Single model — `.dcmmodel` (flat binary file), implemented.** The original
+  plan was: wrap one network's weights plus identity and metadata in a fixed
+  binary header, then the tensors from `ChessMPSNetwork.exportWeights()` /
+  `ChessNetwork.exportWeights()` in declared order, then a trailing 32-byte
+  SHA-256 over all preceding bytes for integrity. Header carries magic
+  `"DCMMODEL"`, format version, `archHash` (hash of filters / blocks / input
+  channels / policy dim — hard-refuses to load on mismatch, no migration),
+  `numTensors` sanity-check, creation wall-clock time, `ModelID`, parent
+  `ModelID` at time of save, and a JSON metadata blob (arena stats at mint,
   training-step count, creator tag). Loadable into any training- or
-  inference-mode `ChessNetwork` via the existing `loadWeights` path —
-  this is the unit for "take any model at any point and use for
-  inference."
+  inference-mode `ChessNetwork` via the existing `loadWeights` path — this is
+  the unit for "take any model at any point and use for inference."
 
-  **Training session — `.dcmsession` (directory).** Holds
-  `champion.dcmmodel`, `trainer.dcmmodel`, and `session.json`. Making a
-  session a directory of `.dcmmodel` files rather than a custom bundle
-  means (a) extraction is free — Finder-copy any model out of a session
-  — and (b) only one binary format to debug. `session.json` is a
-  Codable blob with the session's stable `sessionID`, format version,
-  save and session-start wall-clock timestamps, accumulated training
-  time, all STATS-line counters (trainingSteps, selfPlayGames,
-  selfPlayMoves, trainingPositionsSeen), all hyperparameters that
-  appear in the arena footer (batch, lr, promote threshold, arena
-  games, sp/arena tau configs, self-play worker count), both network
-  IDs duplicated from the `.dcmmodel` headers for fast index reads,
-  and a light arena history (W/L/D + kept/promoted + step-at-run for
-  each arena so far). Excluded from v1: the 500k-position replay
-  buffer (~2.3 GB — resume warmup cost is ~5 min of self-play to
-  refill, acceptable), the candidate network (only exists mid-arena —
-  saving mid-arena is disallowed), and in-flight self-play games
-  (workers abandon on save, same behavior as Stop).
+  Current code evidence: `ModelCheckpointFile.swift` implements `.dcmmodel`
+  encode/decode with magic/version/arch hash, tensor count, metadata, weights,
+  and SHA-256 validation. `ChessNetwork.exportWeights()` returns the current
+  trainable variables plus BN running stats in declared order; current tensor
+  count is validated dynamically by `loadWeights` rather than being hard-coded in
+  ROADMAP. `ChessNetwork.loadWeights(_:)` checks tensor count and each tensor's
+  element count before assigning through prebuilt load placeholders.
 
-  **Save triggers.** Menu items: Save Session, Save Champion as Model,
-  Load Session, Load Model. Autosave on arena promotion defaults **on**
-  — every promotion writes a full session snapshot alongside the manual
-  saves. Save Session is disabled mid-arena; Load Session and Load Model
-  require Play-and-Train to be stopped.
+  **Training session — `.dcmsession` (directory), implemented and expanded.**
+  The original plan was a directory holding `champion.dcmmodel`,
+  `trainer.dcmmodel`, and `session.json`, rather than a custom bundle, so (a)
+  extraction is free — Finder-copy any model out of a session — and (b) only one
+  binary model format needs debugging. `session.json` was planned as a Codable
+  blob with stable `sessionID`, format version, save and session-start
+  wall-clock timestamps, accumulated training time, STATS-line counters
+  (`trainingSteps`, `selfPlayGames`, `selfPlayMoves`, `trainingPositionsSeen`),
+  hyperparameters appearing in the arena footer (batch, lr, promote threshold,
+  arena games, self-play/arena tau configs, self-play worker count), both
+  network IDs duplicated from `.dcmmodel` headers for fast index reads, and light
+  arena history (W/L/D + kept/promoted + step-at-run for each arena so far).
 
-  **File locations.** All saves — manual and auto — land in a fixed
-  Library path so there's one canonical place to find them:
-  `~/Library/Application Support/DrewsChessMachine/Sessions/` for
-  sessions, `~/Library/Application Support/DrewsChessMachine/Models/`
-  for single models. **Every save keeps the old file** — nothing is
-  ever overwritten. Users prune manually. Naming scheme is
-  `<YYYYMMDD-HHMMSS>-<modelID>-<trigger>.<ext>` where trigger is
-  `manual` or `promote`; the wall-clock prefix gives natural Finder
-  sort order. A "Reveal Saves in Finder" button opens the relevant
-  folder so the hidden `Application Support` location is discoverable.
-  Load uses the standard `fileImporter` sheet so you can drag in a
-  file from anywhere (Downloads, AirDrop, another machine) without
-  having to move it into the canonical folder first.
+  Current code evidence: `SessionCheckpointState` now contains all of the above
+  and more: game-result breakdown, replay-ratio settings, step delay / last
+  auto-computed delay, LR warmup, sqrt-batch LR scaling, replay-buffer min
+  positions, arena auto interval, candidate probe interval, legal-mass collapse
+  thresholds, build metadata, replay-buffer presence/counters, training segments,
+  arena concurrency, and expanded arena side-breakdown fields. `CheckpointManager`
+  writes `champion.dcmmodel`, `trainer.dcmmodel`, `session.json`, and, when
+  requested, `replay_buffer.bin`.
 
-  **Every save is self-verified before it's marked successful.** After
-  writing the file(s) atomically (tmp + fsync + rename), the save code
-  (1) re-reads the file from disk, (2) bit-compares the re-read tensors
-  byte-for-byte against the `[[Float]]` that was exported pre-write,
-  and (3) loads the saved weights into a throwaway
-  `ChessMPSNetwork` and runs a forward pass on a canonical test
-  position (starting position + one fixed mid-game FEN), comparing
-  policy and value outputs bit-exact to the same forward pass on the
-  source network. Any mismatch deletes the freshly-written `.tmp`,
-  leaves any prior save in the folder untouched (since we keep
-  history), and surfaces a user-visible error. This gives us production
-  round-trip correctness checking for free on every save — a
-  `loadWeights` regression shows up on the user's next save attempt,
-  not three hours later on resume.
+  **Important correction to the original v1 exclusions.** The original plan
+  excluded the 500k-position replay buffer (~2.3 GB / later noted as 4.6 GB)
+  because resume warmup/refill was considered acceptable, excluded the candidate
+  network because it only exists mid-arena, and excluded in-flight self-play
+  games because workers abandon on save like Stop. Current code no longer
+  excludes replay-buffer contents when `state.hasReplayBuffer == true` and a
+  `ReplayBuffer` is passed: `CheckpointManager.saveSession` writes
+  `replay_buffer.bin`, updates `session.json` replay counters from the exact
+  `ReplayBuffer.write(to:)` snapshot, and verifies by restoring into a scratch
+  buffer. Candidate network and in-flight games remain excluded from session
+  state.
 
-  **Validation — this plan doesn't complete until all of these pass.**
-  (1) Build succeeds. (2) Round-trip a single model: Save Champion as
-  Model → quit → relaunch → Load Model → run Forward Pass on a fixed
-  FEN → policy and value outputs are bit-exact identical to pre-save.
-  (3) Round-trip a session: Play-and-Train for a few minutes → Save
-  Session → quit → relaunch → Load Session → `session.json` counters
-  and ModelIDs match → champion and trainer Forward Pass outputs are
-  bit-exact on a fixed FEN → Play-and-Train resumes, buffer refills,
-  a subsequent arena runs and can promote. (4) Arch-mismatch file —
-  hand-edit `archHash` or build with different filter/block counts —
-  refuses to load with a clear user-facing error, no crash, no
-  silent success. (5) Truncated file — cut the last 1 KB of a
-  `.dcmmodel` — refuses to load with a clear error, no crash.
-  (6) SHA mismatch — flip one byte in the middle of a `.dcmmodel` —
-  refuses to load with a clear error. (7) Save-mid-arena is
-  disallowed — menu item is disabled or errors clearly during an
-  arena. (8) Save atomicity — kill the process mid-save (`SIGKILL`
-  while writing `.tmp`) → prior save on disk is still intact, no
-  half-written file left behind. (9) Every existing test still passes.
+  **Save triggers, implemented with naming updates.** Original plan: Menu items
+  Save Session, Save Champion as Model, Load Session, Load Model; autosave on
+  arena promotion defaults on; Save Session disabled mid-arena; Load Session and
+  Load Model require Play-and-Train to be stopped. Current File menu implements
+  Save Session, Save Champion, Load Session, Load Model, Load Parameters, Save
+  Parameters, Resume Training from Autosave, and Open Data Folder in Finder.
+  Save Session is disabled unless real training is active and no arena/save is
+  running. Load Session/Model are disabled during real training, continuous play,
+  continuous training, sweep, game play, build, or save-in-flight. Post-promotion
+  autosave is enabled by `autosaveSessionsOnPromote = true`, and periodic
+  4-hour autosave is also implemented.
 
-  **Session restore coverage.** What is saved in `.dcmsession` and
-  what happens on resume:
+  **File locations, implemented with corrected session naming.** Original plan:
+  all saves — manual and auto — land under fixed Library paths:
+  `~/Library/Application Support/DrewsChessMachine/Sessions/` for sessions and
+  `~/Library/Application Support/DrewsChessMachine/Models/` for single models.
+  Every save keeps the old file; nothing is overwritten; users prune manually.
+  The planned naming scheme was `<YYYYMMDD-HHMMSS>-<modelID>-<trigger>.<ext>`
+  where trigger is `manual` or `promote`; wall-clock prefix gives natural Finder
+  sort order; a reveal/open button makes the hidden `Application Support`
+  location discoverable; load uses a file importer so files can be loaded from
+  anywhere.
 
-  | Field | Save | Restore |
+  Current code evidence: `CheckpointPaths.rootURL`, `sessionsDir`, and
+  `modelsDir` implement the Library paths. `CheckpointPaths.makeFilename` uses
+  `<timestamp>-<modelID>-<trigger>.<ext>` for standalone models.
+  `CheckpointPaths.makeSessionDirectoryName` uses
+  `<timestamp>-<sessionID>-<trigger>.dcmsession` for sessions, so multiple
+  autosaves for the same run cluster by stable session ID rather than by a fresh
+  model ID. `CheckpointManager` refuses overwrites with target-exists guards.
+  The UI command is currently named "Open Data Folder in Finder" rather than the
+  originally proposed "Reveal Saves in Finder".
+
+  **Every save is self-verified before it is marked successful — implemented and
+  hardened.** Original plan: after atomic writing (tmp + fsync + rename), re-read
+  the file(s), bit-compare tensors against exported `[[Float]]`, load weights
+  into a throwaway `ChessMPSNetwork`, run forward pass on canonical test
+  positions (starting position + one fixed mid-game FEN), and compare policy and
+  value outputs bit-exactly to the source network. Any mismatch deletes the fresh
+  `.tmp`, leaves prior saves untouched, and surfaces a user-visible error.
+
+  Current code evidence: `CheckpointManager.saveModel` and `saveSession` perform
+  model verification via `verifyModelFile`, session JSON decode round-trip,
+  replay-buffer scratch restore/counter comparison when a replay buffer is
+  present, `F_FULLFSYNC` on files/directories, tmp staging, atomic final rename,
+  parent-directory sync, and launch-time orphan cleanup of interrupted `.tmp`
+  artifacts. See the existing Completed entry "Session durability hardening —
+  saved means golden" for the full durability pipeline.
+
+  **Original validation checklist, status after implementation.**
+  (1) Build succeeds — covered by current project/test workflow, not rerun by
+  this documentation-only roadmap edit. (2) Round-trip a single model: Save
+  Champion → quit → relaunch → Load Model → run Forward Pass on a fixed FEN →
+  policy/value bit-exact to pre-save — supported by model encode/decode,
+  `loadWeights`, and save verification. (3) Round-trip a session:
+  Play-and-Train → Save Session → quit → relaunch → Load Session → counters and
+  ModelIDs match → champion/trainer forward outputs bit-exact → Play-and-Train
+  resumes and later arena can promote — supported by session state restore and
+  model verification; replay buffer now can restore rather than always refill.
+  (4) Arch-mismatch file refuses to load with a clear error — implemented via
+  `.dcmmodel` arch hash. (5) Truncated `.dcmmodel` refuses to load. (6) SHA
+  mismatch in `.dcmmodel` refuses to load. (7) Save-mid-arena is disabled or
+  errors clearly — Save Session menu is disabled while `isArenaRunning`. (8)
+  Save atomicity under `SIGKILL` while writing `.tmp` leaves prior saves intact
+  and launch cleanup removes orphans — implemented via tmp staging, no-overwrite
+  final rename, fsyncs, and `CheckpointPaths.cleanupOrphans()`. (9) Existing
+  tests should still pass — not rerun for this roadmap-only task.
+
+  **Session restore coverage — original table corrected against current code.**
+
+  | Field | Save | Restore / current status |
   |---|---|---|
   | Champion + trainer weights | `.dcmmodel` files | loaded into networks |
   | Champion + trainer model IDs | `session.json` | restored to identifiers |
   | Session ID | `session.json` | inherited for continuity |
-  | Elapsed training time | `session.json` | back-dated `sessionStart` anchor |
-  | Training step count | `session.json` | seeded into both stats boxes |
-  | Self-play games / moves | `session.json` | seeded into `ParallelWorkerStatsBox` |
-  | Game results (W/B checkmates, stalemate, 50-move, 3-fold, insuff. material) | `session.json` | seeded into `ParallelWorkerStatsBox` |
-  | Learning rate | `session.json` | restored to `@AppStorage` + trainer |
-  | Replay ratio target + auto-adjust toggle | `session.json` | restored to `@State` + controller |
-  | Step delay + last auto-computed delay | `session.json` | restored to `@AppStorage` |
-  | Self-play worker count | `session.json` | restored to `@State` |
-  | Arena history (W/L/D, score, promoted flag per arena) | `session.json` | rebuilt into `tournamentHistory` |
-  | Replay buffer contents | not saved (4.6 GB) | refills in ~5 min |
-  | Progress rate chart samples | not saved | rebuilds from new data |
-  | Rolling loss windows | not saved | rebuilds from new steps |
+  | Elapsed training time | `session.json` | back-dated `sessionStart` anchor / training segments now add more context |
+  | Training step count | `session.json` | seeded into stats/trainer state |
+  | Self-play games / moves | `session.json` | seeded into `ParallelWorkerStatsBox` / display state |
+  | Game results (W/B checkmates, stalemate, 50-move, 3-fold, insuff. material) | `session.json` Optional fields | restored when present, back-compatible when absent |
+  | Learning rate | `session.json` | restored to `TrainingParameters` + trainer |
+  | LR warmup + sqrt-batch LR scaling | `session.json` Optional fields | restored when present; this is newer than original table |
+  | Replay ratio target + auto-adjust toggle | `session.json` Optional fields | restored to live parameters/controller state when present |
+  | Step delay + last auto-computed delay | `session.json` Optional fields | restored when present |
+  | Self-play worker count | `session.json` | restored/clamped to runtime worker bounds |
+  | Arena concurrency | `session.json` Optional field | restored/clamped; newer than original table |
+  | Arena/candidate/legal-mass tuning fields | `session.json` Optional fields | restored when present; newer than original table |
+  | Build metadata | `session.json` Optional fields | displayed/used for forensic context; newer than original table |
+  | Training segments | `session.json` Optional array | restored/summed for active-training-time history; newer than original table |
+  | Arena history (W/L/D, score, promoted flag per arena) | `session.json` | rebuilt into `tournamentHistory`; side breakdown fields are optional/back-compatible |
+  | Replay buffer contents | `replay_buffer.bin` when `hasReplayBuffer == true` | restored via `ReplayBuffer.restore(from:)` and cross-checked against `session.json`; older sessions without a buffer still resume by refilling |
+  | Progress rate chart samples | not saved as the original table said | rebuilds from new data |
+  | Rolling loss windows | not saved as the original table said | rebuilds from new steps |
 
-- **Compiled `MPSGraphExecutable`.** `ChessNetwork.evaluate` currently calls
-  `graph.run(with:feeds:targetTensors:targetOperations:)`. MPSGraph caches a
-  compiled executable internally keyed on feed shapes, so the steady-state
-  cost is close to a hand-compiled executable, but pre-compiling via
-  `graph.compile(...)` would remove per-call cache lookup and give us a
-  reusable `MPSGraphExecutable` we can serialize for the
-  `NetworkInitMode.package` path. Worth revisiting once training lands.
+- **Legal-move masking in the training policy loss — implemented for training,
+  not for inference.** The old Future item "Fuse legal-move masking into the
+  policy head" said the graph emitted a full policy and the CPU masked illegal
+  moves. That is no longer fully accurate. `ChessTrainer.buildTrainingOps` now
+  creates a `legal_move_mask` placeholder, builds `masked_logits =
+  network.policyOutput + (1 - legalMask) * -1e9`, and feeds `maskedLogits` to
+  `graph.softMaxCrossEntropy(...)`. `ChessTrainer.buildFeeds` writes the
+  `legalMasks` pointer into a cached `legalMaskND` and includes
+  `legalMaskPlaceholder` in the feeds dictionary. Thus the training loss's
+  softmax is graph-masked.
 
-- **Fuse legal-move masking into the policy head.** Today the graph emits a
-  full 4096-way softmax and the CPU masks illegal moves and renormalizes.
-  An alternative is adding a `legalMask` placeholder, switching `policyHead`
-  to emit logits, and computing
-  `softmax(logits + (legalMask - 1) * 1e9)` inside the graph. Marginal at
-  batch=1; potentially worthwhile when batching positions.
+  Inference remains intentionally unmasked at the network boundary:
+  `ChessNetwork.evaluate` returns raw 4864 logits, `ChessRunner` softmaxes for
+  the Forward Pass demo, and `MPSChessPlayer` samples over legal moves using the
+  move list it is given. Keeping raw logits visible preserves diagnostics such
+  as illegal-mass/top-cell collapse; do not describe current training as using a
+  CPU-renormalized policy loss.
 
-- **Partial heap or quickselect for top-k policy moves.**
-  `ChessRunner.extractTopMoves` currently full-sorts the 4096-entry policy
-  vector to pull the top 4 (O(n log n) ≈ 49k comparisons). A size-k min-heap
-  walk would be O(n log k) ≈ 8k comparisons; quickselect would be ~O(n) on
-  average. The absolute savings are microseconds and this only runs on the
-  Run Forward Pass demo button — not the self-play hot path — so it's
-  cosmetic. Worth doing if we ever start ranking top-k moves per ply during
-  search.
+## Decisions not pursued / historical notes
+
+- **Inference-side graph legal-mask softmax is not currently being pursued.**
+  Because training now masks logits in-graph and inference diagnostics benefit
+  from seeing illegal raw logits, the remaining version of this idea is only an
+  inference-path optimization/design change: add a legal-mask feed to inference
+  and return already-normalized legal probabilities. That would hide illegal-mass
+  telemetry unless a raw-logit path were retained. Keep the current raw-logit
+  inference contract unless a measured hot path needs graph-side inference
+  masking.
+
+- **Partial heap / quickselect for top-k policy moves is not worth changing now.**
+  The original text cited a 4096-entry policy vector. Current architecture v2
+  has `ChessNetwork.policySize = 76 * 8 * 8 = 4864`, and
+  `ChessRunner.extractTopMoves` full-sorts the policy indices. That full sort is
+  intentional after the catastrophic-collapse fix: sorting the whole vector
+  guarantees enough on-board decoded moves even when the top cells are off-board.
+  The path is the Forward Pass / Candidate Test UI path, not the self-play hot
+  path. Revisit a heap/quickselect only if top-k extraction moves into a per-ply
+  search/hot loop, and preserve the full-vector/off-board robustness.
+
+- **Old per-worker-network self-play topology is historical.** The existing
+  Completed section preserves the original N-worker design in detail, but current
+  runtime uses a shared `BatchedMoveEvaluationSource` rather than
+  `secondarySelfPlayNetworks`. Treat that section as context, not current
+  architecture.
 
 ## Tech debt / migrations to remove
 
