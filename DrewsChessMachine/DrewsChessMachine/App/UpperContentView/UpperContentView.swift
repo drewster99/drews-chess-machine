@@ -621,6 +621,16 @@ struct UpperContentView: View {
     @State private var arenaPopoverTauStartError: Bool = false
     @State private var arenaPopoverTauDecayError: Bool = false
     @State private var arenaPopoverTauFloorError: Bool = false
+    /// Lifetime training step count at the moment the current
+    /// Play-and-Train segment started (the same instant
+    /// `parallelWorkerStatsBox.sessionStart` is captured). On a
+    /// resumed session the trainer's seeded `_stats.steps` carries
+    /// the cumulative pre-resume count, so the Run Totals rate
+    /// numerator must subtract this baseline to express
+    /// this-segment-only steps over this-segment-only wall time.
+    /// `Avg total` divisor uses the same baseline so it's also
+    /// per-segment and not under-reported by lifetime steps.
+    @State private var trainingStepsAtSegmentStart: Int = 0
     /// Drives the Arena History sheet. Set true when the user clicks
     /// "History" in the Arena popover; the popover dismisses itself
     /// before flipping this flag so the sheet doesn't anchor to a
@@ -6285,7 +6295,17 @@ struct UpperContentView: View {
         let pStatsBox: ParallelWorkerStatsBox
         if continueMode, let existing = parallelWorkerStatsBox {
             pStatsBox = existing
+            // continueMode preserves the prior box's sessionStart, so
+            // the segment baseline must stay where it was — don't
+            // reset it here, otherwise the very next Stop/Start cycle
+            // would re-zero a still-open segment's rate.
         } else if let rs = resumeState {
+            // Resumed session: trainer was seeded with `rs.trainingSteps`
+            // (see `liveStatsBox.seed(seeded)` in `runRealTraining`),
+            // so the rate numerator must subtract that as the
+            // segment-start baseline to express this-segment steps
+            // over this-segment wall time.
+            trainingStepsAtSegmentStart = rs.trainingSteps
             pStatsBox = ParallelWorkerStatsBox(
                 sessionStart: Date(),
                 totalGames: rs.selfPlayGames,
@@ -6309,6 +6329,8 @@ struct UpperContentView: View {
                 lastAutoComputedDelayMs = autoDelay
             }
         } else {
+            // Fresh session — no resumed steps to subtract.
+            trainingStepsAtSegmentStart = 0
             pStatsBox = ParallelWorkerStatsBox(sessionStart: Date())
         }
         parallelWorkerStatsBox = pStatsBox
@@ -9513,15 +9535,31 @@ struct UpperContentView: View {
 
         if let stats = trainingStats {
             let stepsStr = stats.steps.formatted(.number.grouping(.automatic))
+            // Steps actually completed in *this* segment — the trainer
+            // is seeded with the resumed lifetime count so `stats.steps`
+            // alone is lifetime, but `totalStepMs` resets each segment.
+            // Subtract the segment-start baseline so Avg total and
+            // Steps/sec describe the live segment, not a phantom
+            // ratio of this-segment-ms over lifetime-steps.
+            let segmentSteps = max(0, stats.steps - trainingStepsAtSegmentStart)
             // Train time is the sum of per-step wall times — wall time
             // the trainer actually spent inside `trainStep`, exclusive
             // of buffer warmup, gate pauses, and any other idle gaps.
             // Useful as "cumulative GPU training cost"; intentionally
             // not the rate denominator below.
-            let trainTimeStr = stats.steps > 0
+            let trainTimeStr = segmentSteps > 0
             ? String(format: "%.2f s", stats.trainingSeconds)
             : dash
-            let avgTotal = stats.steps > 0 ? String(format: "%7.2f ms", stats.avgStepMs) : dash
+            // Avg total is computed against `segmentSteps` rather than
+            // `stats.steps` so a resumed session displays the live
+            // per-step wall time, not totalStepMs/lifetime-steps.
+            let avgTotal: String
+            if segmentSteps > 0 {
+                let avgMs = stats.totalStepMs / Double(segmentSteps)
+                avgTotal = String(format: "%7.2f ms", avgMs)
+            } else {
+                avgTotal = dash
+            }
 
             // Rate denominator: prefer session wall clock from the
             // parallel-worker stats box when one is present (Play
@@ -9539,17 +9577,17 @@ struct UpperContentView: View {
                 rateDenomSec = max(0.1, stats.trainingSeconds)
             }
 
-            let stepsPerSec: Double = stats.steps > 0
-            ? Double(stats.steps) / rateDenomSec
+            let stepsPerSec: Double = segmentSteps > 0
+            ? Double(segmentSteps) / rateDenomSec
             : 0
-            let movesPerSec: Double = stats.steps > 0
-            ? Double(stats.steps * trainingParams.trainingBatchSize) / rateDenomSec
+            let movesPerSec: Double = segmentSteps > 0
+            ? Double(segmentSteps * trainingParams.trainingBatchSize) / rateDenomSec
             : 0
 
-            let rateStr = stats.steps > 0 ? String(format: "%.2f", stepsPerSec) : dash
+            let rateStr = segmentSteps > 0 ? String(format: "%.2f", stepsPerSec) : dash
             let movesSecStr: String
             let movesHrStr: String
-            if stats.steps > 0 {
+            if segmentSteps > 0 {
                 movesSecStr = Int(movesPerSec.rounded())
                     .formatted(.number.grouping(.automatic))
                 movesHrStr = Int((movesPerSec * 3600).rounded())

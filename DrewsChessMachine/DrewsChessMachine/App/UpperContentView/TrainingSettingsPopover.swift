@@ -82,10 +82,15 @@ struct TrainingSettingsPopover: View {
                     error: lrError,
                     placeholder: "5.00e-05"
                 ) {
+                    // Half-decade (×√10 ≈ ×3.162) ladder: two
+                    // clicks span one order of magnitude. Lets the
+                    // user walk LR with finer granularity than a
+                    // pure ×10 step while still climbing a decade
+                    // in only two presses.
                     Stepper(
                         "",
-                        onIncrement: { stepLRBy(factor: 10) },
-                        onDecrement: { stepLRBy(factor: 0.1) }
+                        onIncrement: { stepLRBy(factor: sqrt(10.0)) },
+                        onDecrement: { stepLRBy(factor: 1.0 / sqrt(10.0)) }
                     )
                 }
                 VStack(alignment: .leading, spacing: 6) {
@@ -314,12 +319,13 @@ struct TrainingSettingsPopover: View {
         )
     }
 
-    /// Multiply the current LR text by `factor` (10 for `+`, 0.1 for
-    /// `-`), clamp into `TrainingParameters` range `[1e-7, 1.0]`, and
-    /// write back. The log ladder is necessary because LR spans
-    /// seven orders of magnitude — a linear `step:` would be either
-    /// useless at the small end or jump past the working range at
-    /// the large end.
+    /// Multiply the current LR text by `factor` (`√10` for `+`,
+    /// `1/√10` for `-`), clamp into `TrainingParameters` range
+    /// `[1e-7, 1.0]`, and write back. The half-decade log ladder
+    /// is necessary because LR spans seven orders of magnitude —
+    /// a linear `step:` would be either useless at the small end
+    /// or jump past the working range at the large end. Two
+    /// presses move exactly one order of magnitude.
     private func stepLRBy(factor: Double) {
         let trimmed = lrText.trimmingCharacters(in: .whitespaces)
         let current = Double(trimmed) ?? 5e-5
