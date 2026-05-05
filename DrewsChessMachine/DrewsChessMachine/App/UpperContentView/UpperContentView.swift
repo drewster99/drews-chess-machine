@@ -618,6 +618,11 @@ struct UpperContentView: View {
     @State private var arenaPopoverGamesError: Bool = false
     @State private var arenaPopoverConcurrencyError: Bool = false
     @State private var arenaPopoverIntervalError: Bool = false
+    /// Drives the Arena History sheet. Set true when the user clicks
+    /// "History" in the Arena popover; the popover dismisses itself
+    /// before flipping this flag so the sheet doesn't anchor to a
+    /// dying popover.
+    @State private var showArenaHistorySheet: Bool = false
     // Sampling cadence (`chartCoordinator.progressRateLastFetch`,
     // `chartCoordinator.progressRateNextId`, `chartCoordinator.trainingChartNextId`,
     // `chartCoordinator.prevChartTotalGpuMs`), chart navigation (`chartCoordinator.scrollX`,
@@ -1566,6 +1571,14 @@ struct UpperContentView: View {
         .onAppear { handleBodyOnAppear() }
         .sheet(isPresented: $autoResumeSheetShowing) {
             autoResumeSheetContentView()
+        }
+        .sheet(isPresented: $showArenaHistorySheet) {
+            ArenaHistoryView(
+                history: tournamentHistory,
+                configuredGamesPerTournament: trainingParams.arenaGamesPerTournament,
+                promoteThreshold: trainingParams.arenaPromoteThreshold,
+                onClose: { showArenaHistorySheet = false }
+            )
         }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
             handleWindowWillClose(note: note)
@@ -2869,7 +2882,10 @@ struct UpperContentView: View {
                 candidateLossesAsWhite: record.candidateLossesAsWhite,
                 candidateLossesAsBlack: record.candidateLossesAsBlack,
                 candidateDrawsAsWhite: record.candidateDrawsAsWhite,
-                candidateDrawsAsBlack: record.candidateDrawsAsBlack
+                candidateDrawsAsBlack: record.candidateDrawsAsBlack,
+                finishedAtUnix: record.finishedAt.map { Int64($0.timeIntervalSince1970) },
+                candidateID: record.candidateID?.description,
+                championID: record.championID?.description
             )
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
@@ -4827,6 +4843,9 @@ struct UpperContentView: View {
         let durationSec = Date().timeIntervalSince(startTime)
         let record = TournamentRecord(
             finishedAtStep: steps,
+            finishedAt: Date(),
+            candidateID: candidateInference.identifier,
+            championID: arenaChampion.identifier,
             gamesPlayed: playedGames,
             candidateWins: stats.playerAWins,
             championWins: stats.playerBWins,
@@ -6212,6 +6231,11 @@ struct UpperContentView: View {
                 }
                 return TournamentRecord(
                     finishedAtStep: entry.finishedAtStep,
+                    finishedAt: entry.finishedAtUnix.map {
+                        Date(timeIntervalSince1970: TimeInterval($0))
+                    },
+                    candidateID: entry.candidateID.map { ModelID(value: $0) },
+                    championID: entry.championID.map { ModelID(value: $0) },
                     gamesPlayed: gp,
                     candidateWins: entry.candidateWins,
                     championWins: entry.championWins,
@@ -8108,6 +8132,7 @@ struct UpperContentView: View {
                         nextArenaDate: arenaTriggerBox.map {
                             $0.lastArenaTime.addingTimeInterval(trainingParams.arenaAutoIntervalSec)
                         },
+                        lastArena: tournamentHistory.last,
                         isArenaRunning: isArenaRunning,
                         realTraining: realTraining,
                         gamesText: $arenaPopoverGamesText,
@@ -8120,6 +8145,11 @@ struct UpperContentView: View {
                             SessionLogger.shared.log("[BUTTON] Run Arena (popover)")
                             arenaTriggerBox?.trigger()
                             showArenaPopover = false
+                        },
+                        onShowHistory: {
+                            SessionLogger.shared.log("[BUTTON] Open Arena History")
+                            showArenaPopover = false
+                            showArenaHistorySheet = true
                         },
                         onCancel: { showArenaPopover = false },
                         onSave: { arenaPopoverSave() },
@@ -9166,49 +9196,12 @@ struct UpperContentView: View {
             lines.append("  Moves/hr:    \(movesHrStr)")
         }
 
-        // Arena history — present only in self-play runs. One line per
-        // completed tournament, newest last. Promotion marker is
-        // visually distinct so you can scan for it.
-        if isSelfPlay, !tournamentHistory.isEmpty {
-            lines.append("")
-            lines.append("Arena History")
-            for (idx, record) in tournamentHistory.enumerated() {
-                let number = String(format: "%2d", idx + 1)
-                let stepStr = record.finishedAtStep.formatted(.number.grouping(.automatic))
-                let scoreStr = String(format: "%.3f", record.score)
-                // Promoted rows append the ID of the new champion
-                // and the kind of promotion (auto vs manual) so a
-                // quick scan of the stats panel tells the same
-                // story as the session log's [ARENA] lines.
-                let marker: String
-                let kindSuffix: String
-                switch record.promotionKind {
-                case .automatic:
-                    kindSuffix = " (auto)"
-                case .manual:
-                    kindSuffix = " (manual)"
-                case .none:
-                    kindSuffix = ""
-                }
-                if record.promoted, let pid = record.promotedID {
-                    marker = "PROMOTED\(kindSuffix)=\(pid.description)"
-                } else if record.promoted {
-                    marker = "PROMOTED\(kindSuffix)"
-                } else {
-                    marker = "kept"
-                }
-                let durStr = Self.formatElapsed(record.durationSec)
-                // Games played vs configured total — e.g. "12/200"
-                // when the user aborted at game 12.
-                let gamesStr = "\(record.gamesPlayed)/\(trainingParams.arenaGamesPerTournament)"
-                lines.append(String(
-                    format: "  #%@ @ %@ steps  games %@  %d-%d-%d  score %@  %@  (%@)",
-                    number, stepStr, gamesStr,
-                    record.candidateWins, record.championWins, record.draws,
-                    scoreStr, marker, durStr
-                ))
-            }
-        }
+        // Arena history used to be appended here as a multi-line
+        // block. It now lives in the Arena History sheet (opened
+        // via the History button in the Arena settings popover) so
+        // the stats text panel stays focused on live training
+        // counters and doesn't grow unboundedly with every
+        // tournament.
 
         return (header: header, body: lines.joined(separator: "\n"))
     }

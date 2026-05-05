@@ -8,6 +8,19 @@ struct TournamentRecord: Sendable, Identifiable {
     let id = UUID()
     /// `trainingStats.steps` at the moment the tournament finished.
     let finishedAtStep: Int
+    /// Wall-clock time the tournament finished. `nil` for legacy
+    /// records loaded from session files written before the field
+    /// existed. Live arenas always populate it; the only nil case
+    /// in normal operation is "resumed from an old `.dcmsession`".
+    var finishedAt: Date? = nil
+    /// Candidate's `ModelID` as it played in the arena (the trainer's
+    /// snapshot ID at arena start). `nil` on legacy records loaded
+    /// from session files written before per-record IDs were stored.
+    var candidateID: ModelID? = nil
+    /// Champion's `ModelID` as it played in the arena (the live
+    /// champion's ID at arena start, *before* any promotion copy).
+    /// `nil` on legacy records.
+    var championID: ModelID? = nil
     /// Number of arena games that actually completed before the
     /// tournament ended. May be less than `Self.tournamentGames` if
     /// the user clicked Abort or Promote mid-tournament, or if the

@@ -90,6 +90,18 @@ struct ArenaHistoryEntryCodable: Codable, Equatable {
     var candidateLossesAsBlack: Int?
     var candidateDrawsAsWhite: Int?
     var candidateDrawsAsBlack: Int?
+    /// Wall-clock time (seconds since 1970) the tournament
+    /// finished. Optional for back-compat with session files
+    /// written before the field existed; the Arena History UI
+    /// renders "—" when nil.
+    var finishedAtUnix: Int64?
+    /// Candidate `ModelID` description (e.g. `20260505-3-A1B2`).
+    /// Optional for back-compat. Surfaces alongside the verdict
+    /// in the Arena History UI.
+    var candidateID: String?
+    /// Champion `ModelID` description as of arena start, before
+    /// any promotion copy. Optional for back-compat.
+    var championID: String?
 }
 
 // MARK: - Session State
