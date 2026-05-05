@@ -333,6 +333,24 @@ Long-term goals, deferred work, and notes on decisions.
   cosmetic. Worth doing if we ever start ranking top-k moves per ply during
   search.
 
+## Tech debt / migrations to remove
+
+- **Drop v1 trainer.dcmmodel zero-pad migration** *(added 2026-05-04;
+  remove after 2026-06-04)*. Trainer state persistence (Polyak momentum
+  velocity) was added with `ModelCheckpointFile` format version 2,
+  bumping from v1 (trainables + bn) to v2 (trainables + bn + velocity).
+  The decoder accepts both versions; the trainer's
+  `loadTrainerWeights(_:)` count-detects v1 files and leaves velocity
+  at zero-init. After 2026-06-04, any in-flight v1 trainer.dcmmodel
+  files should have been re-saved as v2 (a single Save Session
+  re-emits with the new format), so the v1 acceptance branch can be
+  removed:
+  - Tighten `ModelCheckpointFile.supportedReadVersions` to `[2]` only.
+  - Remove the `weights.count == v1Count` branch in
+    `ChessTrainer.loadTrainerWeights(_:)`.
+  - Remove the `// TODO(persist-velocity, after 2026-06-04)` marker
+    comments in both files.
+
 ## Findings
 
 - **Batch-size sweep is reliable at 1 s per batch size.** The Batch Size

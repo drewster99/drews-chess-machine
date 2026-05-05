@@ -3221,8 +3221,11 @@ struct UpperContentView: View {
             var trainerWeights: [[Float]] = []
             var trainerError: Error?
             do {
+                // exportTrainerWeights bundles trainables + bn +
+                // momentum velocity. Caller is responsible for
+                // pausing both gates, which we did above.
                 trainerWeights = try await Task.detached(priority: .userInitiated) {
-                    try await trainer.network.exportWeights()
+                    try await trainer.exportTrainerWeights()
                 }.value
             } catch {
                 trainerError = error
@@ -4786,6 +4789,15 @@ struct UpperContentView: View {
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
                         try await trainer.network.loadWeights(weights)
+                        // The trainer's accumulated momentum velocity
+                        // points against the OLD weight surface, which
+                        // has just been entirely replaced. Zero the
+                        // velocity buffers so the optimizer restarts
+                        // momentum from scratch on the new weights.
+                        // Both gates are paused at this point, so the
+                        // trainer's velocity I/O is safe to drive
+                        // directly on network.graph.
+                        try await trainer.resetVelocitiesToZero()
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
@@ -5556,6 +5568,7 @@ struct UpperContentView: View {
             trainer.weightDecayC = Float(trainingParams.weightDecay)
             trainer.gradClipMaxNorm = Float(trainingParams.gradClipMaxNorm)
             trainer.policyScaleK = Float(trainingParams.policyScaleK)
+            trainer.momentumCoeff = Float(trainingParams.momentumCoeff)
             trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
             trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
             trainer.batchStatsInterval = trainingParams.batchStatsInterval
@@ -5569,6 +5582,7 @@ struct UpperContentView: View {
                 weightDecayC: Float(trainingParams.weightDecay),
                 gradClipMaxNorm: Float(trainingParams.gradClipMaxNorm),
                 policyScaleK: Float(trainingParams.policyScaleK),
+                momentumCoeff: Float(trainingParams.momentumCoeff),
                 sqrtBatchScalingForLR: trainingParams.sqrtBatchScalingLR,
                 lrWarmupSteps: trainingParams.lrWarmupSteps
             )
@@ -6131,6 +6145,7 @@ struct UpperContentView: View {
                 trainer.weightDecayC = Float(trainingParams.weightDecay)
                 trainer.gradClipMaxNorm = Float(trainingParams.gradClipMaxNorm)
                 trainer.policyScaleK = Float(trainingParams.policyScaleK)
+                trainer.momentumCoeff = Float(trainingParams.momentumCoeff)
                 trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
                 trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
             }
@@ -6556,17 +6571,31 @@ struct UpperContentView: View {
                     try await Task.detached(priority: .userInitiated) {
                         [resumedTrainerWeights] in
                         if let trainerWeights = resumedTrainerWeights {
-                            try await trainer.network.loadWeights(trainerWeights)
+                            // loadTrainerWeights detects v1 vs v2 layout
+                            // by count: v2 includes velocity tensors,
+                            // v1 (legacy) is trainables+bn only and
+                            // leaves velocity at zero-init.
+                            try await trainer.loadTrainerWeights(trainerWeights)
                         } else {
+                            // No prior trainer file (fresh session or
+                            // pre-existing session without trainer.dcmmodel):
+                            // fork from champion. Champion has no
+                            // velocities, so loadTrainerWeights takes the
+                            // v1 branch and velocity stays at zero-init.
                             let championWeights = try await network.exportWeights()
-                            try await trainer.network.loadWeights(championWeights)
+                            try await trainer.loadTrainerWeights(championWeights)
                         }
                     }.value
                 case .newSessionResetTrainerFromChampion:
                     try await trainer.resetNetwork()
                     try await Task.detached(priority: .userInitiated) {
+                        // User explicitly asked to discard trainer state
+                        // and re-fork from champion. Velocity goes back
+                        // to zero (via the v1-count branch in
+                        // loadTrainerWeights), which is the correct
+                        // semantics for a fresh fork.
                         let championWeights = try await network.exportWeights()
-                        try await trainer.network.loadWeights(championWeights)
+                        try await trainer.loadTrainerWeights(championWeights)
                     }.value
                 }
             } catch {
@@ -6986,7 +7015,7 @@ struct UpperContentView: View {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, drawPen, weightDec, gradClip, kScale, sqrtLR, warmupSteps, completedSteps) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, drawPen, weightDec, gradClip, kScale, momentum, sqrtLR, warmupSteps, completedSteps) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -6996,6 +7025,7 @@ struct UpperContentView: View {
                                 trainer.weightDecayC,
                                 trainer.gradClipMaxNorm,
                                 trainer.policyScaleK,
+                                trainer.momentumCoeff,
                                 trainer.sqrtBatchScalingForLR,
                                 trainer.lrWarmupSteps,
                                 trainer.completedTrainSteps
@@ -7121,12 +7151,13 @@ struct UpperContentView: View {
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", sessionPromoteThreshold)) arenaGames=\(sessionTournamentGames) workers=\(workerN)"
                         let regStr = String(
-                            format: "clip=%.1f decay=%.0e ent=%.1e drawPen=%.3f K=%.2f",
+                            format: "clip=%.1f decay=%.0e ent=%.1e drawPen=%.3f K=%.2f μ=%.2f",
                             gradClip,
                             weightDec,
                             entropyCoeff,
                             drawPen,
-                            kScale
+                            kScale,
+                            momentum
                         )
                         // Average game length: lifetime and 10-min
                         // rolling window. `selfPlayPositions` counts

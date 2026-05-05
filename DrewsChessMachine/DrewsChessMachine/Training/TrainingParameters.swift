@@ -215,6 +215,16 @@ public enum PolicyScaleK: TrainingParameterKey {}
 public enum LearningRate: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Momentum Coefficient",
+    description: "Polyak momentum μ for SGD. 0.0 disables momentum (pure SGD); higher μ accumulates more gradient history. WARNING: μ near 0.9 amplifies effective step size by ~10× (geometric series of accumulated gradients), equivalent to raising LR 10× — known to collapse the policy. Start low (≤0.5) and watch legalMass / pEntLegal before raising further.",
+    default: 0.0,
+    range: 0.0...0.99,
+    category: "Optimizer",
+    liveTunable: true
+)
+public enum MomentumCoeff: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Sqrt-Batch Scaling LR",
     description: "When true, scales the effective learning rate by sqrt(batch / referenceBatch). Standard practice for Adam.",
     default: true,
@@ -506,6 +516,7 @@ public extension TrainingParametersSnapshot {
     var weightDecay: Double { value(for: WeightDecay.self) }
     var policyScaleK: Double { value(for: PolicyScaleK.self) }
     var learningRate: Double { value(for: LearningRate.self) }
+    var momentumCoeff: Double { value(for: MomentumCoeff.self) }
     var sqrtBatchScalingLR: Bool { value(for: SqrtBatchScalingLR.self) }
     var lrWarmupSteps: Int { value(for: LRWarmupSteps.self) }
     var drawPenalty: Double { value(for: DrawPenalty.self) }
@@ -548,6 +559,7 @@ public final class TrainingParameters {
     public var weightDecay: Double { didSet { Self.persist(WeightDecay.self, value: weightDecay) } }
     public var policyScaleK: Double { didSet { Self.persist(PolicyScaleK.self, value: policyScaleK) } }
     public var learningRate: Double { didSet { Self.persist(LearningRate.self, value: learningRate) } }
+    public var momentumCoeff: Double { didSet { Self.persist(MomentumCoeff.self, value: momentumCoeff) } }
     public var sqrtBatchScalingLR: Bool { didSet { Self.persist(SqrtBatchScalingLR.self, value: sqrtBatchScalingLR) } }
     public var lrWarmupSteps: Int { didSet { Self.persist(LRWarmupSteps.self, value: lrWarmupSteps) } }
     public var drawPenalty: Double { didSet { Self.persist(DrawPenalty.self, value: drawPenalty) } }
@@ -583,6 +595,7 @@ public final class TrainingParameters {
         self.weightDecay = Self.read(WeightDecay.self)
         self.policyScaleK = Self.read(PolicyScaleK.self)
         self.learningRate = Self.read(LearningRate.self)
+        self.momentumCoeff = Self.read(MomentumCoeff.self)
         self.sqrtBatchScalingLR = Self.read(SqrtBatchScalingLR.self)
         self.lrWarmupSteps = Self.read(LRWarmupSteps.self)
         self.drawPenalty = Self.read(DrawPenalty.self)
@@ -624,6 +637,7 @@ public final class TrainingParameters {
         v[WeightDecay.id] = WeightDecay.encode(weightDecay)
         v[PolicyScaleK.id] = PolicyScaleK.encode(policyScaleK)
         v[LearningRate.id] = LearningRate.encode(learningRate)
+        v[MomentumCoeff.id] = MomentumCoeff.encode(momentumCoeff)
         v[SqrtBatchScalingLR.id] = SqrtBatchScalingLR.encode(sqrtBatchScalingLR)
         v[LRWarmupSteps.id] = LRWarmupSteps.encode(lrWarmupSteps)
         v[DrawPenalty.id] = DrawPenalty.encode(drawPenalty)
@@ -676,6 +690,8 @@ public final class TrainingParameters {
             try PolicyScaleK.definition.validate(raw); policyScaleK = try PolicyScaleK.decode(raw)
         case LearningRate.id:
             try LearningRate.definition.validate(raw); learningRate = try LearningRate.decode(raw)
+        case MomentumCoeff.id:
+            try MomentumCoeff.definition.validate(raw); momentumCoeff = try MomentumCoeff.decode(raw)
         case SqrtBatchScalingLR.id:
             try SqrtBatchScalingLR.definition.validate(raw); sqrtBatchScalingLR = try SqrtBatchScalingLR.decode(raw)
         case LRWarmupSteps.id:
@@ -797,6 +813,7 @@ public final class TrainingParameters {
         WeightDecay.self,
         PolicyScaleK.self,
         LearningRate.self,
+        MomentumCoeff.self,
         SqrtBatchScalingLR.self,
         LRWarmupSteps.self,
         DrawPenalty.self,

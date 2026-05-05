@@ -10,6 +10,8 @@ enum ChessTrainerError: LocalizedError {
     case lossOutputMissing
     case gradientMissing(String)
     case nonFiniteLoss(total: Float, policy: Float, value: Float, gradNorm: Float)
+    case trainerWeightCountMismatch(expected: String, got: Int)
+    case velocityReadbackMissing(String)
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +21,10 @@ enum ChessTrainerError: LocalizedError {
             return "Gradient missing for variable: \(name)"
         case .nonFiniteLoss(let total, let policy, let value, let gradNorm):
             return "Non-finite loss detected: total=\(total) policy=\(policy) value=\(value) gradNorm=\(gradNorm). Weights from this step are likely poisoned; training halted."
+        case .trainerWeightCountMismatch(let expected, let got):
+            return "Trainer weight count mismatch: expected \(expected), got \(got)"
+        case .velocityReadbackMissing(let name):
+            return "Velocity tensor missing from graph.run results: \(name)"
         }
     }
 }
@@ -1038,6 +1044,18 @@ final class ChessTrainer: @unchecked Sendable {
     /// useful. AlphaZero canonical is K=1 (equal weighting).
     var policyScaleK: Float
 
+    /// Polyak momentum coefficient μ. Fed into the training graph as
+    /// a scalar placeholder each step (live-tunable). The optimizer
+    /// update is `v_new = μ·v_old + (clipped_grad + decayC·variable)`,
+    /// `weight_new = weight_old − lr·v_new`. μ=0 is equivalent to plain
+    /// SGD (the velocity term zeros out and the formula reduces to the
+    /// classic update). Higher μ amplifies effective step size by ~1/(1−μ)
+    /// in steady state, so μ=0.9 is roughly equivalent to 10× the LR —
+    /// known to push this network into the one-hot-illegal collapse mode
+    /// at the empirical sweet-spot LR of 5e-5. Start low and watch
+    /// `legalMass` / `pEntLegal` before raising further.
+    var momentumCoeff: Float
+
     /// Bootstrap-phase knob that rewrites drawn-game `z` values from 0
     /// to `-drawPenalty` before they reach the graph. Applied CPU-side
     /// in `trainStep` after the replay-buffer sample returns and
@@ -1110,6 +1128,27 @@ final class ChessTrainer: @unchecked Sendable {
     private var weightDecayPlaceholder: MPSGraphTensor  // [] scalar float
     private var gradClipMaxNormPlaceholder: MPSGraphTensor // [] scalar float
     private var policyScaleKPlaceholder: MPSGraphTensor // [] scalar float
+    private var momentumPlaceholder: MPSGraphTensor     // [] scalar float — Polyak μ
+    /// Per-trainable-variable momentum velocity buffers, allocated parallel
+    /// to `network.trainableVariables`. Each step's update is
+    /// `v_new = μ·v_old + (clipped_grad + decayC·variable)`; this list
+    /// holds the `v` for each variable. Initialized to zero on graph build
+    /// (so μ=0.0 reduces to plain SGD bit-exact). Persisted across
+    /// `Stop`/`Continue` and session save/load via the trainer's
+    /// `.dcmmodel` file (format v2+).
+    private var velocityVariables: [MPSGraphTensor] = []
+    /// Per-velocity load infrastructure, parallel to `velocityVariables`.
+    /// Used by `loadTrainerWeights(_:)` and `resetVelocitiesToZero()`
+    /// to overwrite the velocity buffers from a saved-session snapshot
+    /// or to clear them on promotion. Each entry is bound to the
+    /// matching velocity variable via a single assign op:
+    ///   `assign(velocityVariables[i], tensor: velocityLoadPlaceholders[i])`
+    /// The caller writes new bytes into `velocityLoadNDArrays[i]` and
+    /// runs the assign as a target op.
+    private var velocityLoadPlaceholders: [MPSGraphTensor] = []
+    private var velocityLoadAssignOps: [MPSGraphOperation] = []
+    private var velocityLoadNDArrays: [MPSNDArray] = []
+    private var velocityLoadTensorData: [MPSGraphTensorData] = []
     private var totalLoss: MPSGraphTensor               // scalar
     private var policyLossTensor: MPSGraphTensor        // scalar
     private var valueLossTensor: MPSGraphTensor         // scalar
@@ -1157,6 +1196,8 @@ final class ChessTrainer: @unchecked Sendable {
     private var gradClipMaxNormTensorData: MPSGraphTensorData
     private var policyScaleKNDArray: MPSNDArray
     private var policyScaleKTensorData: MPSGraphTensorData
+    private var momentumNDArray: MPSNDArray
+    private var momentumTensorData: MPSGraphTensorData
 
     /// Pre-allocated ND-array-backed tensor data for the three training
     /// placeholders at a given batch size, plus the pre-built
@@ -1272,6 +1313,7 @@ final class ChessTrainer: @unchecked Sendable {
         weightDecayC: Float = ChessTrainer.weightDecayCDefault,
         gradClipMaxNorm: Float = ChessTrainer.gradClipMaxNormDefault,
         policyScaleK: Float = ChessTrainer.policyScaleKDefault,
+        momentumCoeff: Float = 0.0,
         sqrtBatchScalingForLR: Bool = true,
         lrWarmupSteps: Int = 100
     ) throws {
@@ -1281,6 +1323,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.weightDecayC = weightDecayC
         self.gradClipMaxNorm = gradClipMaxNorm
         self.policyScaleK = policyScaleK
+        self.momentumCoeff = momentumCoeff
         self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         self.lrWarmupSteps = lrWarmupSteps
         let net = try ChessNetwork(bnMode: .training)
@@ -1296,6 +1339,12 @@ final class ChessTrainer: @unchecked Sendable {
         self.weightDecayPlaceholder = built.weightDecay
         self.gradClipMaxNormPlaceholder = built.gradClipMaxNorm
         self.policyScaleKPlaceholder = built.policyScaleK
+        self.momentumPlaceholder = built.momentum
+        self.velocityVariables = built.velocityVariables
+        self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
+        self.velocityLoadAssignOps = built.velocityLoadAssignOps
+        self.velocityLoadNDArrays = built.velocityLoadNDArrays
+        self.velocityLoadTensorData = built.velocityLoadTensorData
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
@@ -1346,6 +1395,10 @@ final class ChessTrainer: @unchecked Sendable {
         policyScaleKND.label = "policyScaleKND"
         self.policyScaleKNDArray = policyScaleKND
         self.policyScaleKTensorData = MPSGraphTensorData(policyScaleKND)
+        let momentumND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        momentumND.label = "momentumND"
+        self.momentumNDArray = momentumND
+        self.momentumTensorData = MPSGraphTensorData(momentumND)
 
         let lossPtr = UnsafeMutablePointer<Float>.allocate(
             capacity: Self.lossReadbackSlotCount
@@ -1428,6 +1481,12 @@ final class ChessTrainer: @unchecked Sendable {
         self.weightDecayPlaceholder = built.weightDecay
         self.gradClipMaxNormPlaceholder = built.gradClipMaxNorm
         self.policyScaleKPlaceholder = built.policyScaleK
+        self.momentumPlaceholder = built.momentum
+        self.velocityVariables = built.velocityVariables
+        self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
+        self.velocityLoadAssignOps = built.velocityLoadAssignOps
+        self.velocityLoadNDArrays = built.velocityLoadNDArrays
+        self.velocityLoadTensorData = built.velocityLoadTensorData
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
@@ -1473,6 +1532,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyScaleKNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.policyScaleKNDArray.label = "trainer.scalar.policyScaleK (reset)"
         self.policyScaleKTensorData = MPSGraphTensorData(policyScaleKNDArray)
+        self.momentumNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.momentumNDArray.label = "trainer.scalar.momentum (reset)"
+        self.momentumTensorData = MPSGraphTensorData(momentumNDArray)
         // The cached ND arrays were allocated against the old network's
         // device and are keyed by batch size against the old graph's
         // placeholders. Drop the cache so the first trainStep after
@@ -1500,6 +1562,12 @@ final class ChessTrainer: @unchecked Sendable {
         weightDecay: MPSGraphTensor,
         gradClipMaxNorm: MPSGraphTensor,
         policyScaleK: MPSGraphTensor,
+        momentum: MPSGraphTensor,
+        velocityVariables: [MPSGraphTensor],
+        velocityLoadPlaceholders: [MPSGraphTensor],
+        velocityLoadAssignOps: [MPSGraphOperation],
+        velocityLoadNDArrays: [MPSNDArray],
+        velocityLoadTensorData: [MPSGraphTensorData],
         totalLoss: MPSGraphTensor,
         policyLoss: MPSGraphTensor,
         valueLoss: MPSGraphTensor,
@@ -2174,6 +2242,18 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: dtype,
             name: "policy_scale_k"
         )
+        // Polyak momentum coefficient μ. μ=0 reduces the optimizer update
+        // to plain SGD bit-exact (since μ·v_old = 0 zeroes out the velocity
+        // contribution and the update collapses to lr · combinedUpdate).
+        // μ=0.9 amplifies effective step size by ~1/(1−μ) = 10× — pair
+        // with a proportional LR drop or expect collapse. Live-tunable
+        // via the placeholder so the user can dial it without rebuilding
+        // the graph.
+        let momentumTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "momentum_coeff"
+        )
         let weightedPolicy = graph.multiplication(
             policyScaleKTensor,
             policyLoss,
@@ -2309,24 +2389,95 @@ final class ChessTrainer: @unchecked Sendable {
             name: "grad_clip_scale"
         )
 
-        // --- SGD updates with weight decay + clipped gradients ---
+        // --- SGD updates with weight decay, clipped gradients, Polyak momentum ---
         //
-        // v_new = v - lr * (clipped_grad + weightDecayC * v)
-        //       = (1 - lr*weightDecayC) * v - lr * clipped_grad
+        // v_new   = μ · v_old + (clipped_grad + decayC · variable)
+        // weight_new = weight − lr · v_new
         //
-        // Plain SGD with L2 weight decay (no momentum, no Adam state).
+        // When μ = 0 this reduces bit-exact to plain SGD with L2 decay
+        // (the velocity term zeros out and the update collapses to
+        // `lr · (clipped_grad + decayC · variable)`). The default
+        // value is 0, so existing training trajectories are preserved
+        // unless the user opts in via TrainingParameters.momentumCoeff.
+        //
         // Decay is applied only to variables flagged in
         // `network.trainableShouldDecay` — conv and FC weight matrices
         // — and skipped for BN gamma/beta and biases per the standard
         // PyTorch / AdamW recipe.
         //
-        // The learning rate is a placeholder (not a constant) so it
-        // can be changed between steps without rebuilding the graph.
-        // Each training step feeds the current `self.learningRate`
-        // via the pre-allocated `lrNDArray`.
+        // Velocity variables are allocated here as MPSGraph variables on
+        // the same graph as the trainable weights, with shape matching
+        // each weight and zero-initial values. They are mutable state —
+        // assigned every step. Persisted across save/load via
+        // `exportTrainerWeights()` / `loadTrainerWeights(_:)`
+        // (file format `ModelCheckpointFile` v2). On promotion the
+        // velocities are zeroed via `resetVelocitiesToZero()` because
+        // the trainer's weights are entirely replaced, so the
+        // previously-accumulated velocity vector points against a
+        // weight surface that no longer exists.
+        //
+        // The learning rate, weight decay, and momentum are all scalar
+        // placeholders (not constants), so they can be changed between
+        // steps without rebuilding the graph. Each training step feeds
+        // the current values via the pre-allocated NDArrays.
+
+        // Allocate parallel velocity tensors, one per trainable variable.
+        // Variables created via `graph.variable(with:shape:dataType:name:)`
+        // have reliably-set `.shape`; we read it back to size each velocity
+        // buffer's zero-init data buffer.
+        var velocities: [MPSGraphTensor] = []
+        velocities.reserveCapacity(network.trainableVariables.count)
+        // Per-velocity load infrastructure built in lockstep with
+        // velocity allocation so the index spaces align.
+        var velLoadPlaceholders: [MPSGraphTensor] = []
+        var velLoadAssignOps: [MPSGraphOperation] = []
+        var velLoadNDArrays: [MPSNDArray] = []
+        var velLoadTensorData: [MPSGraphTensorData] = []
+        velLoadPlaceholders.reserveCapacity(network.trainableVariables.count)
+        velLoadAssignOps.reserveCapacity(network.trainableVariables.count)
+        velLoadNDArrays.reserveCapacity(network.trainableVariables.count)
+        velLoadTensorData.reserveCapacity(network.trainableVariables.count)
+        for (i, variable) in network.trainableVariables.enumerated() {
+            guard let shape = variable.shape else {
+                throw ChessTrainerError.gradientMissing(
+                    "trainable[\(i)] has no static shape; cannot allocate velocity"
+                )
+            }
+            let elementCount = shape.reduce(1) { $0 * $1.intValue }
+            let varName = variable.operation.name.isEmpty
+                ? "trainable_\(i)"
+                : variable.operation.name
+            let velocity = graph.variable(
+                with: ChessNetwork.zerosData(count: elementCount),
+                shape: shape,
+                dataType: dtype,
+                name: "\(varName)_velocity"
+            )
+            velocities.append(velocity)
+
+            // Build the velocity-load placeholder + assign op for this
+            // variable. Used by `loadTrainerWeights` and
+            // `resetVelocitiesToZero` to overwrite the velocity buffer
+            // out-of-band from the SGD update path.
+            let loadPh = graph.placeholder(
+                shape: shape,
+                dataType: dtype,
+                name: "\(varName)_velocity_load"
+            )
+            let loadAssign = graph.assign(velocity, tensor: loadPh, name: "\(varName)_velocity_load_assign")
+            velLoadPlaceholders.append(loadPh)
+            velLoadAssignOps.append(loadAssign)
+
+            let desc = MPSNDArrayDescriptor(dataType: dtype, shape: shape)
+            let nda = MPSNDArray(device: network.metalDevice, descriptor: desc)
+            velLoadNDArrays.append(nda)
+            velLoadTensorData.append(MPSGraphTensorData(nda))
+        }
 
         var ops: [MPSGraphOperation] = []
-        ops.reserveCapacity(network.trainableVariables.count)
+        // Two assigns per variable now (velocity + weight) plus the BN
+        // running-stats appended below.
+        ops.reserveCapacity(network.trainableVariables.count * 2)
         precondition(
             network.trainableShouldDecay.count == network.trainableVariables.count,
             "ChessNetwork.trainableShouldDecay must align 1:1 with trainableVariables"
@@ -2340,6 +2491,7 @@ final class ChessTrainer: @unchecked Sendable {
                     variable.operation.name.isEmpty ? "trainable[\(i)]" : variable.operation.name
                 )
             }
+            let velocity = velocities[i]
             // Apply the global L2 clip scale to this gradient.
             let clippedGrad = graph.multiplication(grad, clipScale, name: nil)
             // L2 weight decay term: c*v. Skipped for BN gamma/beta
@@ -2355,10 +2507,18 @@ final class ChessTrainer: @unchecked Sendable {
             } else {
                 combinedUpdate = clippedGrad
             }
-            let scaled = graph.multiplication(lrTensor, combinedUpdate, name: nil)
+            // Polyak momentum: v_new = μ · v_old + combinedUpdate.
+            let scaledOldVelocity = graph.multiplication(velocity, momentumTensor, name: nil)
+            let newVelocity = graph.addition(scaledOldVelocity, combinedUpdate, name: nil)
+            let velocityAssign = graph.assign(velocity, tensor: newVelocity, name: nil)
+            ops.append(velocityAssign)
+            // Weight update uses the FRESH velocity (read back as the
+            // newVelocity tensor we just computed — assigning to it does
+            // not invalidate the value-typed reference we still hold).
+            let scaled = graph.multiplication(lrTensor, newVelocity, name: nil)
             let updated = graph.subtraction(variable, scaled, name: nil)
-            let assignOp = graph.assign(variable, tensor: updated, name: nil)
-            ops.append(assignOp)
+            let weightAssign = graph.assign(variable, tensor: updated, name: nil)
+            ops.append(weightAssign)
         }
 
         // Include BN running-stat EMA updates from ChessNetwork's
@@ -2374,6 +2534,8 @@ final class ChessTrainer: @unchecked Sendable {
         return (
             movePlayed, z, vBaseline, legalMask,
             lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyScaleKTensor,
+            momentumTensor, velocities,
+            velLoadPlaceholders, velLoadAssignOps, velLoadNDArrays, velLoadTensorData,
             totalLossTensor, policyLoss, valueLoss,
             policyEntropy, policyNonNegCount, policyNonNegIllegalCount, gradGlobalNorm, valueMean, valueAbsMean, policyHeadWeightNormTensor,
             policyLogitAbsMax, playedMoveProbTensor,
@@ -3205,6 +3367,193 @@ final class ChessTrainer: @unchecked Sendable {
         replayBatchCapacity = needed
     }
 
+    // MARK: - Trainer State Persistence (weights + BN running stats + momentum velocity)
+    //
+    // The trainer's persistent state for a session save is:
+    //   - all `network.trainableVariables` weights
+    //   - all `network.bnRunningStatsVariables` running stats
+    //   - all `velocityVariables` (one per trainable, momentum velocity)
+    //
+    // Saved as a single flat `[[Float]]` of length
+    //   trainables.count + bnRunningStats.count + velocityVariables.count
+    // ordered exactly as listed above. The file format
+    // (`ModelCheckpointFile` v2) records this as the same flat tensor
+    // list — no schema change beyond version bump.
+    //
+    // Back-compat: a v1 file from before momentum landed contains only
+    // `trainables + bnRunningStats`. `loadTrainerWeights(_:)` detects
+    // that case by count and zero-initializes velocities. See ROADMAP
+    // "Tech debt / migrations to remove" for the planned removal of
+    // the v1 zero-pad branch after 2026-06-04.
+    //
+    // Thread-safety: callers MUST have paused both selfPlayGate and
+    // trainingGate before invoking these methods. They drive
+    // `network.graph.run` directly (bypassing the trainer's
+    // executionQueue) and rely on no concurrent SGD step or self-play
+    // evaluator touching the same variables.
+
+    /// Total expected weight count for a v2 trainer state.
+    private var trainerWeightCountV2: Int {
+        network.trainableVariables.count + network.bnRunningStatsVariables.count + velocityVariables.count
+    }
+    /// Total expected weight count for a legacy v1 trainer state (no velocity).
+    /// TODO(persist-velocity, after 2026-06-04): remove the v1 path once
+    /// any in-flight v1 trainer.dcmmodel files have been re-saved as v2.
+    private var trainerWeightCountV1: Int {
+        network.trainableVariables.count + network.bnRunningStatsVariables.count
+    }
+
+    /// Read all trainer state (weights + bn + velocities) into a flat
+    /// `[[Float]]` array suitable for `ModelCheckpointFile.weights`.
+    /// Caller MUST have paused training (and ideally self-play) before
+    /// calling. See class comment for thread-safety contract.
+    func exportTrainerWeights() async throws -> [[Float]] {
+        // Base weights via the network's existing serialized export
+        // path (uses network.executionQueue + network.commandQueue).
+        let baseWeights = try await network.exportWeights()
+        // Velocities via a separate small graph.run on the same graph.
+        // No race because the caller has paused training.
+        let velocityWeights = try await readVelocityValues()
+        return baseWeights + velocityWeights
+    }
+
+    /// Load trainer state (weights + bn + optional velocities) from a
+    /// flat `[[Float]]` array previously produced by either
+    /// `exportTrainerWeights()` (v2) or the legacy `network.exportWeights()`
+    /// (v1, no velocities). Detects the layout by count.
+    /// Caller MUST have paused training before calling.
+    /// TODO(persist-velocity, after 2026-06-04): drop the v1 zero-pad
+    /// branch once any in-flight v1 trainer.dcmmodel files have been
+    /// re-saved as v2.
+    func loadTrainerWeights(_ weights: [[Float]]) async throws {
+        let v1Count = trainerWeightCountV1
+        let v2Count = trainerWeightCountV2
+        if weights.count == v2Count {
+            // v2: trainables + bn + velocities. Split: first v1Count
+            // go to network.loadWeights (its existing infra); last
+            // velocityVariables.count go to writeVelocityValues.
+            let baseWeights = Array(weights.prefix(v1Count))
+            let velocityWeights = Array(weights.suffix(velocityVariables.count))
+            try await network.loadWeights(baseWeights)
+            try await writeVelocityValues(velocityWeights)
+        } else if weights.count == v1Count {
+            // v1: legacy file with no velocity slots. Load base, leave
+            // velocities at their current value (zero on first load,
+            // last-saved otherwise — the existing trainer.network was
+            // built with zero-init velocity variables, so on a fresh
+            // session start this is zero).
+            // TODO(persist-velocity, after 2026-06-04): remove this
+            // branch.
+            try await network.loadWeights(weights)
+        } else {
+            throw ChessTrainerError.trainerWeightCountMismatch(
+                expected: "\(v1Count) (v1) or \(v2Count) (v2)",
+                got: weights.count
+            )
+        }
+    }
+
+    /// Overwrite all velocity buffers with zeros. Used after arena
+    /// promotion: the trainer's weights have just been replaced with
+    /// the promoted candidate's weights, so the accumulated velocity
+    /// (which pointed against the OLD weight surface) is now stale
+    /// and would steer the optimizer in directions unrelated to the
+    /// new starting point.
+    func resetVelocitiesToZero() async throws {
+        // Build a zeros payload sized per velocity tensor.
+        var zeroed: [[Float]] = []
+        zeroed.reserveCapacity(velocityVariables.count)
+        for v in velocityVariables {
+            let count = try ChessNetwork.elementCount(of: v)
+            zeroed.append([Float](repeating: 0, count: count))
+        }
+        try await writeVelocityValues(zeroed)
+    }
+
+    /// Read current velocity values via a single graph.run targeting
+    /// all velocity variables. Internal helper for `exportTrainerWeights`.
+    /// Runs synchronously on the network's command queue (caller must
+    /// have paused training).
+    private func readVelocityValues() async throws -> [[Float]] {
+        guard !velocityVariables.isEmpty else { return [] }
+        return try await withCheckedThrowingContinuation { continuation in
+            executionQueue.async { [self] in
+                do {
+                    let result: [[Float]] = try autoreleasepool {
+                        let results = network.graph.run(
+                            with: network.commandQueue,
+                            feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                            targetTensors: velocityVariables,
+                            targetOperations: nil
+                        )
+                        var out: [[Float]] = []
+                        out.reserveCapacity(velocityVariables.count)
+                        for v in velocityVariables {
+                            guard let data = results[v] else {
+                                throw ChessTrainerError.velocityReadbackMissing(v.operation.name)
+                            }
+                            let count = try ChessNetwork.elementCount(of: v)
+                            out.append(ChessNetwork.readFloats(from: data, count: count))
+                        }
+                        return out
+                    }
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Write velocity values via a single graph.run that drives all
+    /// velocity-load assign ops. Internal helper for both
+    /// `loadTrainerWeights` and `resetVelocitiesToZero`. Caller must
+    /// have paused training.
+    private func writeVelocityValues(_ weights: [[Float]]) async throws {
+        guard weights.count == velocityVariables.count else {
+            throw ChessTrainerError.trainerWeightCountMismatch(
+                expected: "\(velocityVariables.count) velocity tensors",
+                got: weights.count
+            )
+        }
+        // Validate sizes up-front so a mismatch fails before we start
+        // writing into shared NDArrays.
+        for (i, v) in velocityVariables.enumerated() {
+            let expected = try ChessNetwork.elementCount(of: v)
+            guard weights[i].count == expected else {
+                throw ChessTrainerError.trainerWeightCountMismatch(
+                    expected: "velocity[\(i)] (\(v.operation.name)): \(expected) floats",
+                    got: weights[i].count
+                )
+            }
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            executionQueue.async { [self] in
+                autoreleasepool {
+                    var feeds: [MPSGraphTensor: MPSGraphTensorData] = [
+                        network.inputPlaceholder: network.dummyInferenceInputTensorData
+                    ]
+                    feeds.reserveCapacity(velocityVariables.count + 1)
+                    for i in 0..<velocityVariables.count {
+                        ChessNetwork.writeFloats(weights[i], into: velocityLoadNDArrays[i])
+                        feeds[velocityLoadPlaceholders[i]] = velocityLoadTensorData[i]
+                    }
+                    // graph.run requires at least one target tensor.
+                    // Use the first velocity variable as a dummy read —
+                    // its post-assign value is whatever we just wrote,
+                    // which we discard.
+                    _ = network.graph.run(
+                        with: network.commandQueue,
+                        feeds: feeds,
+                        targetTensors: [velocityVariables[0]],
+                        targetOperations: velocityLoadAssignOps
+                    )
+                }
+                continuation.resume(returning: ())
+            }
+        }
+    }
+
     private func enqueue<T: Sendable>(_ work: @Sendable @escaping () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             executionQueue.async {
@@ -3310,6 +3659,8 @@ final class ChessTrainer: @unchecked Sendable {
         gradClipMaxNormNDArray.writeBytes(&gradClip, strideBytes: nil)
         var kScale = policyScaleK
         policyScaleKNDArray.writeBytes(&kScale, strideBytes: nil)
+        var momentum = momentumCoeff
+        momentumNDArray.writeBytes(&momentum, strideBytes: nil)
 
         return cached.feedsDict
     }
@@ -3393,7 +3744,8 @@ final class ChessTrainer: @unchecked Sendable {
             entropyCoeffPlaceholder: entropyCoeffTensorData,
             weightDecayPlaceholder: weightDecayTensorData,
             gradClipMaxNormPlaceholder: gradClipMaxNormTensorData,
-            policyScaleKPlaceholder: policyScaleKTensorData
+            policyScaleKPlaceholder: policyScaleKTensorData,
+            momentumPlaceholder: momentumTensorData
         ]
 
         let feeds = BatchFeeds(

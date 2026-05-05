@@ -225,8 +225,11 @@ final class ChessNetwork: @unchecked Sendable {
     /// Zero-filled `[1, inputPlanes, 8, 8]` feed shared by `exportWeights()` and
     /// `loadWeights(_:)` to satisfy MPSGraph's requirement that every
     /// graph placeholder be fed even when the target ops don't consume
-    /// it. Filled once at init, never modified afterwards.
-    private let dummyInferenceInputTensorData: MPSGraphTensorData
+    /// it. Filled once at init, never modified afterwards. Also exposed
+    /// to `ChessTrainer` for its velocity-tensor read/write helpers,
+    /// which need to satisfy the same input-placeholder requirement
+    /// without doing any actual forward computation.
+    let dummyInferenceInputTensorData: MPSGraphTensorData
 
     // MARK: Batched Inference Scratch
 
@@ -1014,7 +1017,9 @@ final class ChessNetwork: @unchecked Sendable {
     /// Total scalar count in a tensor's statically-known shape.
     /// Throws if the tensor's shape is missing — which shouldn't happen
     /// for variables (they have concrete shapes at creation time).
-    private static func elementCount(of tensor: MPSGraphTensor) throws -> Int {
+    /// Exposed `internal` so `ChessTrainer` can size its velocity-tensor
+    /// readback buffers identically.
+    static func elementCount(of tensor: MPSGraphTensor) throws -> Int {
         guard let shape = tensor.shape else {
             throw ChessNetworkError.variableShapeMissing(tensor.operation.name)
         }
