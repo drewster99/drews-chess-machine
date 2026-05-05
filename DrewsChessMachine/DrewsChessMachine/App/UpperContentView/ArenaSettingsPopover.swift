@@ -1,17 +1,18 @@
 import SwiftUI
 
 /// Three-section editor opened from the countdown chip. The top
-/// "Next Arena" section shows the next-arena timestamp + Run Arena
-/// Now button. The middle "Last Arena" section shows the most
-/// recent tournament's date/time, W-L-D, AlphaZero score, and
-/// kept/promoted verdict, alongside a History button that opens
-/// the full `ArenaHistoryView` sheet. The bottom "Options" section
-/// edits the three arena knobs (#games, concurrency, interval —
-/// interval accepts 15m/500s/7d/etc.). Cancel discards edits;
-/// Save validates all three and writes them back to
-/// `trainingParams` (validation + write happen in the supplied
-/// `onSave` callback so the popover stays decoupled from the
-/// parameter store).
+/// "Next Arena" section shows the next-arena timestamp; a "Run
+/// Now" button shares the section header line and triggers an
+/// immediate arena. The middle "Last Arena" section shows the
+/// most recent tournament's date/time, W-L-D, AlphaZero score,
+/// and kept/promoted verdict, with a "More" link in the section
+/// header that opens the full `ArenaHistoryView` sheet. The
+/// bottom "Options" section edits the three arena knobs
+/// (#games, concurrency, interval — interval accepts
+/// 15m/500s/7d/etc.). Cancel discards edits; Save validates all
+/// three and writes them back to `trainingParams` (validation +
+/// write happen in the supplied `onSave` callback so the popover
+/// stays decoupled from the parameter store).
 struct ArenaSettingsPopover: View {
     /// Wall-clock time when the next auto-arena will fire, or `nil`
     /// when there is no live session (in which case the row reads
@@ -48,24 +49,24 @@ struct ArenaSettingsPopover: View {
 
             // --- Next Arena section ---
             VStack(alignment: .leading, spacing: 8) {
-                Text("Next Arena")
-                    .font(.subheadline.weight(.semibold))
                 HStack {
-                    if let nextArenaDate, realTraining {
-                        Text(dateFmt.string(from: nextArenaDate))
-                            .font(.system(.body, design: .monospaced))
-                    } else {
-                        Text("Next session")
-                            .foregroundStyle(.secondary)
-                    }
+                    Text("Next Arena")
+                        .font(.subheadline.weight(.semibold))
                     Spacer()
                     Button {
                         guard !isArenaRunning, realTraining else { return }
                         onRunNow()
                     } label: {
-                        Label("Run Arena Now", systemImage: "flag.checkered")
+                        Label("Run Now", systemImage: "flag.checkered")
                     }
                     .disabled(isArenaRunning || !realTraining)
+                }
+                if let nextArenaDate, realTraining {
+                    Text(dateFmt.string(from: nextArenaDate))
+                        .font(.system(.body, design: .monospaced))
+                } else {
+                    Text("Next session")
+                        .foregroundStyle(.secondary)
                 }
                 Text("(countdown is shown in the chip above)")
                     .font(.caption)
@@ -80,10 +81,9 @@ struct ArenaSettingsPopover: View {
                     Text("Last Arena")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
-                    Button(action: onShowHistory) {
-                        Label("History", systemImage: "list.bullet.rectangle")
-                    }
-                    .disabled(lastArena == nil)
+                    Button("More", action: onShowHistory)
+                        .buttonStyle(.link)
+                        .disabled(lastArena == nil)
                 }
                 if let lastArena {
                     lastArenaSummary(lastArena, dateFmt: dateFmt)
