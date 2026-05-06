@@ -65,6 +65,7 @@ struct ContentView: View {
                 LowerContentView(
                     promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
                     replayRatioTarget: TrainingParameters.shared.replayRatioTarget,
+                    gradClipMaxNorm: TrainingParameters.shared.gradClipMaxNorm,
                     appMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
                     gpuMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
                     chartCoordinator: chartCoordinator

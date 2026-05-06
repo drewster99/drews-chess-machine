@@ -563,6 +563,84 @@ original rationale is not lost.
 
 ## Completed
 
+- **Tabbed Training Settings popover + main-screen control sweep +
+  save-verify v2 fix + chart hover bug fix + latent arena-tau push
+  bug fix (2026-05-05).** Cohesive UI consolidation covered in
+  detail in CHANGELOG.md under the 2026-05-05 22:00 CDT entry. Net
+  result: every editable training-side parameter now lives in a
+  single tabbed popover (Optimizer / Self Play / Replay) anchored
+  to the existing top-bar Training chip; the main screen keeps a
+  read-only "Replay Ratio: X target: Y (auto)" status row; four
+  replay-ratio control fields propagate live to `trainingParams`
+  while the popover is open with a Cancel-reverts-to-stash
+  mechanic; the trainer-file save-verify path now correctly
+  handles v2 (trainables + bn + velocity) layouts; the two pLoss
+  charts are now hover-aware; `arenaPopoverSave` finally pushes
+  schedule changes into the live `samplingScheduleBox`.
+
+- **Decoupled weight decay + arena velocity snapshot + momentum
+  session save/load + `μ`/`vNorm` in STATS + chart additions
+  (2026-05-05).** Five interlocking changes covered in detail in
+  CHANGELOG.md under the 2026-05-05 17:30 CDT entry. Net result:
+  the optimizer is now AdamW-style decoupled-decay (μ and weight
+  decay tune independently); velocity buffers persist through arena
+  promotion via snapshot/restore instead of being zeroed; the
+  momentum coefficient itself is now in the session schema and
+  no longer silently picks up the user's current slider on resume;
+  the [STATS] line and chart grid surface velocity-norm and policy-
+  head weight norm so collapse precursors are visible without log-
+  diving; and the gNorm chart shows the active grad-clip threshold
+  as a reference line so "is the clip permanently active?" is a
+  glance rather than a calculation.
+
+  **What landed (summary; see CHANGELOG for file-level detail):**
+  - Optimizer update split: `v_new = μ·v_old + clipped_grad`,
+    `θ_new = θ − lr·v_new − lr·decayC·θ` (decay term skipped for
+    biases / BN affine via `network.trainableShouldDecay`). Bit-
+    exact equivalent to the prior coupled-L2 form at μ=0.
+    Verified by `testDecoupledDecayMatchesCoupledAtZeroMomentum`.
+  - `momentumCoeff: Float?` added to `SessionCheckpointState`.
+    `[RESUME-PARAM] momentum_coeff` log on both branches.
+    Verified by `testMomentumCoeffRoundTripsThroughSessionState`.
+  - `exportVelocitySnapshot()` / `loadVelocitySnapshot(_:)` API
+    on `ChessTrainer`; arena start captures `trainerSnapshotVelocity`
+    alongside the existing `trainerSnapshotWeights`; promotion
+    restores the snapshot instead of zeroing.
+    `resetVelocitiesToZero()` retained as an explicit-discard
+    escape hatch (still used by `testResetVelocitiesToZero`).
+    Verified by `testVelocitySnapshotRoundTrip`.
+  - New `velocityGlobalNormTensor` in the training graph,
+    accumulated alongside `gradGlobalNorm` from per-tensor `||v||²`
+    sums; readback into a new `velocityNorm: Float` field on
+    `TrainStepTiming`; rolling window in `TrainingLiveStatsBox`
+    surfaces `rollingVelocityNorm: Double?` on the snapshot.
+    `[STATS]` line gains `vNorm=` and `μ=` next to `gNorm=`.
+  - Chart grid: standalone CPU and GPU MiniLineCharts merged into
+    a new `CpuGpuChart` dual-line tile (CPU blue, GPU indigo,
+    combined header `CPU N% / GPU M%`); freed slot now hosts a
+    `pwNorm` MiniLineChart driven by `policyHeadWeightNorm`; gNorm
+    MiniLineChart gains a dashed clip-threshold reference line via
+    new optional `referenceLine` / `referenceLineLabel` /
+    `referenceLineColor` parameters. `gradClipMaxNorm` plumbed
+    through `ContentView → LowerContentView → TrainingChartGridView`.
+  - Off-main `trainer.momentumCoeff` race fixed during recheck —
+    [STATS] line now uses the existing main-actor-captured
+    `momentum` local from the same `MainActor.run` block that
+    captures every other live trainer scalar.
+  - Three new tests covering the round-trip semantics, plus
+    fixture updates to `ChartDecimatorTests` for the new
+    `rollingPolicyHeadWeightNorm` field.
+
+  **Compatibility:** Legacy `.dcmsession` files without
+  `momentumCoeff` decode unchanged. v1 trainer.dcmmodel files (no
+  velocity payload) continue to load via the existing v1-acceptance
+  branch. v2 trainer.dcmmodel files written under the *old* coupled-
+  decay formula and loaded under decoupled-decay carry baked-in
+  decay terms in the saved velocity that wash out over ~`ln(0.01)
+  /ln(μ)` steps — a transient, not a correctness break, and only
+  visible if μ was high at save time (the default was 0 so most
+  saves have zero-velocity).
+
 - **Full parameter coverage in session save + Load/Save Parameters
   menu items + slow-save watchdog (2026-04-30).** Three coupled
   changes that close the parameter-reproducibility gap and add a

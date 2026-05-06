@@ -10,18 +10,53 @@ struct PolicyValueLossChart: View {
     let context: TrainingChartGridView.Context
 
     var body: some View {
-        let lastP = buckets.last?.policyLoss?.max
-        let lastV = buckets.last?.valueLoss?.max
+        // Per-series hover readouts — when the cursor moves, read the
+        // bucket that corresponds to the hovered time rather than the
+        // most-recent bucket. Without this the crosshair RuleMark
+        // moves but the header value sits stuck at the last sample.
+        let pReadout = TrainingChartGridView.hoverReadoutTraining(
+            hoveredSec: hoveredSec,
+            buckets: buckets,
+            accessor: { $0.policyLoss },
+            bucketWidthSec: context.bucketWidthSec
+        )
+        let vReadout = TrainingChartGridView.hoverReadoutTraining(
+            hoveredSec: hoveredSec,
+            buckets: buckets,
+            accessor: { $0.valueLoss },
+            bucketWidthSec: context.bucketWidthSec
+        )
+        func value(
+            for readout: TrainingChartGridView.HoverReadout,
+            lastBucketValue: Double?
+        ) -> String {
+            switch readout {
+            case .notHovering:
+                return lastBucketValue.map { String(format: "%.3f", $0) } ?? "--"
+            case .hoveringNoData:
+                return "--"
+            case .hoveringWithData(_, let v):
+                return String(format: "%.3f", v)
+            }
+        }
+        let pStr = value(
+            for: pReadout,
+            lastBucketValue: buckets.last?.policyLoss?.max
+        )
+        let vStr = value(
+            for: vReadout,
+            lastBucketValue: buckets.last?.valueLoss?.max
+        )
         let headerText: String
-        switch (lastP, lastV) {
-        case (let p?, let v?):
-            headerText = String(format: "pLoss %.3f / vLoss %.3f", p, v)
-        case (let p?, nil):
-            headerText = String(format: "pLoss %.3f / vLoss --", p)
-        case (nil, let v?):
-            headerText = String(format: "pLoss -- / vLoss %.3f", v)
-        default:
-            headerText = "--"
+        if pStr == "--" && vStr == "--" {
+            switch pReadout {
+            case .hoveringNoData, .hoveringWithData:
+                headerText = "— no data"
+            case .notHovering:
+                headerText = "--"
+            }
+        } else {
+            headerText = "pLoss \(pStr) / vLoss \(vStr)"
         }
         return VStack(alignment: .leading, spacing: 1) {
             ChartTileHeader(title: "pLoss + vLoss", value: headerText)
@@ -44,6 +79,16 @@ struct PolicyValueLossChart: View {
                     RuleMark(x: .value("Time", t))
                         .foregroundStyle(Color.gray.opacity(0.5))
                         .lineStyle(StrokeStyle(lineWidth: 1))
+                }
+                if case .hoveringWithData(let t, let v) = pReadout {
+                    PointMark(x: .value("Time", t), y: .value("Loss", v))
+                        .foregroundStyle(Color.orange)
+                        .symbolSize(40)
+                }
+                if case .hoveringWithData(let t, let v) = vReadout {
+                    PointMark(x: .value("Time", t), y: .value("Loss", v))
+                        .foregroundStyle(Color.cyan)
+                        .symbolSize(40)
                 }
             }
             .chartForegroundStyleScale([

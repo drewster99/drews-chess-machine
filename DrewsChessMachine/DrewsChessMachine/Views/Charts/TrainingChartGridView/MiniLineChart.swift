@@ -12,6 +12,17 @@ struct MiniLineChart: View {
     @Binding var scrollX: Double
     let context: TrainingChartGridView.Context
     var wholeNumber: Bool = false
+    /// Optional dashed horizontal reference line (e.g. the
+    /// `gradClipMaxNorm` cap on the gNorm tile). Rendered as a
+    /// `RuleMark(y:)` with `referenceLineColor`. The header value
+    /// continues to reflect the data series, not the reference.
+    var referenceLine: Double? = nil
+    /// Short label rendered at the right end of the reference line
+    /// (e.g. `"clip 10"`). Ignored when `referenceLine` is nil.
+    var referenceLineLabel: String? = nil
+    /// Color for the reference line. Defaults to a subdued red so
+    /// "your data is at / above this threshold" reads visually.
+    var referenceLineColor: Color = Color.red.opacity(0.55)
 
     var body: some View {
         let readout = TrainingChartGridView.hoverReadoutTraining(
@@ -45,6 +56,26 @@ struct MiniLineChart: View {
                         y: .value(title, rangeAccessor(b)?.max ?? .nan)
                     )
                     .foregroundStyle(color)
+                }
+                // Optional dashed horizontal reference line (e.g.
+                // gradClipMaxNorm on the gNorm tile). Drawn beneath
+                // the hover crosshair so the crosshair stays the
+                // visual focus when you're inspecting a sample.
+                if let ref = referenceLine {
+                    RuleMark(y: .value("ref", ref))
+                        .foregroundStyle(referenceLineColor)
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                        .annotation(
+                            position: .topTrailing,
+                            alignment: .topTrailing,
+                            spacing: 1
+                        ) {
+                            if let label = referenceLineLabel {
+                                Text(label)
+                                    .font(.caption2)
+                                    .foregroundStyle(referenceLineColor)
+                            }
+                        }
                 }
                 if let t = hoveredSec {
                     RuleMark(x: .value("Time", t))

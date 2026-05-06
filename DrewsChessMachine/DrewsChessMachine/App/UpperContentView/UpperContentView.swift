@@ -527,22 +527,10 @@ struct UpperContentView: View {
         }
         return ladder[nextIdx]
     }
-    /// Current training-step delay in milliseconds, written by
-    /// the Stepper via `trainingStepDelayBinding` and mirrored into
-    /// `trainingStepDelayBox` so the training worker task reads
-    /// the live value between steps. Always a member of
-    /// `stepDelayLadder`. Persists across sessions (@State) so the
-    /// user doesn't have to re-pick the delay on every start. The
-    /// 50 ms default holds the training worker to a modest ~20
-    /// steps/s ceiling so it doesn't starve the N self-play workers
-    /// of GPU time on a fresh session start; the user can drop it
-    /// to 0 ms once the self-play throughput has stabilized.
-    // trainingStepDelayMs migrated to `trainingParams.trainingStepDelayMs`.
-    /// Shared lock-protected mirror of `trainingParams.trainingStepDelayMs` that
-    /// the training worker task reads at the bottom of each step
-    /// to decide how long to sleep before looping. Allocated at
-    /// session start, cleared on session end.
-    @State private var trainingStepDelayBox: TrainingStepDelayBox?
+    // trainingStepDelayMs migrated to `trainingParams.trainingStepDelayMs`;
+    // the training worker reads the live delay from
+    // `replayRatioController.recordTrainingBatchAndGetDelay(...)` each
+    // step, so no separate lock-protected mirror is needed.
     /// Shared lock-protected mirror of `trainingParams.selfPlayWorkers` that
     /// the self-play worker tasks read between games. The Stepper
     /// updates `trainingParams.selfPlayWorkers` AND this box atomically (via
@@ -1193,60 +1181,6 @@ struct UpperContentView: View {
         )
     }
 
-    /// Binding for the training-step delay Stepper. The Stepper is
-    /// configured with `step: 1` over the full 0...stepDelayMaxMs
-    /// range, but the valid values are the discrete rungs in
-    /// `stepDelayLadder`. This binding translates a raw Stepper
-    /// delta (current ± 1) into "advance/retreat one ladder rung",
-    /// snapping the displayed value to the nearest rung and writing
-    /// through to both `trainingParams.trainingStepDelayMs` (so the row
-    /// re-renders immediately) and `trainingStepDelayBox` (so the
-    /// training worker task sees the new delay on its next step).
-    /// The box is nil between sessions, so writes outside Play and
-    /// Train just update the @State and take effect when the next
-    /// session starts.
-    private var trainingStepDelayBinding: Binding<Int> {
-        Binding(
-            get: { trainingParams.trainingStepDelayMs },
-            set: { newValue in
-                let current = trainingParams.trainingStepDelayMs
-                let snapped = Self.snappedNextDelayRung(current: current, requested: newValue)
-                if snapped != current {
-                    SessionLogger.shared.log("[PARAM] stepDelayMs (manual): \(current) -> \(snapped)")
-                }
-                trainingParams.trainingStepDelayMs = snapped
-                trainingStepDelayBox?.set(snapped)
-                replayRatioController?.manualDelayMs = snapped
-            }
-        )
-    }
-
-    /// Binding for the self-play delay Stepper. Mirrors the training-
-    /// step delay binding: walks the same ladder, snaps the value,
-    /// writes through to `trainingParams.selfPlayDelayMs` (for
-    /// persistence and SwiftUI re-render) and to
-    /// `replayRatioController?.manualSelfPlayDelayMs` (so the value
-    /// takes effect on the next self-play game without waiting for a
-    /// session restart). The Stepper is meaningful only when
-    /// auto-adjust is OFF; when auto is on the controller drives the
-    /// SP delay directly. We still write through unconditionally so
-    /// the manual slot stays current and re-engages immediately when
-    /// auto flips off.
-    private var selfPlayStepDelayBinding: Binding<Int> {
-        Binding(
-            get: { trainingParams.selfPlayDelayMs },
-            set: { newValue in
-                let current = trainingParams.selfPlayDelayMs
-                let snapped = Self.snappedNextDelayRung(current: current, requested: newValue)
-                if snapped != current {
-                    SessionLogger.shared.log("[PARAM] selfPlayDelayMs (manual): \(current) -> \(snapped)")
-                }
-                trainingParams.selfPlayDelayMs = snapped
-                replayRatioController?.manualSelfPlayDelayMs = snapped
-            }
-        )
-    }
-
     /// Scratch string for the learning rate text field. Seeded from
     /// the trainer's current LR when Play-and-Train starts; the user
     /// edits freely without the binding reformatting mid-keystroke.
@@ -1282,6 +1216,36 @@ struct UpperContentView: View {
     @State private var trainingPopoverWeightDecayError: Bool = false
     @State private var trainingPopoverPolicyKError: Bool = false
     @State private var trainingPopoverDrawPenaltyError: Bool = false
+    /// Edit-text + transactional state for the new tabs (Self Play,
+    /// Replay) on `TrainingSettingsPopover`. Same pattern as the
+    /// existing optimizer fields above.
+    @State private var trainingBatchSizeEditText: String = ""
+    @State private var selfPlayWorkersEditText: String = ""
+    @State private var replayRatioTargetEditText: String = ""
+    @State private var replaySelfPlayDelayEditText: String = ""
+    @State private var replayTrainingStepDelayEditText: String = ""
+    @State private var replayRatioAutoAdjustEditValue: Bool = true
+    /// Stash of pre-edit values for the four replay-ratio control
+    /// fields. The Replay tab live-propagates changes to those
+    /// fields to `trainingParams` immediately so the user can watch
+    /// the live ratio respond — but if they Cancel, we restore
+    /// these stash values without warning. Captured in
+    /// `trainingPopoverSeedFromParams()` and consumed by
+    /// `trainingPopoverCancel()`.
+    @State private var originalReplayRatioTarget: Double = 1.0
+    @State private var originalReplaySelfPlayDelayMs: Int = 0
+    @State private var originalReplayTrainingStepDelayMs: Int = 0
+    @State private var originalReplayRatioAutoAdjust: Bool = true
+    @State private var trainingPopoverTrainingBatchSizeError: Bool = false
+    @State private var trainingPopoverSelfPlayWorkersError: Bool = false
+    @State private var trainingPopoverSelfPlayStartTauError: Bool = false
+    @State private var trainingPopoverSelfPlayDecayPerPlyError: Bool = false
+    @State private var trainingPopoverSelfPlayFloorTauError: Bool = false
+    @State private var trainingPopoverReplayBufferCapacityError: Bool = false
+    @State private var trainingPopoverReplayBufferMinPositionsError: Bool = false
+    @State private var trainingPopoverReplayRatioTargetError: Bool = false
+    @State private var trainingPopoverReplaySelfPlayDelayError: Bool = false
+    @State private var trainingPopoverReplayTrainingStepDelayError: Bool = false
     @State private var showTrainingPopover: Bool = false
 
     /// Binding for the side-to-move segmented picker. Writes rebuild
@@ -5678,77 +5642,6 @@ struct UpperContentView: View {
         )
     }
 
-    /// Commit edits to the self-play tau fields. Parses each of the
-    /// three `@State` strings, clamps to reasonable ranges, writes back
-    /// to `@AppStorage`, and pushes the new schedule into the live
-    /// `samplingScheduleBox` so the next game played on each self-play
-    /// slot picks it up. Invalid entries revert to the persisted value.
-    private func applySpTauEdit() {
-        var changed = false
-        if let v = Double(spStartTauEditText), v > 0, v.isFinite, v <= 10 {
-            if abs(v - trainingParams.selfPlayStartTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] sp.startTau: %.3f -> %.3f", trainingParams.selfPlayStartTau, v))
-                trainingParams.selfPlayStartTau = v
-                changed = true
-            }
-        }
-        if let v = Double(spFloorTauEditText), v > 0, v.isFinite, v <= 10 {
-            if abs(v - trainingParams.selfPlayTargetTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] sp.floorTau: %.3f -> %.3f", trainingParams.selfPlayTargetTau, v))
-                trainingParams.selfPlayTargetTau = v
-                changed = true
-            }
-        }
-        if let v = Double(spDecayPerPlyEditText), v >= 0, v.isFinite, v <= 1 {
-            if abs(v - trainingParams.selfPlayTauDecayPerPly) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] sp.decayPerPly: %.4f -> %.4f", trainingParams.selfPlayTauDecayPerPly, v))
-                trainingParams.selfPlayTauDecayPerPly = v
-                changed = true
-            }
-        }
-        spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
-        spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
-        spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
-        if changed {
-            samplingScheduleBox?.setSelfPlay(buildSelfPlaySchedule())
-        }
-    }
-
-    /// Commit edits to the arena tau fields. Same contract as
-    /// `applySpTauEdit` but writes into the arena slot of the box;
-    /// in-flight arenas keep the snapshot they were created with and
-    /// only the next arena picks up the new schedule.
-    private func applyArTauEdit() {
-        var changed = false
-        if let v = Double(arStartTauEditText), v > 0, v.isFinite, v <= 10 {
-            if abs(v - trainingParams.arenaStartTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] ar.startTau: %.3f -> %.3f", trainingParams.arenaStartTau, v))
-                trainingParams.arenaStartTau = v
-                changed = true
-            }
-        }
-        if let v = Double(arFloorTauEditText), v > 0, v.isFinite, v <= 10 {
-            if abs(v - trainingParams.arenaTargetTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] ar.floorTau: %.3f -> %.3f", trainingParams.arenaTargetTau, v))
-                trainingParams.arenaTargetTau = v
-                changed = true
-            }
-        }
-        if let v = Double(arDecayPerPlyEditText), v >= 0, v.isFinite, v <= 1 {
-            if abs(v - trainingParams.arenaTauDecayPerPly) > Double.ulpOfOne {
-                SessionLogger.shared.log(String(format: "[PARAM] ar.decayPerPly: %.4f -> %.4f", trainingParams.arenaTauDecayPerPly, v))
-                trainingParams.arenaTauDecayPerPly = v
-                changed = true
-            }
-        }
-        arStartTauEditText = String(format: "%.2f", trainingParams.arenaStartTau)
-        arFloorTauEditText = String(format: "%.2f", trainingParams.arenaTargetTau)
-        arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
-        if changed {
-            samplingScheduleBox?.setArena(buildArenaSchedule())
-        }
-    }
-
     private func trainOnce() {
         SessionLogger.shared.log("[BUTTON] Train Once")
         guard let trainer = ensureTrainer() else { return }
@@ -6406,12 +6299,6 @@ struct UpperContentView: View {
             arena: arSchedule
         )
         samplingScheduleBox = scheduleBox
-        // Shared live delay holder. The Stepper writes through to
-        // both `trainingParams.trainingStepDelayMs` and this box; the
-        // training worker reads from the box at the bottom of each
-        // step to decide how long to pause.
-        let stepDelayBox = TrainingStepDelayBox(initial: trainingParams.trainingStepDelayMs)
-        trainingStepDelayBox = stepDelayBox
         let ratioController = ReplayRatioController(
             batchSize: trainingParams.trainingBatchSize,
             targetRatio: trainingParams.replayRatioTarget,
@@ -7953,7 +7840,6 @@ struct UpperContentView: View {
                 chartCoordinator.arenaChartEvents = []
                 chartCoordinator.cancelActiveArena()
                 workerCountBox = nil
-                trainingStepDelayBox = nil
                 samplingScheduleBox = nil
                 activeSelfPlayGate = nil
                 activeTrainingGate = nil
@@ -8208,6 +8094,7 @@ struct UpperContentView: View {
                         weightDecayText: $weightDecayEditText,
                         policyKText: $policyScaleKEditText,
                         drawPenaltyText: $drawPenaltyEditText,
+                        trainingBatchSizeText: $trainingBatchSizeEditText,
                         lrError: trainingPopoverLRError,
                         warmupError: trainingPopoverWarmupError,
                         momentumError: trainingPopoverMomentumError,
@@ -8216,7 +8103,43 @@ struct UpperContentView: View {
                         weightDecayError: trainingPopoverWeightDecayError,
                         policyKError: trainingPopoverPolicyKError,
                         drawPenaltyError: trainingPopoverDrawPenaltyError,
-                        onCancel: { showTrainingPopover = false },
+                        trainingBatchSizeError: trainingPopoverTrainingBatchSizeError,
+                        selfPlayWorkersText: $selfPlayWorkersEditText,
+                        selfPlayStartTauText: $spStartTauEditText,
+                        selfPlayDecayPerPlyText: $spDecayPerPlyEditText,
+                        selfPlayFloorTauText: $spFloorTauEditText,
+                        selfPlayWorkersError: trainingPopoverSelfPlayWorkersError,
+                        selfPlayStartTauError: trainingPopoverSelfPlayStartTauError,
+                        selfPlayDecayPerPlyError: trainingPopoverSelfPlayDecayPerPlyError,
+                        selfPlayFloorTauError: trainingPopoverSelfPlayFloorTauError,
+                        replayBufferCapacityText: $replayBufferCapacityEditText,
+                        replayBufferMinPositionsText: $replayBufferMinPositionsBeforeTrainingEditText,
+                        replayRatioTargetText: $replayRatioTargetEditText,
+                        replaySelfPlayDelayText: $replaySelfPlayDelayEditText,
+                        replayTrainingStepDelayText: $replayTrainingStepDelayEditText,
+                        replayRatioAutoAdjust: $replayRatioAutoAdjustEditValue,
+                        replayBufferCapacityError: trainingPopoverReplayBufferCapacityError,
+                        replayBufferMinPositionsError: trainingPopoverReplayBufferMinPositionsError,
+                        replayRatioTargetError: trainingPopoverReplayRatioTargetError,
+                        replaySelfPlayDelayError: trainingPopoverReplaySelfPlayDelayError,
+                        replayTrainingStepDelayError: trainingPopoverReplayTrainingStepDelayError,
+                        replayRatioCurrent: replayRatioSnapshot?.currentRatio,
+                        replayRatioComputedDelayMs: replayRatioSnapshot?.computedDelayMs,
+                        replayRatioComputedSelfPlayDelayMs: replayRatioSnapshot?.computedSelfPlayDelayMs,
+                        bytesPerPosition: ReplayBuffer.bytesPerPosition,
+                        onLiveReplayRatioTargetChange: { newValue in
+                            trainingPopoverApplyLiveReplayRatioTarget(newValue)
+                        },
+                        onLiveSelfPlayDelayChange: { newValue in
+                            trainingPopoverApplyLiveSelfPlayDelay(newValue)
+                        },
+                        onLiveTrainingStepDelayChange: { newValue in
+                            trainingPopoverApplyLiveTrainingStepDelay(newValue)
+                        },
+                        onLiveReplayRatioAutoAdjustChange: { newValue in
+                            trainingPopoverApplyLiveReplayRatioAutoAdjust(newValue)
+                        },
+                        onCancel: { trainingPopoverCancel() },
                         onSave: { trainingPopoverSave() },
                         onAppearSeed: { trainingPopoverSeedFromParams() }
                     )
@@ -8635,6 +8558,15 @@ struct UpperContentView: View {
             arenaPopoverTauFloorError = true
             anyError = true
         }
+        // Push the freshly-edited arena schedule into the live
+        // `samplingScheduleBox` so the next arena tournament picks
+        // up the new tau curve. Without this push the box keeps
+        // its session-start snapshot and updated `trainingParams`
+        // values don't take effect until the next Play-and-Train
+        // restart. (Pre-existing latent bug — the arena popover
+        // never wired this through. Cleaned up alongside the
+        // matching push from the new training popover.)
+        samplingScheduleBox?.setArena(buildArenaSchedule())
 
         if !anyError { showArenaPopover = false }
     }
@@ -8645,6 +8577,7 @@ struct UpperContentView: View {
     /// when the popover opens, even if a CLI / parameters-file
     /// override edited them since the last open.
     private func trainingPopoverSeedFromParams() {
+        // --- Optimizer tab ---
         learningRateEditText = String(format: "%.2e", trainingParams.learningRate)
         lrWarmupStepsEditText = String(trainingParams.lrWarmupSteps)
         momentumCoeffEditText = String(format: "%.3f", trainingParams.momentumCoeff)
@@ -8654,6 +8587,33 @@ struct UpperContentView: View {
         weightDecayEditText = String(format: "%.2e", trainingParams.weightDecay)
         policyScaleKEditText = String(format: "%.2f", trainingParams.policyScaleK)
         drawPenaltyEditText = String(format: "%.3f", trainingParams.drawPenalty)
+        trainingBatchSizeEditText = String(trainingParams.trainingBatchSize)
+        // --- Self Play tab ---
+        selfPlayWorkersEditText = String(trainingParams.selfPlayWorkers)
+        spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
+        spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
+        spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
+        // --- Replay tab ---
+        replayBufferCapacityEditText = String(trainingParams.replayBufferCapacity)
+        replayBufferMinPositionsBeforeTrainingEditText = String(
+            trainingParams.replayBufferMinPositionsBeforeTraining
+        )
+        replayRatioTargetEditText = String(format: "%.2f", trainingParams.replayRatioTarget)
+        replaySelfPlayDelayEditText = String(trainingParams.selfPlayDelayMs)
+        replayTrainingStepDelayEditText = String(trainingParams.trainingStepDelayMs)
+        replayRatioAutoAdjustEditValue = trainingParams.replayRatioAutoAdjust
+        // Stash pre-edit values for the four replay-ratio control
+        // fields. The Replay tab live-propagates changes to those
+        // fields; if the user hits Cancel we restore from this
+        // stash, matching the standard "Cancel discards" mental
+        // model from the user's POV even though the live writes
+        // already reached `trainingParams`.
+        originalReplayRatioTarget = trainingParams.replayRatioTarget
+        originalReplaySelfPlayDelayMs = trainingParams.selfPlayDelayMs
+        originalReplayTrainingStepDelayMs = trainingParams.trainingStepDelayMs
+        originalReplayRatioAutoAdjust = trainingParams.replayRatioAutoAdjust
+        // Reset every error flag — a fresh open should never carry
+        // red overlays from a previously-cancelled bad input.
         trainingPopoverLRError = false
         trainingPopoverWarmupError = false
         trainingPopoverMomentumError = false
@@ -8662,6 +8622,117 @@ struct UpperContentView: View {
         trainingPopoverWeightDecayError = false
         trainingPopoverPolicyKError = false
         trainingPopoverDrawPenaltyError = false
+        trainingPopoverTrainingBatchSizeError = false
+        trainingPopoverSelfPlayWorkersError = false
+        trainingPopoverSelfPlayStartTauError = false
+        trainingPopoverSelfPlayDecayPerPlyError = false
+        trainingPopoverSelfPlayFloorTauError = false
+        trainingPopoverReplayBufferCapacityError = false
+        trainingPopoverReplayBufferMinPositionsError = false
+        trainingPopoverReplayRatioTargetError = false
+        trainingPopoverReplaySelfPlayDelayError = false
+        trainingPopoverReplayTrainingStepDelayError = false
+    }
+
+    /// Cancel handler for `TrainingSettingsPopover`. Restores the
+    /// three live-propagated replay-ratio control fields from the
+    /// stash captured in `trainingPopoverSeedFromParams()`, then
+    /// dismisses the popover. Matches the user-facing "Cancel
+    /// discards changes" pattern even though the underlying
+    /// `trainingParams` writes already happened during the edit
+    /// session — the revert here puts everything back without a
+    /// confirmation prompt, by design. No `[PARAM]` log on revert
+    /// (the original live-update writes were not logged either —
+    /// see the Save path's commit-time logging for the source of
+    /// truth).
+    private func trainingPopoverCancel() {
+        if abs(trainingParams.replayRatioTarget - originalReplayRatioTarget) > Double.ulpOfOne {
+            trainingParams.replayRatioTarget = originalReplayRatioTarget
+            // The `ControlSideEffectsProbe` watches
+            // `trainingParams.replayRatioTarget` and pushes the new
+            // value into the live `ReplayRatioController`, so this
+            // single write is sufficient — no direct controller
+            // call needed here.
+        }
+        if trainingParams.selfPlayDelayMs != originalReplaySelfPlayDelayMs {
+            trainingParams.selfPlayDelayMs = originalReplaySelfPlayDelayMs
+            replayRatioController?.manualSelfPlayDelayMs = originalReplaySelfPlayDelayMs
+        }
+        if trainingParams.trainingStepDelayMs != originalReplayTrainingStepDelayMs {
+            trainingParams.trainingStepDelayMs = originalReplayTrainingStepDelayMs
+            replayRatioController?.manualDelayMs = originalReplayTrainingStepDelayMs
+        }
+        if trainingParams.replayRatioAutoAdjust != originalReplayRatioAutoAdjust {
+            trainingParams.replayRatioAutoAdjust = originalReplayRatioAutoAdjust
+        }
+        showTrainingPopover = false
+    }
+
+    /// Live-propagate the user's replay-ratio-target edit straight
+    /// to `trainingParams.replayRatioTarget`. The
+    /// `ControlSideEffectsProbe` watches that property and forwards
+    /// the new value into the live `ReplayRatioController`'s
+    /// `targetRatio`, so this single write is sufficient. Snapped
+    /// to the parameter's `[0.1, 5.0]` range to match the slider
+    /// validation in `trainingPopoverSave`.
+    private func trainingPopoverApplyLiveReplayRatioTarget(_ newValue: Double) {
+        guard newValue.isFinite else { return }
+        let snapped = max(0.1, min(5.0, newValue))
+        if abs(trainingParams.replayRatioTarget - snapped) > Double.ulpOfOne {
+            trainingParams.replayRatioTarget = snapped
+        }
+    }
+
+    /// Live-propagate the user's self-play-delay edit straight to
+    /// `trainingParams.selfPlayDelayMs` and the live
+    /// `ReplayRatioController`. Fired on every text-field commit
+    /// or stepper press while the popover is open. On Cancel the
+    /// parent restores the stashed pre-open value via
+    /// `trainingPopoverCancel()`.
+    private func trainingPopoverApplyLiveSelfPlayDelay(_ newValue: Int) {
+        let snapped = max(0, min(Self.selfPlayDelayMaxMs, newValue))
+        if trainingParams.selfPlayDelayMs != snapped {
+            trainingParams.selfPlayDelayMs = snapped
+            replayRatioController?.manualSelfPlayDelayMs = snapped
+        }
+    }
+
+    /// Live-propagate the user's train-step-delay edit. Same
+    /// rationale as `trainingPopoverApplyLiveSelfPlayDelay`. Also
+    /// writes through to `replayRatioController.manualDelayMs`
+    /// because that's what `recordTrainingBatchAndGetDelay` reads
+    /// each training step — without this push the controller would
+    /// keep returning the old delay despite `trainingParams` having
+    /// the new one.
+    private func trainingPopoverApplyLiveTrainingStepDelay(_ newValue: Int) {
+        let snapped = max(0, min(Self.stepDelayMaxMs, newValue))
+        if trainingParams.trainingStepDelayMs != snapped {
+            trainingParams.trainingStepDelayMs = snapped
+            replayRatioController?.manualDelayMs = snapped
+        }
+    }
+
+    /// Live-propagate the auto-control checkbox toggle. The
+    /// `ControlSideEffectsProbe` watches `replayRatioAutoAdjust`
+    /// and on the OFF transition writes inherited last-auto values
+    /// into `trainingParams.trainingStepDelayMs` / `selfPlayDelayMs`
+    /// — that runs after this setter returns. We defer a re-seed
+    /// of the popover's two delay text bindings to the next main-
+    /// actor tick so the editable PopoverRow that appears when
+    /// auto goes OFF shows the inherited values rather than the
+    /// pre-toggle stash. Without the deferral the user sees the
+    /// stale text and has to tap the Stepper before the probe's
+    /// inherit becomes visible.
+    private func trainingPopoverApplyLiveReplayRatioAutoAdjust(_ newValue: Bool) {
+        if trainingParams.replayRatioAutoAdjust != newValue {
+            trainingParams.replayRatioAutoAdjust = newValue
+            if !newValue {
+                Task { @MainActor in
+                    replaySelfPlayDelayEditText = String(trainingParams.selfPlayDelayMs)
+                    replayTrainingStepDelayEditText = String(trainingParams.trainingStepDelayMs)
+                }
+            }
+        }
     }
 
     /// Validate every `TrainingSettingsPopover` field against its
@@ -8816,7 +8887,200 @@ struct UpperContentView: View {
             anyError = true
         }
 
-        if !anyError { showTrainingPopover = false }
+        // Training batch size — Int in [32, 32_768]. Snapshot-only;
+        // the live trainer rebuilds its feed cache lazily on the
+        // next batch shape it sees, so the change takes effect at
+        // the next training step without an explicit trainer write.
+        if let n = Int(trainingBatchSizeEditText.trimmingCharacters(in: .whitespaces)),
+           n >= 32, n <= 32_768 {
+            trainingPopoverTrainingBatchSizeError = false
+            if n != trainingParams.trainingBatchSize {
+                SessionLogger.shared.log(
+                    "[PARAM] trainingBatchSize: \(trainingParams.trainingBatchSize) -> \(n)"
+                )
+                trainingParams.trainingBatchSize = n
+            }
+        } else {
+            trainingPopoverTrainingBatchSizeError = true
+            anyError = true
+        }
+
+        // Self-play workers — Int in [1, absoluteMaxSelfPlayWorkers].
+        // Live-tunable: the BatchedSelfPlayDriver reconcile loop
+        // picks up the new count on its next reconcile tick.
+        if let n = Int(selfPlayWorkersEditText.trimmingCharacters(in: .whitespaces)),
+           n >= 1, n <= Self.absoluteMaxSelfPlayWorkers {
+            trainingPopoverSelfPlayWorkersError = false
+            if n != trainingParams.selfPlayWorkers {
+                SessionLogger.shared.log(
+                    "[PARAM] selfPlayWorkers: \(trainingParams.selfPlayWorkers) -> \(n)"
+                )
+                trainingParams.selfPlayWorkers = n
+            }
+        } else {
+            trainingPopoverSelfPlayWorkersError = true
+            anyError = true
+        }
+
+        // Self-play tau schedule — Doubles in [0.01, 5.0] (start /
+        // floor) and [0.0, 1.0] (decay). The schedule is rebuilt
+        // by `buildSelfPlaySchedule()` next time the schedule box
+        // is constructed; mid-session changes don't retroactively
+        // alter games already in progress.
+        if let v = Double(spStartTauEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.01, v <= 5.0, v.isFinite {
+            trainingPopoverSelfPlayStartTauError = false
+            if abs(v - trainingParams.selfPlayStartTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] selfPlayStartTau: %.2f -> %.2f", trainingParams.selfPlayStartTau, v)
+                )
+                trainingParams.selfPlayStartTau = v
+            }
+        } else {
+            trainingPopoverSelfPlayStartTauError = true
+            anyError = true
+        }
+        if let v = Double(spDecayPerPlyEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 1.0, v.isFinite {
+            trainingPopoverSelfPlayDecayPerPlyError = false
+            if abs(v - trainingParams.selfPlayTauDecayPerPly) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] selfPlayTauDecayPerPly: %.3f -> %.3f", trainingParams.selfPlayTauDecayPerPly, v)
+                )
+                trainingParams.selfPlayTauDecayPerPly = v
+            }
+        } else {
+            trainingPopoverSelfPlayDecayPerPlyError = true
+            anyError = true
+        }
+        if let v = Double(spFloorTauEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.01, v <= 5.0, v.isFinite {
+            trainingPopoverSelfPlayFloorTauError = false
+            if abs(v - trainingParams.selfPlayTargetTau) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] selfPlayTargetTau: %.2f -> %.2f", trainingParams.selfPlayTargetTau, v)
+                )
+                trainingParams.selfPlayTargetTau = v
+            }
+        } else {
+            trainingPopoverSelfPlayFloorTauError = true
+            anyError = true
+        }
+        // Push the freshly-edited self-play schedule into the live
+        // `samplingScheduleBox` so the next self-play game on each
+        // worker slot picks up the new tau curve. Without this push
+        // the box would keep its session-start snapshot and the
+        // updated `trainingParams` values wouldn't take effect
+        // until the next Play-and-Train start. (The box's own
+        // `setSelfPlay` is a no-op when `samplingScheduleBox` is
+        // nil — i.e. before the first session — so the call is
+        // safe to make unconditionally.)
+        samplingScheduleBox?.setSelfPlay(buildSelfPlaySchedule())
+
+        // Replay buffer capacity — Int in [1024, 100_000_000].
+        // Snapshot-only: the live ReplayBuffer ring cannot resize
+        // mid-session, so this value takes effect at the next
+        // session start.
+        if let n = Int(replayBufferCapacityEditText.trimmingCharacters(in: .whitespaces)),
+           n >= 1024, n <= 100_000_000 {
+            trainingPopoverReplayBufferCapacityError = false
+            if n != trainingParams.replayBufferCapacity {
+                SessionLogger.shared.log(
+                    "[PARAM] replayBufferCapacity: \(trainingParams.replayBufferCapacity) -> \(n)"
+                )
+                trainingParams.replayBufferCapacity = n
+            }
+        } else {
+            trainingPopoverReplayBufferCapacityError = true
+            anyError = true
+        }
+
+        // Pre-train fill threshold — Int in [0, 100_000_000]. Live-
+        // tunable; the gate that holds the trainer until the
+        // buffer fills past this many positions reads from
+        // trainingParams every check.
+        if let n = Int(replayBufferMinPositionsBeforeTrainingEditText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 100_000_000 {
+            trainingPopoverReplayBufferMinPositionsError = false
+            if n != trainingParams.replayBufferMinPositionsBeforeTraining {
+                SessionLogger.shared.log(
+                    "[PARAM] replayBufferMinPositionsBeforeTraining: \(trainingParams.replayBufferMinPositionsBeforeTraining) -> \(n)"
+                )
+                trainingParams.replayBufferMinPositionsBeforeTraining = n
+            }
+        } else {
+            trainingPopoverReplayBufferMinPositionsError = true
+            anyError = true
+        }
+
+        // Replay-ratio control fields (replayRatioTarget,
+        // selfPlayDelayMs, trainingStepDelayMs, replayRatioAutoAdjust)
+        // are live-propagated during edits via
+        // `trainingPopoverApplyLive…` — the writes already reached
+        // `trainingParams`. Save validates the current text values
+        // for red-overlay display only; no parameter writes here.
+        if let v = Double(replayRatioTargetEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.1, v <= 5.0, v.isFinite {
+            trainingPopoverReplayRatioTargetError = false
+        } else {
+            trainingPopoverReplayRatioTargetError = true
+            anyError = true
+        }
+        if let n = Int(replaySelfPlayDelayEditText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= Self.selfPlayDelayMaxMs {
+            trainingPopoverReplaySelfPlayDelayError = false
+        } else {
+            trainingPopoverReplaySelfPlayDelayError = true
+            anyError = true
+        }
+        if let n = Int(replayTrainingStepDelayEditText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 10_000 {
+            trainingPopoverReplayTrainingStepDelayError = false
+        } else {
+            trainingPopoverReplayTrainingStepDelayError = true
+            anyError = true
+        }
+
+        if !anyError {
+            // Commit-time [PARAM] log lines for the four live-
+            // propagated replay-ratio fields. The live writes
+            // during the edit session are intentionally silent
+            // (a log per keystroke would be noise); this is the
+            // single authoritative log line per Save, mirroring
+            // the rest of the trainingPopoverSave fields.
+            if abs(trainingParams.replayRatioTarget - originalReplayRatioTarget) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(
+                        format: "[PARAM] replayRatioTarget: %.2f -> %.2f",
+                        originalReplayRatioTarget,
+                        trainingParams.replayRatioTarget
+                    )
+                )
+            }
+            if trainingParams.selfPlayDelayMs != originalReplaySelfPlayDelayMs {
+                SessionLogger.shared.log(
+                    "[PARAM] selfPlayDelayMs: \(originalReplaySelfPlayDelayMs) -> \(trainingParams.selfPlayDelayMs)"
+                )
+            }
+            if trainingParams.trainingStepDelayMs != originalReplayTrainingStepDelayMs {
+                SessionLogger.shared.log(
+                    "[PARAM] trainingStepDelayMs: \(originalReplayTrainingStepDelayMs) -> \(trainingParams.trainingStepDelayMs)"
+                )
+            }
+            if trainingParams.replayRatioAutoAdjust != originalReplayRatioAutoAdjust {
+                SessionLogger.shared.log(
+                    "[PARAM] replayRatioAutoAdjust: \(originalReplayRatioAutoAdjust) -> \(trainingParams.replayRatioAutoAdjust)"
+                )
+            }
+            // On successful save, the stash that backs Cancel
+            // becomes the new "pre-edit" baseline — closing the
+            // popover with Save commits the live ratio writes.
+            originalReplayRatioTarget = trainingParams.replayRatioTarget
+            originalReplaySelfPlayDelayMs = trainingParams.selfPlayDelayMs
+            originalReplayTrainingStepDelayMs = trainingParams.trainingStepDelayMs
+            originalReplayRatioAutoAdjust = trainingParams.replayRatioAutoAdjust
+            showTrainingPopover = false
+        }
     }
 
     /// Backfill `finishedAt` / `candidateID` / `championID` on
@@ -10089,157 +10353,38 @@ extension UpperContentView {
             bodyText: colorizedPanelBody(column.body),
             realTraining: realTraining
         ) {
-            Group {
-                HStack(spacing: 6) {
-                    Text("  Step Delay:")
-                    if let snap = replayRatioSnapshot, snap.autoAdjust {
-                        Text("\(snap.computedDelayMs)")
-                            .monospacedDigit()
-                            .frame(minWidth: 32, alignment: .trailing)
-                        Text("ms (auto)")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("\(trainingParams.trainingStepDelayMs)")
-                            .monospacedDigit()
-                            .frame(minWidth: 32, alignment: .trailing)
-                        Text("ms")
-                    }
-                    Stepper(
-                        "Step Delay",
-                        value: trainingStepDelayBinding,
-                        in: 0...Self.stepDelayMaxMs
-                    )
-                    .labelsHidden()
-                    .disabled(trainingParams.replayRatioAutoAdjust)
-                }
-                HStack(spacing: 6) {
-                    Text("  SP Delay:")
-                    if let snap = replayRatioSnapshot, snap.autoAdjust {
-                        Text("\(snap.computedSelfPlayDelayMs)")
-                            .monospacedDigit()
-                            .frame(minWidth: 32, alignment: .trailing)
-                        Text("ms (auto)")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("\(trainingParams.selfPlayDelayMs)")
-                            .monospacedDigit()
-                            .frame(minWidth: 32, alignment: .trailing)
-                        Text("ms")
-                    }
-                    Stepper(
-                        "SP Delay",
-                        value: selfPlayStepDelayBinding,
-                        in: 0...Self.selfPlayDelayMaxMs
-                    )
-                    .labelsHidden()
-                    .disabled(trainingParams.replayRatioAutoAdjust)
-                }
-                HStack(spacing: 6) {
-                    Text("  Replay Ratio:")
-                    if let snap = replayRatioSnapshot {
-                        Text(String(format: "%.2f", snap.currentRatio))
-                            .monospacedDigit()
-                            .frame(minWidth: 40, alignment: .trailing)
-                            .foregroundStyle(
-                                abs(snap.currentRatio - snap.targetRatio) < 0.3
-                                ? Color.primary : Color.red
-                            )
-                    } else {
-                        Text("--")
-                            .monospacedDigit()
-                            .frame(minWidth: 40, alignment: .trailing)
-                    }
-                    Text("target:")
-                        .foregroundStyle(.secondary)
-                    Text(String(format: "%.1f", trainingParams.replayRatioTarget))
+            // Read-only replay-ratio display. Editable controls
+            // (Step Delay / SP Delay / Auto toggle / Target Ratio
+            // stepper) moved to the Training Settings popover's
+            // Replay tab. The user explicitly asked to keep this
+            // view-only readout on the main screen so the live
+            // ratio remains glanceable without opening the popover.
+            //
+            // SP tau, Buffer Cap, Prefill rows previously here also
+            // moved to the popover (Self Play and Replay tabs).
+            HStack(spacing: 6) {
+                Text("  Replay Ratio:")
+                if let snap = replayRatioSnapshot {
+                    Text(String(format: "%.2f", snap.currentRatio))
                         .monospacedDigit()
-                        .frame(minWidth: 24, alignment: .trailing)
-                    Stepper(
-                        "Target Ratio",
-                        value: $trainingParams.replayRatioTarget,
-                        in: 0.1...5.0,
-                        step: 0.1
-                    )
-                    .labelsHidden()
-                    Toggle("Auto", isOn: $trainingParams.replayRatioAutoAdjust)
-                        .toggleStyle(.checkbox)
+                        .frame(minWidth: 40, alignment: .trailing)
+                        .foregroundStyle(
+                            abs(snap.currentRatio - snap.targetRatio) < 0.3
+                            ? Color.primary : Color.red
+                        )
+                } else {
+                    Text("--")
+                        .monospacedDigit()
+                        .frame(minWidth: 40, alignment: .trailing)
                 }
-                // Learn Rate / Entropy / Clip / Decay / K rows moved
-                // to `TrainingSettingsPopover` (opened from the
-                // top-bar Training chip). Single edit location keeps
-                // `trainingParams`, `trainer.*`, and the @State edit-
-                // text in sync without the dual binding the inline
-                // rows used to maintain.
-                HStack(spacing: 6) {
-                    Text("  SP tau:")
-                    ParameterTextField(
-                        placeholder: "SP start",
-                        text: $spStartTauEditText,
-                        width: 60
-                    ) { _ in applySpTauEdit() }
-                    Text("→")
-                        .foregroundStyle(.secondary)
-                    ParameterTextField(
-                        placeholder: "SP floor",
-                        text: $spFloorTauEditText,
-                        width: 60
-                    ) { _ in applySpTauEdit() }
-                    Text("decay")
-                        .foregroundStyle(.secondary)
-                    ParameterTextField(
-                        placeholder: "SP decay",
-                        text: $spDecayPerPlyEditText,
-                        width: 70
-                    ) { _ in applySpTauEdit() }
-                    Text("/ply")
-                        .foregroundStyle(.secondary)
-                }
-                // Arena tau editor moved to the Arena Settings
-                // popover (Match temperature section). Single edit
-                // location avoids drift between inline panel and
-                // popover bindings.
-                // Draw Penalty row moved to `TrainingSettingsPopover`.
-                HStack(spacing: 6) {
-                    Text("  Buffer Cap:")
-                    ParameterTextField(
-                        placeholder: "Capacity",
-                        text: $replayBufferCapacityEditText,
-                        width: 100
-                    ) { typed in
-                        if let parsed = Int(typed),
-                           let range = ReplayBufferCapacity.definition.intRange,
-                           range.contains(parsed) {
-                            let prior = trainingParams.replayBufferCapacity
-                            if parsed != prior {
-                                SessionLogger.shared.log(
-                                    "[PARAM] replayBufferCapacity: \(prior) -> \(parsed) (takes effect on next session start)"
-                                )
-                            }
-                            trainingParams.replayBufferCapacity = parsed
-                        }
-                        replayBufferCapacityEditText = String(trainingParams.replayBufferCapacity)
-                    }
-                    Text("Prefill:")
-                        .foregroundStyle(.secondary)
-                    ParameterTextField(
-                        placeholder: "Prefill",
-                        text: $replayBufferMinPositionsBeforeTrainingEditText,
-                        width: 100
-                    ) { typed in
-                        if let parsed = Int(typed),
-                           let range = ReplayBufferMinPositionsBeforeTraining.definition.intRange,
-                           range.contains(parsed) {
-                            let prior = trainingParams.replayBufferMinPositionsBeforeTraining
-                            if parsed != prior {
-                                SessionLogger.shared.log(
-                                    "[PARAM] replayBufferMinPositionsBeforeTraining: \(prior) -> \(parsed) (takes effect on next session start)"
-                                )
-                            }
-                            trainingParams.replayBufferMinPositionsBeforeTraining = parsed
-                        }
-                        replayBufferMinPositionsBeforeTrainingEditText = String(trainingParams.replayBufferMinPositionsBeforeTraining)
-                    }
-                    Text("(applies on next session start)")
+                Text("target:")
+                    .foregroundStyle(.secondary)
+                Text(String(format: "%.2f", trainingParams.replayRatioTarget))
+                    .monospacedDigit()
+                    .frame(minWidth: 32, alignment: .trailing)
+                if trainingParams.replayRatioAutoAdjust {
+                    Text("(auto)")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }

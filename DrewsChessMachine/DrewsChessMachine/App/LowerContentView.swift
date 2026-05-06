@@ -23,6 +23,10 @@ struct LowerContentView: View {
     /// reference line on the replay-ratio tile. Same forwarding
     /// pattern as `promoteThreshold`.
     let replayRatioTarget: Double
+    /// Current gradient-clip global L2 cap, drawn as a dashed
+    /// horizontal reference line on the gNorm tile. Same
+    /// forwarding pattern as `replayRatioTarget`.
+    let gradClipMaxNorm: Double
     /// Unified-memory total used by the App-memory and GPU-memory
     /// tiles to render `used / total (pct%)` headers. Derived
     /// from `UpperContentView`'s `memoryStatsSnap`; nil before the
@@ -42,6 +46,7 @@ struct LowerContentView: View {
                 activeArenaStartElapsed: chartCoordinator.activeArenaStartElapsed,
                 promoteThreshold: promoteThreshold,
                 replayRatioTarget: replayRatioTarget,
+                gradClipMaxNorm: gradClipMaxNorm,
                 appMemoryTotalGB: appMemoryTotalGB,
                 gpuMemoryTotalGB: gpuMemoryTotalGB,
                 legalMassMaxAllTime: chartCoordinator.legalMassMaxAllTime,

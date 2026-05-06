@@ -600,7 +600,20 @@ enum CheckpointManager {
 
         do {
             try await verifyModelFile(at: championTmpURL, expectedWeights: championWeights)
-            try await verifyModelFile(at: trainerTmpURL, expectedWeights: trainerWeights)
+            // Trainer file is v2 layout: trainables + bn + velocity.
+            // The inference scratch network used by `verifyModelFile`
+            // can only load trainables + bn, so the forward-pass
+            // round-trip is scoped to that base prefix. The base
+            // length is exactly the champion file's tensor count
+            // (champion is the same architecture, base-only). The
+            // bit-compare step inside `verifyModelFile` still
+            // covers the full v2 payload, so velocity tensor
+            // integrity on disk is checked unchanged.
+            try await verifyModelFile(
+                at: trainerTmpURL,
+                expectedWeights: trainerWeights,
+                forwardPassPrefixCount: championWeights.count
+            )
             // Round-trip session.json: decode the bytes we just wrote
             // and confirm they reproduce the struct. Catches JSON
             // encoder/decoder asymmetries (e.g. Float precision).
@@ -787,9 +800,25 @@ enum CheckpointManager {
     /// file and surfaces the error. The scratch network is built
     /// fresh on every call; at ~100 ms per build it's acceptable
     /// because saves are infrequent.
+    /// - parameter forwardPassPrefixCount: When non-nil, the forward-
+    ///   pass round-trip step loads only the first `forwardPassPrefixCount`
+    ///   tensors of `expectedWeights` (and of the readback) into a
+    ///   throwaway inference scratch network. Used for the trainer
+    ///   `.dcmmodel` v2 layout: the file carries trainables + bn +
+    ///   velocity (= total 2·trainables + bn), but the inference
+    ///   scratch network only has trainables + bn slots, so a full
+    ///   payload load would throw "Weight load mismatch: expected N
+    ///   tensors, got 2·trainables + bn." When nil (default), the
+    ///   full payload is loaded — appropriate for the champion file
+    ///   which contains only trainables + bn. The bit-compare step
+    ///   above always covers the full payload regardless of this
+    ///   parameter, so velocity tensor integrity is still verified
+    ///   on disk; only the forward-pass behavioral check is scoped
+    ///   to the inference-loadable subset.
     static func verifyModelFile(
         at url: URL,
-        expectedWeights: [[Float]]
+        expectedWeights: [[Float]],
+        forwardPassPrefixCount: Int? = nil
     ) async throws {
         // 1. Re-read and byte-compare.
         let data: Data
@@ -841,10 +870,32 @@ enum CheckpointManager {
 
         let testBoard = BoardEncoder.encode(.starting)
 
+        // For v2 trainer files the scratch inference network can
+        // only load the base prefix (trainables + bn), not the
+        // velocity tail — slice both payloads identically before
+        // the round-trip so they compare apples to apples.
+        let prePayload: [[Float]]
+        let postPayload: [[Float]]
+        if let prefix = forwardPassPrefixCount {
+            guard prefix >= 0,
+                  prefix <= expectedWeights.count,
+                  prefix <= readBack.weights.count else {
+                throw CheckpointManagerError.verificationTensorCountMismatch(
+                    expected: prefix,
+                    got: min(expectedWeights.count, readBack.weights.count)
+                )
+            }
+            prePayload = Array(expectedWeights.prefix(prefix))
+            postPayload = Array(readBack.weights.prefix(prefix))
+        } else {
+            prePayload = expectedWeights
+            postPayload = readBack.weights
+        }
+
         let preValue: Float
         let prePolicy: [Float]
         do {
-            try await scratch.loadWeights(expectedWeights)
+            try await scratch.loadWeights(prePayload)
             let result = try await scratch.evaluate(board: testBoard)
             preValue = result.value
             prePolicy = result.policy
@@ -855,7 +906,7 @@ enum CheckpointManager {
         let postValue: Float
         let postPolicy: [Float]
         do {
-            try await scratch.loadWeights(readBack.weights)
+            try await scratch.loadWeights(postPayload)
             let result = try await scratch.evaluate(board: testBoard)
             postValue = result.value
             postPolicy = result.policy

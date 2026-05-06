@@ -15,18 +15,53 @@ struct PolicyLossSplitChart: View {
     let context: TrainingChartGridView.Context
 
     var body: some View {
-        let lastWin = buckets.last?.policyLossWin?.max
-        let lastLoss = buckets.last?.policyLossLoss?.max
+        // Per-series hover readouts — when the cursor moves, read the
+        // bucket that corresponds to the hovered time rather than the
+        // most-recent bucket. Without this the crosshair RuleMark
+        // moves but the header value sits stuck at the last sample.
+        let winReadout = TrainingChartGridView.hoverReadoutTraining(
+            hoveredSec: hoveredSec,
+            buckets: buckets,
+            accessor: { $0.policyLossWin },
+            bucketWidthSec: context.bucketWidthSec
+        )
+        let lossReadout = TrainingChartGridView.hoverReadoutTraining(
+            hoveredSec: hoveredSec,
+            buckets: buckets,
+            accessor: { $0.policyLossLoss },
+            bucketWidthSec: context.bucketWidthSec
+        )
+        func value(
+            for readout: TrainingChartGridView.HoverReadout,
+            lastBucketValue: Double?
+        ) -> String {
+            switch readout {
+            case .notHovering:
+                return lastBucketValue.map { String(format: "%+.4f", $0) } ?? "--"
+            case .hoveringNoData:
+                return "--"
+            case .hoveringWithData(_, let v):
+                return String(format: "%+.4f", v)
+            }
+        }
+        let winStr = value(
+            for: winReadout,
+            lastBucketValue: buckets.last?.policyLossWin?.max
+        )
+        let lossStr = value(
+            for: lossReadout,
+            lastBucketValue: buckets.last?.policyLossLoss?.max
+        )
         let headerText: String
-        switch (lastWin, lastLoss) {
-        case (let w?, let l?):
-            headerText = String(format: "win %+.4f / loss %+.4f", w, l)
-        case (let w?, nil):
-            headerText = String(format: "win %+.4f / loss --", w)
-        case (nil, let l?):
-            headerText = String(format: "win -- / loss %+.4f", l)
-        default:
-            headerText = "--"
+        if winStr == "--" && lossStr == "--" {
+            switch winReadout {
+            case .hoveringNoData, .hoveringWithData:
+                headerText = "— no data"
+            case .notHovering:
+                headerText = "--"
+            }
+        } else {
+            headerText = "win \(winStr) / loss \(lossStr)"
         }
         return VStack(alignment: .leading, spacing: 1) {
             ChartTileHeader(title: "pLoss split (W vs L)", value: headerText)
@@ -52,6 +87,16 @@ struct PolicyLossSplitChart: View {
                     RuleMark(x: .value("Time", t))
                         .foregroundStyle(Color.gray.opacity(0.5))
                         .lineStyle(StrokeStyle(lineWidth: 1))
+                }
+                if case .hoveringWithData(let t, let v) = winReadout {
+                    PointMark(x: .value("Time", t), y: .value("pLoss", v))
+                        .foregroundStyle(Color.green)
+                        .symbolSize(40)
+                }
+                if case .hoveringWithData(let t, let v) = lossReadout {
+                    PointMark(x: .value("Time", t), y: .value("pLoss", v))
+                        .foregroundStyle(Color.red)
+                        .symbolSize(40)
                 }
             }
             .chartForegroundStyleScale([

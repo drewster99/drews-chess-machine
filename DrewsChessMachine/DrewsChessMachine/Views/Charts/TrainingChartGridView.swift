@@ -41,6 +41,14 @@ struct TrainingChartGridView: View {
     /// the reader can see how far the auto-adjust controller is
     /// missing at a glance.
     let replayRatioTarget: Double
+    /// Current gradient-clip global L2 cap. Drawn as a dashed
+    /// horizontal reference line on the gNorm tile so the reader can
+    /// see at a glance whether the optimizer is being clipped — when
+    /// the gNorm trace sits above this line, every weight's gradient
+    /// is being scaled by `clipMax/gNorm`. Sourced from
+    /// `TrainingParameters.shared.gradClipMaxNorm`; updates next
+    /// re-render after the user changes it via the popover.
+    let gradClipMaxNorm: Double
     /// Unified-memory total in GB, used by the combined memory tile
     /// to render the `App X · GPU Y / Total GB (pct%)` header. The
     /// `app` and `gpu` totals are both derived from
@@ -174,7 +182,9 @@ struct TrainingChartGridView: View {
                 color: .pink,
                 hoveredSec: $hoveredSec,
                 scrollX: $scrollX,
-                context: context
+                context: context,
+                referenceLine: gradClipMaxNorm,
+                referenceLineLabel: String(format: "clip %.0f", gradClipMaxNorm)
             )
             MiniLineChart(
                 title: "||v|| (velocity L2 norm)",
