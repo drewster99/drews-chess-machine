@@ -63,6 +63,7 @@ final class ChessRunner: @unchecked Sendable {
         let policy = softmax(logits)
         return InferenceResult(
             topMoves: extractTopMoves(from: policy, state: state, pieces: pieces, count: 4),
+            logits: logits,
             policy: policy,
             value: value,
             inferenceTimeMs: inferenceTimeMs
@@ -153,6 +154,19 @@ final class ChessRunner: @unchecked Sendable {
 
     struct InferenceResult: Sendable {
         let topMoves: [MoveVisualization]
+        /// Pre-softmax raw policy logits (length `policySize`). Kept
+        /// alongside `policy` so consumers that want the unnormalized
+        /// per-channel landscape (e.g. the policy-channels panel's
+        /// per-channel min-max heatmap) don't have to log-transform
+        /// the softmaxed values back into logit-space — log() of
+        /// near-zero probabilities loses precision and goes to -inf
+        /// where the softmax floored. Same source vector that gets
+        /// softmaxed into `policy` below.
+        let logits: [Float]
+        /// Softmax-over-all-`policySize`-cells of `logits`. The UI's
+        /// top-K display, the per-cell percentage readouts, and the
+        /// "Top 100 sum" stats all consume this — they all want
+        /// real probabilities, not raw logits.
         let policy: [Float]
         let value: Float
         let inferenceTimeMs: Double

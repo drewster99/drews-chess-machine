@@ -200,16 +200,28 @@ struct PolicyChannelsPanel: View {
         }
     }
 
-    /// Apply the per-cell brightness floor. Cells whose normalized
-    /// value is strictly below `redThreshold` are zeroed out so
+    /// Apply the per-cell brightness floor + rescale. Cells whose
+    /// normalized value is below `redThreshold` are zeroed out so
     /// `ChessBoardView`'s `.channel` overlay (which short-circuits
-    /// at `value > 0.001`) skips drawing them entirely. At
-    /// `redThreshold == 0` we hand back the input unchanged so the
-    /// allocation is skipped on the no-cutoff fast path.
+    /// at `value > 0.001`) skips drawing them entirely. Cells at
+    /// or above the floor are linearly remapped from
+    /// `[threshold, 1]` onto `[0, 1]` so the visible range always
+    /// uses the full red-opacity gradient — without this the
+    /// dynamic range above the floor stays compressed (e.g.
+    /// cutoff = 0.7 leaves all surviving cells crammed into the
+    /// [0.7, 1.0] visual band). Edge case: when `threshold == 1`,
+    /// only the per-channel max cells (cellValue == 1.0) survive
+    /// and they render at full brightness; nothing else is visible.
+    /// At `redThreshold == 0` we hand back the input unchanged so
+    /// the allocation is skipped on the no-cutoff fast path.
     private func thresholded(_ values: [Float]) -> [Float] {
         guard redThreshold > 0 else { return values }
         let t = Float(redThreshold)
-        return values.map { $0 >= t ? $0 : 0 }
+        if t >= 1 {
+            return values.map { $0 >= 1 ? 1 : 0 }
+        }
+        let invSpan: Float = 1 / (1 - t)
+        return values.map { $0 >= t ? ($0 - t) * invSpan : 0 }
     }
 
     // MARK: - Channel computation

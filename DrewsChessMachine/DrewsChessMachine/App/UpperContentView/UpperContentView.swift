@@ -1525,7 +1525,7 @@ struct UpperContentView: View {
                 PolicyChannelsPanel(
                     pieces: displayedPieces,
                     currentPlayer: editableState.currentPlayer,
-                    policyLogits: showForwardPassUI ? inferenceResult?.rawInference?.policy : nil
+                    policyLogits: showForwardPassUI ? inferenceResult?.rawInference?.logits : nil
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .layoutPriority(1)
