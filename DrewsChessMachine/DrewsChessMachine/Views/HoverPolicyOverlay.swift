@@ -103,16 +103,15 @@ struct HoverPolicyOverlay: View {
                 ForEach(topChannels) { ch in
                     tile(ch)
                 }
-                Spacer()
             }
         }
         .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
     private func tile(_ ch: TopChannel) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .center, spacing: 4) {
             // Human-readable move-type title above the board.
             // Matches what a chess player would say at the board:
             // "Northeast, 3 squares" / "Knight" / "Promote to Queen"
@@ -120,28 +119,31 @@ struct HoverPolicyOverlay: View {
             // (`32 S5` etc.) lives below the board with the stats.
             Text(Self.humanReadableTitle(for: ch.channel))
                 .font(.system(.subheadline))
+                .frame(maxWidth: .infinity, alignment: .center)
             ChessBoardView(
                 pieces: pieces,
                 overlay: arrowOverlay(for: ch)
             )
             .aspectRatio(1, contentMode: .fit)
-            .frame(maxWidth: 220)
+            .frame(maxWidth: .infinity)
             .clipShape(RoundedRectangle(cornerRadius: 4))
             .overlay(
                 RoundedRectangle(cornerRadius: 4)
                     .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
             )
-            // Mini-board-tile style: channel index + spec name on
-            // line 1, this hover-cell's logit + global softmax prob
-            // on line 2. Same monospaced sizing as the
-            // PolicyChannelsPanel grid tiles so the two views read
-            // as a coherent set.
+            // Channel index + spec name + this cell's stats below
+            // the board. Centered horizontally to match the title;
+            // sized closer to the title font (.callout / .caption)
+            // and at .secondary contrast — the previous 9pt/8pt
+            // tertiary was too small to read at the new tile size.
             Text(ch.label)
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(.callout, design: .monospaced))
                 .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .center)
             Text(probLabel(ch))
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(.tertiary)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 
