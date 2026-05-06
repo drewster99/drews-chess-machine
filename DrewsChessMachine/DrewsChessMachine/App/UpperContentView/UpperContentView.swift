@@ -10270,8 +10270,16 @@ struct UpperContentView: View {
             for (rank, move) in inference.topMoves.enumerated() {
                 let fromName = BoardEncoder.squareName(move.fromRow * 8 + move.fromCol)
                 let toName = BoardEncoder.squareName(move.toRow * 8 + move.toCol)
+                let promoSuffix: String
+                switch move.promotion {
+                case .queen:  promoSuffix = "=Q"
+                case .rook:   promoSuffix = "=R"
+                case .bishop: promoSuffix = "=B"
+                case .knight: promoSuffix = "=N"
+                default:      promoSuffix = ""
+                }
                 let rankCol = String(rank + 1).padding(toLength: 4, withPad: " ", startingAt: 0)
-                let moveCol = "\(fromName)-\(toName)".padding(toLength: 8, withPad: " ", startingAt: 0)
+                let moveCol = "\(fromName)-\(toName)\(promoSuffix)".padding(toLength: 10, withPad: " ", startingAt: 0)
                 let legalMark = move.isLegal ? "" : "  (illegal)"
                 lines.append("  \(rankCol)\(moveCol)\(String(format: "%.6f%%", move.probability * 100))\(legalMark)")
             }

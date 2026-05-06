@@ -16,6 +16,16 @@ struct MoveVisualization: Sendable {
     /// to suppress them. Defaults to `true` for callers that don't
     /// know or care about legality (legacy code paths).
     let isLegal: Bool
+    /// Promotion piece, when this move came from one of the 12
+    /// promotion channels (queen-promo or underpromo). nil for
+    /// non-promotion channels. Carried through so the displayed
+    /// top-K text can render the promotion suffix (`=Q`, `=R`,
+    /// `=B`, `=N`) — without it, two distinct policy cells like
+    /// "NE1 from g6" (chan 7, no promotion) and "queen-promo
+    /// cap-right from g6" (chan 75, =Q) both render as "g6-h7"
+    /// in the move text, which makes it impossible to tell which
+    /// channel a top-K entry actually came from.
+    let promotion: PieceType?
 
     init(
         fromRow: Int,
@@ -24,7 +34,8 @@ struct MoveVisualization: Sendable {
         toCol: Int,
         probability: Float,
         piece: String?,
-        isLegal: Bool = true
+        isLegal: Bool = true,
+        promotion: PieceType? = nil
     ) {
         self.fromRow = fromRow
         self.fromCol = fromCol
@@ -33,5 +44,6 @@ struct MoveVisualization: Sendable {
         self.probability = probability
         self.piece = piece
         self.isLegal = isLegal
+        self.promotion = promotion
     }
 }

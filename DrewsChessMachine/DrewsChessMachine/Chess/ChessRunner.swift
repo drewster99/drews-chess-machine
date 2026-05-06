@@ -144,7 +144,8 @@ final class ChessRunner: @unchecked Sendable {
                 toCol: candidate.toCol,
                 probability: entry.prob,
                 piece: piece?.assetName,
-                isLegal: isLegal
+                isLegal: isLegal,
+                promotion: candidate.promotion
             ))
         }
         return results
@@ -154,19 +155,16 @@ final class ChessRunner: @unchecked Sendable {
 
     struct InferenceResult: Sendable {
         let topMoves: [MoveVisualization]
-        /// Pre-softmax raw policy logits (length `policySize`). Kept
-        /// alongside `policy` so consumers that want the unnormalized
-        /// per-channel landscape (e.g. the policy-channels panel's
-        /// per-channel min-max heatmap) don't have to log-transform
-        /// the softmaxed values back into logit-space — log() of
-        /// near-zero probabilities loses precision and goes to -inf
-        /// where the softmax floored. Same source vector that gets
-        /// softmaxed into `policy` below.
+        /// Pre-softmax raw policy logits (length `policySize`).
+        /// Surfaced alongside `policy` so consumers that want the
+        /// unnormalized per-channel landscape — like the policy-
+        /// channels panel's per-channel min-max heatmap — don't
+        /// have to log-transform `policy` back into logit-space.
         let logits: [Float]
-        /// Softmax-over-all-`policySize`-cells of `logits`. The UI's
-        /// top-K display, the per-cell percentage readouts, and the
-        /// "Top 100 sum" stats all consume this — they all want
-        /// real probabilities, not raw logits.
+        /// Softmax-over-all-`policySize`-cells of `logits`. The
+        /// top-K display, per-cell percentage readouts, and "Top
+        /// 100 sum" stat all consume this; the policy-channels
+        /// panel sums it per channel for the per-tile `mass %`.
         let policy: [Float]
         let value: Float
         let inferenceTimeMs: Double
