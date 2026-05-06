@@ -50,6 +50,15 @@ struct PolicyChannelsPanel: View {
     /// 4864 raw logits from the network's policy head. Pass nil to
     /// render an empty placeholder (no inference result available).
     let policyLogits: [Float]?
+    /// Pre-computed global softmax of `policyLogits` (length
+    /// `policySize`). Same array `ChessRunner.makeInferenceResult`
+    /// already computes for the top-K display upstream — re-using
+    /// it here for the per-channel `mass %` keeps the panel's
+    /// numbers exactly consistent with the top-K probabilities the
+    /// user sees in the Policy Head panel and avoids re-doing the
+    /// global softmax pass on every render. Pass nil if `policyLogits`
+    /// is nil.
+    let policyProbs: [Float]?
 
     /// Tile color for the channel-cell overlay. Red so the
     /// channel-grid is visually distinct from the blue input-tensor
@@ -106,9 +115,13 @@ struct PolicyChannelsPanel: View {
                     .frame(maxWidth: 540, alignment: .trailing)
             }
 
-            if let logits = policyLogits, logits.count == ChessNetwork.policySize {
+            if let logits = policyLogits,
+               let probs = policyProbs,
+               logits.count == ChessNetwork.policySize,
+               probs.count == ChessNetwork.policySize {
                 let chans = Self.computeChannels(
-                    from: logits,
+                    logits: logits,
+                    probs: probs,
                     currentPlayer: currentPlayer
                 )
                 ScrollView {
@@ -147,7 +160,10 @@ struct PolicyChannelsPanel: View {
     }
 
     private var headerStatus: String {
-        guard let logits = policyLogits, logits.count == ChessNetwork.policySize else {
+        guard let logits = policyLogits,
+              let probs = policyProbs,
+              logits.count == ChessNetwork.policySize,
+              probs.count == ChessNetwork.policySize else {
             return ""
         }
         let side = currentPlayer == .white ? "White" : "Black"
@@ -255,37 +271,27 @@ struct PolicyChannelsPanel: View {
     ///    actually is, independent of the visual brightness pattern.
     /// 3. **`globalMass`** — channel's share of the global softmax
     ///    over all 4864 cells. Uniform across channels = 1/76 ≈ 1.32%.
-    ///    Tells the user how much the channel matters overall.
+    ///    Computed by summing the upstream-provided `probs` (the
+    ///    same softmax `ChessRunner.makeInferenceResult` already
+    ///    produced for the top-K display) over each channel's slice
+    ///    — re-using upstream's softmax keeps these numbers
+    ///    consistent with the top-K probabilities the user sees in
+    ///    the Policy Head panel by construction.
     ///
     /// Cells are transposed from encoder frame to absolute board
     /// coordinates (row un-flip) when black is to move, so every tile
     /// renders right-side-up versus the parent board's pieces.
     fileprivate static func computeChannels(
-        from logits: [Float],
+        logits: [Float],
+        probs: [Float],
         currentPlayer: PieceColor
     ) -> [ChannelData] {
         let n = logits.count
         precondition(n == ChessNetwork.policySize,
                      "PolicyChannelsPanel expects \(ChessNetwork.policySize) logits, got \(n)")
+        precondition(probs.count == n,
+                     "PolicyChannelsPanel expects probs.count == logits.count")
 
-        // --- Global softmax pass (for per-channel mass) -------------
-        var maxLogit: Float = -.infinity
-        for i in 0..<n where logits[i] > maxLogit {
-            maxLogit = logits[i]
-        }
-        var globalProbs = [Float](repeating: 0, count: n)
-        var globalSum: Float = 0
-        for i in 0..<n {
-            let e = expf(logits[i] - maxLogit)
-            globalProbs[i] = e
-            globalSum += e
-        }
-        let invGlobalSum: Float = globalSum > 0 ? 1 / globalSum : 0
-        for i in 0..<n {
-            globalProbs[i] *= invGlobalSum
-        }
-
-        // --- Per-channel passes -------------------------------------
         // Smallest meaningful logit span. Below this we treat the
         // channel as degenerate (all-equal) and render it as all-zero
         // — anything finer is denormalized noise that would just
@@ -324,7 +330,8 @@ struct PolicyChannelsPanel: View {
             }
 
             // Build the display-frame heatmap (logit min-max) and
-            // accumulate the global mass in one pass.
+            // sum the channel's slice of the upstream global softmax
+            // for the mass% label, in one pass over the 64 cells.
             var cells = [Float](repeating: 0, count: 64)
             var globalMass: Float = 0
             for r in 0..<8 {
@@ -332,7 +339,7 @@ struct PolicyChannelsPanel: View {
                 for c in 0..<8 {
                     let i = r * 8 + c
                     cells[displayRow * 8 + c] = (logits[base + i] - chMin) * invSpan
-                    globalMass += globalProbs[base + i]
+                    globalMass += probs[base + i]
                 }
             }
             result.append(ChannelData(
