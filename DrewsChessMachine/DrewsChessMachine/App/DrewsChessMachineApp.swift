@@ -21,6 +21,7 @@ struct DrewsChessMachineApp: App {
     /// the user can hide the lower pane during training to reclaim
     /// vertical space without stopping data capture.
     @AppStorage("showTrainingGraphs") private var showTrainingGraphs: Bool = true
+    @AppStorage("showPolicyChannelsPanel") private var showPolicyChannelsPanel: Bool = false
 
     /// View > Collect Chart Data preference. Persisted across launches
     /// via UserDefaults. When `false`, every chart-collection entry
@@ -363,6 +364,7 @@ struct DrewsChessMachineApp: App {
                 Divider()
                 Toggle("Show Training Graphs", isOn: $showTrainingGraphs)
                 Toggle("Collect Chart Data", isOn: $chartCollectionEnabled)
+                Toggle("Show Policy Channels Panel", isOn: $showPolicyChannelsPanel)
                 Divider()
                 Button("Zoom In Charts") { commandHub.chartZoomIn() }
                     .keyboardShortcut("=", modifiers: .command)

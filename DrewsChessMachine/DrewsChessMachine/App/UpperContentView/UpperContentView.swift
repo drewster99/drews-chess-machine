@@ -178,6 +178,12 @@ struct UpperContentView: View {
     /// Run Arena button, suppressing probe activity on screen).
     @State private var isArenaRunning: Bool = false
 
+    /// View-menu toggle: when on, the 76-channel policy panel is
+    /// rendered to the right of the chess board, sourced from
+    /// whatever inference result is currently driving the on-board
+    /// Top Moves overlay (Forward Pass / Candidate Test).
+    @AppStorage("showPolicyChannelsPanel") private var showPolicyChannelsPanel: Bool = false
+
     // Inference
     @State private var inferenceResult: EvaluationResult?
     @State private var isEvaluating = false
@@ -1502,6 +1508,26 @@ struct UpperContentView: View {
                     selfPlayColumn: { selfPlayStatsColumn },
                     trainingColumn: { trainingStatsColumn }
                 )
+
+                // Right-of-board policy-channel decomposition. Toggled
+                // via View > Show Policy Channels Panel. Driven off
+                // the same `inferenceResult` that already feeds the
+                // on-board Top Moves overlay, so it auto-updates with
+                // the Candidate Test re-eval loop as the trainer
+                // learns. Hidden entirely when the toggle is off so
+                // the existing two-column layout is unchanged for
+                // users who don't opt in. Also gated on
+                // `showForwardPassUI` so it never displays a stale
+                // result against an unrelated board (Game Run / Game
+                // Mode / pure training paths) — same condition the
+                // on-board overlay uses for the channel-strip.
+                if showPolicyChannelsPanel && showForwardPassUI {
+                    PolicyChannelsPanel(
+                        pieces: displayedPieces,
+                        currentPlayer: editableState.currentPlayer,
+                        policyLogits: inferenceResult?.rawInference?.policy
+                    )
+                }
             }
             .layoutPriority(1)
 
