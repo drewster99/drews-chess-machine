@@ -6,7 +6,13 @@ import Foundation
 /// rates — over the last 3 minutes leading up to `timestamp`, not
 /// lifetime averages — so the chart shows how throughput changes
 /// over time rather than asymptoting to the session mean.
-struct ProgressRateSample: Identifiable, Sendable {
+///
+/// On-disk schema note: same warning as `TrainingChartSample` —
+/// fields are part of the JSON envelope persisted in
+/// `progress_rate_chart.json` inside `.dcmsession` bundles. Treat
+/// them as additive-Optional only and bump `formatVersion` for any
+/// breaking change.
+struct ProgressRateSample: Identifiable, Sendable, Codable, Equatable {
     /// Monotonic identity for SwiftUI's `ForEach` / `Chart` — the
     /// index the sample was appended at. Stable for the life of
     /// the session and never reused.

@@ -222,6 +222,26 @@ struct SessionCheckpointState: Codable, Equatable {
     var replayBufferCapacity: Int?
     var replayBufferTotalPositionsAdded: Int?
 
+    // Chart-data presence (added alongside the optional
+    // `training_chart.json` and `progress_rate_chart.json`
+    // companion files). `true` iff both files exist in the session
+    // directory and the per-ring sample counts agree with the
+    // values in those files. Older sessions and sessions saved
+    // with chart collection disabled are nil/false here. Loaded
+    // by `seedFromRestoredSession` to populate the chart rings on
+    // resume so the chart trajectory survives save/resume cycles.
+    var hasChartData: Bool?
+    var trainingChartSampleCount: Int?
+    var progressRateSampleCount: Int?
+
+    // Inline auxiliary chart state, small enough to live next to
+    // the rest of session.json instead of in a side file. Both
+    // Optional for back-compat; missing/nil decodes the same way
+    // older sessions did (no arena bands restored,
+    // `legalMassMaxAllTime` resets to 0 on session start).
+    var arenaChartEvents: [ArenaChartEvent]?
+    var legalMassMaxAllTime: Double?
+
     /// Per-run training history. Each `TrainingSegment` represents one
     /// continuous Play-and-Train period (start → stop, save, or
     /// session-quit). Cumulative status-bar metrics sum across this
@@ -313,6 +333,26 @@ struct SessionCheckpointState: Codable, Equatable {
         return copy
     }
 
+    /// Return a copy with the chart-data fields filled in. Same
+    /// reason as `withTrainingSegments`: keeps the memberwise init
+    /// call site lean. Pass `nil` for `hasChartData` when no chart
+    /// snapshot is being saved (no companion files written).
+    func withChartData(
+        hasChartData: Bool?,
+        trainingChartSampleCount: Int?,
+        progressRateSampleCount: Int?,
+        arenaChartEvents: [ArenaChartEvent]?,
+        legalMassMaxAllTime: Double?
+    ) -> SessionCheckpointState {
+        var copy = self
+        copy.hasChartData = hasChartData
+        copy.trainingChartSampleCount = trainingChartSampleCount
+        copy.progressRateSampleCount = progressRateSampleCount
+        copy.arenaChartEvents = arenaChartEvents
+        copy.legalMassMaxAllTime = legalMassMaxAllTime
+        return copy
+    }
+
     func encode() throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
@@ -335,6 +375,8 @@ enum SessionCheckpointLayout {
     static let trainerFilename = "trainer.dcmmodel"
     static let stateFilename = "session.json"
     static let replayBufferFilename = "replay_buffer.bin"
+    static let trainingChartFilename = "training_chart.json"
+    static let progressRateChartFilename = "progress_rate_chart.json"
 
     static func championURL(in directoryURL: URL) -> URL {
         directoryURL.appendingPathComponent(championFilename)
@@ -350,6 +392,14 @@ enum SessionCheckpointLayout {
 
     static func replayBufferURL(in directoryURL: URL) -> URL {
         directoryURL.appendingPathComponent(replayBufferFilename)
+    }
+
+    static func trainingChartURL(in directoryURL: URL) -> URL {
+        directoryURL.appendingPathComponent(trainingChartFilename)
+    }
+
+    static func progressRateChartURL(in directoryURL: URL) -> URL {
+        directoryURL.appendingPathComponent(progressRateChartFilename)
     }
 
     /// Read the three raw payloads out of a session directory.

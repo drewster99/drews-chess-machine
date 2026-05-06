@@ -68,6 +68,27 @@ final class ChartCoordinator {
 
     // MARK: - Sampling cadence state
 
+    /// Reference instant against which `TrainingChartSample.elapsedSec`
+    /// and `ProgressRateSample.elapsedSec` are measured. Distinct
+    /// from `parallelStats.sessionStart` (which is fresh on every
+    /// Play-and-Train start, including resumes, so lifetime
+    /// games/hr stays accurate per-segment): the chart anchor is
+    /// back-dated on resume so a saved trajectory's elapsed-second
+    /// axis lines up with the post-resume axis with no visible gap.
+    /// On a fresh session this is `Date()` at construction and on
+    /// every `reset()`; on resume `seedFromRestoredSession(...)`
+    /// sets it to `Date() - lastRestoredElapsedSec`.
+    ///
+    /// This is the single anchor that ALL chart-axis values must
+    /// use — training samples, progress-rate samples, and arena
+    /// event start/end times. Routing any of those off
+    /// `parallelStats.sessionStart` directly would re-introduce the
+    /// cross-anchor coordinate-space bug that the comment in
+    /// `UpperContentView.refreshTrainingChartIfNeeded` originally
+    /// warned about (parallel-stats vs. currentSessionStart drift),
+    /// just with different participants.
+    var chartElapsedAnchor: Date = Date()
+
     /// Most recent wall-clock timestamp at which a progress-rate
     /// sample was appended. Used to throttle the heartbeat to 1 Hz.
     var progressRateLastFetch: Date = .distantPast
@@ -173,13 +194,16 @@ final class ChartCoordinator {
 
     /// Clear every chart-layer field back to a fresh-session state.
     /// Retains the rings' first-block reserved capacity so the new
-    /// session reuses the existing 24h block of storage.
+    /// session reuses the existing 24h block of storage. Re-stamps
+    /// `chartElapsedAnchor` to `Date()` so a fresh session's chart
+    /// axis starts at 0.
     func reset() {
         progressRateRing.reset()
         trainingRing.reset()
         decimatedFrame = .empty
         scrollX = 0
         followLatest = true
+        chartElapsedAnchor = Date()
         progressRateLastFetch = .distantPast
         progressRateNextId = 0
         trainingChartNextId = 0
@@ -365,4 +389,80 @@ final class ChartCoordinator {
         }
         return changed
     }
+
+    // MARK: - Session save/restore
+
+    /// Build a `ChartCoordinatorSnapshot` of the current chart state.
+    /// Returns `nil` when collection is disabled or no samples have
+    /// been recorded yet, so the caller can skip writing chart files
+    /// entirely rather than producing an empty `training_chart.json`.
+    func buildSnapshot() -> ChartCoordinatorSnapshot? {
+        guard collectionEnabled else { return nil }
+        guard trainingRing.count > 0 || progressRateRing.count > 0 else { return nil }
+        let trainingSamples: [TrainingChartSample]
+        if trainingRing.count > 0 {
+            trainingSamples = (0..<trainingRing.count).map { trainingRing[$0] }
+        } else {
+            trainingSamples = []
+        }
+        let progressSamples: [ProgressRateSample]
+        if progressRateRing.count > 0 {
+            progressSamples = (0..<progressRateRing.count).map { progressRateRing[$0] }
+        } else {
+            progressSamples = []
+        }
+        let lastTrainElapsed = trainingSamples.last?.elapsedSec ?? 0
+        let lastProgressElapsed = progressSamples.last?.elapsedSec ?? 0
+        let lastElapsed = max(lastTrainElapsed, lastProgressElapsed)
+        return ChartCoordinatorSnapshot(
+            trainingSamples: trainingSamples,
+            progressRateSamples: progressSamples,
+            arenaChartEvents: arenaChartEvents,
+            legalMassMaxAllTime: legalMassMaxAllTime,
+            lastElapsedSec: lastElapsed
+        )
+    }
+
+    /// Seed this coordinator from a restored snapshot. Called once
+    /// at session-resume time, after `reset()` and before the
+    /// heartbeat starts pushing new samples. Bulk-fills both rings
+    /// (using the ring's no-side-effect `bulkRestore`), restores
+    /// arena events and the legal-mass running max, advances the
+    /// id counters past the restored samples so new appends don't
+    /// collide, back-dates `chartElapsedAnchor` so post-resume
+    /// elapsedSec values continue monotonically from the saved
+    /// trajectory, and recomputes the decimated frame once.
+    ///
+    /// Leaves `followLatest = true` (set by `reset`) so the visible
+    /// window auto-snaps to the most recent restored sample on
+    /// first render.
+    func seedFromRestoredSession(_ snapshot: ChartCoordinatorSnapshot) {
+        trainingRing.bulkRestore(snapshot.trainingSamples)
+        progressRateRing.bulkRestore(snapshot.progressRateSamples)
+        arenaChartEvents = snapshot.arenaChartEvents
+        legalMassMaxAllTime = snapshot.legalMassMaxAllTime
+        trainingChartNextId = snapshot.trainingSamples.count
+        progressRateNextId = snapshot.progressRateSamples.count
+        chartElapsedAnchor = Date().addingTimeInterval(-snapshot.lastElapsedSec)
+        recomputeDecimatedFrame()
+    }
+}
+
+/// Snapshot of every chart-coordinator field that gets persisted
+/// alongside a session. Built on the main actor at save time
+/// (rings are `@MainActor`-isolated, so the array copies happen
+/// in `ChartCoordinator.buildSnapshot` rather than in the detached
+/// save task) and handed across the actor boundary as a `Sendable`
+/// value. Mirror-image of `ChartCoordinator.seedFromRestoredSession`'s
+/// inputs.
+///
+/// Top-level (not nested inside `ChartCoordinator`) so it doesn't
+/// inherit the coordinator's `@MainActor` isolation — it travels
+/// to the detached save task, where the JSON encode actually runs.
+struct ChartCoordinatorSnapshot: Sendable {
+    let trainingSamples: [TrainingChartSample]
+    let progressRateSamples: [ProgressRateSample]
+    let arenaChartEvents: [ArenaChartEvent]
+    let legalMassMaxAllTime: Double
+    let lastElapsedSec: Double
 }

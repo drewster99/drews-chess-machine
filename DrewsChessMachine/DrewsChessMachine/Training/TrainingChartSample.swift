@@ -2,7 +2,16 @@ import Foundation
 
 /// Per-second sample of training metrics for the chart grid.
 /// Populated by the heartbeat alongside `ProgressRateSample`.
-struct TrainingChartSample: Identifiable, Sendable {
+///
+/// On-disk schema note: this struct is persisted as JSON inside
+/// `.dcmsession` bundles via `Charts/ChartFileFormat.swift`. New
+/// fields must be added as Optional with no semantic break to
+/// existing fields, so older saved files keep decoding (the
+/// missing key just decodes as `nil`). Renaming a field, removing
+/// one, or changing its units silently corrupts older saves —
+/// bump `formatVersion` in the chart-file envelope and add an
+/// explicit migration path for any such change.
+struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     let id: Int
     let elapsedSec: Double
 
@@ -77,5 +86,34 @@ struct TrainingChartSample: Identifiable, Sendable {
 
     var gpuMemoryGB: Double? {
         gpuMemoryMB.map { $0 / 1024.0 }
+    }
+}
+
+/// Codable shim for Apple's `ProcessInfo.ThermalState`. The enum has
+/// `Int` rawValue (0=nominal, 1=fair, 2=serious, 3=critical) but
+/// does not get `Codable` conformance for free. We encode the raw
+/// `Int` so JSON readers can map it back to a thermal state without
+/// needing this enum type.
+///
+/// `@retroactive` opts in to declaring `Codable` on a type owned by
+/// another module (Foundation). If Apple ever adds first-party
+/// `Codable` to `ThermalState`, this declaration becomes a duplicate
+/// and is the place to delete — Swift will surface a duplicate-
+/// conformance error pointing here, not a silent semantic change.
+extension ProcessInfo.ThermalState: @retroactive Codable {
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(Int.self)
+        guard let value = ProcessInfo.ThermalState(rawValue: raw) else {
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "Unknown ProcessInfo.ThermalState rawValue: \(raw)"
+            )
+        }
+        self = value
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(self.rawValue)
     }
 }

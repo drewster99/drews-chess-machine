@@ -703,6 +703,15 @@ struct UpperContentView: View {
     /// alphabetically in Finder.
     @State private var currentSessionID: String?
 
+    /// Wall-clock timestamp of the most recent successful session
+    /// save *in this app session*. Nil if the session has never
+    /// been saved since the app launched — even if it was resumed
+    /// from a `.dcmsession` on disk, that on-disk save's age
+    /// doesn't count here. Cleared on Build Network and on session
+    /// load; set to `Date()` whenever any save trigger (manual,
+    /// post-promotion, periodic) completes successfully.
+    @State private var lastSavedAt: Date?
+
     /// Wall-clock anchor for the current session, captured at
     /// startRealTraining time before worker setup. Used by the
     /// session-save path to compute `elapsedTrainingSec`.
@@ -1306,6 +1315,18 @@ struct UpperContentView: View {
         return "Channel \(selectedOverlay - 1): \(TensorChannelNames.names[selectedOverlay - 1])"
     }
 
+    /// "Last saved: 5/6/26 at 4:34 PM" or "Last saved: Never" — the
+    /// "Never" case covers both a fresh Build Network with no save
+    /// yet and a session that was resumed from disk but hasn't been
+    /// re-saved in this app run. The on-disk `.dcmsession`'s age is
+    /// deliberately ignored; this label tracks save activity *in
+    /// this app session* so the user can see at a glance whether
+    /// the trainer's current state has been written anywhere.
+    private var lastSavedDisplayString: String {
+        guard let when = lastSavedAt else { return "Last saved: Never" }
+        return "Last saved: \(when.formatted(date: .abbreviated, time: .shortened))"
+    }
+
     private var currentOverlay: ChessBoardView.Overlay {
         // Outside of forward-pass / candidate-test contexts (e.g. live
         // game-run) we have no inference data to overlay; render bare.
@@ -1347,7 +1368,7 @@ struct UpperContentView: View {
                 // .callout so they're readable at glance distance. Contrast
                 // (.secondary) was already fine; only the size changes.
                 if let net = network {
-                    Text("ID: \(net.identifier?.description ?? "–")")
+                    Text("Self play ID: \(net.identifier?.description ?? "–")")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -1355,6 +1376,16 @@ struct UpperContentView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                HStack(spacing: 4) {
+                    if lastSavedAt != nil {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                    Text(lastSavedDisplayString)
+                        .font(.callout)
+                        .foregroundStyle(lastSavedAt == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.green))
+                        .lineLimit(1)
+                }
             }
 
             if let alarm = activeTrainingAlarm {
@@ -2166,19 +2197,21 @@ struct UpperContentView: View {
     /// `refreshProgressRateIfNeeded` at the same 1Hz cadence.
     private func refreshTrainingChartIfNeeded() async {
         let now = Date()
-        // Use the parallel-worker stats box's `sessionStart` (fresh
-        // `Date()` at Play-and-Train start, including after a resume)
-        // rather than `currentSessionStart`, which is back-dated on
-        // resume by the loaded session's `elapsedTrainingSec` so
-        // persistence can accumulate elapsed time across save/resume
-        // cycles. Using the back-dated anchor for chart samples puts
-        // their `elapsedSec` thousands of seconds ahead of the
-        // progress-rate samples (which use the fresh anchor), which
-        // drives the shared `scrollX` binding to the progress-rate
-        // coordinate space and parks every training chart's data
-        // outside the visible window on resumed sessions.
-        let sessionStart = parallelStats?.sessionStart ?? currentSessionStart ?? now
-        let elapsed = max(0, now.timeIntervalSince(sessionStart))
+        // Chart sample elapsed-second axis comes off
+        // `chartCoordinator.chartElapsedAnchor`, NOT
+        // `parallelStats.sessionStart` or `currentSessionStart`.
+        // The chart anchor is back-dated on session resume so a
+        // restored chart trajectory and post-resume samples share
+        // one continuous elapsed-sec axis (no visible gap, no
+        // overlap). Every chart-axis call site — this one, the
+        // progress-rate sampler, and both arena-event sites — must
+        // use the same anchor or the elapsedSec values across
+        // sources land in different coordinate spaces and the
+        // shared `scrollX` binding parks some sources off-screen
+        // (the same bug class an earlier mismatch between
+        // `parallelStats.sessionStart` and the back-dated
+        // `currentSessionStart` originally introduced).
+        let elapsed = max(0, now.timeIntervalSince(chartCoordinator.chartElapsedAnchor))
         let trainingSnap: TrainingLiveStatsBox.Snapshot?
         if let trainingBox {
             trainingSnap = await trainingBox.asyncSnapshot()
@@ -2407,7 +2440,15 @@ struct UpperContentView: View {
         }
 
         guard let session = parallelStats else { return }
-        let elapsed = max(0, now.timeIntervalSince(session.sessionStart))
+        // ElapsedSec on chart axis comes off the chart-coordinator's
+        // anchor, NOT `session.sessionStart`. See the matching block
+        // in `refreshTrainingChartIfNeeded` for full reasoning —
+        // both samplers must share an anchor or `scrollX` ends up
+        // straddling two coordinate spaces. `session.sessionStart`
+        // remains the correct anchor for everything else this
+        // function does (cumulative-counter deltas use 3-minute
+        // window timestamps, not elapsedSec).
+        let elapsed = max(0, now.timeIntervalSince(chartCoordinator.chartElapsedAnchor))
         let curSp = session.selfPlayPositions
         let curTr = (trainingStats?.steps ?? 0) * trainingParams.trainingBatchSize
 
@@ -3010,6 +3051,63 @@ struct UpperContentView: View {
         ).withTrainingSegments(segments)
     }
 
+    /// Resume helper — reads `training_chart.json` and
+    /// `progress_rate_chart.json` from the previously-loaded session
+    /// and seeds the chart coordinator with the restored trajectory.
+    /// Called once from the resume branch of `runRealTraining`,
+    /// right after `chartCoordinator.reset()`.
+    ///
+    /// Pulls the small auxiliary fields (`arenaChartEvents`,
+    /// `legalMassMaxAllTime`) out of `pendingLoadedSession.state`
+    /// since those ride inline in `session.json`. Decode failures
+    /// log and skip — the rest of the session-resume flow keeps
+    /// going so a corrupt or truncated chart file never blocks the
+    /// network/replay-buffer load.
+    private func seedChartCoordinatorFromLoadedSession(
+        chartURLs: (training: URL, progressRate: URL)
+    ) {
+        guard chartCoordinator.collectionEnabled else {
+            // User has chart collection turned off; honor that and
+            // skip restore. The view still shows whatever live data
+            // is captured after they re-enable, the same as today.
+            SessionLogger.shared.log(
+                "[CHECKPOINT] Skipping chart-data restore — collection is disabled in View > Collect Chart Data"
+            )
+            return
+        }
+        let trainingSamples: [TrainingChartSample]
+        let progressSamples: [ProgressRateSample]
+        do {
+            trainingSamples = try readChartFile(
+                [TrainingChartSample].self, from: chartURLs.training
+            )
+            progressSamples = try readChartFile(
+                [ProgressRateSample].self, from: chartURLs.progressRate
+            )
+        } catch {
+            SessionLogger.shared.log(
+                "[CHECKPOINT] Chart-data restore skipped — decode failed: \(error.localizedDescription)"
+            )
+            return
+        }
+        let arenaEvents = pendingLoadedSession?.state.arenaChartEvents ?? []
+        let legalMassMax = pendingLoadedSession?.state.legalMassMaxAllTime ?? 0
+        let lastTrainElapsed = trainingSamples.last?.elapsedSec ?? 0
+        let lastProgressElapsed = progressSamples.last?.elapsedSec ?? 0
+        let lastElapsed = max(lastTrainElapsed, lastProgressElapsed)
+        let snapshot = ChartCoordinatorSnapshot(
+            trainingSamples: trainingSamples,
+            progressRateSamples: progressSamples,
+            arenaChartEvents: arenaEvents,
+            legalMassMaxAllTime: legalMassMax,
+            lastElapsedSec: lastElapsed
+        )
+        chartCoordinator.seedFromRestoredSession(snapshot)
+        SessionLogger.shared.log(
+            "[CHECKPOINT] Restored chart data: \(trainingSamples.count) training samples, \(progressSamples.count) progress-rate samples, \(arenaEvents.count) arena events"
+        )
+    }
+
     /// Manual "Save Champion as Model" — writes a standalone
     /// `.dcmmodel` containing the current champion's weights.
     /// If Play-and-Train is active, pauses self-play worker 0
@@ -3233,6 +3331,14 @@ struct UpperContentView: View {
         )
         let trainingStep = trainingStats?.steps ?? 0
         let bufferForSave = replayBuffer
+        // Snapshot the chart-coordinator state on the main actor
+        // BEFORE jumping to detached work — the rings are
+        // `@MainActor`-isolated so the array copies have to happen
+        // here. `buildSnapshot()` returns nil when collection is off
+        // or both rings are empty, in which case the save path skips
+        // writing chart-companion files entirely (matching the
+        // existing `bufferForSave == nil` skip).
+        let chartSnapshotForSave = chartCoordinator.buildSnapshot()
 
         Task {
             // Helper to clear both in-flight flags consistently on
@@ -3322,7 +3428,7 @@ struct UpperContentView: View {
             )
             let now = Int64(Date().timeIntervalSince1970)
             let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
-                [bufferForSave] in
+                [bufferForSave, chartSnapshotForSave] in
                 do {
                     let url = try await CheckpointManager.saveSession(
                         championWeights: championWeights,
@@ -3335,6 +3441,7 @@ struct UpperContentView: View {
                         trainerCreatedAtUnix: now,
                         state: sessionState,
                         replayBuffer: bufferForSave,
+                        chartSnapshot: chartSnapshotForSave,
                         trigger: diskTag
                     )
                     return .success(url)
@@ -3362,6 +3469,7 @@ struct UpperContentView: View {
                     trigger: diskTag
                 )
                 periodicSaveController?.noteSuccessfulSave(at: Date())
+                lastSavedAt = Date()
             case .failure(let error):
                 setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
@@ -3541,6 +3649,7 @@ struct UpperContentView: View {
                     Steps: \(loaded.state.trainingSteps) / Games: \(loaded.state.selfPlayGames)
                     Click Play and Train to resume.
                     """
+                lastSavedAt = nil
                 setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", kind: .success)
                 let savedBuild = loaded.state.buildNumber.map(String.init) ?? "?"
                 let savedGit = loaded.state.buildGitHash ?? "?"
@@ -4219,6 +4328,7 @@ struct UpperContentView: View {
                     Architecture: 20x8x8 -> stem(128)
                       -> 8 res+SE blocks -> policy(4864) + value(1)
                     """
+                lastSavedAt = nil
             case .failure(let error):
                 network = nil
                 runner = nil
@@ -4524,14 +4634,16 @@ struct UpperContentView: View {
         // chart grid's arena activity tile can render a live band
         // as the arena progresses, rather than only showing the
         // arena post-hoc when the completed ArenaChartEvent lands.
-        // Uses `parallelStats.sessionStart` (fresh at Play-and-Train
-        // start) so the arena's x-position lands on the same axis
-        // the training + progress-rate charts render against. Using
-        // the back-dated `currentSessionStart` would park the arena
-        // band ~hours off the chart on resumed sessions.
-        if let sessionStart = parallelStats?.sessionStart ?? currentSessionStart {
-            chartCoordinator.recordArenaStarted(elapsedSec: Date().timeIntervalSince(sessionStart))
-        }
+        // Anchors off `chartCoordinator.chartElapsedAnchor` so the
+        // arena's x-position lands on the same axis as the training
+        // + progress-rate samples. (Routing this off
+        // `parallelStats.sessionStart` instead would put restored
+        // chart data and post-resume arena bands in different
+        // coordinate spaces — the back-dated chart axis vs. the
+        // fresh per-segment parallel-stats axis.)
+        chartCoordinator.recordArenaStarted(
+            elapsedSec: Date().timeIntervalSince(chartCoordinator.chartElapsedAnchor)
+        )
 
         let totalGames = trainingParams.arenaGamesPerTournament
         let startTime = Date()
@@ -4932,40 +5044,32 @@ struct UpperContentView: View {
         )
         tournamentHistory.append(record)
         // Mirror into the chart-tile event stream. Compute the
-        // elapsed-second start/end against the session-start anchor
-        // so the band lands on the same X axis as the time-series
-        // charts. Uses `parallelStats.sessionStart` (fresh at
-        // Play-and-Train start) to match the training/progress-rate
-        // chart axes — the back-dated `currentSessionStart` would
-        // push the completed arena band ~hours off the chart on
-        // resumed sessions. Guarded by sessionStart existing —
-        // a stale arena tick with no session shouldn't happen
-        // (arenas only run during Play-and-Train) but we'd rather
-        // silently skip than dereference a nil anchor.
-        if let sessionStart = parallelStats?.sessionStart ?? currentSessionStart {
-            let endElapsed = max(0, Date().timeIntervalSince(sessionStart))
-            // Prefer the live start mark captured at arena begin —
-            // it avoids a ~5-second drift from backward-inferring
-            // startElapsed out of (end - durationSec) after the
-            // promotion work ran. Fall back to the durationSec math
-            // only if the live mark is somehow nil.
-            let startElapsed = chartCoordinator.activeArenaStartElapsed
-            ?? max(0, endElapsed - durationSec)
-            // `recordArenaCompleted` appends the event AND clears
-            // the live-band marker, so the chart drops back to just
-            // the completed events on the next render.
-            chartCoordinator.recordArenaCompleted(ArenaChartEvent(
-                id: chartCoordinator.arenaChartEvents.count,
-                startElapsedSec: startElapsed,
-                endElapsedSec: endElapsed,
-                score: score,
-                promoted: promoted
-            ))
-        } else {
-            // No session anchor (shouldn't happen mid-arena) — at
-            // least cancel the live band so it doesn't dangle.
-            chartCoordinator.cancelActiveArena()
-        }
+        // elapsed-second start/end against the chart-coordinator's
+        // anchor so the band lands on the same X axis as the
+        // time-series charts. (See `recordArenaStarted` site for
+        // why this MUST be the chart anchor and not
+        // `parallelStats.sessionStart` — the chart anchor is
+        // back-dated on resume so the band lines up with restored
+        // chart data; the parallel-stats anchor is intentionally
+        // fresh per segment for rate-display.)
+        let endElapsed = max(0, Date().timeIntervalSince(chartCoordinator.chartElapsedAnchor))
+        // Prefer the live start mark captured at arena begin —
+        // it avoids a ~5-second drift from backward-inferring
+        // startElapsed out of (end - durationSec) after the
+        // promotion work ran. Fall back to the durationSec math
+        // only if the live mark is somehow nil.
+        let startElapsed = chartCoordinator.activeArenaStartElapsed
+        ?? max(0, endElapsed - durationSec)
+        // `recordArenaCompleted` appends the event AND clears
+        // the live-band marker, so the chart drops back to just
+        // the completed events on the next render.
+        chartCoordinator.recordArenaCompleted(ArenaChartEvent(
+            id: chartCoordinator.arenaChartEvents.count,
+            startElapsedSec: startElapsed,
+            endElapsedSec: endElapsed,
+            score: score,
+            promoted: promoted
+        ))
         logArenaResult(
             record: record,
             index: tournamentHistory.count,
@@ -5038,6 +5142,10 @@ struct UpperContentView: View {
             let championWeightsSnapshot = promotedChampionWeights
             let trainerWeightsSnapshot = trainerSnapshotWeights
             let bufferForAutosave = replayBuffer
+            // Same main-actor snapshot rule as the manual/periodic
+            // path — rings are @MainActor-isolated, so the array
+            // copies have to happen here before we go detached.
+            let chartSnapshotForAutosave = chartCoordinator.buildSnapshot()
 
             setCheckpointStatus("Saving session (post-promotion)…", kind: .progress)
             checkpointSaveInFlight = true
@@ -5053,7 +5161,7 @@ struct UpperContentView: View {
             // that hop is safe because the handler only touches
             // the View's @State (no network or gate reads).
             Task.detached(priority: .utility) {
-                [bufferForAutosave] in
+                [bufferForAutosave, chartSnapshotForAutosave] in
                 let outcome: Result<(URL, String), Error>
                 do {
                     let url = try await CheckpointManager.saveSession(
@@ -5067,6 +5175,7 @@ struct UpperContentView: View {
                         trainerCreatedAtUnix: createdAtUnix,
                         state: sessionState,
                         replayBuffer: bufferForAutosave,
+                        chartSnapshot: chartSnapshotForAutosave,
                         trigger: "promote"
                     )
                     let bufStr: String
@@ -5095,6 +5204,7 @@ struct UpperContentView: View {
                             trigger: "post-promotion"
                         )
                         periodicSaveController?.noteSuccessfulSave(at: Date())
+                        lastSavedAt = Date()
                     case .failure(let error):
                         setCheckpointStatus(
                             "Autosave failed (post-promotion): \(error.localizedDescription)",
@@ -6351,6 +6461,19 @@ struct UpperContentView: View {
             // and doesn't show a visible "step" from the previous
             // session's trailing values.
             chartCoordinator.reset()
+            // Resume path: if a session is being restored AND it was
+            // saved with chart-companion files, decode them here on
+            // the main actor and seed the chart coordinator. The
+            // JSON decode takes ~1-2 s on a 24h session — acceptable
+            // as a one-time resume cost, on the same order as the
+            // replay-buffer restore that already runs at this point.
+            // A decode failure logs a warning and skips the restore;
+            // the rest of the session-resume flow continues so a
+            // corrupt chart file never blocks the (more important)
+            // network/replay-buffer load.
+            if let chartURLs = pendingLoadedSession?.chartDataURLs {
+                seedChartCoordinatorFromLoadedSession(chartURLs: chartURLs)
+            }
         }
         // Single self-play gate. All self-play workers now share one
         // `BatchedMoveEvaluationSource` on the champion network, driven

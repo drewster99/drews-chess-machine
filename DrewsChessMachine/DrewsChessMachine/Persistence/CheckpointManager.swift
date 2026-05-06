@@ -20,6 +20,8 @@ enum CheckpointManagerError: LocalizedError {
     case fsyncFailed(URL, Error)
     case replayVerificationFailed(String)
     case sessionReplayMismatch(detail: String)
+    case chartFileWriteFailed(URL, Error)
+    case chartFileVerifyFailed(detail: String)
 
     var errorDescription: String? {
         switch self {
@@ -55,6 +57,10 @@ enum CheckpointManagerError: LocalizedError {
             return "Post-save replay-buffer verification failed: \(detail)"
         case .sessionReplayMismatch(let detail):
             return "Session/replay-buffer mismatch on load: \(detail)"
+        case .chartFileWriteFailed(let url, let err):
+            return "Chart-file write failed for \(url.lastPathComponent): \(err.localizedDescription)"
+        case .chartFileVerifyFailed(let detail):
+            return "Chart-file post-write verification failed: \(detail)"
         }
     }
 }
@@ -202,6 +208,14 @@ struct LoadedSession {
     /// directory and the state flags it as present. `nil` for older
     /// sessions or sessions saved without a replay buffer.
     let replayBufferURL: URL?
+    /// URLs of the optional chart-companion JSON files, when
+    /// `state.hasChartData == true` and both files exist on disk.
+    /// `nil` for older sessions, sessions saved with chart
+    /// collection disabled, or sessions whose chart files were
+    /// removed externally. Loader callers JSON-decode them via
+    /// `readChartFile(_:from:)` (see `ChartFileFormat.swift`) and
+    /// then hand the arrays to `ChartCoordinator.seedFromRestoredSession`.
+    let chartDataURLs: (training: URL, progressRate: URL)?
 }
 
 /// Lightweight, weights-free projection of a `SessionCheckpointState`
@@ -225,6 +239,12 @@ struct SessionResumeSummary: Sendable, Equatable {
     let selfPlayGames: Int
     let selfPlayMoves: Int
     let replayBufferTotalPositionsAdded: Int?
+    /// Count of `TrainingChartSample`s saved with the session.
+    /// nil for older sessions or sessions saved with chart
+    /// collection disabled. Lets the resume sheet surface
+    /// "12,453 chart samples" so the user knows up front whether
+    /// the chart trajectory will come back on resume.
+    let trainingChartSampleCount: Int?
     let arenaCount: Int
     let promotionCount: Int
     let buildNumber: Int?
@@ -242,6 +262,7 @@ struct SessionResumeSummary: Sendable, Equatable {
         self.selfPlayGames = state.selfPlayGames
         self.selfPlayMoves = state.selfPlayMoves
         self.replayBufferTotalPositionsAdded = state.replayBufferTotalPositionsAdded
+        self.trainingChartSampleCount = state.trainingChartSampleCount
         self.arenaCount = state.arenaHistory.count
         self.promotionCount = state.arenaHistory.lazy.filter { $0.promoted }.count
         self.buildNumber = state.buildNumber
@@ -445,6 +466,7 @@ enum CheckpointManager {
         trainerCreatedAtUnix: Int64,
         state: SessionCheckpointState,
         replayBuffer: ReplayBuffer? = nil,
+        chartSnapshot: ChartCoordinatorSnapshot? = nil,
         trigger: String,
         at date: Date = Date()
     ) async throws -> URL {
@@ -502,7 +524,19 @@ enum CheckpointManager {
         let trainerTmpURL = SessionCheckpointLayout.trainerURL(in: tmpDirURL)
         let stateTmpURL = SessionCheckpointLayout.stateURL(in: tmpDirURL)
         let bufferTmpURL = SessionCheckpointLayout.replayBufferURL(in: tmpDirURL)
+        let trainingChartTmpURL = SessionCheckpointLayout.trainingChartURL(in: tmpDirURL)
+        let progressRateChartTmpURL = SessionCheckpointLayout.progressRateChartURL(in: tmpDirURL)
         let wantsReplayBuffer = replayBuffer != nil && state.hasReplayBuffer == true
+        // Chart files are only written when the caller passed a
+        // snapshot AND that snapshot has at least one ring populated.
+        // `ChartCoordinator.buildSnapshot()` already returns nil when
+        // collection is off or the rings are empty, so this flag
+        // typically tracks "the caller wanted to save chart data and
+        // had something to save." Older sessions that never saw a
+        // snapshot leave the flag false, the chart files absent, and
+        // `state.hasChartData` nil — load-time code falls back to the
+        // existing behavior (chart pane starts fresh).
+        let wantsChartData = chartSnapshot != nil
 
         do {
             try championEncoded.write(to: championTmpURL, options: [.atomic])
@@ -550,15 +584,53 @@ enum CheckpointManager {
             }
         }
 
+        // Optional chart-data dump. Two plain-JSON files
+        // (`training_chart.json`, `progress_rate_chart.json`) carry
+        // the two `ChartCoordinator` rings + the small auxiliary
+        // chart state needed to restore a chart trajectory across
+        // save/resume. Inline JSON for the `arenaChartEvents` and
+        // `legalMassMaxAllTime` fields rides in session.json
+        // alongside everything else (small enough not to need a side
+        // file). Skipped entirely when `chartSnapshot` is nil — older
+        // sessions, sessions saved with chart collection off, and
+        // CLI runs without a heartbeat all land here.
+        if let chartSnapshot {
+            do {
+                try writeChartFile(
+                    chartSnapshot.trainingSamples,
+                    to: trainingChartTmpURL
+                )
+                try writeChartFile(
+                    chartSnapshot.progressRateSamples,
+                    to: progressRateChartTmpURL
+                )
+            } catch {
+                cleanupTmp()
+                throw CheckpointManagerError.chartFileWriteFailed(tmpDirURL, error)
+            }
+        }
+
         // Now encode and write session.json. If we wrote a buffer,
         // its post-write snapshot supersedes the caller's pre-pause
         // numbers so the two files match bit-for-bit on the
-        // `totalPositionsAdded` cross-check at load time.
+        // `totalPositionsAdded` cross-check at load time. Chart
+        // counts go in here too — the values come from the snapshot
+        // we just serialized, so they're guaranteed to match the
+        // file contents.
         var effectiveState = state
         if let writtenSnap {
             effectiveState.replayBufferStoredCount = writtenSnap.storedCount
             effectiveState.replayBufferCapacity = writtenSnap.capacity
             effectiveState.replayBufferTotalPositionsAdded = writtenSnap.totalPositionsAdded
+        }
+        if let chartSnapshot {
+            effectiveState = effectiveState.withChartData(
+                hasChartData: true,
+                trainingChartSampleCount: chartSnapshot.trainingSamples.count,
+                progressRateSampleCount: chartSnapshot.progressRateSamples.count,
+                arenaChartEvents: chartSnapshot.arenaChartEvents,
+                legalMassMaxAllTime: chartSnapshot.legalMassMaxAllTime
+            )
         }
         let stateEncoded: Data
         do {
@@ -592,6 +664,10 @@ enum CheckpointManager {
             try fullSyncPath(stateTmpURL)
             if wantsReplayBuffer {
                 try fullSyncPath(bufferTmpURL)
+            }
+            if wantsChartData {
+                try fullSyncPath(trainingChartTmpURL)
+                try fullSyncPath(progressRateChartTmpURL)
             }
         } catch {
             cleanupTmp()
@@ -665,6 +741,41 @@ enum CheckpointManager {
                       written.totalPositionsAdded == got.totalPositionsAdded else {
                     throw CheckpointManagerError.replayVerificationFailed(
                         "counter round-trip mismatch: written=(stored=\(written.storedCount), total=\(written.totalPositionsAdded)) scratch=(stored=\(got.storedCount), total=\(got.totalPositionsAdded))"
+                    )
+                }
+            }
+            // Chart-file verification: re-read each file and confirm
+            // the count of decoded samples matches what we just
+            // wrote. Element-wise equality is intentionally NOT
+            // checked here — `Double.nan == Double.nan` is `false`
+            // per IEEE 754, and `gNorm` legitimately becomes NaN
+            // when the network diverges, so an element-wise check
+            // would flag healthy NaN-bearing samples as round-trip
+            // failures. Bit-pattern equality is verified in unit
+            // tests instead.
+            if wantsChartData, let chartSnapshot {
+                do {
+                    let restoredTraining = try readChartFile(
+                        [TrainingChartSample].self, from: trainingChartTmpURL
+                    )
+                    guard restoredTraining.count == chartSnapshot.trainingSamples.count else {
+                        throw CheckpointManagerError.chartFileVerifyFailed(
+                            detail: "training_chart.json count round-trip mismatch: written=\(chartSnapshot.trainingSamples.count) scratch=\(restoredTraining.count)"
+                        )
+                    }
+                    let restoredProgress = try readChartFile(
+                        [ProgressRateSample].self, from: progressRateChartTmpURL
+                    )
+                    guard restoredProgress.count == chartSnapshot.progressRateSamples.count else {
+                        throw CheckpointManagerError.chartFileVerifyFailed(
+                            detail: "progress_rate_chart.json count round-trip mismatch: written=\(chartSnapshot.progressRateSamples.count) scratch=\(restoredProgress.count)"
+                        )
+                    }
+                } catch let err as CheckpointManagerError {
+                    throw err
+                } catch {
+                    throw CheckpointManagerError.chartFileVerifyFailed(
+                        detail: "scratch read failed: \(error.localizedDescription)"
                     )
                 }
             }
@@ -769,12 +880,20 @@ enum CheckpointManager {
         let bufferURL = SessionCheckpointLayout.replayBufferURL(in: directoryURL)
         let bufferPresent = (state.hasReplayBuffer == true)
             && FileManager.default.fileExists(atPath: bufferURL.path)
+        let trainingChartURL = SessionCheckpointLayout.trainingChartURL(in: directoryURL)
+        let progressRateChartURL = SessionCheckpointLayout.progressRateChartURL(in: directoryURL)
+        let chartFilesPresent = (state.hasChartData == true)
+            && FileManager.default.fileExists(atPath: trainingChartURL.path)
+            && FileManager.default.fileExists(atPath: progressRateChartURL.path)
         return LoadedSession(
             directoryURL: directoryURL,
             state: state,
             championFile: championFile,
             trainerFile: trainerFile,
-            replayBufferURL: bufferPresent ? bufferURL : nil
+            replayBufferURL: bufferPresent ? bufferURL : nil,
+            chartDataURLs: chartFilesPresent
+                ? (training: trainingChartURL, progressRate: progressRateChartURL)
+                : nil
         )
     }
 

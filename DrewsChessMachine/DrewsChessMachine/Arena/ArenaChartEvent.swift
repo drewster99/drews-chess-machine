@@ -5,7 +5,7 @@ import Foundation
 /// pair lets us render arenas as duration bands rather than point
 /// events, so the reader can see WHEN training was paused for
 /// arena play and for HOW LONG.
-struct ArenaChartEvent: Identifiable, Sendable, Equatable {
+struct ArenaChartEvent: Identifiable, Sendable, Equatable, Codable {
     let id: Int
     /// Session-elapsed seconds when the arena began.
     let startElapsedSec: Double

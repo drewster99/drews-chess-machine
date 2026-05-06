@@ -98,6 +98,31 @@ final class ChartSampleRing<Element> {
     /// have been cleared via `reset`).
     var isEmpty: Bool { count == 0 }
 
+    /// Bulk-append a sequence of elements. Equivalent to calling
+    /// `append` in a loop. Used by session-resume code to restore
+    /// a saved chart trajectory in one shot. Reserves block storage
+    /// up-front for the incoming count so a multi-block restore
+    /// pays each fresh-block allocation exactly once. The ring has
+    /// no observer hooks, so this only differs from a naive loop
+    /// in the up-front capacity reservation.
+    func bulkRestore(_ samples: [Element]) {
+        guard !samples.isEmpty else { return }
+        // Reserve enough block headroom for `samples.count` more
+        // appends so the loop below never re-grows `blocks` in the
+        // middle. After the call: count goes up by samples.count,
+        // and the trailing block holds at most blockSize elements.
+        let newCount = count + samples.count
+        let blocksNeeded = (newCount + Self.blockSize - 1) / Self.blockSize
+        while blocks.count < blocksNeeded {
+            var fresh: [Element] = []
+            fresh.reserveCapacity(Self.blockSize)
+            blocks.append(fresh)
+        }
+        for sample in samples {
+            append(sample)
+        }
+    }
+
     /// Drop every appended element. Retains the first block's
     /// reserved capacity so the next session reuses the existing
     /// allocation; releases all subsequent blocks. No-op (and no
