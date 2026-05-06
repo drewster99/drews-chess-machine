@@ -74,6 +74,11 @@ struct BoardSideView: View {
 
             board
         }
-        .frame(minWidth: 320, maxWidth: 420)
+        // No maxWidth cap — the inner board has aspectRatio(1, .fit)
+        // so it'll stay square at min(width, height). When the upper
+        // area grows tall, the board grows along with it; the HStack
+        // sibling (MainTextPanel / HoverPolicyOverlay) naturally
+        // gets the rest of the horizontal space.
+        .frame(minWidth: 320)
     }
 }
