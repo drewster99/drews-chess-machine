@@ -14,16 +14,22 @@ import SwiftUI
 /// only when the user clicks Run Forward Pass (or edits the board,
 /// which auto-triggers a re-eval).
 ///
-/// Per-tile rendering: each tile shows softmax over THAT channel's
-/// own 64 cells (so the 64 cells of one tile sum to 1), then
-/// normalized to the per-tile max so the channel's brightest
-/// from-square renders fully opaque. This means every tile is
-/// independently scaled — a channel with tiny global mass still
-/// shows where ITS preferred from-squares are. The tile's
-/// per-channel max probability and the channel's GLOBAL share of
-/// total policy mass are both shown beneath the board so the user
-/// can read both halves of the story (where would this channel
-/// fire AND does this channel matter overall).
+/// Per-tile rendering: each cell's brightness is the channel's
+/// logit at that square min-max normalized within the channel —
+/// `(logit − channel_min) / (channel_max − channel_min)`. We
+/// deliberately avoid softmax-based brightness here: early in
+/// training the per-channel softmax is essentially uniform
+/// (1/64 ≈ 1.56% per cell), and any per-tile peak normalization
+/// of a uniform distribution produces solid-color tiles with no
+/// per-cell variation. Min-max on the raw logits guarantees
+/// visible per-cell structure as long as the channel has any
+/// spread at all (always true post random init). The trade-off
+/// is that absolute magnitude is lost from the visual — a barely-
+/// trained channel and a sharp channel both render their peak at
+/// full brightness — so the per-tile `peak %` (channel-softmax
+/// concentration) and `mass %` (channel's share of the GLOBAL
+/// 4864-cell distribution) are shown beneath each tile to keep
+/// the magnitude story available textually.
 ///
 /// Sections mirror `PolicyEncoding`'s blocks so co-located tiles
 /// share semantics:
@@ -57,16 +63,43 @@ struct PolicyChannelsPanel: View {
     /// any narrower layout falls back to fewer.
     private static let minTileSide: CGFloat = 96
 
+    /// Brightness floor applied to every tile after per-channel
+    /// normalization. Cells whose normalized value falls strictly
+    /// below this threshold render with no red tint at all (the
+    /// underlying chess-square color shows through). Slider in the
+    /// header drives this; persisted across launches via
+    /// `@AppStorage` so the user's preferred cut-off survives a
+    /// session restart. 0 = show everything (default), 1 = show
+    /// only cells at the per-channel max.
+    @AppStorage("policyChannelsRedThreshold") private var redThreshold: Double = 0
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Text("Policy channels")
                     .font(.headline)
                 Text(headerStatus)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
+
+                // Per-cell brightness floor. Drag right to hide
+                // weak cells and reveal only the per-channel peaks
+                // — at 1.0, only the brightest cell of each tile
+                // remains red.
+                HStack(spacing: 6) {
+                    Text("min")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Slider(value: $redThreshold, in: 0...1)
+                        .frame(width: 220)
+                    Text(String(format: "%.2f", redThreshold))
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 36, alignment: .trailing)
+                }
+
                 Spacer()
-                Text("Per-channel softmax (each tile sums to 1) → per-tile normalize. Brightness = relative within the channel. mass% = channel's share of total policy mass.")
+                Text("Per-channel logit min-max → cell brightness = (logit − channel_min) / (channel_max − channel_min). peak% = per-channel softmax concentration; mass% = channel's share of total policy mass.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.trailing)
@@ -143,7 +176,7 @@ struct PolicyChannelsPanel: View {
         VStack(spacing: 1) {
             ChessBoardView(
                 pieces: pieces,
-                overlay: .channel(ch.cellValues),
+                overlay: .channel(thresholded(ch.cellValues)),
                 channelColor: Self.tileTint
             )
             .aspectRatio(1, contentMode: .fit)
@@ -167,33 +200,52 @@ struct PolicyChannelsPanel: View {
         }
     }
 
+    /// Apply the per-cell brightness floor. Cells whose normalized
+    /// value is strictly below `redThreshold` are zeroed out so
+    /// `ChessBoardView`'s `.channel` overlay (which short-circuits
+    /// at `value > 0.001`) skips drawing them entirely. At
+    /// `redThreshold == 0` we hand back the input unchanged so the
+    /// allocation is skipped on the no-cutoff fast path.
+    private func thresholded(_ values: [Float]) -> [Float] {
+        guard redThreshold > 0 else { return values }
+        let t = Float(redThreshold)
+        return values.map { $0 >= t ? $0 : 0 }
+    }
+
     // MARK: - Channel computation
 
     fileprivate struct ChannelData: Identifiable {
         let id: Int
-        let cellValues: [Float]   // 64 entries in absolute (display) coordinates, scaled to [0,1] via per-channel max
-        let peakProb: Float       // max per-channel softmax probability (= max cellValues pre-normalization)
+        let cellValues: [Float]   // 64 entries in absolute (display) coords, [0, 1] from logit min-max
+        let peakProb: Float       // per-channel softmax peak probability (concentration indicator)
         let globalMass: Float     // sum of GLOBAL softmax probs in this channel
         let label: String
     }
 
     /// Decompose the 4864 raw logits into 76 displayable channel
-    /// tiles. Two normalizations happen here:
+    /// tiles. Three independent quantities are computed per channel:
     ///
-    /// 1. **Global softmax** over all 4864 cells, summed per channel,
-    ///    gives `globalMass` — "what fraction of total policy
-    ///    probability does this channel hold." Useful as a relevance
-    ///    indicator: dominant channels show high mass, dead ones near
-    ///    zero.
-    /// 2. **Per-channel softmax** over each channel's 64 cells gives a
-    ///    proper [0, 1] distribution INSIDE that channel ("if I pick
-    ///    this channel, what's the spatial preference?"). Then divide
-    ///    by the channel's max so the brightest cell renders fully
-    ///    opaque — every tile auto-scales for visibility, even
-    ///    channels with tiny global mass still show where their
-    ///    preferred from-squares are.
+    /// 1. **`cellValues`** — the actual heatmap. Each cell's
+    ///    brightness is the logit at that square min-max normalized
+    ///    within the channel: `(logit − chMin) / (chMax − chMin)`.
+    ///    Always uses the full [0, 1] range as long as the channel
+    ///    has any logit spread (degenerate `chMax == chMin` collapses
+    ///    to all-zero). Crucially, this does NOT depend on the
+    ///    softmax flatness — early-training near-uniform softmax
+    ///    distributions still produce meaningful per-cell variation
+    ///    because the underlying logits always have *some* spread
+    ///    (random init alone is enough). Trade-off: absolute
+    ///    magnitude is lost from the visual; we surface it via the
+    ///    peak/mass labels below.
+    /// 2. **`peakProb`** — max probability of the per-channel softmax
+    ///    over the 64 cells. Uniform = 1/64 ≈ 1.56%, perfectly
+    ///    concentrated = 1.0. Tells the user how spiky the channel
+    ///    actually is, independent of the visual brightness pattern.
+    /// 3. **`globalMass`** — channel's share of the global softmax
+    ///    over all 4864 cells. Uniform across channels = 1/76 ≈ 1.32%.
+    ///    Tells the user how much the channel matters overall.
     ///
-    /// Cells are also transposed from encoder frame to absolute board
+    /// Cells are transposed from encoder frame to absolute board
     /// coordinates (row un-flip) when black is to move, so every tile
     /// renders right-side-up versus the parent board's pieces.
     fileprivate static func computeChannels(
@@ -221,43 +273,54 @@ struct PolicyChannelsPanel: View {
             globalProbs[i] *= invGlobalSum
         }
 
-        // --- Per-channel softmax + display-frame transpose ----------
+        // --- Per-channel passes -------------------------------------
+        // Smallest meaningful logit span. Below this we treat the
+        // channel as degenerate (all-equal) and render it as all-zero
+        // — anything finer is denormalized noise that would just
+        // amplify into arbitrary bright patterns under min-max.
+        let degenerateSpanThreshold: Float = 1e-6
         let flip = currentPlayer == .black
         var result: [ChannelData] = []
         result.reserveCapacity(PolicyEncoding.channelCount)
         for chan in 0..<PolicyEncoding.channelCount {
             let base = chan * 64
 
-            // Stable softmax over JUST this channel's 64 cells.
-            var maxIn: Float = -.infinity
-            for i in 0..<64 where logits[base + i] > maxIn {
-                maxIn = logits[base + i]
-            }
-            var probs = [Float](repeating: 0, count: 64)
-            var sum: Float = 0
+            // Per-channel logit min/max (drives the visualization).
+            var chMin: Float = .infinity
+            var chMax: Float = -.infinity
             for i in 0..<64 {
-                let e = expf(logits[base + i] - maxIn)
-                probs[i] = e
-                sum += e
+                let l = logits[base + i]
+                if l < chMin { chMin = l }
+                if l > chMax { chMax = l }
             }
-            let invSum: Float = sum > 0 ? 1 / sum : 0
+            let span = chMax - chMin
+            let invSpan: Float = span > degenerateSpanThreshold ? 1 / span : 0
+
+            // Per-channel softmax (drives the `peak %` label only).
+            var pkSum: Float = 0
+            var pkProbs = [Float](repeating: 0, count: 64)
+            for i in 0..<64 {
+                let e = expf(logits[base + i] - chMax)
+                pkProbs[i] = e
+                pkSum += e
+            }
+            let pkInv: Float = pkSum > 0 ? 1 / pkSum : 0
             var peakProb: Float = 0
             for i in 0..<64 {
-                probs[i] *= invSum
-                if probs[i] > peakProb { peakProb = probs[i] }
+                pkProbs[i] *= pkInv
+                if pkProbs[i] > peakProb { peakProb = pkProbs[i] }
             }
-            let normInv: Float = peakProb > 0 ? 1 / peakProb : 0
 
-            // Transpose encoder rows to absolute (display) rows, scale
-            // to [0, 1] by the per-channel peak, and accumulate the
-            // global mass while we're walking the channel.
+            // Build the display-frame heatmap (logit min-max) and
+            // accumulate the global mass in one pass.
             var cells = [Float](repeating: 0, count: 64)
             var globalMass: Float = 0
             for r in 0..<8 {
                 let displayRow = flip ? (7 - r) : r
                 for c in 0..<8 {
-                    cells[displayRow * 8 + c] = probs[r * 8 + c] * normInv
-                    globalMass += globalProbs[base + r * 8 + c]
+                    let i = r * 8 + c
+                    cells[displayRow * 8 + c] = (logits[base + i] - chMin) * invSpan
+                    globalMass += globalProbs[base + i]
                 }
             }
             result.append(ChannelData(
