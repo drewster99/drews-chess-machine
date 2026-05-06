@@ -27,6 +27,8 @@ final class ChartDecimatorTests: XCTestCase {
             rollingPolicyNonNegCount: nil,
             rollingPolicyNonNegIllegalCount: nil,
             rollingGradNorm: gradNorm,
+            rollingVelocityNorm: nil,
+            rollingPolicyHeadWeightNorm: nil,
             replayRatio: replayRatio,
             rollingPolicyLossWin: nil,
             rollingPolicyLossLoss: nil,

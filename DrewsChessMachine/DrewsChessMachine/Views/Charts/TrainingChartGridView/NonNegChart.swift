@@ -25,8 +25,8 @@ struct NonNegChart: View {
             let legalStr = lastLegal.map { String(Int($0)) } ?? "--"
             let illegalStr = lastIllegal.map { String(Int($0)) } ?? "--"
             headerText = "legal \(legalStr) • illegal \(illegalStr)"
-        case .hoveringNoData(let t):
-            headerText = "t=\(TrainingChartGridView.formatElapsedAxis(t)) — no data"
+        case .hoveringNoData:
+            headerText = "— no data"
         case .hoveringWithData(let t, let v):
             // Pull the matching illegal value from the same hovered bucket.
             let tolerance = Swift.max(
@@ -37,7 +37,7 @@ struct NonNegChart: View {
                 at: t, in: buckets, tolerance: tolerance
             )?.policyNonNegIllegalCount?.max
             let illegalStr = illegalAtHover.map { String(Int($0)) } ?? "--"
-            headerText = "t=\(TrainingChartGridView.formatElapsedAxis(t))  legal \(Int(v)) • illegal \(illegalStr)"
+            headerText = "legal \(Int(v)) • illegal \(illegalStr)"
         }
         return VStack(alignment: .leading, spacing: 1) {
             ChartTileHeader(title: "Above-uniform policy count", value: headerText)

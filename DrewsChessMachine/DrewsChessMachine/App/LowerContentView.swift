@@ -44,6 +44,7 @@ struct LowerContentView: View {
                 replayRatioTarget: replayRatioTarget,
                 appMemoryTotalGB: appMemoryTotalGB,
                 gpuMemoryTotalGB: gpuMemoryTotalGB,
+                legalMassMaxAllTime: chartCoordinator.legalMassMaxAllTime,
                 visibleDomainSec: ChartZoom.stops[chartCoordinator.chartZoomIdx],
                 scrollX: $chartCoordinator.scrollX,
                 hoveredSec: $chartCoordinator.hoveredSec

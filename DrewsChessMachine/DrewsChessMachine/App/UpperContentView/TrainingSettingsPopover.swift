@@ -143,7 +143,7 @@ struct TrainingSettingsPopover: View {
             // regularization companions (clip, decay, K).
             VStack(alignment: .leading, spacing: 6) {
                 row(
-                    label: "Entropy regularization:",
+                    label: "Entropy reg. bonus:",
                     text: $entropyText,
                     error: entropyError,
                     placeholder: "1.00e-03"

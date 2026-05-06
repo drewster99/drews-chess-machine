@@ -216,7 +216,7 @@ public enum LearningRate: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Momentum Coefficient",
-    description: "Polyak momentum μ for SGD. 0.0 disables momentum (pure SGD); higher μ accumulates more gradient history. WARNING: μ near 0.9 amplifies effective step size by ~10× (geometric series of accumulated gradients), equivalent to raising LR 10× — known to collapse the policy. Start low (≤0.5) and watch legalMass / pEntLegal before raising further.",
+    description: "Polyak momentum μ for SGD. 0.0 disables momentum (pure SGD); higher μ accumulates more gradient history. The optimizer uses decoupled weight decay (AdamW-style), so μ and Weight Decay tune independently — raising μ no longer amplifies decay. Effective step size in correlated-gradient regimes still scales ~1/(1−μ), so a high μ paired with the existing LR can be too aggressive — pair μ jumps with a proportional LR drop. Start low (≤0.5) and watch legalMass / pEntLegal before raising further.",
     default: 0.0,
     range: 0.0...0.99,
     category: "Optimizer",

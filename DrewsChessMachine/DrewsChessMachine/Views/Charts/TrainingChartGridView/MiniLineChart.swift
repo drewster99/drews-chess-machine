@@ -30,11 +30,11 @@ struct MiniLineChart: View {
             } else {
                 headerText = "--"
             }
-        case .hoveringNoData(let t):
-            headerText = "t=\(TrainingChartGridView.formatElapsedAxis(t)) — no data"
-        case .hoveringWithData(let t, let v):
+        case .hoveringNoData:
+            headerText = "— no data"
+        case .hoveringWithData(_, let v):
             let valueStr = wholeNumber ? String(Int(v)) : TrainingChartGridView.compactLabel(v)
-            headerText = "t=\(TrainingChartGridView.formatElapsedAxis(t)) \(valueStr)\(unitSuffix)"
+            headerText = "\(valueStr)\(unitSuffix)"
         }
         return VStack(alignment: .leading, spacing: 1) {
             ChartTileHeader(title: title, value: headerText)

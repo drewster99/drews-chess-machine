@@ -41,6 +41,8 @@ struct TrainingBucket: Sendable, Equatable, Identifiable {
     let policyNonNegCount: ChartBucketRange?
     let policyNonNegIllegalCount: ChartBucketRange?
     let gradNorm: ChartBucketRange?
+    let velocityNorm: ChartBucketRange?
+    let policyHeadWeightNorm: ChartBucketRange?
     let replayRatio: ChartBucketRange?
     let policyLossWin: ChartBucketRange?
     let policyLossLoss: ChartBucketRange?
@@ -306,6 +308,8 @@ private struct TrainingBucketBuilder {
     var policyNonNegCount = NumericAccumulator()
     var policyNonNegIllegalCount = NumericAccumulator()
     var gradNorm = NumericAccumulator()
+    var velocityNorm = NumericAccumulator()
+    var policyHeadWeightNorm = NumericAccumulator()
     var replayRatio = NumericAccumulator()
     var policyLossWin = NumericAccumulator()
     var policyLossLoss = NumericAccumulator()
@@ -329,6 +333,8 @@ private struct TrainingBucketBuilder {
         policyNonNegCount.absorb(s.rollingPolicyNonNegCount)
         policyNonNegIllegalCount.absorb(s.rollingPolicyNonNegIllegalCount)
         gradNorm.absorb(s.rollingGradNorm)
+        velocityNorm.absorb(s.rollingVelocityNorm)
+        policyHeadWeightNorm.absorb(s.rollingPolicyHeadWeightNorm)
         replayRatio.absorb(s.replayRatio)
         policyLossWin.absorb(s.rollingPolicyLossWin)
         policyLossLoss.absorb(s.rollingPolicyLossLoss)
@@ -353,6 +359,8 @@ private struct TrainingBucketBuilder {
             policyNonNegCount: policyNonNegCount.range,
             policyNonNegIllegalCount: policyNonNegIllegalCount.range,
             gradNorm: gradNorm.range,
+            velocityNorm: velocityNorm.range,
+            policyHeadWeightNorm: policyHeadWeightNorm.range,
             replayRatio: replayRatio.range,
             policyLossWin: policyLossWin.range,
             policyLossLoss: policyLossLoss.range,

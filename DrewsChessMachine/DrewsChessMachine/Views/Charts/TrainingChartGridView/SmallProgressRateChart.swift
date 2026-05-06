@@ -39,12 +39,11 @@ struct SmallProgressRateChart: View {
                 let combined = nearest.combinedMovesPerHour?.max ?? 0
                 let selfPlay = nearest.selfPlayMovesPerHour?.max ?? 0
                 let training = nearest.trainingMovesPerHour?.max ?? 0
-                return "t=\(TrainingChartGridView.formatElapsedAxis(nearest.elapsedSec)) "
-                    + "comb=\(TrainingChartGridView.compactLabel(combined)) "
+                return "comb=\(TrainingChartGridView.compactLabel(combined)) "
                     + "sp=\(TrainingChartGridView.compactLabel(selfPlay)) "
                     + "tr=\(TrainingChartGridView.compactLabel(training))"
             } else {
-                return "t=\(TrainingChartGridView.formatElapsedAxis(t)) — no data"
+                return "— no data"
             }
         } else if let last = buckets.last,
                   let combined = last.combinedMovesPerHour?.max {

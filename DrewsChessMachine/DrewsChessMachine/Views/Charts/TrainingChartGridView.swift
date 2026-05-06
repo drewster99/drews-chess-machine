@@ -41,10 +41,19 @@ struct TrainingChartGridView: View {
     /// the reader can see how far the auto-adjust controller is
     /// missing at a glance.
     let replayRatioTarget: Double
-    /// Unified-memory total in GB, used by the App memory and GPU
-    /// memory tiles to render "used / total (pct%)" headers.
+    /// Unified-memory total in GB, used by the combined memory tile
+    /// to render the `App X · GPU Y / Total GB (pct%)` header. The
+    /// `app` and `gpu` totals are both derived from
+    /// `ProcessInfo.physicalMemory` (unified memory), so either one
+    /// is sufficient — both are accepted only because the upstream
+    /// plumbing predates the chart consolidation.
     let appMemoryTotalGB: Double?
     let gpuMemoryTotalGB: Double?
+    /// Session-wide running max of rolling legal-mass. Drives the
+    /// tiered Y-axis on the legal-mass tile (top = 0.5 / 0.75 / 1.0
+    /// based on the highest value seen all session, not just in the
+    /// visible window). Sourced from `ChartCoordinator`.
+    let legalMassMaxAllTime: Double
     let visibleDomainSec: Double
     @Binding var scrollX: Double
     /// Shared hover selection across every time-series chart. Set
@@ -73,17 +82,18 @@ struct TrainingChartGridView: View {
     )
 
     var body: some View {
-        // 5 columns × 2 rows. Layout by column (left to right):
-        //   Col 1: Loss Total, Replay Ratio
-        //   Col 2: Policy Entropy, Non-Negligible Policy Count
-        //   Col 3: Progress Rate, (empty — progress rate is tall)
-        //   Col 4: CPU %, GPU %
-        //   Col 5: App Memory, GPU RAM
-        // But LazyVGrid fills row-major, so we order accordingly.
+        // 5 columns × 3 rows, filled row-major:
+        //   Row 1: legal-mass, policy entropy, progress rate (small),
+        //          CPU %, RAM (App + GPU on shared axes)
+        //   Row 2: pLoss + vLoss, non-negligible policy count, replay
+        //          ratio, GPU %, power / thermal
+        //   Row 3: pLoss split, gNorm, ||v|| (velocity L2 norm),
+        //          longest move prefix histogram, arena activity
         LazyVGrid(columns: Self.columns, spacing: 1) {
             // Row 1
-            PolicyLossSplitChart(
+            LegalMassChart(
                 buckets: frame.trainingBuckets,
+                allTimeMax: legalMassMaxAllTime,
                 hoveredSec: $hoveredSec,
                 scrollX: $scrollX,
                 context: context
@@ -100,22 +110,15 @@ struct TrainingChartGridView: View {
                 scrollX: $scrollX,
                 context: context
             )
-            MiniLineChart(
-                title: "CPU",
+            CpuGpuChart(
                 buckets: frame.trainingBuckets,
-                rangeAccessor: { $0.cpuPercent },
-                unit: "%",
-                color: .blue,
                 hoveredSec: $hoveredSec,
                 scrollX: $scrollX,
                 context: context
             )
             MemoryChart(
-                title: "App memory (RAM)",
                 buckets: frame.trainingBuckets,
-                rangeAccessor: { $0.appMemoryGB },
-                totalGB: appMemoryTotalGB,
-                color: .brown,
+                totalGB: appMemoryTotalGB ?? gpuMemoryTotalGB,
                 hoveredSec: $hoveredSec,
                 scrollX: $scrollX,
                 context: context
@@ -141,27 +144,23 @@ struct TrainingChartGridView: View {
                 context: context
             )
             MiniLineChart(
-                title: "GPU",
+                title: "pwNorm (policy head weight L2 norm)",
                 buckets: frame.trainingBuckets,
-                rangeAccessor: { $0.gpuBusyPercent },
-                unit: "%",
+                rangeAccessor: { $0.policyHeadWeightNorm },
+                unit: "",
                 color: .indigo,
                 hoveredSec: $hoveredSec,
                 scrollX: $scrollX,
                 context: context
             )
-            MemoryChart(
-                title: "GPU memory (RAM)",
+            PowerThermalChart(
                 buckets: frame.trainingBuckets,
-                rangeAccessor: { $0.gpuMemoryGB },
-                totalGB: gpuMemoryTotalGB,
-                color: .teal,
                 hoveredSec: $hoveredSec,
                 scrollX: $scrollX,
                 context: context
             )
             // Row 3
-            LegalMassChart(
+            PolicyLossSplitChart(
                 buckets: frame.trainingBuckets,
                 hoveredSec: $hoveredSec,
                 scrollX: $scrollX,
@@ -177,13 +176,17 @@ struct TrainingChartGridView: View {
                 scrollX: $scrollX,
                 context: context
             )
-            DiversityHistogramChart(bars: diversityHistogram)
-            PowerThermalChart(
+            MiniLineChart(
+                title: "||v|| (velocity L2 norm)",
                 buckets: frame.trainingBuckets,
+                rangeAccessor: { $0.velocityNorm },
+                unit: "",
+                color: .purple,
                 hoveredSec: $hoveredSec,
                 scrollX: $scrollX,
                 context: context
             )
+            DiversityHistogramChart(bars: diversityHistogram)
             ArenaActivityChart(
                 events: arenaEvents,
                 activeArenaStartElapsed: activeArenaStartElapsed,

@@ -2188,6 +2188,8 @@ struct UpperContentView: View {
             rollingPolicyNonNegCount: trainingSnap?.rollingPolicyNonNegCount,
             rollingPolicyNonNegIllegalCount: trainingSnap?.rollingPolicyNonNegIllegalCount,
             rollingGradNorm: trainingSnap?.rollingGradGlobalNorm,
+            rollingVelocityNorm: trainingSnap?.rollingVelocityNorm,
+            rollingPolicyHeadWeightNorm: trainingSnap?.rollingPolicyHeadWeightNorm,
             replayRatio: ratioSnap?.currentRatio,
             rollingPolicyLossWin: trainingSnap?.rollingPolicyLossWin,
             rollingPolicyLossLoss: trainingSnap?.rollingPolicyLossLoss,
@@ -2939,6 +2941,7 @@ struct UpperContentView: View {
             gradClipMaxNorm: Float(trainingParams.gradClipMaxNorm),
             weightDecayCoeff: Float(trainingParams.weightDecay),
             policyScaleK: Float(trainingParams.policyScaleK),
+            momentumCoeff: Float(trainingParams.momentumCoeff),
             replayRatioTarget: trainingParams.replayRatioTarget,
             replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust,
             stepDelayMs: trainingParams.trainingStepDelayMs,
@@ -4536,13 +4539,25 @@ struct UpperContentView: View {
         // autosave task, which is critical to avoid deadlocking
         // a save that runs past a session cancel — unstructured
         // save tasks don't inherit realTrainingTask cancellation).
+        //
+        // We also snapshot the optimizer velocity. If the candidate
+        // wins the arena, we'll restore THIS snapshot when we copy
+        // the candidate weights back into the trainer — the velocity
+        // that built the validated candidate is the right velocity
+        // for the candidate's weight surface. (Earlier behavior
+        // zeroed velocity on promotion, throwing away accumulated
+        // gradient signal.)
         var trainerSnapshotWeights: [[Float]] = []
+        var trainerSnapshotVelocity: [[Float]] = []
         do {
-            trainerSnapshotWeights = try await Task.detached(priority: .userInitiated) {
+            let snapshot: ([[Float]], [[Float]]) = try await Task.detached(priority: .userInitiated) {
                 let weights = try await trainer.network.exportWeights()
+                let velocity = try await trainer.exportVelocitySnapshot()
                 try await candidateInference.loadWeights(weights)
-                return weights
+                return (weights, velocity)
             }.value
+            trainerSnapshotWeights = snapshot.0
+            trainerSnapshotVelocity = snapshot.1
         } catch {
             trainingBox?.recordError("Arena candidate sync failed: \(error.localizedDescription)")
             trainingGate.resume()
@@ -4824,19 +4839,22 @@ struct UpperContentView: View {
             if !Task.isCancelled {
                 do {
                     promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
-                        [candidateInference, champion, trainer] in
+                        [candidateInference, champion, trainer, trainerSnapshotVelocity] in
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
                         try await trainer.network.loadWeights(weights)
-                        // The trainer's accumulated momentum velocity
-                        // points against the OLD weight surface, which
-                        // has just been entirely replaced. Zero the
-                        // velocity buffers so the optimizer restarts
-                        // momentum from scratch on the new weights.
-                        // Both gates are paused at this point, so the
-                        // trainer's velocity I/O is safe to drive
-                        // directly on network.graph.
-                        try await trainer.resetVelocitiesToZero()
+                        // The trainer's CURRENT velocity was built up
+                        // against the post-arena weight surface (which
+                        // we just discarded by overwriting with the
+                        // candidate weights). Restore the velocity we
+                        // snapshotted at arena-start instead — that
+                        // velocity is the EMA of gradients that built
+                        // the validated candidate, so it's the right
+                        // accumulator for the candidate's weight
+                        // surface. Both gates are paused at this point,
+                        // so the trainer's velocity I/O is safe to
+                        // drive directly on network.graph.
+                        try await trainer.loadVelocitySnapshot(trainerSnapshotVelocity)
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
@@ -6047,6 +6065,18 @@ struct UpperContentView: View {
                         "[RESUME-PARAM] K: saved=nil applied=\(trainingParams.policyScaleK) (defaulted)"
                     )
                 }
+                if let mu = rs.momentumCoeff {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] momentum_coeff: \(trainingParams.momentumCoeff) -> \(mu) (from session)"
+                    )
+                    trainer.momentumCoeff = mu
+                    trainingParams.momentumCoeff = Double(mu)
+                } else {
+                    trainer.momentumCoeff = Float(trainingParams.momentumCoeff)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] momentum_coeff: saved=nil applied=\(trainingParams.momentumCoeff) (defaulted)"
+                    )
+                }
                 // LR warmup length and sqrt-batch LR scaling are now
                 // part of the session schema (Optional, for back-compat
                 // with older `.dcmsession` files that pre-date the
@@ -7126,6 +7156,13 @@ struct UpperContentView: View {
                         } else {
                             gradNormStr = "--"
                         }
+                        let vNormStr: String
+                        if let vn = trainingSnap.rollingVelocityNorm {
+                            vNormStr = String(format: "%.3f", vn)
+                        } else {
+                            vNormStr = "--"
+                        }
+                        let muStr = String(format: "%.3f", momentum)
                         let vMeanStr: String
                         if let vm = trainingSnap.rollingValueMean {
                             vMeanStr = String(format: "%+.4f", vm)
@@ -7399,7 +7436,7 @@ struct UpperContentView: View {
                         // inputs).
                         let shapesStr = "feedCache=\(trainer.feedCacheCount)"
 
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // CLI `--output` capture: one StatsLine per

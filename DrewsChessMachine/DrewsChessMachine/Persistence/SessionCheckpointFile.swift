@@ -154,6 +154,15 @@ struct SessionCheckpointState: Codable, Equatable {
     /// loss. Optional for back-compat with session files written
     /// before the field became editable.
     var policyScaleK: Float?
+    /// Polyak momentum coefficient μ in effect at save time. Optional
+    /// for back-compat with session files written before momentum
+    /// landed in the schema; absent → loader falls through to the
+    /// user's current `TrainingParameters.shared.momentumCoeff`.
+    /// The optimizer's velocity buffers themselves are persisted
+    /// separately in `trainer.dcmmodel` (v2 layout); this scalar
+    /// controls how aggressively the saved velocity is mixed in
+    /// going forward.
+    var momentumCoeff: Float?
 
     // Replay-ratio controller settings. All Optional so older
     // session.json files that lack these keys still decode.

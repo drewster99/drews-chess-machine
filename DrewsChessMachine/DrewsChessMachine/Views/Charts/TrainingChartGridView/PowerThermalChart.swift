@@ -104,12 +104,12 @@ struct PowerThermalChart: View {
             } else {
                 return "--"
             }
-        case .hoveringNoData(let t):
-            return "t=\(TrainingChartGridView.formatElapsedAxis(t)) — no data"
-        case .hoveringWithData(let t, let lp, let ts):
+        case .hoveringNoData:
+            return "— no data"
+        case .hoveringWithData(_, let lp, let ts):
             let powerStr = lp ? "on" : "off"
             let thermStr = Self.thermalStateName(ts)
-            return "t=\(TrainingChartGridView.formatElapsedAxis(t))  lowpwr=\(powerStr)  thermal=\(thermStr)"
+            return "lowpwr=\(powerStr)  thermal=\(thermStr)"
         }
     }
 

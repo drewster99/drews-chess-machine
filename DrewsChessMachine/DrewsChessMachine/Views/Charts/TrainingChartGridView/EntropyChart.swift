@@ -1,34 +1,35 @@
 import Charts
 import SwiftUI
 
-/// Policy entropy chart with an extra `pEntLegal` series.
+/// Legal-only policy-entropy chart — Shannon entropy in nats over the
+/// legal-renormalized softmax at the probed position.
+///
+/// The full-head `pEnt` (entropy over the entire 4864-cell policy
+/// head) was removed because it conflates "is the policy concentrating
+/// on a single legal move" with "is policy mass leaking onto illegal
+/// moves." `pEntLegal` answers the first question on its own.
 struct EntropyChart: View {
     let buckets: [TrainingBucket]
     @Binding var hoveredSec: Double?
     @Binding var scrollX: Double
     let context: TrainingChartGridView.Context
 
-    nonisolated static let maxEntropy = log(Double(ChessNetwork.policySize))
     /// Reference uniform-distribution entropy for the legal-only
     /// renormalized softmax. A typical chess position has ~30 legal
     /// moves, so log(30) ≈ 3.40 nats is a reasonable "fully diffuse
-    /// over legal" baseline.
+    /// over legal" baseline; the header reports the current value as
+    /// a percentage of this reference so 100 % means uniform-over-legal.
     nonisolated static let maxLegalEntropy = log(30.0)
 
     var body: some View {
         let readout = TrainingChartGridView.hoverReadoutTraining(
             hoveredSec: hoveredSec,
             buckets: buckets,
-            accessor: { $0.policyEntropy },
+            accessor: { $0.legalEntropy },
             bucketWidthSec: context.bucketWidthSec
         )
-        let latestPEnt = buckets.last?.policyEntropy?.max
-        let latestPEntLegal = buckets.last?.legalEntropy?.max
-        let headerText = entropyHeader(
-            readout: readout,
-            latestPEnt: latestPEnt,
-            latestPEntLegal: latestPEntLegal
-        )
+        let latest = buckets.last?.legalEntropy?.max
+        let headerText = entropyHeader(readout: readout, latest: latest)
 
         return VStack(alignment: .leading, spacing: 1) {
             ChartTileHeader(title: "Policy entropy", value: headerText)
@@ -36,16 +37,9 @@ struct EntropyChart: View {
                 ForEach(buckets) { b in
                     LineMark(
                         x: .value("Time", b.elapsedSec),
-                        y: .value("Entropy", b.policyEntropy?.max ?? .nan)
-                    )
-                    .foregroundStyle(by: .value("Series", "pEnt"))
-                }
-                ForEach(buckets) { b in
-                    LineMark(
-                        x: .value("Time", b.elapsedSec),
                         y: .value("Entropy", b.legalEntropy?.max ?? .nan)
                     )
-                    .foregroundStyle(by: .value("Series", "pEntLegal"))
+                    .foregroundStyle(.green)
                 }
                 if let t = hoveredSec {
                     RuleMark(x: .value("Time", t))
@@ -54,14 +48,10 @@ struct EntropyChart: View {
                 }
                 if case .hoveringWithData(let t, let v) = readout {
                     PointMark(x: .value("Time", t), y: .value("Entropy", v))
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(.green)
                         .symbolSize(40)
                 }
             }
-            .chartForegroundStyleScale([
-                "pEnt": Color.purple,
-                "pEntLegal": Color.green
-            ])
             .modifier(StandardTimeSeriesChartModifiers(
                 context: context,
                 scrollX: $scrollX,
@@ -74,33 +64,22 @@ struct EntropyChart: View {
 
     private func entropyHeader(
         readout: TrainingChartGridView.HoverReadout,
-        latestPEnt: Double?,
-        latestPEntLegal: Double?
+        latest: Double?
     ) -> String {
-        func formatEntropy(_ v: Double?) -> String {
-            guard let v else { return "--" }
-            return String(format: "%.3f", v)
+        func format(_ v: Double) -> String {
+            String(format: "%.3f (%.1f%%)", v, v / Self.maxLegalEntropy * 100)
         }
         switch readout {
         case .notHovering:
-            let pEntStr: String
-            if let v = latestPEnt {
-                pEntStr = String(format: "%.3f (%.1f%%)", v, v / Self.maxEntropy * 100)
+            if let v = latest {
+                return "pEntLegal \(format(v))"
             } else {
-                pEntStr = "--"
+                return "--"
             }
-            let pEntLegalStr: String
-            if let v = latestPEntLegal {
-                pEntLegalStr = String(format: "%.3f (%.1f%%)", v, v / Self.maxLegalEntropy * 100)
-            } else {
-                pEntLegalStr = "--"
-            }
-            return "pEnt \(pEntStr) / pEntLegal \(pEntLegalStr)"
-        case .hoveringNoData(let t):
-            return "t=\(TrainingChartGridView.formatElapsedAxis(t)) — no data"
-        case .hoveringWithData(let t, let v):
-            let pEntStr = String(format: "%.3f (%.1f%%)", v, v / Self.maxEntropy * 100)
-            return "t=\(TrainingChartGridView.formatElapsedAxis(t)) pEnt \(pEntStr) / pEntLegal \(formatEntropy(latestPEntLegal))"
+        case .hoveringNoData:
+            return "— no data"
+        case .hoveringWithData(_, let v):
+            return "pEntLegal \(format(v))"
         }
     }
 }

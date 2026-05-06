@@ -24,13 +24,10 @@ struct ReplayRatioChart: View {
             } else {
                 headerText = String(format: "-- (target %.2f)", target)
             }
-        case .hoveringNoData(let t):
-            headerText = "t=\(TrainingChartGridView.formatElapsedAxis(t)) — no data"
-        case .hoveringWithData(let t, let v):
-            headerText = String(
-                format: "t=%@ %.2f (target %.2f)",
-                TrainingChartGridView.formatElapsedAxis(t), v, target
-            )
+        case .hoveringNoData:
+            headerText = "— no data"
+        case .hoveringWithData(_, let v):
+            headerText = String(format: "%.2f (target %.2f)", v, target)
         }
         return VStack(alignment: .leading, spacing: 1) {
             ChartTileHeader(title: "Replay ratio", value: headerText)

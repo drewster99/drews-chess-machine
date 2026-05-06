@@ -96,6 +96,13 @@ final class ChartCoordinator {
     /// doesn't re-render the chart every tick).
     var currentDiversityHistogramBars: [DiversityHistogramBar] = []
 
+    /// Session-wide running maximum of the rolling-legal-mass series.
+    /// Drives the tiered Y-axis on `LegalMassChart` so the scale is
+    /// keyed off the highest legal-mass value the session has ever
+    /// produced (not just the visible window). 0 until the first
+    /// non-nil legal-mass sample arrives.
+    var legalMassMaxAllTime: Double = 0
+
     // MARK: - Active flag
 
     /// Mirrors `UpperContentView.realTraining`. `ContentView`
@@ -156,6 +163,9 @@ final class ChartCoordinator {
         trainingRing.append(sample)
         trainingChartNextId += 1
         prevChartTotalGpuMs = totalGpuMs
+        if let v = sample.rollingLegalMass, v > legalMassMaxAllTime {
+            legalMassMaxAllTime = v
+        }
         recomputeDecimatedFrame()
     }
 
@@ -177,6 +187,7 @@ final class ChartCoordinator {
         arenaChartEvents = []
         activeArenaStartElapsed = nil
         currentDiversityHistogramBars = []
+        legalMassMaxAllTime = 0
     }
 
     // MARK: - Decimation

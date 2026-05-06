@@ -207,6 +207,17 @@ struct TrainStepTiming: Sendable {
     /// is rewarded ("don't repeat that move"). Nil when no batch
     /// position has a loss outcome.
     let policyLossLoss: Float?
+
+    /// Global L2 norm of the optimizer's velocity buffer ‖v‖ AFTER
+    /// the SGD update was applied this step. With Polyak momentum,
+    /// the steady-state velocity-norm under independent gradients
+    /// approaches roughly ‖g‖/√(1−μ²), so reading this against
+    /// `gradGlobalNorm` and `momentumCoeff` gives a direct view of
+    /// how much momentum is amplifying per-step updates. Watch for
+    /// monotonic growth without a corresponding ‖g‖ rise — that's a
+    /// runaway-velocity event, typically caused by setting μ too
+    /// high relative to LR for the current loss landscape.
+    let velocityNorm: Float
 }
 
 // MARK: - Sweep Result
@@ -519,6 +530,12 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         /// Rolling-window mean policy loss restricted to loss-outcome
         /// batch positions (z < -0.5).
         let rollingPolicyLossLoss: Double?
+        /// Rolling-window mean of `TrainStepTiming.velocityNorm` —
+        /// post-update velocity-buffer L2 norm over the recent window.
+        /// Surfaced on the `[STATS]` line as `vNorm=…` next to `gNorm=`
+        /// so velocity-vs-gradient magnitude can be compared at a
+        /// glance when raising μ. Nil before any step has executed.
+        let rollingVelocityNorm: Double?
         /// Rolling-window means of `TrainStepTiming` timing fields,
         /// over the last `rollingTimingWindow` steps. These intentionally
         /// shadow `TrainingRunStats.avgGpuMs` (which is cumulative across
@@ -573,6 +590,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _advFracSmallWindow: RollingDoubleWindow
     private var _policyLossWinWindow: RollingDoubleWindow
     private var _policyLossLossWindow: RollingDoubleWindow
+    private var _velocityNormWindow: RollingDoubleWindow
     /// Rolling per-step timing windows. Sized independently of
     /// `rollingWindow` because the right horizon for "is the trainer
     /// slowing down?" is hundreds of steps, not the much smaller window
@@ -646,6 +664,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._advFracSmallWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyLossWinWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyLossLossWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._velocityNormWindow = RollingDoubleWindow(limit: rollingWindow)
         self._dataPrepMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
         self._gpuRunMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
         self._readbackMsWindow = RollingDoubleWindow(limit: Self.rollingTimingWindow)
@@ -718,6 +737,9 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             }
             if let plos = timing.policyLossLoss, plos.isFinite {
                 self._policyLossLossWindow.append(Double(plos))
+            }
+            if timing.velocityNorm.isFinite {
+                self._velocityNormWindow.append(Double(timing.velocityNorm))
             }
             if let raw = timing.advantageRaw, !raw.isEmpty {
                 self.pushAdvRaw(raw)
@@ -804,6 +826,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._advFracSmallWindow.removeAll()
             self._policyLossWinWindow.removeAll()
             self._policyLossLossWindow.removeAll()
+            self._velocityNormWindow.removeAll()
             self._dataPrepMsWindow.removeAll()
             self._gpuRunMsWindow.removeAll()
             self._readbackMsWindow.removeAll()
@@ -857,6 +880,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingAdvFracSmall = _advFracSmallWindow.mean
             let rollingPLossWin = _policyLossWinWindow.mean
             let rollingPLossLoss = _policyLossLossWindow.mean
+            let rollingVNorm = _velocityNormWindow.mean
             let (advP05, advP50, advP95) = Self.percentiles(
                 ring: _advRawRing,
                 filled: _advRawRingFilled
@@ -892,6 +916,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 advantageP95: advP95,
                 rollingPolicyLossWin: rollingPLossWin,
                 rollingPolicyLossLoss: rollingPLossLoss,
+                rollingVelocityNorm: rollingVNorm,
                 recentDataPrepMs: _dataPrepMsWindow.mean,
                 recentGpuRunMs: _gpuRunMsWindow.mean,
                 recentReadbackMs: _readbackMsWindow.mean,
@@ -1046,14 +1071,21 @@ final class ChessTrainer: @unchecked Sendable {
 
     /// Polyak momentum coefficient μ. Fed into the training graph as
     /// a scalar placeholder each step (live-tunable). The optimizer
-    /// update is `v_new = μ·v_old + (clipped_grad + decayC·variable)`,
-    /// `weight_new = weight_old − lr·v_new`. μ=0 is equivalent to plain
-    /// SGD (the velocity term zeros out and the formula reduces to the
-    /// classic update). Higher μ amplifies effective step size by ~1/(1−μ)
-    /// in steady state, so μ=0.9 is roughly equivalent to 10× the LR —
-    /// known to push this network into the one-hot-illegal collapse mode
-    /// at the empirical sweet-spot LR of 5e-5. Start low and watch
-    /// `legalMass` / `pEntLegal` before raising further.
+    /// update is decoupled-decay SGD with momentum:
+    ///   `v_new      = μ·v_old + clipped_grad`
+    ///   `weight_new = weight_old − lr·v_new − lr·decayC·weight_old`
+    /// (decay term is skipped for variables flagged in
+    /// `network.trainableShouldDecay`). μ=0 is equivalent to plain
+    /// SGD with weight decay (the velocity term zeros out and the
+    /// formula reduces to the classic update). Higher μ amplifies
+    /// the effective velocity contribution to each weight step by
+    /// ~1/(1−μ) in steady state under correlated gradients, so
+    /// μ=0.9 still behaves like ~10× the LR on the gradient term —
+    /// known to push this network into the one-hot-illegal collapse
+    /// mode at the empirical sweet-spot LR of 5e-5. Decay is now
+    /// independent of μ (decoupled form), so changing μ no longer
+    /// silently amplifies decay. Start low and watch `legalMass` /
+    /// `pEntLegal` before raising further.
     var momentumCoeff: Float
 
     /// Bootstrap-phase knob that rewrites drawn-game `z` values from 0
@@ -1178,6 +1210,10 @@ final class ChessTrainer: @unchecked Sendable {
     /// Scalar mean policy loss restricted to batch positions where
     /// outcome z < -0.5. NaN when no loss positions are in the batch.
     private var policyLossLossTensor: MPSGraphTensor
+    /// Scalar global L2 norm of the post-step velocity buffer ‖v_new‖.
+    /// Reported on the [STATS] line so velocity magnitude growth is
+    /// observable when raising μ.
+    private var velocityGlobalNormTensor: MPSGraphTensor
     private var assignOps: [MPSGraphOperation]
 
     /// Pre-allocated scalar ND array for the learning-rate feed.
@@ -1263,7 +1299,8 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotPolicyLossWin: Int = 19
     private static let lossReadbackSlotPolicyLossLoss: Int = 20
     private static let lossReadbackSlotNonNegIllegal: Int = 21
-    private static let lossReadbackSlotCount: Int = 22
+    private static let lossReadbackSlotVelocityNorm: Int = 22
+    private static let lossReadbackSlotCount: Int = 23
 
     /// Reusable host-side staging buffers for replay-buffer samples.
     /// The trainer owns these buffers so real-data training can hop
@@ -1368,6 +1405,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.advantageRawTensor = built.advantageRaw
         self.policyLossWinTensor = built.policyLossWin
         self.policyLossLossTensor = built.policyLossLoss
+        self.velocityGlobalNormTensor = built.velocityGlobalNorm
         self.assignOps = built.assignOps
 
         // Scalar ND array for the learning rate feed, reused every step.
@@ -1510,6 +1548,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.advantageRawTensor = built.advantageRaw
         self.policyLossWinTensor = built.policyLossWin
         self.policyLossLossTensor = built.policyLossLoss
+        self.velocityGlobalNormTensor = built.velocityGlobalNorm
         self.assignOps = built.assignOps
         // Rebuild the LR scalar feed against the new network's device
         // so the new graph's placeholder maps to a fresh wrapper.
@@ -1591,6 +1630,7 @@ final class ChessTrainer: @unchecked Sendable {
         advantageRaw: MPSGraphTensor,
         policyLossWin: MPSGraphTensor,
         policyLossLoss: MPSGraphTensor,
+        velocityGlobalNorm: MPSGraphTensor,
         assignOps: [MPSGraphOperation]
     ) {
         let graph = network.graph
@@ -2242,12 +2282,14 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: dtype,
             name: "policy_scale_k"
         )
-        // Polyak momentum coefficient μ. μ=0 reduces the optimizer update
-        // to plain SGD bit-exact (since μ·v_old = 0 zeroes out the velocity
-        // contribution and the update collapses to lr · combinedUpdate).
-        // μ=0.9 amplifies effective step size by ~1/(1−μ) = 10× — pair
-        // with a proportional LR drop or expect collapse. Live-tunable
-        // via the placeholder so the user can dial it without rebuilding
+        // Polyak momentum coefficient μ. μ=0 reduces the velocity term
+        // to zero (μ·v_old = 0), so the update collapses to plain
+        // SGD-with-decoupled-decay bit-exact. μ=0.9 still amplifies
+        // the gradient term by ~1/(1−μ) = 10× in steady state under
+        // correlated gradients — pair with a proportional LR drop or
+        // expect collapse. Decay is decoupled from velocity so
+        // changing μ does NOT amplify weight decay. Live-tunable via
+        // the placeholder so the user can dial it without rebuilding
         // the graph.
         let momentumTensor = graph.placeholder(
             shape: [1],
@@ -2389,16 +2431,27 @@ final class ChessTrainer: @unchecked Sendable {
             name: "grad_clip_scale"
         )
 
-        // --- SGD updates with weight decay, clipped gradients, Polyak momentum ---
+        // --- SGD updates with decoupled weight decay, clipped gradients, Polyak momentum ---
         //
-        // v_new   = μ · v_old + (clipped_grad + decayC · variable)
-        // weight_new = weight − lr · v_new
+        // v_new       = μ · v_old + clipped_grad
+        // weight_new  = weight − lr · v_new − lr · decayC · weight        (if shouldDecay)
+        // weight_new  = weight − lr · v_new                                (otherwise)
         //
-        // When μ = 0 this reduces bit-exact to plain SGD with L2 decay
-        // (the velocity term zeros out and the update collapses to
-        // `lr · (clipped_grad + decayC · variable)`). The default
-        // value is 0, so existing training trajectories are preserved
-        // unless the user opts in via TrainingParameters.momentumCoeff.
+        // Decoupled weight decay (Loshchilov & Hutter 2017, the "AdamW"
+        // paper). Decay is applied directly to the weight at update
+        // time, NOT folded into the gradient before momentum. This
+        // means the effective decay strength does NOT scale with
+        // 1/(1−μ) the way the legacy PyTorch-default coupled L2 form
+        // did — μ and decayC tune independently. At μ = 0 this
+        // reduces bit-exact to plain SGD with weight decay (since
+        // both forms collapse to the same `lr · (grad + decayC · weight)`
+        // expression when the velocity term zeros out).
+        //
+        // The earlier coupled form had a documented "μ near 0.9
+        // amplifies effective step size by ~10×" trap because the
+        // decayC · weight term lived inside the velocity buffer, so
+        // raising μ silently amplified decay by the same factor. The
+        // decoupled form fixes that.
         //
         // Decay is applied only to variables flagged in
         // `network.trainableShouldDecay` — conv and FC weight matrices
@@ -2482,6 +2535,13 @@ final class ChessTrainer: @unchecked Sendable {
             network.trainableShouldDecay.count == network.trainableVariables.count,
             "ChessNetwork.trainableShouldDecay must align 1:1 with trainableVariables"
         )
+        // Diagnostic: global L2 norm of the post-step velocity buffer
+        // ‖v_new‖. Built up as the sum of per-velocity squared sums
+        // alongside the SGD update, so MPSGraph fuses it into the same
+        // training pass without a second graph.run. Reported on the
+        // [STATS] line so the user can see velocity magnitude growth
+        // directly when raising μ.
+        var velSumOfSquares: MPSGraphTensor?
         for (i, variable) in network.trainableVariables.enumerated() {
             guard let grad = grads[variable] else {
                 // Already checked in the norm-accumulation loop above,
@@ -2494,29 +2554,43 @@ final class ChessTrainer: @unchecked Sendable {
             let velocity = velocities[i]
             // Apply the global L2 clip scale to this gradient.
             let clippedGrad = graph.multiplication(grad, clipScale, name: nil)
-            // L2 weight decay term: c*v. Skipped for BN gamma/beta
-            // and FC biases per the standard no-decay recipe.
-            let combinedUpdate: MPSGraphTensor
+            // Polyak momentum: v_new = μ · v_old + clippedGrad.
+            // Weight decay does NOT enter the velocity (decoupled form).
+            let scaledOldVelocity = graph.multiplication(velocity, momentumTensor, name: nil)
+            let newVelocity = graph.addition(scaledOldVelocity, clippedGrad, name: nil)
+            let velocityAssign = graph.assign(velocity, tensor: newVelocity, name: nil)
+            ops.append(velocityAssign)
+            // Accumulate ‖v_new‖² for the global velocity-norm diagnostic.
+            // Uses the symbolic newVelocity (matching the reasoning at the
+            // weight-update site below: assigning a variable does not
+            // invalidate value-typed references to the assigned tensor).
+            let velFlat = graph.reshape(newVelocity, shape: [-1], name: nil)
+            let velSq = graph.square(with: velFlat, name: nil)
+            let velScalar = graph.reductionSum(with: velSq, axis: 0, name: nil)
+            if let accum = velSumOfSquares {
+                velSumOfSquares = graph.addition(accum, velScalar, name: nil)
+            } else {
+                velSumOfSquares = velScalar
+            }
+            // Weight update uses the FRESH velocity (read back as the
+            // newVelocity tensor we just computed — assigning to it does
+            // not invalidate the value-typed reference we still hold).
+            // Decoupled decay step (skipped for biases / BN affine):
+            //   step = lr · v_new + lr · decayC · weight
+            let momentumStep = graph.multiplication(lrTensor, newVelocity, name: nil)
+            let totalStep: MPSGraphTensor
             if network.trainableShouldDecay[i] {
-                let decayTerm = graph.multiplication(
+                let decayScaled = graph.multiplication(
                     variable,
                     weightDecayTensor,
                     name: nil
                 )
-                combinedUpdate = graph.addition(clippedGrad, decayTerm, name: nil)
+                let decayStep = graph.multiplication(lrTensor, decayScaled, name: nil)
+                totalStep = graph.addition(momentumStep, decayStep, name: nil)
             } else {
-                combinedUpdate = clippedGrad
+                totalStep = momentumStep
             }
-            // Polyak momentum: v_new = μ · v_old + combinedUpdate.
-            let scaledOldVelocity = graph.multiplication(velocity, momentumTensor, name: nil)
-            let newVelocity = graph.addition(scaledOldVelocity, combinedUpdate, name: nil)
-            let velocityAssign = graph.assign(velocity, tensor: newVelocity, name: nil)
-            ops.append(velocityAssign)
-            // Weight update uses the FRESH velocity (read back as the
-            // newVelocity tensor we just computed — assigning to it does
-            // not invalidate the value-typed reference we still hold).
-            let scaled = graph.multiplication(lrTensor, newVelocity, name: nil)
-            let updated = graph.subtraction(variable, scaled, name: nil)
+            let updated = graph.subtraction(variable, totalStep, name: nil)
             let weightAssign = graph.assign(variable, tensor: updated, name: nil)
             ops.append(weightAssign)
         }
@@ -2531,6 +2605,19 @@ final class ChessTrainer: @unchecked Sendable {
         // loadWeights().
         ops.append(contentsOf: network.bnRunningStatsAssignOps)
 
+        // Finalize the velocity-norm scalar. Same precondition as
+        // gradGlobalNorm: trainableVariables is non-empty so the
+        // accumulator is always populated.
+        guard let velSumOfSquaresTensor = velSumOfSquares else {
+            throw ChessTrainerError.gradientMissing(
+                "(no trainable variables for velocity-norm)"
+            )
+        }
+        let velocityGlobalNormTensor = graph.squareRoot(
+            with: velSumOfSquaresTensor,
+            name: "velocity_global_norm"
+        )
+
         return (
             movePlayed, z, vBaseline, legalMask,
             lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyScaleKTensor,
@@ -2544,6 +2631,7 @@ final class ChessTrainer: @unchecked Sendable {
             advantageFracPosTensor, advantageFracSmallTensor,
             advantage,
             policyLossWin, policyLossLoss,
+            velocityGlobalNormTensor,
             ops
         )
     }
@@ -3045,7 +3133,8 @@ final class ChessTrainer: @unchecked Sendable {
                 advantageFracSmall: baseTiming.advantageFracSmall,
                 advantageRaw: baseTiming.advantageRaw,
                 policyLossWin: baseTiming.policyLossWin,
-                policyLossLoss: baseTiming.policyLossLoss
+                policyLossLoss: baseTiming.policyLossLoss,
+                velocityNorm: baseTiming.velocityNorm
             )
         }
     }
@@ -3453,12 +3542,14 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
 
-    /// Overwrite all velocity buffers with zeros. Used after arena
-    /// promotion: the trainer's weights have just been replaced with
-    /// the promoted candidate's weights, so the accumulated velocity
-    /// (which pointed against the OLD weight surface) is now stale
-    /// and would steer the optimizer in directions unrelated to the
-    /// new starting point.
+    /// Overwrite all velocity buffers with zeros. Retained as an
+    /// escape hatch for callers that explicitly want to discard
+    /// momentum (e.g. tests). Promotion no longer uses this path —
+    /// it now snapshots velocity at arena-start and restores that
+    /// snapshot on promotion (`exportVelocitySnapshot()` /
+    /// `loadVelocitySnapshot(_:)`), which keeps the optimizer's
+    /// accumulated gradient signal aligned with the validated
+    /// candidate weights instead of throwing it away.
     func resetVelocitiesToZero() async throws {
         // Build a zeros payload sized per velocity tensor.
         var zeroed: [[Float]] = []
@@ -3468,6 +3559,27 @@ final class ChessTrainer: @unchecked Sendable {
             zeroed.append([Float](repeating: 0, count: count))
         }
         try await writeVelocityValues(zeroed)
+    }
+
+    /// Read the optimizer's per-trainable velocity buffers into a flat
+    /// `[[Float]]` (one sub-array per trainable variable, parallel to
+    /// `network.trainableVariables`). Used at arena start to snapshot
+    /// the velocity that built the candidate weights, then restored
+    /// on promotion via `loadVelocitySnapshot(_:)`. Caller must have
+    /// paused training (the readback drives `network.graph.run`
+    /// directly and races against concurrent SGD steps).
+    func exportVelocitySnapshot() async throws -> [[Float]] {
+        try await readVelocityValues()
+    }
+
+    /// Overwrite all velocity buffers from a previously-captured
+    /// snapshot produced by `exportVelocitySnapshot()`. Caller must
+    /// have paused training. Throws if the snapshot's per-tensor
+    /// element counts don't match the current trainer's velocity
+    /// shapes — protects against loading a snapshot taken from a
+    /// trainer with a different architecture.
+    func loadVelocitySnapshot(_ snapshot: [[Float]]) async throws {
+        try await writeVelocityValues(snapshot)
     }
 
     /// Read current velocity values via a single graph.run targeting
@@ -3797,7 +3909,8 @@ final class ChessTrainer: @unchecked Sendable {
                 advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
                 advantageFracPosTensor, advantageFracSmallTensor,
                 advantageRawTensor,
-                policyLossWinTensor, policyLossLossTensor
+                policyLossWinTensor, policyLossLossTensor,
+                velocityGlobalNormTensor
             ],
             targetOperations: assignOps
         )
@@ -3827,7 +3940,8 @@ final class ChessTrainer: @unchecked Sendable {
             let advFracSmallData = results[advantageFracSmallTensor],
             let advRawData = results[advantageRawTensor],
             let policyLossWinData = results[policyLossWinTensor],
-            let policyLossLossData = results[policyLossLossTensor]
+            let policyLossLossData = results[policyLossLossTensor],
+            let velocityNormData = results[velocityGlobalNormTensor]
         else {
             throw ChessTrainerError.lossOutputMissing
         }
@@ -3941,6 +4055,11 @@ final class ChessTrainer: @unchecked Sendable {
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossLoss),
             count: 1
         )
+        ChessNetwork.readFloats(
+            from: velocityNormData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotVelocityNorm),
+            count: 1
+        )
         // Raw per-position advantage — batch-sized vector. Read into
         // a fresh [Float] since the size depends on the runtime batch
         // and we don't want to resize the scratch every time.
@@ -3977,6 +4096,7 @@ final class ChessTrainer: @unchecked Sendable {
         let advFracSmallBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvFracSmall]
         let policyLossWinBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLossWin]
         let policyLossLossBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLossLoss]
+        let velocityNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotVelocityNorm]
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         // Health check: any NaN/Inf in the headline loss or grad scalars means
@@ -4038,7 +4158,8 @@ final class ChessTrainer: @unchecked Sendable {
             advantageFracSmall: advFracSmallBufValue,
             advantageRaw: advRawValues,
             policyLossWin: policyLossWinBufValue.isFinite ? policyLossWinBufValue : nil,
-            policyLossLoss: policyLossLossBufValue.isFinite ? policyLossLossBufValue : nil
+            policyLossLoss: policyLossLossBufValue.isFinite ? policyLossLossBufValue : nil,
+            velocityNorm: velocityNormBufValue
         )
         }  // autoreleasepool
     }

@@ -12,6 +12,20 @@ struct TrainingChartSample: Identifiable, Sendable {
     let rollingPolicyNonNegCount: Double?
     let rollingPolicyNonNegIllegalCount: Double?
     let rollingGradNorm: Double?
+    /// Rolling-window mean of the post-update SGD velocity-buffer L2
+    /// norm (`||v||`). Sits next to `rollingGradNorm` (`||g||`) on the
+    /// chart grid so velocity-vs-gradient magnitude can be compared
+    /// at a glance — informative when raising the momentum coefficient
+    /// μ. Source: `TrainingRunStats.rollingVelocityNorm`.
+    let rollingVelocityNorm: Double?
+    /// Rolling-window mean of the policy head's final 1×1 conv weight
+    /// L2 norm (`pwNorm` on the [STATS] line). Tracks the magnitude of
+    /// the layer that emits raw logits — monotonic growth with low
+    /// entropy and saturating gradient clip = the classic "policy is
+    /// sharpening into a few logits" trajectory weight decay is
+    /// supposed to hold in check. Source:
+    /// `TrainingRunStats.rollingPolicyHeadWeightNorm`.
+    let rollingPolicyHeadWeightNorm: Double?
     let replayRatio: Double?
     /// Outcome-partitioned policy loss — mean over batch positions
     /// where outcome z > +0.5 (winning game) / z < -0.5 (losing game).
