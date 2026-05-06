@@ -8,7 +8,7 @@ This document summarizes the prioritized concurrency issues identified during th
 
 #### Files / lines
 
-- `DrewsChessMachine/DrewsChessMachine/Training/ChessTrainer.swift:983-1039` — mutable training parameters (`learningRate`, `sqrtBatchScalingForLR`, `lrWarmupSteps`, `entropyRegularizationCoeff`, `weightDecayC`, `gradClipMaxNorm`, `policyScaleK`)
+- `DrewsChessMachine/DrewsChessMachine/Training/ChessTrainer.swift:983-1039` — mutable training parameters (`learningRate`, `sqrtBatchScalingForLR`, `lrWarmupSteps`, `entropyRegularizationCoeff`, `weightDecayC`, `gradClipMaxNorm`, `policyLossWeight`, `valueLossWeight`)
 - `DrewsChessMachine/DrewsChessMachine/Training/ChessTrainer.swift:1070` — mutable `drawPenalty`
 - `DrewsChessMachine/DrewsChessMachine/Training/ChessTrainer.swift:1252-1264` — mutable `batchStatsInterval`, `lastBatchStatsUniquePct`, `lastBatchStatsSummary`
 - `DrewsChessMachine/DrewsChessMachine/Training/ChessTrainer.swift:2457-2474` and `3289-3312` — background/execution-queue reads of those mutable parameters
