@@ -202,7 +202,7 @@ struct PolicyChannelsPanel: View {
                     .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
             )
             Text(ch.label)
-                .font(.system(size: 9, design: .monospaced))
+                .font(.system(size: 11, design: .monospaced))
                 .lineLimit(1)
             // peak% = brightest cell's per-channel softmax probability;
             // mass% = channel's share of the global policy distribution.
@@ -211,8 +211,8 @@ struct PolicyChannelsPanel: View {
             // network actually betting on this channel as a whole".
             Text(String(format: "peak %.1f%% · mass %.2f%%",
                         ch.peakProb * 100, ch.globalMass * 100))
-                .font(.system(size: 8, design: .monospaced))
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
         }
     }
 

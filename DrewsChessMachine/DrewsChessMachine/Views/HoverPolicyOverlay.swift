@@ -141,8 +141,7 @@ struct HoverPolicyOverlay: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .center)
             Text(probLabel(ch))
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .font(.system(.callout, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .center)
         }
     }
