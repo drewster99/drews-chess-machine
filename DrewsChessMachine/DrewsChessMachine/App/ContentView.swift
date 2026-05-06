@@ -42,6 +42,14 @@ struct ContentView: View {
     /// an empty axis with no data is just visual noise.
     let chartCollectionEnabled: Bool
 
+    /// View > Show Policy Channels Panel preference, forwarded from
+    /// `DrewsChessMachineApp`'s `@AppStorage`. When `true`, the
+    /// 76-channel panel inside `UpperContentView` expands to fill
+    /// the chart-pane area and `LowerContentView` is dropped from
+    /// the layout entirely so the panel really does take over the
+    /// bottom of the window.
+    let showPolicyChannelsPanel: Bool
+
     /// Single source of truth for chart-layer state. Held here
     /// (rather than on `UpperContentView`) so it can be passed to
     /// both child views as a shared reference. Initial allocation
@@ -60,21 +68,28 @@ struct ContentView: View {
                 chartCoordinator: chartCoordinator
             )
             .frame(minHeight: 400)
-            VStack {
-                Divider()
-                LowerContentView(
-                    promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
-                    replayRatioTarget: TrainingParameters.shared.replayRatioTarget,
-                    gradClipMaxNorm: TrainingParameters.shared.gradClipMaxNorm,
-                    appMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
-                    gpuMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
-                    chartCoordinator: chartCoordinator
-                )
+            // The chart pane is dropped entirely when the
+            // policy-channels panel is on — it's expanded to
+            // take over the freed space inside UpperContentView,
+            // so leaving even a zero-height LowerContentView in
+            // the layout would still steal a divider line.
+            if !showPolicyChannelsPanel {
+                VStack {
+                    Divider()
+                    LowerContentView(
+                        promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
+                        replayRatioTarget: TrainingParameters.shared.replayRatioTarget,
+                        gradClipMaxNorm: TrainingParameters.shared.gradClipMaxNorm,
+                        appMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
+                        gpuMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
+                        chartCoordinator: chartCoordinator
+                    )
+                }
+                .opacity((effectiveShowTrainingGraphs && chartCoordinator.isActive) ? 1.0 : 0.0)
+                .frame(height: !effectiveShowTrainingGraphs ? 0 : (chartCoordinator.isActive ? nil : 250))
+                Spacer()
+                    .frame(maxHeight: (effectiveShowTrainingGraphs && chartCoordinator.isActive) ? nil : 0)
             }
-            .opacity((effectiveShowTrainingGraphs && chartCoordinator.isActive) ? 1.0 : 0.0)
-            .frame(height: !effectiveShowTrainingGraphs ? 0 : (chartCoordinator.isActive ? nil : 250))
-            Spacer()
-                .frame(maxHeight: (effectiveShowTrainingGraphs && chartCoordinator.isActive) ? nil : 0)
         }
         .onAppear {
             // Bootstrap the coordinator's gate from the @AppStorage
@@ -108,6 +123,7 @@ struct ContentView: View {
         cliConfig: nil,
         cliOutputURL: nil,
         showTrainingGraphs: true,
-        chartCollectionEnabled: true
+        chartCollectionEnabled: true,
+        showPolicyChannelsPanel: false
     )
 }

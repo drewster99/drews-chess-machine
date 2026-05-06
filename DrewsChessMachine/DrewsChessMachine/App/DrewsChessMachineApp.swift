@@ -291,7 +291,8 @@ struct DrewsChessMachineApp: App {
                 cliConfig: cliConfig,
                 cliOutputURL: cliOutputURL,
                 showTrainingGraphs: showTrainingGraphs,
-                chartCollectionEnabled: chartCollectionEnabled
+                chartCollectionEnabled: chartCollectionEnabled,
+                showPolicyChannelsPanel: showPolicyChannelsPanel
             )
         }
         .commands {

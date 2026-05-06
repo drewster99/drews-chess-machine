@@ -1508,28 +1508,28 @@ struct UpperContentView: View {
                     selfPlayColumn: { selfPlayStatsColumn },
                     trainingColumn: { trainingStatsColumn }
                 )
-
-                // Right-of-board policy-channel decomposition. Toggled
-                // via View > Show Policy Channels Panel. Driven off
-                // the same `inferenceResult` that already feeds the
-                // on-board Top Moves overlay, so it auto-updates with
-                // the Candidate Test re-eval loop as the trainer
-                // learns. Hidden entirely when the toggle is off so
-                // the existing two-column layout is unchanged for
-                // users who don't opt in. Also gated on
-                // `showForwardPassUI` so it never displays a stale
-                // result against an unrelated board (Game Run / Game
-                // Mode / pure training paths) — same condition the
-                // on-board overlay uses for the channel-strip.
-                if showPolicyChannelsPanel && showForwardPassUI {
-                    PolicyChannelsPanel(
-                        pieces: displayedPieces,
-                        currentPlayer: editableState.currentPlayer,
-                        policyLogits: inferenceResult?.rawInference?.policy
-                    )
-                }
             }
             .layoutPriority(1)
+
+            // Full-area policy-channel decomposition. Toggled via
+            // View > Show Policy Channels Panel. When on, takes over
+            // the entire region freed up by the (now-hidden) chart
+            // pane — `ContentView` drops `LowerContentView` for the
+            // same toggle. When off, layout is unchanged. Gated on
+            // `showForwardPassUI` so it never renders against a
+            // stale result on an unrelated board (Game Run / Game
+            // Mode / pure-training paths) — passes nil logits in
+            // those cases so the panel shows its own placeholder.
+            if showPolicyChannelsPanel {
+                Divider()
+                PolicyChannelsPanel(
+                    pieces: displayedPieces,
+                    currentPlayer: editableState.currentPlayer,
+                    policyLogits: showForwardPassUI ? inferenceResult?.rawInference?.policy : nil
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .layoutPriority(1)
+            }
 
             // Input tensor channel strip — hidden in plain-board mode
             // (`selectedOverlay < 0`, the new -1 default). Right-paging

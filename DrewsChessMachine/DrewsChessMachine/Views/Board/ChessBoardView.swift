@@ -7,10 +7,15 @@ struct ChessBoardView: View {
     /// 64-square flat board, indexed as row * 8 + col.
     var pieces: [Piece?] = GameState.starting.board
     var overlay: Overlay = .none
+    /// Tint for the `.channel` overlay's per-square fills. Defaults
+    /// to blue (matches the input-tensor channel strip elsewhere in
+    /// the UI). The policy-channels panel passes red so an active-
+    /// channel grid is visually distinct from an input-tensor grid
+    /// at a glance.
+    var channelColor: Color = .blue
 
     private static let lightSquare = Color(red: 0.94, green: 0.85, blue: 0.71)
     private static let darkSquare = Color(red: 0.71, green: 0.53, blue: 0.39)
-    private static let channelColor = Color.blue
 
     private static let allAssetNames = [
         "wP", "wN", "wB", "wR", "wQ", "wK",
@@ -52,7 +57,7 @@ struct ChessBoardView: View {
                             )
                             context.fill(
                                 Path(rect),
-                                with: .color(Self.channelColor.opacity(Double(value) * 0.6))
+                                with: .color(channelColor.opacity(Double(value) * 0.6))
                             )
                         }
                     }

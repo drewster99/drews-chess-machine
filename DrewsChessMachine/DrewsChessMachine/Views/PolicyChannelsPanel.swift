@@ -14,18 +14,16 @@ import SwiftUI
 /// only when the user clicks Run Forward Pass (or edits the board,
 /// which auto-triggers a re-eval).
 ///
-/// One tile per channel:
-///   - Mini chess board with the same piece arrangement as the
-///     parent board (so the user can mentally co-locate "this
-///     channel firing from a knight square" with the actual knight).
-///   - `.channel` overlay: per-square brightness = global softmax
-///     probability of (this channel × this from-square) within the
-///     full 4864-cell distribution, normalized to the global max so
-///     the brightest cell anywhere in the panel is fully opaque and
-///     dead channels visibly stay dim.
-///   - Channel index + spec name (e.g. "0 N1", "57 RU", "64 uN-F",
-///     "73 QP-F") and per-channel total mass% so the user can spot
-///     dominant channels at a glance.
+/// Per-tile rendering: each tile shows softmax over THAT channel's
+/// own 64 cells (so the 64 cells of one tile sum to 1), then
+/// normalized to the per-tile max so the channel's brightest
+/// from-square renders fully opaque. This means every tile is
+/// independently scaled — a channel with tiny global mass still
+/// shows where ITS preferred from-squares are. The tile's
+/// per-channel max probability and the channel's GLOBAL share of
+/// total policy mass are both shown beneath the board so the user
+/// can read both halves of the story (where would this channel
+/// fire AND does this channel matter overall).
 ///
 /// Sections mirror `PolicyEncoding`'s blocks so co-located tiles
 /// share semantics:
@@ -47,47 +45,56 @@ struct PolicyChannelsPanel: View {
     /// render an empty placeholder (no inference result available).
     let policyLogits: [Float]?
 
+    /// Tile color for the channel-cell overlay. Red so the
+    /// channel-grid is visually distinct from the blue input-tensor
+    /// channel strip rendered elsewhere in the UI.
+    private static let tileTint: Color = .red
+
+    /// Adaptive grid sizing — `.adaptive(minimum:)` lets SwiftUI
+    /// pack as many tiles per row as the available width allows
+    /// while keeping each tile at least this wide. The full-area
+    /// layout (panel taking over the chart pane) gets many columns;
+    /// any narrower layout falls back to fewer.
+    private static let minTileSide: CGFloat = 96
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
                 Text("Policy channels")
                     .font(.headline)
-                Spacer()
                 Text(headerStatus)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
+                Spacer()
+                Text("Per-channel softmax (each tile sums to 1) → per-tile normalize. Brightness = relative within the channel. mass% = channel's share of total policy mass.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: 540, alignment: .trailing)
             }
-            Text("Per channel: cell brightness = global softmax probability of channel × from-square (normalized to overall max). Mass% = total prob in the channel.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
             if let logits = policyLogits, logits.count == ChessNetwork.policySize {
+                let chans = Self.computeChannels(
+                    from: logits,
+                    currentPlayer: currentPlayer
+                )
                 ScrollView {
-                    let chans = Self.computeChannels(
-                        from: logits,
-                        currentPlayer: currentPlayer
-                    )
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 14) {
                         section(
-                            title: "Queen-style",
-                            channels: Array(chans[0..<56]),
-                            columns: 7
+                            title: "Queen-style (8 directions × 7 distances)",
+                            channels: Array(chans[0..<56])
                         )
                         section(
-                            title: "Knight",
-                            channels: Array(chans[56..<64]),
-                            columns: 4
+                            title: "Knight (8 jumps)",
+                            channels: Array(chans[56..<64])
                         )
                         section(
-                            title: "Underpromotion",
-                            channels: Array(chans[64..<73]),
-                            columns: 3
+                            title: "Underpromotion (knight / rook / bishop × forward / cap-left / cap-right)",
+                            channels: Array(chans[64..<73])
                         )
                         section(
-                            title: "Queen-promotion",
-                            channels: Array(chans[73..<76]),
-                            columns: 3
+                            title: "Queen-promotion (forward / cap-left / cap-right)",
+                            channels: Array(chans[73..<76])
                         )
                     }
                     .padding(.bottom, 8)
@@ -95,7 +102,7 @@ struct PolicyChannelsPanel: View {
             } else {
                 Spacer()
                 Text("No inference result.\nSwitch to Candidate Test, or click Run Forward Pass.")
-                    .font(.caption)
+                    .font(.body)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity)
@@ -103,7 +110,7 @@ struct PolicyChannelsPanel: View {
             }
         }
         .padding(8)
-        .frame(minWidth: 360, idealWidth: 380, maxWidth: 440)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var headerStatus: String {
@@ -111,24 +118,19 @@ struct PolicyChannelsPanel: View {
             return ""
         }
         let side = currentPlayer == .white ? "White" : "Black"
-        return "\(side) to move"
+        return "— \(side) to move"
     }
 
     @ViewBuilder
-    private func section(
-        title: String,
-        channels: [ChannelData],
-        columns: Int
-    ) -> some View {
+    private func section(title: String, channels: [ChannelData]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            let gridColumns = Array(
-                repeating: GridItem(.flexible(), spacing: 4, alignment: .top),
-                count: columns
-            )
-            LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 6) {
+            let gridColumns = [
+                GridItem(.adaptive(minimum: Self.minTileSide), spacing: 6, alignment: .top)
+            ]
+            LazyVGrid(columns: gridColumns, alignment: .leading, spacing: 8) {
                 ForEach(channels) { ch in
                     channelTile(ch)
                 }
@@ -141,19 +143,26 @@ struct PolicyChannelsPanel: View {
         VStack(spacing: 1) {
             ChessBoardView(
                 pieces: pieces,
-                overlay: .channel(ch.cellValues)
+                overlay: .channel(ch.cellValues),
+                channelColor: Self.tileTint
             )
             .aspectRatio(1, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 2))
+            .clipShape(RoundedRectangle(cornerRadius: 3))
             .overlay(
-                RoundedRectangle(cornerRadius: 2)
-                    .stroke(Color.gray.opacity(0.25), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
             )
             Text(ch.label)
-                .font(.system(size: 8, design: .monospaced))
+                .font(.system(size: 9, design: .monospaced))
                 .lineLimit(1)
-            Text(String(format: "%.2f%%", ch.totalMass * 100))
-                .font(.system(size: 7, design: .monospaced))
+            // peak% = brightest cell's per-channel softmax probability;
+            // mass% = channel's share of the global policy distribution.
+            // Two distinct signals: peak says "how concentrated is the
+            // pick within this channel" and mass says "how much is the
+            // network actually betting on this channel as a whole".
+            Text(String(format: "peak %.1f%% · mass %.2f%%",
+                        ch.peakProb * 100, ch.globalMass * 100))
+                .font(.system(size: 8, design: .monospaced))
                 .foregroundStyle(.tertiary)
         }
     }
@@ -162,23 +171,31 @@ struct PolicyChannelsPanel: View {
 
     fileprivate struct ChannelData: Identifiable {
         let id: Int
-        let cellValues: [Float]   // 64 entries in absolute (display) coordinates, normalized to [0,1] vs global max
-        let totalMass: Float      // sum of softmax probs in this channel
+        let cellValues: [Float]   // 64 entries in absolute (display) coordinates, scaled to [0,1] via per-channel max
+        let peakProb: Float       // max per-channel softmax probability (= max cellValues pre-normalization)
+        let globalMass: Float     // sum of GLOBAL softmax probs in this channel
         let label: String
     }
 
-    /// One global softmax pass + per-channel slicing, returning all
-    /// 76 tiles ready to hand to `ChessBoardView`'s `.channel` overlay.
+    /// Decompose the 4864 raw logits into 76 displayable channel
+    /// tiles. Two normalizations happen here:
     ///
-    /// Cells are transposed from encoder frame to absolute board
-    /// coordinates: when black is to move, the network emits logits
-    /// with rows vertically flipped (per `BoardEncoder` and
-    /// `PolicyEncoding`'s "encoder frame" convention), but the
-    /// parent `ChessBoardView` shows pieces in absolute coordinates
-    /// (row 0 = rank 8). Without the un-flip, every black-to-move
-    /// channel would render upside-down versus the pieces on its
-    /// own board — extremely confusing. We do the flip here, once
-    /// per re-eval, so tile renderers can stay identity-mapped.
+    /// 1. **Global softmax** over all 4864 cells, summed per channel,
+    ///    gives `globalMass` — "what fraction of total policy
+    ///    probability does this channel hold." Useful as a relevance
+    ///    indicator: dominant channels show high mass, dead ones near
+    ///    zero.
+    /// 2. **Per-channel softmax** over each channel's 64 cells gives a
+    ///    proper [0, 1] distribution INSIDE that channel ("if I pick
+    ///    this channel, what's the spatial preference?"). Then divide
+    ///    by the channel's max so the brightest cell renders fully
+    ///    opaque — every tile auto-scales for visibility, even
+    ///    channels with tiny global mass still show where their
+    ///    preferred from-squares are.
+    ///
+    /// Cells are also transposed from encoder frame to absolute board
+    /// coordinates (row un-flip) when black is to move, so every tile
+    /// renders right-side-up versus the parent board's pieces.
     fileprivate static func computeChannels(
         from logits: [Float],
         currentPlayer: PieceColor
@@ -187,46 +204,67 @@ struct PolicyChannelsPanel: View {
         precondition(n == ChessNetwork.policySize,
                      "PolicyChannelsPanel expects \(ChessNetwork.policySize) logits, got \(n)")
 
-        // Stable softmax over all 4864 cells.
+        // --- Global softmax pass (for per-channel mass) -------------
         var maxLogit: Float = -.infinity
         for i in 0..<n where logits[i] > maxLogit {
             maxLogit = logits[i]
         }
-        var probs = [Float](repeating: 0, count: n)
-        var sum: Float = 0
+        var globalProbs = [Float](repeating: 0, count: n)
+        var globalSum: Float = 0
         for i in 0..<n {
             let e = expf(logits[i] - maxLogit)
-            probs[i] = e
-            sum += e
+            globalProbs[i] = e
+            globalSum += e
         }
-        let invSum: Float = sum > 0 ? 1 / sum : 0
-        var globalMaxProb: Float = 0
+        let invGlobalSum: Float = globalSum > 0 ? 1 / globalSum : 0
         for i in 0..<n {
-            probs[i] *= invSum
-            if probs[i] > globalMaxProb { globalMaxProb = probs[i] }
+            globalProbs[i] *= invGlobalSum
         }
-        let normInv: Float = globalMaxProb > 0 ? 1 / globalMaxProb : 0
 
+        // --- Per-channel softmax + display-frame transpose ----------
         let flip = currentPlayer == .black
-
         var result: [ChannelData] = []
         result.reserveCapacity(PolicyEncoding.channelCount)
         for chan in 0..<PolicyEncoding.channelCount {
-            var cells = [Float](repeating: 0, count: 64)
-            var mass: Float = 0
             let base = chan * 64
+
+            // Stable softmax over JUST this channel's 64 cells.
+            var maxIn: Float = -.infinity
+            for i in 0..<64 where logits[base + i] > maxIn {
+                maxIn = logits[base + i]
+            }
+            var probs = [Float](repeating: 0, count: 64)
+            var sum: Float = 0
+            for i in 0..<64 {
+                let e = expf(logits[base + i] - maxIn)
+                probs[i] = e
+                sum += e
+            }
+            let invSum: Float = sum > 0 ? 1 / sum : 0
+            var peakProb: Float = 0
+            for i in 0..<64 {
+                probs[i] *= invSum
+                if probs[i] > peakProb { peakProb = probs[i] }
+            }
+            let normInv: Float = peakProb > 0 ? 1 / peakProb : 0
+
+            // Transpose encoder rows to absolute (display) rows, scale
+            // to [0, 1] by the per-channel peak, and accumulate the
+            // global mass while we're walking the channel.
+            var cells = [Float](repeating: 0, count: 64)
+            var globalMass: Float = 0
             for r in 0..<8 {
                 let displayRow = flip ? (7 - r) : r
                 for c in 0..<8 {
-                    let p = probs[base + r * 8 + c]
-                    mass += p
-                    cells[displayRow * 8 + c] = p * normInv
+                    cells[displayRow * 8 + c] = probs[r * 8 + c] * normInv
+                    globalMass += globalProbs[base + r * 8 + c]
                 }
             }
             result.append(ChannelData(
                 id: chan,
                 cellValues: cells,
-                totalMass: mass,
+                peakProb: peakProb,
+                globalMass: globalMass,
                 label: Self.label(for: chan)
             ))
         }
