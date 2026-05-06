@@ -534,7 +534,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let weightDecayC: Double
         let entropyRegularizationCoeff: Double
         let drawPenalty: Double
-        let policyScaleK: Double
+        let policyLossWeight: Double
+        let valueLossWeight: Double
         let buildNumber: Int
         let trainerID: String
         let championID: String
@@ -613,7 +614,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case weightDecayC = "weight_decay"
             case entropyRegularizationCoeff = "entropy_regularization_coeff"
             case drawPenalty = "draw_penalty"
-            case policyScaleK = "policy_scale_k"
+            case policyLossWeight = "policy_loss_weight"
+            case valueLossWeight = "value_loss_weight"
             case buildNumber = "build_number"
             case trainerID = "trainer_id"
             case championID = "champion_id"

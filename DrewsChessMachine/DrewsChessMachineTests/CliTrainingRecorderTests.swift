@@ -101,7 +101,8 @@ final class CliTrainingRecorderTests: XCTestCase {
         XCTAssertNotNil(line?["learning_rate"])
         XCTAssertNotNil(line?["entropy_regularization_coeff"])
         XCTAssertNotNil(line?["grad_clip_max_norm"])
-        XCTAssertNotNil(line?["policy_scale_k"])
+        XCTAssertNotNil(line?["policy_loss_weight"])
+        XCTAssertNotNil(line?["value_loss_weight"])
         XCTAssertNotNil(line?["self_play_start_tau"])
         XCTAssertNotNil(line?["arena_floor_tau"])
         XCTAssertNotNil(line?["ratio_target"])
@@ -268,7 +269,8 @@ final class CliTrainingRecorderTests: XCTestCase {
             weightDecayC: 1e-4,
             entropyRegularizationCoeff: 1e-3,
             drawPenalty: 0.1,
-            policyScaleK: 5,
+            policyLossWeight: 1,
+            valueLossWeight: 1,
             buildNumber: 42,
             trainerID: "T1",
             championID: "C1"

@@ -194,15 +194,26 @@ public enum GradClipMaxNorm: TrainingParameterKey {}
 public enum WeightDecay: TrainingParameterKey {}
 
 @TrainingParameter(
-    name: "Policy Scale K",
-    description: "Per-component weighting on the POLICY-LOSS TENSOR inside total_loss = valueLoss + K · policyLoss − entropyCoeff · policyEntropy. Higher K shifts shared-trunk gradients toward policy fitting and away from value regression: at K=1 the trunk is pulled equally by both heads (AlphaZero canonical); at K=5+ the policy head dominates trunk shaping and the value head trails. NOT a multiplier on policy logits — that's a common misreading. Without MCTS-quality policy targets (this engine has none), values above ~3 amplify policy-target noise faster than the value head can supply a useful baseline.",
-    default: 5.0,
-    range: 0.1...20.0,
+    name: "Policy Loss Weight",
+    description: "Per-component weighting on the POLICY-LOSS TENSOR inside total_loss = valueLossWeight · valueLoss + policyLossWeight · policyLoss − entropyCoeff · policyEntropy. Pairs with valueLossWeight. Higher values shift shared-trunk gradients toward policy fitting and away from value regression: at policyLossWeight = valueLossWeight = 1 the trunk is pulled equally by both heads (AlphaZero canonical); at policyLossWeight=5+ the policy head dominates trunk shaping and the value head trails. NOT a multiplier on policy logits — that's a common misreading. Without MCTS-quality policy targets (this engine has none), values above ~3 amplify policy-target noise faster than the value head can supply a useful baseline.",
+    default: 1.0,
+    range: 0.0...20.0,
     category: "Optimizer",
-    id: "K",
+    id: "policy_loss_weight",
     liveTunable: true
 )
-public enum PolicyScaleK: TrainingParameterKey {}
+public enum PolicyLossWeight: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Value Loss Weight",
+    description: "Per-component weighting on the VALUE-LOSS TENSOR inside total_loss = valueLossWeight · valueLoss + policyLossWeight · policyLoss − entropyCoeff · policyEntropy. Mirrors policyLossWeight: at 1.0 the value MSE term feeds the trunk at its natural magnitude (AlphaZero canonical); raising it makes the trunk prioritize value regression over policy fitting. Lc0/KataGo expose the same knob as `value_loss_weight`. The two weights only matter relative to each other plus the entropy term — scaling both by the same factor is equivalent to scaling the learning rate.",
+    default: 1.0,
+    range: 0.0...20.0,
+    category: "Optimizer",
+    id: "value_loss_weight",
+    liveTunable: true
+)
+public enum ValueLossWeight: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Learning Rate",
@@ -514,7 +525,8 @@ public extension TrainingParametersSnapshot {
     var entropyBonus: Double { value(for: EntropyBonus.self) }
     var gradClipMaxNorm: Double { value(for: GradClipMaxNorm.self) }
     var weightDecay: Double { value(for: WeightDecay.self) }
-    var policyScaleK: Double { value(for: PolicyScaleK.self) }
+    var policyLossWeight: Double { value(for: PolicyLossWeight.self) }
+    var valueLossWeight: Double { value(for: ValueLossWeight.self) }
     var learningRate: Double { value(for: LearningRate.self) }
     var momentumCoeff: Double { value(for: MomentumCoeff.self) }
     var sqrtBatchScalingLR: Bool { value(for: SqrtBatchScalingLR.self) }
@@ -557,7 +569,8 @@ public final class TrainingParameters {
     public var entropyBonus: Double { didSet { Self.persist(EntropyBonus.self, value: entropyBonus) } }
     public var gradClipMaxNorm: Double { didSet { Self.persist(GradClipMaxNorm.self, value: gradClipMaxNorm) } }
     public var weightDecay: Double { didSet { Self.persist(WeightDecay.self, value: weightDecay) } }
-    public var policyScaleK: Double { didSet { Self.persist(PolicyScaleK.self, value: policyScaleK) } }
+    public var policyLossWeight: Double { didSet { Self.persist(PolicyLossWeight.self, value: policyLossWeight) } }
+    public var valueLossWeight: Double { didSet { Self.persist(ValueLossWeight.self, value: valueLossWeight) } }
     public var learningRate: Double { didSet { Self.persist(LearningRate.self, value: learningRate) } }
     public var momentumCoeff: Double { didSet { Self.persist(MomentumCoeff.self, value: momentumCoeff) } }
     public var sqrtBatchScalingLR: Bool { didSet { Self.persist(SqrtBatchScalingLR.self, value: sqrtBatchScalingLR) } }
@@ -593,7 +606,8 @@ public final class TrainingParameters {
         self.entropyBonus = Self.read(EntropyBonus.self)
         self.gradClipMaxNorm = Self.read(GradClipMaxNorm.self)
         self.weightDecay = Self.read(WeightDecay.self)
-        self.policyScaleK = Self.read(PolicyScaleK.self)
+        self.policyLossWeight = Self.read(PolicyLossWeight.self)
+        self.valueLossWeight = Self.read(ValueLossWeight.self)
         self.learningRate = Self.read(LearningRate.self)
         self.momentumCoeff = Self.read(MomentumCoeff.self)
         self.sqrtBatchScalingLR = Self.read(SqrtBatchScalingLR.self)
@@ -635,7 +649,8 @@ public final class TrainingParameters {
         v[EntropyBonus.id] = EntropyBonus.encode(entropyBonus)
         v[GradClipMaxNorm.id] = GradClipMaxNorm.encode(gradClipMaxNorm)
         v[WeightDecay.id] = WeightDecay.encode(weightDecay)
-        v[PolicyScaleK.id] = PolicyScaleK.encode(policyScaleK)
+        v[PolicyLossWeight.id] = PolicyLossWeight.encode(policyLossWeight)
+        v[ValueLossWeight.id] = ValueLossWeight.encode(valueLossWeight)
         v[LearningRate.id] = LearningRate.encode(learningRate)
         v[MomentumCoeff.id] = MomentumCoeff.encode(momentumCoeff)
         v[SqrtBatchScalingLR.id] = SqrtBatchScalingLR.encode(sqrtBatchScalingLR)
@@ -686,8 +701,10 @@ public final class TrainingParameters {
             try GradClipMaxNorm.definition.validate(raw); gradClipMaxNorm = try GradClipMaxNorm.decode(raw)
         case WeightDecay.id:
             try WeightDecay.definition.validate(raw); weightDecay = try WeightDecay.decode(raw)
-        case PolicyScaleK.id:
-            try PolicyScaleK.definition.validate(raw); policyScaleK = try PolicyScaleK.decode(raw)
+        case PolicyLossWeight.id:
+            try PolicyLossWeight.definition.validate(raw); policyLossWeight = try PolicyLossWeight.decode(raw)
+        case ValueLossWeight.id:
+            try ValueLossWeight.definition.validate(raw); valueLossWeight = try ValueLossWeight.decode(raw)
         case LearningRate.id:
             try LearningRate.definition.validate(raw); learningRate = try LearningRate.decode(raw)
         case MomentumCoeff.id:
@@ -811,7 +828,8 @@ public final class TrainingParameters {
         EntropyBonus.self,
         GradClipMaxNorm.self,
         WeightDecay.self,
-        PolicyScaleK.self,
+        PolicyLossWeight.self,
+        ValueLossWeight.self,
         LearningRate.self,
         MomentumCoeff.self,
         SqrtBatchScalingLR.self,

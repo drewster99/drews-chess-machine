@@ -1204,7 +1204,8 @@ struct UpperContentView: View {
     @State private var drawPenaltyEditText: String = ""
     @State private var weightDecayEditText: String = ""
     @State private var gradClipMaxNormEditText: String = ""
-    @State private var policyScaleKEditText: String = ""
+    @State private var policyLossWeightEditText: String = ""
+    @State private var valueLossWeightEditText: String = ""
     @State private var spStartTauEditText: String = ""
     @State private var spFloorTauEditText: String = ""
     @State private var spDecayPerPlyEditText: String = ""
@@ -1226,7 +1227,8 @@ struct UpperContentView: View {
     @State private var trainingPopoverEntropyError: Bool = false
     @State private var trainingPopoverGradClipError: Bool = false
     @State private var trainingPopoverWeightDecayError: Bool = false
-    @State private var trainingPopoverPolicyKError: Bool = false
+    @State private var trainingPopoverPolicyLossWeightError: Bool = false
+    @State private var trainingPopoverValueLossWeightError: Bool = false
     @State private var trainingPopoverDrawPenaltyError: Bool = false
     /// Edit-text + transactional state for the new tabs (Self Play,
     /// Replay) on `TrainingSettingsPopover`. Same pattern as the
@@ -1744,8 +1746,11 @@ struct UpperContentView: View {
         if gradClipMaxNormEditText.isEmpty {
             gradClipMaxNormEditText = String(format: "%.2f", trainingParams.gradClipMaxNorm)
         }
-        if policyScaleKEditText.isEmpty {
-            policyScaleKEditText = String(format: "%.2f", trainingParams.policyScaleK)
+        if policyLossWeightEditText.isEmpty {
+            policyLossWeightEditText = String(format: "%.2f", trainingParams.policyLossWeight)
+        }
+        if valueLossWeightEditText.isEmpty {
+            valueLossWeightEditText = String(format: "%.2f", trainingParams.valueLossWeight)
         }
         if spStartTauEditText.isEmpty {
             spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
@@ -2961,7 +2966,8 @@ struct UpperContentView: View {
             selfPlayWorkerCount: trainingParams.selfPlayWorkers,
             gradClipMaxNorm: Float(trainingParams.gradClipMaxNorm),
             weightDecayCoeff: Float(trainingParams.weightDecay),
-            policyScaleK: Float(trainingParams.policyScaleK),
+            policyLossWeight: Float(trainingParams.policyLossWeight),
+            valueLossWeight: Float(trainingParams.valueLossWeight),
             momentumCoeff: Float(trainingParams.momentumCoeff),
             replayRatioTarget: trainingParams.replayRatioTarget,
             replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust,
@@ -5648,7 +5654,8 @@ struct UpperContentView: View {
             trainer.drawPenalty = Float(trainingParams.drawPenalty)
             trainer.weightDecayC = Float(trainingParams.weightDecay)
             trainer.gradClipMaxNorm = Float(trainingParams.gradClipMaxNorm)
-            trainer.policyScaleK = Float(trainingParams.policyScaleK)
+            trainer.policyLossWeight = Float(trainingParams.policyLossWeight)
+            trainer.valueLossWeight = Float(trainingParams.valueLossWeight)
             trainer.momentumCoeff = Float(trainingParams.momentumCoeff)
             trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
             trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
@@ -5662,7 +5669,8 @@ struct UpperContentView: View {
                 drawPenalty: Float(trainingParams.drawPenalty),
                 weightDecayC: Float(trainingParams.weightDecay),
                 gradClipMaxNorm: Float(trainingParams.gradClipMaxNorm),
-                policyScaleK: Float(trainingParams.policyScaleK),
+                policyLossWeight: Float(trainingParams.policyLossWeight),
+                valueLossWeight: Float(trainingParams.valueLossWeight),
                 momentumCoeff: Float(trainingParams.momentumCoeff),
                 sqrtBatchScalingForLR: trainingParams.sqrtBatchScalingLR,
                 lrWarmupSteps: trainingParams.lrWarmupSteps
@@ -6003,16 +6011,28 @@ struct UpperContentView: View {
                         "[RESUME-PARAM] grad_clip_max_norm: saved=nil applied=\(trainingParams.gradClipMaxNorm) (defaulted)"
                     )
                 }
-                if let k = rs.policyScaleK {
+                if let plw = rs.policyLossWeight {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] K: \(trainingParams.policyScaleK) -> \(k) (from session)"
+                        "[RESUME-PARAM] policy_loss_weight: \(trainingParams.policyLossWeight) -> \(plw) (from session)"
                     )
-                    trainer.policyScaleK = k
-                    trainingParams.policyScaleK = Double(k)
+                    trainer.policyLossWeight = plw
+                    trainingParams.policyLossWeight = Double(plw)
                 } else {
-                    trainer.policyScaleK = Float(trainingParams.policyScaleK)
+                    trainer.policyLossWeight = Float(trainingParams.policyLossWeight)
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] K: saved=nil applied=\(trainingParams.policyScaleK) (defaulted)"
+                        "[RESUME-PARAM] policy_loss_weight: saved=nil applied=\(trainingParams.policyLossWeight) (defaulted)"
+                    )
+                }
+                if let vlw = rs.valueLossWeight {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] value_loss_weight: \(trainingParams.valueLossWeight) -> \(vlw) (from session)"
+                    )
+                    trainer.valueLossWeight = vlw
+                    trainingParams.valueLossWeight = Double(vlw)
+                } else {
+                    trainer.valueLossWeight = Float(trainingParams.valueLossWeight)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] value_loss_weight: saved=nil applied=\(trainingParams.valueLossWeight) (defaulted)"
                     )
                 }
                 if let mu = rs.momentumCoeff {
@@ -6166,7 +6186,8 @@ struct UpperContentView: View {
                 trainer.drawPenalty = Float(trainingParams.drawPenalty)
                 trainer.weightDecayC = Float(trainingParams.weightDecay)
                 trainer.gradClipMaxNorm = Float(trainingParams.gradClipMaxNorm)
-                trainer.policyScaleK = Float(trainingParams.policyScaleK)
+                trainer.policyLossWeight = Float(trainingParams.policyLossWeight)
+                trainer.valueLossWeight = Float(trainingParams.valueLossWeight)
                 trainer.momentumCoeff = Float(trainingParams.momentumCoeff)
                 trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
                 trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
@@ -6194,7 +6215,8 @@ struct UpperContentView: View {
         drawPenaltyEditText = String(format: "%.3f", Double(trainer.drawPenalty))
         weightDecayEditText = String(format: "%.2e", trainer.weightDecayC)
         gradClipMaxNormEditText = String(format: "%.2f", trainer.gradClipMaxNorm)
-        policyScaleKEditText = String(format: "%.2f", trainer.policyScaleK)
+        policyLossWeightEditText = String(format: "%.2f", trainer.policyLossWeight)
+        valueLossWeightEditText = String(format: "%.2f", trainer.valueLossWeight)
         spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
         spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
         spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
@@ -7048,7 +7070,7 @@ struct UpperContentView: View {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, drawPen, weightDec, gradClip, kScale, momentum, sqrtLR, warmupSteps, completedSteps) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -7057,7 +7079,8 @@ struct UpperContentView: View {
                                 trainer.drawPenalty,
                                 trainer.weightDecayC,
                                 trainer.gradClipMaxNorm,
-                                trainer.policyScaleK,
+                                trainer.policyLossWeight,
+                                trainer.valueLossWeight,
                                 trainer.momentumCoeff,
                                 trainer.sqrtBatchScalingForLR,
                                 trainer.lrWarmupSteps,
@@ -7191,12 +7214,13 @@ struct UpperContentView: View {
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", sessionPromoteThreshold)) arenaGames=\(sessionTournamentGames) workers=\(workerN)"
                         let regStr = String(
-                            format: "clip=%.1f decay=%.0e ent=%.1e drawPen=%.3f K=%.2f μ=%.2f",
+                            format: "clip=%.1f decay=%.0e ent=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f",
                             gradClip,
                             weightDec,
                             entropyCoeff,
                             drawPen,
-                            kScale,
+                            policyW,
+                            valueW,
                             momentum
                         )
                         // Average game length: lifetime and 10-min
@@ -7483,7 +7507,8 @@ struct UpperContentView: View {
                                 weightDecayC: Double(weightDec),
                                 entropyRegularizationCoeff: Double(entropyCoeff),
                                 drawPenalty: Double(drawPen),
-                                policyScaleK: Double(kScale),
+                                policyLossWeight: Double(policyW),
+                                valueLossWeight: Double(valueW),
                                 buildNumber: BuildInfo.buildNumber,
                                 trainerID: trainerID,
                                 championID: championID
@@ -8149,7 +8174,8 @@ struct UpperContentView: View {
                         entropyText: $entropyRegularizationEditText,
                         gradClipText: $gradClipMaxNormEditText,
                         weightDecayText: $weightDecayEditText,
-                        policyKText: $policyScaleKEditText,
+                        policyLossWeightText: $policyLossWeightEditText,
+                        valueLossWeightText: $valueLossWeightEditText,
                         drawPenaltyText: $drawPenaltyEditText,
                         trainingBatchSizeText: $trainingBatchSizeEditText,
                         lrError: trainingPopoverLRError,
@@ -8158,7 +8184,8 @@ struct UpperContentView: View {
                         entropyError: trainingPopoverEntropyError,
                         gradClipError: trainingPopoverGradClipError,
                         weightDecayError: trainingPopoverWeightDecayError,
-                        policyKError: trainingPopoverPolicyKError,
+                        policyLossWeightError: trainingPopoverPolicyLossWeightError,
+                        valueLossWeightError: trainingPopoverValueLossWeightError,
                         drawPenaltyError: trainingPopoverDrawPenaltyError,
                         trainingBatchSizeError: trainingPopoverTrainingBatchSizeError,
                         selfPlayWorkersText: $selfPlayWorkersEditText,
@@ -8642,7 +8669,8 @@ struct UpperContentView: View {
         entropyRegularizationEditText = String(format: "%.2e", trainingParams.entropyBonus)
         gradClipMaxNormEditText = String(format: "%.1f", trainingParams.gradClipMaxNorm)
         weightDecayEditText = String(format: "%.2e", trainingParams.weightDecay)
-        policyScaleKEditText = String(format: "%.2f", trainingParams.policyScaleK)
+        policyLossWeightEditText = String(format: "%.2f", trainingParams.policyLossWeight)
+        valueLossWeightEditText = String(format: "%.2f", trainingParams.valueLossWeight)
         drawPenaltyEditText = String(format: "%.3f", trainingParams.drawPenalty)
         trainingBatchSizeEditText = String(trainingParams.trainingBatchSize)
         // --- Self Play tab ---
@@ -8677,7 +8705,8 @@ struct UpperContentView: View {
         trainingPopoverEntropyError = false
         trainingPopoverGradClipError = false
         trainingPopoverWeightDecayError = false
-        trainingPopoverPolicyKError = false
+        trainingPopoverPolicyLossWeightError = false
+        trainingPopoverValueLossWeightError = false
         trainingPopoverDrawPenaltyError = false
         trainingPopoverTrainingBatchSizeError = false
         trainingPopoverSelfPlayWorkersError = false
@@ -8912,19 +8941,35 @@ struct UpperContentView: View {
             anyError = true
         }
 
-        // Policy scale K — Double in [0.1, 20].
-        if let v = Double(policyScaleKEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.1, v <= 20.0, v.isFinite {
-            trainingPopoverPolicyKError = false
-            if abs(v - trainingParams.policyScaleK) > Double.ulpOfOne {
+        // Policy loss weight — Double in [0, 20].
+        if let v = Double(policyLossWeightEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 20.0, v.isFinite {
+            trainingPopoverPolicyLossWeightError = false
+            if abs(v - trainingParams.policyLossWeight) > Double.ulpOfOne {
                 SessionLogger.shared.log(
-                    String(format: "[PARAM] policyScaleK: %.2f -> %.2f", trainingParams.policyScaleK, v)
+                    String(format: "[PARAM] policyLossWeight: %.2f -> %.2f", trainingParams.policyLossWeight, v)
                 )
-                trainingParams.policyScaleK = v
-                trainer?.policyScaleK = Float(v)
+                trainingParams.policyLossWeight = v
+                trainer?.policyLossWeight = Float(v)
             }
         } else {
-            trainingPopoverPolicyKError = true
+            trainingPopoverPolicyLossWeightError = true
+            anyError = true
+        }
+
+        // Value loss weight — Double in [0, 20].
+        if let v = Double(valueLossWeightEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 20.0, v.isFinite {
+            trainingPopoverValueLossWeightError = false
+            if abs(v - trainingParams.valueLossWeight) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] valueLossWeight: %.2f -> %.2f", trainingParams.valueLossWeight, v)
+                )
+                trainingParams.valueLossWeight = v
+                trainer?.valueLossWeight = Float(v)
+            }
+        } else {
+            trainingPopoverValueLossWeightError = true
             anyError = true
         }
 

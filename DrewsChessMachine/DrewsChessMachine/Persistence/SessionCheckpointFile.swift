@@ -150,10 +150,19 @@ struct SessionCheckpointState: Codable, Equatable {
     let selfPlayWorkerCount: Int
     var gradClipMaxNorm: Float?
     var weightDecayCoeff: Float?
-    /// Policy-loss coefficient K applied to the policy term in total
-    /// loss. Optional for back-compat with session files written
-    /// before the field became editable.
-    var policyScaleK: Float?
+    /// Policy-loss coefficient applied to the policy term in
+    /// `total_loss = valueLossWeight·valueLoss +
+    /// policyLossWeight·policyLoss − …`. Optional for back-compat
+    /// with session files written before the field became editable.
+    /// Renamed from `policyScaleK` (the old K knob); old session
+    /// files won't carry this key and load with the user's current
+    /// `TrainingParameters.shared.policyLossWeight` instead.
+    var policyLossWeight: Float?
+    /// Value-loss coefficient applied to the value term in
+    /// `total_loss`. Mirrors `policyLossWeight`; optional for
+    /// back-compat with session files written before the value
+    /// weight existed.
+    var valueLossWeight: Float?
     /// Polyak momentum coefficient μ in effect at save time. Optional
     /// for back-compat with session files written before momentum
     /// landed in the schema; absent → loader falls through to the

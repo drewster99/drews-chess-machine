@@ -1001,15 +1001,21 @@ final class ChessTrainer: @unchecked Sendable {
     /// user widen the valve when that happens.
     static let gradClipMaxNormDefault: Float = 30.0
 
-    /// Default policy-loss coefficient K. Policy loss is REINFORCE
-    /// on the played move over a `policySize`-way softmax, so its
-    /// gradient is naturally much weaker than the value head's
-    /// (z−v)² gradient. The K coefficient rescales the policy loss
-    /// term in the total loss so both heads get meaningful gradient
-    /// during early bootstrap. Lowered from 50 → 5 after review —
-    /// the prior 50× multiplier was an amplifier on the gradient
-    /// magnitude that the clip was eating nearly all of.
-    static let policyScaleKDefault: Float = 5.0
+    /// Default per-head loss coefficients in `total_loss =
+    /// valueLossWeight · valueLoss + policyLossWeight · policyLoss
+    /// − entropyCoeff · policyEntropy`. AlphaZero canonical is
+    /// 1.0 / 1.0 (both heads weighted equally); Lc0 / KataGo expose
+    /// these as `policy_loss_weight` / `value_loss_weight` and tune
+    /// the ratio per training stage.
+    ///
+    /// Note: this engine's policy loss is REINFORCE on the played
+    /// move over a `policySize`-way softmax, so its raw gradient is
+    /// naturally weaker than the value head's (z−v)². If the policy
+    /// head is starving for signal early, raise `policyLossWeight`
+    /// (or lower `valueLossWeight`) — the prior `K=5` default did
+    /// the former implicitly.
+    static let policyLossWeightDefault: Float = 1.0
+    static let valueLossWeightDefault: Float = 1.0
 
     var learningRate: Float
     /// Base batch size at which `learningRate` and `weightDecayC`
@@ -1056,18 +1062,23 @@ final class ChessTrainer: @unchecked Sendable {
     /// Live gradient-clip max norm. Fed via scalar placeholder each
     /// step.
     var gradClipMaxNorm: Float
-    /// Live policy-loss coefficient K. Multiplied into `policyLoss`
-    /// before it joins `valueLoss` and `−entropyCoeff·policyEntropy`
-    /// in `total_loss`. Fed via scalar placeholder each step (live-
-    /// tunable). Behaviorally a per-head weighting on shared-trunk
-    /// gradients — bigger K = trunk pulled toward minimizing policy
-    /// CE, smaller K = balanced trunk that lets the value head
-    /// converge in parallel. NOT a multiplier on the policy LOGITS;
-    /// see `weightedPolicy` in `buildTrainingOps`. Without MCTS-
-    /// quality policy targets, values above ~3 tend to amplify
-    /// noise on the policy head before the value baseline becomes
-    /// useful. AlphaZero canonical is K=1 (equal weighting).
-    var policyScaleK: Float
+    /// Live policy-loss coefficient. Multiplied into `policyLoss`
+    /// before it joins the (similarly weighted) `valueLoss` term
+    /// and `−entropyCoeff·policyEntropy` in `total_loss`. Fed via
+    /// scalar placeholder each step (live-tunable). Behaviorally a
+    /// per-head weighting on shared-trunk gradients — bigger value
+    /// = trunk pulled toward minimizing policy CE, smaller = trunk
+    /// follows the value-loss gradient instead. NOT a multiplier
+    /// on the policy LOGITS; see `weightedPolicy` in
+    /// `buildTrainingOps`.
+    var policyLossWeight: Float
+    /// Live value-loss coefficient. Multiplied into `valueLoss`
+    /// before it joins `weightedPolicy` in `total_loss`. Pairs
+    /// with `policyLossWeight`; the absolute scale of the two
+    /// together is equivalent to a learning-rate multiplier, so
+    /// only the ratio matters for shaping shared-trunk gradients.
+    /// Mirror of Lc0 / KataGo's `value_loss_weight`.
+    var valueLossWeight: Float
 
     /// Polyak momentum coefficient μ. Fed into the training graph as
     /// a scalar placeholder each step (live-tunable). The optimizer
@@ -1159,7 +1170,8 @@ final class ChessTrainer: @unchecked Sendable {
     private var entropyCoeffPlaceholder: MPSGraphTensor // [] scalar float
     private var weightDecayPlaceholder: MPSGraphTensor  // [] scalar float
     private var gradClipMaxNormPlaceholder: MPSGraphTensor // [] scalar float
-    private var policyScaleKPlaceholder: MPSGraphTensor // [] scalar float
+    private var policyLossWeightPlaceholder: MPSGraphTensor // [] scalar float
+    private var valueLossWeightPlaceholder: MPSGraphTensor  // [] scalar float
     private var momentumPlaceholder: MPSGraphTensor     // [] scalar float — Polyak μ
     /// Per-trainable-variable momentum velocity buffers, allocated parallel
     /// to `network.trainableVariables`. Each step's update is
@@ -1230,8 +1242,10 @@ final class ChessTrainer: @unchecked Sendable {
     private var weightDecayTensorData: MPSGraphTensorData
     private var gradClipMaxNormNDArray: MPSNDArray
     private var gradClipMaxNormTensorData: MPSGraphTensorData
-    private var policyScaleKNDArray: MPSNDArray
-    private var policyScaleKTensorData: MPSGraphTensorData
+    private var policyLossWeightNDArray: MPSNDArray
+    private var policyLossWeightTensorData: MPSGraphTensorData
+    private var valueLossWeightNDArray: MPSNDArray
+    private var valueLossWeightTensorData: MPSGraphTensorData
     private var momentumNDArray: MPSNDArray
     private var momentumTensorData: MPSGraphTensorData
 
@@ -1349,7 +1363,8 @@ final class ChessTrainer: @unchecked Sendable {
         drawPenalty: Float = 0.1,
         weightDecayC: Float = ChessTrainer.weightDecayCDefault,
         gradClipMaxNorm: Float = ChessTrainer.gradClipMaxNormDefault,
-        policyScaleK: Float = ChessTrainer.policyScaleKDefault,
+        policyLossWeight: Float = ChessTrainer.policyLossWeightDefault,
+        valueLossWeight: Float = ChessTrainer.valueLossWeightDefault,
         momentumCoeff: Float = 0.0,
         sqrtBatchScalingForLR: Bool = true,
         lrWarmupSteps: Int = 100
@@ -1359,7 +1374,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.drawPenalty = drawPenalty
         self.weightDecayC = weightDecayC
         self.gradClipMaxNorm = gradClipMaxNorm
-        self.policyScaleK = policyScaleK
+        self.policyLossWeight = policyLossWeight
+        self.valueLossWeight = valueLossWeight
         self.momentumCoeff = momentumCoeff
         self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         self.lrWarmupSteps = lrWarmupSteps
@@ -1375,7 +1391,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.entropyCoeffPlaceholder = built.entropyCoeff
         self.weightDecayPlaceholder = built.weightDecay
         self.gradClipMaxNormPlaceholder = built.gradClipMaxNorm
-        self.policyScaleKPlaceholder = built.policyScaleK
+        self.policyLossWeightPlaceholder = built.policyLossWeight
+        self.valueLossWeightPlaceholder = built.valueLossWeight
         self.momentumPlaceholder = built.momentum
         self.velocityVariables = built.velocityVariables
         self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
@@ -1429,10 +1446,14 @@ final class ChessTrainer: @unchecked Sendable {
         gradClipND.label = "gradClipND"
         self.gradClipMaxNormNDArray = gradClipND
         self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipND)
-        let policyScaleKND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
-        policyScaleKND.label = "policyScaleKND"
-        self.policyScaleKNDArray = policyScaleKND
-        self.policyScaleKTensorData = MPSGraphTensorData(policyScaleKND)
+        let policyLossWeightND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        policyLossWeightND.label = "policyLossWeightND"
+        self.policyLossWeightNDArray = policyLossWeightND
+        self.policyLossWeightTensorData = MPSGraphTensorData(policyLossWeightND)
+        let valueLossWeightND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        valueLossWeightND.label = "valueLossWeightND"
+        self.valueLossWeightNDArray = valueLossWeightND
+        self.valueLossWeightTensorData = MPSGraphTensorData(valueLossWeightND)
         let momentumND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         momentumND.label = "momentumND"
         self.momentumNDArray = momentumND
@@ -1518,7 +1539,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.entropyCoeffPlaceholder = built.entropyCoeff
         self.weightDecayPlaceholder = built.weightDecay
         self.gradClipMaxNormPlaceholder = built.gradClipMaxNorm
-        self.policyScaleKPlaceholder = built.policyScaleK
+        self.policyLossWeightPlaceholder = built.policyLossWeight
+        self.valueLossWeightPlaceholder = built.valueLossWeight
         self.momentumPlaceholder = built.momentum
         self.velocityVariables = built.velocityVariables
         self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
@@ -1568,9 +1590,12 @@ final class ChessTrainer: @unchecked Sendable {
         self.gradClipMaxNormNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.gradClipMaxNormNDArray.label = "trainer.scalar.gradClipMaxNorm (reset)"
         self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipMaxNormNDArray)
-        self.policyScaleKNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
-        self.policyScaleKNDArray.label = "trainer.scalar.policyScaleK (reset)"
-        self.policyScaleKTensorData = MPSGraphTensorData(policyScaleKNDArray)
+        self.policyLossWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.policyLossWeightNDArray.label = "trainer.scalar.policyLossWeight (reset)"
+        self.policyLossWeightTensorData = MPSGraphTensorData(policyLossWeightNDArray)
+        self.valueLossWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.valueLossWeightNDArray.label = "trainer.scalar.valueLossWeight (reset)"
+        self.valueLossWeightTensorData = MPSGraphTensorData(valueLossWeightNDArray)
         self.momentumNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.momentumNDArray.label = "trainer.scalar.momentum (reset)"
         self.momentumTensorData = MPSGraphTensorData(momentumNDArray)
@@ -1600,7 +1625,8 @@ final class ChessTrainer: @unchecked Sendable {
         entropyCoeff: MPSGraphTensor,
         weightDecay: MPSGraphTensor,
         gradClipMaxNorm: MPSGraphTensor,
-        policyScaleK: MPSGraphTensor,
+        policyLossWeight: MPSGraphTensor,
+        valueLossWeight: MPSGraphTensor,
         momentum: MPSGraphTensor,
         velocityVariables: [MPSGraphTensor],
         velocityLoadPlaceholders: [MPSGraphTensor],
@@ -2254,7 +2280,7 @@ final class ChessTrainer: @unchecked Sendable {
         // term and cancels the relative boost. If the larger effective
         // learning rate on the shared trunk causes instability, lower
         // the LR rather than adding a normalizer. Live-tunable via
-        // the `policyScaleK` placeholder so the user can dial it
+        // the `policyLossWeight` placeholder so the user can dial it
         // down if the amplified policy gradient is the source of
         // gradient-clip saturation.
         let lrTensor = graph.placeholder(
@@ -2277,10 +2303,15 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: dtype,
             name: "grad_clip_max_norm"
         )
-        let policyScaleKTensor = graph.placeholder(
+        let policyLossWeightTensor = graph.placeholder(
             shape: [1],
             dataType: dtype,
-            name: "policy_scale_k"
+            name: "policy_loss_weight"
+        )
+        let valueLossWeightTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "value_loss_weight"
         )
         // Polyak momentum coefficient μ. μ=0 reduces the velocity term
         // to zero (μ·v_old = 0), so the update collapses to plain
@@ -2297,9 +2328,14 @@ final class ChessTrainer: @unchecked Sendable {
             name: "momentum_coeff"
         )
         let weightedPolicy = graph.multiplication(
-            policyScaleKTensor,
+            policyLossWeightTensor,
             policyLoss,
             name: "weighted_policy_loss"
+        )
+        let weightedValue = graph.multiplication(
+            valueLossWeightTensor,
+            valueLoss,
+            name: "weighted_value_loss"
         )
         let entropyPenalty = graph.multiplication(
             entropyCoeffTensor,
@@ -2307,7 +2343,7 @@ final class ChessTrainer: @unchecked Sendable {
             name: "entropy_regularization_term"
         )
         let lossWithoutEntropy = graph.addition(
-            valueLoss,
+            weightedValue,
             weightedPolicy,
             name: "loss_without_entropy_regularization"
         )
@@ -2620,7 +2656,8 @@ final class ChessTrainer: @unchecked Sendable {
 
         return (
             movePlayed, z, vBaseline, legalMask,
-            lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyScaleKTensor,
+            lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyLossWeightTensor,
+            valueLossWeightTensor,
             momentumTensor, velocities,
             velLoadPlaceholders, velLoadAssignOps, velLoadNDArrays, velLoadTensorData,
             totalLossTensor, policyLoss, valueLoss,
@@ -3769,8 +3806,10 @@ final class ChessTrainer: @unchecked Sendable {
         weightDecayNDArray.writeBytes(&weightDecay, strideBytes: nil)
         var gradClip = gradClipMaxNorm
         gradClipMaxNormNDArray.writeBytes(&gradClip, strideBytes: nil)
-        var kScale = policyScaleK
-        policyScaleKNDArray.writeBytes(&kScale, strideBytes: nil)
+        var policyLossW = policyLossWeight
+        policyLossWeightNDArray.writeBytes(&policyLossW, strideBytes: nil)
+        var valueLossW = valueLossWeight
+        valueLossWeightNDArray.writeBytes(&valueLossW, strideBytes: nil)
         var momentum = momentumCoeff
         momentumNDArray.writeBytes(&momentum, strideBytes: nil)
 
@@ -3856,7 +3895,8 @@ final class ChessTrainer: @unchecked Sendable {
             entropyCoeffPlaceholder: entropyCoeffTensorData,
             weightDecayPlaceholder: weightDecayTensorData,
             gradClipMaxNormPlaceholder: gradClipMaxNormTensorData,
-            policyScaleKPlaceholder: policyScaleKTensorData,
+            policyLossWeightPlaceholder: policyLossWeightTensorData,
+            valueLossWeightPlaceholder: valueLossWeightTensorData,
             momentumPlaceholder: momentumTensorData
         ]
 

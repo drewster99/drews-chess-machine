@@ -48,7 +48,8 @@ struct TrainingSettingsPopover: View {
     @Binding var entropyText: String
     @Binding var gradClipText: String
     @Binding var weightDecayText: String
-    @Binding var policyKText: String
+    @Binding var policyLossWeightText: String
+    @Binding var valueLossWeightText: String
     @Binding var drawPenaltyText: String
     @Binding var trainingBatchSizeText: String
 
@@ -58,7 +59,8 @@ struct TrainingSettingsPopover: View {
     let entropyError: Bool
     let gradClipError: Bool
     let weightDecayError: Bool
-    let policyKError: Bool
+    let policyLossWeightError: Bool
+    let valueLossWeightError: Bool
     let drawPenaltyError: Bool
     let trainingBatchSizeError: Bool
 
@@ -190,7 +192,8 @@ struct TrainingSettingsPopover: View {
                     entropyText: $entropyText,
                     gradClipText: $gradClipText,
                     weightDecayText: $weightDecayText,
-                    policyKText: $policyKText,
+                    policyLossWeightText: $policyLossWeightText,
+                    valueLossWeightText: $valueLossWeightText,
                     drawPenaltyText: $drawPenaltyText,
                     trainingBatchSizeText: $trainingBatchSizeText,
                     lrError: lrError,
@@ -199,7 +202,8 @@ struct TrainingSettingsPopover: View {
                     entropyError: entropyError,
                     gradClipError: gradClipError,
                     weightDecayError: weightDecayError,
-                    policyKError: policyKError,
+                    policyLossWeightError: policyLossWeightError,
+                    valueLossWeightError: valueLossWeightError,
                     drawPenaltyError: drawPenaltyError,
                     trainingBatchSizeError: trainingBatchSizeError
                 )
@@ -276,7 +280,8 @@ private struct OptimizerTab: View {
     @Binding var entropyText: String
     @Binding var gradClipText: String
     @Binding var weightDecayText: String
-    @Binding var policyKText: String
+    @Binding var policyLossWeightText: String
+    @Binding var valueLossWeightText: String
     @Binding var drawPenaltyText: String
     @Binding var trainingBatchSizeText: String
 
@@ -286,7 +291,8 @@ private struct OptimizerTab: View {
     let entropyError: Bool
     let gradClipError: Bool
     let weightDecayError: Bool
-    let policyKError: Bool
+    let policyLossWeightError: Bool
+    let valueLossWeightError: Bool
     let drawPenaltyError: Bool
     let trainingBatchSizeError: Bool
 
@@ -411,19 +417,36 @@ private struct OptimizerTab: View {
                         )
                     }
                     PopoverRow(
-                        label: "K policy scalar:",
-                        text: $policyKText,
-                        error: policyKError,
-                        placeholder: "5.00"
+                        label: "Policy loss weight:",
+                        text: $policyLossWeightText,
+                        error: policyLossWeightError,
+                        placeholder: "1.00"
                     ) {
                         Stepper(
                             "",
                             value: PopoverBindings.doubleBinding(
-                                text: $policyKText,
-                                fallback: 5.0,
+                                text: $policyLossWeightText,
+                                fallback: 1.0,
                                 format: "%.2f"
                             ),
-                            in: 0.1...20.0,
+                            in: 0.0...20.0,
+                            step: 0.5
+                        )
+                    }
+                    PopoverRow(
+                        label: "Value loss weight:",
+                        text: $valueLossWeightText,
+                        error: valueLossWeightError,
+                        placeholder: "1.00"
+                    ) {
+                        Stepper(
+                            "",
+                            value: PopoverBindings.doubleBinding(
+                                text: $valueLossWeightText,
+                                fallback: 1.0,
+                                format: "%.2f"
+                            ),
+                            in: 0.0...20.0,
                             step: 0.5
                         )
                     }
