@@ -112,12 +112,14 @@ struct HoverPolicyOverlay: View {
 
     @ViewBuilder
     private func tile(_ ch: TopChannel) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(ch.label)
-                .font(.system(.subheadline, design: .monospaced))
-            Text(probLabel(ch))
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 2) {
+            // Human-readable move-type title above the board.
+            // Matches what a chess player would say at the board:
+            // "Northeast, 3 squares" / "Knight" / "Promote to Queen"
+            // / "Promote to Rook". The encoder-frame canonical name
+            // (`32 S5` etc.) lives below the board with the stats.
+            Text(Self.humanReadableTitle(for: ch.channel))
+                .font(.system(.subheadline))
             ChessBoardView(
                 pieces: pieces,
                 overlay: arrowOverlay(for: ch)
@@ -129,6 +131,17 @@ struct HoverPolicyOverlay: View {
                 RoundedRectangle(cornerRadius: 4)
                     .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
             )
+            // Mini-board-tile style: channel index + spec name on
+            // line 1, this hover-cell's logit + global softmax prob
+            // on line 2. Same monospaced sizing as the
+            // PolicyChannelsPanel grid tiles so the two views read
+            // as a coherent set.
+            Text(ch.label)
+                .font(.system(size: 9, design: .monospaced))
+                .lineLimit(1)
+            Text(probLabel(ch))
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(.tertiary)
         }
     }
 
@@ -137,6 +150,32 @@ struct HoverPolicyOverlay: View {
             return String(format: "logit %+.3f · prob %.3f%%", ch.logit, p * 100)
         }
         return String(format: "logit %+.3f", ch.logit)
+    }
+
+    /// Friendly, plain-English description of a channel's move type
+    /// for the title above each tile. The arrow on the mini-board
+    /// already shows the geometric direction visually, so the title
+    /// stays high-level — direction + distance for queen-style,
+    /// just "Knight" for knight channels, and the standard chess
+    /// "Promote to {Piece}" wording for promotions.
+    fileprivate static func humanReadableTitle(for channel: Int) -> String {
+        if channel < 56 {
+            let dirs = ["North", "Northeast", "East", "Southeast",
+                        "South", "Southwest", "West", "Northwest"]
+            let dirIdx = channel / 7
+            let dist = channel % 7 + 1
+            let plural = dist == 1 ? "" : "s"
+            return "\(dirs[dirIdx]), \(dist) square\(plural)"
+        }
+        if channel < 64 {
+            return "Knight"
+        }
+        if channel < 73 {
+            let pieces = ["Knight", "Rook", "Bishop"]
+            let off = channel - 64
+            return "Promote to \(pieces[off / 3])"
+        }
+        return "Promote to Queen"
     }
 
     /// Build a `.topMoves` overlay containing exactly one entry —
