@@ -96,10 +96,42 @@ struct ChessBoardView: View {
                         y: (CGFloat(move.toRow) + 0.5) * squareSize
                     )
 
+                    // Stretch the arrow a bit past the from- and
+                    // to-square centers along the move axis. Reads
+                    // as "from inside this square, into this square"
+                    // rather than "exactly center to exactly center"
+                    // — the arrowhead tip lands well inside the
+                    // destination square instead of pinned to its
+                    // center, and the tail's narrow start sits a
+                    // little behind the from-square center so the
+                    // direction is unambiguous even at small sizes.
+                    let dx = toCenter.x - fromCenter.x
+                    let dy = toCenter.y - fromCenter.y
+                    let len = sqrt(dx * dx + dy * dy)
+                    let extendBack = squareSize * 0.18
+                    let extendForward = squareSize * 0.22
+                    let extFrom: CGPoint
+                    let extTo: CGPoint
+                    if len > 0.001 {
+                        let ux = dx / len
+                        let uy = dy / len
+                        extFrom = CGPoint(
+                            x: fromCenter.x - ux * extendBack,
+                            y: fromCenter.y - uy * extendBack
+                        )
+                        extTo = CGPoint(
+                            x: toCenter.x + ux * extendForward,
+                            y: toCenter.y + uy * extendForward
+                        )
+                    } else {
+                        extFrom = fromCenter
+                        extTo = toCenter
+                    }
+
                     let color = Self.arrowColor(forRank: rank, of: moves.count)
                     let path = Self.arrowPath(
-                        from: fromCenter,
-                        to: toCenter,
+                        from: extFrom,
+                        to: extTo,
                         startWidth: squareSize * 0.10,
                         shaftWidth: squareSize * 0.30,
                         headWidth: squareSize * 0.60,
