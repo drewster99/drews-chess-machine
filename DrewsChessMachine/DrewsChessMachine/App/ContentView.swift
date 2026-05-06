@@ -74,6 +74,16 @@ struct ContentView: View {
             // so leaving even a zero-height LowerContentView in
             // the layout would still steal a divider line.
             if !showPolicyChannelsPanel {
+                // Spacer comes BEFORE the chart pane so any extra
+                // vertical space the window provides above the chart
+                // pane's natural height pushes the chart pane down to
+                // the window's bottom edge instead of leaving a gap
+                // below the charts. When the chart pane is hidden
+                // (training off, or training graphs disabled) the
+                // Spacer collapses to 0 so the upper area can occupy
+                // the full window height as before.
+                Spacer()
+                    .frame(maxHeight: (effectiveShowTrainingGraphs && chartCoordinator.isActive) ? nil : 0)
                 VStack {
                     Divider()
                     LowerContentView(
@@ -87,8 +97,7 @@ struct ContentView: View {
                 }
                 .opacity((effectiveShowTrainingGraphs && chartCoordinator.isActive) ? 1.0 : 0.0)
                 .frame(height: !effectiveShowTrainingGraphs ? 0 : (chartCoordinator.isActive ? nil : 250))
-                Spacer()
-                    .frame(maxHeight: (effectiveShowTrainingGraphs && chartCoordinator.isActive) ? nil : 0)
+                .padding(.bottom, 4)
             }
         }
         .onAppear {
