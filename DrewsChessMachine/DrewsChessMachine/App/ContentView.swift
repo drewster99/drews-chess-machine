@@ -60,6 +60,16 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Upper area takes natural height at minimum, but may
+            // grow to fill any vertical space the window provides
+            // above the chart pane. Without `maxHeight: .infinity`
+            // SwiftUI would size the upper area to its intrinsic
+            // content height and a `Spacer()` between upper and
+            // chart pane would absorb the leftover — leaving an
+            // empty gray band between them. Letting the upper area
+            // be the flexible one keeps the chart pane pinned to
+            // the bottom edge while the upper content sits flush
+            // against it.
             UpperContentView(
                 commandHub: commandHub,
                 autoTrainOnLaunch: autoTrainOnLaunch,
@@ -67,23 +77,13 @@ struct ContentView: View {
                 cliOutputURL: cliOutputURL,
                 chartCoordinator: chartCoordinator
             )
-            .frame(minHeight: 400)
+            .frame(minHeight: 400, maxHeight: .infinity)
             // The chart pane is dropped entirely when the
             // policy-channels panel is on — it's expanded to
             // take over the freed space inside UpperContentView,
             // so leaving even a zero-height LowerContentView in
             // the layout would still steal a divider line.
             if !showPolicyChannelsPanel {
-                // Spacer comes BEFORE the chart pane so any extra
-                // vertical space the window provides above the chart
-                // pane's natural height pushes the chart pane down to
-                // the window's bottom edge instead of leaving a gap
-                // below the charts. When the chart pane is hidden
-                // (training off, or training graphs disabled) the
-                // Spacer collapses to 0 so the upper area can occupy
-                // the full window height as before.
-                Spacer()
-                    .frame(maxHeight: (effectiveShowTrainingGraphs && chartCoordinator.isActive) ? nil : 0)
                 VStack {
                     Divider()
                     LowerContentView(
