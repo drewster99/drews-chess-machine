@@ -380,6 +380,51 @@ final class ChartDataRoundTripTests: XCTestCase {
         )
     }
 
+    /// Regression: after `seedFromRestoredSession`, `scrollX` should
+    /// already point at the window containing the latest restored
+    /// sample — without this, the chart momentarily renders at
+    /// `scrollX = 0` (the leftmost few minutes of restored data) on
+    /// resume until the first post-resume heartbeat tick re-runs the
+    /// auto-follow math inside `appendProgressRate`. The user-visible
+    /// "rewind" flash that bug produced would be brief but
+    /// disorienting on long restored sessions.
+    func testSeedFromRestoredSessionAdvancesScrollX() async throws {
+        let coord = ChartCoordinator()
+        coord.chartElapsedAnchor = Date().addingTimeInterval(-7200)
+        // 2-hour worth of synthetic samples, sparse so the test stays fast.
+        for i in 0..<120 {
+            coord.appendTrainingChart(
+                makeTrainingSample(id: i, elapsedSec: Double(i) * 60),
+                totalGpuMs: 0
+            )
+            coord.appendProgressRate(
+                makeProgressSample(id: i, elapsedSec: Double(i) * 60)
+            )
+        }
+        guard let snapshot = coord.buildSnapshot() else {
+            XCTFail("buildSnapshot should succeed with non-empty rings")
+            return
+        }
+        XCTAssertEqual(snapshot.lastElapsedSec, 7140) // 119 * 60
+
+        let resumed = ChartCoordinator()
+        resumed.reset()
+        XCTAssertEqual(resumed.scrollX, 0, "Reset should zero scrollX")
+        XCTAssertTrue(resumed.followLatest, "Reset should leave followLatest true")
+        resumed.seedFromRestoredSession(snapshot)
+        // With followLatest=true, scrollX should land at
+        // `max(0, lastElapsedSec - currentWindowSec)`. The default
+        // window is non-zero, so scrollX must have advanced past 0.
+        XCTAssertGreaterThan(
+            resumed.scrollX, 0,
+            "scrollX should advance to keep the latest restored sample on screen"
+        )
+        XCTAssertLessThanOrEqual(
+            resumed.scrollX, snapshot.lastElapsedSec,
+            "scrollX should never overshoot the data span"
+        )
+    }
+
     /// Verify that an empty/disabled coordinator returns nil from
     /// `buildSnapshot` so the save path can skip writing chart files
     /// without producing a zero-sample envelope.

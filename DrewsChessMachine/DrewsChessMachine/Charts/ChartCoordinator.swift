@@ -433,9 +433,14 @@ final class ChartCoordinator {
     /// elapsedSec values continue monotonically from the saved
     /// trajectory, and recomputes the decimated frame once.
     ///
-    /// Leaves `followLatest = true` (set by `reset`) so the visible
-    /// window auto-snaps to the most recent restored sample on
-    /// first render.
+    /// Also pre-advances `scrollX` to land the visible window on the
+    /// most recent restored sample. Without this the chart would
+    /// briefly render at `scrollX = 0` after resume — showing the
+    /// leftmost minute or two of restored data — until the first
+    /// post-resume heartbeat tick re-runs the auto-follow math
+    /// inside `appendProgressRate`. Same expression `appendProgressRate`
+    /// uses on every new append, so the user sees the latest data
+    /// immediately on Resume rather than a brief "rewind" flash.
     func seedFromRestoredSession(_ snapshot: ChartCoordinatorSnapshot) {
         trainingRing.bulkRestore(snapshot.trainingSamples)
         progressRateRing.bulkRestore(snapshot.progressRateSamples)
@@ -444,6 +449,10 @@ final class ChartCoordinator {
         trainingChartNextId = snapshot.trainingSamples.count
         progressRateNextId = snapshot.progressRateSamples.count
         chartElapsedAnchor = Date().addingTimeInterval(-snapshot.lastElapsedSec)
+        if followLatest {
+            let windowSec = ChartZoom.stops[chartZoomIdx]
+            scrollX = max(0, snapshot.lastElapsedSec - windowSec)
+        }
         recomputeDecimatedFrame()
     }
 }
