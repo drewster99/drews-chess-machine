@@ -941,10 +941,25 @@ private struct PopoverRow<Stepper: View>: View {
         HStack(spacing: 8) {
             Text(label)
                 .frame(width: 160, alignment: .trailing)
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.roundedBorder)
+            // Use ParameterTextField (not bare TextField). On macOS a
+            // bare `TextField(text:)` only commits its in-progress
+            // edit to the binding on Return or focus loss — clicking
+            // Save while a field still has first-responder status
+            // would silently throw away typed/stepped values, even
+            // though the field visually showed them. ParameterTextField
+            // attaches a `@FocusState` and an `onChange(of: isFocused)`
+            // that drives the macOS commit on every focus change so
+            // the popover's Save handler sees the actual value the
+            // user just entered. The `onCommit` closure here is a
+            // no-op because validation/parsing happens transactionally
+            // in `trainingPopoverSave()` — we just need the binding
+            // to be current by the time Save reads it.
+            ParameterTextField(
+                placeholder: placeholder,
+                text: $text,
+                width: 110
+            ) { _ in /* no-op: Save handler does parse + apply */ }
                 .font(.system(.body, design: .monospaced))
-                .frame(width: 110)
                 .disabled(disabled)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
