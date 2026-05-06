@@ -100,21 +100,22 @@ struct ChessBoardView: View {
                     let path = Self.arrowPath(
                         from: fromCenter,
                         to: toCenter,
-                        shaftWidth: squareSize * 0.28,
-                        headWidth: squareSize * 0.55,
-                        headLength: squareSize * 0.4
+                        startWidth: squareSize * 0.10,
+                        shaftWidth: squareSize * 0.30,
+                        headWidth: squareSize * 0.60,
+                        headLength: squareSize * 0.42
                     )
 
-                    context.fill(
+                    // Fully opaque solid fill for glanceability
+                    // (was a 1.0 → 0.6 linear gradient). Followed
+                    // by a dark outline so the arrow stays
+                    // distinguishable against any board square or
+                    // piece silhouette behind it.
+                    context.fill(path, with: .color(color))
+                    context.stroke(
                         path,
-                        with: .linearGradient(
-                            Gradient(stops: [
-                                .init(color: color.opacity(1.0), location: 0),
-                                .init(color: color.opacity(0.6), location: 1)
-                            ]),
-                            startPoint: fromCenter,
-                            endPoint: toCenter
-                        )
+                        with: .color(.black.opacity(0.6)),
+                        lineWidth: max(0.75, squareSize * 0.008)
                     )
                 }
 
@@ -161,6 +162,7 @@ struct ChessBoardView: View {
     private static func arrowPath(
         from: CGPoint,
         to: CGPoint,
+        startWidth: CGFloat,
         shaftWidth: CGFloat,
         headWidth: CGFloat,
         headLength: CGFloat
@@ -175,31 +177,44 @@ struct ChessBoardView: View {
         let px = -uy
         let py = ux
 
+        // Shaft tapers linearly from `startHalf` at the from-end to
+        // `shaftHalf` where the head begins, then the head widens
+        // outward to `headHalf` and converges to a point at `to`.
+        // Visual: skinny tail → fattening shaft → wide arrowhead →
+        // tip. Reads as direction-of-motion at a glance.
+        let startHalf = startWidth / 2
         let shaftHalf = shaftWidth / 2
         let headHalf = headWidth / 2
         let headStart = max(length - headLength, length * 0.5)
 
         var path = Path()
 
-        path.move(to: CGPoint(x: from.x + px * shaftHalf, y: from.y + py * shaftHalf))
+        // Start side (from-end, narrow).
+        path.move(to: CGPoint(x: from.x + px * startHalf, y: from.y + py * startHalf))
+        // Shaft → head transition (right side, full shaft width).
         path.addLine(to: CGPoint(
             x: from.x + ux * headStart + px * shaftHalf,
             y: from.y + uy * headStart + py * shaftHalf
         ))
+        // Head outer corner (right).
         path.addLine(to: CGPoint(
             x: from.x + ux * headStart + px * headHalf,
             y: from.y + uy * headStart + py * headHalf
         ))
+        // Tip.
         path.addLine(to: to)
+        // Head outer corner (left).
         path.addLine(to: CGPoint(
             x: from.x + ux * headStart - px * headHalf,
             y: from.y + uy * headStart - py * headHalf
         ))
+        // Shaft → head transition (left side).
         path.addLine(to: CGPoint(
             x: from.x + ux * headStart - px * shaftHalf,
             y: from.y + uy * headStart - py * shaftHalf
         ))
-        path.addLine(to: CGPoint(x: from.x - px * shaftHalf, y: from.y - py * shaftHalf))
+        // Back to start (left, narrow).
+        path.addLine(to: CGPoint(x: from.x - px * startHalf, y: from.y - py * startHalf))
 
         path.closeSubpath()
         return path
