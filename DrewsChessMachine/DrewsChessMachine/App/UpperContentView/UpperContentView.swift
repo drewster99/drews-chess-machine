@@ -184,6 +184,12 @@ struct UpperContentView: View {
     /// Top Moves overlay (Forward Pass / Candidate Test).
     @AppStorage("showPolicyChannelsPanel") private var showPolicyChannelsPanel: Bool = false
 
+    /// Square (0..<64, row*8+col) the cursor is currently hovering
+    /// on the main chess board. Drives the top-3-channels-at-this-
+    /// square overlay that replaces the right-hand `MainTextPanel`
+    /// during hover. nil = cursor is off the board.
+    @State private var hoveredBoardSquare: Int? = nil
+
     // Inference
     @State private var inferenceResult: EvaluationResult?
     @State private var isEvaluating = false
@@ -1495,19 +1501,43 @@ struct UpperContentView: View {
                         },
                         squareIndex: { point, size in
                             Self.squareIndex(at: point, boardSize: size)
+                        },
+                        onHoverSquare: { sq in
+                            hoveredBoardSquare = sq
                         }
                     )
                 )
 
-                MainTextPanel(
-                    isGameMode: isGameMode,
-                    isTrainingMode: isTrainingMode,
-                    isCandidateTestActive: isCandidateTestActive,
-                    inferenceResultText: inferenceResult?.textOutput,
-                    trainingError: trainingError,
-                    selfPlayColumn: { selfPlayStatsColumn },
-                    trainingColumn: { trainingStatsColumn }
-                )
+                // Hover-driven top-3 channels overlay. When the
+                // cursor is over a square AND we have an inference
+                // result with raw logits, show a horizontal row of
+                // 3 mini-board tiles displaying the top-3 channels
+                // (by per-channel logit at that from-square) — each
+                // tile draws the channel's geometric move as an
+                // arrow from the hovered square. Replaces the
+                // MainTextPanel during hover; restores on un-hover.
+                if let sq = hoveredBoardSquare,
+                   let logits = inferenceResult?.rawInference?.logits,
+                   logits.count == ChessNetwork.policySize {
+                    HoverPolicyOverlay(
+                        hoveredRow: sq / 8,
+                        hoveredCol: sq % 8,
+                        currentPlayer: editableState.currentPlayer,
+                        pieces: displayedPieces,
+                        policyLogits: logits,
+                        policyProbs: inferenceResult?.rawInference?.policy
+                    )
+                } else {
+                    MainTextPanel(
+                        isGameMode: isGameMode,
+                        isTrainingMode: isTrainingMode,
+                        isCandidateTestActive: isCandidateTestActive,
+                        inferenceResultText: inferenceResult?.textOutput,
+                        trainingError: trainingError,
+                        selfPlayColumn: { selfPlayStatsColumn },
+                        trainingColumn: { trainingStatsColumn }
+                    )
+                }
             }
             .layoutPriority(1)
 

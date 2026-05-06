@@ -18,6 +18,15 @@ struct LiveBoardWithNavigationView: View {
     let onNavigate: (Int) -> Void
     let onApplyFreePlacementDrag: (Int?, Int?) -> Void
     let squareIndex: (CGPoint, CGFloat) -> Int?
+    /// Called as the cursor moves over (and off of) the board.
+    /// Argument is the hovered square index (0..<64, row*8+col) or
+    /// nil when the cursor leaves the board. Drives the upper
+    /// "top-3 channels at this square" overlay in `UpperContentView`.
+    /// Always wired (the SwiftUI hit layer is shared with the
+    /// drag editor and `forwardPassEditable` only gates drags, not
+    /// hover) so the overlay can fire in any mode that produces an
+    /// inference result.
+    let onHoverSquare: (Int?) -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -48,17 +57,33 @@ struct LiveBoardWithNavigationView: View {
                     // game/training views aren't hijacked.
                     GeometryReader { geo in
                         let boardSize = min(geo.size.width, geo.size.height)
+                        // Single hit layer: hover always live, drag
+                        // gated by `forwardPassEditable`. We can't
+                        // split these into two stacked Color.clear
+                        // layers because the upper one (whichever it
+                        // is) consumes hover events and starves the
+                        // other — combining both modifiers on the
+                        // same view lets SwiftUI route hover and
+                        // gesture independently.
                         Color.clear
                             .contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                switch phase {
+                                case .active(let pt):
+                                    onHoverSquare(squareIndex(pt, boardSize))
+                                case .ended:
+                                    onHoverSquare(nil)
+                                }
+                            }
                             .gesture(
                                 DragGesture(minimumDistance: 0)
                                     .onEnded { value in
+                                        guard forwardPassEditable else { return }
                                         let fromSq = squareIndex(value.startLocation, boardSize)
                                         let toSq = squareIndex(value.location, boardSize)
                                         onApplyFreePlacementDrag(fromSq, toSq)
                                     }
                             )
-                            .allowsHitTesting(forwardPassEditable)
                     }
                 }
                 .overlay {

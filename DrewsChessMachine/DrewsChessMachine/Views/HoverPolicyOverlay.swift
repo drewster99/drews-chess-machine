@@ -1,0 +1,205 @@
+import SwiftUI
+
+/// Hover overlay rendered to the right of the main chess board when
+/// the user mouses over a square. Shows a horizontal row of three
+/// mini-board tiles, one per top-3 channel (ranked by per-channel
+/// logit at the hovered from-square). Each tile draws the channel's
+/// geometric move as a green arrow from the hovered square plus a
+/// label with the channel name and softmax probability.
+///
+/// Replaces `MainTextPanel` while hovering — the parent gates the
+/// swap on (cursor-over-board AND inference result has raw logits).
+/// Restores `MainTextPanel` on un-hover.
+///
+/// All math is over the per-channel softmax (each tile's slice sums
+/// to 1) for the displayed prob, but the *ranking* of channels
+/// is by raw logit at the hovered square. Logits and softmax
+/// agree on ordering at a fixed cell since softmax is monotonic;
+/// using logits avoids re-computing per-channel softmax on every
+/// hover tick.
+struct HoverPolicyOverlay: View {
+    /// Hovered square in absolute (display) coordinates: row 0 =
+    /// rank 8, row 7 = rank 1.
+    let hoveredRow: Int
+    let hoveredCol: Int
+    /// Side to move. Drives the encoder-frame row flip when
+    /// computing per-channel logit indices and the geometric-move
+    /// decoder for arrow placement.
+    let currentPlayer: PieceColor
+    /// Pieces on the displayed board (absolute coords). Used as the
+    /// background for each tile so the arrow lands on the right
+    /// physical square.
+    let pieces: [Piece?]
+    /// Raw 4864 logits. The ranking source.
+    let policyLogits: [Float]
+    /// Optional pre-softmaxed policy. When provided we use it to
+    /// display the global softmax probability of each top channel's
+    /// hovered cell — that's the most directly comparable number to
+    /// the upper Policy Head top-K display. nil → fall back to the
+    /// raw logit value as the display number.
+    let policyProbs: [Float]?
+
+    /// Top-3 channels for the hovered square, sorted by logit
+    /// descending. Recomputed on every body invocation; with 76
+    /// channels and a single sort this is sub-microsecond and
+    /// keeps the view stateless.
+    private var topChannels: [TopChannel] {
+        let flip = currentPlayer == .black
+        let encoderRow = flip ? (7 - hoveredRow) : hoveredRow
+        // Build (channel, logit) pairs for every channel that's
+        // geometrically valid from this from-square.
+        var pairs: [(chan: Int, logit: Float, idx: Int)] = []
+        pairs.reserveCapacity(PolicyEncoding.channelCount)
+        for chan in 0..<PolicyEncoding.channelCount {
+            let idx = chan * 64 + encoderRow * 8 + hoveredCol
+            let logit = policyLogits[idx]
+            // Skip channels whose geometric move is off-board from
+            // this square — a north-7 move from rank 7 would land
+            // on rank 14, which is meaningless to draw an arrow for.
+            if PolicyEncoding.geometricDecode(
+                channel: chan,
+                row: encoderRow,
+                col: hoveredCol,
+                currentPlayer: currentPlayer
+            ) == nil {
+                continue
+            }
+            pairs.append((chan, logit, idx))
+        }
+        let top = pairs
+            .sorted { $0.logit > $1.logit }
+            .prefix(3)
+        return top.map { p in
+            let move = PolicyEncoding.geometricDecode(
+                channel: p.chan,
+                row: encoderRow,
+                col: hoveredCol,
+                currentPlayer: currentPlayer
+            )
+            let prob: Float? = policyProbs.map { probs in
+                p.idx < probs.count ? probs[p.idx] : 0
+            }
+            return TopChannel(
+                channel: p.chan,
+                logit: p.logit,
+                prob: prob,
+                move: move,
+                label: HoverPolicyOverlay.channelLabel(for: p.chan)
+            )
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Top 3 channels at \(squareName(hoveredRow, hoveredCol))")
+                    .font(.headline)
+                Spacer()
+                Text("\(currentPlayer == .white ? "White" : "Black") to move")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(topChannels) { ch in
+                    tile(ch)
+                }
+                Spacer()
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func tile(_ ch: TopChannel) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(ch.label)
+                .font(.system(.subheadline, design: .monospaced))
+            Text(probLabel(ch))
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.secondary)
+            ChessBoardView(
+                pieces: pieces,
+                overlay: arrowOverlay(for: ch)
+            )
+            .aspectRatio(1, contentMode: .fit)
+            .frame(maxWidth: 220)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.gray.opacity(0.3), lineWidth: 0.5)
+            )
+        }
+    }
+
+    private func probLabel(_ ch: TopChannel) -> String {
+        if let p = ch.prob {
+            return String(format: "logit %+.3f · prob %.3f%%", ch.logit, p * 100)
+        }
+        return String(format: "logit %+.3f", ch.logit)
+    }
+
+    /// Build a `.topMoves` overlay containing exactly one entry —
+    /// the arrow for this channel's geometric move from the
+    /// hovered square. `MoveVisualization.probability` is set to
+    /// 1.0 so the arrow renders at full saturation regardless of
+    /// the channel's actual mass; the textual `probLabel` carries
+    /// the magnitude information.
+    private func arrowOverlay(for ch: TopChannel) -> ChessBoardView.Overlay {
+        guard let move = ch.move else {
+            return .none
+        }
+        let piece = pieces[move.fromRow * 8 + move.fromCol]
+        return .topMoves([
+            MoveVisualization(
+                fromRow: move.fromRow,
+                fromCol: move.fromCol,
+                toRow: move.toRow,
+                toCol: move.toCol,
+                probability: 1.0,
+                piece: piece?.assetName,
+                isLegal: true,
+                promotion: move.promotion
+            )
+        ])
+    }
+
+    private func squareName(_ row: Int, _ col: Int) -> String {
+        let files: [Character] = ["a", "b", "c", "d", "e", "f", "g", "h"]
+        let rank = 8 - row
+        return "\(files[col])\(rank)"
+    }
+
+    fileprivate struct TopChannel: Identifiable {
+        let channel: Int
+        let logit: Float
+        let prob: Float?
+        let move: ChessMove?
+        let label: String
+        var id: Int { channel }
+    }
+
+    /// Channel-name decoder. Mirrors `PolicyChannelsPanel.label(for:)`
+    /// but lifted here so the two views can reuse the same naming
+    /// without circular module dependencies. Format: "<idx> <name>"
+    /// where name is the spec's encoder-frame canonical string
+    /// (queen-style direction × distance, knight L-shape, or
+    /// promotion piece × direction).
+    fileprivate static func channelLabel(for channel: Int) -> String {
+        let queenDirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+        let knightDirs = ["UR", "RU", "RD", "DR", "DL", "LD", "LU", "UL"]
+        let promoDirs = ["F", "CL", "CR"]
+        let underpromo = ["uN", "uR", "uB"]
+        if channel < 56 {
+            return "\(channel) \(queenDirs[channel / 7])\(channel % 7 + 1)"
+        }
+        if channel < 64 {
+            return "\(channel) Kn-\(knightDirs[channel - 56])"
+        }
+        if channel < 73 {
+            let off = channel - 64
+            return "\(channel) \(underpromo[off / 3])-\(promoDirs[off % 3])"
+        }
+        return "\(channel) QP-\(promoDirs[channel - 73])"
+    }
+}
