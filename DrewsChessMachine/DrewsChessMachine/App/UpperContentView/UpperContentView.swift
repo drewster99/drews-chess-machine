@@ -1401,13 +1401,10 @@ struct UpperContentView: View {
 
             // Status row — only renders when there's actually something
             // to show (a non-realTraining busy state, an in-flight
-            // tournament, or a checkpoint status message). Wrapped in a
-            // Group so the `.fileImporter` / `.alert` /
-            // `.confirmationDialog` modifiers below have a stable
-            // anchor even when the inner HStack collapses; an empty
-            // Group contributes no height or VStack spacing, freeing
-            // up the vertical band that used to sit empty between the
-            // top status bar and the board.
+            // tournament, or a checkpoint status message). Keep the
+            // row itself conditional so the layout stays compact when
+            // idle; dialog / importer presentation hosts live on the
+            // always-mounted root VStack below.
             let showsBusyContent: Bool = {
                 if let _ = checkpointStatusMessage { return true }
                 guard isBusy else { return false }
@@ -1432,44 +1429,6 @@ struct UpperContentView: View {
                     }
                 }
             }
-            .fileImporter(
-                isPresented: $showingLoadModelImporter,
-                allowedContentTypes: [.data, .item],
-                allowsMultipleSelection: false,
-                onCompletion: { result in
-                    handleLoadModelPickResult(result)
-                }
-            )
-            .fileImporter(
-                isPresented: $showingLoadSessionImporter,
-                allowedContentTypes: [.folder],
-                allowsMultipleSelection: false,
-                onCompletion: { result in
-                    handleLoadSessionPickResult(result)
-                }
-            )
-            .fileImporter(
-                isPresented: $showingLoadParametersImporter,
-                allowedContentTypes: [.json],
-                allowsMultipleSelection: false,
-                onCompletion: { result in
-                    handleLoadParametersPickResult(result)
-                }
-            )
-            .fileExporter(
-                isPresented: $showingSaveParametersExporter,
-                document: parametersDocumentForExport,
-                contentType: .json,
-                defaultFilename: "parameters",
-                onCompletion: { result in
-                    handleSaveParametersExportResult(result)
-                }
-            )
-            .fileDialogDefaultDirectory(
-                showingLoadModelImporter
-                ? CheckpointPaths.modelsDir
-                : CheckpointPaths.sessionsDir
-            )
             .alert(
                 "Can't do that right now",
                 isPresented: Binding(
@@ -1642,6 +1601,59 @@ struct UpperContentView: View {
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) { navigateOverlay(-1); return .handled }
         .onKeyPress(.rightArrow) { navigateOverlay(1); return .handled }
+        .background {
+            // Each importer/exporter stays on its own host view:
+            // stacking multiple file-presentation modifiers on one
+            // SwiftUI host became unreliable on newer macOS builds.
+            // The important part is that the host itself must also be
+            // always mounted; File-menu actions can fire while the
+            // status row above is absent.
+            Color.clear
+                .fileImporter(
+                    isPresented: $showingLoadModelImporter,
+                    allowedContentTypes: [.data, .item],
+                    allowsMultipleSelection: false,
+                    onCompletion: { result in
+                        handleLoadModelPickResult(result)
+                    }
+                )
+                .fileDialogDefaultDirectory(
+                    showingLoadModelImporter
+                    ? CheckpointPaths.modelsDir
+                    : CheckpointPaths.sessionsDir
+                )
+
+            Color.clear
+                .fileImporter(
+                    isPresented: $showingLoadSessionImporter,
+                    allowedContentTypes: [.folder],
+                    allowsMultipleSelection: false,
+                    onCompletion: { result in
+                        handleLoadSessionPickResult(result)
+                    }
+                )
+
+            Color.clear
+                .fileImporter(
+                    isPresented: $showingLoadParametersImporter,
+                    allowedContentTypes: [.json],
+                    allowsMultipleSelection: false,
+                    onCompletion: { result in
+                        handleLoadParametersPickResult(result)
+                    }
+                )
+
+            Color.clear
+                .fileExporter(
+                    isPresented: $showingSaveParametersExporter,
+                    document: parametersDocumentForExport,
+                    contentType: .json,
+                    defaultFilename: "parameters",
+                    onCompletion: { result in
+                        handleSaveParametersExportResult(result)
+                    }
+                )
+        }
         .background(WindowAccessor(window: $contentWindow, onAttached: handleWindowAttached))
         .onAppear { handleBodyOnAppear() }
         .sheet(isPresented: $autoResumeSheetShowing) {
