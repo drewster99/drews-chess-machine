@@ -1,18 +1,5 @@
 import Foundation
 
-// MARK: - Errors
-
-enum BatchedMoveEvaluationSourceError: LocalizedError {
-    case batchResultShapeMismatch(expected: Int, got: Int)
-
-    var errorDescription: String? {
-        switch self {
-        case .batchResultShapeMismatch(let expected, let got):
-            return "BatchedMoveEvaluationSource: batched evaluate returned \(got) values, expected \(expected)"
-        }
-    }
-}
-
 // MARK: - Barrier Batcher
 
 /// Why a barrier fire was scheduled. Tagged at every
@@ -124,8 +111,8 @@ struct BatchSizeStats: Sendable {
 /// spent in coalescing windows — measured from the moment `pending` first
 /// became non-empty in a cycle to the moment `fireBatch` actually started
 /// processing it. `run` is the cumulative time inside the underlying
-/// `network.evaluate(batchBoards:count:)` call. Anything outside those
-/// two windows but inside the arena's wall time is "idle" — the batcher
+/// `network.evaluateBatched(batchBoards:count:consume:)` call. Anything
+/// outside those two windows but inside the arena's wall time is "idle" — the batcher
 /// had nothing pending (e.g. the OTHER batcher was running, or slots
 /// were doing CPU-side legality + sampling work).
 ///
@@ -154,13 +141,16 @@ struct BatchTimingStats: Sendable {
 /// Barrier-style batcher for chess inference.
 ///
 /// **Self-play mode** (the original use): N `ChessMachine.runGameLoop`
-/// tasks (one per self-play slot) all call `evaluate(encodedBoard:)`
-/// exactly once per ply. Each call parks in a `CheckedContinuation`;
-/// when the N-th submission arrives (where N = `expectedSlotCount`),
-/// the barrier fires a single batched
-/// `network.evaluate(batchBoards:count:)`, slices the N policy vectors
-/// and N value scalars out of the returned buffers, and resumes all N
-/// continuations with their own `(policy, value)`. The cycle repeats
+/// tasks (one per self-play slot) all call
+/// `evaluate(encodedBoard:intoPolicy:)` exactly once per ply. Each call
+/// parks in a `CheckedContinuation`; when the N-th submission arrives
+/// (where N = `expectedSlotCount`), the barrier fires a single batched
+/// `network.evaluateBatched(batchBoards:count:consume:)`. The network's
+/// consume closure runs synchronously on the network's serial
+/// `executionQueue` and writes each slot's policy slice directly into
+/// the slot caller's `intoPolicy` destination (i.e. the slot
+/// `MPSChessPlayer`'s pre-allocated `policyScratchPtr`), then resumes
+/// each continuation with the per-slot value scalar. The cycle repeats
 /// on the next ply.
 ///
 /// Because each live slot submits exactly once per barrier cycle, the
@@ -330,17 +320,28 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         /// negligible against the ~1 ms ply we're already paying).
         let token: UUID
         /// Copy of the caller's encoded board — the caller's
-        /// `UnsafeBufferPointer` is only valid for the duration of
-        /// `evaluate(encodedBoard:)`, so we snapshot into owned storage
-        /// before parking.
+        /// `[Float]` is captured by value here so the fire's pack
+        /// step can read from owned storage independent of the
+        /// caller's binding.
         let boardCopy: [Float]
-        let continuation: CheckedContinuation<(policy: [Float], value: Float), Error>
+        /// Caller-owned destination that the fire's `consume` closure
+        /// will write `policySize` policy logits into. Aliases the
+        /// caller's `MPSChessPlayer.policyScratchPtr` (or equivalent);
+        /// the caller guarantees the underlying memory stays alive
+        /// for the duration of the await (see protocol contract on
+        /// `MoveEvaluationSource.evaluate(encodedBoard:intoPolicy:)`).
+        /// `PolicyDestination` is the `@unchecked Sendable` wrapper
+        /// so this struct can be implicitly `Sendable` — `Pending`
+        /// values are captured into the network's `@Sendable` consume
+        /// closure dispatched onto `ChessNetwork.executionQueue`.
+        let intoPolicy: PolicyDestination
+        let continuation: CheckedContinuation<Float, Error>
     }
 
     /// Reusable scratch for packing `count × BoardEncoder.tensorLength`
     /// floats into one contiguous buffer before the batched `graph.run`.
     /// Resized to *exactly* `totalFloats` each batch so the buffer can
-    /// be handed straight to `network.evaluate(batchBoards:count:)`
+    /// be handed straight to `network.evaluateBatched(batchBoards:count:consume:)`
     /// without a trimming copy — that API validates
     /// `batchBoards.count == count * tensorLength`. Steady-state (stable
     /// slot count) the resize is a no-op and the same COW storage is
@@ -362,8 +363,14 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// aliasing, slicing bug) — which would explain "all slots pick
     /// the same move" in self-play. On pass we log and flip the flag
     /// so the check runs once per session.
+    ///
+    /// Stored in a `SyncBox` (rather than as plain actor state) so
+    /// `runBatchCorrectnessCheckIfNeeded` can be `nonisolated` and
+    /// callable from the network's `consume` closure, which runs on
+    /// `ChessNetwork.executionQueue` rather than on this actor's
+    /// executor.
     #if DEBUG
-    private var batchCorrectnessCheckDone = false
+    private let batchCorrectnessCheckDone = SyncBox<Bool>(false)
     #endif
 
     // MARK: - Init
@@ -393,7 +400,7 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// - Setting to 0 (drain mode): fires immediately with whatever is
     ///   queued, so parked callers wake up; subsequent submissions in
     ///   drain mode fire as single-element (or whatever-is-pending)
-    ///   batches — see `evaluate(encodedBoard:)`. Drain mode is used by
+    ///   batches — see `evaluate(encodedBoard:intoPolicy:)`. Drain mode is used by
     ///   `BatchedSelfPlayDriver.stopAll` during arena pauses and
     ///   session shutdown to guarantee in-flight slots can always make
     ///   progress even while they're being asked to exit.
@@ -490,8 +497,12 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     // MARK: - Inference
 
     func evaluate(
-        encodedBoard: [Float]
-    ) async throws -> (policy: [Float], value: Float) {
+        encodedBoard: [Float],
+        intoPolicy: PolicyDestination
+    ) async throws -> Float {
+        precondition(intoPolicy.count == ChessNetwork.policySize,
+            "BatchedMoveEvaluationSource.evaluate: intoPolicy.count \(intoPolicy.count) "
+            + "must equal ChessNetwork.policySize \(ChessNetwork.policySize)")
         // Per-call token used by the cancellation handler below to
         // find and remove this specific parked submission so a
         // cancelled awaiter unblocks instead of leaking forever.
@@ -506,11 +517,12 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         // arrives, no slot is parked at the batcher.
         let token = UUID()
         return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Float, Error>) in
                 let wasEmpty = pending.isEmpty
                 pending.append(Pending(
                     token: token,
                     boardCopy: encodedBoard,
+                    intoPolicy: intoPolicy,
                     continuation: continuation
                 ))
                 // Mark the start of a wait window on the 0→1 pending
@@ -683,8 +695,8 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         // Size the pack scratch to exactly what the batch needs. In the
         // steady state (stable slot count) this is a no-op, the same
         // COW storage is reused batch after batch, and the downstream
-        // `network.evaluate(batchBoards:count:)` call passes `packBuffer`
-        // straight through without any intermediate trimming copy.
+        // `network.evaluateBatched(batchBoards:count:consume:)` call passes
+        // `packBuffer` straight through without any intermediate trimming copy.
         // Reassignment (rather than `removeLast` / shrink-in-place)
         // keeps the code path symmetric for grow and shrink and avoids
         // accidentally carrying stale floats across a size change.
@@ -732,11 +744,49 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             // stored property — the first mutating access there would
             // uniquify a fresh buffer, leaving the one captured by the
             // in-flight `network.evaluate` call untouched.
+            //
+            // The `consume` closure runs on `ChessNetwork.executionQueue`
+            // (a serial DispatchQueue) inside the network's
+            // `internalEvaluate` autoreleasepool. It writes each slot's
+            // policy slice directly into the slot's caller-owned
+            // `intoPolicy` destination (which aliases the slot's
+            // `MPSChessPlayer.policyScratchPtr`) and resumes each
+            // slot's continuation with just the value scalar. Because
+            // executionQueue is serial, no other batched fire's
+            // consume can write to anything until this consume returns.
             let runStartedNanos = DispatchTime.now().uptimeNanoseconds
-            let (policy, values) = try await network.evaluate(
+            try await network.evaluateBatched(
                 batchBoards: packBuffer,
                 count: count
-            )
+            ) { [batch] policyBuf, valuesBuf in
+                // `policyBuf.baseAddress` is non-nil by construction:
+                // `internalEvaluate` builds the buffer as
+                // `UnsafeBufferPointer(start: policyPtr, count: count * policySize)`
+                // where `policyPtr` is the result of an allocation
+                // (`ensureBatchPolicyScratch`) that always returns a
+                // non-nil `UnsafeMutablePointer`. A nil here would be
+                // an internal invariant violation, not recoverable —
+                // resuming all parked continuations with an error
+                // would leave the network in an indeterminate state.
+                guard let policyBase = policyBuf.baseAddress else {
+                    preconditionFailure(
+                        "ChessNetwork batched consume policy buffer has nil baseAddress"
+                    )
+                }
+                #if DEBUG
+                self.runBatchCorrectnessCheckIfNeeded(
+                    batch: batch,
+                    policyBuf: policyBuf,
+                    valuesBuf: valuesBuf
+                )
+                #endif
+                let policySize = Self.policySize
+                for (i, item) in batch.enumerated() {
+                    let src = policyBase + i * policySize
+                    item.intoPolicy.pointer.update(from: src, count: policySize)
+                    item.continuation.resume(returning: valuesBuf[i])
+                }
+            }
             let runFinishedNanos = DispatchTime.now().uptimeNanoseconds
             gpuTimer?.fireEnded()
             gpuTimerEnded = true
@@ -750,17 +800,6 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
                 if delta > expectedDriftMaxDelta {
                     expectedDriftMaxDelta = delta
                 }
-            }
-
-            guard policy.count == count * Self.policySize else {
-                throw BatchedMoveEvaluationSourceError.batchResultShapeMismatch(
-                    expected: count * Self.policySize, got: policy.count
-                )
-            }
-            guard values.count == count else {
-                throw BatchedMoveEvaluationSourceError.batchResultShapeMismatch(
-                    expected: count, got: values.count
-                )
             }
 
             // Record this fire into the batch-size histogram. Done
@@ -807,10 +846,6 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             }
             #endif
 
-            #if DEBUG
-            runBatchCorrectnessCheckIfNeeded(batch: batch, policy: policy, values: values)
-            #endif
-
             // Report this tick to the replay-ratio controller. One
             // barrier fire = one "measurement event" on the self-play
             // side. Drain-mode fires (`expectedSlotCount == 0`) are
@@ -820,6 +855,13 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             // and treats its first call after a reset as
             // measurement-less (just stamps the time), so a re-attach
             // after a session break never produces a garbage sample.
+            //
+            // Order note: slot continuations have already been resumed
+            // inside the consume closure above (i.e. on
+            // executionQueue, before the await returned). Recording
+            // this tick after that resume is fine — the controller's
+            // measurement is wall-clock-only and order-insensitive
+            // w.r.t. slot wakeups.
             if let controller = replayRatioController, expectedSlotCount > 0 {
                 // Controller now owns the inter-tick wall clock
                 // directly. We just report the current per-game
@@ -833,20 +875,14 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
                     workerCount: expectedSlotCount
                 )
             }
-
-            for (i, item) in batch.enumerated() {
-                let start = i * Self.policySize
-                let end = start + Self.policySize
-                let policySlice = Array(policy[start..<end])
-                let value = values[i]
-                item.continuation.resume(returning: (policy: policySlice, value: value))
-            }
         } catch {
-            // Two error sources route here: (a) `network.evaluate`
-            // itself threw — `fireEnded()` was NOT called yet — and
-            // (b) the post-evaluate shape-mismatch `throw`s above —
-            // `fireEnded()` already ran. The flag disambiguates so the
-            // joint timer's `inFlight` count never gets stuck.
+            // The only error source is `network.evaluateBatched`
+            // itself throwing before its consume closure runs (shape
+            // mismatch / output missing inside `internalEvaluate`).
+            // `fireEnded()` was NOT called yet (the do-block's
+            // `gpuTimer?.fireEnded()` hasn't been reached); the flag
+            // is still false. Resume each slot's continuation with
+            // the error and end the gpuTimer's busy window.
             if !gpuTimerEnded {
                 gpuTimer?.fireEnded()
             }
@@ -873,22 +909,47 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
     /// actually compare, either log success + flip the flag (so this
     /// is O(1) across the session) or `preconditionFailure` on
     /// mismatch.
-    private func runBatchCorrectnessCheckIfNeeded(
+    ///
+    /// `nonisolated` because it's invoked from the network's
+    /// `consume` closure, which runs on `ChessNetwork.executionQueue`,
+    /// not on this actor's executor. The function only touches the
+    /// `SyncBox`-protected one-shot flag, the static `Self.policySize`,
+    /// the passed-in arguments, and `SessionLogger.shared` — all
+    /// safely callable from any thread. Pointer-arithmetic compares
+    /// avoid any per-call `Array` allocation; the check is one-shot
+    /// per session anyway.
+    private nonisolated func runBatchCorrectnessCheckIfNeeded(
         batch: [Pending],
-        policy: [Float],
-        values: [Float]
+        policyBuf: UnsafeBufferPointer<Float>,
+        valuesBuf: UnsafeBufferPointer<Float>
     ) {
-        if batchCorrectnessCheckDone { return }
+        if batchCorrectnessCheckDone.value { return }
         let count = batch.count
         guard count >= 2 else { return }
+        // `policyBuf.baseAddress` is non-nil by construction (the
+        // network's allocator-backed scratch). A nil here would be
+        // an internal invariant violation; surface it loudly rather
+        // than silently skipping the check.
+        guard let policyBase = policyBuf.baseAddress else {
+            preconditionFailure(
+                "runBatchCorrectnessCheckIfNeeded: policyBuf has nil baseAddress"
+            )
+        }
+        let policySize = Self.policySize
         let base = batch[0].boardCopy
         for i in 1..<count where batch[i].boardCopy != base {
-            let slot0Policy = Array(policy[0..<Self.policySize])
-            let otherStart = i * Self.policySize
-            let otherPolicy = Array(policy[otherStart..<otherStart + Self.policySize])
-            let slot0Value = values[0]
-            let otherValue = values[i]
-            if slot0Policy == otherPolicy && slot0Value == otherValue {
+            let policy0 = policyBase + 0 * policySize
+            let policyI = policyBase + i * policySize
+            let value0 = valuesBuf[0]
+            let valueI = valuesBuf[i]
+            var identical = (value0 == valueI)
+            if identical {
+                for k in 0..<policySize where policy0[k] != policyI[k] {
+                    identical = false
+                    break
+                }
+            }
+            if identical {
                 preconditionFailure(
                     "BatchedMoveEvaluationSource correctness check FAILED: "
                     + "slots 0 and \(i) returned bit-identical policy+value "
@@ -899,9 +960,9 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             SessionLogger.shared.log(
                 "[BATCHER] Correctness check passed: batch size \(count), "
                 + "slot 0 vs slot \(i) produced distinct policies "
-                + "(value0=\(slot0Value) value\(i)=\(otherValue))."
+                + "(value0=\(value0) value\(i)=\(valueI))."
             )
-            batchCorrectnessCheckDone = true
+            batchCorrectnessCheckDone.value = true
             return
         }
         // All boards in this batch are identical (e.g. every slot at

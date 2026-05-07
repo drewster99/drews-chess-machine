@@ -233,7 +233,7 @@ final class ChessNetwork: @unchecked Sendable {
 
     // MARK: Batched Inference Scratch
 
-    /// Per-batch-size input feed cache for `evaluate(batchBoards:count:)`.
+    /// Per-batch-size input feed cache for `evaluateBatched(batchBoards:count:consume:)`.
     /// Keyed by batch count. Each entry holds one `[count, inputPlanes, 8, 8]`
     /// MPSNDArray (bytes overwritten in place on every call) plus a
     /// pre-built feeds dict. Entries are added lazily the first time a
@@ -248,9 +248,9 @@ final class ChessNetwork: @unchecked Sendable {
 
     /// Readback scratch for batched policy logits. Grows on demand to
     /// the largest batch size ever requested. **Not re-entrant** — the
-    /// `UnsafeBufferPointer` returned from `evaluate(batchBoards:count:)`
-    /// aliases this storage and is valid only until the next batched
-    /// evaluate call on this same network.
+    /// `UnsafeBufferPointer` handed to the consume closure of
+    /// `evaluateBatched(batchBoards:count:consume:)` aliases this storage
+    /// and is valid only for the duration of that closure call.
     private var batchPolicyScratchPtr: UnsafeMutablePointer<Float>?
     private var batchPolicyScratchCapacity: Int = 0
 
@@ -491,13 +491,21 @@ final class ChessNetwork: @unchecked Sendable {
 
     // MARK: - Inference
 
-    /// Evaluate a single board position.
+    /// Evaluate a single board position and hand the policy/value
+    /// readback to `consume` synchronously, inside the network's
+    /// `executionQueue` work block and inside an `autoreleasepool`.
     ///
-    /// **Not re-entrant.** The returned `policy` buffer aliases this
-    /// network's shared readback scratch — it is valid only until the
-    /// next `evaluate` call on this same network. Callers must consume
-    /// the policy vector before issuing another `evaluate`. The `value`
-    /// scalar is returned by copy and is not subject to this constraint.
+    /// `consume` receives an `UnsafeBufferPointer<Float>` of `policySize`
+    /// policy logits plus the scalar value head output. The buffer
+    /// aliases the network's shared inference scratch and is valid only
+    /// for the duration of the closure call — copy any bytes that need
+    /// to outlive the closure (e.g. into a caller-owned destination)
+    /// before returning.
+    ///
+    /// `consume` is non-throwing by contract. If `consume` is invoked,
+    /// it runs to completion before this method returns; if the network
+    /// itself throws (shape mismatch, output missing) before reaching
+    /// the closure, `consume` is never invoked.
     ///
     /// In self-play both `MPSChessPlayer` instances share one
     /// `ChessNetwork` but are driven sequentially inside a single
@@ -507,35 +515,25 @@ final class ChessNetwork: @unchecked Sendable {
     /// explicit serialization here.
     ///
     /// - Parameter board: `inputPlanes`×8×8 = 1,280 floats in NCHW order (planes, rows, cols).
-    /// - Returns: `UnsafeBufferPointer` over `policySize` (4864) policy logits plus the scalar value in [-1, +1].
     func evaluate(
-        board: UnsafeBufferPointer<Float>
-    ) async throws -> (policy: [Float], value: Float) {
-        try await evaluate(board: Array(board))
-    }
-
-    /// `[Float]`-input overload for callers outside the hot path (tests,
-    /// the Forward Pass demo). Runs the blocking graph work on the
-    /// network's private serial queue so the awaiting task suspends
-    /// instead of occupying Swift's cooperative executor.
-    func evaluate(
-        board: [Float]
-    ) async throws -> (policy: [Float], value: Float) {
+        board: [Float],
+        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, Float) -> Void
+    ) async throws {
         try await enqueue {
-            let (policyBuf, value) = try self.internalEvaluate(board: board)
-            return (policy: Array(policyBuf), value: value)
+            try self.internalEvaluate(board: board, consume: consume)
         }
     }
 
     private func internalEvaluate(
-        board: UnsafeBufferPointer<Float>
-    ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
+        board: UnsafeBufferPointer<Float>,
+        consume: (UnsafeBufferPointer<Float>, Float) -> Void
+    ) throws {
         let expected = 1 * Self.inputPlanes * Self.boardSize * Self.boardSize
         guard board.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: board.count)
         }
 
-        // Wrap graph.run + readback in an autoreleasepool so the
+        // Wrap graph.run + readback + consume in an autoreleasepool so the
         // `[MPSGraphTensor: MPSGraphTensorData]` result dictionary,
         // the MPSNDArray handles reached through `.mpsndarray()`, and
         // any other autoreleased Obj-C objects allocated inside MPS
@@ -545,7 +543,7 @@ final class ChessNetwork: @unchecked Sendable {
         // (observed as ~420 GB virtual against ~5 GB resident during
         // multi-hour Play-and-Train sessions) and the main thread
         // spends progressively more time in the deferred drain.
-        return try autoreleasepool {
+        try autoreleasepool {
             Self.writeInferenceInput(board, into: inferenceInputNDArray)
 
             let results = graph.run(
@@ -565,27 +563,41 @@ final class ChessNetwork: @unchecked Sendable {
             Self.readFloats(from: policyData, into: inferencePolicyScratchPtr, count: Self.policySize)
             Self.readFloats(from: valueData, into: inferenceValueScratchPtr, count: 1)
 
-            return (
-                policy: UnsafeBufferPointer(start: inferencePolicyScratchPtr, count: Self.policySize),
-                value: inferenceValueScratchPtr.pointee
+            consume(
+                UnsafeBufferPointer(start: inferencePolicyScratchPtr, count: Self.policySize),
+                inferenceValueScratchPtr.pointee
             )
         }
     }
 
     private func internalEvaluate(
-        board: [Float]
-    ) throws -> (policy: UnsafeBufferPointer<Float>, value: Float) {
+        board: [Float],
+        consume: (UnsafeBufferPointer<Float>, Float) -> Void
+    ) throws {
         try board.withUnsafeBufferPointer { buf in
-            try internalEvaluate(board: buf)
+            try internalEvaluate(board: buf, consume: consume)
         }
     }
 
-    /// Evaluate a batch of `count` board positions in one graph execution.
+    /// Evaluate a batch of `count` board positions in one graph execution
+    /// and hand the policy/value readback to `consume` synchronously,
+    /// inside the network's `executionQueue` work block and inside an
+    /// `autoreleasepool`.
     ///
-    /// **Not re-entrant.** Both returned buffers alias this network's
-    /// batched readback scratch and are valid only until the next
-    /// `evaluate(batchBoards:count:)` call. Callers that need the bytes
-    /// to survive past the next batch must copy.
+    /// `consume` receives two `UnsafeBufferPointer<Float>`s that alias
+    /// this network's batched readback scratch:
+    /// - `policy` holds `count * policySize` raw logits laid out
+    ///   position-major (slot `i` starts at `i * policySize`).
+    /// - `values` holds `count` scalars in [-1, +1].
+    /// Both buffers are valid only for the duration of the closure call.
+    /// Callers that need any bytes past the closure must copy them out
+    /// (typically into a caller-owned destination such as
+    /// `MPSChessPlayer`'s policy scratch).
+    ///
+    /// `consume` is non-throwing by contract. If `consume` is invoked,
+    /// it runs to completion before this method returns; if the network
+    /// itself throws (shape mismatch, output missing) before reaching
+    /// the closure, `consume` is never invoked.
     ///
     /// The first call at a given `count` lazily allocates a per-batch-
     /// size input `MPSNDArray` + feeds dict that is reused on all later
@@ -597,31 +609,29 @@ final class ChessNetwork: @unchecked Sendable {
     ///   - batchBoards: `count * inputPlanes * 8 * 8 = count * 1280` floats in
     ///                  NCHW order, one position after another.
     ///   - count: number of positions in the batch; must be >= 1.
-    /// - Returns: `policy` — `count * policySize` raw logits laid out
-    ///            position-major (slot `i` starts at
-    ///            `i * policySize`); `values` — `count` scalars in [-1, +1].
-    func evaluate(
-        batchBoards: UnsafeBufferPointer<Float>,
-        count: Int
-    ) async throws -> (policy: [Float], values: [Float]) {
-        let batchCopy = Array(batchBoards)
-        return try await evaluate(batchBoards: batchCopy, count: count)
-    }
-
-    func evaluate(
+    ///   - consume: non-throwing closure invoked once with the policy
+    ///              and value buffers when evaluation succeeds.
+    func evaluateBatched(
         batchBoards: [Float],
-        count: Int
-    ) async throws -> (policy: [Float], values: [Float]) {
-        return try await enqueue {
-            let (policyBuf, valuesBuf) = try self.internalEvaluate(batchBoards: batchBoards, count: count)
-            return (policy: Array(policyBuf), values: Array(valuesBuf))
+        count: Int,
+        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+    ) async throws {
+        try await enqueue {
+            try self.internalEvaluate(batchBoards: batchBoards, count: count, consume: consume)
         }
     }
 
     private func internalEvaluate(
         batchBoards: UnsafeBufferPointer<Float>,
-        count: Int
-    ) throws -> (policy: UnsafeBufferPointer<Float>, values: UnsafeBufferPointer<Float>) {
+        count: Int,
+        consume: (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+    ) throws {
+        // Validation runs synchronously on `executionQueue` after the
+        // [Float] has been pinned via `withUnsafeBufferPointer`. `count`
+        // and `batchBoards.count` are stable for the rest of the body
+        // because Swift value-type semantics isolate our captured copy
+        // from the caller's binding (COW), and the buffer pointer's
+        // count is set at construction and never derived dynamically.
         guard count >= 1 else {
             throw ChessNetworkError.boardSizeMismatch(expected: Self.inputPlanes * Self.boardSize * Self.boardSize, got: 0)
         }
@@ -639,7 +649,7 @@ final class ChessNetwork: @unchecked Sendable {
         // site in the app (roughly once per barrier cycle at ~20-40
         // Hz across concurrent slots), so a missed pool drain here
         // dominates the long-session VM bloat.
-        return try autoreleasepool {
+        try autoreleasepool {
             Self.writeInferenceInput(batchBoards, into: entry.ndArray)
 
             let results = graph.run(
@@ -659,19 +669,20 @@ final class ChessNetwork: @unchecked Sendable {
             Self.readFloats(from: policyData, into: policyPtr, count: count * Self.policySize)
             Self.readFloats(from: valueData, into: valuePtr, count: count)
 
-            return (
-                policy: UnsafeBufferPointer(start: policyPtr, count: count * Self.policySize),
-                values: UnsafeBufferPointer(start: valuePtr, count: count)
+            consume(
+                UnsafeBufferPointer(start: policyPtr, count: count * Self.policySize),
+                UnsafeBufferPointer(start: valuePtr, count: count)
             )
         }
     }
 
     private func internalEvaluate(
         batchBoards: [Float],
-        count: Int
-    ) throws -> (policy: UnsafeBufferPointer<Float>, values: UnsafeBufferPointer<Float>) {
+        count: Int,
+        consume: (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+    ) throws {
         try batchBoards.withUnsafeBufferPointer { buf in
-            try internalEvaluate(batchBoards: buf, count: count)
+            try internalEvaluate(batchBoards: buf, count: count, consume: consume)
         }
     }
 

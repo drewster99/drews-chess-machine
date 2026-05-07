@@ -151,8 +151,18 @@ final class SignConsistencyTests: XCTestCase {
         let blackEnc = BoardEncoder.encode(blackToMove)
         XCTAssertEqual(whiteEnc, blackEnc, "Test precondition (Test A) must hold")
 
-        let (whitePolicy, whiteValue) = try await net.evaluate(board: whiteEnc)
-        let (blackPolicy, blackValue) = try await net.evaluate(board: blackEnc)
+        nonisolated(unsafe) var whitePolicy: [Float] = []
+        nonisolated(unsafe) var whiteValue: Float = 0
+        try await net.evaluate(board: whiteEnc) { policyBuf, v in
+            whitePolicy = Array(policyBuf)
+            whiteValue = v
+        }
+        nonisolated(unsafe) var blackPolicy: [Float] = []
+        nonisolated(unsafe) var blackValue: Float = 0
+        try await net.evaluate(board: blackEnc) { policyBuf, v in
+            blackPolicy = Array(policyBuf)
+            blackValue = v
+        }
 
         XCTAssertEqual(
             whiteValue, blackValue,

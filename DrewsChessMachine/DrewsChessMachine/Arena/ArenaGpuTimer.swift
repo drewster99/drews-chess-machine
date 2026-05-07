@@ -5,8 +5,8 @@ import os
 /// champion `BatchedMoveEvaluationSource` instances during an arena.
 ///
 /// Each batcher reports `fireStarted` immediately before its
-/// `network.evaluate(batchBoards:count:)` await and `fireEnded`
-/// immediately after. The timer maintains a single integer
+/// `network.evaluateBatched(batchBoards:count:consume:)` await and
+/// `fireEnded` immediately after. The timer maintains a single integer
 /// `inFlight` counter and accumulates wall-clock time between the
 /// 0→1 and 1→0 transitions — i.e. wall time during which **at
 /// least one** side was on the GPU. The arena callsite reads

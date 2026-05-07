@@ -6969,8 +6969,11 @@ struct UpperContentView: View {
                 // there is exactly one active slot; all slots
                 // contribute identically to `pStatsBox` /
                 // `spDiversityTracker`.
+                let selfPlayTaskCreatedAt = Date()
                 group.addTask(priority: .high) {
-                    [selfPlayDriver] in
+                    [selfPlayDriver, selfPlayTaskCreatedAt] in
+                    let creatingMs = Int(Date().timeIntervalSince(selfPlayTaskCreatedAt) * 1000)
+                    SessionLogger.shared.log("[TASK] self-play driver: created→exec=\(creatingMs)ms")
                     await selfPlayDriver.run()
                 }
 
@@ -6981,9 +6984,12 @@ struct UpperContentView: View {
                 // 30 min auto cadence elapses. Pauses at `trainingGate`
                 // so the arena coordinator can briefly snapshot
                 // trainer weights.
+                let trainingTaskCreatedAt = Date()
                 group.addTask(priority: .high) {
                     [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController,
-                     sessionTrainingBatchSize, sessionMinBufferBeforeTraining] in
+                     sessionTrainingBatchSize, sessionMinBufferBeforeTraining, trainingTaskCreatedAt] in
+                    let creatingMs = Int(Date().timeIntervalSince(trainingTaskCreatedAt) * 1000)
+                    SessionLogger.shared.log("[TASK] training worker: created→exec=\(creatingMs)ms")
                     // Track the previous step's applied delay so the
                     // next `recordTrainingBatchAndGetDelay` can report
                     // it as the current per-batch training-side delay
@@ -7083,9 +7089,11 @@ struct UpperContentView: View {
                 // own loop (not the worker tasks) during arena
                 // execution. Both the 30-minute auto-fire and the
                 // Run Arena button enter here via `triggerBox.trigger()`.
-                group.addTask(priority: .utility) {
-                    [trainer, network, tBox, selfPlayGate, trainingGate, arenaFlag, triggerBox, overrideBox,
-                     candidateInference, arenaChampion] in
+                let arenaTaskCreatedAt = Date()
+                group.addTask(priority: .high) {
+                    [arenaTaskCreatedAt] in
+                    let creatingMs = Int(Date().timeIntervalSince(arenaTaskCreatedAt) * 1000)
+                    SessionLogger.shared.log("[TASK] arena coordinator: created→exec=\(creatingMs)ms")
                     while !Task.isCancelled {
                         if triggerBox.consume() {
                             await self.runArenaParallel(
@@ -8267,71 +8275,7 @@ struct UpperContentView: View {
                     warmupCompletedSteps: trainerWarmupSnap?.completedSteps,
                     warmupTotalSteps: trainerWarmupSnap?.warmupSteps
                 )
-                TrainingSettingsChip(showPopover: $showTrainingPopover) {
-                    TrainingSettingsPopover(
-                        modelID: trainer?.identifier?.description ?? "—",
-                        sessionStart: currentSessionStart ?? Date(),
-                        lrText: $learningRateEditText,
-                        warmupText: $lrWarmupStepsEditText,
-                        momentumText: $momentumCoeffEditText,
-                        sqrtBatchScalingValue: $sqrtBatchScalingEditValue,
-                        entropyText: $entropyRegularizationEditText,
-                        gradClipText: $gradClipMaxNormEditText,
-                        weightDecayText: $weightDecayEditText,
-                        policyLossWeightText: $policyLossWeightEditText,
-                        valueLossWeightText: $valueLossWeightEditText,
-                        drawPenaltyText: $drawPenaltyEditText,
-                        trainingBatchSizeText: $trainingBatchSizeEditText,
-                        lrError: trainingPopoverLRError,
-                        warmupError: trainingPopoverWarmupError,
-                        momentumError: trainingPopoverMomentumError,
-                        entropyError: trainingPopoverEntropyError,
-                        gradClipError: trainingPopoverGradClipError,
-                        weightDecayError: trainingPopoverWeightDecayError,
-                        policyLossWeightError: trainingPopoverPolicyLossWeightError,
-                        valueLossWeightError: trainingPopoverValueLossWeightError,
-                        drawPenaltyError: trainingPopoverDrawPenaltyError,
-                        trainingBatchSizeError: trainingPopoverTrainingBatchSizeError,
-                        selfPlayWorkersText: $selfPlayWorkersEditText,
-                        selfPlayStartTauText: $spStartTauEditText,
-                        selfPlayDecayPerPlyText: $spDecayPerPlyEditText,
-                        selfPlayFloorTauText: $spFloorTauEditText,
-                        selfPlayWorkersError: trainingPopoverSelfPlayWorkersError,
-                        selfPlayStartTauError: trainingPopoverSelfPlayStartTauError,
-                        selfPlayDecayPerPlyError: trainingPopoverSelfPlayDecayPerPlyError,
-                        selfPlayFloorTauError: trainingPopoverSelfPlayFloorTauError,
-                        replayBufferCapacityText: $replayBufferCapacityEditText,
-                        replayBufferMinPositionsText: $replayBufferMinPositionsBeforeTrainingEditText,
-                        replayRatioTargetText: $replayRatioTargetEditText,
-                        replaySelfPlayDelayText: $replaySelfPlayDelayEditText,
-                        replayTrainingStepDelayText: $replayTrainingStepDelayEditText,
-                        replayRatioAutoAdjust: $replayRatioAutoAdjustEditValue,
-                        replayBufferCapacityError: trainingPopoverReplayBufferCapacityError,
-                        replayBufferMinPositionsError: trainingPopoverReplayBufferMinPositionsError,
-                        replayRatioTargetError: trainingPopoverReplayRatioTargetError,
-                        replaySelfPlayDelayError: trainingPopoverReplaySelfPlayDelayError,
-                        replayTrainingStepDelayError: trainingPopoverReplayTrainingStepDelayError,
-                        replayRatioCurrent: replayRatioSnapshot?.currentRatio,
-                        replayRatioComputedDelayMs: replayRatioSnapshot?.computedDelayMs,
-                        replayRatioComputedSelfPlayDelayMs: replayRatioSnapshot?.computedSelfPlayDelayMs,
-                        bytesPerPosition: ReplayBuffer.bytesPerPosition,
-                        onLiveReplayRatioTargetChange: { newValue in
-                            trainingPopoverApplyLiveReplayRatioTarget(newValue)
-                        },
-                        onLiveSelfPlayDelayChange: { newValue in
-                            trainingPopoverApplyLiveSelfPlayDelay(newValue)
-                        },
-                        onLiveTrainingStepDelayChange: { newValue in
-                            trainingPopoverApplyLiveTrainingStepDelay(newValue)
-                        },
-                        onLiveReplayRatioAutoAdjustChange: { newValue in
-                            trainingPopoverApplyLiveReplayRatioAutoAdjust(newValue)
-                        },
-                        onCancel: { trainingPopoverCancel() },
-                        onSave: { trainingPopoverSave() },
-                        onAppearSeed: { trainingPopoverSeedFromParams() }
-                    )
-                }
+                trainingSettingsChipWithErrorClearing
                 ArenaCountdownChip(
                     isArenaRunning: isArenaRunning,
                     countdownText: { now in arenaCountdownText(at: now) },
@@ -9520,7 +9464,10 @@ struct UpperContentView: View {
             ran += 1
             do {
                 let board = BoardEncoder.encode(.starting)
-                let (policy, _) = try await net.evaluate(board: board)
+                nonisolated(unsafe) var policy: [Float] = []
+                try await net.evaluate(board: board) { policyBuf, _ in
+                    policy = Array(policyBuf)
+                }
                 if policy.count == ChessNetwork.policySize {
                     SessionLogger.shared.log(
                         "[DIAG] PASS  Network forward-pass produces \(ChessNetwork.policySize) logits"
@@ -9594,8 +9541,18 @@ struct UpperContentView: View {
         do {
             let board1 = BoardEncoder.encode(pos1)
             let board2 = BoardEncoder.encode(pos2)
-            let (policy1, value1) = try await net.evaluate(board: board1)
-            let (policy2, value2) = try await net.evaluate(board: board2)
+            nonisolated(unsafe) var policy1: [Float] = []
+            nonisolated(unsafe) var value1: Float = 0
+            try await net.evaluate(board: board1) { policyBuf, v in
+                policy1 = Array(policyBuf)
+                value1 = v
+            }
+            nonisolated(unsafe) var policy2: [Float] = []
+            nonisolated(unsafe) var value2: Float = 0
+            try await net.evaluate(board: board2) { policyBuf, v in
+                policy2 = Array(policyBuf)
+                value2 = v
+            }
 
             guard policy1.count == policy2.count else {
                 SessionLogger.shared.log(
@@ -10603,6 +10560,189 @@ extension UpperContentView {
                 }
             }
         }
+    }
+
+    /// The Training Settings chip + popover, with 19 per-field
+    /// `.onChange` handlers attached that clear the matching
+    /// validation error flag when the user edits a previously-
+    /// invalid field. This is split into chained `@ViewBuilder`
+    /// chunks for a concrete reason: a single 19-deep `.onChange`
+    /// chain — even isolated in its own computed property — blows
+    /// past SwiftUI's per-expression type-check budget
+    /// ("the compiler is unable to type-check this expression in
+    /// reasonable time"). Splitting the chain into ~5-deep chunks
+    /// across separate properties keeps each property's
+    /// type-check cheap.
+    ///
+    /// Behavior: each `.onChange` clears only the error flag for
+    /// its matching text field. The next Save click re-validates
+    /// the full form transactionally — these handlers are *not* a
+    /// short-circuit validator, only a "user is fixing this field
+    /// now, optimistically clear its error so the Save button can
+    /// re-enable" hook.
+    /// Returns `AnyView` (not `some View`) on purpose: the body of
+    /// `UpperContentView` is already at the hard type-check timeout
+    /// boundary, and an opaque-return chain through five chained
+    /// `@ViewBuilder` properties (each adding 5 layers of
+    /// `ModifiedContent<_, _OnChangeViewModifier>`) materially
+    /// inflates the body's inference cost. `AnyView` collapses that
+    /// type cascade at every chunk boundary.
+    var trainingSettingsChipWithErrorClearing: AnyView {
+        trainingSettingsChipReplayErrorClearing
+    }
+
+    /// The bare Training Settings chip + popover, with no
+    /// `.onChange` handlers attached. Pulled out so the popover-
+    /// construction expression (~60 lines of named arguments) gets
+    /// its own type-check unit, separate from the four chunks of
+    /// edit-clears-error `.onChange` modifiers chained on top.
+    private var trainingSettingsChipBare: AnyView {
+        AnyView(TrainingSettingsChip(showPopover: $showTrainingPopover) {
+            TrainingSettingsPopover(
+                modelID: trainer?.identifier?.description ?? "—",
+                sessionStart: currentSessionStart ?? Date(),
+                lrText: $learningRateEditText,
+                warmupText: $lrWarmupStepsEditText,
+                momentumText: $momentumCoeffEditText,
+                sqrtBatchScalingValue: $sqrtBatchScalingEditValue,
+                entropyText: $entropyRegularizationEditText,
+                gradClipText: $gradClipMaxNormEditText,
+                weightDecayText: $weightDecayEditText,
+                policyLossWeightText: $policyLossWeightEditText,
+                valueLossWeightText: $valueLossWeightEditText,
+                drawPenaltyText: $drawPenaltyEditText,
+                trainingBatchSizeText: $trainingBatchSizeEditText,
+                lrError: trainingPopoverLRError,
+                warmupError: trainingPopoverWarmupError,
+                momentumError: trainingPopoverMomentumError,
+                entropyError: trainingPopoverEntropyError,
+                gradClipError: trainingPopoverGradClipError,
+                weightDecayError: trainingPopoverWeightDecayError,
+                policyLossWeightError: trainingPopoverPolicyLossWeightError,
+                valueLossWeightError: trainingPopoverValueLossWeightError,
+                drawPenaltyError: trainingPopoverDrawPenaltyError,
+                trainingBatchSizeError: trainingPopoverTrainingBatchSizeError,
+                selfPlayWorkersText: $selfPlayWorkersEditText,
+                selfPlayStartTauText: $spStartTauEditText,
+                selfPlayDecayPerPlyText: $spDecayPerPlyEditText,
+                selfPlayFloorTauText: $spFloorTauEditText,
+                selfPlayWorkersError: trainingPopoverSelfPlayWorkersError,
+                selfPlayStartTauError: trainingPopoverSelfPlayStartTauError,
+                selfPlayDecayPerPlyError: trainingPopoverSelfPlayDecayPerPlyError,
+                selfPlayFloorTauError: trainingPopoverSelfPlayFloorTauError,
+                replayBufferCapacityText: $replayBufferCapacityEditText,
+                replayBufferMinPositionsText: $replayBufferMinPositionsBeforeTrainingEditText,
+                replayRatioTargetText: $replayRatioTargetEditText,
+                replaySelfPlayDelayText: $replaySelfPlayDelayEditText,
+                replayTrainingStepDelayText: $replayTrainingStepDelayEditText,
+                replayRatioAutoAdjust: $replayRatioAutoAdjustEditValue,
+                replayBufferCapacityError: trainingPopoverReplayBufferCapacityError,
+                replayBufferMinPositionsError: trainingPopoverReplayBufferMinPositionsError,
+                replayRatioTargetError: trainingPopoverReplayRatioTargetError,
+                replaySelfPlayDelayError: trainingPopoverReplaySelfPlayDelayError,
+                replayTrainingStepDelayError: trainingPopoverReplayTrainingStepDelayError,
+                replayRatioCurrent: replayRatioSnapshot?.currentRatio,
+                replayRatioComputedDelayMs: replayRatioSnapshot?.computedDelayMs,
+                replayRatioComputedSelfPlayDelayMs: replayRatioSnapshot?.computedSelfPlayDelayMs,
+                bytesPerPosition: ReplayBuffer.bytesPerPosition,
+                onLiveReplayRatioTargetChange: { newValue in
+                    trainingPopoverApplyLiveReplayRatioTarget(newValue)
+                },
+                onLiveSelfPlayDelayChange: { newValue in
+                    trainingPopoverApplyLiveSelfPlayDelay(newValue)
+                },
+                onLiveTrainingStepDelayChange: { newValue in
+                    trainingPopoverApplyLiveTrainingStepDelay(newValue)
+                },
+                onLiveReplayRatioAutoAdjustChange: { newValue in
+                    trainingPopoverApplyLiveReplayRatioAutoAdjust(newValue)
+                },
+                onCancel: { trainingPopoverCancel() },
+                onSave: { trainingPopoverSave() },
+                onAppearSeed: { trainingPopoverSeedFromParams() }
+            )
+        })
+    }
+
+    private var trainingSettingsChipOptimizerErrorClearingA: AnyView {
+        AnyView(
+            trainingSettingsChipBare
+                .onChange(of: learningRateEditText) { _, _ in
+                    trainingPopoverLRError = false
+                }
+                .onChange(of: lrWarmupStepsEditText) { _, _ in
+                    trainingPopoverWarmupError = false
+                }
+                .onChange(of: momentumCoeffEditText) { _, _ in
+                    trainingPopoverMomentumError = false
+                }
+                .onChange(of: entropyRegularizationEditText) { _, _ in
+                    trainingPopoverEntropyError = false
+                }
+                .onChange(of: gradClipMaxNormEditText) { _, _ in
+                    trainingPopoverGradClipError = false
+                }
+        )
+    }
+
+    private var trainingSettingsChipOptimizerErrorClearingB: AnyView {
+        AnyView(
+            trainingSettingsChipOptimizerErrorClearingA
+                .onChange(of: weightDecayEditText) { _, _ in
+                    trainingPopoverWeightDecayError = false
+                }
+                .onChange(of: policyLossWeightEditText) { _, _ in
+                    trainingPopoverPolicyLossWeightError = false
+                }
+                .onChange(of: valueLossWeightEditText) { _, _ in
+                    trainingPopoverValueLossWeightError = false
+                }
+                .onChange(of: drawPenaltyEditText) { _, _ in
+                    trainingPopoverDrawPenaltyError = false
+                }
+                .onChange(of: trainingBatchSizeEditText) { _, _ in
+                    trainingPopoverTrainingBatchSizeError = false
+                }
+        )
+    }
+
+    private var trainingSettingsChipSelfPlayErrorClearing: AnyView {
+        AnyView(
+            trainingSettingsChipOptimizerErrorClearingB
+                .onChange(of: selfPlayWorkersEditText) { _, _ in
+                    trainingPopoverSelfPlayWorkersError = false
+                }
+                .onChange(of: spStartTauEditText) { _, _ in
+                    trainingPopoverSelfPlayStartTauError = false
+                }
+                .onChange(of: spDecayPerPlyEditText) { _, _ in
+                    trainingPopoverSelfPlayDecayPerPlyError = false
+                }
+                .onChange(of: spFloorTauEditText) { _, _ in
+                    trainingPopoverSelfPlayFloorTauError = false
+                }
+        )
+    }
+
+    private var trainingSettingsChipReplayErrorClearing: AnyView {
+        AnyView(
+            trainingSettingsChipSelfPlayErrorClearing
+                .onChange(of: replayBufferCapacityEditText) { _, _ in
+                    trainingPopoverReplayBufferCapacityError = false
+                }
+                .onChange(of: replayBufferMinPositionsBeforeTrainingEditText) { _, _ in
+                    trainingPopoverReplayBufferMinPositionsError = false
+                }
+                .onChange(of: replayRatioTargetEditText) { _, _ in
+                    trainingPopoverReplayRatioTargetError = false
+                }
+                .onChange(of: replaySelfPlayDelayEditText) { _, _ in
+                    trainingPopoverReplaySelfPlayDelayError = false
+                }
+                .onChange(of: replayTrainingStepDelayEditText) { _, _ in
+                    trainingPopoverReplayTrainingStepDelayError = false
+                }
+        )
     }
 
 }

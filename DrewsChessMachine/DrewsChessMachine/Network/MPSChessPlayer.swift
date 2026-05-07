@@ -228,6 +228,25 @@ final class MPSChessPlayer: ChessPlayer {
     /// `gameBoardScratchCapacity * boardFloats` floats.
     private var gameBoardScratchCapacity: Int
 
+    /// Reusable destination scratch for the per-ply policy readback.
+    /// Manually allocated once at init and freed at deinit, mirroring
+    /// the `gameBoardScratchPtr` pattern. Sized to
+    /// `ChessNetwork.policySize` floats and passed (as
+    /// `UnsafeMutableBufferPointer`) to `source.evaluate` every ply,
+    /// satisfying the `MoveEvaluationSource` destination-buffer
+    /// contract. One ply runs at a time per player (white then black,
+    /// serialized by `ChessMachine.runGameLoop`), so this scratch is
+    /// never aliased by concurrent calls. Owned by raw pointer so the
+    /// network can write into it via `update(from:count:)` with no
+    /// Swift `Array` allocation per call.
+    private let policyScratchPtr: UnsafeMutablePointer<Float>
+    /// Element count of `policyScratchPtr` — captured once so the
+    /// `init` allocation and the `deinit` `deinitialize`/`deallocate`
+    /// pair stay in sync, and the per-ply call site doesn't have to
+    /// reach into `ChessNetwork.policySize` (which would tie the call
+    /// site to the constant changing).
+    private static let policyScratchCount = ChessNetwork.policySize
+
     /// Policy-target indices for each recorded ply, computed via
     /// `PolicyEncoding.policyIndex` in the network's encoder-frame
     /// coordinate system (0..<policySize, currently 0..<4864). Pre-
@@ -373,6 +392,10 @@ final class MPSChessPlayer: ChessPlayer {
         self.gameBoardScratchPtr = ptr
         self.gameBoardScratchCapacity = initialCapacity
 
+        let pPtr = UnsafeMutablePointer<Float>.allocate(capacity: Self.policyScratchCount)
+        pPtr.initialize(repeating: 0, count: Self.policyScratchCount)
+        self.policyScratchPtr = pPtr
+
         var indices: [Int32] = []
         indices.reserveCapacity(initialCapacity)
         self.gamePolicyIndices = indices
@@ -401,6 +424,8 @@ final class MPSChessPlayer: ChessPlayer {
     deinit {
         gameBoardScratchPtr.deinitialize(count: gameBoardScratchCapacity * Self.boardFloats)
         gameBoardScratchPtr.deallocate()
+        policyScratchPtr.deinitialize(count: Self.policyScratchCount)
+        policyScratchPtr.deallocate()
     }
 
     func onNewGame(_ isWhite: Bool) {
@@ -451,14 +476,13 @@ final class MPSChessPlayer: ChessPlayer {
         // equivalent copy internally, so this just moves the copy
         // one actor hop earlier — net allocations are unchanged.
         //
-        // The returned `policy` is a fresh, caller-owned `[Float]`
-        // of `policySize` raw logits — batchers can reuse their readback
-        // scratch on the next batch without invalidating this
-        // array. `value` is the scalar `v(position)` from the value
-        // head; we stash it as the advantage baseline so the
+        // The source writes `policySize` raw policy logits directly
+        // into our per-player `policyScratchPtr` (handed in as
+        // `intoPolicy`) and returns the scalar `v(position)` from the
+        // value head; we stash that as the advantage baseline so the
         // training policy loss can compute
-        // `(z − vBaseline) * −log p(a*)` without paying for a
-        // second forward pass.
+        // `(z − vBaseline) * −log p(a*)` without paying for a second
+        // forward pass.
         let rowConst = UnsafeBufferPointer<Float>(rowMutable)
         let encoded = Array(rowConst)
 
@@ -482,10 +506,20 @@ final class MPSChessPlayer: ChessPlayer {
         }
         let materialCount = UInt8(min(matCount, Int(UInt8.max)))
 
-        let (policy, value) = try await source.evaluate(encodedBoard: encoded)
-        let move = policy.withUnsafeBufferPointer { policyBuf in
-            sampleMove(from: policyBuf, legalMoves: legalMoves, currentPlayer: gameState.currentPlayer)
-        }
+        let policyDest = PolicyDestination(UnsafeMutableBufferPointer(
+            start: policyScratchPtr,
+            count: Self.policyScratchCount
+        ))
+        let value = try await source.evaluate(encodedBoard: encoded, intoPolicy: policyDest)
+        let policyView = UnsafeBufferPointer(
+            start: policyScratchPtr,
+            count: Self.policyScratchCount
+        )
+        let move = sampleMove(
+            from: policyView,
+            legalMoves: legalMoves,
+            currentPlayer: gameState.currentPlayer
+        )
 
         gamePolicyIndices.append(Int32(PolicyEncoding.policyIndex(move, currentPlayer: gameState.currentPlayer)))
         gameValueScalars.append(value)
@@ -601,8 +635,12 @@ final class MPSChessPlayer: ChessPlayer {
     /// so the path is allocation-free. `legalMoves` is guaranteed
     /// non-empty by the caller (game-end is detected before this call).
     ///
-    /// `logits` is a non-owning view over the network's policy readback
-    /// scratch; it is valid only for the duration of this call.
+    /// `logits` is a non-owning view over this player's own
+    /// `policyScratchPtr`, which the evaluation source wrote into via
+    /// the `intoPolicy` destination on the immediately-preceding
+    /// `source.evaluate` call. The view is valid only for the
+    /// duration of this call (until the next `onChooseNextMove`
+    /// overwrites the same scratch).
     private func sampleMove(
         from logits: UnsafeBufferPointer<Float>,
         legalMoves: [ChessMove],

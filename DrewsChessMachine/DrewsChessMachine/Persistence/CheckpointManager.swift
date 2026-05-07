@@ -1011,24 +1011,29 @@ enum CheckpointManager {
             postPayload = readBack.weights
         }
 
-        let preValue: Float
-        let prePolicy: [Float]
+        // `nonisolated(unsafe)` for the `var` so each can be mutated
+        // from inside the `@Sendable` consume closure. Safe because
+        // the await suspends this task for the closure window.
+        nonisolated(unsafe) var preValue: Float = 0
+        nonisolated(unsafe) var prePolicy: [Float] = []
         do {
             try await scratch.loadWeights(prePayload)
-            let result = try await scratch.evaluate(board: testBoard)
-            preValue = result.value
-            prePolicy = result.policy
+            try await scratch.evaluate(board: testBoard) { policyBuf, value in
+                prePolicy = Array(policyBuf)
+                preValue = value
+            }
         } catch {
             throw CheckpointManagerError.verificationForwardPassFailed(error)
         }
 
-        let postValue: Float
-        let postPolicy: [Float]
+        nonisolated(unsafe) var postValue: Float = 0
+        nonisolated(unsafe) var postPolicy: [Float] = []
         do {
             try await scratch.loadWeights(postPayload)
-            let result = try await scratch.evaluate(board: testBoard)
-            postValue = result.value
-            postPolicy = result.policy
+            try await scratch.evaluate(board: testBoard) { policyBuf, value in
+                postPolicy = Array(policyBuf)
+                postValue = value
+            }
         } catch {
             throw CheckpointManagerError.verificationForwardPassFailed(error)
         }

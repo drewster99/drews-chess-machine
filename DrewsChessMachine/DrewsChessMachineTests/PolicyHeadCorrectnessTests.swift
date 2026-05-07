@@ -279,7 +279,12 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
                 let legal = MoveGenerator.legalMoves(for: state)
                 if legal.isEmpty { continue }
                 let tensor = BoardEncoder.encode(state)
-                let (policy, value) = try await net.evaluate(board: tensor)
+                nonisolated(unsafe) var policy: [Float] = []
+                nonisolated(unsafe) var value: Float = 0
+                try await net.evaluate(board: tensor) { policyBuf, v in
+                    policy = Array(policyBuf)
+                    value = v
+                }
                 XCTAssertEqual(policy.count, ChessNetwork.policySize)
                 XCTAssertTrue(value.isFinite, "Value at init must be finite")
 
@@ -336,14 +341,24 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         packed.reserveCapacity(totalFloats)
         for t in tensors { packed.append(contentsOf: t) }
 
-        let (batchPolicy, batchValues) = try await net.evaluate(
+        nonisolated(unsafe) var batchPolicy: [Float] = []
+        nonisolated(unsafe) var batchValues: [Float] = []
+        try await net.evaluateBatched(
             batchBoards: packed, count: states.count
-        )
+        ) { policyBuf, valuesBuf in
+            batchPolicy = Array(policyBuf)
+            batchValues = Array(valuesBuf)
+        }
         XCTAssertEqual(batchPolicy.count, states.count * ChessNetwork.policySize)
         XCTAssertEqual(batchValues.count, states.count)
 
         for (i, t) in tensors.enumerated() {
-            let (singlePolicy, singleValue) = try await net.evaluate(board: t)
+            nonisolated(unsafe) var singlePolicy: [Float] = []
+            nonisolated(unsafe) var singleValue: Float = 0
+            try await net.evaluate(board: t) { policyBuf, v in
+                singlePolicy = Array(policyBuf)
+                singleValue = v
+            }
             XCTAssertEqual(singleValue, batchValues[i], accuracy: 1e-4,
                            "Batched value differs from single-call value at slot \(i)")
 
@@ -881,7 +896,10 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             let state: GameState = .starting
             let legal = MoveGenerator.legalMoves(for: state)
             let tensor = BoardEncoder.encode(state)
-            let (policy, _) = try await net.evaluate(board: tensor)
+            nonisolated(unsafe) var policy: [Float] = []
+            try await net.evaluate(board: tensor) { policyBuf, _ in
+                policy = Array(policyBuf)
+            }
 
             // Per-channel and per-row mass.
             var maxL: Float = -.infinity
@@ -975,7 +993,12 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         }
         let net = try ChessNetwork(bnMode: .inference)
         let zeroBoard = [Float](repeating: 0, count: BoardEncoder.tensorLength)
-        let (policy, value) = try await net.evaluate(board: zeroBoard)
+        nonisolated(unsafe) var policy: [Float] = []
+        nonisolated(unsafe) var value: Float = 0
+        try await net.evaluate(board: zeroBoard) { policyBuf, v in
+            policy = Array(policyBuf)
+            value = v
+        }
 
         // Value should be ~0 (tanh(0) = 0).
         XCTAssertEqual(value, 0.0, accuracy: 1e-4,
@@ -1034,8 +1057,14 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             var batchBoards: [Float] = []
             let states = sampleStates(count: 8)
             for s in states { batchBoards.append(contentsOf: BoardEncoder.encode(s)) }
-            let (infPolicy, _) = try await infNet.evaluate(batchBoards: batchBoards, count: 8)
-            let (trnPolicy, _) = try await trnNet.evaluate(batchBoards: batchBoards, count: 8)
+            nonisolated(unsafe) var infPolicy: [Float] = []
+            try await infNet.evaluateBatched(batchBoards: batchBoards, count: 8) { policyBuf, _ in
+                infPolicy = Array(policyBuf)
+            }
+            nonisolated(unsafe) var trnPolicy: [Float] = []
+            try await trnNet.evaluateBatched(batchBoards: batchBoards, count: 8) { policyBuf, _ in
+                trnPolicy = Array(policyBuf)
+            }
 
             func summary(_ p: ArraySlice<Float>) -> (maxProb: Double, topChannelMass: Double) {
                 var maxL: Float = -.infinity
@@ -1079,7 +1108,10 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         let states = sampleStates(count: 64)
         var batch: [Float] = []
         for s in states { batch.append(contentsOf: BoardEncoder.encode(s)) }
-        let (policy, _) = try await net.evaluate(batchBoards: batch, count: states.count)
+        nonisolated(unsafe) var policy: [Float] = []
+        try await net.evaluateBatched(batchBoards: batch, count: states.count) { policyBuf, _ in
+            policy = Array(policyBuf)
+        }
 
         var ratios: [Double] = []
         for (i, state) in states.enumerated() {

@@ -195,56 +195,40 @@ final class ChessMPSNetwork: @unchecked Sendable {
         }
     }
 
-    /// Run the forward pass on a board tensor.
-    ///
-    /// **Not re-entrant.** The returned policy buffer aliases the
-    /// underlying `ChessNetwork`'s shared readback scratch and is valid
-    /// only until the next `evaluate` call on this wrapper. See
-    /// `ChessNetwork.evaluate(board:)` for the full contract.
+    /// Run the forward pass on a board tensor and hand the policy/value
+    /// readback to `consume` synchronously, inside the underlying
+    /// `ChessNetwork`'s `executionQueue` work block. See
+    /// `ChessNetwork.evaluate(board:consume:)` for the full contract
+    /// (closure-validity window, non-throwing requirement).
     ///
     /// - Parameter board: `inputPlanes`×8×8 = 1,280 floats (from `BoardEncoder.encode`).
-    /// - Returns: `policySize` (4,864) raw policy logits and the scalar value head.
+    /// - Parameter consume: receives `policySize` (4,864) raw policy logits and the scalar value head.
     func evaluate(
-        board: UnsafeBufferPointer<Float>
-    ) async throws -> (policy: [Float], value: Float) {
-        try await network.evaluate(board: board)
+        board: [Float],
+        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, Float) -> Void
+    ) async throws {
+        try await network.evaluate(board: board, consume: consume)
     }
 
-    /// `[Float]`-input overload for non-hot-path callers (the Forward
-    /// Pass demo, tests). Delegates to the pointer-based primary entry
-    /// point — no copy on `.float32`.
-    func evaluate(
-        board: [Float]
-    ) async throws -> (policy: [Float], value: Float) {
-        try await network.evaluate(board: board)
-    }
-
-    /// Run a batched forward pass.
-    ///
-    /// **Not re-entrant.** Both returned buffers alias the underlying
-    /// `ChessNetwork`'s shared batched readback scratch and are valid
-    /// only until the next batched `evaluate` call on this wrapper. See
-    /// `ChessNetwork.evaluate(batchBoards:count:)` for the full contract.
+    /// Run a batched forward pass and hand the policy/value readback to
+    /// `consume` synchronously, inside the underlying `ChessNetwork`'s
+    /// `executionQueue` work block. See
+    /// `ChessNetwork.evaluateBatched(batchBoards:count:consume:)` for
+    /// the full contract.
     ///
     /// - Parameters:
     ///   - batchBoards: `count * BoardEncoder.tensorLength` floats (currently
     ///                  `count * 1280`), NCHW order, positions laid
     ///                  out back-to-back.
     ///   - count: batch size; must be >= 1.
-    /// - Returns: `policy` — `count * policySize` logits; `values` — `count`
-    ///            scalars in [-1, +1].
-    func evaluate(
-        batchBoards: UnsafeBufferPointer<Float>,
-        count: Int
-    ) async throws -> (policy: [Float], values: [Float]) {
-        try await network.evaluate(batchBoards: batchBoards, count: count)
-    }
-
-    func evaluate(
+    ///   - consume: receives `policy` (`count * policySize` logits, position-major)
+    ///              and `values` (`count` scalars in [-1, +1]).
+    func evaluateBatched(
         batchBoards: [Float],
-        count: Int
-    ) async throws -> (policy: [Float], values: [Float]) {
-        try await network.evaluate(batchBoards: batchBoards, count: count)
+        count: Int,
+        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+    ) async throws {
+        try await network.evaluateBatched(batchBoards: batchBoards, count: count, consume: consume)
     }
 
     func exportWeights() async throws -> [[Float]] {

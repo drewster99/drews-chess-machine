@@ -2952,10 +2952,19 @@ final class ChessTrainer: @unchecked Sendable {
         // trainer's network to compute v(s) for every position. We
         // discard the policy output and keep only the value scalars.
         let freshBaselineStart = CFAbsoluteTimeGetCurrent()
-        let (freshPolicy, freshValues) = try await network.evaluate(
+        // `nonisolated(unsafe)` for the `var` so it can be mutated
+        // from inside the `@Sendable` consume closure. Safe because
+        // the await suspends this task for the closure window.
+        nonisolated(unsafe) var freshValues: [Float] = []
+        try await network.evaluateBatched(
             batchBoards: phase1.boardsCopy,
             count: batchSize
-        )
+        ) { _, valuesBuf in
+            // Policy is discarded (Phase 2 only needs the value
+            // scalars); copy the values out before the network's
+            // scratch is reused on the next call.
+            freshValues = Array(valuesBuf)
+        }
         let freshBaselineMs = (CFAbsoluteTimeGetCurrent() - freshBaselineStart) * 1000
 
         // Compute the diagnostic mean-absolute-delta between the
@@ -2975,7 +2984,7 @@ final class ChessTrainer: @unchecked Sendable {
         // just with vBaselines now containing current-trainer values
         // instead of replay-buffer-frozen values.
         let dispatchedAtPhase3 = CFAbsoluteTimeGetCurrent()
-        return try await enqueue { [batchSize, freshValues, freshPolicy, freshBaselineMs, meanAbsDelta, dispatchedAtPhase3] in
+        return try await enqueue { [batchSize, freshValues, freshBaselineMs, meanAbsDelta, dispatchedAtPhase3] in
             let phase3QueueWaitMs = (CFAbsoluteTimeGetCurrent() - dispatchedAtPhase3) * 1000
             let totalStart = CFAbsoluteTimeGetCurrent()
             let prepStart = CFAbsoluteTimeGetCurrent()
@@ -3255,21 +3264,26 @@ final class ChessTrainer: @unchecked Sendable {
         // stall where SGD batches see a BN distribution that has
         // drifted away from the one they're trying to normalize —
         // the policy head's legal-mass signal flatlines near 1.0.
-        let policy: [Float]
+        // `nonisolated(unsafe)` so the `var` can be mutated from
+        // inside the `@Sendable` consume closure. Safe because the
+        // await suspends this task for the closure window.
+        nonisolated(unsafe) var policy: [Float] = []
         if let inferenceNetwork {
             let weights = try await network.exportWeights()
             try await inferenceNetwork.loadWeights(weights)
-            let (p, _) = try await inferenceNetwork.evaluate(
+            try await inferenceNetwork.evaluateBatched(
                 batchBoards: sampled.boards,
                 count: sampled.count
-            )
-            policy = p
+            ) { policyBuf, _ in
+                policy = Array(policyBuf)
+            }
         } else {
-            let (p, _) = try await network.evaluate(
+            try await network.evaluateBatched(
                 batchBoards: sampled.boards,
                 count: sampled.count
-            )
-            policy = p
+            ) { policyBuf, _ in
+                policy = Array(policyBuf)
+            }
         }
 
         let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize

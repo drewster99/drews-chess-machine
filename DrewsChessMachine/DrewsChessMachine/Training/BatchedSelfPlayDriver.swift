@@ -11,8 +11,10 @@ import os
 /// `MPSChessPlayer`s pointed at the shared batcher, record stats +
 /// diversity, repeat. Every per-ply `evaluate` call on every slot parks
 /// in the batcher; when the N-th submission arrives the batcher fires a
-/// single `network.evaluate(batchBoards:count:)` and resumes all N slots
-/// with their own `(policy, value)`. Batch size is exactly N every time.
+/// single `network.evaluateBatched(batchBoards:count:consume:)` and the
+/// closure-based consume writes each slot's policy bytes into its
+/// caller-owned scratch and resumes the slot's continuation with the
+/// scalar value. Batch size is exactly N every time.
 ///
 /// The outer `run()` loop reconciles slot count to `countBox.count` (the
 /// Stepper-driven live worker count) and handles arena pause requests

@@ -33,7 +33,20 @@ final class ChessRunner: @unchecked Sendable {
         pieces: [Piece?]
     ) async throws -> InferenceResult {
         let start = CFAbsoluteTimeGetCurrent()
-        let (logits, value) = try await network.evaluate(board: board)
+        // `nonisolated(unsafe)` is required because `consume` is
+        // `@Sendable` so a `var` mutated from inside the closure must
+        // be opted out of the strict-concurrency capture check. Safe
+        // here because the await suspends the calling task for the
+        // entire closure window — the closure runs on
+        // `ChessNetwork.executionQueue`, writes the captured `vars`,
+        // and Swift's continuation resume publishes those writes to
+        // the post-await reads.
+        nonisolated(unsafe) var logits: [Float] = []
+        nonisolated(unsafe) var value: Float = 0
+        try await network.evaluate(board: board) { logitsBuf, v in
+            logits = Array(logitsBuf)
+            value = v
+        }
         let inferenceTimeMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
         return Self.makeInferenceResult(
             logits: logits,
