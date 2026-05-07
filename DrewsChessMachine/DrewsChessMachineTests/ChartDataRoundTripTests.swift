@@ -412,9 +412,20 @@ final class ChartDataRoundTripTests: XCTestCase {
         XCTAssertEqual(resumed.scrollX, 0, "Reset should zero scrollX")
         XCTAssertTrue(resumed.followLatest, "Reset should leave followLatest true")
         resumed.seedFromRestoredSession(snapshot)
-        // With followLatest=true, scrollX should land at
-        // `max(0, lastElapsedSec - currentWindowSec)`. The default
-        // window is non-zero, so scrollX must have advanced past 0.
+        // With followLatest=true, scrollX should land at the exact
+        // expression appendProgressRate uses on every new sample:
+        // `max(0, lastElapsedSec - currentWindowSec)`. Asserting the
+        // exact value (not just direction + bound) catches a
+        // sign-flip regression that would otherwise still pass the
+        // directional checks below.
+        let expectedScrollX = max(0, snapshot.lastElapsedSec - ChartZoom.stops[resumed.chartZoomIdx])
+        XCTAssertEqual(
+            resumed.scrollX, expectedScrollX, accuracy: 0.001,
+            "scrollX should land at max(0, lastElapsedSec - windowSec)"
+        )
+        // Belt-and-suspenders directional checks. Cheap to keep, and
+        // they document the invariant in case the exact-value math
+        // ever needs to be relaxed.
         XCTAssertGreaterThan(
             resumed.scrollX, 0,
             "scrollX should advance to keep the latest restored sample on screen"

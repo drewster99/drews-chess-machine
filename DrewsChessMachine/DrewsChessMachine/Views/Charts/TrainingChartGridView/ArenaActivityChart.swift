@@ -50,6 +50,14 @@ struct ArenaActivityChart: View {
         }
     }
 
+    /// True when the chart has nothing meaningful to render — no
+    /// completed arenas and no live arena in progress. Surfaces a
+    /// "No data to display" overlay so the empty state reads as
+    /// "nothing yet" rather than "the threshold line is the data".
+    private var isEmpty: Bool {
+        events.isEmpty && activeArenaStartElapsed == nil
+    }
+
     var body: some View {
         let hoveredID = hoverArenaID
         let nowMark = liveNow
@@ -116,6 +124,21 @@ struct ArenaActivityChart: View {
             .chartScrollPosition(x: $scrollX)
             .chartOverlay { proxy in
                 ChartHoverOverlay(proxy: proxy, hoveredSec: $hoveredSec)
+            }
+            .overlay {
+                if isEmpty {
+                    Text("No data to display")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        // The chart's own `.chartOverlay` provides
+                        // hover-detection via `.onContinuousHover`;
+                        // a hit-testing-enabled Text on top would
+                        // shadow it. Disabling hit-testing keeps the
+                        // hover gestures reaching the chart even
+                        // though there's nothing meaningful to hover
+                        // over while empty.
+                        .allowsHitTesting(false)
+                }
             }
             .frame(height: 60)
         }

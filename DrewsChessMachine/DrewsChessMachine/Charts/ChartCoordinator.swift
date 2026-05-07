@@ -450,7 +450,15 @@ final class ChartCoordinator {
         progressRateNextId = snapshot.progressRateSamples.count
         chartElapsedAnchor = Date().addingTimeInterval(-snapshot.lastElapsedSec)
         if followLatest {
-            let windowSec = ChartZoom.stops[chartZoomIdx]
+            // Defensive clamp: `chartZoomIdx` is normally bounded by
+            // the zoom controls, but a corrupted persisted value
+            // would otherwise trap on the unchecked subscript here.
+            // Clamping (rather than early-returning) preserves the
+            // invariant that `recomputeDecimatedFrame()` always runs
+            // at the end of seedFromRestoredSession, so the first
+            // post-resume render still sees an up-to-date frame.
+            let safeIdx = min(max(0, chartZoomIdx), ChartZoom.stops.count - 1)
+            let windowSec = ChartZoom.stops[safeIdx]
             scrollX = max(0, snapshot.lastElapsedSec - windowSec)
         }
         recomputeDecimatedFrame()

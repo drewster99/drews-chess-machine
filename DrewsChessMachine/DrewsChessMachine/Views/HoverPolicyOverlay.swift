@@ -40,10 +40,56 @@ struct HoverPolicyOverlay: View {
     let policyProbs: [Float]?
 
     /// Top-3 channels for the hovered square, sorted by logit
-    /// descending. Recomputed on every body invocation; with 76
-    /// channels and a single sort this is sub-microsecond and
-    /// keeps the view stateless.
-    private var topChannels: [TopChannel] {
+    /// descending. Cached as `@State` so we recompute only when one
+    /// of the inputs actually changes — not on every parent
+    /// re-render. The 76-channel sort + two geometric decodes per
+    /// channel is sub-millisecond, but the typical case is a parent
+    /// re-render where none of those inputs moved (e.g. an unrelated
+    /// SwiftUI state change), so caching is the SwiftUI-correct shape.
+    ///
+    /// We watch `policyLogits.count` to catch the inference-completed
+    /// transition (0 → `policySize`) and `policyLogits.first` as a
+    /// cheap content fingerprint to catch the case where a new
+    /// inference produces a fresh array of the same length while the
+    /// cursor stays over the board (different position → different
+    /// logit[0] in any realistic scenario). Watching the full 4864-
+    /// element array would be far more work than the recompute we're
+    /// avoiding.
+    @State private var topChannels: [TopChannel] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Top 3 channels at \(squareName(hoveredRow, hoveredCol))")
+                    .font(.headline)
+                Spacer()
+                Text("\(currentPlayer == .white ? "White" : "Black") to move")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(topChannels) { ch in
+                    tile(ch)
+                }
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear { topChannels = computeTopChannels() }
+        .onChange(of: hoveredRow) { _, _ in topChannels = computeTopChannels() }
+        .onChange(of: hoveredCol) { _, _ in topChannels = computeTopChannels() }
+        .onChange(of: currentPlayer) { _, _ in topChannels = computeTopChannels() }
+        .onChange(of: policyLogits.count) { _, _ in topChannels = computeTopChannels() }
+        .onChange(of: policyLogits.first) { _, _ in topChannels = computeTopChannels() }
+    }
+
+    private func computeTopChannels() -> [TopChannel] {
+        // Defensive: parent gates on `policyLogits.count == policySize`,
+        // but @State recomputes can fire mid-transition (e.g. between
+        // an inference clear and the next result). Bail before the
+        // loop when the array isn't sized for the full channel sweep.
+        let required = PolicyEncoding.channelCount * 64
+        guard policyLogits.count >= required else { return [] }
         let flip = currentPlayer == .black
         let encoderRow = flip ? (7 - hoveredRow) : hoveredRow
         // Build (channel, logit) pairs for every channel that's
@@ -87,26 +133,6 @@ struct HoverPolicyOverlay: View {
                 label: HoverPolicyOverlay.channelLabel(for: p.chan)
             )
         }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Top 3 channels at \(squareName(hoveredRow, hoveredCol))")
-                    .font(.headline)
-                Spacer()
-                Text("\(currentPlayer == .white ? "White" : "Black") to move")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(topChannels) { ch in
-                    tile(ch)
-                }
-            }
-        }
-        .padding(8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
