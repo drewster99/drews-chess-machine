@@ -30,6 +30,13 @@ import SwiftUI
 /// these three fields to the values it stashed in `onAppearSeed`,
 /// matching the standard "edit → cancel discards" pattern from the
 /// user's POV.
+fileprivate enum Tab: String, CaseIterable, Identifiable {
+    case optimizer = "Optimizer"
+    case selfPlay = "Self Play"
+    case replay = "Replay"
+    var id: String { rawValue }
+}
+
 struct TrainingSettingsPopover: View {
 
     /// Trainer model ID at session start, displayed in the header.
@@ -137,11 +144,45 @@ struct TrainingSettingsPopover: View {
     /// — the natural mental model is "always start on Optimizer."
     @State private var selectedTab: Tab = .optimizer
 
-    private enum Tab: String, CaseIterable, Identifiable {
-        case optimizer = "Optimizer"
-        case selfPlay = "Self Play"
-        case replay = "Replay"
-        var id: String { rawValue }
+    // Aggregated per-tab error flags, derived from the existing
+    // per-field `*Error: Bool` properties already passed in by the
+    // parent. These drive (a) the red-dot indicator on each tab in
+    // the segmented control below and (b) the Save button's
+    // `.disabled(...)` modifier — once Save has set any error flag,
+    // the user has to clear it (by editing the offending field) before
+    // Save re-enables. The parent's `.onChange` handlers next to the
+    // popover construction site clear individual error flags as the
+    // user edits the matching text field.
+    private var optimizerHasError: Bool {
+        lrError
+            || warmupError
+            || momentumError
+            || entropyError
+            || gradClipError
+            || weightDecayError
+            || policyLossWeightError
+            || valueLossWeightError
+            || drawPenaltyError
+            || trainingBatchSizeError
+    }
+
+    private var selfPlayHasError: Bool {
+        selfPlayWorkersError
+            || selfPlayStartTauError
+            || selfPlayDecayPerPlyError
+            || selfPlayFloorTauError
+    }
+
+    private var replayHasError: Bool {
+        replayBufferCapacityError
+            || replayBufferMinPositionsError
+            || replayRatioTargetError
+            || replaySelfPlayDelayError
+            || replayTrainingStepDelayError
+    }
+
+    private var anyTabHasError: Bool {
+        optimizerHasError || selfPlayHasError || replayHasError
     }
 
     var body: some View {
@@ -165,17 +206,21 @@ struct TrainingSettingsPopover: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Segmented tab picker — `.segmented` style renders as
-            // the macOS-native segmented control inside a popover,
-            // matching `Picker(.segmented)` patterns elsewhere in
-            // the app's chip popovers.
-            Picker("", selection: $selectedTab) {
-                ForEach(Tab.allCases) { t in
-                    Text(t.rawValue).tag(t)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
+            // Tab bar — a small custom segmented control rather than
+            // `Picker(.segmented)` because the macOS native segmented
+            // control does not allow per-segment colored content. We
+            // render a 6-pt red dot next to a tab's label whenever
+            // any field on that tab is currently flagged with a
+            // validation error, so the user can see at a glance which
+            // tab(s) need attention even when looking at a different
+            // tab. Visual styling is intentionally close to (not
+            // pixel-perfect with) `NSSegmentedControl`.
+            TrainingSettingsTabBar(
+                selectedTab: $selectedTab,
+                optimizerHasError: optimizerHasError,
+                selfPlayHasError: selfPlayHasError,
+                replayHasError: replayHasError
+            )
 
             Divider()
 
@@ -246,8 +291,15 @@ struct TrainingSettingsPopover: View {
                 Spacer()
                 Button("Cancel", action: onCancel)
                     .keyboardShortcut(.cancelAction)
+                // Save stays disabled while any field is currently
+                // marked invalid. The matching error flag is cleared
+                // by the parent's `.onChange` handler when the user
+                // edits the offending field, at which point Save
+                // re-enables and the next click re-validates the
+                // full form transactionally.
                 Button("Save", action: onSave)
                     .keyboardShortcut(.defaultAction)
+                    .disabled(anyTabHasError)
             }
         }
         .padding(16)
@@ -267,6 +319,138 @@ struct TrainingSettingsPopover: View {
             // sequence finds nothing to revert.
             onCancel()
         }
+    }
+
+}
+
+/// Custom segmented control. One button per `Tab` case, with an
+/// optional 6-pt red dot trailing the label when that tab's
+/// `*HasError` input is true. The selected tab is filled with a
+/// light accent-color tint; unselected tabs render with a
+/// secondary foreground for the label.
+///
+/// The three tabs are unrolled (rather than `ForEach(Tab.allCases)`)
+/// so there is no per-render `Array(Tab.allCases.enumerated())`
+/// allocation and no `if idx > 0 { Divider() }` conditional that
+/// would change the view tree shape across re-evals. SwiftUI sees a
+/// stable five-child HStack: button, divider, button, divider,
+/// button.
+fileprivate struct TrainingSettingsTabBar: View {
+    @Binding var selectedTab: Tab
+    let optimizerHasError: Bool
+    let selfPlayHasError: Bool
+    let replayHasError: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            TrainingSettingsTabButton(
+                tab: .optimizer,
+                selectedTab: $selectedTab,
+                hasError: optimizerHasError
+            )
+            Divider().frame(height: 18)
+            TrainingSettingsTabButton(
+                tab: .selfPlay,
+                selectedTab: $selectedTab,
+                hasError: selfPlayHasError
+            )
+            Divider().frame(height: 18)
+            TrainingSettingsTabButton(
+                tab: .replay,
+                selectedTab: $selectedTab,
+                hasError: replayHasError
+            )
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.35), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+/// One tab button. The error dot is always present in the tree;
+/// its size and opacity flip together so SwiftUI never sees the
+/// button's child count change. This avoids the
+/// `if hasError { Circle() }` conditional that would otherwise
+/// rebuild the AppKit-side view when validation flips.
+fileprivate struct TrainingSettingsTabButton: View {
+    let tab: Tab
+    @Binding var selectedTab: Tab
+    let hasError: Bool
+
+    var body: some View {
+        Button {
+            selectedTab = tab
+        } label: {
+            HStack(spacing: 6) {
+                Text(tab.rawValue)
+                    .font(.system(size: 13))
+                    .foregroundStyle(tab == selectedTab ? Color.primary : Color.secondary)
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: hasError ? 6 : 0, height: hasError ? 6 : 0)
+                    .opacity(hasError ? 1 : 0)
+                    .accessibilityHidden(!hasError)
+                    .accessibilityLabel("Errors on \(tab.rawValue) tab")
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .background(
+                tab == selectedTab
+                    ? Color.accentColor.opacity(0.18)
+                    : Color.clear
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Live ratio badge
+
+/// Live current-ratio badge. Color-coded: green within ±10% of
+/// target, orange between 10% and 30%, red beyond 30% — matches
+/// the existing replay-ratio chart's color semantics. Target
+/// value reads from the live text-edit binding so the badge
+/// updates in lock-step with the user typing into the Target
+/// ratio field.
+///
+/// View tree is stable: a single `Text` view always — the value
+/// portion and the "(target …)" portion are concatenated via
+/// `Text + Text`, which produces one inline-styled Text rather
+/// than an HStack. When `current` is nil the value run shows "--"
+/// with secondary styling; when present, it shows the formatted
+/// value with the banded color. SwiftUI never sees the structure
+/// swap, so the AppKit bridge stays put — and the visual matches
+/// the original single-Text rendering exactly (no HStack spacing
+/// delta).
+fileprivate struct LiveRatioBadge: View {
+    let current: Double?
+    let targetText: String
+
+    var body: some View {
+        let target = Double(targetText.trimmingCharacters(in: .whitespaces)) ?? 1.10
+        let valuePart: Text = {
+            guard let cur = current else {
+                return Text("--").foregroundStyle(.secondary)
+            }
+            let delta = abs(cur - target) / max(0.001, target)
+            let color: Color
+            if delta < 0.10 {
+                color = .green
+            } else if delta < 0.30 {
+                color = .orange
+            } else {
+                color = .red
+            }
+            return Text(String(format: "%.2f", cur)).foregroundStyle(color)
+        }()
+        return (valuePart
+                + Text(" ")
+                + Text(String(format: "(target %.2f)", target))
+                    .foregroundStyle(.secondary))
+            .font(.system(.caption, design: .monospaced))
     }
 }
 
@@ -572,8 +756,54 @@ private struct SelfPlayTab: View {
                 ) {
                     EmptyView()
                 }
+                // Soft advisory: the popover validates start/floor in
+                // [0.01, 5.0] but values that pass validation can
+                // still produce near-uniform sampling at every ply
+                // (e.g. floor=5.0 keeps softmax flat regardless of
+                // decay). Warn when either the steady-state floor or
+                // the post-20-ply effective tau is high enough that
+                // the network's logit advantage is largely lost.
+                // Decay here is additive per ply (not multiplicative),
+                // so effective tau at ply N is
+                //     max(start - N*decay, floor).
+                if showsTauWarning {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Text(
+                            "Sampling will be near-uniform: τ is high enough that "
+                                + "the network's logit advantage will be largely lost. "
+                                + "Consider lowering Floor or increasing Decay."
+                        )
+                        .foregroundStyle(.red)
+                        .font(.system(size: 12))
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.top, 4)
+                }
             }
         }
+    }
+
+    /// Heuristic predicate for the soft tau warning. Fires when either
+    ///   - the floor itself is ≥ 2.0 (steady-state too flat to recover
+    ///     even with maximal decay), or
+    ///   - effective τ after 20 plies of additive decay
+    ///     (`max(start − 20·decay, floor)`) is still ≥ 2.0.
+    /// 2.0 is a soft threshold: at τ ≈ 2 a ±2-nat logit gap (a fairly
+    ///  confident network call) is compressed to ~e^1 ≈ 2.7× odds, which
+    /// is most of the network's signal washed out.
+    private var showsTauWarning: Bool {
+        guard let start = Double(selfPlayStartTauText), start.isFinite,
+              let floor = Double(selfPlayFloorTauText), floor.isFinite,
+              let decay = Double(selfPlayDecayPerPlyText), decay.isFinite,
+              decay >= 0 else {
+            return false
+        }
+        if floor >= 2.0 { return true }
+        let after20 = max(start - 20.0 * decay, floor)
+        if after20 >= 2.0 { return true }
+        return false
     }
 
     /// Live "reached at N plies" hint computed from the current
@@ -675,7 +905,7 @@ private struct ReplayTab: View {
                     Text("Replay ratio control")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
-                    liveRatioBadge
+                    LiveRatioBadge(current: replayRatioCurrent, targetText: replayRatioTargetText)
                 }
                 let autoOn = replayRatioAutoAdjust
                 PopoverRow(
@@ -776,37 +1006,6 @@ private struct ReplayTab: View {
                     Spacer()
                 }
             }
-        }
-    }
-
-    /// Live current-ratio badge. Color-coded: green within ±10% of
-    /// target, orange between 10% and 30%, red beyond 30% — matches
-    /// the existing replay-ratio chart's color semantics. Target
-    /// value reads from the live text-edit binding so the badge
-    /// updates in lock-step with the user typing into the Target
-    /// ratio field.
-    @ViewBuilder
-    private var liveRatioBadge: some View {
-        let target = Double(replayRatioTargetText.trimmingCharacters(in: .whitespaces)) ?? 1.10
-        if let cur = replayRatioCurrent {
-            let delta = abs(cur - target) / max(0.001, target)
-            let color: Color = {
-                if delta < 0.10 { return .green }
-                if delta < 0.30 { return .orange }
-                return .red
-            }()
-            HStack(spacing: 4) {
-                Text(String(format: "%.2f", cur))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(color)
-                Text(String(format: "(target %.2f)", target))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-        } else {
-            Text(String(format: "-- (target %.2f)", target))
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
         }
     }
 

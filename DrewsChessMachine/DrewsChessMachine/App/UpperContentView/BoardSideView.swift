@@ -35,41 +35,44 @@ struct BoardSideView: View {
         // two rows of vertical space for the actual board.
         let showBoardPicker = realTraining && workerCount <= 1
         VStack(spacing: 4) {
-            if showBoardPicker {
-                Picker("Board", selection: $playAndTrainBoardMode) {
-                    Text("Game run").tag(PlayAndTrainBoardMode.gameRun)
-                    Text("Candidate test").tag(PlayAndTrainBoardMode.candidateTest)
+            Picker("Board", selection: $playAndTrainBoardMode) {
+                Text("Game run").tag(PlayAndTrainBoardMode.gameRun)
+                Text("Candidate test").tag(PlayAndTrainBoardMode.candidateTest)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 240)
+            .opacity(showBoardPicker ? 1 : 0)
+            .frame(height: showBoardPicker ? nil : 0)
+
+            HStack(spacing: 12) {
+                let labelVisible = inferenceResultPresent && showForwardPassUI
+                Text(overlayLabel)
+                    .font(.system(.caption, design: .monospaced))
+                    .opacity(labelVisible ? 1 : 0)
+                    .frame(width: labelVisible ? nil : 0)
+                    .frame(height: labelVisible ? nil : 0)
+                Picker("To move", selection: sideToMoveBinding) {
+                    Text("White").tag(PieceColor.white)
+                    Text("Black").tag(PieceColor.black)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 240)
-            }
-
-            HStack(spacing: 12) {
-                if inferenceResultPresent, showForwardPassUI {
-                    Text(overlayLabel)
-                        .font(.system(.caption, design: .monospaced))
+                .controlSize(.small)
+                .frame(maxWidth: 110)
+                .opacity(forwardPassEditable ? 1 : 0)
+                .frame(width: forwardPassEditable ? 110 : 0)
+                .frame(height: forwardPassEditable ? nil : 0)
+                Picker("Probe", selection: $probeNetworkTarget) {
+                    Text("Candidate").tag(ProbeNetworkTarget.candidate)
+                    Text("Champion").tag(ProbeNetworkTarget.champion)
                 }
-                if forwardPassEditable {
-                    Picker("To move", selection: sideToMoveBinding) {
-                        Text("White").tag(PieceColor.white)
-                        Text("Black").tag(PieceColor.black)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(maxWidth: 110)
-                }
-                if isCandidateTestActive {
-                    Picker("Probe", selection: $probeNetworkTarget) {
-                        Text("Candidate").tag(ProbeNetworkTarget.candidate)
-                        Text("Champion").tag(ProbeNetworkTarget.champion)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .controlSize(.small)
-                    .frame(maxWidth: 150)
-                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(maxWidth: 150)
+                .opacity(isCandidateTestActive ? 1 : 0)
+                .frame(width: isCandidateTestActive ? nil : 0)
             }
 
             board

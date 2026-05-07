@@ -1496,7 +1496,7 @@ struct UpperContentView: View {
                         inferenceResultText: inferenceResult?.textOutput,
                         trainingError: trainingError,
                         selfPlayColumn: { selfPlayStatsColumn },
-                        trainingColumn: { trainingStatsColumn }
+                        trainingColumn: { trainingStatsColumnView }
                     )
                 }
             }
@@ -8216,59 +8216,39 @@ struct UpperContentView: View {
         clearTrainingAlarm()
     }
 
-    private var cumulativeStatusBar: some View {
+    fileprivate var cumulativeStatusBar: UpperCumulativeStatusBar<some View> {
         let totalSteps = trainingStats?.steps ?? 0
         let hasHistory = cumulativeRunCount > 0 || totalSteps > 0
         let canRunArena = !isArenaRunning && network != nil && trainer != nil
         let totalPositions = totalSteps * trainingParams.trainingBatchSize
-        let activeSec = cumulativeActiveTrainingSec
-        return CumulativeStatusBar(
+        let warmupLR: String? = {
+            if let snap = trainerWarmupSnap, snap.inWarmup {
+                return String(format: "%.2e", snap.effectiveLR)
+            }
+            return nil
+        }()
+        let legalMassStr = realLastLegalMassSnapshot.map {
+            String(format: "%.4f%%", Double($0.legalMass) * 100)
+        } ?? "--"
+        return UpperCumulativeStatusBar(
             hasHistory: hasHistory,
-            isVisible: hasHistory || canRunArena,
-            historyCells: {
-                StatusBarCell(
-                    label: "Active training time",
-                    value: GameWatcher.Snapshot.formatHMS(seconds: activeSec)
-                )
-                    // LR Warm-up cell — only visible while the trainer is
-                if let snap = trainerWarmupSnap, snap.inWarmup {
-                    StatusBarCell(
-                        label: "LR effective",
-                        value: String(format: "%.2e", snap.effectiveLR)
-                    )
-                }
-                StatusBarCell(
-                    label: "Training steps",
-                    value: Int(totalSteps).formatted()
-                )
-                StatusBarCell(
-                    label: "Positions trained",
-                    value: Self.formatCompactCount(totalPositions)
-                )
-                StatusBarCell(
-                    label: "Training rate",
-                    value: trainingRateStatusValue
-                )
-                StatusBarCell(
-                    label: "Legal mass",
-                    value: realLastLegalMassSnapshot.map {
-                        String(format: "%.4f%%", Double($0.legalMass) * 100)
-                    } ?? "--"
-                )
-                StatusBarCell(
-                    label: "Runs",
-                    value: "\(cumulativeRunCount)"
-                )
-                StatusBarCell(
-                    label: "Arenas",
-                    value: "\(tournamentHistory.count)"
-                )
-                StatusBarCell(
-                    label: "Promotions",
-                    value: "\(tournamentHistory.lazy.filter { $0.promoted }.count)"
-                )
-                scoreStatusBarCell
-            },
+            canRunArena: canRunArena,
+            activeTrainingTime: GameWatcher.Snapshot.formatHMS(seconds: cumulativeActiveTrainingSec),
+            warmupLREffective: warmupLR,
+            trainingSteps: Int(totalSteps).formatted(),
+            positionsTrained: Self.formatCompactCount(totalPositions),
+            trainingRate: trainingRateStatusValue,
+            legalMass: legalMassStr,
+            runs: "\(cumulativeRunCount)",
+            arenas: "\(tournamentHistory.count)",
+            promotions: "\(tournamentHistory.lazy.filter { $0.promoted }.count)",
+            scoreCell: scoreStatusBarCell,
+            // Right-side chips. Built each parent render. The
+            // popovers' bindings / error flags / callbacks remain
+            // captured here exactly as before. The chip-side
+            // state graph can be tightened in a follow-up by
+            // extracting each chip+popover into its own wrapper
+            // struct.
             rightChips: {
                 SessionStatusChipView(
                     kind: sessionStatusChip,
@@ -10500,7 +10480,7 @@ struct UpperContentView: View {
 // `UpperContentView`'s state, mirroring how the original inline code worked.
 extension UpperContentView {
 
-    var selfPlayStatsColumn: some View {
+    var selfPlayStatsColumn: SelfPlayStatsColumn {
         let column: (header: String, body: String)?
         if realTraining, let session = parallelStats {
             column = playAndTrainStatsText(game: gameSnapshot, session: session)
@@ -10516,50 +10496,16 @@ extension UpperContentView {
         )
     }
 
-    var trainingStatsColumn: some View {
-        @Bindable var trainingParams = self.trainingParams
+    fileprivate var trainingStatsColumnView: UpperTrainingStatsColumn {
         let column = trainingStatsText()
-        return TrainingStatsColumn(
+        return UpperTrainingStatsColumn(
             header: column.header,
             bodyText: colorizedPanelBody(column.body),
-            realTraining: realTraining
-        ) {
-            // Read-only replay-ratio display. Editable controls
-            // (Step Delay / SP Delay / Auto toggle / Target Ratio
-            // stepper) moved to the Training Settings popover's
-            // Replay tab. The user explicitly asked to keep this
-            // view-only readout on the main screen so the live
-            // ratio remains glanceable without opening the popover.
-            //
-            // SP tau, Buffer Cap, Prefill rows previously here also
-            // moved to the popover (Self Play and Replay tabs).
-            HStack(spacing: 6) {
-                Text("  Replay Ratio:")
-                if let snap = replayRatioSnapshot {
-                    Text(String(format: "%.2f", snap.currentRatio))
-                        .monospacedDigit()
-                        .frame(minWidth: 40, alignment: .trailing)
-                        .foregroundStyle(
-                            abs(snap.currentRatio - snap.targetRatio) < 0.3
-                            ? Color.primary : Color.red
-                        )
-                } else {
-                    Text("--")
-                        .monospacedDigit()
-                        .frame(minWidth: 40, alignment: .trailing)
-                }
-                Text("target:")
-                    .foregroundStyle(.secondary)
-                Text(String(format: "%.2f", trainingParams.replayRatioTarget))
-                    .monospacedDigit()
-                    .frame(minWidth: 32, alignment: .trailing)
-                if trainingParams.replayRatioAutoAdjust {
-                    Text("(auto)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
+            realTraining: realTraining,
+            replayRatioSnapshot: replayRatioSnapshot,
+            replayRatioTarget: trainingParams.replayRatioTarget,
+            replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust
+        )
     }
 
     /// The Training Settings chip + popover, with 19 per-field
@@ -10745,4 +10691,109 @@ extension UpperContentView {
         )
     }
 
+}
+
+/// Top-of-window cumulative status bar wrapper. Owns the
+/// rendering of the ~10 left-side history cells; right-side chips
+/// are supplied by the caller as a `@ViewBuilder` closure so the
+/// chips keep their concrete View types (no `AnyView` erasure).
+/// The bar's identity boundary doesn't depend on the popovers'
+/// bindings/error flags — SwiftUI can short-circuit re-evaluation
+/// of the cell list when only chip state changes.
+fileprivate struct UpperCumulativeStatusBar<RightChips: View>: View {
+    let hasHistory: Bool
+    let canRunArena: Bool
+    let activeTrainingTime: String
+    /// `nil` outside the LR warm-up window — the cell is then
+    /// omitted. (This still produces a `_ConditionalContent`
+    /// flip; if it ever becomes a hot path, switch to an
+    /// always-rendered cell with a `frame(width:)`-collapsed
+    /// hidden state.)
+    let warmupLREffective: String?
+    let trainingSteps: String
+    let positionsTrained: String
+    let trainingRate: String
+    let legalMass: String
+    let runs: String
+    let arenas: String
+    let promotions: String
+    let scoreCell: StatusBarCell
+    @ViewBuilder let rightChips: () -> RightChips
+
+    var body: some View {
+        CumulativeStatusBar(
+            hasHistory: hasHistory,
+            isVisible: hasHistory || canRunArena,
+            historyCells: {
+                StatusBarCell(label: "Active training time", value: activeTrainingTime)
+                if let lr = warmupLREffective {
+                    StatusBarCell(label: "LR effective", value: lr)
+                }
+                StatusBarCell(label: "Training steps", value: trainingSteps)
+                StatusBarCell(label: "Positions trained", value: positionsTrained)
+                StatusBarCell(label: "Training rate", value: trainingRate)
+                StatusBarCell(label: "Legal mass", value: legalMass)
+                StatusBarCell(label: "Runs", value: runs)
+                StatusBarCell(label: "Arenas", value: arenas)
+                StatusBarCell(label: "Promotions", value: promotions)
+                scoreCell
+            },
+            rightChips: rightChips
+        )
+    }
+}
+
+/// Wrapper around `TrainingStatsColumn` that owns the read-only
+/// replay-ratio status row. Pulled out of `UpperContentView` so it
+/// is its own SwiftUI identity boundary — its body re-evaluates
+/// only when one of its declared inputs changes, instead of every
+/// time the parent view re-renders.
+fileprivate struct UpperTrainingStatsColumn: View {
+    let header: String
+    let bodyText: AttributedString
+    let realTraining: Bool
+    let replayRatioSnapshot: ReplayRatioController.RatioSnapshot?
+    let replayRatioTarget: Double
+    let replayRatioAutoAdjust: Bool
+
+    var body: some View {
+        TrainingStatsColumn(
+            header: header,
+            bodyText: bodyText,
+            realTraining: realTraining
+        ) {
+            // Read-only replay-ratio display. Editable controls
+            // (Step Delay / SP Delay / Auto toggle / Target Ratio
+            // stepper) moved to the Training Settings popover's
+            // Replay tab. The user explicitly asked to keep this
+            // view-only readout on the main screen so the live
+            // ratio remains glanceable without opening the popover.
+            HStack(spacing: 6) {
+                Text("  Replay Ratio:")
+                if let snap = replayRatioSnapshot {
+                    Text(String(format: "%.2f", snap.currentRatio))
+                        .monospacedDigit()
+                        .frame(minWidth: 40, alignment: .trailing)
+                        .foregroundStyle(
+                            abs(snap.currentRatio - snap.targetRatio) < 0.3
+                            ? Color.primary : Color.red
+                        )
+                } else {
+                    Text("--")
+                        .monospacedDigit()
+                        .frame(minWidth: 40, alignment: .trailing)
+                }
+                Text("target:")
+                    .foregroundStyle(.secondary)
+                Text(String(format: "%.2f", replayRatioTarget))
+                    .monospacedDigit()
+                    .frame(minWidth: 32, alignment: .trailing)
+                if replayRatioAutoAdjust {
+                    Text("(auto)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
 }

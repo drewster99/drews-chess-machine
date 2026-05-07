@@ -87,7 +87,7 @@ struct ArenaHistoryView: View {
             if history.isEmpty {
                 VStack {
                     Spacer()
-                    Text("No arenas yet")
+                    Text("No data to display")
                         .foregroundStyle(.secondary)
                     Spacer()
                 }
@@ -295,8 +295,15 @@ private struct ArenaTrendSparkline: View {
                         }
                         guard let n = nearest else { return }
                         // Distance-in-pixels guard so taps in empty
-                        // chart space are ignored.
-                        let dotX = (proxy.position(forX: Double(n.index)) ?? 0) + origin.x
+                        // chart space are ignored. A real `guard let`
+                        // here — the prior `?? 0` fallback collapsed
+                        // `dotX` to the chart's `origin.x` whenever
+                        // `proxy.position(forX:)` returned nil, which
+                        // could spuriously match taps near the chart's
+                        // left edge or reject taps elsewhere that
+                        // genuinely landed near a dot.
+                        guard let plotX = proxy.position(forX: Double(n.index)) else { return }
+                        let dotX = plotX + origin.x
                         if abs(location.x - dotX) <= 14 {
                             onTapRecord(n.id)
                         }
@@ -390,7 +397,7 @@ private struct ArenaHistoryRow: View {
                 // fill available width; the badge and score stay
                 // at intrinsic size.
                 HStack(alignment: .center, spacing: 12) {
-                    statusBadge
+                    ArenaHistoryStatusBadge(text: statusBadgeText, color: statusBadgeColor)
                     Text(scoreText)
                         .font(.system(.title3, design: .monospaced).weight(.bold))
                         .foregroundStyle(statusBadgeColor)
@@ -434,7 +441,7 @@ private struct ArenaHistoryRow: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
         }
-        .background { rowBackground }
+        .background(rowBackground)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture {
@@ -449,29 +456,32 @@ private struct ArenaHistoryRow: View {
         }
     }
 
-    @ViewBuilder
-    private var statusBadge: some View {
-        Text(statusBadgeText)
+    private var rowBackground: Color {
+        if hovering { return Color.gray.opacity(0.10) }
+        if rowParity == 0 { return Color.gray.opacity(0.04) }
+        return Color.clear
+    }
+}
+
+// MARK: - Status badge
+
+/// "PROMOTED ★" / "kept" pill. Visual styling driven entirely by
+/// the inputs so SwiftUI sees a stable view tree.
+private struct ArenaHistoryStatusBadge: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
             .font(.system(.caption, design: .default).weight(.semibold))
-            .foregroundStyle(statusBadgeColor)
+            .foregroundStyle(color)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(statusBadgeColor.opacity(0.12))
+                    .fill(color.opacity(0.12))
             )
             .frame(minWidth: 90, alignment: .center)
-    }
-
-    @ViewBuilder
-    private var rowBackground: some View {
-        if hovering {
-            Color.gray.opacity(0.10)
-        } else if rowParity == 0 {
-            Color.gray.opacity(0.04)
-        } else {
-            Color.clear
-        }
     }
 }
 
