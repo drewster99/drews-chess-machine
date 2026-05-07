@@ -105,28 +105,6 @@ on smaller batches; bottleneck is more likely self-play GPU
 saturation than trainer GPU saturation at the current scale). Not
 asked for; flagging for possible future work.
 
-### Per-tab error-state polish on the popover
-
-The new tabbed Training Settings popover validates each field on
-Save and surfaces a red border on parse failure, but doesn't
-currently propagate the failure across to a per-tab indicator
-(e.g., a red dot on the segmented control's tab when that tab
-has a field with a red border). On a Save-with-errors, the
-popover stays open but the user has to manually walk every tab
-to find the offender. A per-tab error indicator on the segmented
-picker would be a small UX improvement.
-
-### Self-play tau range mismatch with schedule rebuild
-
-The `trainingPopoverSave` validates `selfPlayStartTau` and
-`selfPlayTargetTau` against `[0.01, 5.0]`, but the
-`SamplingSchedule` initializer further clamps tau values to
-positive floats with `max(0.01, …)`. If the user enters a value
-below 0.01 the popover save catches it; if they enter a value
-that's valid for the popover but produces degenerate downstream
-behavior (e.g., tau=5.0 with no decay produces softmax over near-
-flat logits at every ply), there's no diagnostic. Low priority.
-
 ---
 
 ## How this file works
