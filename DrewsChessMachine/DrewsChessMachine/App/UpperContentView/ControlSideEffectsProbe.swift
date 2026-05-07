@@ -26,10 +26,10 @@ struct ControlSideEffectsProbe: View {
     let workerCountBox: WorkerCountBox?
     let trainer: ChessTrainer?
     let replayRatioController: ReplayRatioController?
-    /// Snap-to-rung helper for the discrete training-step delay
-    /// ladder. Forwarded in so the probe doesn't have to
-    /// duplicate the parent's `stepDelayLadder` constant.
-    let snapDelayToLadder: (Int) -> Int
+    /// Snap-to-rung helper for the shared discrete delay policy.
+    /// Forwarded in so the probe doesn't have to duplicate the
+    /// parent's valid-delay rung list.
+    let snapDelayToNearestValidRung: (Int) -> Int
 
     var body: some View {
         Color.clear
@@ -121,7 +121,7 @@ struct ControlSideEffectsProbe: View {
                     // ladder rung so the Stepper binding doesn't crash
                     // on an off-ladder value.
                     let lastAuto = replayRatioController?.computedDelayMs ?? trainingParams.trainingStepDelayMs
-                    let snapped = snapDelayToLadder(lastAuto)
+                    let snapped = snapDelayToNearestValidRung(lastAuto)
                     trainingParams.trainingStepDelayMs = snapped
                     replayRatioController?.manualDelayMs = snapped
                     // Symmetric inherit on the SP side: pick up the
@@ -139,7 +139,7 @@ struct ControlSideEffectsProbe: View {
                     // than collapsing to 0.
                     let priorSP = trainingParams.selfPlayDelayMs
                     let lastAutoSP = replayRatioController?.smoothedSelfPlayDelayMs ?? priorSP
-                    let snappedSP = snapDelayToLadder(lastAutoSP > 0 ? lastAutoSP : priorSP)
+                    let snappedSP = snapDelayToNearestValidRung(lastAutoSP > 0 ? lastAutoSP : priorSP)
                     trainingParams.selfPlayDelayMs = snappedSP
                     replayRatioController?.manualSelfPlayDelayMs = snappedSP
                 }

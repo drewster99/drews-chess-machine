@@ -501,44 +501,13 @@ struct UpperContentView: View {
     /// bring the ratio back. 2000 ms is the ceiling so a runaway
     /// auto-adjust can't stall the session outright.
     nonisolated static let selfPlayDelayMaxMs: Int = 3000
-    /// Discrete ladder of valid training-step delay values in
-    /// milliseconds. Fine-grained 5 ms increments at the low end
-    /// where small delays matter most, then 25 ms increments all
-    /// the way up to `stepDelayMaxMs`. The Stepper's +/- clicks
-    /// walk this ladder one rung at a time via
-    /// `trainingStepDelayBinding`.
-    nonisolated static let stepDelayLadder: [Int] =
+    /// Discrete set of valid delay values in milliseconds used by
+    /// both manual stepper edits and auto-computed delay handoff.
+    /// Fine-grained 5 ms increments at the low end where small
+    /// delays matter most, then 25 ms increments up to
+    /// `stepDelayMaxMs`.
+    nonisolated static let validDelayRungsMs: [Int] =
     [0, 5, 10, 15, 20] + Array(stride(from: 25, through: Self.stepDelayMaxMs, by: 25))
-
-    /// Snap a Stepper write onto `stepDelayLadder`. The Stepper is
-    /// configured with `step: 1` over the full integer range, but
-    /// only the discrete ladder rungs are valid; this helper translates
-    /// the raw `current ± 1` write into "advance / retreat one rung".
-    /// If `current` isn't already a ladder rung (e.g. inherited from
-    /// the auto-adjuster which produces arbitrary ms values), it's
-    /// snapped to the nearest rung first and then walked from there.
-    /// Shared by `trainingStepDelayBinding` and
-    /// `selfPlayStepDelayBinding` since both speak the same ladder.
-    nonisolated static func snappedNextDelayRung(current: Int, requested: Int) -> Int {
-        let ladder = stepDelayLadder
-        let currentIdx: Int
-        if let exact = ladder.firstIndex(of: current) {
-            currentIdx = exact
-        } else {
-            currentIdx = ladder.enumerated().min(by: {
-                abs($0.element - current) < abs($1.element - current)
-            })?.offset ?? 0
-        }
-        let nextIdx: Int
-        if requested > current {
-            nextIdx = min(currentIdx + 1, ladder.count - 1)
-        } else if requested < current {
-            nextIdx = max(currentIdx - 1, 0)
-        } else {
-            nextIdx = currentIdx
-        }
-        return ladder[nextIdx]
-    }
     // trainingStepDelayMs migrated to `trainingParams.trainingStepDelayMs`;
     // the training worker reads the live delay from
     // `replayRatioController.recordTrainingBatchAndGetDelay(...)` each
@@ -1686,8 +1655,8 @@ struct UpperContentView: View {
             workerCountBox: workerCountBox,
             trainer: trainer,
             replayRatioController: replayRatioController,
-            snapDelayToLadder: { delay in
-                Self.stepDelayLadder.min(by: { abs($0 - delay) < abs($1 - delay) }) ?? delay
+            snapDelayToNearestValidRung: { delay in
+                Self.validDelayRungsMs.min(by: { abs($0 - delay) < abs($1 - delay) }) ?? delay
             }
         ))
         .onReceive(snapshotTimer) { _ in
@@ -3932,7 +3901,7 @@ struct UpperContentView: View {
         }
         if case .int(let v) = values[TrainingStepDelayMs.id] {
             let clamped = max(0, min(Self.stepDelayMaxMs, v))
-            let ladder = Self.stepDelayLadder
+            let ladder = Self.validDelayRungsMs
             let nearest = ladder.min(by: { abs($0 - clamped) < abs($1 - clamped) }) ?? clamped
             values[TrainingStepDelayMs.id] = .int(nearest)
         }

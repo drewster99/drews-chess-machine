@@ -54,23 +54,6 @@ Implementation pattern would mirror the existing single-tensor
 `policyHeadWeightNormTensor` readback. Not a difficult change;
 just a deferred priority.
 
-### "Clip is currently active" counter on STATS line / popover
-
-The new `gNorm` chart shows the clip line, so the answer to "is
-the clip permanently active?" is now a glance. But a counter like
-`clipped=98/100 last 100 steps` on the `[STATS]` line, or a "Clip
-active 98% of recent steps" badge on the popover, would be a
-clearer alarm than reading the chart. Particularly useful for
-autotrain runs where no human is reading the chart in real time.
-
-Implementation: append a 0/1 marker to a new rolling window in
-`TrainingLiveStatsBox` indexed by `gNorm > gradClipMaxNorm`;
-expose `rollingClipActiveFraction: Double?` on the snapshot. Or,
-cheaper: `gNorm > gradClipMaxNorm` is computable from the existing
-`rollingGradGlobalNorm` and the live `gradClipMaxNorm` slider value
-without any extra trainer-side work — the `[STATS]` line consumer
-can format `clip=ON` / `clip=off` from those two values.
-
 ### Migrating away from coupled-decay-saved velocity buffers
 
 A v2 `trainer.dcmmodel` written under the *old* coupled-decay
@@ -132,24 +115,6 @@ has a field with a red border). On a Save-with-errors, the
 popover stays open but the user has to manually walk every tab
 to find the offender. A per-tab error indicator on the segmented
 picker would be a small UX improvement.
-
-### `replayRatioTarget` discrete-step issue
-
-The Replay tab's Target ratio Stepper uses `step: 0.05`. The
-binding's set converts back to `String(format: "%.2f", newValue)`
-which can land off-grid (e.g., a click past 1.10 lands at 1.149999
-which displays as 1.15). Live-update path snaps via
-`max(0.1, min(5.0, newValue))` but doesn't snap to the 0.05 grid.
-Functionally fine; just a polish item if rounding is bothersome.
-
-### `trainingStepDelayBox` cleanup remnants
-
-`stepDelayLadder` / `snappedNextDelayRung` static helpers on
-`UpperContentView` survived the box deletion because they're
-still referenced by the auto-computed delay snapping path. The
-naming now reads as orphaned-from-Stepper-context — could be
-renamed to reflect the actual remaining use case for clarity.
-Cosmetic.
 
 ### Self-play tau range mismatch with schedule rebuild
 
