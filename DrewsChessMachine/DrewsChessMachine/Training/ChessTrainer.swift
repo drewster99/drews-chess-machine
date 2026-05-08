@@ -1755,15 +1755,13 @@ final class ChessTrainer: @unchecked Sendable {
         let advantage = graph.subtraction(z, vBaseline, name: "advantage")
         // Per-batch advantage standardization: `(A − E[A]) / (σ[A] + ε)`
         // before multiplying into the policy loss. Stabilizes the
-        // policy-gradient magnitude batch-to-batch and removes the
-        // bias-from-uncentered-baseline failure mode: when the value
-        // head has a global offset (e.g. `E[v] ≈ 0.45` because 80 % of
-        // self-play games are draws and the head has collapsed to the
-        // draw-penalty average), raw advantages are systematically
-        // skewed positive for wins and skewed negative for losses, so
-        // the shared trunk receives a biased gradient in one direction.
-        // Centering cancels the bias; std-dividing keeps step sizes
-        // comparable even when the batch happens to span extreme z.
+        // policy-gradient magnitude batch-to-batch.
+        //
+        // DEPRECATED: Centering (subtracting E[A]) was found to cause
+        // policy collapse in draw-heavy regimes by inverting the
+        // signal for draws. We now preserve the absolute sign of the
+        // advantage while still dividing by the standard deviation
+        // to keep step sizes comparable batch-to-batch.
         //
         // MPSGraph has no stopGradient — but advantage is a pure
         // function of placeholders (`z`, `vBaseline`), so no gradient
@@ -1772,9 +1770,9 @@ final class ChessTrainer: @unchecked Sendable {
         // it adjusts the forward value used as the REINFORCE weight,
         // never touches the autograd path.
         //
-        // ε of 1e-6 is conservative — the batch std is comfortably
-        // above that under any outcome mix we actually train on (z in
-        // {−1, 0, +1}, `drawPenalty ≈ 0.3`, batch=4096 → std ≈ 0.5+).
+        // ε of 1e-6 is conservative. We floor the variance at 0.04
+        // (std 0.2) via `graph.maximum` so that a homogeneous batch
+        // (e.g. all draws) doesn't produce an infinite gradient.
         let advantageMeanForNorm = graph.mean(
             of: advantage,
             axes: [0, 1],
@@ -1789,9 +1787,15 @@ final class ChessTrainer: @unchecked Sendable {
             with: advantageCentered,
             name: "advantage_centered_sq"
         )
-        let advantageVarForNorm = graph.mean(
+        let advantageVarRaw = graph.mean(
             of: advantageCenteredSq,
             axes: [0, 1],
+            name: "advantage_var_raw"
+        )
+        let advantageVarFloor = graph.constant(0.04, dataType: dtype)
+        let advantageVarForNorm = graph.maximum(
+            advantageVarRaw,
+            advantageVarFloor,
             name: "advantage_var_for_norm"
         )
         let advantageNormEps = graph.constant(1e-6, dataType: dtype)
@@ -1805,7 +1809,7 @@ final class ChessTrainer: @unchecked Sendable {
             name: "advantage_std_for_norm"
         )
         let advantageNormalized = graph.division(
-            advantageCentered,
+            advantage, // <-- Use 'advantage' (z - vBaseline) directly, not 'advantageCentered'
             advantageStdForNorm,
             name: "advantage_normalized"
         )
@@ -1923,8 +1927,13 @@ final class ChessTrainer: @unchecked Sendable {
         // a placeholder or rebuilding as log-softmax-from-logits
         // (max-subtract needs reductionMaximum → no gradient) remain
         // closed off; the ε-bumped form is the available mitigation.
+        //
+        // NOTE: We use UNMASKED logits here so the entropy bonus
+        // penalizes concentration anywhere, including illegal moves.
+        // This is a critical anti-collapse guard that keeps illegal
+        // mass from runaway growth.
         let softmax = graph.softMax(
-            with: maskedLogits,
+            with: network.policyOutput, // <-- changed from maskedLogits
             axis: 1,
             name: "policy_softmax"
         )
