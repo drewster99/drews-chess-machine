@@ -1,0 +1,17 @@
+log_path: /Users/andrew/Library/Logs/DrewsChessMachine/dcm_log_20260507-203345.txt
+tick_count: 81976
+stats_count: 1012
+joined_count: 1012
+elapsed_hours_start: 0.016666666666666666
+elapsed_hours_end: 17.301944444444445
+tick_p95_ms_start: 157.53
+tick_p95_ms_end: 13093.45
+tick_p95_ms_median: 8788.89
+tick_p95_ms_p95: 12831.3
+tick_p95_ms_max: 188723.03
+train_rate_start_hr: 9133327.0
+train_rate_end_hr: 2744799.0
+train_rate_median_hr: 3453702.0
+train_rate_p05_hr: 2720689.0
+train_rate_min_hr: 0.0
+pearson_log10_p95tick_vs_trainrate: -0.9667608190341775
