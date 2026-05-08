@@ -1668,14 +1668,13 @@ struct UpperContentView: View {
             let dispatchedAt = CFAbsoluteTimeGetCurrent()
 
             guard !snapshotTickInFlight else {
-                snapshotTickSkipped += 1
                 return
             }
 
             snapshotTickInFlight = true
-            Task { @MainActor in
-                defer { snapshotTickInFlight = false }
+            Task.detached {
                 await processSnapshotTimerTick(dispatchedAt: dispatchedAt)
+                await MainActor.run { snapshotTickInFlight = false }
             }
         }
         .onChange(of: realTraining) { _, newValue in
@@ -1827,7 +1826,6 @@ struct UpperContentView: View {
     /// Throttling clock for the periodic `[TICK]` emit. Reset every
     /// time a periodic or anomalous emit fires.
     @State private var snapshotTickInFlight = false
-    @State private var snapshotTickSkipped = 0
     @State private var snapshotTickLastLogAt: Date? = nil
 
     /// Cadence for the periodic snapshot-tick log emit. 30 s gives a
