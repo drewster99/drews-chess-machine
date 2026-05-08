@@ -381,7 +381,7 @@ struct UpperContentView: View {
     @State private var trainingError: String?
     /// Lock-protected live-stats holder shared with the background training
     /// task (continuous or self-play). The worker writes via `recordStep`
-    /// with no main-actor hop; the 10 Hz `snapshotTimer` poller mirrors the
+    /// with no main-actor hop; the 2 Hz `snapshotTimer` poller mirrors the
     /// latest values into `trainingStats` / `lastTrainStep` /
     /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
     /// count has actually advanced.
@@ -1856,16 +1856,13 @@ struct UpperContentView: View {
         // Cheap (single locked struct copy) and bounds UI work even
         // when the game loop is doing hundreds of moves per second.
         //
-        // `elap(_:)` is the per-stage trace probe that was used to
-        // attribute a UI stall to a specific block of this tick.
-        // Left as a stub — call sites stay so the next investigation
-        // can re-enable it by uncommenting the body — but disabled by
-        // default so the snapshot tick stays as cheap as possible
-        // (Date() per call + an os_log emit at every site adds up
-        // when we're at 10 Hz and chasing main-actor latency in this
-        // very tick).
+        // `elap(_:)` is the per-stage trace probe used to attribute a
+        // UI stall to a specific block of this tick. Cheap enough to
+        // leave on at the 2 Hz heartbeat — `os_log` is hundreds of
+        // nanoseconds per emit and we're producing ~13 lines/sec,
+        // negligible against the work the tick body itself does.
         func elap(_ s: String) {
-            // logger.log(">> \(s): \(Date().timeIntervalSince(start))")
+            logger.log(">> \(s): \(Date().timeIntervalSince(start))")
         }
         let start = Date()
         _ = start
@@ -7094,8 +7091,19 @@ struct UpperContentView: View {
                     [arenaTaskCreatedAt] in
                     let creatingMs = Int(Date().timeIntervalSince(arenaTaskCreatedAt) * 1000)
                     SessionLogger.shared.log("[TASK] arena coordinator: created→exec=\(creatingMs)ms")
-                    while !Task.isCancelled {
-                        if triggerBox.consume() {
+                    // Event-driven wait — sleeps until a trigger
+                    // fires, the box is cancelled, or the Task is
+                    // cancelled. The trigger-box's tri-state return
+                    // is the single source of truth for what to do
+                    // next — no separate `Task.isCancelled` check
+                    // needed after the await.
+                    arenaLoop: while true {
+                        switch await triggerBox.waitForTrigger() {
+                        case .cancelled:
+                            break arenaLoop
+                        case .falseAlarm:
+                            continue arenaLoop
+                        case .fire:
                             await self.runArenaParallel(
                                 trainer: trainer,
                                 champion: network,
@@ -7108,8 +7116,6 @@ struct UpperContentView: View {
                                 overrideBox: overrideBox
                             )
                             triggerBox.recordArenaCompleted()
-                        } else {
-                            try? await Task.sleep(for: .milliseconds(500))
                         }
                     }
                 }
