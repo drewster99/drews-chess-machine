@@ -658,7 +658,7 @@ struct UpperContentView: View {
     @State private var sweepResults: [SweepRow] = []
     @State private var sweepProgress: SweepProgress?
     @State private var sweepCancelBox: CancelBox?
-    @State private var sweepDeviceCaps: DeviceMemoryCaps?
+    @State private var sweepDeviceCaps: MetalDeviceMemoryLimits?
     nonisolated static let sweepSizes: [Int] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
     nonisolated static let sweepSecondsPerSize: Double = 1.0
 
@@ -1877,7 +1877,7 @@ struct UpperContentView: View {
             // sweep's per-row peak. The trainer also samples at row
             // boundaries — we just contribute extra samples while a
             // row is in flight so we don't miss mid-step spikes.
-            let phys = await ChessTrainer.asyncCurrentPhysFootprintBytes()
+            let phys = await ChessTrainer.getAppMemoryFootprintBytes()
             await box.asyncRecordPeakSample(phys)
             let rows = await box.asyncCompletedRows()
             if rows.count != sweepResults.count {
@@ -1892,7 +1892,7 @@ struct UpperContentView: View {
         // useless redraw — and an idle box (after Stop or before
         // first step) stays silent.
         if let box = trainingBox {
-            let snap = await box.asyncSnapshot()
+            let snap = await box.snapshot()
             if snap.stats.steps != (trainingStats?.steps ?? -1) {
                 trainingStats = snap.stats
                 lastTrainStep = snap.lastTiming
@@ -2134,10 +2134,10 @@ struct UpperContentView: View {
         if now.timeIntervalSince(memoryStatsLastFetch) < Self.memoryStatsRefreshSec {
             return
         }
-        let app = await ChessTrainer.asyncCurrentPhysFootprintBytes()
-        let caps: DeviceMemoryCaps?
+        let app = await ChessTrainer.getAppMemoryFootprintBytes()
+        let caps: MetalDeviceMemoryLimits?
         if let trainer {
-            caps = await trainer.asyncDeviceMemoryCaps()
+            caps = await trainer.currentMetalMemoryLimits()
         } else {
             caps = nil
         }
@@ -2192,7 +2192,7 @@ struct UpperContentView: View {
         let elapsed = max(0, now.timeIntervalSince(chartCoordinator.chartElapsedAnchor))
         let trainingSnap: TrainingLiveStatsBox.Snapshot?
         if let trainingBox {
-            trainingSnap = await trainingBox.asyncSnapshot()
+            trainingSnap = await trainingBox.snapshot()
         } else {
             trainingSnap = nil
         }
@@ -2247,7 +2247,7 @@ struct UpperContentView: View {
         // `UpperContentView` because it mutates streak counters and
         // surfaces the banner / sound-loop state, both of which
         // are upper-layer concerns.
-        chartCoordinator.appendTrainingChart(sample, totalGpuMs: currentGpuMs)
+        await chartCoordinator.appendTrainingChart(sample, totalGpuMs: currentGpuMs)
         evaluateTrainingAlarm(from: sample)
     }
 
@@ -4120,7 +4120,7 @@ struct UpperContentView: View {
         commandHub.trainOnce = { trainOnce() }
         commandHub.startContinuousTraining = { startContinuousTraining() }
         commandHub.startRealTraining = { startTrainingFromMenu() }
-        commandHub.startSweep = { startSweep() }
+        commandHub.startSweep = { Task.detached { await startSweep() } }
         commandHub.stopAnyContinuous = { stopAnyContinuous() }
         commandHub.runArena = {
             SessionLogger.shared.log("[BUTTON] Run Arena")
@@ -4580,7 +4580,7 @@ struct UpperContentView: View {
         // the trainer's state entering the arena — especially
         // useful for diagnosing whether divergence was already
         // underway before the arena ran.
-        if let snap = trainingBox?.snapshot() {
+        if let snap = await trainingBox?.snapshot() {
             let pStr = snap.rollingPolicyLoss.map { String(format: "%+.4f", $0) } ?? "--"
             let vStr = snap.rollingValueLoss.map { String(format: "%+.4f", $0) } ?? "--"
             let eStr = snap.rollingPolicyEntropy.map { String(format: "%.4f", $0) } ?? "--"
@@ -7180,7 +7180,7 @@ struct UpperContentView: View {
                     var prevVmIoAccel: UInt32 = 0
 
                     func logOne(elapsedTarget: TimeInterval, legalMassOverride: ChessTrainer.LegalMassSnapshot?) async {
-                        let trainingSnap = box.snapshot()
+                        let trainingSnap = await box.snapshot()
                         let parallelSnap = pStatsBox.snapshot()
                         let bufCount = buffer.count
                         let bufCap = buffer.capacity
@@ -7664,7 +7664,7 @@ struct UpperContentView: View {
                     // line per new training step until
                     // bootstrapSteps steps have been logged.
                     while !Task.isCancelled && !bootstrapDone {
-                        let trainingSnap = box.snapshot()
+                        let trainingSnap = await box.snapshot()
                         let steps = trainingSnap.stats.steps
                         if steps > lastEmittedStep && steps > 0 {
                             // Refresh legalMass on a stride so
@@ -7724,7 +7724,7 @@ struct UpperContentView: View {
                         }
                         if Task.isCancelled { return }
                         if buffer.count >= legalMassSampleSize, let probeNet = probeInferenceForProbes {
-                            let trainingSnap = box.snapshot()
+                            let trainingSnap = await box.snapshot()
                             let steps = trainingSnap.stats.steps
                             do {
                                 lastLegalMass = try await trainer.legalMassSnapshot(
@@ -7895,7 +7895,7 @@ struct UpperContentView: View {
                         // learning-progress signal exists. Once steps
                         // > 0, stamp the anchor on the first qualifying
                         // iteration and measure grace from there.
-                        let trainingSteps = box.snapshot().stats.steps
+                        let trainingSteps = await box.snapshot().stats.steps
                         guard trainingSteps > 0 else {
                             trainingStartAt = nil
                             continue
@@ -9684,7 +9684,7 @@ struct UpperContentView: View {
 
     // MARK: - Sweep Actions
 
-    private func startSweep() {
+    private func startSweep() async {
         SessionLogger.shared.log("[BUTTON] Sweep Batch Sizes")
         guard let trainer = ensureTrainer() else { return }
         inferenceResult = nil
@@ -9694,7 +9694,7 @@ struct UpperContentView: View {
         sweepRunning = true
         // Snapshot device caps once at sweep start so the header has a
         // stable reference point regardless of what else is running.
-        sweepDeviceCaps = trainer.deviceMemoryCaps()
+        sweepDeviceCaps = await trainer.currentMetalMemoryLimits()
 
         let sizes = Self.sweepSizes
         let secondsPerSize = Self.sweepSecondsPerSize

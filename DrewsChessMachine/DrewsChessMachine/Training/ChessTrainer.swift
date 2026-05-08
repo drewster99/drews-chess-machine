@@ -256,7 +256,7 @@ struct SkippedRow: Sendable {
 
 /// Snapshot of the Metal device's memory caps. Captured once at sweep
 /// start so the UI can show "here's the ceiling and how close we are".
-struct DeviceMemoryCaps: Sendable {
+struct MetalDeviceMemoryLimits: Sendable {
     let recommendedMaxWorkingSet: UInt64
     let currentAllocated: UInt64
     let maxBufferLength: UInt64
@@ -838,12 +838,10 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         }
     }
 
-    /// Off-main async variant of `snapshot()`. Lock acquisition runs
-    /// on a global executor so the awaiter (typically the main actor)
-    /// is never synchronously blocked on `lock.withLock`.
-    func asyncSnapshot() async -> Snapshot {
+    /// Gets a snapshot of live stats
+    func snapshot() async -> Snapshot {
         await withCheckedContinuation { (cont: CheckedContinuation<Snapshot, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.global(qos: .default).async {
                 cont.resume(returning: self.snapshot())
             }
         }
@@ -4478,9 +4476,9 @@ final class ChessTrainer: @unchecked Sendable {
     /// `task_info` kernel call runs on a global executor so the
     /// awaiter (typically the main actor) is never synchronously
     /// blocked.
-    static func asyncCurrentPhysFootprintBytes() async -> UInt64 {
+    static func getAppMemoryFootprintBytes() async -> UInt64 {
         await withCheckedContinuation { (cont: CheckedContinuation<UInt64, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.global(qos: .default).async {
                 cont.resume(returning: Self.currentPhysFootprintBytes())
             }
         }
@@ -4608,27 +4606,21 @@ final class ChessTrainer: @unchecked Sendable {
         )
     }
 
-    /// Off-main async variant of `deviceMemoryCaps()`. The Metal
-    /// property reads run on a global executor so the awaiter
-    /// (typically the main actor) is never synchronously blocked.
-    func asyncDeviceMemoryCaps() async -> DeviceMemoryCaps {
-        await withCheckedContinuation { (cont: CheckedContinuation<DeviceMemoryCaps, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                cont.resume(returning: self.deviceMemoryCaps())
+    /// Stats and limits for the current Metal device's memory
+    func currentMetalMemoryLimits() async -> MetalDeviceMemoryLimits {
+        await withCheckedContinuation { [network] (cont: CheckedContinuation<MetalDeviceMemoryLimits, Never>) in
+            DispatchQueue.global(qos: .default).async {
+                let device = network.metalDevice
+                let deviceMemoryCaps = MetalDeviceMemoryLimits(
+                    recommendedMaxWorkingSet: device.recommendedMaxWorkingSetSize,
+                    currentAllocated: UInt64(device.currentAllocatedSize),
+                    maxBufferLength: UInt64(device.maxBufferLength)
+                )
+                cont.resume(returning: deviceMemoryCaps)
             }
         }
     }
 
-    /// Snapshot the device's memory caps right now. Read once at the start
-    /// of a sweep so the UI header has a stable reference point.
-    func deviceMemoryCaps() -> DeviceMemoryCaps {
-        let device = network.metalDevice
-        return DeviceMemoryCaps(
-            recommendedMaxWorkingSet: device.recommendedMaxWorkingSetSize,
-            currentAllocated: UInt64(device.currentAllocatedSize),
-            maxBufferLength: UInt64(device.maxBufferLength)
-        )
-    }
 
     // MARK: - Random Fill
 

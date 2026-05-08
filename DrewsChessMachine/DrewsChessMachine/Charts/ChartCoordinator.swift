@@ -179,7 +179,7 @@ final class ChartCoordinator {
     /// rolling GPU-ms baseline that the next sample's `gpuBusy %`
     /// will diff against, and recompute the decimated frame so the
     /// chart picks up the new sample on this same tick.
-    func appendTrainingChart(_ sample: TrainingChartSample, totalGpuMs: Double) {
+    func appendTrainingChart(_ sample: TrainingChartSample, totalGpuMs: Double) async {
         guard collectionEnabled else { return }
         trainingRing.append(sample)
         trainingChartNextId += 1
