@@ -1660,24 +1660,21 @@ struct UpperContentView: View {
             }
         ))
         .onReceive(snapshotTimer) { _ in
-            // Defer every @State mutation driven by the heartbeat
-            // to a fresh main-actor runloop tick. The timer publisher
-            // fires on the main thread, and SwiftUI flags "update
-            // multiple times per frame" warnings (and measurable
-            // hangs) when onReceive synchronously pushes several
-            // dozen state-change notifications inline. The Task wrap
-            // coalesces the work into a single render pass. Detached
-            // so the surrounding SwiftUI tick context isn't inherited
-            // (priority, task locals); the awaited call hops onto
-            // the main actor where the tick body actually runs.
-            //
             // Capture timestamp at dispatch so the tick body can
             // measure how long the main actor took to begin executing
             // it. A growing gap between dispatch and execution means
             // the main actor is being starved by other work — the
             // primary mechanism behind UI stalls during long sessions.
             let dispatchedAt = CFAbsoluteTimeGetCurrent()
-            Task.detached {
+
+            guard !snapshotTickInFlight else {
+                snapshotTickSkipped += 1
+                return
+            }
+
+            snapshotTickInFlight = true
+            Task { @MainActor in
+                defer { snapshotTickInFlight = false }
                 await processSnapshotTimerTick(dispatchedAt: dispatchedAt)
             }
         }
@@ -1829,6 +1826,8 @@ struct UpperContentView: View {
 
     /// Throttling clock for the periodic `[TICK]` emit. Reset every
     /// time a periodic or anomalous emit fires.
+    @State private var snapshotTickInFlight = false
+    @State private var snapshotTickSkipped = 0
     @State private var snapshotTickLastLogAt: Date? = nil
 
     /// Cadence for the periodic snapshot-tick log emit. 30 s gives a
