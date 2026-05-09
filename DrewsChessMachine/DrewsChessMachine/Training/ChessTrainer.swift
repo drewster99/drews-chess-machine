@@ -2092,17 +2092,22 @@ final class ChessTrainer: @unchecked Sendable {
         //
         // The **unconditional** batch mean of this quantity is directionally
         // ambiguous under this trainer's advantage-normalized policy loss.
-        // `advantage_normalized` has zero batch-mean by construction, so
-        // ~half the positions pull `p(a*)` up and ~half pull it down —
-        // the unconditional mean can sit near `1/policySize` even when
-        // learning is healthy. We keep it as a coarse index-mismatch
-        // probe (both conditionals flat near `1/policySize` is strong
-        // evidence of action-index misalignment) and emit two
+        // `advantage_normalized = advantage / RMS(advantage)` preserves the
+        // sign of `advantage`, so positions with `z > vBaseline` pull
+        // `p(a*)` up and positions with `z < vBaseline` pull it down.
+        // Whether the batch's unconditional `p(a*)` mean trends up,
+        // down, or stays flat depends on the win/draw/loss mix and the
+        // value-head calibration — it can sit near `1/policySize` even
+        // when learning is healthy, especially in the draw-heavy regime
+        // where most positions have `z ≈ 0`. We keep it as a coarse
+        // index-mismatch probe (both conditionals flat near `1/policySize`
+        // is strong evidence of action-index misalignment) and emit two
         // **advantage-sign-conditional** means as the real direction-of-
-        // learning signal: `playedMoveProbPosAdv` should rise and
-        // `playedMoveProbNegAdv` should fall as training progresses. The
-        // divergence between the two is the health signal, not the raw
-        // mean.
+        // learning signal: `playedMoveProbPosAdv` (conditioned on
+        // `advantage > 0`) should rise and `playedMoveProbNegAdv`
+        // (conditioned on `advantage < 0`) should fall as training
+        // progresses. The divergence between the two is the health
+        // signal, not the raw mean.
         let playedSoftmaxMasked = graph.multiplication(
             softmax,
             oneHot,
