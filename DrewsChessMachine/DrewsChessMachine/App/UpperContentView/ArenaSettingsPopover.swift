@@ -26,12 +26,14 @@ struct ArenaSettingsPopover: View {
     @Binding var gamesText: String
     @Binding var concurrencyText: String
     @Binding var intervalText: String
+    @Binding var promoteThresholdText: String
     @Binding var tauStartText: String
     @Binding var tauDecayText: String
     @Binding var tauFloorText: String
     let gamesError: Bool
     let concurrencyError: Bool
     let intervalError: Bool
+    let promoteThresholdError: Bool
     let tauStartError: Bool
     let tauDecayError: Bool
     let tauFloorError: Bool
@@ -164,6 +166,18 @@ struct ArenaSettingsPopover: View {
                     placeholder: "15m",
                     width: 100,
                     hint: "(e.g. 15m, 500s, 7d, 90)"
+                )
+                // Lowering this is the way to "semi-force" an early
+                // promotion from a candidate that's been hovering
+                // just above 0.50 — e.g. set 0.510 to promote on
+                // any clearly-positive arena.
+                ArenaPopoverField(
+                    label: "Promote threshold:",
+                    text: $promoteThresholdText,
+                    error: promoteThresholdError,
+                    placeholder: "0.550",
+                    width: 100,
+                    hint: "(score in [0.5, 1.0])"
                 )
             }
 

@@ -333,11 +333,11 @@ final class ChartDataRoundTripTests: XCTestCase {
         // heartbeat would produce. Anchored 100 s ago so each
         // sample's elapsedSec is plausibly in the past.
         coord.chartElapsedAnchor = Date().addingTimeInterval(-100)
-        coord.appendTrainingChart(
+        await coord.appendTrainingChart(
             makeTrainingSample(id: 0, elapsedSec: 50),
             totalGpuMs: 0
         )
-        coord.appendTrainingChart(
+        await coord.appendTrainingChart(
             makeTrainingSample(id: 1, elapsedSec: 75),
             totalGpuMs: 0
         )
@@ -393,7 +393,7 @@ final class ChartDataRoundTripTests: XCTestCase {
         coord.chartElapsedAnchor = Date().addingTimeInterval(-7200)
         // 2-hour worth of synthetic samples, sparse so the test stays fast.
         for i in 0..<120 {
-            coord.appendTrainingChart(
+            await coord.appendTrainingChart(
                 makeTrainingSample(id: i, elapsedSec: Double(i) * 60),
                 totalGpuMs: 0
             )
@@ -439,12 +439,12 @@ final class ChartDataRoundTripTests: XCTestCase {
     /// Verify that an empty/disabled coordinator returns nil from
     /// `buildSnapshot` so the save path can skip writing chart files
     /// without producing a zero-sample envelope.
-    func testEmptyCoordinatorBuildSnapshotReturnsNil() {
+    func testEmptyCoordinatorBuildSnapshotReturnsNil() async {
         let coord = ChartCoordinator()
         XCTAssertNil(coord.buildSnapshot(), "Empty rings should produce nil snapshot")
 
         coord.collectionEnabled = false
-        coord.appendTrainingChart(
+        await coord.appendTrainingChart(
             makeTrainingSample(id: 0, elapsedSec: 0), totalGpuMs: 0
         )
         XCTAssertNil(

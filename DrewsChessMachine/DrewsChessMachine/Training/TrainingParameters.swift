@@ -174,6 +174,16 @@ public protocol TrainingParameterKey: Sendable {
 public enum EntropyBonus: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Illegal Mass Penalty Weight",
+    description: "Weight for the penalty term that pushes probability mass off illegal moves. Start at 1.0; increase if illegal mass leaks.",
+    default: 1.0,
+    range: 0.0...100.0,
+    category: "Optimizer",
+    liveTunable: true
+)
+public enum IllegalMassWeight: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Gradient Clip Max Norm",
     description: "Global L2 norm cap for gradient clipping. Above this, gradients are scaled down before the SGD step.",
     default: 30.0,
@@ -567,6 +577,7 @@ public final class TrainingParameters {
     // Stored properties — one per parameter. didSet persists to UserDefaults.
     // @Observable instruments these for SwiftUI re-renders.
     public var entropyBonus: Double { didSet { Self.persist(EntropyBonus.self, value: entropyBonus) } }
+    public var illegalMassWeight: Double { didSet { Self.persist(IllegalMassWeight.self, value: illegalMassWeight) } }
     public var gradClipMaxNorm: Double { didSet { Self.persist(GradClipMaxNorm.self, value: gradClipMaxNorm) } }
     public var weightDecay: Double { didSet { Self.persist(WeightDecay.self, value: weightDecay) } }
     public var policyLossWeight: Double { didSet { Self.persist(PolicyLossWeight.self, value: policyLossWeight) } }
@@ -604,6 +615,7 @@ public final class TrainingParameters {
         // Read each value from UserDefaults (or definition default if absent / invalid).
         // didSet does not fire on initial assignment in init — which is what we want.
         self.entropyBonus = Self.read(EntropyBonus.self)
+        self.illegalMassWeight = Self.read(IllegalMassWeight.self)
         self.gradClipMaxNorm = Self.read(GradClipMaxNorm.self)
         self.weightDecay = Self.read(WeightDecay.self)
         self.policyLossWeight = Self.read(PolicyLossWeight.self)
@@ -647,6 +659,7 @@ public final class TrainingParameters {
     private func collectValues() -> [String: ParameterValue] {
         var v: [String: ParameterValue] = [:]
         v[EntropyBonus.id] = EntropyBonus.encode(entropyBonus)
+        v[IllegalMassWeight.id] = IllegalMassWeight.encode(illegalMassWeight)
         v[GradClipMaxNorm.id] = GradClipMaxNorm.encode(gradClipMaxNorm)
         v[WeightDecay.id] = WeightDecay.encode(weightDecay)
         v[PolicyLossWeight.id] = PolicyLossWeight.encode(policyLossWeight)
@@ -697,6 +710,8 @@ public final class TrainingParameters {
         switch id {
         case EntropyBonus.id:
             try EntropyBonus.definition.validate(raw); entropyBonus = try EntropyBonus.decode(raw)
+        case IllegalMassWeight.id:
+            try IllegalMassWeight.definition.validate(raw); illegalMassWeight = try IllegalMassWeight.decode(raw)
         case GradClipMaxNorm.id:
             try GradClipMaxNorm.definition.validate(raw); gradClipMaxNorm = try GradClipMaxNorm.decode(raw)
         case WeightDecay.id:
@@ -826,6 +841,7 @@ public final class TrainingParameters {
     /// All keys, in declaration order. Used by save/load and by the `--show-default-parameters` CLI flag.
     public nonisolated static let allKeys: [any TrainingParameterKey.Type] = [
         EntropyBonus.self,
+        IllegalMassWeight.self,
         GradClipMaxNorm.self,
         WeightDecay.self,
         PolicyLossWeight.self,

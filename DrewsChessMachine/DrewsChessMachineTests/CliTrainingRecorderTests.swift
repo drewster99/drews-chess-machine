@@ -209,6 +209,7 @@ final class CliTrainingRecorderTests: XCTestCase {
             policyLoss: -0.12,
             valueLoss: 0.33,
             policyEntropy: 6.0,
+            policyIllegalMassPenalty: 0.0,
             gradGlobalNorm: 2.5,
             policyHeadWeightNorm: 1.2,
             policyLogitAbsMax: 3.3,

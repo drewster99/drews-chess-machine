@@ -66,6 +66,7 @@ struct TrainStepTiming: Sendable {
     /// Watch for monotonic drift to either extreme — that's the signature
     /// of policy collapse or a stuck-at-uniform learning failure.
     let policyEntropy: Float
+    let illegalMassPenalty: Float
     let policyNonNegligibleCount: Float
     /// Mean per-position count of ILLEGAL cells whose unmasked
     /// softmax probability exceeds 1/policySize. Healthy networks
@@ -456,6 +457,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let rollingPolicyLoss: Double?
         let rollingValueLoss: Double?
         let rollingPolicyEntropy: Double?
+        let rollingIllegalMassPenalty: Double?
         let rollingPolicyNonNegCount: Double?
         let rollingPolicyNonNegIllegalCount: Double?
         let rollingGradGlobalNorm: Double?
@@ -561,6 +563,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _policyLossWindow: RollingDoubleWindow
     private var _valueLossWindow: RollingDoubleWindow
     private var _policyEntropyWindow: RollingDoubleWindow
+    private var _illegalMassPenaltyWindow: RollingDoubleWindow
     private var _policyNonNegWindow: RollingDoubleWindow
     private var _policyNonNegIllegalWindow: RollingDoubleWindow
     private var _gradNormWindow: RollingDoubleWindow
@@ -643,6 +646,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._policyLossWindow = RollingDoubleWindow(limit: rollingWindow)
         self._valueLossWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyEntropyWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._illegalMassPenaltyWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyNonNegWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyNonNegIllegalWindow = RollingDoubleWindow(limit: rollingWindow)
         self._gradNormWindow = RollingDoubleWindow(limit: rollingWindow)
@@ -702,6 +706,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._policyLossWindow.append(Double(timing.policyLoss))
             self._valueLossWindow.append(Double(timing.valueLoss))
             self._policyEntropyWindow.append(Double(timing.policyEntropy))
+            self._illegalMassPenaltyWindow.append(Double(timing.illegalMassPenalty))
             self._policyNonNegWindow.append(Double(timing.policyNonNegligibleCount))
             self._policyNonNegIllegalWindow.append(Double(timing.policyNonNegligibleIllegalCount))
             self._gradNormWindow.append(Double(timing.gradGlobalNorm))
@@ -816,6 +821,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._policyLossWindow.removeAll()
             self._valueLossWindow.removeAll()
             self._policyEntropyWindow.removeAll()
+            self._illegalMassPenaltyWindow.removeAll()
             self._policyNonNegWindow.removeAll()
             self._policyNonNegIllegalWindow.removeAll()
             self._gradNormWindow.removeAll()
@@ -864,6 +870,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingPolicy = _policyLossWindow.mean
             let rollingValue = _valueLossWindow.mean
             let rollingEntropy = _policyEntropyWindow.mean
+            let rollingIllegalPenalty = _illegalMassPenaltyWindow.mean
             let rollingNonNeg = _policyNonNegWindow.mean
             let rollingNonNegIllegal = _policyNonNegIllegalWindow.mean
             let rollingGradNorm = _gradNormWindow.mean
@@ -900,6 +907,7 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 rollingPolicyLoss: rollingPolicy,
                 rollingValueLoss: rollingValue,
                 rollingPolicyEntropy: rollingEntropy,
+                rollingIllegalMassPenalty: rollingIllegalPenalty,
                 rollingPolicyNonNegCount: rollingNonNeg,
                 rollingPolicyNonNegIllegalCount: rollingNonNegIllegal,
                 rollingGradGlobalNorm: rollingGradNorm,
@@ -1089,6 +1097,12 @@ final class ChessTrainer: @unchecked Sendable {
     /// Mirror of Lc0 / KataGo's `value_loss_weight`.
     var valueLossWeight: Float
 
+    /// Live illegal-mass penalty coefficient. Multiplied into
+    /// `illegalMassPenalty` before it joins `total_loss` (minimizing
+    /// total loss minimizes illegal mass). Start at 1.0; increase
+    /// if the legal-mass diagnostic starts to walk down.
+    var illegalMassPenaltyWeight: Float
+
     /// Polyak momentum coefficient μ. Fed into the training graph as
     /// a scalar placeholder each step (live-tunable). The optimizer
     /// update is decoupled-decay SGD with momentum:
@@ -1181,6 +1195,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var gradClipMaxNormPlaceholder: MPSGraphTensor // [] scalar float
     private var policyLossWeightPlaceholder: MPSGraphTensor // [] scalar float
     private var valueLossWeightPlaceholder: MPSGraphTensor  // [] scalar float
+    private var illegalMassWeightPlaceholder: MPSGraphTensor // [] scalar float
     private var momentumPlaceholder: MPSGraphTensor     // [] scalar float — Polyak μ
     /// Per-trainable-variable momentum velocity buffers, allocated parallel
     /// to `network.trainableVariables`. Each step's update is
@@ -1206,7 +1221,8 @@ final class ChessTrainer: @unchecked Sendable {
     private var policyLossTensor: MPSGraphTensor        // scalar
     private var valueLossTensor: MPSGraphTensor         // scalar
     private var policyEntropyTensor: MPSGraphTensor     // scalar (diagnostic)
-    private var policyNonNegCountTensor: MPSGraphTensor // scalar (diagnostic, legal cells)
+    private var illegalMassPenaltyTensor: MPSGraphTensor // scalar (diagnostic)
+    private var policyNonNegCountTensor: MPSGraphTensor // scalar (diagnostic)
     private var policyNonNegIllegalCountTensor: MPSGraphTensor // scalar (diagnostic, illegal cells)
     private var gradGlobalNormTensor: MPSGraphTensor    // scalar (diagnostic)
     private var valueMeanTensor: MPSGraphTensor         // scalar (diagnostic)
@@ -1255,6 +1271,8 @@ final class ChessTrainer: @unchecked Sendable {
     private var policyLossWeightTensorData: MPSGraphTensorData
     private var valueLossWeightNDArray: MPSNDArray
     private var valueLossWeightTensorData: MPSGraphTensorData
+    private var illegalMassWeightNDArray: MPSNDArray
+    private var illegalMassWeightTensorData: MPSGraphTensorData
     private var momentumNDArray: MPSNDArray
     private var momentumTensorData: MPSGraphTensorData
 
@@ -1304,26 +1322,27 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotPolicy: Int = 1
     private static let lossReadbackSlotValue: Int = 2
     private static let lossReadbackSlotEntropy: Int = 3
-    private static let lossReadbackSlotNonNeg: Int = 4
-    private static let lossReadbackSlotGradNorm: Int = 5
-    private static let lossReadbackSlotValueMean: Int = 6
-    private static let lossReadbackSlotValueAbsMean: Int = 7
-    private static let lossReadbackSlotPolicyHeadWNorm: Int = 8
-    private static let lossReadbackSlotPLogitAbsMax: Int = 9
-    private static let lossReadbackSlotPlayedMoveProb: Int = 10
-    private static let lossReadbackSlotAdvMean: Int = 11
-    private static let lossReadbackSlotAdvStd: Int = 12
-    private static let lossReadbackSlotAdvMin: Int = 13
-    private static let lossReadbackSlotAdvMax: Int = 14
-    private static let lossReadbackSlotAdvFracPos: Int = 15
-    private static let lossReadbackSlotAdvFracSmall: Int = 16
-    private static let lossReadbackSlotPlayedMoveProbPosAdv: Int = 17
-    private static let lossReadbackSlotPlayedMoveProbNegAdv: Int = 18
-    private static let lossReadbackSlotPolicyLossWin: Int = 19
-    private static let lossReadbackSlotPolicyLossLoss: Int = 20
-    private static let lossReadbackSlotNonNegIllegal: Int = 21
-    private static let lossReadbackSlotVelocityNorm: Int = 22
-    private static let lossReadbackSlotCount: Int = 23
+    private static let lossReadbackSlotIllegalMassPenalty: Int = 4
+    private static let lossReadbackSlotNonNeg: Int = 5
+    private static let lossReadbackSlotGradNorm: Int = 6
+    private static let lossReadbackSlotValueMean: Int = 7
+    private static let lossReadbackSlotValueAbsMean: Int = 8
+    private static let lossReadbackSlotPolicyHeadWNorm: Int = 9
+    private static let lossReadbackSlotPLogitAbsMax: Int = 10
+    private static let lossReadbackSlotPlayedMoveProb: Int = 11
+    private static let lossReadbackSlotAdvMean: Int = 12
+    private static let lossReadbackSlotAdvStd: Int = 13
+    private static let lossReadbackSlotAdvMin: Int = 14
+    private static let lossReadbackSlotAdvMax: Int = 15
+    private static let lossReadbackSlotAdvFracPos: Int = 16
+    private static let lossReadbackSlotAdvFracSmall: Int = 17
+    private static let lossReadbackSlotPlayedMoveProbPosAdv: Int = 18
+    private static let lossReadbackSlotPlayedMoveProbNegAdv: Int = 19
+    private static let lossReadbackSlotPolicyLossWin: Int = 20
+    private static let lossReadbackSlotPolicyLossLoss: Int = 21
+    private static let lossReadbackSlotNonNegIllegal: Int = 22
+    private static let lossReadbackSlotVelocityNorm: Int = 23
+    private static let lossReadbackSlotCount: Int = 24
 
     /// Reusable host-side staging buffers for replay-buffer samples.
     /// The trainer owns these buffers so real-data training can hop
@@ -1374,6 +1393,7 @@ final class ChessTrainer: @unchecked Sendable {
         gradClipMaxNorm: Float = ChessTrainer.gradClipMaxNormDefault,
         policyLossWeight: Float = ChessTrainer.policyLossWeightDefault,
         valueLossWeight: Float = ChessTrainer.valueLossWeightDefault,
+        illegalMassPenaltyWeight: Float = 1.0,
         momentumCoeff: Float = 0.0,
         sqrtBatchScalingForLR: Bool = true,
         lrWarmupSteps: Int = 100
@@ -1385,6 +1405,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.gradClipMaxNorm = gradClipMaxNorm
         self.policyLossWeight = policyLossWeight
         self.valueLossWeight = valueLossWeight
+        self.illegalMassPenaltyWeight = illegalMassPenaltyWeight
         self.momentumCoeff = momentumCoeff
         self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         self.lrWarmupSteps = lrWarmupSteps
@@ -1402,6 +1423,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.gradClipMaxNormPlaceholder = built.gradClipMaxNorm
         self.policyLossWeightPlaceholder = built.policyLossWeight
         self.valueLossWeightPlaceholder = built.valueLossWeight
+        self.illegalMassWeightPlaceholder = built.illegalMassWeight
         self.momentumPlaceholder = built.momentum
         self.velocityVariables = built.velocityVariables
         self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
@@ -1412,6 +1434,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
+        self.illegalMassPenaltyTensor = built.illegalMassPenalty
         self.policyNonNegCountTensor = built.policyNonNegCount
         self.policyNonNegIllegalCountTensor = built.policyNonNegIllegalCount
         self.gradGlobalNormTensor = built.gradGlobalNorm
@@ -1463,6 +1486,10 @@ final class ChessTrainer: @unchecked Sendable {
         valueLossWeightND.label = "valueLossWeightND"
         self.valueLossWeightNDArray = valueLossWeightND
         self.valueLossWeightTensorData = MPSGraphTensorData(valueLossWeightND)
+        let illegalMassWeightND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        illegalMassWeightND.label = "illegalMassWeightND"
+        self.illegalMassWeightNDArray = illegalMassWeightND
+        self.illegalMassWeightTensorData = MPSGraphTensorData(illegalMassWeightND)
         let momentumND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         momentumND.label = "momentumND"
         self.momentumNDArray = momentumND
@@ -1550,6 +1577,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.gradClipMaxNormPlaceholder = built.gradClipMaxNorm
         self.policyLossWeightPlaceholder = built.policyLossWeight
         self.valueLossWeightPlaceholder = built.valueLossWeight
+        self.illegalMassWeightPlaceholder = built.illegalMassWeight
         self.momentumPlaceholder = built.momentum
         self.velocityVariables = built.velocityVariables
         self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
@@ -1560,6 +1588,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
         self.policyEntropyTensor = built.policyEntropy
+        self.illegalMassPenaltyTensor = built.illegalMassPenalty
         self.policyNonNegCountTensor = built.policyNonNegCount
         self.policyNonNegIllegalCountTensor = built.policyNonNegIllegalCount
         self.gradGlobalNormTensor = built.gradGlobalNorm
@@ -1605,6 +1634,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.valueLossWeightNDArray.label = "trainer.scalar.valueLossWeight (reset)"
         self.valueLossWeightTensorData = MPSGraphTensorData(valueLossWeightNDArray)
+        self.illegalMassWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.illegalMassWeightNDArray.label = "trainer.scalar.illegalMassWeight (reset)"
+        self.illegalMassWeightTensorData = MPSGraphTensorData(illegalMassWeightNDArray)
         self.momentumNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.momentumNDArray.label = "trainer.scalar.momentum (reset)"
         self.momentumTensorData = MPSGraphTensorData(momentumNDArray)
@@ -1637,6 +1669,7 @@ final class ChessTrainer: @unchecked Sendable {
         gradClipMaxNorm: MPSGraphTensor,
         policyLossWeight: MPSGraphTensor,
         valueLossWeight: MPSGraphTensor,
+        illegalMassWeight: MPSGraphTensor,
         momentum: MPSGraphTensor,
         velocityVariables: [MPSGraphTensor],
         velocityLoadPlaceholders: [MPSGraphTensor],
@@ -1647,6 +1680,7 @@ final class ChessTrainer: @unchecked Sendable {
         policyLoss: MPSGraphTensor,
         valueLoss: MPSGraphTensor,
         policyEntropy: MPSGraphTensor,
+        illegalMassPenalty: MPSGraphTensor,
         policyNonNegCount: MPSGraphTensor,
         policyNonNegIllegalCount: MPSGraphTensor,
         gradGlobalNorm: MPSGraphTensor,
@@ -1749,29 +1783,20 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [-1, 1],
             name: "policy_ce_per_pos"
         )
-        // Clip per-position CE to prevent the unbounded-loss
-        // catastrophe documented in CHANGELOG.md (2026-04-16).
-        // Without this, a single position where the played move
-        // has p(a*) ≈ 0 produces -log(0) → huge, and with the
-        // policy-loss weight the gradient explodes to NaN. This
-        // is especially dangerous right after arena promotion:
-        // the new champion generates data from a broad policy
-        // while the trainer has concentrated, so many moves in
-        // the new data have near-zero probability under the
-        // trainer's policy. Clipping at log(policySize) ≈ 8.49 caps
-        // the per-position CE at the entropy of a uniform
-        // distribution — no single position can contribute more
-        // gradient than "this move is maximally surprising."
-        let ceClipMax = graph.constant(
-            Double(log(Float(ChessNetwork.policySize))),
-            dataType: dtype
-        )
-        let negLogProbClipped = graph.clamp(
-            negLogProb,
-            min: graph.constant(0.0, dataType: dtype),
-            max: ceClipMax,
-            name: "policy_ce_clipped"
-        )
+        // No per-position CE clamp: clamping at log(policySize) saturates
+        // exactly the high-magnitude `−log p(a*)` terms that should be
+        // teaching the policy to broaden when the played move has tiny
+        // probability under the current policy. `graph.clamp` has zero
+        // gradient outside its bounds, so any played move with
+        // `p(a*) < 1/policySize` would contribute no policy gradient —
+        // catastrophic right after a weight rewind, where buffer
+        // positions from the previous champion are exactly the
+        // surprising-to-the-trainer cases that need to flow gradient.
+        // The unbounded-loss / NaN concern that motivated the clamp is
+        // covered by the global gNorm clip (`gradClipMaxNorm`) bounding
+        // total update magnitude per step, and by `softMaxCrossEntropy`'s
+        // internal log-sum-exp numerical stability (finite logits ⇒
+        // finite per-position CE).
         // --- Advantage baseline: (z − vBaseline) · −log p(a*) ---
         //
         // `vBaseline` is a placeholder — the inference-time v(position)
@@ -1844,7 +1869,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let weightedCE = graph.multiplication(
             advantageNormalized,
-            negLogProbClipped,
+            negLogProb,
             name: "adv_weighted_ce"
         )
         let policyLoss = graph.mean(
@@ -1957,28 +1982,33 @@ final class ChessTrainer: @unchecked Sendable {
         // (max-subtract needs reductionMaximum → no gradient) remain
         // closed off; the ε-bumped form is the available mitigation.
         //
-        // NOTE: We use UNMASKED logits here so the entropy bonus
-        // penalizes concentration anywhere, including illegal moves.
-        // This is a critical anti-collapse guard that keeps illegal
-        // mass from runaway growth.
-        let softmax = graph.softMax(
-            with: network.policyOutput, // <-- changed from maskedLogits
+        // NOTE: We use MASKED logits for the entropy bonus. This
+        // encourages exploration within the set of legal moves without
+        // perversely rewarding mass placement on illegal moves (the
+        // prior unmasked form acted as an attractor for the ~4834
+        // illegal cells).
+        let softmaxLegal = graph.softMax(
+            with: maskedLogits,
             axis: 1,
-            name: "policy_softmax"
+            name: "policy_softmax_legal"
         )
         let logEpsConst = graph.constant(1e-7, dataType: dtype)
-        let softmaxClamped = graph.addition(
-            softmax,
+        let softmaxClampedLegal = graph.addition(
+            softmaxLegal,
             logEpsConst,
-            name: "policy_softmax_clamped"
+            name: "policy_softmax_legal_clamped"
         )
-        let logSoftmax = graph.logarithm(
-            with: softmaxClamped,
-            name: "policy_log_softmax"
+        let logSoftmaxLegal = graph.logarithm(
+            with: softmaxClampedLegal,
+            name: "policy_log_softmax_legal"
         )
-        let pLogP = graph.multiplication(softmax, logSoftmax, name: "p_log_p")
+        let pLogPLegal = graph.multiplication(
+            softmaxLegal,
+            logSoftmaxLegal,
+            name: "p_log_p_legal"
+        )
         let negEntropyPerPos = graph.reductionSum(
-            with: pLogP,
+            with: pLogPLegal,
             axis: 1,
             name: "neg_entropy_per_pos"
         )
@@ -1990,6 +2020,31 @@ final class ChessTrainer: @unchecked Sendable {
             of: entropyPerPos,
             axes: [0, 1],
             name: "policy_entropy"
+        )
+
+        // --- Illegal mass penalty ---
+        //
+        // Directly penalizes probability mass that leaks past the mask.
+        // Unlike the entropy bonus, this has a stable attractor at
+        // 100% legal mass. Minimizing total loss minimizes this term.
+        let unmaskedSoftmax = graph.softMax(
+            with: network.policyOutput,
+            axis: 1,
+            name: "policy_softmax_unmasked"
+        )
+        let illegalMassPerPos = graph.reductionSum(
+            with: graph.multiplication(
+                unmaskedSoftmax,
+                illegalMask,
+                name: "policy_illegal_mass_per_pos_masked"
+            ),
+            axis: 1,
+            name: "policy_illegal_mass_per_pos"
+        )
+        let illegalMassPenalty = graph.mean(
+            of: illegalMassPerPos,
+            axes: [0, 1],
+            name: "illegal_mass_penalty"
         )
 
         // --- Policy non-negligible count (diagnostic) ---
@@ -2009,7 +2064,7 @@ final class ChessTrainer: @unchecked Sendable {
         // above 1/policySize here is necessarily a legal cell with
         // meaningful mass.
         let aboveThreshold = graph.greaterThan(
-            softmax,
+            softmaxLegal,
             nonNegThreshold,
             name: "policy_above_thresh"
         )
@@ -2035,11 +2090,6 @@ final class ChessTrainer: @unchecked Sendable {
         // illegal mass approach 0, so this count should trend toward
         // 0 over training. A rising illegal-above-uniform count is a
         // direct signal that mass is leaking onto illegal cells.
-        let unmaskedSoftmax = graph.softMax(
-            with: network.policyOutput,
-            axis: 1,
-            name: "policy_softmax_unmasked"
-        )
         let unmaskedAboveThreshold = graph.greaterThan(
             unmaskedSoftmax,
             nonNegThreshold,
@@ -2120,7 +2170,7 @@ final class ChessTrainer: @unchecked Sendable {
         // progresses. The divergence between the two is the health
         // signal, not the raw mean.
         let playedSoftmaxMasked = graph.multiplication(
-            softmax,
+            softmaxLegal,
             oneHot,
             name: "played_softmax_masked"
         )
@@ -2356,6 +2406,11 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: dtype,
             name: "value_loss_weight"
         )
+        let illegalMassWeightTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "illegal_mass_weight"
+        )
         // Polyak momentum coefficient μ. μ=0 reduces the velocity term
         // to zero (μ·v_old = 0), so the update collapses to plain
         // SGD-with-decoupled-decay bit-exact. μ=0.9 still amplifies
@@ -2385,14 +2440,24 @@ final class ChessTrainer: @unchecked Sendable {
             policyEntropy,
             name: "entropy_regularization_term"
         )
-        let lossWithoutEntropy = graph.addition(
+        let illegalPenalty = graph.multiplication(
+            illegalMassWeightTensor,
+            illegalMassPenalty,
+            name: "illegal_mass_penalty_term"
+        )
+        let lossWithoutRegularization = graph.addition(
             weightedValue,
             weightedPolicy,
-            name: "loss_without_entropy_regularization"
+            name: "loss_without_regularization"
         )
-        let totalLossTensor = graph.subtraction(
-            lossWithoutEntropy,
+        let lossWithEntropy = graph.subtraction(
+            lossWithoutRegularization,
             entropyPenalty,
+            name: "loss_minus_entropy"
+        )
+        let totalLossTensor = graph.addition(
+            lossWithEntropy,
+            illegalPenalty,
             name: "total_loss"
         )
 
@@ -2701,10 +2766,11 @@ final class ChessTrainer: @unchecked Sendable {
             movePlayed, z, vBaseline, legalMask,
             lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyLossWeightTensor,
             valueLossWeightTensor,
+            illegalMassWeightTensor,
             momentumTensor, velocities,
             velLoadPlaceholders, velLoadAssignOps, velLoadNDArrays, velLoadTensorData,
             totalLossTensor, policyLoss, valueLoss,
-            policyEntropy, policyNonNegCount, policyNonNegIllegalCount, gradGlobalNorm, valueMean, valueAbsMean, policyHeadWeightNormTensor,
+            policyEntropy, illegalMassPenalty, policyNonNegCount, policyNonNegIllegalCount, gradGlobalNorm, valueMean, valueAbsMean, policyHeadWeightNormTensor,
             policyLogitAbsMax, playedMoveProbTensor,
             playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
             advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
@@ -3202,6 +3268,7 @@ final class ChessTrainer: @unchecked Sendable {
                 policyLoss: baseTiming.policyLoss,
                 valueLoss: baseTiming.valueLoss,
                 policyEntropy: baseTiming.policyEntropy,
+                illegalMassPenalty: baseTiming.illegalMassPenalty,
                 policyNonNegligibleCount: baseTiming.policyNonNegligibleCount,
                 policyNonNegligibleIllegalCount: baseTiming.policyNonNegligibleIllegalCount,
                 gradGlobalNorm: baseTiming.gradGlobalNorm,
@@ -3862,6 +3929,8 @@ final class ChessTrainer: @unchecked Sendable {
         policyLossWeightNDArray.writeBytes(&policyLossW, strideBytes: nil)
         var valueLossW = valueLossWeight
         valueLossWeightNDArray.writeBytes(&valueLossW, strideBytes: nil)
+        var illegalMassW = illegalMassPenaltyWeight
+        illegalMassWeightNDArray.writeBytes(&illegalMassW, strideBytes: nil)
         var momentum = momentumCoeff
         momentumNDArray.writeBytes(&momentum, strideBytes: nil)
 
@@ -3949,6 +4018,7 @@ final class ChessTrainer: @unchecked Sendable {
             gradClipMaxNormPlaceholder: gradClipMaxNormTensorData,
             policyLossWeightPlaceholder: policyLossWeightTensorData,
             valueLossWeightPlaceholder: valueLossWeightTensorData,
+            illegalMassWeightPlaceholder: illegalMassWeightTensorData,
             momentumPlaceholder: momentumTensorData
         ]
 
@@ -3994,7 +4064,7 @@ final class ChessTrainer: @unchecked Sendable {
             feeds: feeds,
             targetTensors: [
                 totalLoss, policyLossTensor, valueLossTensor,
-                policyEntropyTensor, policyNonNegCountTensor, policyNonNegIllegalCountTensor, gradGlobalNormTensor,
+                policyEntropyTensor, illegalMassPenaltyTensor, policyNonNegCountTensor, policyNonNegIllegalCountTensor, gradGlobalNormTensor,
                 valueMeanTensor, valueAbsMeanTensor, policyHeadWeightNormTensor,
                 policyLogitAbsMaxTensor, playedMoveProbTensor,
                 playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
@@ -4014,6 +4084,7 @@ final class ChessTrainer: @unchecked Sendable {
             let policyData = results[policyLossTensor],
             let valueData = results[valueLossTensor],
             let entropyData = results[policyEntropyTensor],
+            let illegalPenaltyData = results[illegalMassPenaltyTensor],
             let nonNegData = results[policyNonNegCountTensor],
             let nonNegIllegalData = results[policyNonNegIllegalCountTensor],
             let gradNormData = results[gradGlobalNormTensor],
@@ -4055,6 +4126,11 @@ final class ChessTrainer: @unchecked Sendable {
         ChessNetwork.readFloats(
             from: entropyData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotEntropy),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: illegalPenaltyData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotIllegalMassPenalty),
             count: 1
         )
         ChessNetwork.readFloats(
@@ -4170,6 +4246,7 @@ final class ChessTrainer: @unchecked Sendable {
         let policyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicy]
         let valueBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValue]
         let entropyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotEntropy]
+        let illegalPenaltyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotIllegalMassPenalty]
         let nonNegBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotNonNeg]
         let nonNegIllegalBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotNonNegIllegal]
         let gradNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotGradNorm]
@@ -4227,6 +4304,7 @@ final class ChessTrainer: @unchecked Sendable {
             policyLoss: policyBufValue,
             valueLoss: valueBufValue,
             policyEntropy: entropyBufValue,
+            illegalMassPenalty: illegalPenaltyBufValue,
             policyNonNegligibleCount: nonNegBufValue,
             policyNonNegligibleIllegalCount: nonNegIllegalBufValue,
             gradGlobalNorm: gradNormBufValue,

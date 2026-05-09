@@ -356,6 +356,7 @@ final class MomentumOptimizerTests: XCTestCase {
             policyLossWeight: 1.0,
             valueLossWeight: 1.0,
             momentumCoeff: 0.7,
+            illegalMassPenaltyWeight: 1.5,
             replayRatioTarget: 1.0,
             replayRatioAutoAdjust: true,
             stepDelayMs: 0,

@@ -1181,6 +1181,7 @@ struct UpperContentView: View {
     @State private var learningRateEditText: String = ""
     @State private var lrWarmupStepsEditText: String = ""
     @State private var entropyRegularizationEditText: String = ""
+    @State private var illegalMassWeightEditText: String = ""
     @State private var drawPenaltyEditText: String = ""
     @State private var weightDecayEditText: String = ""
     @State private var gradClipMaxNormEditText: String = ""
@@ -1205,6 +1206,7 @@ struct UpperContentView: View {
     @State private var trainingPopoverWarmupError: Bool = false
     @State private var trainingPopoverMomentumError: Bool = false
     @State private var trainingPopoverEntropyError: Bool = false
+    @State private var trainingPopoverIllegalMassWeightError: Bool = false
     @State private var trainingPopoverGradClipError: Bool = false
     @State private var trainingPopoverWeightDecayError: Bool = false
     @State private var trainingPopoverPolicyLossWeightError: Bool = false
@@ -2987,6 +2989,7 @@ struct UpperContentView: View {
             policyLossWeight: Float(trainingParams.policyLossWeight),
             valueLossWeight: Float(trainingParams.valueLossWeight),
             momentumCoeff: Float(trainingParams.momentumCoeff),
+            illegalMassPenaltyWeight: Float(trainingParams.illegalMassWeight),
             replayRatioTarget: trainingParams.replayRatioTarget,
             replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust,
             stepDelayMs: trainingParams.trainingStepDelayMs,
@@ -5768,6 +5771,7 @@ struct UpperContentView: View {
             trainer.gradClipMaxNorm = Float(trainingParams.gradClipMaxNorm)
             trainer.policyLossWeight = Float(trainingParams.policyLossWeight)
             trainer.valueLossWeight = Float(trainingParams.valueLossWeight)
+            trainer.illegalMassPenaltyWeight = Float(trainingParams.illegalMassWeight)
             trainer.momentumCoeff = Float(trainingParams.momentumCoeff)
             trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
             trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
@@ -5783,6 +5787,7 @@ struct UpperContentView: View {
                 gradClipMaxNorm: Float(trainingParams.gradClipMaxNorm),
                 policyLossWeight: Float(trainingParams.policyLossWeight),
                 valueLossWeight: Float(trainingParams.valueLossWeight),
+                illegalMassPenaltyWeight: Float(trainingParams.illegalMassWeight),
                 momentumCoeff: Float(trainingParams.momentumCoeff),
                 sqrtBatchScalingForLR: trainingParams.sqrtBatchScalingLR,
                 lrWarmupSteps: trainingParams.lrWarmupSteps
@@ -6157,6 +6162,18 @@ struct UpperContentView: View {
                     trainer.momentumCoeff = Float(trainingParams.momentumCoeff)
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] momentum_coeff: saved=nil applied=\(trainingParams.momentumCoeff) (defaulted)"
+                    )
+                }
+                if let imw = rs.illegalMassPenaltyWeight {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] illegal_mass_weight: \(trainingParams.illegalMassWeight) -> \(imw) (from session)"
+                    )
+                    trainer.illegalMassPenaltyWeight = imw
+                    trainingParams.illegalMassWeight = Double(imw)
+                } else {
+                    trainer.illegalMassPenaltyWeight = Float(trainingParams.illegalMassWeight)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] illegal_mass_weight: saved=nil applied=\(trainingParams.illegalMassWeight) (defaulted)"
                     )
                 }
                 // LR warmup length and sqrt-batch LR scaling are now
@@ -7219,12 +7236,13 @@ struct UpperContentView: View {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
                                 trainer.learningRate,
                                 trainer.entropyRegularizationCoeff,
+                                trainer.illegalMassPenaltyWeight,
                                 trainer.drawPenalty,
                                 trainer.weightDecayC,
                                 trainer.gradClipMaxNorm,
@@ -7260,12 +7278,8 @@ struct UpperContentView: View {
                         } else {
                             valueStr = "--"
                         }
-                        let entropyStr: String
-                        if let e = trainingSnap.rollingPolicyEntropy {
-                            entropyStr = String(format: "%.4f", e)
-                        } else {
-                            entropyStr = "--"
-                        }
+                        let entropyStr = String(format: "%.4f", trainingSnap.rollingPolicyEntropy ?? 0)
+                        let illegalPenaltyStr = String(format: "%.4f", trainingSnap.rollingIllegalMassPenalty ?? 0)
                         let gradNormStr: String
                         if let g = trainingSnap.rollingGradGlobalNorm {
                             gradNormStr = String(format: "%.3f", g)
@@ -7363,10 +7377,11 @@ struct UpperContentView: View {
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", sessionPromoteThreshold)) arenaGames=\(sessionTournamentGames) workers=\(workerN)"
                         let regStr = String(
-                            format: "clip=%.1f decay=%.0e ent=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f",
+                            format: "clip=%.1f decay=%.0e ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f",
                             gradClip,
                             weightDec,
                             entropyCoeff,
+                            illegalMassW,
                             drawPen,
                             policyW,
                             valueW,
@@ -7553,7 +7568,7 @@ struct UpperContentView: View {
                         // inputs).
                         let shapesStr = "feedCache=\(trainer.feedCacheCount)"
 
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // CLI `--output` capture: one StatsLine per
@@ -7576,6 +7591,7 @@ struct UpperContentView: View {
                                 policyLoss: trainingSnap.rollingPolicyLoss,
                                 valueLoss: trainingSnap.rollingValueLoss,
                                 policyEntropy: trainingSnap.rollingPolicyEntropy,
+                                policyIllegalMassPenalty: trainingSnap.rollingIllegalMassPenalty,
                                 gradGlobalNorm: trainingSnap.rollingGradGlobalNorm,
                                 policyHeadWeightNorm: trainingSnap.rollingPolicyHeadWeightNorm,
                                 policyLogitAbsMax: trainingSnap.rollingPolicyLogitAbsMax,
@@ -8767,6 +8783,7 @@ struct UpperContentView: View {
         momentumCoeffEditText = String(format: "%.3f", trainingParams.momentumCoeff)
         sqrtBatchScalingEditValue = trainingParams.sqrtBatchScalingLR
         entropyRegularizationEditText = String(format: "%.2e", trainingParams.entropyBonus)
+        illegalMassWeightEditText = String(format: "%.2f", trainingParams.illegalMassWeight)
         gradClipMaxNormEditText = String(format: "%.1f", trainingParams.gradClipMaxNorm)
         weightDecayEditText = String(format: "%.2e", trainingParams.weightDecay)
         policyLossWeightEditText = String(format: "%.2f", trainingParams.policyLossWeight)
@@ -8803,6 +8820,7 @@ struct UpperContentView: View {
         trainingPopoverWarmupError = false
         trainingPopoverMomentumError = false
         trainingPopoverEntropyError = false
+        trainingPopoverIllegalMassWeightError = false
         trainingPopoverGradClipError = false
         trainingPopoverWeightDecayError = false
         trainingPopoverPolicyLossWeightError = false
@@ -9006,6 +9024,22 @@ struct UpperContentView: View {
             }
         } else {
             trainingPopoverEntropyError = true
+            anyError = true
+        }
+
+        // Illegal mass penalty — Double in [0, 100].
+        if let v = Double(illegalMassWeightEditText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 100.0, v.isFinite {
+            trainingPopoverIllegalMassWeightError = false
+            if abs(v - trainingParams.illegalMassWeight) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] illegalMassWeight: %.2f -> %.2f", trainingParams.illegalMassWeight, v)
+                )
+                trainingParams.illegalMassWeight = v
+                trainer?.illegalMassPenaltyWeight = Float(v)
+            }
+        } else {
+            trainingPopoverIllegalMassWeightError = true
             anyError = true
         }
 
@@ -10624,6 +10658,7 @@ extension UpperContentView {
                 momentumText: $momentumCoeffEditText,
                 sqrtBatchScalingValue: $sqrtBatchScalingEditValue,
                 entropyText: $entropyRegularizationEditText,
+                illegalMassWeightText: $illegalMassWeightEditText,
                 gradClipText: $gradClipMaxNormEditText,
                 weightDecayText: $weightDecayEditText,
                 policyLossWeightText: $policyLossWeightEditText,
@@ -10634,6 +10669,7 @@ extension UpperContentView {
                 warmupError: trainingPopoverWarmupError,
                 momentumError: trainingPopoverMomentumError,
                 entropyError: trainingPopoverEntropyError,
+                illegalMassWeightError: trainingPopoverIllegalMassWeightError,
                 gradClipError: trainingPopoverGradClipError,
                 weightDecayError: trainingPopoverWeightDecayError,
                 policyLossWeightError: trainingPopoverPolicyLossWeightError,
@@ -10696,6 +10732,9 @@ extension UpperContentView {
                 }
                 .onChange(of: entropyRegularizationEditText) { _, _ in
                     trainingPopoverEntropyError = false
+                }
+                .onChange(of: illegalMassWeightEditText) { _, _ in
+                    trainingPopoverIllegalMassWeightError = false
                 }
                 .onChange(of: gradClipMaxNormEditText) { _, _ in
                     trainingPopoverGradClipError = false

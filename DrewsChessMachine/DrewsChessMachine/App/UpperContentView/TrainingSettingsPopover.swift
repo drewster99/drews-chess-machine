@@ -53,6 +53,7 @@ struct TrainingSettingsPopover: View {
     @Binding var momentumText: String
     @Binding var sqrtBatchScalingValue: Bool
     @Binding var entropyText: String
+    @Binding var illegalMassWeightText: String
     @Binding var gradClipText: String
     @Binding var weightDecayText: String
     @Binding var policyLossWeightText: String
@@ -64,6 +65,7 @@ struct TrainingSettingsPopover: View {
     let warmupError: Bool
     let momentumError: Bool
     let entropyError: Bool
+    let illegalMassWeightError: Bool
     let gradClipError: Bool
     let weightDecayError: Bool
     let policyLossWeightError: Bool
@@ -235,6 +237,7 @@ struct TrainingSettingsPopover: View {
                     momentumText: $momentumText,
                     sqrtBatchScalingValue: $sqrtBatchScalingValue,
                     entropyText: $entropyText,
+                    illegalMassWeightText: $illegalMassWeightText,
                     gradClipText: $gradClipText,
                     weightDecayText: $weightDecayText,
                     policyLossWeightText: $policyLossWeightText,
@@ -245,6 +248,7 @@ struct TrainingSettingsPopover: View {
                     warmupError: warmupError,
                     momentumError: momentumError,
                     entropyError: entropyError,
+                    illegalMassWeightError: illegalMassWeightError,
                     gradClipError: gradClipError,
                     weightDecayError: weightDecayError,
                     policyLossWeightError: policyLossWeightError,
@@ -462,6 +466,7 @@ private struct OptimizerTab: View {
     @Binding var momentumText: String
     @Binding var sqrtBatchScalingValue: Bool
     @Binding var entropyText: String
+    @Binding var illegalMassWeightText: String
     @Binding var gradClipText: String
     @Binding var weightDecayText: String
     @Binding var policyLossWeightText: String
@@ -473,6 +478,7 @@ private struct OptimizerTab: View {
     let warmupError: Bool
     let momentumError: Bool
     let entropyError: Bool
+    let illegalMassWeightError: Bool
     let gradClipError: Bool
     let weightDecayError: Bool
     let policyLossWeightError: Bool
@@ -566,6 +572,23 @@ private struct OptimizerTab: View {
                     )
                 }
                 VStack(alignment: .leading, spacing: 6) {
+                    PopoverRow(
+                        label: "Illegal mass penalty:",
+                        text: $illegalMassWeightText,
+                        error: illegalMassWeightError,
+                        placeholder: "1.00"
+                    ) {
+                        Stepper(
+                            "",
+                            value: PopoverBindings.doubleBinding(
+                                text: $illegalMassWeightText,
+                                fallback: 1.0,
+                                format: "%.2f"
+                            ),
+                            in: 0.0...100.0,
+                            step: 0.5
+                        )
+                    }
                     PopoverRow(
                         label: "Clip:",
                         text: $gradClipText,

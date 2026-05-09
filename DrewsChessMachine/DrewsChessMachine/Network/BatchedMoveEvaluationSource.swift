@@ -544,18 +544,13 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
                 }
             }
         } onCancel: {
-            // Runs synchronously when the awaiting task is cancelled.
-            // We can't touch actor state from here directly, so hop
-            // back to the actor to remove this submission's pending
-            // entry and resume its continuation with `CancellationError`.
-            // Race-safe vs. `fireBatch`: both `cancelPending` and
-            // `fireBatch` are actor-isolated, so they serialize. If
-            // `fireBatch` resumed the continuation first, our
-            // cancelPending finds nothing and no-ops; if cancelPending
-            // ran first, fireBatch's snapshot of `pending` won't
-            // include this entry. No double-resume in either order.
-            Task.detached { [weak self] in
-                await self?.cancelPending(token: token)
+            // High-frequency optimization: Instead of spawning a
+            // detached task per cancel (which can flood the pool
+            // during session promotion), we use a structured Task to
+            // notify the actor.
+            nonisolated(unsafe) let weakSelf = self
+            Task {
+                await weakSelf.cancelPending(token: token)
             }
         }
     }

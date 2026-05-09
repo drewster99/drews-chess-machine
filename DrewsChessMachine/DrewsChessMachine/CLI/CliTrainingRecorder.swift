@@ -446,6 +446,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let policyLoss: Double?
         let valueLoss: Double?
         let policyEntropy: Double?
+        let policyIllegalMassPenalty: Double?
         let gradGlobalNorm: Double?
         let policyHeadWeightNorm: Double?
         let policyLogitAbsMax: Double?
@@ -554,6 +555,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case policyLoss = "policy_loss"
             case valueLoss = "value_loss"
             case policyEntropy = "policy_entropy"
+            case policyIllegalMassPenalty = "policy_illegal_mass_penalty"
             case gradGlobalNorm = "grad_global_norm"
             case policyHeadWeightNorm = "policy_head_weight_norm"
             case policyLogitAbsMax = "policy_logit_abs_max"

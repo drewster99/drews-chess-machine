@@ -11,6 +11,7 @@
   "draw_penalty" : 0,
   "entropy_bonus" : 0.014999999999999999,
   "grad_clip_max_norm" : 30,
+  "illegal_mass_weight" : 1,
   "learning_rate" : 0.0001,
   "legal_mass_collapse_grace_seconds" : 600,
   "legal_mass_collapse_no_improvement_probes" : 8,

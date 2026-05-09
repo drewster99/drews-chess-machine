@@ -172,6 +172,13 @@ struct SessionCheckpointState: Codable, Equatable {
     /// controls how aggressively the saved velocity is mixed in
     /// going forward.
     var momentumCoeff: Float?
+    /// Illegal-mass penalty weight in effect at save time. Multiplied
+    /// into the unmasked-softmax illegal-mass term in `total_loss`,
+    /// where positive values pull probability mass off illegal cells.
+    /// Optional for back-compat with session files written before
+    /// the term existed; absent → loader falls through to the user's
+    /// current `TrainingParameters.shared.illegalMassWeight`.
+    var illegalMassPenaltyWeight: Float?
 
     // Replay-ratio controller settings. All Optional so older
     // session.json files that lack these keys still decode.
