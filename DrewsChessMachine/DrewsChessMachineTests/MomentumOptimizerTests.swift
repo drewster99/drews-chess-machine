@@ -15,9 +15,9 @@
 //  - exportTrainerWeights() round-trips through loadTrainerWeights():
 //    re-loaded weights and velocities match the saved snapshot
 //    bit-exactly.
-//  - Loading a v1-shape weight array (no velocity tensors) is
-//    accepted; base weights are loaded; velocities are left at their
-//    pre-load state (zero on a fresh trainer).
+//  - Loading a base-only weight array through the strict session
+//    loader is rejected; fresh champion forks use the explicit
+//    base-load API that resets velocity.
 //  - resetVelocitiesToZero() clears all velocity buffers after they
 //    have been populated.
 //
@@ -44,7 +44,7 @@ final class MomentumOptimizerTests: XCTestCase {
         let baseCount = trainer.network.trainableVariables.count
             + trainer.network.bnRunningStatsVariables.count
         let velocityCount = trainer.network.trainableVariables.count
-        // Either v1 (no velocity) or v2 (with velocity) layout.
+        // Either base-only or full trainer layout.
         if weights.count == baseCount {
             return PartitionedWeights(base: weights, velocity: [])
         }
@@ -194,47 +194,53 @@ final class MomentumOptimizerTests: XCTestCase {
         }
     }
 
-    /// Loading a v1-shape weight array (length = trainables + bn,
-    /// no velocity tensors) must be accepted. Base weights load;
-    /// velocities are NOT touched — they remain at whatever value
-    /// they had pre-load (zero on a fresh trainer).
-    /// TODO(persist-velocity, after 2026-06-04): can be removed
-    /// once the v1 zero-pad migration window expires.
-    func testV1ShapeLoadAcceptedWithVelocityZeroed() async throws {
+    /// Session resume requires full trainer state. A base-only
+    /// trainables+BN payload must not be silently accepted as a
+    /// trainer checkpoint because that would lose optimizer velocity.
+    func testLoadTrainerWeightsRejectsBaseOnlyShape() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
         let trainer = try ChessTrainer(momentumCoeff: 0.9, lrWarmupSteps: 0)
-        // Run a step so weights and velocities are both non-zero.
         _ = try await trainer.trainStep(batchSize: 32)
         let v2Snapshot = try await trainer.exportTrainerWeights()
         let p2 = partition(v2Snapshot, trainer: trainer)
-        XCTAssertFalse(allZero(p2.velocity), "Velocity should be non-zero after one step at μ=0.9")
 
-        // Build a v1-shape array: only the base portion.
-        let v1Shape = p2.base
-        XCTAssertEqual(
-            v1Shape.count,
-            trainer.network.trainableVariables.count + trainer.network.bnRunningStatsVariables.count,
-            "v1 layout: trainables + bnRunningStats only"
-        )
+        do {
+            try await trainer.loadTrainerWeights(p2.base)
+            XCTFail("Expected loadTrainerWeights to reject base-only payload")
+        } catch {
+            guard case ChessTrainerError.trainerWeightCountMismatch = error else {
+                XCTFail("Expected trainerWeightCountMismatch, got \(error)")
+                return
+            }
+        }
+    }
 
-        // Reset the network to clear any existing velocity, then load
-        // the v1 array. After load, velocities should be zero (initial
-        // state from the resetNetwork rebuild) and base weights should
-        // match.
+    /// Fresh forks from champion are allowed to load base weights,
+    /// but only through the explicit API that also zeros velocity.
+    func testLoadBaseWeightsResetVelocityLoadsBaseAndZerosVelocity() async throws {
+        guard MTLCreateSystemDefaultDevice() != nil else {
+            throw XCTSkip("Metal not available")
+        }
+        let trainer = try ChessTrainer(momentumCoeff: 0.9, lrWarmupSteps: 0)
+        _ = try await trainer.trainStep(batchSize: 32)
+        let snapshot = try await trainer.exportTrainerWeights()
+        let partitioned = partition(snapshot, trainer: trainer)
+        XCTAssertFalse(allZero(partitioned.velocity), "Velocity should be non-zero after one step at μ=0.9")
+
         try await trainer.resetNetwork()
-        try await trainer.loadTrainerWeights(v1Shape)
+        try await trainer.loadBaseWeightsResetVelocity(partitioned.base)
         let after = try await trainer.exportTrainerWeights()
         let pa = partition(after, trainer: trainer)
 
-        XCTAssertEqual(pa.base.count, p2.base.count, "Base tensor count after v1 load should match input")
+        XCTAssertEqual(pa.base.count, partitioned.base.count, "Base tensor count after base load should match input")
         for i in 0..<pa.base.count {
-            XCTAssertEqual(pa.base[i], p2.base[i], "Base tensor \(i) should match v1-loaded value bit-exactly")
+            XCTAssertEqual(pa.base[i], partitioned.base[i], "Base tensor \(i) should match loaded value bit-exactly")
         }
         XCTAssertTrue(
             allZero(pa.velocity),
-            "Velocity should be zero after v1-shape load (no velocity slots in source data; trainer.resetNetwork zeroed them)"
+            "Velocity should be zero after explicit base-load reset"
         )
     }
 
@@ -271,8 +277,7 @@ final class MomentumOptimizerTests: XCTestCase {
         }
     }
 
-    /// Loading a malformed weights array (count not matching either
-    /// v1 or v2 layout) must throw.
+    /// Loading a malformed weights array must throw.
     func testLoadTrainerWeightsRejectsWrongCount() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
@@ -292,10 +297,7 @@ final class MomentumOptimizerTests: XCTestCase {
         }
     }
 
-    /// ModelCheckpointFile decode must accept both v1 and v2 file
-    /// versions. Verified by encoding a v2 file (the new default) and
-    /// then loading it back — formatVersion on the decoded struct
-    /// should be 2.
+    /// ModelCheckpointFile decode accepts the current v2 file version.
     func testModelCheckpointFileV2RoundTrip() throws {
         let now = Int64(Date().timeIntervalSince1970)
         let tinyWeights: [[Float]] = [[1.0, 2.0], [3.0]]

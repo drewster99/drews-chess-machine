@@ -101,19 +101,12 @@ struct ModelCheckpointMetadata: Codable, Equatable {
 struct ModelCheckpointFile {
     static let magic: [UInt8] = Array("DCMMODEL".utf8)
     /// Current write version. New encodes always emit this version.
-    /// Decode accepts v1 (legacy: trainables + bn only) and v2
-    /// (current: trainables + bn + optional optimizer state — used
-    /// by trainer.dcmmodel to round-trip momentum velocity buffers
-    /// per `ChessTrainer.exportTrainerWeights()`).
-    /// TODO(persist-velocity, after 2026-06-04): consider tightening
-    /// the decoder to v2-only once any in-flight v1 trainer.dcmmodel
-    /// files have been re-saved as v2 in the wild.
+    /// Trainer session files use the same flat tensor-list container
+    /// but append optimizer velocity buffers after trainables + BN.
     static let formatVersion: UInt32 = 2
-    /// Versions the decoder accepts. v1: pre-momentum trainers and
-    /// all champion/candidate/probe model files. v2: trainer files
-    /// written after the momentum implementation lands; payload may
-    /// contain extra tensors past the bn-running-stats slot.
-    static let supportedReadVersions: Set<UInt32> = [1, 2]
+    /// Versions the decoder accepts. Older model-file versions are
+    /// rejected instead of silently inventing missing session state.
+    static let supportedReadVersions: Set<UInt32> = [2]
 
     /// Hash of the shape constants that determine variable layout.
     /// Any change to `ChessNetwork.channels`, `numBlocks`,
@@ -183,21 +176,19 @@ struct ModelCheckpointFile {
     let createdAtUnix: Int64
     let metadata: ModelCheckpointMetadata
     /// One sub-array per persistent tensor.
-    /// - For v1 files: order is `trainableVariables + bnRunningStatsVariables`.
-    /// - For v2 files: order is `trainableVariables + bnRunningStatsVariables`,
-    ///   optionally followed by trainer optimizer-state tensors (currently
-    ///   the velocity buffers parallel to `trainableVariables`). The total
-    ///   tensor count distinguishes the two payload shapes — the loader
-    ///   inspects `weights.count` against the live variable counts to
-    ///   decide how to bind them. Element count per sub-array matches the
-    ///   tensor's static shape.
+    /// - Champion/candidate/probe files: `trainableVariables +
+    ///   bnRunningStatsVariables`.
+    /// - Trainer session files: the same base tensors followed by
+    ///   optimizer-state tensors, currently velocity buffers parallel
+    ///   to `trainableVariables`. Session resume requires the full
+    ///   trainer shape; fresh forks from champion use an explicit base
+    ///   load path.
+    /// Element count per sub-array matches the tensor's static shape.
     let weights: [[Float]]
     /// Format version actually decoded. New encodes always write
-    /// `Self.formatVersion` (currently 2). Decoded value is one of
-    /// `Self.supportedReadVersions`. Callers (typically
-    /// `ChessTrainer.loadTrainerWeights`) use this to disambiguate
-    /// payload layout when the live variable count alone would be
-    /// ambiguous.
+    /// `Self.formatVersion` (currently 2). Payload shape is validated
+    /// by the call site that knows whether it is loading a base model
+    /// or full trainer state.
     let formatVersion: UInt32
 
     /// Memberwise init with `formatVersion` defaulted to the current

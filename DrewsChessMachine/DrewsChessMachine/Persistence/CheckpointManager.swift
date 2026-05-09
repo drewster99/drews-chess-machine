@@ -484,6 +484,12 @@ enum CheckpointManager {
             throw CheckpointManagerError.targetAlreadyExists(finalDirURL)
         }
 
+        guard trainerWeights.count > championWeights.count else {
+            throw CheckpointManagerError.sessionWriteFailed(
+                "trainer.dcmmodel must contain full trainer state, including optimizer velocity; got \(trainerWeights.count) tensors for trainer and \(championWeights.count) tensors for champion"
+            )
+        }
+
         // Encode the model files up front (their inputs are already
         // resolved) so an encoding failure aborts before we touch the
         // filesystem. session.json is encoded LATER — after the

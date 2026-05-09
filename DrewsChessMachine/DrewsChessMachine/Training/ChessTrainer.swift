@@ -680,6 +680,17 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         }
     }
 
+    /// Rewind or reseed the cumulative step counter without touching
+    /// timing/error fields. Used after arena promotion when the
+    /// trainer weights are restored to the arena-start snapshot, so
+    /// future checkpoint state stays aligned with
+    /// `ChessTrainer.completedTrainSteps`.
+    func setStepCount(_ steps: Int) {
+        lock.withLock {
+            self._stats.steps = max(0, steps)
+        }
+    }
+
     /// Record one completed training step. Called from the background
     /// training task. The lock acquisition is sub-microsecond and the
     /// rolling-window bookkeeping runs synchronously under it; the UI
@@ -1599,12 +1610,12 @@ final class ChessTrainer: @unchecked Sendable {
         self.momentumTensorData = MPSGraphTensorData(momentumNDArray)
         // The cached ND arrays were allocated against the old network's
         // device and are keyed by batch size against the old graph's
-        // Drop the cache so the first trainStep after
+        // placeholders. Drop the cache so the first trainStep after
         // reset rebuilds against the fresh network.
         feedCache.removeAll()
         _feedCacheCount.value = 0
         _completedTrainSteps.value = 0
-        }
+    }
 
     /// Build the training subgraph (loss + gradients + SGD assigns) on top
     /// of the given network's forward graph. Returns the placeholders, loss

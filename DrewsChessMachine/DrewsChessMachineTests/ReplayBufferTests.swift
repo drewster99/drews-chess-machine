@@ -3,12 +3,12 @@
 //  DrewsChessMachineTests
 //
 //  Round-trip, integrity, and corruption-rejection tests for
-//  `ReplayBuffer`'s on-disk persistence (current format v4). Because
+//  `ReplayBuffer`'s on-disk persistence (current format v6). Because
 //  the buffer is the unit of training data, a write/read regression
 //  here would corrupt every saved session. Tests cover:
 //   - empty buffer round-trips cleanly through SHA verify
 //   - single-position round-trip preserves exact float bytes
-//   - older format versions (v2, v3) cleanly reject with
+//   - older format versions cleanly reject with
 //     `unsupportedVersion`
 //   - tampered body byte → hashMismatch
 //   - file truncated by one byte → sizeMismatch
@@ -195,9 +195,9 @@ final class ReplayBufferTests: XCTestCase {
 
     func testV3FileRejectedWithUnsupportedVersion() throws {
         // Synthesize a v3-formatted file (no SHA trailer) and attempt to
-        // restore. v3 shared v4's header layout but had no SHA-256
-        // trailer and no size-invariant check. The v4 reader must
-        // reject v3 cleanly via `unsupportedVersion(3)`.
+        // restore. v3 shared the current header layout but had no
+        // SHA-256 trailer and no size-invariant check. The reader
+        // must reject v3 cleanly via `unsupportedVersion(3)`.
         let magic = "DCMRPBUF".data(using: .utf8)!
         var version: UInt32 = 3
         var pad: UInt32 = 0
@@ -229,10 +229,72 @@ final class ReplayBufferTests: XCTestCase {
         }
     }
 
-    // MARK: - v4 integrity checks
+    func testV4FileRejectedWithUnsupportedVersion() throws {
+        let magic = "DCMRPBUF".data(using: .utf8)!
+        var version: UInt32 = 4
+        var pad: UInt32 = 0
+        var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
+        var cap: Int64 = 100
+        var stored: Int64 = 0
+        var writeIdx: Int64 = 0
+        var totalAdded: Int64 = 0
 
-    func testV4SHAMismatchRejected() throws {
-        // Write a valid v4 file with one real position, then flip a
+        var header = Data()
+        header.append(magic)
+        withUnsafeBytes(of: &version) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &pad) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &fpb) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &cap) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &stored) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &writeIdx) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &totalAdded) { header.append(contentsOf: $0) }
+        try header.write(to: tempFile)
+
+        let restored = ReplayBuffer(capacity: 100)
+        XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
+            guard case ReplayBuffer.PersistenceError.unsupportedVersion(let v) = error else {
+                XCTFail("Expected unsupportedVersion(4), got \(error)")
+                return
+            }
+            XCTAssertEqual(v, 4)
+        }
+    }
+
+    func testV5FileRejectedWithUnsupportedVersion() throws {
+        let magic = "DCMRPBUF".data(using: .utf8)!
+        var version: UInt32 = 5
+        var pad: UInt32 = 0
+        var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
+        var cap: Int64 = 100
+        var stored: Int64 = 0
+        var writeIdx: Int64 = 0
+        var totalAdded: Int64 = 0
+
+        var header = Data()
+        header.append(magic)
+        withUnsafeBytes(of: &version) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &pad) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &fpb) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &cap) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &stored) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &writeIdx) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &totalAdded) { header.append(contentsOf: $0) }
+        try header.write(to: tempFile)
+
+        let restored = ReplayBuffer(capacity: 100)
+        XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
+            guard case ReplayBuffer.PersistenceError.unsupportedVersion(let v) = error else {
+                XCTFail("Expected unsupportedVersion(5), got \(error)")
+                return
+            }
+            XCTAssertEqual(v, 5)
+        }
+    }
+
+    // MARK: - Current-format integrity checks
+
+    func testSHAMismatchRejected() throws {
+        // Write a valid file with one real position, then flip a
         // single byte somewhere in the body (past the 56-byte header
         // and before the 32-byte trailer). Decode must throw
         // hashMismatch — the SHA-256 trailer is the first line of
@@ -258,8 +320,8 @@ final class ReplayBufferTests: XCTestCase {
         }
     }
 
-    func testV4SizeMismatchOnTruncation() throws {
-        // Truncate a valid v4 file by one byte. The size-equality
+    func testSizeMismatchOnTruncation() throws {
+        // Truncate a valid file by one byte. The size-equality
         // check runs before the SHA pass, so the error must be
         // sizeMismatch (not hashMismatch).
         let buffer = ReplayBuffer(capacity: 10)
@@ -279,7 +341,7 @@ final class ReplayBufferTests: XCTestCase {
         }
     }
 
-    func testV4SizeMismatchOnTrailingGarbage() throws {
+    func testSizeMismatchOnTrailingGarbage() throws {
         // Append a single byte past the valid end. The SHA trailer
         // is still at its correct offset, but the file is now one
         // byte too long — strict `==` size check must reject.
@@ -300,13 +362,13 @@ final class ReplayBufferTests: XCTestCase {
         }
     }
 
-    func testV4UpperBoundRejectedOnCapacity() throws {
-        // Synthesize a v4-versioned header with capacity = Int64.max.
+    func testUpperBoundRejectedOnCapacity() throws {
+        // Synthesize a current-version header with capacity = Int64.max.
         // The upper-bound cap check runs after the header is parsed
         // but before any allocation or seek arithmetic — it must
         // throw upperBoundExceeded, not crash.
         let magic = "DCMRPBUF".data(using: .utf8)!
-        var version: UInt32 = 4
+        var version: UInt32 = 6
         var pad: UInt32 = 0
         var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
         var cap: Int64 = .max

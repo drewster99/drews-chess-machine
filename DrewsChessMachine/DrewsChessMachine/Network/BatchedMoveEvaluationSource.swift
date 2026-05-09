@@ -338,22 +338,6 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         let continuation: CheckedContinuation<Float, Error>
     }
 
-    /// Reusable scratch for packing `count × BoardEncoder.tensorLength`
-    /// floats into one contiguous buffer before the batched `graph.run`.
-    /// Resized to *exactly* `totalFloats` each batch so the buffer can
-    /// be handed straight to `network.evaluateBatched(batchBoards:count:consume:)`
-    /// without a trimming copy — that API validates
-    /// `batchBoards.count == count * tensorLength`. Steady-state (stable
-    /// slot count) the resize is a no-op and the same COW storage is
-    /// reused indefinitely; a slot-count change or a reentrant
-    /// `fireBatch` overlap triggers at most one COW uniquify (still far
-    /// cheaper than the per-batch full-buffer copy the previous
-    /// implementation paid unconditionally to trim an oversized scratch).
-    /// Swift `[Float]` so storage management is automatic and the
-    /// actor doesn't need a manual `deinit` that would have to touch
-    /// non-Sendable raw pointers from a nonisolated deinit.
-    private var packBuffer: [Float] = []
-
     /// One-shot debug flag for the batched-output correctness check.
     /// First time `fireBatch` runs with a `count >= 2` batch that
     /// contains at least two distinct board encodings, we compare
@@ -692,19 +676,8 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
 
         let count = batch.count
         let totalFloats = count * Self.boardFloats
-        // Size the pack scratch to exactly what the batch needs. In the
-        // steady state (stable slot count) this is a no-op, the same
-        // COW storage is reused batch after batch, and the downstream
-        // `network.evaluateBatched(batchBoards:count:consume:)` call passes
-        // `packBuffer` straight through without any intermediate trimming copy.
-        // Reassignment (rather than `removeLast` / shrink-in-place)
-        // keeps the code path symmetric for grow and shrink and avoids
-        // accidentally carrying stale floats across a size change.
-        if packBuffer.count != totalFloats {
-            packBuffer = [Float](repeating: 0, count: totalFloats)
-        }
-
-        packBuffer.withUnsafeMutableBufferPointer { packBuf in
+        var batchBoards = [Float](repeating: 0, count: totalFloats)
+        batchBoards.withUnsafeMutableBufferPointer { packBuf in
             guard let packBase = packBuf.baseAddress else { return }
             for (i, item) in batch.enumerated() {
                 let dst = packBase.advanced(by: i * Self.boardFloats)
@@ -736,14 +709,10 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
         var gpuTimerEnded = false
 
         do {
-            // Pass `packBuffer` (an owned Swift `[Float]`) directly
-            // across the `await`. Swift's COW guarantees the buffer
-            // stays intact for the duration of the evaluation even if
-            // a reentrant `fireBatch` runs on this actor at a
-            // suspension point and resizes/rewrites our `packBuffer`
-            // stored property — the first mutating access there would
-            // uniquify a fresh buffer, leaving the one captured by the
-            // in-flight `network.evaluate` call untouched.
+            // Pass batch-local board storage across the await. No
+            // actor-owned scratch buffer is shared with reentrant
+            // fires, so another `fireBatch` cannot resize or rewrite
+            // this batch's inputs while the GPU call is in flight.
             //
             // The `consume` closure runs on `ChessNetwork.executionQueue`
             // (a serial DispatchQueue) inside the network's
@@ -756,18 +725,9 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             // consume can write to anything until this consume returns.
             let runStartedNanos = DispatchTime.now().uptimeNanoseconds
             try await network.evaluateBatched(
-                batchBoards: packBuffer,
+                batchBoards: batchBoards,
                 count: count
             ) { [batch] policyBuf, valuesBuf in
-                // `policyBuf.baseAddress` is non-nil by construction:
-                // `internalEvaluate` builds the buffer as
-                // `UnsafeBufferPointer(start: policyPtr, count: count * policySize)`
-                // where `policyPtr` is the result of an allocation
-                // (`ensureBatchPolicyScratch`) that always returns a
-                // non-nil `UnsafeMutablePointer`. A nil here would be
-                // an internal invariant violation, not recoverable —
-                // resuming all parked continuations with an error
-                // would leave the network in an indeterminate state.
                 guard let policyBase = policyBuf.baseAddress else {
                     preconditionFailure(
                         "ChessNetwork batched consume policy buffer has nil baseAddress"

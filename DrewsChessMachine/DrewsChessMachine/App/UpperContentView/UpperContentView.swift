@@ -4568,7 +4568,14 @@ struct UpperContentView: View {
         // (cancellation, sync errors) don't — clearing here keeps
         // all exit paths honest.
         _ = overrideBox.consume()
-        let steps = trainingStats?.steps ?? 0
+        let arenaStartTrainingSnapshot = await trainingBox?.snapshot()
+        let steps = arenaStartTrainingSnapshot?.stats.steps ?? trainingStats?.steps ?? 0
+        if let arenaStartTrainingSnapshot {
+            trainingStats = arenaStartTrainingSnapshot.stats
+            lastTrainStep = arenaStartTrainingSnapshot.lastTiming
+            realRollingPolicyLoss = arenaStartTrainingSnapshot.rollingPolicyLoss
+            realRollingValueLoss = arenaStartTrainingSnapshot.rollingValueLoss
+        }
 
         let trainerIDStart = trainer.identifier?.description ?? "?"
         let championIDStart = champion.identifier?.description ?? "?"
@@ -4579,7 +4586,7 @@ struct UpperContentView: View {
         // the trainer's state entering the arena — especially
         // useful for diagnosing whether divergence was already
         // underway before the arena ran.
-        if let snap = await trainingBox?.snapshot() {
+        if let snap = arenaStartTrainingSnapshot {
             let pStr = snap.rollingPolicyLoss.map { String(format: "%+.4f", $0) } ?? "--"
             let vStr = snap.rollingValueLoss.map { String(format: "%+.4f", $0) } ?? "--"
             let eStr = snap.rollingPolicyEntropy.map { String(format: "%.4f", $0) } ?? "--"
@@ -4991,6 +4998,16 @@ struct UpperContentView: View {
                     )
                     promoted = true
                     promotedID = candidateInference.identifier
+                    if let arenaStartTrainingSnapshot {
+                        trainingBox?.seed(arenaStartTrainingSnapshot.stats)
+                        trainingStats = arenaStartTrainingSnapshot.stats
+                    } else {
+                        trainingBox?.setStepCount(steps)
+                        if var stats = trainingStats {
+                            stats.steps = steps
+                            trainingStats = stats
+                        }
+                    }
                     trainingBox?.resetRollingWindows()
                     divergenceWarningStreak = 0
                     divergenceCriticalStreak = 0

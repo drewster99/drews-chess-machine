@@ -821,12 +821,9 @@ final class ReplayBuffer: @unchecked Sendable {
     ///     10. materialCounts (UInt8) ← v6 new
     ///   - Trailer: 32-byte SHA-256 digest over every preceding byte.
     ///
-    /// **v4 / v5 read compatibility.** The reader still loads older
-    /// formats by zeroing the missing metadata fields and rebuilding
-    /// hashes from boards (v4) or reading them directly (v5). One-
-    /// way compat: an older file loaded into a v6 build will be
-    /// re-saved as v6 on the next checkpoint. Versions v1–v3 are
-    /// rejected with `unsupportedVersion`.
+    /// Older replay-buffer versions are rejected rather than loaded
+    /// with synthesized metadata. Session resume should either restore
+    /// the exact saved state or fail loudly.
     private static let fileVersion: UInt32 = 6
     /// Header size in bytes: 8 magic + 4 version + 4 pad + 5 × Int64 fields.
     private static let headerSize: Int = 8 + 4 + 4 + 8 * 5
@@ -1179,13 +1176,13 @@ final class ReplayBuffer: @unchecked Sendable {
     /// replay-ratio controller's production-rate window stays
     /// continuous across save/resume.
     ///
-    /// v4 validation order (each step throws a specific error on
+    /// Validation order (each step throws a specific error on
     /// failure and aborts; no field is trusted until all preceding
     /// checks pass):
     ///
     /// 1. File opens and header can be fully read (`truncatedHeader`).
     /// 2. Magic matches "DCMRPBUF" (`badMagic`).
-    /// 3. `fileVersion == 4` (`unsupportedVersion`).
+    /// 3. `fileVersion` matches the current format (`unsupportedVersion`).
     /// 4. `floatsPerBoard` matches the running build's tensor length
     ///    (`incompatibleBoardSize`) — replay-buffer analog of the
     ///    `.dcmmodel` arch-hash check.
@@ -1238,15 +1235,9 @@ final class ReplayBuffer: @unchecked Sendable {
         let version: UInt32 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
         }
-        // v6 is the canonical format. v5 and v4 are silently upgraded
-        // on read by zeroing the missing metadata sections (and, for
-        // v4, also recomputing stateHashes from the restored boards).
-        // v1–v3 are rejected.
-        guard version == Self.fileVersion || version == 5 || version == 4 else {
+        guard version == Self.fileVersion else {
             throw PersistenceError.unsupportedVersion(version)
         }
-        let isV4 = (version == 4)
-        let isV5 = (version == 5)
         let fpbFile: Int64 = headerData.withUnsafeBytes {
             $0.loadUnaligned(fromByteOffset: 16, as: Int64.self)
         }
@@ -1308,27 +1299,17 @@ final class ReplayBuffer: @unchecked Sendable {
         // Compute expected file size from the header, then require
         // strict byte-for-byte equality against what's on disk. The
         // format is fully deterministic — any deviation is corruption.
-        // v5 adds 5 metadata sections (ply UInt16 + length UInt16 +
-        // tau Float + hash UInt64 + workerGameId UInt32 = 20 bytes
-        // per slot). v4 omits them.
-        let v4PerSlotBytes: Int64 = fpbFile * Int64(MemoryLayout<Float>.size)
+        let basePerSlotBytes: Int64 = fpbFile * Int64(MemoryLayout<Float>.size)
             + Int64(MemoryLayout<Int32>.size)       // moves
             + Int64(MemoryLayout<Float>.size)       // outcomes
             + Int64(MemoryLayout<Float>.size)       // vBaselines
-        let v5MetadataBytes: Int64 = Int64(MemoryLayout<UInt16>.size)        // plyIndex
+        let metadataPerSlotBytes: Int64 = Int64(MemoryLayout<UInt16>.size)   // plyIndex
             + Int64(MemoryLayout<UInt16>.size)      // gameLength
             + Int64(MemoryLayout<Float>.size)       // samplingTau
             + Int64(MemoryLayout<UInt64>.size)      // stateHash
             + Int64(MemoryLayout<UInt32>.size)      // workerGameId
-        let v6MetadataBytes: Int64 = Int64(MemoryLayout<UInt8>.size)         // materialCount
-        let perSlotBytes: Int64
-        if isV4 {
-            perSlotBytes = v4PerSlotBytes
-        } else if isV5 {
-            perSlotBytes = v4PerSlotBytes + v5MetadataBytes
-        } else {
-            perSlotBytes = v4PerSlotBytes + v5MetadataBytes + v6MetadataBytes
-        }
+            + Int64(MemoryLayout<UInt8>.size)       // materialCount
+        let perSlotBytes = basePerSlotBytes + metadataPerSlotBytes
         let expectedBytes: Int64 = Int64(Self.headerSize)
             + stcFile * perSlotBytes
             + Int64(Self.trailerSize)
@@ -1416,9 +1397,6 @@ final class ReplayBuffer: @unchecked Sendable {
             storedCount = 0
             writeIndex = 0
             _totalPositionsAdded = 0
-            // Observability fields are NOT persisted in v4. Reset to
-            // zero; the hash dict gets rebuilt by re-hashing the
-            // restored boards once the body reads complete (below).
             hashStats.removeAll(keepingCapacity: true)
 
             if fileStored == 0 {
@@ -1475,94 +1453,68 @@ final class ReplayBuffer: @unchecked Sendable {
                 count: target
             )
 
-            // v5 metadata sections. v4 files end at vBaselines — the
-            // metadata arrays are zeroed and the hash dict is rebuilt
-            // from boards (existing v4-compat behavior). v5 files
-            // read all five sections directly from disk.
-            if !isV4 {
-                if skip > 0 {
-                    try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt16>.size)
-                }
-                try readContiguous(
-                    handle: handle,
-                    into: UnsafeMutableRawPointer(plyIndexStorage),
-                    slotBytes: MemoryLayout<UInt16>.size,
-                    count: target
-                )
-                if skip > 0 {
-                    try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt16>.size)
-                }
-                try readContiguous(
-                    handle: handle,
-                    into: UnsafeMutableRawPointer(gameLengthStorage),
-                    slotBytes: MemoryLayout<UInt16>.size,
-                    count: target
-                )
-                if skip > 0 {
-                    try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
-                }
-                try readContiguous(
-                    handle: handle,
-                    into: UnsafeMutableRawPointer(samplingTauStorage),
-                    slotBytes: MemoryLayout<Float>.size,
-                    count: target
-                )
-                if skip > 0 {
-                    try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt64>.size)
-                }
-                try readContiguous(
-                    handle: handle,
-                    into: UnsafeMutableRawPointer(stateHashStorage),
-                    slotBytes: MemoryLayout<UInt64>.size,
-                    count: target
-                )
-                if skip > 0 {
-                    try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt32>.size)
-                }
-                try readContiguous(
-                    handle: handle,
-                    into: UnsafeMutableRawPointer(workerGameIdStorage),
-                    slotBytes: MemoryLayout<UInt32>.size,
-                    count: target
-                )
-                if !isV5 {
-                    // v6+ — read materialCounts. v5 lacks the section,
-                    // so we zero materialCountStorage in-place above
-                    // (it was initialized to zero at allocation).
-                    if skip > 0 {
-                        try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt8>.size)
-                    }
-                    try readContiguous(
-                        handle: handle,
-                        into: UnsafeMutableRawPointer(materialCountStorage),
-                        slotBytes: MemoryLayout<UInt8>.size,
-                        count: target
-                    )
-                } else {
-                    // Explicit zero of the legacy slots so cycled-out
-                    // entries from a v5 restore don't carry stale
-                    // material counts from a previous session.
-                    materialCountStorage.update(repeating: 0, count: target)
-                }
+            if skip > 0 {
+                try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt16>.size)
             }
+            try readContiguous(
+                handle: handle,
+                into: UnsafeMutableRawPointer(plyIndexStorage),
+                slotBytes: MemoryLayout<UInt16>.size,
+                count: target
+            )
+            if skip > 0 {
+                try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt16>.size)
+            }
+            try readContiguous(
+                handle: handle,
+                into: UnsafeMutableRawPointer(gameLengthStorage),
+                slotBytes: MemoryLayout<UInt16>.size,
+                count: target
+            )
+            if skip > 0 {
+                try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
+            }
+            try readContiguous(
+                handle: handle,
+                into: UnsafeMutableRawPointer(samplingTauStorage),
+                slotBytes: MemoryLayout<Float>.size,
+                count: target
+            )
+            if skip > 0 {
+                try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt64>.size)
+            }
+            try readContiguous(
+                handle: handle,
+                into: UnsafeMutableRawPointer(stateHashStorage),
+                slotBytes: MemoryLayout<UInt64>.size,
+                count: target
+            )
+            if skip > 0 {
+                try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt32>.size)
+            }
+            try readContiguous(
+                handle: handle,
+                into: UnsafeMutableRawPointer(workerGameIdStorage),
+                slotBytes: MemoryLayout<UInt32>.size,
+                count: target
+            )
+            if skip > 0 {
+                try seekForward(handle: handle, bytes: skip * MemoryLayout<UInt8>.size)
+            }
+            try readContiguous(
+                handle: handle,
+                into: UnsafeMutableRawPointer(materialCountStorage),
+                slotBytes: MemoryLayout<UInt8>.size,
+                count: target
+            )
 
             storedCount = target
             writeIndex = (target == capacity) ? 0 : target
             _totalPositionsAdded = Int(ttlFile)
 
-            // Rebuild the hash dict from the just-loaded hashes (v5)
-            // or by re-hashing the boards (v4 compat path). Either
-            // way, the per-hash WLD counters are populated from the
-            // restored outcome column.
-            let fpb = Self.floatsPerBoard
+            // Rebuild the hash dict from the restored hash column.
             for slot in 0..<target {
-                let h: UInt64
-                if isV4 {
-                    h = Self.hashBoard(boardStorage + slot * fpb, count: fpb)
-                    stateHashStorage[slot] = h
-                } else {
-                    h = stateHashStorage[slot]
-                }
+                let h = stateHashStorage[slot]
                 let outcome = outcomeStorage[slot]
                 incrementHashStat(
                     hash: h,
