@@ -584,9 +584,11 @@ struct UpperContentView: View {
     @State private var arenaPopoverGamesText: String = ""
     @State private var arenaPopoverConcurrencyText: String = ""
     @State private var arenaPopoverIntervalText: String = ""
+    @State private var arenaPopoverPromoteThresholdText: String = ""
     @State private var arenaPopoverGamesError: Bool = false
     @State private var arenaPopoverConcurrencyError: Bool = false
     @State private var arenaPopoverIntervalError: Bool = false
+    @State private var arenaPopoverPromoteThresholdError: Bool = false
     @State private var arenaPopoverTauStartError: Bool = false
     @State private var arenaPopoverTauDecayError: Bool = false
     @State private var arenaPopoverTauFloorError: Bool = false
@@ -4953,7 +4955,7 @@ struct UpperContentView: View {
             if !Task.isCancelled {
                 do {
                     promotedChampionWeights = try await Task.detached(priority: .userInitiated) {
-                        [candidateInference, champion, trainer, trainerSnapshotVelocity] in
+                        [candidateInference, champion, trainer, trainerSnapshotVelocity, steps] in
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
                         try await trainer.network.loadWeights(weights)
@@ -4969,6 +4971,14 @@ struct UpperContentView: View {
                         // so the trainer's velocity I/O is safe to
                         // drive directly on network.graph.
                         try await trainer.loadVelocitySnapshot(trainerSnapshotVelocity)
+                        // CRITICAL: Rewind the trainer's completed step
+                        // count to match the snapshotted weights. Without
+                        // this, the trainer keeps its post-arena step
+                        // count but uses arena-start weights, causing
+                        // the LR warmup multiplier to jump ahead of
+                        // the weights and drive the immature network
+                        // into collapse with an oversized LR.
+                        trainer.completedTrainSteps = steps
                         return weights
                     }.value
                     // Promoted: champion now holds the arena candidate's
@@ -5108,14 +5118,14 @@ struct UpperContentView: View {
                 creator: "promote",
                 trainingStep: trainingStats?.steps ?? 0,
                 parentModelID: championID,
-                notes: "Trainer lineage at arena-start pause"
+                notes: "Trainer lineage at arena-start pause with optimizer velocity"
             )
             let createdAtUnix = Int64(Date().timeIntervalSince1970)
             // Copy captured arrays for clean Sendable semantics
             // (they're already Sendable but this makes the
             // transfer to the detached task explicit).
             let championWeightsSnapshot = promotedChampionWeights
-            let trainerWeightsSnapshot = trainerSnapshotWeights
+            let trainerWeightsSnapshot = trainerSnapshotWeights + trainerSnapshotVelocity
             let bufferForAutosave = replayBuffer
             // Same main-actor snapshot rule as the manual/periodic
             // path — rings are @MainActor-isolated, so the array
@@ -6415,6 +6425,8 @@ struct UpperContentView: View {
             if let autoDelay = rs.lastAutoComputedDelayMs {
                 lastAutoComputedDelayMs = autoDelay
             }
+            trainingParams.replayRatioTarget = rs.replayRatioTarget ?? 1.0
+            trainingParams.replayRatioAutoAdjust = rs.replayRatioAutoAdjust ?? true
         } else {
             // Fresh session — no resumed steps to subtract.
             trainingStepsAtSegmentStart = 0
@@ -6536,8 +6548,6 @@ struct UpperContentView: View {
         } else if let resumed = pendingLoadedSession {
             currentSessionID = resumed.state.sessionID
             currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
-            trainingParams.replayRatioTarget = resumed.state.replayRatioTarget ?? 1.0
-            trainingParams.replayRatioAutoAdjust = resumed.state.replayRatioAutoAdjust ?? true
             trainingParams.learningRate = Double(resumed.state.learningRate)
             if let entropyCoeff = resumed.state.entropyRegularizationCoeff {
                 trainingParams.entropyBonus = Double(entropyCoeff)
@@ -6724,19 +6734,16 @@ struct UpperContentView: View {
                     try await Task.detached(priority: .userInitiated) {
                         [resumedTrainerWeights] in
                         if let trainerWeights = resumedTrainerWeights {
-                            // loadTrainerWeights detects v1 vs v2 layout
-                            // by count: v2 includes velocity tensors,
-                            // v1 (legacy) is trainables+bn only and
-                            // leaves velocity at zero-init.
+                            // Session resume requires exact trainer
+                            // state, including optimizer velocity.
                             try await trainer.loadTrainerWeights(trainerWeights)
                         } else {
                             // No prior trainer file (fresh session or
                             // pre-existing session without trainer.dcmmodel):
-                            // fork from champion. Champion has no
-                            // velocities, so loadTrainerWeights takes the
-                            // v1 branch and velocity stays at zero-init.
+                            // fork from champion and intentionally
+                            // start optimizer velocity from zero.
                             let championWeights = try await network.exportWeights()
-                            try await trainer.loadTrainerWeights(championWeights)
+                            try await trainer.loadBaseWeightsResetVelocity(championWeights)
                         }
                     }.value
                 case .newSessionResetTrainerFromChampion:
@@ -6744,11 +6751,10 @@ struct UpperContentView: View {
                     try await Task.detached(priority: .userInitiated) {
                         // User explicitly asked to discard trainer state
                         // and re-fork from champion. Velocity goes back
-                        // to zero (via the v1-count branch in
-                        // loadTrainerWeights), which is the correct
-                        // semantics for a fresh fork.
+                        // to zero, which is the correct semantics for
+                        // a fresh fork.
                         let championWeights = try await network.exportWeights()
-                        try await trainer.loadTrainerWeights(championWeights)
+                        try await trainer.loadBaseWeightsResetVelocity(championWeights)
                     }.value
                 }
             } catch {
@@ -8274,12 +8280,14 @@ struct UpperContentView: View {
                         gamesText: $arenaPopoverGamesText,
                         concurrencyText: $arenaPopoverConcurrencyText,
                         intervalText: $arenaPopoverIntervalText,
+                        promoteThresholdText: $arenaPopoverPromoteThresholdText,
                         tauStartText: $arStartTauEditText,
                         tauDecayText: $arDecayPerPlyEditText,
                         tauFloorText: $arFloorTauEditText,
                         gamesError: arenaPopoverGamesError,
                         concurrencyError: arenaPopoverConcurrencyError,
                         intervalError: arenaPopoverIntervalError,
+                        promoteThresholdError: arenaPopoverPromoteThresholdError,
                         tauStartError: arenaPopoverTauStartError,
                         tauDecayError: arenaPopoverTauDecayError,
                         tauFloorError: arenaPopoverTauFloorError,
@@ -8575,6 +8583,7 @@ struct UpperContentView: View {
         arenaPopoverGamesText = String(trainingParams.arenaGamesPerTournament)
         arenaPopoverConcurrencyText = String(trainingParams.arenaConcurrency)
         arenaPopoverIntervalText = Self.formatDurationSpec(trainingParams.arenaAutoIntervalSec)
+        arenaPopoverPromoteThresholdText = String(format: "%.3f", trainingParams.arenaPromoteThreshold)
         // Reuse the same edit-text @State that backs the inline
         // stats-panel tau row (now removed) so a single edit
         // location keeps `trainingParams` and `@State` in sync.
@@ -8584,6 +8593,7 @@ struct UpperContentView: View {
         arenaPopoverGamesError = false
         arenaPopoverConcurrencyError = false
         arenaPopoverIntervalError = false
+        arenaPopoverPromoteThresholdError = false
         arenaPopoverTauStartError = false
         arenaPopoverTauDecayError = false
         arenaPopoverTauFloorError = false
@@ -8625,6 +8635,25 @@ struct UpperContentView: View {
             }
         } else {
             arenaPopoverIntervalError = true
+            anyError = true
+        }
+
+        // Promote threshold — `[0.5, 1.0]` matches the parameter's
+        // declared range. Lower bound 0.5 means "at-least-even" —
+        // anything below would let the candidate displace the
+        // champion on a coin-flip arena, so the parameter type
+        // refuses to go there.
+        if let v = Double(arenaPopoverPromoteThresholdText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.5, v.isFinite, v <= 1.0 {
+            arenaPopoverPromoteThresholdError = false
+            if abs(v - trainingParams.arenaPromoteThreshold) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] arenaPromoteThreshold: %.3f -> %.3f", trainingParams.arenaPromoteThreshold, v)
+                )
+                trainingParams.arenaPromoteThreshold = v
+            }
+        } else {
+            arenaPopoverPromoteThresholdError = true
             anyError = true
         }
 

@@ -1599,11 +1599,12 @@ final class ChessTrainer: @unchecked Sendable {
         self.momentumTensorData = MPSGraphTensorData(momentumNDArray)
         // The cached ND arrays were allocated against the old network's
         // device and are keyed by batch size against the old graph's
-        // placeholders. Drop the cache so the first trainStep after
+        // Drop the cache so the first trainStep after
         // reset rebuilds against the fresh network.
         feedCache.removeAll()
         _feedCacheCount.value = 0
-    }
+        _completedTrainSteps.value = 0
+        }
 
     /// Build the training subgraph (loss + gradients + SGD assigns) on top
     /// of the given network's forward graph. Returns the placeholders, loss
@@ -1737,6 +1738,29 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [-1, 1],
             name: "policy_ce_per_pos"
         )
+        // Clip per-position CE to prevent the unbounded-loss
+        // catastrophe documented in CHANGELOG.md (2026-04-16).
+        // Without this, a single position where the played move
+        // has p(a*) ≈ 0 produces -log(0) → huge, and with the
+        // policy-loss weight the gradient explodes to NaN. This
+        // is especially dangerous right after arena promotion:
+        // the new champion generates data from a broad policy
+        // while the trainer has concentrated, so many moves in
+        // the new data have near-zero probability under the
+        // trainer's policy. Clipping at log(policySize) ≈ 8.49 caps
+        // the per-position CE at the entropy of a uniform
+        // distribution — no single position can contribute more
+        // gradient than "this move is maximally surprising."
+        let ceClipMax = graph.constant(
+            Double(log(Float(ChessNetwork.policySize))),
+            dataType: dtype
+        )
+        let negLogProbClipped = graph.clamp(
+            negLogProb,
+            min: graph.constant(0.0, dataType: dtype),
+            max: ceClipMax,
+            name: "policy_ce_clipped"
+        )
         // --- Advantage baseline: (z − vBaseline) · −log p(a*) ---
         //
         // `vBaseline` is a placeholder — the inference-time v(position)
@@ -1751,69 +1775,65 @@ final class ChessTrainer: @unchecked Sendable {
         // baseline only has to be a function of state, not the
         // current network's prediction.
         let advantage = graph.subtraction(z, vBaseline, name: "advantage")
-        // Per-batch advantage standardization: `(A − E[A]) / (σ[A] + ε)`
+        // Per-batch advantage standardization: `A / RMS(A)`
         // before multiplying into the policy loss. Stabilizes the
         // policy-gradient magnitude batch-to-batch.
         //
         // DEPRECATED: Centering (subtracting E[A]) was found to cause
         // policy collapse in draw-heavy regimes by inverting the
         // signal for draws. We now preserve the absolute sign of the
-        // advantage while still dividing by the standard deviation
-        // to keep step sizes comparable batch-to-batch.
+        // advantage while still dividing by the magnitude to keep
+        // step sizes comparable batch-to-batch.
+        //
+        // REFINED: We use the Root Mean Square (RMS) for normalization
+        // rather than Standard Deviation (σ). Standard Deviation
+        // subtracts the mean, which acts as a "Bias Amplifier" after
+        // a weight rewind (where E[A] is large and σ is small, leading
+        // to a massive multiplier). RMS measures total power and
+        // correctly scales the update regardless of systematic bias.
         //
         // MPSGraph has no stopGradient — but advantage is a pure
         // function of placeholders (`z`, `vBaseline`), so no gradient
-        // path flows through `mean` / `std` back into trainable
-        // variables. That's what makes this the "safe" standardization:
+        // path flows through `rms` back into trainable variables.
+        // That's what makes this the "safe" standardization:
         // it adjusts the forward value used as the REINFORCE weight,
         // never touches the autograd path.
         //
-        // ε of 1e-6 is conservative. We floor the variance at 0.04
-        // (std 0.2) via `graph.maximum` so that a homogeneous batch
+        // ε of 1e-6 is conservative. We floor the power at 0.04
+        // (rms 0.2) via `graph.maximum` so that a homogeneous batch
         // (e.g. all draws) doesn't produce an infinite gradient.
-        let advantageMeanForNorm = graph.mean(
-            of: advantage,
+        let advantageSq = graph.square(
+            with: advantage,
+            name: "advantage_sq"
+        )
+        let advantageMS = graph.mean(
+            of: advantageSq,
             axes: [0, 1],
-            name: "advantage_mean_for_norm"
+            name: "advantage_mean_square"
         )
-        let advantageCentered = graph.subtraction(
-            advantage,
-            advantageMeanForNorm,
-            name: "advantage_centered"
-        )
-        let advantageCenteredSq = graph.square(
-            with: advantageCentered,
-            name: "advantage_centered_sq"
-        )
-        let advantageVarRaw = graph.mean(
-            of: advantageCenteredSq,
-            axes: [0, 1],
-            name: "advantage_var_raw"
-        )
-        let advantageVarFloor = graph.constant(0.04, dataType: dtype)
-        let advantageVarForNorm = graph.maximum(
-            advantageVarRaw,
-            advantageVarFloor,
-            name: "advantage_var_for_norm"
+        let advantagePowerFloor = graph.constant(0.04, dataType: dtype)
+        let advantagePowerForNorm = graph.maximum(
+            advantageMS,
+            advantagePowerFloor,
+            name: "advantage_power_for_norm"
         )
         let advantageNormEps = graph.constant(1e-6, dataType: dtype)
-        let advantageVarPlusEps = graph.addition(
-            advantageVarForNorm,
-            advantageNormEps,
-            name: "advantage_var_plus_eps"
-        )
-        let advantageStdForNorm = graph.squareRoot(
-            with: advantageVarPlusEps,
-            name: "advantage_std_for_norm"
+        let advantageRMSForNorm = graph.squareRoot(
+            with: graph.addition(
+                advantagePowerForNorm,
+                advantageNormEps,
+                name: "advantage_rms_sum"
+            ),
+            name: "advantage_rms_for_norm"
         )
         let advantageNormalized = graph.division(
-            advantage, // <-- Use 'advantage' (z - vBaseline) directly, not 'advantageCentered'
-            advantageStdForNorm,
+            advantage,
+            advantageRMSForNorm,
             name: "advantage_normalized"
         )
         let weightedCE = graph.multiplication(
             advantageNormalized,
-            negLogProb,
+            negLogProbClipped,
             name: "adv_weighted_ce"
         )
         let policyLoss = graph.mean(
@@ -3527,12 +3547,6 @@ final class ChessTrainer: @unchecked Sendable {
     // (`ModelCheckpointFile` v2) records this as the same flat tensor
     // list — no schema change beyond version bump.
     //
-    // Back-compat: a v1 file from before momentum landed contains only
-    // `trainables + bnRunningStats`. `loadTrainerWeights(_:)` detects
-    // that case by count and zero-initializes velocities. See ROADMAP
-    // "Tech debt / migrations to remove" for the planned removal of
-    // the v1 zero-pad branch after 2026-06-04.
-    //
     // Thread-safety: callers MUST have paused both selfPlayGate and
     // trainingGate before invoking these methods. They drive
     // `network.graph.run` directly (bypassing the trainer's
@@ -3543,9 +3557,9 @@ final class ChessTrainer: @unchecked Sendable {
     private var trainerWeightCountV2: Int {
         network.trainableVariables.count + network.bnRunningStatsVariables.count + velocityVariables.count
     }
-    /// Total expected weight count for a legacy v1 trainer state (no velocity).
-    /// TODO(persist-velocity, after 2026-06-04): remove the v1 path once
-    /// any in-flight v1 trainer.dcmmodel files have been re-saved as v2.
+
+    /// Total expected weight count for base network state: trainables
+    /// plus BN running stats, with no optimizer velocity.
     private var trainerWeightCountV1: Int {
         network.trainableVariables.count + network.bnRunningStatsVariables.count
     }
@@ -3564,40 +3578,41 @@ final class ChessTrainer: @unchecked Sendable {
         return baseWeights + velocityWeights
     }
 
-    /// Load trainer state (weights + bn + optional velocities) from a
-    /// flat `[[Float]]` array previously produced by either
-    /// `exportTrainerWeights()` (v2) or the legacy `network.exportWeights()`
-    /// (v1, no velocities). Detects the layout by count.
+    /// Load exact trainer state (weights + bn + velocities) from a
+    /// flat `[[Float]]` array previously produced by
+    /// `exportTrainerWeights()`.
     /// Caller MUST have paused training before calling.
-    /// TODO(persist-velocity, after 2026-06-04): drop the v1 zero-pad
-    /// branch once any in-flight v1 trainer.dcmmodel files have been
-    /// re-saved as v2.
     func loadTrainerWeights(_ weights: [[Float]]) async throws {
         let v1Count = trainerWeightCountV1
         let v2Count = trainerWeightCountV2
-        if weights.count == v2Count {
-            // v2: trainables + bn + velocities. Split: first v1Count
-            // go to network.loadWeights (its existing infra); last
-            // velocityVariables.count go to writeVelocityValues.
-            let baseWeights = Array(weights.prefix(v1Count))
-            let velocityWeights = Array(weights.suffix(velocityVariables.count))
-            try await network.loadWeights(baseWeights)
-            try await writeVelocityValues(velocityWeights)
-        } else if weights.count == v1Count {
-            // v1: legacy file with no velocity slots. Load base, leave
-            // velocities at their current value (zero on first load,
-            // last-saved otherwise — the existing trainer.network was
-            // built with zero-init velocity variables, so on a fresh
-            // session start this is zero).
-            // TODO(persist-velocity, after 2026-06-04): remove this
-            // branch.
-            try await network.loadWeights(weights)
-        } else {
+        guard weights.count == v2Count else {
             throw ChessTrainerError.trainerWeightCountMismatch(
-                expected: "\(v1Count) (v1) or \(v2Count) (v2)",
+                expected: "\(v2Count) (full trainer state: \(v1Count) base + \(velocityVariables.count) velocity)",
                 got: weights.count
             )
         }
+
+        let baseWeights = Array(weights.prefix(v1Count))
+        let velocityWeights = Array(weights.suffix(velocityVariables.count))
+        try await network.loadWeights(baseWeights)
+        try await writeVelocityValues(velocityWeights)
+    }
+
+    /// Initialize a trainer from base/champion network weights and
+    /// intentionally discard optimizer velocity. This is for fresh
+    /// forks and explicit reset-from-champion flows only; session
+    /// resume must use `loadTrainerWeights(_:)` so missing velocity
+    /// fails loudly instead of being invented as zero.
+    func loadBaseWeightsResetVelocity(_ weights: [[Float]]) async throws {
+        let expected = trainerWeightCountV1
+        guard weights.count == expected else {
+            throw ChessTrainerError.trainerWeightCountMismatch(
+                expected: "\(expected) (base network state)",
+                got: weights.count
+            )
+        }
+        try await network.loadWeights(weights)
+        try await resetVelocitiesToZero()
     }
 
     /// Overwrite all velocity buffers with zeros. Retained as an
