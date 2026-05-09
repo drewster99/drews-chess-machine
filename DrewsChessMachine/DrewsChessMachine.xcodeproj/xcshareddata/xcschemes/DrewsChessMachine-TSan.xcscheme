@@ -44,7 +44,7 @@
       </Testables>
    </TestAction>
    <LaunchAction
-      buildConfiguration = "Release"
+      buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       disableMainThreadChecker = "YES"
@@ -54,10 +54,11 @@
       debugDocumentVersioning = "NO"
       debugXPCServices = "NO"
       debugServiceExtension = "internal"
-      enableGPUValidationMode = "1"
+      enableThreadSanitizer = "YES"
       allowLocationSimulation = "NO"
       viewDebuggingEnabled = "No"
       queueDebuggingEnabled = "No"
+      memoryGraphOnResourceException = "Yes"
       disablePerformanceAntipatternChecker = "YES">
       <BuildableProductRunnable
          runnableDebuggingMode = "0">
