@@ -8575,7 +8575,16 @@ struct UpperContentView: View {
         // fresh during this phase; the explicit check here avoids
         // a 2-second 'jitter' (e.g. 30:00 -> 29:58 -> 30:00) on the
         // heartbeat as the worker resets the anchor.
-        let isWarmup = (trainingStats?.steps ?? 0) < trainingParams.lrWarmupSteps
+        //
+        // Source-of-truth: read `trainer.completedTrainSteps` — the
+        // same counter the worker's gating loop reads — so the UI
+        // and the worker can never disagree on whether warmup has
+        // elapsed. `trainingStats.steps` is updated off the heartbeat
+        // and lags behind the trainer by up to one tick, which would
+        // briefly show "warmup" to the user after the worker had
+        // already started ticking the anchor forward.
+        let stepsForGate = trainer?.completedTrainSteps ?? 0
+        let isWarmup = stepsForGate < trainingParams.lrWarmupSteps
         if isWarmup {
             return interval
         }

@@ -1646,6 +1646,10 @@ final class ChessTrainer: @unchecked Sendable {
         // reset rebuilds against the fresh network.
         feedCache.removeAll()
         _feedCacheCount.value = 0
+        // Fresh weights ⇒ the LR-warmup schedule must restart from
+        // step 0. Without this, the warmup multiplier (a function of
+        // `_completedTrainSteps / lrWarmupSteps`) jumps ahead of the
+        // immature network and drives oversized first-step updates.
         _completedTrainSteps.value = 0
     }
 
