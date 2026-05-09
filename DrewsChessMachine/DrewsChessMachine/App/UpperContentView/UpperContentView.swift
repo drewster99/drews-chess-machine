@@ -7059,8 +7059,19 @@ struct UpperContentView: View {
                         // status-bar Arena popover's Save edits take
                         // effect on the next poll without restarting
                         // the session.
-                        let liveInterval = await TrainingParameters.shared.snapshot().arenaAutoIntervalSec
-                        if triggerBox.shouldAutoTrigger(interval: liveInterval) {
+                        //
+                        // CRITICAL: The arena clock only begins ticking
+                        // once the model has reached stability (buffer
+                        // prefill AND LR warmup complete). While either
+                        // is in progress, we keep resetting the anchor
+                        // to 'now' so the first auto-arena occurs exactly
+                        // one interval after the model matures.
+                        let liveParams = await TrainingParameters.shared.snapshot()
+                        let liveInterval = liveParams.arenaAutoIntervalSec
+                        let isWarmup = trainer.completedTrainSteps < liveParams.lrWarmupSteps
+                        if isWarmup {
+                            triggerBox.resetLastArenaTime(to: Date())
+                        } else if triggerBox.shouldAutoTrigger(interval: liveInterval) {
                             triggerBox.trigger()
                         }
 
@@ -8524,7 +8535,19 @@ struct UpperContentView: View {
     private func secondsUntilNextArena(at now: Date) -> Double? {
         guard let box = arenaTriggerBox, realTraining else { return nil }
         let elapsed = now.timeIntervalSince(box.lastArenaTime)
-        return max(0, trainingParams.arenaAutoIntervalSec - elapsed)
+        let interval = trainingParams.arenaAutoIntervalSec
+
+        // Freeze countdown at the full interval while the model
+        // is still in warmup. The training worker keeps the anchor
+        // fresh during this phase; the explicit check here avoids
+        // a 2-second 'jitter' (e.g. 30:00 -> 29:58 -> 30:00) on the
+        // heartbeat as the worker resets the anchor.
+        let isWarmup = (trainingStats?.steps ?? 0) < trainingParams.lrWarmupSteps
+        if isWarmup {
+            return interval
+        }
+
+        return max(0, interval - elapsed)
     }
 
     /// Renderable label for the arena countdown chip. `--:--:--` when

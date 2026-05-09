@@ -156,4 +156,13 @@ final class ArenaTriggerBox: @unchecked Sendable {
     var lastArenaTime: Date {
         lock.withLock { $0.lastArenaTime }
     }
+
+    /// Update the last arena timestamp to a specific time (usually
+    /// 'now') WITHOUT clearing the pending flag. Used by the
+    /// training worker to keep the auto-arena anchor fresh during
+    /// the prefill/warmup phase, so the 30-minute clock only
+    /// begins once the model is stable.
+    func resetLastArenaTime(to date: Date) {
+        lock.withLock { $0.lastArenaTime = date }
+    }
 }
