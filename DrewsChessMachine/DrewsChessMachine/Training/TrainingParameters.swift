@@ -184,6 +184,16 @@ public enum EntropyBonus: TrainingParameterKey {}
 public enum IllegalMassWeight: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Policy Label Smoothing ε",
+    description: "Label-smoothing coefficient on the policy CE target. ε=0 = one-hot played-move target (original behavior). ε=0.1 = (1−ε) at played + ε spread uniformly over legal moves; caps per-position concentration at p(played)=1−ε, structurally prevents delta-policy collapse. Range [0, 0.9].",
+    default: 0.1,
+    range: 0.0...0.9,
+    category: "Optimizer",
+    liveTunable: true
+)
+public enum PolicyLabelSmoothingEpsilon: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Gradient Clip Max Norm",
     description: "Global L2 norm cap for gradient clipping. Above this, gradients are scaled down before the SGD step.",
     default: 30.0,
@@ -578,6 +588,7 @@ public final class TrainingParameters {
     // @Observable instruments these for SwiftUI re-renders.
     public var entropyBonus: Double { didSet { Self.persist(EntropyBonus.self, value: entropyBonus) } }
     public var illegalMassWeight: Double { didSet { Self.persist(IllegalMassWeight.self, value: illegalMassWeight) } }
+    public var policyLabelSmoothingEpsilon: Double { didSet { Self.persist(PolicyLabelSmoothingEpsilon.self, value: policyLabelSmoothingEpsilon) } }
     public var gradClipMaxNorm: Double { didSet { Self.persist(GradClipMaxNorm.self, value: gradClipMaxNorm) } }
     public var weightDecay: Double { didSet { Self.persist(WeightDecay.self, value: weightDecay) } }
     public var policyLossWeight: Double { didSet { Self.persist(PolicyLossWeight.self, value: policyLossWeight) } }
@@ -616,6 +627,7 @@ public final class TrainingParameters {
         // didSet does not fire on initial assignment in init — which is what we want.
         self.entropyBonus = Self.read(EntropyBonus.self)
         self.illegalMassWeight = Self.read(IllegalMassWeight.self)
+        self.policyLabelSmoothingEpsilon = Self.read(PolicyLabelSmoothingEpsilon.self)
         self.gradClipMaxNorm = Self.read(GradClipMaxNorm.self)
         self.weightDecay = Self.read(WeightDecay.self)
         self.policyLossWeight = Self.read(PolicyLossWeight.self)
@@ -660,6 +672,7 @@ public final class TrainingParameters {
         var v: [String: ParameterValue] = [:]
         v[EntropyBonus.id] = EntropyBonus.encode(entropyBonus)
         v[IllegalMassWeight.id] = IllegalMassWeight.encode(illegalMassWeight)
+        v[PolicyLabelSmoothingEpsilon.id] = PolicyLabelSmoothingEpsilon.encode(policyLabelSmoothingEpsilon)
         v[GradClipMaxNorm.id] = GradClipMaxNorm.encode(gradClipMaxNorm)
         v[WeightDecay.id] = WeightDecay.encode(weightDecay)
         v[PolicyLossWeight.id] = PolicyLossWeight.encode(policyLossWeight)
@@ -712,6 +725,8 @@ public final class TrainingParameters {
             try EntropyBonus.definition.validate(raw); entropyBonus = try EntropyBonus.decode(raw)
         case IllegalMassWeight.id:
             try IllegalMassWeight.definition.validate(raw); illegalMassWeight = try IllegalMassWeight.decode(raw)
+        case PolicyLabelSmoothingEpsilon.id:
+            try PolicyLabelSmoothingEpsilon.definition.validate(raw); policyLabelSmoothingEpsilon = try PolicyLabelSmoothingEpsilon.decode(raw)
         case GradClipMaxNorm.id:
             try GradClipMaxNorm.definition.validate(raw); gradClipMaxNorm = try GradClipMaxNorm.decode(raw)
         case WeightDecay.id:
@@ -842,6 +857,7 @@ public final class TrainingParameters {
     public nonisolated static let allKeys: [any TrainingParameterKey.Type] = [
         EntropyBonus.self,
         IllegalMassWeight.self,
+        PolicyLabelSmoothingEpsilon.self,
         GradClipMaxNorm.self,
         WeightDecay.self,
         PolicyLossWeight.self,

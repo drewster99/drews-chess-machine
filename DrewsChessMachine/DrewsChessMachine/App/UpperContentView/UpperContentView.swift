@@ -5772,6 +5772,7 @@ struct UpperContentView: View {
             trainer.policyLossWeight = Float(trainingParams.policyLossWeight)
             trainer.valueLossWeight = Float(trainingParams.valueLossWeight)
             trainer.illegalMassPenaltyWeight = Float(trainingParams.illegalMassWeight)
+            trainer.policyLabelSmoothingEpsilon = Float(trainingParams.policyLabelSmoothingEpsilon)
             trainer.momentumCoeff = Float(trainingParams.momentumCoeff)
             trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
             trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
@@ -5788,6 +5789,7 @@ struct UpperContentView: View {
                 policyLossWeight: Float(trainingParams.policyLossWeight),
                 valueLossWeight: Float(trainingParams.valueLossWeight),
                 illegalMassPenaltyWeight: Float(trainingParams.illegalMassWeight),
+                policyLabelSmoothingEpsilon: Float(trainingParams.policyLabelSmoothingEpsilon),
                 momentumCoeff: Float(trainingParams.momentumCoeff),
                 sqrtBatchScalingForLR: trainingParams.sqrtBatchScalingLR,
                 lrWarmupSteps: trainingParams.lrWarmupSteps

@@ -1103,6 +1103,24 @@ final class ChessTrainer: @unchecked Sendable {
     /// if the legal-mass diagnostic starts to walk down.
     var illegalMassPenaltyWeight: Float
 
+    /// Label-smoothing coefficient ε for the policy CE target. Fed
+    /// to the training graph each step as a scalar placeholder, so
+    /// it's live-tunable.
+    ///
+    /// The policy CE target is built in-graph as
+    ///   target = (1 − ε) · one_hot(played) + ε · uniform(legal)
+    /// where `uniform(legal)` is `legalMask / |legal|` per position.
+    /// At ε=0 the target collapses to one-hot (legacy behavior). At
+    /// ε=0.1 the trainer reaches equilibrium with `p(played) ≈ 1 − ε`
+    /// instead of the unreachable `p(played) = 1`, capping per-
+    /// position concentration at a fixed level and converting the
+    /// unbounded `−log p` gradient drive into a stable fixed point.
+    /// Together with `max(0, advantageNormalized)` in `buildTrainingOps`
+    /// this turns the policy CE into a bounded supervised-CE-shaped
+    /// loss; see `CHECK_NEXT.md` for the divergence analysis that
+    /// motivated both changes.
+    var policyLabelSmoothingEpsilon: Float
+
     /// Polyak momentum coefficient μ. Fed into the training graph as
     /// a scalar placeholder each step (live-tunable). The optimizer
     /// update is decoupled-decay SGD with momentum:
@@ -1196,6 +1214,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var policyLossWeightPlaceholder: MPSGraphTensor // [] scalar float
     private var valueLossWeightPlaceholder: MPSGraphTensor  // [] scalar float
     private var illegalMassWeightPlaceholder: MPSGraphTensor // [] scalar float
+    private var labelSmoothingEpsilonPlaceholder: MPSGraphTensor // [] scalar float
     private var momentumPlaceholder: MPSGraphTensor     // [] scalar float — Polyak μ
     /// Per-trainable-variable momentum velocity buffers, allocated parallel
     /// to `network.trainableVariables`. Each step's update is
@@ -1273,6 +1292,8 @@ final class ChessTrainer: @unchecked Sendable {
     private var valueLossWeightTensorData: MPSGraphTensorData
     private var illegalMassWeightNDArray: MPSNDArray
     private var illegalMassWeightTensorData: MPSGraphTensorData
+    private var labelSmoothingEpsilonNDArray: MPSNDArray
+    private var labelSmoothingEpsilonTensorData: MPSGraphTensorData
     private var momentumNDArray: MPSNDArray
     private var momentumTensorData: MPSGraphTensorData
 
@@ -1394,6 +1415,7 @@ final class ChessTrainer: @unchecked Sendable {
         policyLossWeight: Float = ChessTrainer.policyLossWeightDefault,
         valueLossWeight: Float = ChessTrainer.valueLossWeightDefault,
         illegalMassPenaltyWeight: Float = 1.0,
+        policyLabelSmoothingEpsilon: Float = 0.1,
         momentumCoeff: Float = 0.0,
         sqrtBatchScalingForLR: Bool = true,
         lrWarmupSteps: Int = 100
@@ -1406,6 +1428,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossWeight = policyLossWeight
         self.valueLossWeight = valueLossWeight
         self.illegalMassPenaltyWeight = illegalMassPenaltyWeight
+        self.policyLabelSmoothingEpsilon = policyLabelSmoothingEpsilon
         self.momentumCoeff = momentumCoeff
         self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         self.lrWarmupSteps = lrWarmupSteps
@@ -1424,6 +1447,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossWeightPlaceholder = built.policyLossWeight
         self.valueLossWeightPlaceholder = built.valueLossWeight
         self.illegalMassWeightPlaceholder = built.illegalMassWeight
+        self.labelSmoothingEpsilonPlaceholder = built.labelSmoothingEpsilon
         self.momentumPlaceholder = built.momentum
         self.velocityVariables = built.velocityVariables
         self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
@@ -1490,6 +1514,10 @@ final class ChessTrainer: @unchecked Sendable {
         illegalMassWeightND.label = "illegalMassWeightND"
         self.illegalMassWeightNDArray = illegalMassWeightND
         self.illegalMassWeightTensorData = MPSGraphTensorData(illegalMassWeightND)
+        let labelSmoothingND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        labelSmoothingND.label = "labelSmoothingEpsilonND"
+        self.labelSmoothingEpsilonNDArray = labelSmoothingND
+        self.labelSmoothingEpsilonTensorData = MPSGraphTensorData(labelSmoothingND)
         let momentumND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         momentumND.label = "momentumND"
         self.momentumNDArray = momentumND
@@ -1578,6 +1606,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLossWeightPlaceholder = built.policyLossWeight
         self.valueLossWeightPlaceholder = built.valueLossWeight
         self.illegalMassWeightPlaceholder = built.illegalMassWeight
+        self.labelSmoothingEpsilonPlaceholder = built.labelSmoothingEpsilon
         self.momentumPlaceholder = built.momentum
         self.velocityVariables = built.velocityVariables
         self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
@@ -1637,6 +1666,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.illegalMassWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.illegalMassWeightNDArray.label = "trainer.scalar.illegalMassWeight (reset)"
         self.illegalMassWeightTensorData = MPSGraphTensorData(illegalMassWeightNDArray)
+        self.labelSmoothingEpsilonNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.labelSmoothingEpsilonNDArray.label = "trainer.scalar.labelSmoothingEpsilon (reset)"
+        self.labelSmoothingEpsilonTensorData = MPSGraphTensorData(labelSmoothingEpsilonNDArray)
         self.momentumNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.momentumNDArray.label = "trainer.scalar.momentum (reset)"
         self.momentumTensorData = MPSGraphTensorData(momentumNDArray)
@@ -1674,6 +1706,7 @@ final class ChessTrainer: @unchecked Sendable {
         policyLossWeight: MPSGraphTensor,
         valueLossWeight: MPSGraphTensor,
         illegalMassWeight: MPSGraphTensor,
+        labelSmoothingEpsilon: MPSGraphTensor,
         momentum: MPSGraphTensor,
         velocityVariables: [MPSGraphTensor],
         velocityLoadPlaceholders: [MPSGraphTensor],
@@ -1746,20 +1779,58 @@ final class ChessTrainer: @unchecked Sendable {
         let additiveMask = graph.multiplication(illegalMask, largeNeg, name: "additive_mask")
         let maskedLogits = graph.addition(network.policyOutput, additiveMask, name: "masked_logits")
 
-        // --- Policy loss: L = mean( z * -log_softmax(logits)[a*] ) ---
+        // --- Policy loss: L = mean( max(0, advNorm) · CE(smoothedTarget, p) ) ---
         //
-        // Standard outcome-weighted cross entropy. We one-hot the played
-        // move and feed the (logits, one-hot labels) pair to MPSGraph's
-        // fused softMaxCrossEntropy, which ships its own autodiff
-        // implementation. That matters because MPSGraph's autodiff has no
-        // gradient for reductionMaximum — a manual stable log-softmax
-        // built with max-subtraction would compile but crash inside
-        // gradientForPrimaryTensor. The fused op sidesteps the issue and
-        // is numerically stable by construction.
+        // Two structural changes from the original outcome-weighted CE
+        // (see CHECK_NEXT.md for the divergence analysis that motivated
+        // them):
         //
-        // Multiplying by z applies the outcome weighting from
-        // chess-engine-design.md:
-        //   z=+1 → push p(a*) up, z=-1 → push it down, z=0 → no contribution.
+        // 1. Label-smoothed target. The CE labels are no longer a hard
+        //    one-hot at the played move; they're a smoothed distribution
+        //          target = (1 − ε) · oneHot(played) + ε · uniform(legal)
+        //    where `uniform(legal)` puts equal mass on every legal cell
+        //    and zero on illegal cells. At ε = 0 this is bit-exact the
+        //    legacy one-hot. At ε > 0 the loss equilibrium becomes
+        //    `p(played) = 1 − ε + ε/|legal|` per position — a finite,
+        //    reachable fixed point. With a one-hot target the equilibrium
+        //    sits at `p(played) = 1`, which requires `logit(played) = +∞`;
+        //    that's the unreachable-attractor that drives `pLogitAbsMax`
+        //    into the tens of thousands and the run into divergence. The
+        //    smoothed target replaces it with an attainable fixed point
+        //    whose gradient self-corrects (passing `p(played) > 1 − ε`
+        //    flips the sign of the played-cell gradient).
+        //
+        // 2. Negative-advantage gate (further down in this function).
+        //    `max(0, advantageNormalized)` so only positive-advantage
+        //    positions contribute to the policy gradient. The negative-
+        //    advantage branch was the source of the unbounded-below loss
+        //    (`−adv · log p` going to −∞ as `p → 0`); dropping it makes
+        //    the policy loss bounded below by zero, supervised-CE-shaped.
+        //
+        // Together: the policy loss is now structurally identical to a
+        // supervised classifier with label smoothing on the positive-
+        // advantage subset of positions. The value head still trains on
+        // all positions via the MSE term — only the policy gradient is
+        // gated.
+        //
+        // The graph still uses MPSGraph's fused `softMaxCrossEntropy`
+        // because (a) it has an autodiff rule (manual stable
+        // log-softmax with max-subtract would compile but blow up in
+        // `gradientForPrimaryTensor` since `reductionMaximum` has no
+        // gradient), and (b) it accepts arbitrary label tensors, not
+        // just one-hots — passing a smoothed target shape-matches the
+        // op without any other changes.
+
+        // Label-smoothing ε — scalar placeholder so it's live-tunable.
+        // Declared next to its only consumer (the smoothed-target build
+        // below) rather than in the bottom-of-function placeholder
+        // block, because we need the value to construct the target
+        // before the CE op runs.
+        let labelSmoothingEpsilonTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "policy_label_smoothing_epsilon"
+        )
 
         let oneHot = graph.oneHot(
             withIndicesTensor: movePlayed,
@@ -1771,9 +1842,55 @@ final class ChessTrainer: @unchecked Sendable {
             name: "move_onehot"
         )
 
+        // uniform(legal) = legalMask / |legal|, per position.
+        //   legalMask has shape [batch, policySize] with 1.0 at legal,
+        //   0.0 at illegal cells.
+        //   |legal| (per row) is reductionSum over the class axis with
+        //   keepdims; clamp at 1.0 to defend against the theoretically-
+        //   impossible zero-legal-moves case (terminal positions never
+        //   make it into the training buffer, but a divide-by-zero
+        //   here would NaN the entire batch).
+        let legalCountKeepDims = graph.reductionSum(
+            with: legalMask,
+            axis: 1,
+            name: "legal_count_per_pos"
+        )
+        let oneFloatForLegal = graph.constant(1.0, dataType: dtype)
+        let legalCountSafe = graph.maximum(
+            legalCountKeepDims,
+            oneFloatForLegal,
+            name: "legal_count_safe"
+        )
+        let uniformOverLegal = graph.division(
+            legalMask,
+            legalCountSafe,
+            name: "uniform_over_legal"
+        )
+        // smoothed = (1 − ε) · oneHot + ε · uniformOverLegal
+        let oneMinusEpsilon = graph.subtraction(
+            oneFloatForLegal,
+            labelSmoothingEpsilonTensor,
+            name: "label_smoothing_one_minus_eps"
+        )
+        let smoothedTargetOneHotComponent = graph.multiplication(
+            oneHot,
+            oneMinusEpsilon,
+            name: "smoothed_target_onehot_part"
+        )
+        let smoothedTargetUniformComponent = graph.multiplication(
+            uniformOverLegal,
+            labelSmoothingEpsilonTensor,
+            name: "smoothed_target_uniform_part"
+        )
+        let smoothedTarget = graph.addition(
+            smoothedTargetOneHotComponent,
+            smoothedTargetUniformComponent,
+            name: "policy_smoothed_target"
+        )
+
         let ceLossRaw = graph.softMaxCrossEntropy(
-            maskedLogits,        // <-- changed from network.policyOutput
-            labels: oneHot,
+            maskedLogits,
+            labels: smoothedTarget,
             axis: 1,
             reuctionType: .none,
             name: "policy_ce_raw"
@@ -1787,20 +1904,36 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [-1, 1],
             name: "policy_ce_per_pos"
         )
-        // No per-position CE clamp: clamping at log(policySize) saturates
-        // exactly the high-magnitude `−log p(a*)` terms that should be
-        // teaching the policy to broaden when the played move has tiny
-        // probability under the current policy. `graph.clamp` has zero
-        // gradient outside its bounds, so any played move with
-        // `p(a*) < 1/policySize` would contribute no policy gradient —
-        // catastrophic right after a weight rewind, where buffer
-        // positions from the previous champion are exactly the
-        // surprising-to-the-trainer cases that need to flow gradient.
-        // The unbounded-loss / NaN concern that motivated the clamp is
-        // covered by the global gNorm clip (`gradClipMaxNorm`) bounding
-        // total update magnitude per step, and by `softMaxCrossEntropy`'s
-        // internal log-sum-exp numerical stability (finite logits ⇒
-        // finite per-position CE).
+        // No per-position CE clamp here. Two prior approaches and why
+        // they were both rejected, kept for reference because the
+        // tradeoffs are non-obvious:
+        //
+        //   (a) Hard `graph.clamp(CE, upper: log(policySize))` had zero
+        //       gradient outside its bounds, so the high-magnitude
+        //       `−log p(a*)` terms that should teach the policy to
+        //       broaden produced no gradient at all. Removed in the
+        //       19d8ab6 commit on this hypothesis.
+        //   (b) No clamp at all (post-19d8ab6, pre-this-change). The
+        //       reasoning was that the global gNorm clip plus
+        //       `softMaxCrossEntropy`'s internal log-sum-exp stability
+        //       would bound things. That reasoning was wrong: with
+        //       signed-advantage multiplication, the loss is unbounded
+        //       below, the gradient on the played logit does not
+        //       vanish as `p(played) → 0`, gNorm clip preserves
+        //       direction so every clipped step pushes the same way,
+        //       and momentum integrates the consistent direction into
+        //       a 5+ orders-of-magnitude logit blowup over ~1 hour of
+        //       training (observed in dcm_log_20260509-155952.txt;
+        //       full analysis in CHECK_NEXT.md).
+        //
+        // The current fix bounds the loss at a structural level
+        // instead — label smoothing (above) gives the policy CE a
+        // reachable fixed point, and `max(0, advNorm)` (below) drops
+        // the negative-advantage branch that lacked any fixed point.
+        // Together they make the policy loss bounded below by zero,
+        // and the per-position CE is naturally bounded by the
+        // smoothed-target entropy (around `H(smoothed) ≈ 0.64 nats`
+        // at the configured ε=0.1). No graph-level CE clamp needed.
         // --- Advantage baseline: (z − vBaseline) · −log p(a*) ---
         //
         // `vBaseline` is a placeholder — the inference-time v(position)
@@ -1871,8 +2004,37 @@ final class ChessTrainer: @unchecked Sendable {
             advantageRMSForNorm,
             name: "advantage_normalized"
         )
-        let weightedCE = graph.multiplication(
+        // Drop the negative-advantage branch of the policy gradient.
+        //
+        // `−advNorm · log p(played)` is **unbounded below** when
+        // advNorm < 0 (as p → 0, log p → −∞, so the whole expression
+        // → −∞). The trainer minimizes the loss, so the optimizer is
+        // happy to drive `p(played) → 0` indefinitely — and the
+        // gradient on the played logit at `p(played) → 0` is the
+        // non-vanishing constant `−advNorm`, so there's no stopping
+        // condition. The original outcome-weighted formulation
+        // assumed this loss had a floor; it doesn't. See
+        // CHECK_NEXT.md for the per-step numbers (pLoss reached
+        // −64,868 in dcm_log_20260509-155952.txt before the run was
+        // stopped).
+        //
+        // Replacing `advNorm` with `max(0, advNorm)` here changes the
+        // policy CE into the supervised-CE shape: bounded below by 0,
+        // gradient vanishes at the (smoothed-target) equilibrium.
+        // Negative-advantage positions contribute zero to the policy
+        // gradient but are still seen by the value head (the value
+        // loss is built independently from `z − network.valueOutput`
+        // below). This is equivalent to "reward-weighted regression
+        // on positive-reward samples," a known stable reformulation
+        // of REINFORCE.
+        let zeroAdvantage = graph.constant(0.0, dataType: dtype)
+        let advantagePositive = graph.maximum(
             advantageNormalized,
+            zeroAdvantage,
+            name: "advantage_positive_only"
+        )
+        let weightedCE = graph.multiplication(
+            advantagePositive,
             negLogProb,
             name: "adv_weighted_ce"
         )
@@ -2771,6 +2933,7 @@ final class ChessTrainer: @unchecked Sendable {
             lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyLossWeightTensor,
             valueLossWeightTensor,
             illegalMassWeightTensor,
+            labelSmoothingEpsilonTensor,
             momentumTensor, velocities,
             velLoadPlaceholders, velLoadAssignOps, velLoadNDArrays, velLoadTensorData,
             totalLossTensor, policyLoss, valueLoss,
@@ -2820,9 +2983,21 @@ final class ChessTrainer: @unchecked Sendable {
     /// runs on a global executor so the awaiter (typically the main
     /// actor) is never synchronously blocked.
     func asyncCompletedTrainSteps() async -> Int {
-        await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
+        let start = Date()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Int, Never>) in
+            let inContinuation = Date()
             DispatchQueue.global(qos: .userInitiated).async {
-                cont.resume(returning: self._completedTrainSteps.value)
+                let dispatched = Date()
+                let result = self._completedTrainSteps.value
+                let now = Date()
+                let total = now.timeIntervalSince(start)
+                if total > 0.05 {
+                    let pre = inContinuation.timeIntervalSince(start)
+                    let queue = dispatched.timeIntervalSince(inContinuation)
+                    let work = now.timeIntervalSince(dispatched)
+                    print(String(format: "[DISPATCH-LATENCY] asyncCompletedTrainSteps: total=%.2fms (pre=%.2fms queue=%.2fms work=%.2fms)", total*1000, pre*1000, queue*1000, work*1000))
+                }
+                cont.resume(returning: result)
             }
         }
     }
@@ -2831,12 +3006,24 @@ final class ChessTrainer: @unchecked Sendable {
     /// The (potential) lock read runs on a global executor so the
     /// awaiter is never synchronously blocked.
     func asyncEffectiveLearningRate(forBatchSize batchSize: Int, completedSteps: Int? = nil) async -> Float {
-        await withCheckedContinuation { (cont: CheckedContinuation<Float, Never>) in
+        let start = Date()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Float, Never>) in
+            let inContinuation = Date()
             DispatchQueue.global(qos: .userInitiated).async {
-                cont.resume(returning: self.effectiveLearningRate(
+                let dispatched = Date()
+                let result = self.effectiveLearningRate(
                     forBatchSize: batchSize,
                     completedSteps: completedSteps
-                ))
+                )
+                let now = Date()
+                let total = now.timeIntervalSince(start)
+                if total > 0.05 {
+                    let pre = inContinuation.timeIntervalSince(start)
+                    let queue = dispatched.timeIntervalSince(inContinuation)
+                    let work = now.timeIntervalSince(dispatched)
+                    print(String(format: "[DISPATCH-LATENCY] asyncEffectiveLearningRate: total=%.2fms (pre=%.2fms queue=%.2fms work=%.2fms)", total*1000, pre*1000, queue*1000, work*1000))
+                }
+                cont.resume(returning: result)
             }
         }
     }
@@ -3935,6 +4122,8 @@ final class ChessTrainer: @unchecked Sendable {
         valueLossWeightNDArray.writeBytes(&valueLossW, strideBytes: nil)
         var illegalMassW = illegalMassPenaltyWeight
         illegalMassWeightNDArray.writeBytes(&illegalMassW, strideBytes: nil)
+        var labelSmoothEps = policyLabelSmoothingEpsilon
+        labelSmoothingEpsilonNDArray.writeBytes(&labelSmoothEps, strideBytes: nil)
         var momentum = momentumCoeff
         momentumNDArray.writeBytes(&momentum, strideBytes: nil)
 
@@ -4023,6 +4212,7 @@ final class ChessTrainer: @unchecked Sendable {
             policyLossWeightPlaceholder: policyLossWeightTensorData,
             valueLossWeightPlaceholder: valueLossWeightTensorData,
             illegalMassWeightPlaceholder: illegalMassWeightTensorData,
+            labelSmoothingEpsilonPlaceholder: labelSmoothingEpsilonTensorData,
             momentumPlaceholder: momentumTensorData
         ]
 
