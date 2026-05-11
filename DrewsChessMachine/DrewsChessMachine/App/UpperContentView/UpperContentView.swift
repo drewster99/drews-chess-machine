@@ -7245,7 +7245,7 @@ struct UpperContentView: View {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -7261,7 +7261,9 @@ struct UpperContentView: View {
                                 trainer.sqrtBatchScalingForLR,
                                 trainer.lrWarmupSteps,
                                 trainer.completedTrainSteps,
-                                TrainingParameters.shared.arenaAutoIntervalSec
+                                TrainingParameters.shared.arenaAutoIntervalSec,
+                                TrainingParameters.shared.arenaPromoteThreshold,
+                                TrainingParameters.shared.arenaGamesPerTournament
                             )
                         }
                         let policyStr: String
@@ -7385,7 +7387,7 @@ struct UpperContentView: View {
                                                 parallelSnap.whiteCheckmates, parallelSnap.blackCheckmates,
                                                 parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
-                        let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", sessionPromoteThreshold)) arenaGames=\(sessionTournamentGames) arenaAutoSec=\(Int(arenaAutoSec)) workers=\(workerN)"
+                        let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", livePromoteThreshold)) arenaGames=\(liveTournamentGames) arenaAutoSec=\(Int(arenaAutoSec)) workers=\(workerN)"
                         let regStr = String(
                             format: "clip=%.1f decay=%.0e ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f",
                             gradClip,
