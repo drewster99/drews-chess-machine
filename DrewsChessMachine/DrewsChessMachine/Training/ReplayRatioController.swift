@@ -62,77 +62,181 @@ import os
 ///     `(T_work + D) / (N × G)` = target).
 ///
 /// The raw `signedDelay` value from each event is NOT applied
-/// directly. Each event appends `(timestamp, signed)` to a
-/// rolling history; the publicly-visible applied delays come
-/// from an SMA of that history.
+/// directly. Each event appends `(timestamp, signed)` to a time-
+/// stamped history; the publicly-visible applied delays come from
+/// an SMA of that pre-branched signed history, with the sign branch
+/// applied AFTER averaging. This preserves the mutual-exclusivity
+/// invariant "at most one of training-delay / sp-delay is non-zero
+/// at any moment" — averaging the two branched delays separately
+/// would mix zeros-from-one-branch with nonzeros-from-the-other and
+/// produce both sides sleeping simultaneously during transitions.
+/// Smoothing over a fixed 20 s wall-clock window (not a fixed sample
+/// count) — batch cadence varies with batch size, so a count window
+/// would span wildly different durations.
 ///
-/// Smoothing over a fixed 20 s wall-clock window (not a fixed
-/// sample count). To keep this efficient at high barrier-tick
-/// rates (~2700 Hz), we use a ring of 20 buckets (1 second each).
-/// Each bucket maintains its own sum and count.
-private struct Bucket {
-    var startTime: Double = 0
-    var sum: Double = 0
-    var count: Int = 0
+/// There is no measurement window on the input side, no Kp, no
+/// damping, no divergence boost, no deadband, no PID — only the
+/// model-inverting formula plus the 20-second output smoothing.
+///
+/// Thread-safe via a private `OSAllocatedUnfairLock`. All accessors
+/// hop through `lock.withLock`. The lock is never held across an
+/// `await`, and inner helpers like `recomputeDelays`,
+/// `pruneDelayHistory`, `pruneRateSamples`, `maybeAppendRateSample`,
+/// and the `smoothed*` projections assume the caller already holds
+/// the lock — they must never re-enter `withLock` (that would trap;
+/// `OSAllocatedUnfairLock` isn't recursive).
+final class ReplayRatioController: @unchecked Sendable {
+    private let lock = OSAllocatedUnfairLock()
 
-    mutating func reset(startTime: Double) {
-        self.startTime = startTime
-        self.sum = 0
-        self.count = 0
+    // MARK: - Configuration
+
+    private var _targetRatio: Double
+    private var _autoAdjust: Bool
+    private var _manualDelayMs: Int
+    /// User-set per-game-per-worker self-play delay used when
+    /// `_autoAdjust == false`. Mirrors `_manualDelayMs` for the
+    /// training side. When auto is on this value is dormant; the
+    /// controller's own SP-side smoothing drives the worker sleep.
+    /// Seeded to 0 so a fresh controller in manual mode runs SP
+    /// unthrottled until the user dials in a non-zero value.
+    private var _manualSelfPlayDelayMs: Int = 0
+    /// Size of one SGD training batch, in positions. Used to convert
+    /// per-move deltas into per-batch sleep durations.
+    let trainingBatchSize: Int
+    /// Hard ceiling on the training-side (positive) delay per SGD step.
+    let maxTrainingStepDelayMs: Int
+    /// Hard ceiling on the self-play-side per-game-per-slot sleep.
+    let maxSelfPlayDelayMs: Int
+
+    /// Publicly-visible alias preserved so existing call sites that
+    /// read `batchSize` keep compiling. Same value as `trainingBatchSize`.
+    var batchSize: Int { trainingBatchSize }
+
+    // MARK: - Internal state
+
+    /// Latest aggregate per-move time on each side, in milliseconds.
+    /// `nil` until at least one batch has been recorded on that side.
+    /// Both are WORK-TIME-only — no sleep is included in either.
+    private var _selfPlayMsPerMove: Double? = nil
+    private var _trainingMsPerMove: Double? = nil
+
+    /// Positions flushed in the most recent self-play event. Treated
+    /// as `positionsPerGame` when converting the self-play-side
+    /// deficit into a per-game-per-worker sleep. Seeded to 100 as a
+    /// safe non-zero default for use before the first event arrives.
+    private var _lastSelfPlayPositionsPerGame: Int = 100
+
+    /// Active self-play worker count (`N` in the aggregate formula).
+    /// Updated on every self-play batch by the driver so the per-game
+    /// delay stays correct when the user changes the worker count
+    /// stepper mid-session. Seeded to 1 — safe floor until the first
+    /// event sets the real value.
+    private var _lastSelfPlayWorkerCount: Int = 1
+
+    /// Wall-clock stamp of the previous self-play barrier-tick callback.
+    /// The controller owns the inter-tick wall measurement directly so
+    /// the basis is symmetric with the training side and so the reading
+    /// captures EVERYTHING that happens between callbacks (probes, BN
+    /// syncs, queue waits, our own injected sleeps), not just whatever
+    /// slice the caller chose to time. nil before the first tick — that
+    /// first call only stamps and returns; the first usable measurement
+    /// arrives on tick #2.
+    private var _lastSelfPlayTickAt: CFAbsoluteTime? = nil
+
+    /// Wall-clock stamp of the previous `recordTrainingBatchAndGetDelay`
+    /// call. Same rationale as `_lastSelfPlayTickAt` — the controller's
+    /// own clock is the only honest accounting for one full training
+    /// "cycle" (batch work + post-step sleep + any inter-call work).
+    private var _lastTrainingTickAt: CFAbsoluteTime? = nil
+
+    /// Latest raw signed delay (ms per training batch) as produced by
+    /// the most recent `recomputeDelays()`. Positive = training slow;
+    /// negative = sp slow. NOT the applied value — the workers read
+    /// SMA-smoothed projections via the helpers below. Seeded from
+    /// `initialDelayMs` (positive) in init so the first return from
+    /// `recordTrainingBatchAndGetDelay` is sensible before any history
+    /// has accumulated.
+    private var _rawSignedDelayMs: Double
+
+    /// Window (seconds) used for the SMA on the signed delay. Long
+    /// enough that a single-batch outlier can't swing the delay hard,
+    /// short enough that the controller still tracks real rate changes.
+    /// Pinned to 20 s per the user's specification; also covers the
+    /// long-tail case where a single SGD batch takes more than one
+    /// second of wall clock, so the average still has ≥ several entries.
+    private let historyWindowSec: Double = 20.0
+
+    /// Time-stamped history of raw signed-delay values, appended on
+    /// every `recomputeDelays()` run. Entries older than
+    /// `historyWindowSec` are pruned on both append and read. Typical
+    /// steady-state occupancy under 32 self-play slots + 3 SGD
+    /// steps/sec is ~14-57k entries in the 20 s window — an array with
+    /// leading-prune is still O(1) amortized because ticks arrive in
+    /// time order and we only drop from the front. Reduction is
+    /// linear in the window size but runs rarely (only on snapshot /
+    /// explicit reads), not on every tick append.
+    private struct DelayHistoryEntry {
+        let at: Date
+        let signedMs: Double
     }
-}
-private var _buckets: [Bucket] = (0..<20).map { _ in Bucket() }
-private var _currentBucketIndex: Int = 0
-/// Global running sum and count across all buckets. Updated on
-/// every append and every bucket-wrap (eviction), so the SMA
-/// projection is always O(1).
-private var _historySum: Double = 0
-private var _historyCount: Int = 0
+    private var _delayHistory: [DelayHistoryEntry] = []
 
-// MARK: - 1-minute rolling rate estimator
+    // MARK: - 1-minute rolling rate estimator
 
-/// Separate rolling estimator for the UI/log/JSON production and
-/// consumption rates.
-private let rateWindowSec: Double = 60.0
-private let rateSampleIntervalSec: Double = 0.25
-private var _totalSelfPlayPositions: Int = 0
-private var _totalTrainingPositions: Int = 0
-private struct RateSample {
-    let at: Date
-    let selfPlayTotal: Int
-    let trainingTotal: Int
-}
-/// Small history of total-count snapshots (one every 0.25s).
-/// Max size is ~240 entries; O(N) pruning is acceptable here.
-private var _rateSamples: [RateSample] = []
-private var _lastRateSampleAt: Date? = nil
+    /// Separate rolling estimator for the UI/log/JSON production and
+    /// consumption rates. The control loop uses instantaneous per-
+    /// event measurements (`_selfPlayMsPerMove` / `_trainingMsPerMove`)
+    /// because control needs the latest information, but display
+    /// values should be smoothed over a human time scale so the
+    /// reader isn't watching numbers flicker at 2700 Hz.
+    ///
+    /// Cumulative total positions counters, sampled at ~4 Hz into
+    /// `_rateSamples`. Rate = (newest.total − oldest_in_window.total)
+    /// / (newest.at − oldest_in_window.at). Window = 60 s.
+    ///
+    /// Subsampling keeps the buffer bounded at ~240 entries instead
+    /// of the ~162k we'd accumulate sampling every barrier tick.
+    private let rateWindowSec: Double = 60.0
+    private let rateSampleIntervalSec: Double = 0.25
+    private var _totalSelfPlayPositions: Int = 0
+    private var _totalTrainingPositions: Int = 0
+    private struct RateSample {
+        let at: Date
+        let selfPlayTotal: Int
+        let trainingTotal: Int
+    }
+    private var _rateSamples: [RateSample] = []
+    private var _lastRateSampleAt: Date? = nil
 
-// MARK: - Init
+    // MARK: - Init
 
-init(
-    batchSize: Int,
-    targetRatio: Double = 1.0,
-    autoAdjust: Bool = true,
-    initialDelayMs: Int = 50,
-    maxTrainingStepDelayMs: Int = 3000,
-    maxSelfPlayDelayMs: Int = 3000
-) {
-    self.trainingBatchSize = batchSize
-    self._targetRatio = targetRatio
-    self._autoAdjust = autoAdjust
-    self._manualDelayMs = initialDelayMs
-    // Seed the raw SIGNED delay from the passed initial value.
-    let seedSigned = Double(max(0, min(maxTrainingStepDelayMs, initialDelayMs)))
-    self._rawSignedDelayMs = seedSigned
-    self.maxTrainingStepDelayMs = maxTrainingStepDelayMs
-    self.maxSelfPlayDelayMs = maxSelfPlayDelayMs
+    init(
+        batchSize: Int,
+        targetRatio: Double = 1.0,
+        autoAdjust: Bool = true,
+        initialDelayMs: Int = 50,
+        maxTrainingStepDelayMs: Int = 3000,
+        maxSelfPlayDelayMs: Int = 3000
+    ) {
+        self.trainingBatchSize = batchSize
+        self._targetRatio = targetRatio
+        self._autoAdjust = autoAdjust
+        self._manualDelayMs = initialDelayMs
+        // Seed the raw SIGNED delay from the passed initial value
+        // (positive = training delay) so the first post-construction
+        // read returns a sensible training-side number before any
+        // batch has been recorded. Self-play per-game delay stays at
+        // 0 — there is no UI concept of "initial self-play delay,"
+        // and a positive seed keeps the applied projections in the
+        // training-slow branch until real measurements arrive.
+        let seedSigned = Double(max(0, min(maxTrainingStepDelayMs, initialDelayMs)))
+        self._rawSignedDelayMs = seedSigned
+        self.maxTrainingStepDelayMs = maxTrainingStepDelayMs
+        self.maxSelfPlayDelayMs = maxSelfPlayDelayMs
+    }
 
-    // Seed the first bucket.
-    let now = CFAbsoluteTimeGetCurrent()
-    _buckets[0].reset(startTime: now)
-}
+    // MARK: - Recording hooks
 
-// MARK: - Recording hooks
     /// Called once per self-play barrier tick. A barrier tick is one
     /// fire of the shared batched evaluator: all currently-submitting
     /// slots submit one board each, the GPU runs one batched forward
@@ -242,7 +346,10 @@ init(
 
     /// Closed-form recompute of the RAW signed delay from the latest
     /// per-move estimates, followed by an append to the rolling
-    /// history.
+    /// history. Only runs once both sides have reported at least one
+    /// batch — before that the seeded `_rawSignedDelayMs` from init
+    /// stays in effect. The applied (smoothed, then branched) values
+    /// are computed on read in the `smoothed*` helpers below.
     private func recomputeDelays() {
         guard _autoAdjust,
               let sp = _selfPlayMsPerMove,
@@ -252,44 +359,45 @@ init(
             return
         }
 
+        // User-derived model-inverting formula (names match the spec):
+        //   signed = (selfPlayMsPerMove / targetRatio − trainingMsPerMove)
+        //            × trainingBatchSize
+        //
+        // Store ONLY the raw signed value. Branching into training-
+        // side vs self-play-side delays happens AFTER the SMA in the
+        // `smoothed*` helpers so the mutual-exclusivity invariant
+        // "only one side is non-zero at a time" holds even during
+        // sign transitions. Averaging the two branched values
+        // separately would mix zeros from one branch with nonzeros
+        // from the other and produce both sides sleeping simultaneously.
         let signedPerTrainingBatchMs =
             (sp / _targetRatio - tr) * Double(trainingBatchSize)
         _rawSignedDelayMs = signedPerTrainingBatchMs
 
-        let now = CFAbsoluteTimeGetCurrent()
+        let now = Date()
+        _delayHistory.append(
+            DelayHistoryEntry(at: now, signedMs: signedPerTrainingBatchMs)
+        )
         pruneDelayHistory(now: now)
-
-        _buckets[_currentBucketIndex].sum += signedPerTrainingBatchMs
-        _buckets[_currentBucketIndex].count += 1
-        _historySum += signedPerTrainingBatchMs
-        _historyCount += 1
     }
 
-    /// Advance the bucket ring if `now` has crossed a 1-second
-    /// boundary. When wrapping, subtract the old bucket's data from
-    /// the running totals to maintain the 20-second window.
-    private func pruneDelayHistory(now: Double) {
-        let elapsedSinceBucketStart = now - _buckets[_currentBucketIndex].startTime
-        if elapsedSinceBucketStart < 1.0 {
-            return
+    /// Drop entries older than `historyWindowSec` from the front of
+    /// the history. Called on every append and also on every read so
+    /// the window stays honest even if the controller hasn't logged
+    /// an event in a while (e.g. the training task paused).
+    private func pruneDelayHistory(now: Date) {
+        let cutoff = now.addingTimeInterval(-historyWindowSec)
+        while let first = _delayHistory.first, first.at < cutoff {
+            _delayHistory.removeFirst()
         }
-
-        // Cross as many 1-second boundaries as needed (handles
-        // training pauses).
-        let bucketsToMove = Int(elapsedSinceBucketStart.rounded(.down))
-        for i in 1...min(bucketsToMove, 20) {
-            let nextIndex = (_currentBucketIndex + i) % 20
-            // Evict the old bucket's contributions from the global sum.
-            _historySum -= _buckets[nextIndex].sum
-            _historyCount -= _buckets[nextIndex].count
-            // Reset for the new second.
-            _buckets[nextIndex].reset(startTime: _buckets[_currentBucketIndex].startTime + Double(i))
-        }
-        _currentBucketIndex = (_currentBucketIndex + bucketsToMove) % 20
     }
 
     /// Append a rolling-rate sample if at least `rateSampleIntervalSec`
-    /// has passed since the last one.
+    /// has passed since the last one. Always runs the 60-s window
+    /// prune so the buffer stays bounded. Called from both recording
+    /// hooks — training and self-play both update the cumulative
+    /// counters, and either one crossing the subsample interval is
+    /// reason to snapshot both counters together.
     private func maybeAppendRateSample(now: Date) {
         if let last = _lastRateSampleAt,
            now.timeIntervalSince(last) < rateSampleIntervalSec {
@@ -311,7 +419,10 @@ init(
         }
     }
 
-    /// Rolling production and consumption rates (positions/sec).
+    /// Rolling production and consumption rates (positions/sec),
+    /// averaged over up to `rateWindowSec` of real samples. Returns
+    /// `(0, 0)` if we haven't accumulated at least one second of
+    /// span in the window yet — short spans produce unstable rates.
     private func rollingRates() -> (production: Double, consumption: Double) {
         pruneRateSamples(now: Date())
         guard let oldest = _rateSamples.first,
@@ -327,13 +438,18 @@ init(
         return (prod, cons)
     }
 
-    /// SMA of the raw signed delay. O(1).
+    /// SMA of the last `historyWindowSec` seconds of raw signed delay.
+    /// Falls back to `_rawSignedDelayMs` (the seeded or latest raw
+    /// value) when no history has accumulated yet — e.g. startup
+    /// before the first event pair, or immediately after an auto-off
+    /// drain where all history entries have aged out.
     private func smoothedSignedDelayMs() -> Double {
-        pruneDelayHistory(now: CFAbsoluteTimeGetCurrent())
-        guard _historyCount > 0 else {
+        pruneDelayHistory(now: Date())
+        guard !_delayHistory.isEmpty else {
             return _rawSignedDelayMs
         }
-        return _historySum / Double(_historyCount)
+        let sum = _delayHistory.reduce(0.0) { $0 + $1.signedMs }
+        return sum / Double(_delayHistory.count)
     }
 
     /// Training-side projection: if the smoothed signed value is
@@ -417,21 +533,9 @@ init(
     /// on a global executor so the awaiter (typically the main actor)
     /// is never synchronously blocked on `lock.withLock`.
     func asyncSnapshot() async -> RatioSnapshot {
-        let start = Date()
-        return await withCheckedContinuation { (cont: CheckedContinuation<RatioSnapshot, Never>) in
-            let inContinuation = Date()
+        await withCheckedContinuation { (cont: CheckedContinuation<RatioSnapshot, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
-                let dispatched = Date()
-                let result = self.snapshot()
-                let now = Date()
-                let total = now.timeIntervalSince(start)
-                if total > 0.05 {
-                    let pre = inContinuation.timeIntervalSince(start)
-                    let queue = dispatched.timeIntervalSince(inContinuation)
-                    let work = now.timeIntervalSince(dispatched)
-                    print(String(format: "[DISPATCH-LATENCY] ReplayRatioController.asyncSnapshot: total=%.2fms (pre=%.2fms queue=%.2fms work=%.2fms)", total*1000, pre*1000, queue*1000, work*1000))
-                }
-                cont.resume(returning: result)
+                cont.resume(returning: self.snapshot())
             }
         }
     }
@@ -523,16 +627,17 @@ init(
         set {
             lock.withLock {
                 let clamped = max(0, min(self.maxTrainingStepDelayMs, newValue))
-                let now = CFAbsoluteTimeGetCurrent()
+                // Seed BOTH the raw signed latch AND the history so
+                // an immediate read returns this value (not an
+                // average still dominated by stale pre-toggle
+                // entries). Positive signed = training-side delay,
+                // which is exactly what this setter is meant to
+                // represent.
                 self._rawSignedDelayMs = Double(clamped)
-                self._historySum = Double(clamped)
-                self._historyCount = 1
-                for i in 0..<20 {
-                    _buckets[i].reset(startTime: now - Double(19 - i))
-                }
-                _currentBucketIndex = 19
-                _buckets[19].sum = Double(clamped)
-                _buckets[19].count = 1
+                self._delayHistory.removeAll(keepingCapacity: true)
+                self._delayHistory.append(
+                    DelayHistoryEntry(at: Date(), signedMs: Double(clamped))
+                )
             }
         }
     }

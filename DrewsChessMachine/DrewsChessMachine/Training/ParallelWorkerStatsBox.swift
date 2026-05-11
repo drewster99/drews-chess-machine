@@ -16,19 +16,15 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// visible without having to watch the lifetime number drift.
     static let recentWindow: TimeInterval = 600
 
-    /// One completed game, stored in a bucket.
-    private struct Bucket {
-        var startTime: Double = 0
-        var moves: Int = 0
-        var durationMs: Double = 0
-        var gameCount: Int = 0
-
-        mutating func reset(startTime: Double) {
-            self.startTime = startTime
-            self.moves = 0
-            self.durationMs = 0
-            self.gameCount = 0
-        }
+    /// One completed game, stored in the rolling window. Drops out of
+    /// the window once its `timestamp` is more than `recentWindow`
+    /// seconds behind `Date()`. Storage is O(games in the last 10
+    /// minutes); at typical self-play rates this is a few thousand
+    /// records max.
+    private struct GameRecord {
+        let timestamp: Date
+        let moves: Int
+        let durationMs: Double
     }
 
     private let lock = OSAllocatedUnfairLock()
@@ -42,17 +38,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     private var _threefoldRepetitionDraws: Int = 0
     private var _insufficientMaterialDraws: Int = 0
     private var _trainingSteps: Int = 0
-
-    // MARK: - Recent stats (10-minute window)
-    
-    /// Ring of 60 buckets (10 seconds each) covering 600 seconds.
-    private var _buckets: [Bucket] = (0..<60).map { _ in Bucket() }
-    private var _currentBucketIndex: Int = 0
-    /// Global running totals across all buckets. O(1) access.
-    private var _recentMoves: Int = 0
-    private var _recentGameWallMs: Double = 0
-    private var _recentGameCount: Int = 0
-
+    private var _recentGames: [GameRecord] = []
     /// Fixed-capacity ring of recent game lengths (plies), used to
     /// compute p50/p95 in `Snapshot`. Sized for a few hundred games
     /// — plenty for a meaningful percentile on the 10-minute
@@ -74,11 +60,6 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
 
     init(sessionStart: Date = Date()) {
         self._sessionStart = sessionStart
-        let now = CFAbsoluteTimeGetCurrent()
-        for i in 0..<60 {
-            _buckets[i].reset(startTime: now - Double(59 - i) * 10.0)
-        }
-        _currentBucketIndex = 59
     }
 
     /// Seeded init for session resume. All counters pick up where
@@ -107,12 +88,6 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         self._threefoldRepetitionDraws = threefoldRepetitionDraws
         self._insufficientMaterialDraws = insufficientMaterialDraws
         self._trainingSteps = trainingSteps
-        
-        let now = CFAbsoluteTimeGetCurrent()
-        for i in 0..<60 {
-            _buckets[i].reset(startTime: now - Double(59 - i) * 10.0)
-        }
-        _currentBucketIndex = 59
     }
 
     /// Advance `sessionStart` to `Date()`. Called once from inside
@@ -159,7 +134,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// it must reflect when the game actually finished rather than
     /// when the lock acquisition lands.
     func recordCompletedGame(moves: Int, durationMs: Double, result: GameResult) {
-        let now = CFAbsoluteTimeGetCurrent()
+        let now = Date()
         lock.withLock {
             self._totalGames += 1
             self._totalMoves += moves
@@ -182,15 +157,12 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 self._threefoldRepetitionDraws += 1
             }
 
+            self._recentGames.append(GameRecord(timestamp: now, moves: moves, durationMs: durationMs))
             self.pruneRecentLocked(now: now)
-            _buckets[_currentBucketIndex].moves += moves
-            _buckets[_currentBucketIndex].durationMs += durationMs
-            _buckets[_currentBucketIndex].gameCount += 1
-            _recentMoves += moves
-            _recentGameWallMs += durationMs
-            _recentGameCount += 1
 
-            // Percentile ring.
+            // Percentile ring. Pre-sized lazily; FIFO overwrite once
+            // full. `moves` is plies (not half-moves pairs), matching
+            // every other game-length counter the app exposes.
             if self._recentGameLengths.count < Self.gameLengthRingCapacity {
                 self._recentGameLengths.append(moves)
             } else {
@@ -206,24 +178,15 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         }
     }
 
-    /// Advance the bucket ring if `now` has crossed a 10-second
-    /// boundary. When wrapping, subtract the old bucket's data from
-    /// the running totals to maintain the 10-minute window.
-    private func pruneRecentLocked(now: Double) {
-        let elapsedSinceBucketStart = now - _buckets[_currentBucketIndex].startTime
-        if elapsedSinceBucketStart < 10.0 {
-            return
+    /// Drop rolling-window entries older than `now - recentWindow`.
+    /// Caller must already hold `lock`. Records are appended in
+    /// monotonic timestamp order so this is a prefix removal —
+    /// O(k) where k is the expired count.
+    private func pruneRecentLocked(now: Date) {
+        let cutoff = now.addingTimeInterval(-Self.recentWindow)
+        while let first = _recentGames.first, first.timestamp < cutoff {
+            _recentGames.removeFirst()
         }
-
-        let bucketsToMove = Int(elapsedSinceBucketStart.rounded(.down) / 10.0)
-        for i in 1...min(bucketsToMove, 60) {
-            let nextIndex = (_currentBucketIndex + i) % 60
-            _recentMoves -= _buckets[nextIndex].moves
-            _recentGameWallMs -= _buckets[nextIndex].durationMs
-            _recentGameCount -= _buckets[nextIndex].gameCount
-            _buckets[nextIndex].reset(startTime: _buckets[_currentBucketIndex].startTime + Double(i) * 10.0)
-        }
-        _currentBucketIndex = (_currentBucketIndex + bucketsToMove) % 60
     }
 
     struct Snapshot: Sendable {
@@ -260,32 +223,30 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// on a global executor so the awaiter (typically the main actor)
     /// is never synchronously blocked on `lock.withLock`.
     func asyncSnapshot() async -> Snapshot {
-        let start = Date()
-        return await withCheckedContinuation { (cont: CheckedContinuation<Snapshot, Never>) in
-            let inContinuation = Date()
+        await withCheckedContinuation { (cont: CheckedContinuation<Snapshot, Never>) in
             DispatchQueue.global(qos: .userInitiated).async {
-                let dispatched = Date()
-                let result = self.snapshot()
-                let now = Date()
-                let total = now.timeIntervalSince(start)
-                if total > 0.05 {
-                    let pre = inContinuation.timeIntervalSince(start)
-                    let queue = dispatched.timeIntervalSince(inContinuation)
-                    let work = now.timeIntervalSince(dispatched)
-                    print(String(format: "[DISPATCH-LATENCY] ParallelWorkerStatsBox.asyncSnapshot: total=%.2fms (pre=%.2fms queue=%.2fms work=%.2fms)", total*1000, pre*1000, queue*1000, work*1000))
-                }
-                cont.resume(returning: result)
+                cont.resume(returning: self.snapshot())
             }
         }
     }
 
     func snapshot() -> Snapshot {
         lock.withLock {
-            let now = CFAbsoluteTimeGetCurrent()
+            let now = Date()
             pruneRecentLocked(now: now)
 
-            let oldestTime = _buckets[(_currentBucketIndex + 1) % 60].startTime
-            let recentWindowSec = min(Self.recentWindow, now - oldestTime)
+            var recentMoves = 0
+            var recentGameWallMs: Double = 0
+            for r in _recentGames {
+                recentMoves += r.moves
+                recentGameWallMs += r.durationMs
+            }
+            let recentWindowSec: Double
+            if let oldest = _recentGames.first?.timestamp {
+                recentWindowSec = min(Self.recentWindow, now.timeIntervalSince(oldest))
+            } else {
+                recentWindowSec = 0
+            }
 
             let (p50, p95): (Int?, Int?) = {
                 guard !_recentGameLengths.isEmpty else { return (nil, nil) }
@@ -310,9 +271,9 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 insufficientMaterialDraws: _insufficientMaterialDraws,
                 trainingSteps: _trainingSteps,
                 sessionStart: _sessionStart,
-                recentGames: _recentGameCount,
-                recentMoves: _recentMoves,
-                recentGameWallMs: _recentGameWallMs,
+                recentGames: _recentGames.count,
+                recentMoves: recentMoves,
+                recentGameWallMs: recentGameWallMs,
                 recentWindowSeconds: recentWindowSec,
                 gameLenP50: p50,
                 gameLenP95: p95
