@@ -247,6 +247,150 @@ final class CheckpointController {
         }
     }
 
+    // MARK: - Session identity / segments (Stage 3c part 2b)
+
+    /// Stable ID for the current Play-and-Train session — minted on start,
+    /// inherited on resume. Threaded into `[STATS]` / `[ARENA]` / `[SAVE]` log
+    /// lines and the session save path so per-launch state can be correlated
+    /// across files.
+    var currentSessionID: String?
+
+    /// Wall-clock instant of the most recent successful save of any flavor.
+    /// `nil` until a save lands; shown in the status bar.
+    var lastSavedAt: Date?
+
+    /// Wall-clock at which the current session started — used to derive the
+    /// elapsed-training counter for back-dating on resume.
+    var currentSessionStart: Date?
+
+    /// Closed training segments accumulated this session. Appended on Stop,
+    /// pre-save (so the snapshot includes the in-flight segment with a clean
+    /// close), and session-end.
+    var completedTrainingSegments: [SessionCheckpointState.TrainingSegment] = []
+
+    /// `nil` when no Play-and-Train run is currently active in-memory; non-nil
+    /// while a run is in progress. Constructed in `beginActiveTrainingSegment`
+    /// and consumed in `closeActiveTrainingSegment`.
+    var activeSegmentStart: ActiveSegmentStart?
+
+    /// Training-step count at the moment the current segment started. Read by
+    /// the live `Run Totals` rate display so a resumed session shows
+    /// segment-local rates, not lifetime ones over post-resume time.
+    var trainingStepsAtSegmentStart: Int = 0
+
+    /// In-memory record of an active training segment's start metadata. Kept on
+    /// the controller (rather than synthesized at close time) so a build /
+    /// session resume that lands in the middle of a segment still preserves
+    /// the original starting counter snapshots.
+    struct ActiveSegmentStart {
+        let startUnix: Int64
+        let startDate: Date
+        let startingTrainingStep: Int
+        let startingTotalPositions: Int
+        let startingSelfPlayGames: Int
+        let buildNumber: Int?
+        let buildGitHash: String?
+        let buildGitDirty: Bool?
+    }
+
+    /// Wired by `UpperContentView` to read `trainingStats?.steps` at call time.
+    var trainingStepsProvider: () -> Int? = { nil }
+    /// Wired to read `replayBuffer?.totalPositionsAdded` at call time.
+    var totalPositionsAddedProvider: () -> Int? = { nil }
+    /// Wired to read `parallelStats?.selfPlayGames` at call time.
+    var selfPlayGamesProvider: () -> Int? = { nil }
+    /// Wired to read `trainingBox?.snapshot()` at close-segment time so the
+    /// segment record captures the closing entropy / loss / gNorm.
+    var trainingBoxSnapshotProvider: () -> TrainingLiveStatsBox.Snapshot? = { nil }
+
+    /// Begin a new training segment when Play-and-Train starts.
+    /// Captures starting counter snapshots and the active build/git
+    /// metadata so the resulting segment can be attributed to a
+    /// specific code version after-the-fact.
+    func beginActiveTrainingSegment() {
+        let now = Date()
+        let bufferAdded = totalPositionsAddedProvider() ?? 0
+        let selfPlayGames = selfPlayGamesProvider() ?? 0
+        let trainingStep = trainingStepsProvider() ?? 0
+        activeSegmentStart = ActiveSegmentStart(
+            startUnix: Int64(now.timeIntervalSince1970),
+            startDate: now,
+            startingTrainingStep: trainingStep,
+            startingTotalPositions: bufferAdded,
+            startingSelfPlayGames: selfPlayGames,
+            buildNumber: BuildInfo.buildNumber,
+            buildGitHash: BuildInfo.gitHash,
+            buildGitDirty: BuildInfo.gitDirty
+        )
+        SessionLogger.shared.log(
+            "[SEGMENT] start (segment #\(completedTrainingSegments.count + 1)) "
+            + "step=\(activeSegmentStart?.startingTrainingStep ?? 0) "
+            + "build=\(BuildInfo.buildNumber)"
+        )
+    }
+
+    /// Close the in-progress segment with current end-of-segment
+    /// counters and append it to `completedTrainingSegments`. Idempotent
+    /// — if no segment is active, returns silently. Called from Stop,
+    /// from the save path, and from session-end. `reason` is only used
+    /// for the log line; the segment data itself is reason-agnostic.
+    func closeActiveTrainingSegment(reason: String) {
+        guard let start = activeSegmentStart else { return }
+        let now = Date()
+        let endUnix = Int64(now.timeIntervalSince1970)
+        let durationSec = max(0, now.timeIntervalSince(start.startDate))
+        let liveSnap = trainingBoxSnapshotProvider()
+        let bufferAdded = totalPositionsAddedProvider() ?? start.startingTotalPositions
+        let endLoss: Double? = {
+            guard let p = liveSnap?.rollingPolicyLoss,
+                  let v = liveSnap?.rollingValueLoss else { return nil }
+            return p + v
+        }()
+        let segment = SessionCheckpointState.TrainingSegment(
+            startUnix: start.startUnix,
+            endUnix: endUnix,
+            durationSec: durationSec,
+            startingTrainingStep: start.startingTrainingStep,
+            endingTrainingStep: trainingStepsProvider() ?? start.startingTrainingStep,
+            startingTotalPositions: start.startingTotalPositions,
+            endingTotalPositions: bufferAdded,
+            startingSelfPlayGames: start.startingSelfPlayGames,
+            endingSelfPlayGames: selfPlayGamesProvider() ?? start.startingSelfPlayGames,
+            buildNumber: start.buildNumber,
+            buildGitHash: start.buildGitHash,
+            buildGitDirty: start.buildGitDirty,
+            endPolicyEntropy: liveSnap?.rollingPolicyEntropy,
+            endLossTotal: endLoss,
+            endGradNorm: liveSnap?.rollingGradGlobalNorm
+        )
+        completedTrainingSegments.append(segment)
+        activeSegmentStart = nil
+        SessionLogger.shared.log(
+            String(format: "[SEGMENT] close (%@) duration=%.1fs steps=%d -> %d positions=%d -> %d",
+                   reason,
+                   durationSec,
+                   segment.startingTrainingStep,
+                   segment.endingTrainingStep,
+                   segment.startingTotalPositions,
+                   segment.endingTotalPositions)
+        )
+    }
+
+    /// Total active training wall-time across all segments, including the
+    /// currently-running one if any. Excludes any time when training was
+    /// stopped — sum of segment durations only.
+    var cumulativeActiveTrainingSec: Double {
+        let completed = completedTrainingSegments.reduce(0.0) { $0 + $1.durationSec }
+        let active = activeSegmentStart.map { Date().timeIntervalSince($0.startDate) } ?? 0
+        return completed + max(0, active)
+    }
+
+    /// Total run count: segments closed + 1 if a run is currently active.
+    /// Useful for "this session has had N runs."
+    var cumulativeRunCount: Int {
+        completedTrainingSegments.count + (activeSegmentStart != nil ? 1 : 0)
+    }
+
     /// Completion handler for the Save Parameters file exporter.
     /// Logs success or failure to the session log; user-visible
     /// status appears in the checkpoint status row.

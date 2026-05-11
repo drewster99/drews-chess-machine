@@ -566,16 +566,6 @@ struct UpperContentView: View {
         formatDurationSpec: UpperContentView.formatDurationSpec,
         parseDurationSpec: UpperContentView.parseDurationSpec
     )
-    /// Lifetime training step count at the moment the current
-    /// Play-and-Train segment started (the same instant
-    /// `parallelWorkerStatsBox.sessionStart` is captured). On a
-    /// resumed session the trainer's seeded `_stats.steps` carries
-    /// the cumulative pre-resume count, so the Run Totals rate
-    /// numerator must subtract this baseline to express
-    /// this-segment-only steps over this-segment-only wall time.
-    /// `Avg total` divisor uses the same baseline so it's also
-    /// per-segment and not under-reported by lifetime steps.
-    @State private var trainingStepsAtSegmentStart: Int = 0
     /// Drives the Arena History sheet. Set true when the user clicks
     /// "History" in the Arena popover; the popover dismisses itself
     /// before flipping this flag so the sheet doesn't anchor to a
@@ -639,28 +629,13 @@ struct UpperContentView: View {
     nonisolated static let sweepSecondsPerSize: Double = 1.0
 
     // MARK: - Checkpoint state (save / load models and sessions)
-
-    /// Stable session identifier, minted at Play-and-Train start and
-    /// carried through every autosave and manual session save for
-    /// the life of that run. Re-minted on the next start. Used as
-    /// the middle token in `.dcmsession` directory names so
-    /// successive saves from the same run cluster together
-    /// alphabetically in Finder.
-    @State private var currentSessionID: String?
-
-    /// Wall-clock timestamp of the most recent successful session
-    /// save *in this app session*. Nil if the session has never
-    /// been saved since the app launched — even if it was resumed
-    /// from a `.dcmsession` on disk, that on-disk save's age
-    /// doesn't count here. Cleared on Build Network and on session
-    /// load; set to `Date()` whenever any save trigger (manual,
-    /// post-promotion, periodic) completes successfully.
-    @State private var lastSavedAt: Date?
-
-    /// Wall-clock anchor for the current session, captured at
-    /// startRealTraining time before worker setup. Used by the
-    /// session-save path to compute `elapsedTrainingSec`.
-    @State private var currentSessionStart: Date?
+    //
+    // Session-identity, checkpoint.lastSavedAt, session-start clock, the completed-
+    // segments list, the in-flight segment record, the segment-relative
+    // training-step anchor, the ActiveSegmentStart nested struct, the begin/
+    // close-segment methods, and the cumulative wall-time / run-count
+    // computed properties have moved to CheckpointController in Stage 3c
+    // part 2b. External readers/writers reach them through `checkpoint.…`.
 
     /// A parsed session that was loaded from disk but not yet
     /// applied. The user loads a session while Play-and-Train is
@@ -669,43 +644,19 @@ struct UpperContentView: View {
     /// clears it.
     @State private var pendingLoadedSession: LoadedSession?
 
-    // MARK: - Training Segments (cumulative wall-time tracking)
-
-    /// All Play-and-Train runs that have completed (Stop, Save, or
-    /// session restart) since this session was opened. On load, this
-    /// is hydrated from `SessionCheckpointState.trainingSegments`. On
-    /// save, the current run (if any) is closed and appended before
-    /// the snapshot is written. Cumulative status-bar metrics sum
-    /// across this array plus the in-flight current run.
-    @State private var completedTrainingSegments: [SessionCheckpointState.TrainingSegment] = []
-
-    /// Per-run start info captured when Play-and-Train begins. Held
-    /// in-memory only — closed and appended into `completedTrainingSegments`
-    /// when training stops, save fires, or the session ends.
-    private struct ActiveSegmentStart {
-        let startUnix: Int64
-        let startDate: Date
-        let startingTrainingStep: Int
-        let startingTotalPositions: Int
-        let startingSelfPlayGames: Int
-        let buildNumber: Int?
-        let buildGitHash: String?
-        let buildGitDirty: Bool?
-    }
-    @State private var activeSegmentStart: ActiveSegmentStart?
-
     /// A parsed standalone model that was loaded from disk but
     /// not yet applied. Consumed by a follow-up network build
     /// or by `startRealTraining` to initialize the champion's
     /// weights from the loaded file. Cleared on apply.
     @State private var pendingLoadedModel: ModelCheckpointFile?
 
-    /// The checkpoint subsystem (status display, slow-save watchdog, and —
-    /// in Stage 3c part 2 — the save/load/segments/periodic-save logic).
-    /// Read by the body's status row (`CheckpointStatusLineView`); written by
-    /// the save/load methods still on `UpperContentView` via
-    /// `checkpoint.checkpoint.setCheckpointStatus(_:kind:)` / `.checkpoint.startSlowSaveWatchdog(label:)`
-    /// / `.checkpoint.cancelSlowSaveWatchdog()` and the `.checkpoint.checkpointSaveInFlight` flag.
+    /// The checkpoint subsystem (status display, slow-save watchdog, segment
+    /// tracking, parameter import/export — the save/load/periodic-save logic
+    /// will join in Stage 3c parts 2c–2e). Read by the body's status row
+    /// (`CheckpointStatusLineView`); written by the save/load methods still on
+    /// `UpperContentView` via `checkpoint.setCheckpointStatus(_:kind:)` /
+    /// `.startSlowSaveWatchdog(label:)` / `.cancelSlowSaveWatchdog()` and the
+    /// `.checkpointSaveInFlight` flag.
     @State private var checkpoint = CheckpointController()
 
     /// Drives the Load Model file importer sheet.
@@ -1120,7 +1071,7 @@ struct UpperContentView: View {
     /// this app session* so the user can see at a glance whether
     /// the trainer's current state has been written anywhere.
     private var lastSavedDisplayString: String {
-        guard let when = lastSavedAt else { return "Last saved: Never" }
+        guard let when = checkpoint.lastSavedAt else { return "Last saved: Never" }
         return "Last saved: \(when.formatted(date: .abbreviated, time: .shortened))"
     }
 
@@ -1191,13 +1142,13 @@ struct UpperContentView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 HStack(spacing: 4) {
-                    if lastSavedAt != nil {
+                    if checkpoint.lastSavedAt != nil {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                     }
                     Text(lastSavedDisplayString)
                         .font(.callout)
-                        .foregroundStyle(lastSavedAt == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.green))
+                        .foregroundStyle(checkpoint.lastSavedAt == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.green))
                         .lineLimit(1)
                 }
             }
@@ -1614,6 +1565,14 @@ struct UpperContentView: View {
         // status row). `applyCliConfigOverridesFromMenu(cfg:)` does both and
         // already returns a `[ParameterOverrideChange]` shaped to fit.
         checkpoint.onApplyOverrides = { applyCliConfigOverridesFromMenu(cfg: $0) }
+        // Wire the segment-tracking providers. CheckpointController calls
+        // these at begin/close-segment time to capture the live counter
+        // snapshots without holding direct references to the @State that
+        // back them.
+        checkpoint.trainingStepsProvider = { trainingStats?.steps }
+        checkpoint.totalPositionsAddedProvider = { replayBuffer?.totalPositionsAdded }
+        checkpoint.selfPlayGamesProvider = { parallelStats?.selfPlayGames }
+        checkpoint.trainingBoxSnapshotProvider = { trainingBox?.snapshot() }
         // Resume-sheet UX is correctly gated on the window being
         // visible — surfacing a sheet on a hidden window would do
         // nothing useful. Skipped under `--train` because the
@@ -2011,7 +1970,7 @@ struct UpperContentView: View {
         let now = Date()
         // Chart sample elapsed-second axis comes off
         // `chartCoordinator.chartElapsedAnchor`, NOT
-        // `parallelStats.sessionStart` or `currentSessionStart`.
+        // `parallelStats.sessionStart` or `checkpoint.currentSessionStart`.
         // The chart anchor is back-dated on session resume so a
         // restored chart trajectory and post-resume samples share
         // one continuous elapsed-sec axis (no visible gap, no
@@ -2022,7 +1981,7 @@ struct UpperContentView: View {
         // shared `scrollX` binding parks some sources off-screen
         // (the same bug class an earlier mismatch between
         // `parallelStats.sessionStart` and the back-dated
-        // `currentSessionStart` originally introduced).
+        // `checkpoint.currentSessionStart` originally introduced).
         let elapsed = max(0, now.timeIntervalSince(chartCoordinator.chartElapsedAnchor))
         let trainingSnap: TrainingLiveStatsBox.Snapshot?
         if let trainingBox {
@@ -2375,12 +2334,12 @@ struct UpperContentView: View {
         // "2 hours today + 1 hour tomorrow = 3 hours" arithmetic
         // would only hold if the user never saved mid-training.
         let wasTraining = realTraining
-        closeActiveTrainingSegment(reason: "save")
-        if wasTraining && activeSegmentStart == nil {
-            beginActiveTrainingSegment()
+        checkpoint.closeActiveTrainingSegment(reason: "save")
+        if wasTraining && checkpoint.activeSegmentStart == nil {
+            checkpoint.beginActiveTrainingSegment()
         }
         let now = Date()
-        let sessionStart = currentSessionStart ?? (parallelStats?.sessionStart ?? now)
+        let sessionStart = checkpoint.currentSessionStart ?? (parallelStats?.sessionStart ?? now)
         let elapsedSec = max(0, now.timeIntervalSince(sessionStart))
         let snap = parallelStats
         let trainingSnap = trainingStats
@@ -2411,12 +2370,12 @@ struct UpperContentView: View {
         let entropyCoeff = trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault
         let drawPen = trainer?.drawPenalty ?? Float(trainingParams.drawPenalty)
         let bufferSnap = replayBuffer?.stateSnapshot()
-        let segments: [SessionCheckpointState.TrainingSegment]? = completedTrainingSegments.isEmpty
+        let segments: [SessionCheckpointState.TrainingSegment]? = checkpoint.completedTrainingSegments.isEmpty
             ? nil
-            : completedTrainingSegments
+            : checkpoint.completedTrainingSegments
         return SessionCheckpointState(
             formatVersion: SessionCheckpointState.currentFormatVersion,
-            sessionID: currentSessionID ?? "unknown-session",
+            sessionID: checkpoint.currentSessionID ?? "unknown-session",
             savedAtUnix: Int64(now.timeIntervalSince1970),
             sessionStartUnix: Int64(sessionStart.timeIntervalSince1970),
             elapsedTrainingSec: elapsedSec,
@@ -2902,7 +2861,7 @@ struct UpperContentView: View {
                     trigger: diskTag
                 )
                 periodicSaveController?.noteSuccessfulSave(at: Date())
-                lastSavedAt = Date()
+                checkpoint.lastSavedAt = Date()
             case .failure(let error):
                 checkpoint.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
@@ -3082,7 +3041,7 @@ struct UpperContentView: View {
                     Steps: \(loaded.state.trainingSteps) / Games: \(loaded.state.selfPlayGames)
                     Click Play and Train to resume.
                     """
-                lastSavedAt = nil
+                checkpoint.lastSavedAt = nil
                 checkpoint.setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", kind: .success)
                 let savedBuild = loaded.state.buildNumber.map(String.init) ?? "?"
                 let savedGit = loaded.state.buildGitHash ?? "?"
@@ -3557,7 +3516,7 @@ struct UpperContentView: View {
                     Architecture: 20x8x8 -> stem(128)
                       -> 8 res+SE blocks -> policy(4864) + value(1)
                     """
-                lastSavedAt = nil
+                checkpoint.lastSavedAt = nil
             case .failure(let error):
                 network = nil
                 runner = nil
@@ -3688,7 +3647,7 @@ struct UpperContentView: View {
         // output.
         if let recorder = cliRecorder,
            let inf = result.rawInference,
-           let sessionStart = currentSessionStart {
+           let sessionStart = checkpoint.currentSessionStart {
             let elapsed = Date().timeIntervalSince(sessionStart)
             let event = buildCliCandidateTestEvent(
                 elapsedSec: elapsed,
@@ -4456,7 +4415,7 @@ struct UpperContentView: View {
                             trigger: "post-promotion"
                         )
                         periodicSaveController?.noteSuccessfulSave(at: Date())
-                        lastSavedAt = Date()
+                        checkpoint.lastSavedAt = Date()
                     case .failure(let error):
                         checkpoint.setCheckpointStatus(
                             "Autosave failed (post-promotion): \(error.localizedDescription)",
@@ -5051,10 +5010,10 @@ struct UpperContentView: View {
         // at save time. Don't try to open one if the previous Stop
         // didn't actually close (defensive — `closeActiveTrainingSegment`
         // is idempotent on nil but we want the log line to be clean).
-        if activeSegmentStart != nil {
-            closeActiveTrainingSegment(reason: "restart-without-stop")
+        if checkpoint.activeSegmentStart != nil {
+            checkpoint.closeActiveTrainingSegment(reason: "restart-without-stop")
         }
-        beginActiveTrainingSegment()
+        checkpoint.beginActiveTrainingSegment()
         precondition(
             Self.absoluteMaxSelfPlayWorkers >= 1,
             "absoluteMaxSelfPlayWorkers must be >= 1; got \(Self.absoluteMaxSelfPlayWorkers)"
@@ -5414,7 +5373,7 @@ struct UpperContentView: View {
         // themselves from `trainingParams` each time the popover
         // opens (its `onAppear`), so there's nothing to re-seed here.
         if continueMode {
-            // Preserve `completedTrainingSegments` and
+            // Preserve `checkpoint.completedTrainingSegments` and
             // `tournamentHistory` as they stood at Stop. The new
             // training segment has already been opened by
             // `beginActiveTrainingSegment` above.
@@ -5423,7 +5382,7 @@ struct UpperContentView: View {
             // and run-count metrics carry across save/load. Missing
             // (older session files) → empty array, which means this
             // becomes the first segment in the session's history.
-            completedTrainingSegments = rs.trainingSegments ?? []
+            checkpoint.completedTrainingSegments = rs.trainingSegments ?? []
             tournamentHistory = rs.arenaHistory.map { entry in
                 // Legacy session files don't store `gamesPlayed` —
                 // reconstruct it from the W/L/D totals (same identity
@@ -5474,12 +5433,12 @@ struct UpperContentView: View {
             // both the arena history and the training-segment
             // wall-time history — "new session" means fresh
             // counters. Pre-existing first-launch behavior left
-            // `completedTrainingSegments` alone (benign, since it
+            // `checkpoint.completedTrainingSegments` alone (benign, since it
             // was already empty at first launch), but after a
             // Stop→"New session" pick the old value would bleed
             // through, so normalize to "always fresh" here.
             tournamentHistory = []
-            completedTrainingSegments = []
+            checkpoint.completedTrainingSegments = []
         }
         tournamentProgress = nil
         let tBox = TournamentLiveBox()
@@ -5497,7 +5456,7 @@ struct UpperContentView: View {
             // so the rate numerator must subtract that as the
             // segment-start baseline to express this-segment steps
             // over this-segment wall time.
-            trainingStepsAtSegmentStart = rs.trainingSteps
+            checkpoint.trainingStepsAtSegmentStart = rs.trainingSteps
             pStatsBox = ParallelWorkerStatsBox(
                 sessionStart: Date(),
                 totalGames: rs.selfPlayGames,
@@ -5527,7 +5486,7 @@ struct UpperContentView: View {
             trainingParams.replayRatioAutoAdjust = rs.replayRatioAutoAdjust ?? true
         } else {
             // Fresh session — no resumed steps to subtract.
-            trainingStepsAtSegmentStart = 0
+            checkpoint.trainingStepsAtSegmentStart = 0
             pStatsBox = ParallelWorkerStatsBox(sessionStart: Date())
         }
         parallelWorkerStatsBox = pStatsBox
@@ -5626,9 +5585,9 @@ struct UpperContentView: View {
         periodicSaveInFlight = false
 
         // Expose the two gates the checkpoint save path needs and
-        // anchor the session ID + wall clock. `currentSessionID`
+        // anchor the session ID + wall clock. `checkpoint.currentSessionID`
         // is either a fresh mint or the loaded session's ID when
-        // resuming. `currentSessionStart` is back-dated on
+        // resuming. `checkpoint.currentSessionStart` is back-dated on
         // resume by the loaded session's `elapsedTrainingSec`, so
         // successive save-resume-save cycles accumulate elapsed
         // time monotonically. This anchor is only read by the
@@ -5639,20 +5598,20 @@ struct UpperContentView: View {
         activeSelfPlayGate = selfPlayGate
         activeTrainingGate = trainingGate
         if continueMode {
-            // Preserve `currentSessionID`, `currentSessionStart`,
+            // Preserve `checkpoint.currentSessionID`, `checkpoint.currentSessionStart`,
             // `replayRatioTarget`, `replayRatioAutoAdjust`, and any
             // trainer-hyperparameter edits the user made between
             // Stop and Start. Nothing to do here.
         } else if let resumed = pendingLoadedSession {
-            currentSessionID = resumed.state.sessionID
-            currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
+            checkpoint.currentSessionID = resumed.state.sessionID
+            checkpoint.currentSessionStart = Date().addingTimeInterval(-resumed.state.elapsedTrainingSec)
             trainingParams.learningRate = Double(resumed.state.learningRate)
             if let entropyCoeff = resumed.state.entropyRegularizationCoeff {
                 trainingParams.entropyBonus = Double(entropyCoeff)
             }
         } else {
-            currentSessionID = ModelIDMinter.mint().value
-            currentSessionStart = Date()
+            checkpoint.currentSessionID = ModelIDMinter.mint().value
+            checkpoint.currentSessionStart = Date()
         }
 
         // CLI capture mode: allocate the recorder before the
@@ -5669,7 +5628,7 @@ struct UpperContentView: View {
         let recorder: CliTrainingRecorder?
         if cliOutputURL != nil || autoTrainOnLaunch {
             let r = CliTrainingRecorder()
-            r.setSessionID(currentSessionID)
+            r.setSessionID(checkpoint.currentSessionID)
             recorder = r
             cliRecorder = r
         } else {
@@ -7157,8 +7116,8 @@ struct UpperContentView: View {
                 samplingScheduleBox = nil
                 activeSelfPlayGate = nil
                 activeTrainingGate = nil
-                currentSessionID = nil
-                currentSessionStart = nil
+                checkpoint.currentSessionID = nil
+                checkpoint.currentSessionStart = nil
                 replayRatioController = nil
                 replayRatioSnapshot = nil
                 effectiveReplayRatioTarget = nil
@@ -7177,7 +7136,7 @@ struct UpperContentView: View {
         // totals exclude post-Stop idle. If saving immediately after,
         // buildCurrentSessionState will see the segment already closed
         // and won't double-count.
-        closeActiveTrainingSegment(reason: "stop")
+        checkpoint.closeActiveTrainingSegment(reason: "stop")
         // Disarm the periodic-save scheduler so a Stop-then-Start
         // doesn't fire an immediate save on Start. The next Start
         // constructs a fresh controller with a fresh 4-hour
@@ -7186,80 +7145,6 @@ struct UpperContentView: View {
         periodicSaveController = nil
         periodicSaveLastPollAt = nil
         periodicSaveInFlight = false
-    }
-
-    /// Begin a new training segment when Play-and-Train starts.
-    /// Captures starting counter snapshots and the active build/git
-    /// metadata so the resulting segment can be attributed to a
-    /// specific code version after-the-fact.
-    private func beginActiveTrainingSegment() {
-        let now = Date()
-        let bufferAdded = replayBuffer?.totalPositionsAdded ?? 0
-        let snap = parallelStats
-        activeSegmentStart = ActiveSegmentStart(
-            startUnix: Int64(now.timeIntervalSince1970),
-            startDate: now,
-            startingTrainingStep: trainingStats?.steps ?? 0,
-            startingTotalPositions: bufferAdded,
-            startingSelfPlayGames: snap?.selfPlayGames ?? 0,
-            buildNumber: BuildInfo.buildNumber,
-            buildGitHash: BuildInfo.gitHash,
-            buildGitDirty: BuildInfo.gitDirty
-        )
-        SessionLogger.shared.log(
-            "[SEGMENT] start (segment #\(completedTrainingSegments.count + 1)) "
-            + "step=\(activeSegmentStart?.startingTrainingStep ?? 0) "
-            + "build=\(BuildInfo.buildNumber)"
-        )
-    }
-
-    /// Close the in-progress segment with current end-of-segment
-    /// counters and append it to `completedTrainingSegments`. Idempotent
-    /// — if no segment is active, returns silently. Called from Stop,
-    /// from the save path, and from session-end. `reason` is only used
-    /// for the log line; the segment data itself is reason-agnostic.
-    private func closeActiveTrainingSegment(reason: String) {
-        guard let start = activeSegmentStart else { return }
-        let now = Date()
-        let endUnix = Int64(now.timeIntervalSince1970)
-        let durationSec = max(0, now.timeIntervalSince(start.startDate))
-        let snap = parallelStats
-        let trainingSnap = trainingStats
-        let liveSnap = trainingBox?.snapshot()
-        let bufferAdded = replayBuffer?.totalPositionsAdded ?? start.startingTotalPositions
-        let endLoss: Double? = {
-            guard let p = liveSnap?.rollingPolicyLoss,
-                  let v = liveSnap?.rollingValueLoss else { return nil }
-            return p + v
-        }()
-        let segment = SessionCheckpointState.TrainingSegment(
-            startUnix: start.startUnix,
-            endUnix: endUnix,
-            durationSec: durationSec,
-            startingTrainingStep: start.startingTrainingStep,
-            endingTrainingStep: trainingSnap?.steps ?? start.startingTrainingStep,
-            startingTotalPositions: start.startingTotalPositions,
-            endingTotalPositions: bufferAdded,
-            startingSelfPlayGames: start.startingSelfPlayGames,
-            endingSelfPlayGames: snap?.selfPlayGames ?? start.startingSelfPlayGames,
-            buildNumber: start.buildNumber,
-            buildGitHash: start.buildGitHash,
-            buildGitDirty: start.buildGitDirty,
-            endPolicyEntropy: liveSnap?.rollingPolicyEntropy,
-            endLossTotal: endLoss,
-            endGradNorm: liveSnap?.rollingGradGlobalNorm
-        )
-        completedTrainingSegments.append(segment)
-        activeSegmentStart = nil
-        SessionLogger.shared.log(
-            String(format: "[SEGMENT] close (%@) duration=%.1fs steps=%d -> %d positions=%d -> %d",
-                   reason,
-                   durationSec,
-                   segment.startingTrainingStep,
-                   segment.endingTrainingStep,
-                   segment.startingTotalPositions,
-                   segment.endingTotalPositions)
-        )
     }
 
     /// One of four high-level session states surfaced as a colored
@@ -7289,21 +7174,6 @@ struct UpperContentView: View {
             return .trainingWarmup
         }
         return .training
-    }
-
-    /// Total active training wall-time across all segments, including
-    /// the currently-running one if any. Excludes any time when
-    /// training was stopped — sum of segment durations only.
-    private var cumulativeActiveTrainingSec: Double {
-        let completed = completedTrainingSegments.reduce(0.0) { $0 + $1.durationSec }
-        let active = activeSegmentStart.map { Date().timeIntervalSince($0.startDate) } ?? 0
-        return completed + max(0, active)
-    }
-
-    /// Total run count: segments closed + 1 if a run is currently
-    /// active. Useful for "this session has had N runs."
-    private var cumulativeRunCount: Int {
-        completedTrainingSegments.count + (activeSegmentStart != nil ? 1 : 0)
     }
 
     /// Cumulative status bar — sums across all completed
@@ -7338,7 +7208,7 @@ struct UpperContentView: View {
 
     fileprivate var cumulativeStatusBar: UpperCumulativeStatusBar<some View> {
         let totalSteps = trainingStats?.steps ?? 0
-        let hasHistory = cumulativeRunCount > 0 || totalSteps > 0
+        let hasHistory = checkpoint.cumulativeRunCount > 0 || totalSteps > 0
         let canRunArena = !isArenaRunning && network != nil && trainer != nil
         let totalPositions = totalSteps * trainingParams.trainingBatchSize
         let warmupLR: String? = {
@@ -7353,13 +7223,13 @@ struct UpperContentView: View {
         return UpperCumulativeStatusBar(
             hasHistory: hasHistory,
             canRunArena: canRunArena,
-            activeTrainingTime: GameWatcher.Snapshot.formatHMS(seconds: cumulativeActiveTrainingSec),
+            activeTrainingTime: GameWatcher.Snapshot.formatHMS(seconds: checkpoint.cumulativeActiveTrainingSec),
             warmupLREffective: warmupLR,
             trainingSteps: Int(totalSteps).formatted(),
             positionsTrained: Self.formatCompactCount(totalPositions),
             trainingRate: trainingRateStatusValue,
             legalMass: legalMassStr,
-            runs: "\(cumulativeRunCount)",
+            runs: "\(checkpoint.cumulativeRunCount)",
             arenas: "\(tournamentHistory.count)",
             promotions: "\(tournamentHistory.lazy.filter { $0.promoted }.count)",
             scoreCell: scoreStatusBarCell,
@@ -8463,7 +8333,7 @@ struct UpperContentView: View {
             // Subtract the segment-start baseline so Avg total and
             // Steps/sec describe the live segment, not a phantom
             // ratio of this-segment-ms over lifetime-steps.
-            let segmentSteps = max(0, stats.steps - trainingStepsAtSegmentStart)
+            let segmentSteps = max(0, stats.steps - checkpoint.trainingStepsAtSegmentStart)
             // Train time is the sum of per-step wall times — wall time
             // the trainer actually spent inside `trainStep`, exclusive
             // of buffer warmup, gate pauses, and any other idle gaps.
@@ -8998,7 +8868,7 @@ extension UpperContentView {
             TrainingSettingsPopover(
                 model: trainingSettingsPopover,
                 modelID: trainer?.identifier?.description ?? "—",
-                sessionStart: currentSessionStart ?? Date(),
+                sessionStart: checkpoint.currentSessionStart ?? Date(),
                 replayRatioCurrent: replayRatioSnapshot?.currentRatio,
                 replayRatioComputedDelayMs: replayRatioSnapshot?.computedDelayMs,
                 replayRatioComputedSelfPlayDelayMs: replayRatioSnapshot?.computedSelfPlayDelayMs,
