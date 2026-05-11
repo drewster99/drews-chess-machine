@@ -824,85 +824,26 @@ struct UpperContentView: View {
     /// working day of training.
     nonisolated static let periodicSaveIntervalSec: TimeInterval = 4 * 60 * 60
 
-    // MARK: - Auto-resume sheet state
+    // MARK: - Auto-resume sheet
     //
-    // Shown at app launch if a `LastSessionPointer` still names
-    // an on-disk `.dcmsession`. Offers the user a 30-second
-    // window to resume (after which the resume fires
-    // automatically) or dismiss. On dismiss the File menu item
-    // "Resume training from autosave" covers the same flow for
-    // the rest of the launch.
+    // The launch-time "Resume last training session?" flow (sheet, 30-second
+    // countdown, File-menu fallback, in-flight guard) lives on its own
+    // `@MainActor @Observable` controller. The actual load-and-start chain
+    // stays here (`loadSessionFrom(url:startAfterLoad:)`); `autoResume.onResume`
+    // is wired to it in `handleBodyOnAppear`.
+    @State private var autoResume = AutoResumeController()
 
-    /// Drives the sheet presentation. Set to `true` once during
-    /// the first `.onAppear` pass when a valid pointer is found,
-    /// flipped back to `false` on either button press or the
-    /// countdown firing the auto-resume action.
-    @State private var autoResumeSheetShowing: Bool = false
-
-    /// Pointer the sheet is offering to resume. Captured when the
-    /// sheet is presented so the resume action uses the exact
-    /// pointer the user saw (not whatever the UserDefaults key
-    /// might hold if the next save raced in between).
-    @State private var autoResumePointer: LastSessionPointer?
-
-    /// Lightweight peek of the target session's `session.json`,
-    /// loaded synchronously when the sheet is presented. Powers
-    /// the rich body lines (started-when, training counters, build
-    /// version mismatch). `nil` either when the sheet isn't up or
-    /// when the peek failed — in the latter case the sheet falls
-    /// back to a minimal pointer-only layout so a corrupt session
-    /// still gets the resume prompt rendered.
-    @State private var autoResumeSummary: SessionResumeSummary?
-
-    /// Seconds remaining on the countdown. Ticks down once per
-    /// second from `autoResumeCountdownStartSec` while the sheet
-    /// is showing; displayed in the Resume button's label.
-    @State private var autoResumeCountdownRemaining: Int = 0
-
-    /// Handle to the countdown task. Cancelled when the user
-    /// dismisses the sheet (either via the Resume button or Not
-    /// Now) so the timer doesn't fire a load after the user has
-    /// explicitly opted out.
-    @State private var autoResumeCountdownTask: Task<Void, Never>?
-
-    /// True while a resume load is in flight, so the File menu
-    /// item stays disabled during the load and the Resume button
-    /// cannot be pressed twice. Cleared after the load-and-start
-    /// chain completes (or errors).
-    @State private var autoResumeInFlight: Bool = false
-
-    /// Initial value of the auto-resume countdown in seconds.
-    /// 30 s per the product spec — long enough for the user to
-    /// notice the dialog and read the session details, short
-    /// enough that an unattended app resumes quickly.
-    nonisolated static let autoResumeCountdownStartSec: Int = 30
-
-    /// True if a last-saved-session pointer exists and still
-    /// names an on-disk directory. Used by the File menu item
-    /// and the resume-in-flight guard. Computed live (cheap FS
-    /// stat) rather than mirrored into @State so it tracks
-    /// external deletions without us having to poll.
+    /// True if the File-menu "Resume training from autosave" item should be
+    /// enabled: no live training run AND the controller has a resumable pointer
+    /// (and isn't already mid-resume / showing the sheet).
     private var canResumeFromAutosave: Bool {
-        guard !realTraining,
-              !autoResumeInFlight,
-              !autoResumeSheetShowing else {
-            return false
-        }
-        guard let pointer = LastSessionPointer.read() else {
-            return false
-        }
-        return pointer.directoryExists
+        !realTraining && autoResume.canResume
     }
 
-    /// Composite scalar version of the three auto-resume gating
-    /// flags so a single `.onChange` handler on the view body can
-    /// drive `syncMenuCommandHubState()` when any of them flips.
-    /// Modelled on the existing `chartZoomStateVersion` pattern
-    /// for the same reason — adding N separate `.onChange` modifiers
-    /// near a body this large blows the type-checker's time budget.
+    /// Composite scalar of the auto-resume gating flags, fed to `menuHubSignature`
+    /// so a single `.onChange` on the body drives `syncMenuCommandHubState()`.
     private var autoResumeStateVersion: Int {
-        (autoResumeInFlight ? 1 : 0)
-        | (autoResumeSheetShowing ? 2 : 0)
+        autoResume.stateVersion
     }
 
     /// Live sampling schedules shared between UI edit fields and the
@@ -1562,14 +1503,14 @@ struct UpperContentView: View {
         }
         .background(WindowAccessor(window: $contentWindow, onAttached: handleWindowAttached))
         .onAppear { handleBodyOnAppear() }
-        .sheet(isPresented: $autoResumeSheetShowing) {
-            if let pointer = autoResumePointer {
+        .sheet(isPresented: $autoResume.sheetShowing) {
+            if let pointer = autoResume.pointer {
                 AutoResumeSheetView(
                     pointer: pointer,
-                    summary: autoResumeSummary,
-                    countdownRemaining: autoResumeCountdownRemaining,
-                    onDismiss: { dismissAutoResumeSheet() },
-                    onResume: { performAutoResume() }
+                    summary: autoResume.summary,
+                    countdownRemaining: autoResume.countdownRemaining,
+                    onDismiss: { autoResume.dismiss() },
+                    onResume: { autoResume.performResume() }
                 )
             }
         }
@@ -1696,6 +1637,10 @@ struct UpperContentView: View {
         trainingSettingsPopover.pushSelfPlaySchedule = {
             samplingScheduleBox?.setSelfPlay(buildSelfPlaySchedule())
         }
+        // The auto-resume controller chains into the load-and-start path here.
+        autoResume.onResume = { pointer in
+            loadSessionFrom(url: pointer.directoryURL, startAfterLoad: true)
+        }
         // Resume-sheet UX is correctly gated on the window being
         // visible — surfacing a sheet on a hidden window would do
         // nothing useful. Skipped under `--train` because the
@@ -1703,7 +1648,7 @@ struct UpperContentView: View {
         // already kicked off training and the sheet would be
         // confusing on top of an active session.
         if !autoTrainOnLaunch {
-            maybePresentAutoResumeSheet()
+            autoResume.maybePresentSheet(isTrainingActive: realTraining)
         }
     }
 
@@ -3413,107 +3358,9 @@ struct UpperContentView: View {
                 SessionLogger.shared.log("[CHECKPOINT] Load session failed: \(error.localizedDescription)")
             }
             if startAfterLoad {
-                autoResumeInFlight = false
+                autoResume.markResumeFinished()
             }
         }
-    }
-
-    // MARK: - Auto-resume flow
-
-    /// Present the auto-resume sheet if a valid last-session
-    /// pointer is on disk. Called from the view's first `.onAppear`
-    /// pass. A no-op if no pointer exists, the target has been
-    /// deleted externally, or the app is already mid-training
-    /// (the latter should be impossible at launch, but the guard
-    /// is cheap and keeps this callable from anywhere).
-    @MainActor
-    private func maybePresentAutoResumeSheet() {
-        // Suppress auto-resume entirely when running under XCTest.
-        // Same env-var signal `DrewsChessMachineApp` already uses to
-        // bypass CLI-flag parsing — set unconditionally by the
-        // xctest runner. Without this guard, a future test that
-        // instantiates `ContentView` would either auto-fire a real
-        // training run 30 s into the test or race the countdown
-        // Task against test teardown.
-        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-            SessionLogger.shared.log("[RESUME] Skipping auto-resume sheet — running under XCTest")
-            return
-        }
-        guard !realTraining, !autoResumeSheetShowing else { return }
-        guard let pointer = LastSessionPointer.read() else {
-            SessionLogger.shared.log("[RESUME] No last-session pointer found — skipping auto-resume prompt")
-            return
-        }
-        guard pointer.directoryExists else {
-            SessionLogger.shared.log(
-                "[RESUME] Last-session pointer names missing folder \(pointer.directoryPath) — clearing stale pointer"
-            )
-            LastSessionPointer.clear()
-            return
-        }
-        autoResumePointer = pointer
-        // Best-effort peek of the session's metadata file so the
-        // sheet can render counters / build info up front. A peek
-        // failure leaves `autoResumeSummary` nil and the sheet
-        // gracefully falls back to the minimal layout — we never
-        // suppress the prompt over a peek failure, since the
-        // primary purpose (offering Resume) is independent of the
-        // metadata.
-        do {
-            autoResumeSummary = try CheckpointManager.peekSessionMetadata(at: pointer.directoryURL)
-        } catch {
-            autoResumeSummary = nil
-            SessionLogger.shared.log(
-                "[RESUME] session.json peek failed for \(pointer.sessionID): "
-                + "\(error.localizedDescription) — sheet will use minimal layout"
-            )
-        }
-        autoResumeCountdownRemaining = Self.autoResumeCountdownStartSec
-        autoResumeSheetShowing = true
-        let savedAgo = max(0, Int(Date().timeIntervalSince1970) - Int(pointer.savedAtUnix))
-        SessionLogger.shared.log(
-            "[RESUME] Presenting auto-resume sheet for \(pointer.sessionID) (\(pointer.trigger), saved \(savedAgo)s ago)"
-        )
-        startAutoResumeCountdownTask()
-    }
-
-    /// Kick off the 1 Hz countdown timer that ticks
-    /// `autoResumeCountdownRemaining` down to zero, at which point
-    /// it fires the resume action as if the user had clicked the
-    /// Resume button.
-    @MainActor
-    private func startAutoResumeCountdownTask() {
-        autoResumeCountdownTask?.cancel()
-        autoResumeCountdownTask = Task { @MainActor in
-            while autoResumeSheetShowing && autoResumeCountdownRemaining > 0 {
-                do {
-                    try await Task.sleep(for: .seconds(1))
-                } catch {
-                    // Cancelled (user dismissed). Nothing to do.
-                    return
-                }
-                if Task.isCancelled { return }
-                autoResumeCountdownRemaining -= 1
-            }
-            // Only fire if the sheet is still up — a dismiss path
-            // may have zeroed the counter on its way out.
-            if autoResumeSheetShowing {
-                performAutoResume()
-            }
-        }
-    }
-
-    /// Dismiss the sheet without resuming. The File menu item
-    /// "Resume training from autosave" stays available so the
-    /// user can still trigger the resume later during this
-    /// launch.
-    @MainActor
-    private func dismissAutoResumeSheet() {
-        autoResumeCountdownTask?.cancel()
-        autoResumeCountdownTask = nil
-        autoResumeSheetShowing = false
-        autoResumeSummary = nil
-        SessionLogger.shared.log("[RESUME] User dismissed auto-resume sheet")
     }
 
     /// Drive the `--train` CLI launch sequence: build a fresh
@@ -3709,36 +3556,12 @@ struct UpperContentView: View {
         }
     }
 
-    /// Trigger the actual resume: tear down the sheet, then chain
-    /// through `loadSessionFrom(url:startAfterLoad:)` which handles
-    /// the network-build, weight-load, and Play-and-Train start.
-    /// Errors surface via `setCheckpointStatus(.error)` and the
-    /// session log — we deliberately do NOT delete the pointer or
-    /// the target folder on failure per the spec ("If the session
-    /// can't be loaded, throw up an error and stop. Don't delete
-    /// anything.").
-    @MainActor
-    private func performAutoResume() {
-        guard let pointer = autoResumePointer else {
-            dismissAutoResumeSheet()
-            return
-        }
-        autoResumeCountdownTask?.cancel()
-        autoResumeCountdownTask = nil
-        autoResumeSheetShowing = false
-        autoResumeSummary = nil
-        autoResumeInFlight = true
-        SessionLogger.shared.log(
-            "[RESUME] Starting auto-resume of \(pointer.sessionID) from \(pointer.directoryURL.lastPathComponent)"
-        )
-        loadSessionFrom(url: pointer.directoryURL, startAfterLoad: true)
-    }
-
-    /// File-menu entry point for "Resume training from autosave".
-    /// Shares `performAutoResume`'s implementation but re-reads
-    /// the pointer from UserDefaults first, since the user may
-    /// have performed another save (which updated the pointer)
-    /// between the launch sheet and the menu click.
+    /// File-menu entry point for "Resume training from autosave". Re-reads the
+    /// pointer from UserDefaults first (the user may have saved again — which
+    /// updated the pointer — since the launch sheet), guards on no live training
+    /// run / no in-flight resume / pointer-still-on-disk, then hands off to the
+    /// `AutoResumeController`. (The launch-sheet path goes through
+    /// `autoResume.performResume()` directly.)
     @MainActor
     private func resumeFromAutosaveMenuAction() {
         SessionLogger.shared.log("[BUTTON] Resume Training from Autosave")
@@ -3746,7 +3569,7 @@ struct UpperContentView: View {
             refuseMenuAction("Stop the current training session before resuming from autosave.")
             return
         }
-        guard !autoResumeInFlight else { return }
+        guard !autoResume.inFlight else { return }
         guard let pointer = LastSessionPointer.read() else {
             refuseMenuAction("No saved session available to resume.")
             return
@@ -3764,8 +3587,7 @@ struct UpperContentView: View {
             syncMenuCommandHubState()
             return
         }
-        autoResumePointer = pointer
-        performAutoResume()
+        autoResume.resumeFromPointer(pointer)
     }
 
     /// Open Finder pointed at the checkpoint root so the user can
