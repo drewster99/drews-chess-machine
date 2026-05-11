@@ -62,15 +62,14 @@ final class ChartDecimatorTests: XCTestCase {
 
     // MARK: - Empty / out-of-range
 
-    func testEmptyRingsProduceEmptyFrame() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
-        let progressRing = ChartSampleRing<ProgressRateSample>()
-
+    func testEmptyInputsProduceEmptyFrame() {
         let frame = ChartDecimator.decimate(
-            trainingRing: trainingRing,
-            progressRateRing: progressRing,
+            trainingSamples: [],
+            progressRateSamples: [],
             visibleStart: 0,
-            visibleLength: 60,
+            visibleEnd: 60,
+            lastT: nil,
+            lastP: nil,
             trainingBucketBudget: 100,
             progressRateBucketBudget: 100
         )
@@ -82,14 +81,10 @@ final class ChartDecimatorTests: XCTestCase {
     }
 
     func testVisibleWindowEntirelyOutsideDataReturnsEmpty() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
-        for i in 0..<10 {
-            trainingRing.append(trainingSample(id: i, elapsedSec: Double(i)))
-        }
-
-        // Window [100, 160] is past every sample (which run 0...9).
+        // Samples run 0...9; caller passes only the visible-window slice,
+        // which for window [100, 160] is empty.
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: [],
             visibleStart: 100,
             visibleEnd: 160,
             bucketBudget: 50
@@ -98,12 +93,9 @@ final class ChartDecimatorTests: XCTestCase {
     }
 
     func testVisibleWindowEntirelyBeforeDataReturnsEmpty() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
-        for i in 0..<10 {
-            trainingRing.append(trainingSample(id: i, elapsedSec: Double(50 + i)))
-        }
+        // Samples run 50...59; the visible-window slice for [0, 30] is empty.
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: [],
             visibleStart: 0,
             visibleEnd: 30,
             bucketBudget: 50
@@ -114,16 +106,10 @@ final class ChartDecimatorTests: XCTestCase {
     // MARK: - Bucket count + budget cap
 
     func testBucketCountNeverExceedsBudget() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
         // 1000 samples, all distinct elapsedSec values inside [0, 1000).
-        for i in 0..<1000 {
-            trainingRing.append(trainingSample(
-                id: i, elapsedSec: Double(i),
-                policyLoss: Double(i)
-            ))
-        }
+        let samples = (0..<1000).map { trainingSample(id: $0, elapsedSec: Double($0), policyLoss: Double($0)) }
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: samples,
             visibleStart: 0,
             visibleEnd: 1000,
             bucketBudget: 50
@@ -135,13 +121,10 @@ final class ChartDecimatorTests: XCTestCase {
     }
 
     func testBucketBudgetClampedToMinimum() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
-        for i in 0..<100 {
-            trainingRing.append(trainingSample(id: i, elapsedSec: Double(i)))
-        }
+        let samples = (0..<100).map { trainingSample(id: $0, elapsedSec: Double($0)) }
         // Caller asks for 1 bucket; decimator clamps up to the floor.
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: samples,
             visibleStart: 0,
             visibleEnd: 100,
             bucketBudget: 1
@@ -154,12 +137,9 @@ final class ChartDecimatorTests: XCTestCase {
     }
 
     func testBucketBudgetClampedToMaximum() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
-        for i in 0..<5000 {
-            trainingRing.append(trainingSample(id: i, elapsedSec: Double(i)))
-        }
+        let samples = (0..<5000).map { trainingSample(id: $0, elapsedSec: Double($0)) }
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: samples,
             visibleStart: 0,
             visibleEnd: 5000,
             bucketBudget: 999_999
@@ -173,18 +153,18 @@ final class ChartDecimatorTests: XCTestCase {
     // MARK: - Min/max envelope
 
     func testMinMaxEnvelopeIsExactWithinBucket() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
         // Two samples, both fall in the same bucket. One has a known
         // min, the other a known max. Decimator should report exactly
         // those values.
         //
         // Visible window [0, 1] with the bucket-budget floor (32)
         // gives bucket 0 = [0, 1/32). Cluster both samples inside it.
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.005, policyLoss: -3.5))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.020, policyLoss: 7.25))
-
+        let samples = [
+            trainingSample(id: 0, elapsedSec: 0.005, policyLoss: -3.5),
+            trainingSample(id: 1, elapsedSec: 0.020, policyLoss: 7.25)
+        ]
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: samples,
             visibleStart: 0,
             visibleEnd: 1,
             // Force everything into one bucket via the floor; samples
@@ -199,15 +179,15 @@ final class ChartDecimatorTests: XCTestCase {
     }
 
     func testNilFieldDoesNotAffectEnvelope() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
         // Cluster all samples inside bucket 0 = [0, 1/32) under the
         // floor-clamped layout.
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.005, policyLoss: nil))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.015, policyLoss: 5.0))
-        trainingRing.append(trainingSample(id: 2, elapsedSec: 0.025, policyLoss: nil))
-
+        let samples = [
+            trainingSample(id: 0, elapsedSec: 0.005, policyLoss: nil),
+            trainingSample(id: 1, elapsedSec: 0.015, policyLoss: 5.0),
+            trainingSample(id: 2, elapsedSec: 0.025, policyLoss: nil)
+        ]
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: samples,
             visibleStart: 0,
             visibleEnd: 1,
             bucketBudget: 1
@@ -220,13 +200,13 @@ final class ChartDecimatorTests: XCTestCase {
     }
 
     func testFieldWithNoSamplesReportsNilRange() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
         // Cluster inside bucket 0 = [0, 1/32) under the floor.
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.005))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.020))
-
+        let samples = [
+            trainingSample(id: 0, elapsedSec: 0.005),
+            trainingSample(id: 1, elapsedSec: 0.020)
+        ]
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: samples,
             visibleStart: 0,
             visibleEnd: 1,
             bucketBudget: 1
@@ -240,16 +220,16 @@ final class ChartDecimatorTests: XCTestCase {
     // MARK: - Categorical fields
 
     func testCategoricalFieldUsesLastObservedValue() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
         // Three samples in one bucket; lowPowerMode flips false → true → false.
         // Last-observed semantics should report `false`.
         // Cluster inside bucket 0 = [0, 1/32) under the floor.
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.005, lowPowerMode: false))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.015, lowPowerMode: true))
-        trainingRing.append(trainingSample(id: 2, elapsedSec: 0.025, lowPowerMode: false))
-
+        let samples = [
+            trainingSample(id: 0, elapsedSec: 0.005, lowPowerMode: false),
+            trainingSample(id: 1, elapsedSec: 0.015, lowPowerMode: true),
+            trainingSample(id: 2, elapsedSec: 0.025, lowPowerMode: false)
+        ]
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: samples,
             visibleStart: 0,
             visibleEnd: 1,
             bucketBudget: 1
@@ -259,14 +239,14 @@ final class ChartDecimatorTests: XCTestCase {
     }
 
     func testThermalStateLastObservedSurvivesNilSamples() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
         // Cluster inside bucket 0 = [0, 1/32) under the floor.
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.005, thermalState: .nominal))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.015, thermalState: .fair))
-        trainingRing.append(trainingSample(id: 2, elapsedSec: 0.025, thermalState: nil))
-
+        let samples = [
+            trainingSample(id: 0, elapsedSec: 0.005, thermalState: .nominal),
+            trainingSample(id: 1, elapsedSec: 0.015, thermalState: .fair),
+            trainingSample(id: 2, elapsedSec: 0.025, thermalState: nil)
+        ]
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: samples,
             visibleStart: 0,
             visibleEnd: 1,
             bucketBudget: 1
@@ -280,14 +260,14 @@ final class ChartDecimatorTests: XCTestCase {
     // MARK: - Empty buckets are skipped
 
     func testEmptyBucketsAreOmittedFromOutput() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
         // Samples cluster at t=0.05 and t=0.95, leaving the middle
         // buckets entirely empty.
-        trainingRing.append(trainingSample(id: 0, elapsedSec: 0.05, policyLoss: 1.0))
-        trainingRing.append(trainingSample(id: 1, elapsedSec: 0.95, policyLoss: 2.0))
-
+        let samples = [
+            trainingSample(id: 0, elapsedSec: 0.05, policyLoss: 1.0),
+            trainingSample(id: 1, elapsedSec: 0.95, policyLoss: 2.0)
+        ]
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: samples,
             visibleStart: 0,
             visibleEnd: 1,
             bucketBudget: 100
@@ -306,16 +286,11 @@ final class ChartDecimatorTests: XCTestCase {
     /// sample's `elapsedSec`. Decimator must include that sample;
     /// otherwise the chart reads one tick stale every 1 Hz append.
     func testSampleAtVisibleEndIsIncluded() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
-        for i in 0..<100 {
-            trainingRing.append(trainingSample(
-                id: i, elapsedSec: Double(i),
-                policyLoss: Double(i)
-            ))
-        }
-        // Window [40, 99] — the sample at exactly 99 must appear.
+        // Window [40, 99] — the sample at exactly 99 must appear. The
+        // caller passes the in-window slice (samples 40...99).
+        let samples = (40...99).map { trainingSample(id: $0, elapsedSec: Double($0), policyLoss: Double($0)) }
         let buckets = ChartDecimator.decimateTraining(
-            ring: trainingRing,
+            samples: samples,
             visibleStart: 40,
             visibleEnd: 99,
             bucketBudget: 60
@@ -329,20 +304,24 @@ final class ChartDecimatorTests: XCTestCase {
 
     // MARK: - Last-elapsed reporting
 
-    func testLastElapsedReportsRingTailNotVisibleWindow() {
-        let trainingRing = ChartSampleRing<TrainingChartSample>()
-        let progressRing = ChartSampleRing<ProgressRateSample>()
-        for i in 0..<10 {
-            trainingRing.append(trainingSample(id: i, elapsedSec: Double(i)))
-            progressRing.append(progressSample(id: i, elapsedSec: Double(i)))
-        }
+    func testLastElapsedReportsCallerSuppliedTailNotVisibleWindow() {
+        // The decimator no longer knows about the underlying ring — the
+        // caller passes `lastT` / `lastP` explicitly (it's the ring
+        // tail, computed independently of the visible-window slice).
+        // Visible window [0, 5) here, but the supplied tail is 9; the
+        // frame must echo the supplied tail, not anything derived from
+        // the window.
+        let allTraining = (0..<10).map { trainingSample(id: $0, elapsedSec: Double($0)) }
+        let allProgress = (0..<10).map { progressSample(id: $0, elapsedSec: Double($0)) }
+        let inWindowTraining = allTraining.filter { (0.0...5.0).contains($0.elapsedSec) }
+        let inWindowProgress = allProgress.filter { (0.0...5.0).contains($0.elapsedSec) }
         let frame = ChartDecimator.decimate(
-            trainingRing: trainingRing,
-            progressRateRing: progressRing,
-            // Visible window is BEFORE the data — but lastElapsed is
-            // about the underlying ring, not the visible window.
+            trainingSamples: inWindowTraining,
+            progressRateSamples: inWindowProgress,
             visibleStart: 0,
-            visibleLength: 5,
+            visibleEnd: 5,
+            lastT: allTraining.last?.elapsedSec,
+            lastP: allProgress.last?.elapsedSec,
             trainingBucketBudget: 50,
             progressRateBucketBudget: 50
         )
@@ -353,14 +332,15 @@ final class ChartDecimatorTests: XCTestCase {
     // MARK: - Progress rate
 
     func testProgressRateDecimationIncludesDerivedCombinedRate() {
-        let progressRing = ChartSampleRing<ProgressRateSample>()
-        progressRing.append(progressSample(
-            id: 0, elapsedSec: 0.5,
-            selfPlayMovesPerHour: 100,
-            trainingMovesPerHour: 250
-        ))
+        let samples = [
+            progressSample(
+                id: 0, elapsedSec: 0.5,
+                selfPlayMovesPerHour: 100,
+                trainingMovesPerHour: 250
+            )
+        ]
         let buckets = ChartDecimator.decimateProgressRate(
-            ring: progressRing,
+            samples: samples,
             visibleStart: 0,
             visibleEnd: 1,
             bucketBudget: 1
