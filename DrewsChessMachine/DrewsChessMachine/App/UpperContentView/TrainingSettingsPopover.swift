@@ -15,21 +15,24 @@ import SwiftUI
 ///     control panel (live current-ratio readout, self-play delay,
 ///     train step delay, auto-control checkbox).
 ///
-/// Edit-text bindings + error flags are owned by `UpperContentView`
-/// (same pattern as `ArenaSettingsPopover`) — keeps in-progress
-/// text alive across renders. Save validates and writes back to
-/// `trainingParams` via the parent's `trainingPopoverSave()` helper;
-/// Cancel discards in-progress text.
+/// All transactional state — edit-text fields, per-field error flags, the
+/// validate-and-write-back logic, and the live-propagation of the replay-ratio
+/// fields — lives on the `TrainingSettingsPopoverModel` (`@MainActor @Observable`),
+/// which this view receives as `@Bindable model`. Keeping it on a model object
+/// (rather than `@State` on `UpperContentView`) keeps in-progress text alive
+/// across renders, lets the sub-tab views bind directly off `$model`, and means
+/// editing a field clears its own error via the model's `didSet` — so no
+/// `.onChange` chain is needed here. Save/Cancel/onAppearSeed call
+/// `model.save()` / `model.cancel()` / `model.seedFromParams()`.
 ///
-/// **Live-propagation exception for replay-ratio fields.** The three
-/// replay-ratio control fields (`selfPlayDelayMs`, `trainingStepDelayMs`,
-/// `replayRatioAutoAdjust`) write through to `trainingParams`
-/// *immediately on change* via the `onLive...Change` callbacks rather
-/// than waiting for Save. This lets the user watch the live ratio
-/// display respond to their change. On Cancel, the parent reverts
-/// these three fields to the values it stashed in `onAppearSeed`,
-/// matching the standard "edit → cancel discards" pattern from the
-/// user's POV.
+/// **Live-propagation exception for replay-ratio fields.** The replay-ratio
+/// control fields (`replayRatioTarget`, `selfPlayDelayMs`, `trainingStepDelayMs`,
+/// `replayRatioAutoAdjust`) write through to `trainingParams` *immediately on
+/// change* via `model.applyLive…` rather than waiting for Save, so the user can
+/// watch the live ratio display respond. On Cancel (and on outside-click
+/// dismiss, routed through `model.cancel()`) those are reverted from the stash
+/// captured in `model.seedFromParams()`, matching the standard
+/// "edit → cancel discards" pattern from the user's POV.
 fileprivate enum Tab: String, CaseIterable, Identifiable {
     case optimizer = "Optimizer"
     case selfPlay = "Self Play"
@@ -39,6 +42,10 @@ fileprivate enum Tab: String, CaseIterable, Identifiable {
 
 struct TrainingSettingsPopover: View {
 
+    /// All transactional state (edit-text fields, per-field error flags,
+    /// validation + write-back, live-propagation of the replay-ratio fields).
+    @Bindable var model: TrainingSettingsPopoverModel
+
     /// Trainer model ID at session start, displayed in the header.
     /// "—" when no trainer exists yet (build-pre-session).
     let modelID: String
@@ -46,97 +53,19 @@ struct TrainingSettingsPopover: View {
     /// user has a stable "this is the run you're configuring" anchor.
     let sessionStart: Date
 
-    // MARK: - Optimizer-tab bindings
-
-    @Binding var lrText: String
-    @Binding var warmupText: String
-    @Binding var momentumText: String
-    @Binding var sqrtBatchScalingValue: Bool
-    @Binding var entropyText: String
-    @Binding var illegalMassWeightText: String
-    @Binding var gradClipText: String
-    @Binding var weightDecayText: String
-    @Binding var policyLossWeightText: String
-    @Binding var valueLossWeightText: String
-    @Binding var drawPenaltyText: String
-    @Binding var trainingBatchSizeText: String
-
-    let lrError: Bool
-    let warmupError: Bool
-    let momentumError: Bool
-    let entropyError: Bool
-    let illegalMassWeightError: Bool
-    let gradClipError: Bool
-    let weightDecayError: Bool
-    let policyLossWeightError: Bool
-    let valueLossWeightError: Bool
-    let drawPenaltyError: Bool
-    let trainingBatchSizeError: Bool
-
-    // MARK: - Self-Play-tab bindings
-
-    @Binding var selfPlayWorkersText: String
-    @Binding var selfPlayStartTauText: String
-    @Binding var selfPlayDecayPerPlyText: String
-    @Binding var selfPlayFloorTauText: String
-
-    let selfPlayWorkersError: Bool
-    let selfPlayStartTauError: Bool
-    let selfPlayDecayPerPlyError: Bool
-    let selfPlayFloorTauError: Bool
-
-    // MARK: - Replay-tab bindings
-
-    @Binding var replayBufferCapacityText: String
-    @Binding var replayBufferMinPositionsText: String
-    @Binding var replayRatioTargetText: String
-    @Binding var replaySelfPlayDelayText: String
-    @Binding var replayTrainingStepDelayText: String
-    @Binding var replayRatioAutoAdjust: Bool
-
-    let replayBufferCapacityError: Bool
-    let replayBufferMinPositionsError: Bool
-    let replayRatioTargetError: Bool
-    let replaySelfPlayDelayError: Bool
-    let replayTrainingStepDelayError: Bool
-
     /// Live "current ratio (target X.XX)" snapshot for the Replay
     /// tab's status line. Refreshes with the parent's heartbeat;
     /// nil before the controller has produced its first sample.
     let replayRatioCurrent: Double?
     /// Live auto-computed training-step delay from the controller.
     /// Displayed in place of the editable Train-step-delay field
-    /// when `replayRatioAutoAdjust == true` so the user can see
-    /// what the auto-controller is currently doing. Nil before the
+    /// when `model.replayRatioAutoAdjust == true`. Nil before the
     /// controller has produced its first sample.
     let replayRatioComputedDelayMs: Int?
     /// Live auto-computed self-play delay from the controller.
-    /// Same role as `replayRatioComputedDelayMs` but for the
-    /// Self-play-delay field.
     let replayRatioComputedSelfPlayDelayMs: Int?
-    /// Bytes-per-position for the auto-GB readout. Sourced from
-    /// `ReplayBuffer.bytesPerPosition` so any future schema change
-    /// updates the displayed estimate without further plumbing.
+    /// Bytes-per-position for the auto-GB readout (`ReplayBuffer.bytesPerPosition`).
     let bytesPerPosition: Int
-
-    // MARK: - Live-update callbacks (Replay-ratio fields only)
-    //
-    // These callbacks fire on EVERY change while the popover is
-    // open — text-field commit, stepper press, checkbox toggle.
-    // The parent writes the value through to `trainingParams` and
-    // (for the delay values) to the live `ReplayRatioController`
-    // immediately. On Cancel, the parent restores from its stash.
-
-    let onLiveReplayRatioTargetChange: (Double) -> Void
-    let onLiveSelfPlayDelayChange: (Int) -> Void
-    let onLiveTrainingStepDelayChange: (Int) -> Void
-    let onLiveReplayRatioAutoAdjustChange: (Bool) -> Void
-
-    // MARK: - Lifecycle callbacks
-
-    let onCancel: () -> Void
-    let onSave: () -> Void
-    let onAppearSeed: () -> Void
 
     // MARK: - Tab selection
 
@@ -146,41 +75,38 @@ struct TrainingSettingsPopover: View {
     /// — the natural mental model is "always start on Optimizer."
     @State private var selectedTab: Tab = .optimizer
 
-    // Aggregated per-tab error flags, derived from the existing
-    // per-field `*Error: Bool` properties already passed in by the
-    // parent. These drive (a) the red-dot indicator on each tab in
-    // the segmented control below and (b) the Save button's
-    // `.disabled(...)` modifier — once Save has set any error flag,
-    // the user has to clear it (by editing the offending field) before
-    // Save re-enables. The parent's `.onChange` handlers next to the
-    // popover construction site clear individual error flags as the
-    // user edits the matching text field.
+    // Aggregated per-tab error flags, derived from the per-field `*Error`
+    // properties on the model. These drive (a) the red-dot indicator on each
+    // tab in the segmented control and (b) the Save button's `.disabled(...)` —
+    // once Save has set any error flag, the user clears it by editing the
+    // offending field (the model's `didSet` does that), at which point Save
+    // re-enables and the next click re-validates the full form transactionally.
     private var optimizerHasError: Bool {
-        lrError
-            || warmupError
-            || momentumError
-            || entropyError
-            || gradClipError
-            || weightDecayError
-            || policyLossWeightError
-            || valueLossWeightError
-            || drawPenaltyError
-            || trainingBatchSizeError
+        model.lrError
+            || model.warmupError
+            || model.momentumError
+            || model.entropyError
+            || model.gradClipError
+            || model.weightDecayError
+            || model.policyLossWeightError
+            || model.valueLossWeightError
+            || model.drawPenaltyError
+            || model.trainingBatchSizeError
     }
 
     private var selfPlayHasError: Bool {
-        selfPlayWorkersError
-            || selfPlayStartTauError
-            || selfPlayDecayPerPlyError
-            || selfPlayFloorTauError
+        model.selfPlayWorkersError
+            || model.selfPlayStartTauError
+            || model.selfPlayDecayPerPlyError
+            || model.selfPlayFloorTauError
     }
 
     private var replayHasError: Bool {
-        replayBufferCapacityError
-            || replayBufferMinPositionsError
-            || replayRatioTargetError
-            || replaySelfPlayDelayError
-            || replayTrainingStepDelayError
+        model.replayBufferCapacityError
+            || model.replayBufferMinPositionsError
+            || model.replayRatioTargetError
+            || model.replaySelfPlayDelayError
+            || model.replayTrainingStepDelayError
     }
 
     private var anyTabHasError: Bool {
@@ -228,100 +154,100 @@ struct TrainingSettingsPopover: View {
 
             // Per-tab content. Each tab is its own subview struct so
             // the parent body stays small and the Stepper/binding
-            // helpers can live close to the fields they drive.
+            // helpers can live close to the fields they drive. The
+            // sub-views keep their existing `@Binding` interface; the
+            // bindings are projected off `model` here.
             switch selectedTab {
             case .optimizer:
                 OptimizerTab(
-                    lrText: $lrText,
-                    warmupText: $warmupText,
-                    momentumText: $momentumText,
-                    sqrtBatchScalingValue: $sqrtBatchScalingValue,
-                    entropyText: $entropyText,
-                    illegalMassWeightText: $illegalMassWeightText,
-                    gradClipText: $gradClipText,
-                    weightDecayText: $weightDecayText,
-                    policyLossWeightText: $policyLossWeightText,
-                    valueLossWeightText: $valueLossWeightText,
-                    drawPenaltyText: $drawPenaltyText,
-                    trainingBatchSizeText: $trainingBatchSizeText,
-                    lrError: lrError,
-                    warmupError: warmupError,
-                    momentumError: momentumError,
-                    entropyError: entropyError,
-                    illegalMassWeightError: illegalMassWeightError,
-                    gradClipError: gradClipError,
-                    weightDecayError: weightDecayError,
-                    policyLossWeightError: policyLossWeightError,
-                    valueLossWeightError: valueLossWeightError,
-                    drawPenaltyError: drawPenaltyError,
-                    trainingBatchSizeError: trainingBatchSizeError
+                    lrText: $model.lrText,
+                    warmupText: $model.warmupText,
+                    momentumText: $model.momentumText,
+                    sqrtBatchScalingValue: $model.sqrtBatchScalingValue,
+                    entropyText: $model.entropyText,
+                    illegalMassWeightText: $model.illegalMassWeightText,
+                    gradClipText: $model.gradClipText,
+                    weightDecayText: $model.weightDecayText,
+                    policyLossWeightText: $model.policyLossWeightText,
+                    valueLossWeightText: $model.valueLossWeightText,
+                    drawPenaltyText: $model.drawPenaltyText,
+                    trainingBatchSizeText: $model.trainingBatchSizeText,
+                    lrError: model.lrError,
+                    warmupError: model.warmupError,
+                    momentumError: model.momentumError,
+                    entropyError: model.entropyError,
+                    illegalMassWeightError: model.illegalMassWeightError,
+                    gradClipError: model.gradClipError,
+                    weightDecayError: model.weightDecayError,
+                    policyLossWeightError: model.policyLossWeightError,
+                    valueLossWeightError: model.valueLossWeightError,
+                    drawPenaltyError: model.drawPenaltyError,
+                    trainingBatchSizeError: model.trainingBatchSizeError
                 )
             case .selfPlay:
                 SelfPlayTab(
-                    selfPlayWorkersText: $selfPlayWorkersText,
-                    selfPlayStartTauText: $selfPlayStartTauText,
-                    selfPlayDecayPerPlyText: $selfPlayDecayPerPlyText,
-                    selfPlayFloorTauText: $selfPlayFloorTauText,
-                    selfPlayWorkersError: selfPlayWorkersError,
-                    selfPlayStartTauError: selfPlayStartTauError,
-                    selfPlayDecayPerPlyError: selfPlayDecayPerPlyError,
-                    selfPlayFloorTauError: selfPlayFloorTauError
+                    selfPlayWorkersText: $model.selfPlayWorkersText,
+                    selfPlayStartTauText: $model.selfPlayStartTauText,
+                    selfPlayDecayPerPlyText: $model.selfPlayDecayPerPlyText,
+                    selfPlayFloorTauText: $model.selfPlayFloorTauText,
+                    selfPlayWorkersError: model.selfPlayWorkersError,
+                    selfPlayStartTauError: model.selfPlayStartTauError,
+                    selfPlayDecayPerPlyError: model.selfPlayDecayPerPlyError,
+                    selfPlayFloorTauError: model.selfPlayFloorTauError
                 )
             case .replay:
                 ReplayTab(
-                    replayBufferCapacityText: $replayBufferCapacityText,
-                    replayBufferMinPositionsText: $replayBufferMinPositionsText,
-                    replayRatioTargetText: $replayRatioTargetText,
-                    replaySelfPlayDelayText: $replaySelfPlayDelayText,
-                    replayTrainingStepDelayText: $replayTrainingStepDelayText,
-                    replayRatioAutoAdjust: $replayRatioAutoAdjust,
-                    replayBufferCapacityError: replayBufferCapacityError,
-                    replayBufferMinPositionsError: replayBufferMinPositionsError,
-                    replayRatioTargetError: replayRatioTargetError,
-                    replaySelfPlayDelayError: replaySelfPlayDelayError,
-                    replayTrainingStepDelayError: replayTrainingStepDelayError,
+                    replayBufferCapacityText: $model.replayBufferCapacityText,
+                    replayBufferMinPositionsText: $model.replayBufferMinPositionsText,
+                    replayRatioTargetText: $model.replayRatioTargetText,
+                    replaySelfPlayDelayText: $model.replaySelfPlayDelayText,
+                    replayTrainingStepDelayText: $model.replayTrainingStepDelayText,
+                    replayRatioAutoAdjust: $model.replayRatioAutoAdjust,
+                    replayBufferCapacityError: model.replayBufferCapacityError,
+                    replayBufferMinPositionsError: model.replayBufferMinPositionsError,
+                    replayRatioTargetError: model.replayRatioTargetError,
+                    replaySelfPlayDelayError: model.replaySelfPlayDelayError,
+                    replayTrainingStepDelayError: model.replayTrainingStepDelayError,
                     replayRatioCurrent: replayRatioCurrent,
                     replayRatioComputedDelayMs: replayRatioComputedDelayMs,
                     replayRatioComputedSelfPlayDelayMs: replayRatioComputedSelfPlayDelayMs,
                     bytesPerPosition: bytesPerPosition,
-                    onLiveReplayRatioTargetChange: onLiveReplayRatioTargetChange,
-                    onLiveSelfPlayDelayChange: onLiveSelfPlayDelayChange,
-                    onLiveTrainingStepDelayChange: onLiveTrainingStepDelayChange,
-                    onLiveReplayRatioAutoAdjustChange: onLiveReplayRatioAutoAdjustChange
+                    onLiveReplayRatioTargetChange: { model.applyLiveReplayRatioTarget($0) },
+                    onLiveSelfPlayDelayChange: { model.applyLiveSelfPlayDelay($0) },
+                    onLiveTrainingStepDelayChange: { model.applyLiveTrainingStepDelay($0) },
+                    onLiveReplayRatioAutoAdjustChange: { model.applyLiveReplayRatioAutoAdjust($0) }
                 )
             }
 
             HStack {
                 Spacer()
-                Button("Cancel", action: onCancel)
+                Button("Cancel") { model.cancel() }
                     .keyboardShortcut(.cancelAction)
                 // Save stays disabled while any field is currently
                 // marked invalid. The matching error flag is cleared
-                // by the parent's `.onChange` handler when the user
-                // edits the offending field, at which point Save
-                // re-enables and the next click re-validates the
-                // full form transactionally.
-                Button("Save", action: onSave)
+                // by the model's `didSet` when the user edits the
+                // offending field, at which point Save re-enables and
+                // the next click re-validates the full form transactionally.
+                Button("Save") { model.save() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(anyTabHasError)
             }
         }
         .padding(16)
         .frame(width: 480)
-        .onAppear { onAppearSeed() }
+        .onAppear { model.seedFromParams() }
         .onDisappear {
             // macOS popovers dismiss on outside-click without ever
             // calling the Cancel button's action. The Replay tab
-            // live-propagates three values to `trainingParams`
-            // during edits, so an outside-click would silently
-            // commit those changes against the user's intent. By
-            // routing every dismissal through `onCancel` we get
-            // "Cancel reverts, Save commits, outside-click reverts"
-            // — and `onCancel` (== `trainingPopoverCancel` in the
-            // parent) is idempotent because Save updates the parent's
-            // pre-edit stash before closing, so a Save → onDisappear
-            // sequence finds nothing to revert.
-            onCancel()
+            // live-propagates values to `trainingParams` during edits,
+            // so an outside-click would silently commit those changes
+            // against the user's intent. By routing every dismissal
+            // through `model.cancel()` we get "Cancel reverts, Save
+            // commits, outside-click reverts" — and `cancel()` is
+            // idempotent because Save updates the pre-edit stash before
+            // closing, so a Save → onDisappear sequence finds nothing
+            // to revert.
+            model.cancel()
         }
     }
 
@@ -1174,8 +1100,8 @@ private struct PopoverRow<Stepper: View>: View {
             // the popover's Save handler sees the actual value the
             // user just entered. The `onCommit` closure here is a
             // no-op because validation/parsing happens transactionally
-            // in `trainingPopoverSave()` — we just need the binding
-            // to be current by the time Save reads it.
+            // in `TrainingSettingsPopoverModel.save()` — we just need
+            // the binding to be current by the time Save reads it.
             ParameterTextField(
                 placeholder: placeholder,
                 text: $text,

@@ -1163,73 +1163,18 @@ struct UpperContentView: View {
         )
     }
 
-    /// Scratch string for the learning rate text field. Seeded from
-    /// the trainer's current LR when Play-and-Train starts; the user
-    /// edits freely without the binding reformatting mid-keystroke.
-    /// The value is parsed and applied only on Enter (via `.onSubmit`
-    /// on the TextField). Invalid input reverts to the current LR.
-    @State private var learningRateEditText: String = ""
-    @State private var lrWarmupStepsEditText: String = ""
-    @State private var entropyRegularizationEditText: String = ""
-    @State private var illegalMassWeightEditText: String = ""
-    @State private var drawPenaltyEditText: String = ""
-    @State private var weightDecayEditText: String = ""
-    @State private var gradClipMaxNormEditText: String = ""
-    @State private var policyLossWeightEditText: String = ""
-    @State private var valueLossWeightEditText: String = ""
-    @State private var spStartTauEditText: String = ""
-    @State private var spFloorTauEditText: String = ""
-    @State private var spDecayPerPlyEditText: String = ""
-    @State private var replayBufferCapacityEditText: String = ""
-    @State private var replayBufferMinPositionsBeforeTrainingEditText: String = ""
-    /// Edit-text + transactional checkbox state backing the new
-    /// `TrainingSettingsPopover`. The momentum and √batch fields
-    /// have no inline UI today, so this is where their first edit-
-    /// surfaces live. Error flags pair with each text field; they
-    /// drive the red-overlay on parse failure during Save.
-    @State private var momentumCoeffEditText: String = ""
-    @State private var sqrtBatchScalingEditValue: Bool = true
-    @State private var trainingPopoverLRError: Bool = false
-    @State private var trainingPopoverWarmupError: Bool = false
-    @State private var trainingPopoverMomentumError: Bool = false
-    @State private var trainingPopoverEntropyError: Bool = false
-    @State private var trainingPopoverIllegalMassWeightError: Bool = false
-    @State private var trainingPopoverGradClipError: Bool = false
-    @State private var trainingPopoverWeightDecayError: Bool = false
-    @State private var trainingPopoverPolicyLossWeightError: Bool = false
-    @State private var trainingPopoverValueLossWeightError: Bool = false
-    @State private var trainingPopoverDrawPenaltyError: Bool = false
-    /// Edit-text + transactional state for the new tabs (Self Play,
-    /// Replay) on `TrainingSettingsPopover`. Same pattern as the
-    /// existing optimizer fields above.
-    @State private var trainingBatchSizeEditText: String = ""
-    @State private var selfPlayWorkersEditText: String = ""
-    @State private var replayRatioTargetEditText: String = ""
-    @State private var replaySelfPlayDelayEditText: String = ""
-    @State private var replayTrainingStepDelayEditText: String = ""
-    @State private var replayRatioAutoAdjustEditValue: Bool = true
-    /// Stash of pre-edit values for the four replay-ratio control
-    /// fields. The Replay tab live-propagates changes to those
-    /// fields to `trainingParams` immediately so the user can watch
-    /// the live ratio respond — but if they Cancel, we restore
-    /// these stash values without warning. Captured in
-    /// `trainingPopoverSeedFromParams()` and consumed by
-    /// `trainingPopoverCancel()`.
-    @State private var originalReplayRatioTarget: Double = 1.0
-    @State private var originalReplaySelfPlayDelayMs: Int = 0
-    @State private var originalReplayTrainingStepDelayMs: Int = 0
-    @State private var originalReplayRatioAutoAdjust: Bool = true
-    @State private var trainingPopoverTrainingBatchSizeError: Bool = false
-    @State private var trainingPopoverSelfPlayWorkersError: Bool = false
-    @State private var trainingPopoverSelfPlayStartTauError: Bool = false
-    @State private var trainingPopoverSelfPlayDecayPerPlyError: Bool = false
-    @State private var trainingPopoverSelfPlayFloorTauError: Bool = false
-    @State private var trainingPopoverReplayBufferCapacityError: Bool = false
-    @State private var trainingPopoverReplayBufferMinPositionsError: Bool = false
-    @State private var trainingPopoverReplayRatioTargetError: Bool = false
-    @State private var trainingPopoverReplaySelfPlayDelayError: Bool = false
-    @State private var trainingPopoverReplayTrainingStepDelayError: Bool = false
-    @State private var showTrainingPopover: Bool = false
+    /// All transactional state for the Training Settings popover (presentation
+    /// flag, ~22 edit-text/checkbox fields, ~21 per-field error flags, the
+    /// cancel stash for the live-propagated replay-ratio fields, validation +
+    /// write-back, and the `applyLive…` propagation). Lives on its own
+    /// `@Observable` model rather than as a forest of `@State` here. Its
+    /// `trainerProvider` / `replayRatioControllerProvider` / `pushSelfPlaySchedule`
+    /// hooks are wired in `handleBodyOnAppear`.
+    @State private var trainingSettingsPopover = TrainingSettingsPopoverModel(
+        selfPlayDelayMaxMs: UpperContentView.selfPlayDelayMaxMs,
+        stepDelayMaxMs: UpperContentView.stepDelayMaxMs,
+        maxSelfPlayWorkers: UpperContentView.absoluteMaxSelfPlayWorkers
+    )
 
     /// Binding for the side-to-move segmented picker. Writes rebuild
     /// `editableState` with the new current-player (nothing else changes)
@@ -1656,7 +1601,7 @@ struct UpperContentView: View {
             probeNetworkTarget: $probeNetworkTarget,
             candidateProbeDirty: $candidateProbeDirty,
             selectedOverlay: $selectedOverlay,
-            lrWarmupStepsEditText: $lrWarmupStepsEditText,
+            resyncLrWarmupText: trainingSettingsPopover.resyncLrWarmupText,
             effectiveReplayRatioTarget: $effectiveReplayRatioTarget,
             lastReplayRatioCompensatorAt: $lastReplayRatioCompensatorAt,
             trainingParams: trainingParams,
@@ -1744,50 +1689,20 @@ struct UpperContentView: View {
     private func handleBodyOnAppear() {
         wireMenuCommandHub()
         syncMenuCommandHubState()
-        // After the Arena popover writes its edits back to `trainingParams`,
-        // push the new τ schedule into the live `samplingScheduleBox` so the
-        // next tournament picks it up without a Play-and-Train restart.
+        // Wire the popover models' side-effect hooks. The Arena popover pushes
+        // the new τ schedule into the live `samplingScheduleBox` after a Save;
+        // the Training popover does the same for its self-play schedule and
+        // needs live references to the trainer / replay-ratio controller so its
+        // optimizer-mirror and live-delay writes reach them. (`samplingScheduleBox`,
+        // `trainer`, `replayRatioController` are `@State` — reference-backed — so
+        // these closures see the current values even when re-evaluated.)
         arenaSettingsPopover.onAfterSave = {
             samplingScheduleBox?.setArena(buildArenaSchedule())
         }
-        if learningRateEditText.isEmpty {
-            learningRateEditText = String(format: "%.1e", trainingParams.learningRate)
-        }
-        if lrWarmupStepsEditText.isEmpty {
-            lrWarmupStepsEditText = String(trainingParams.lrWarmupSteps)
-        }
-        if entropyRegularizationEditText.isEmpty {
-            entropyRegularizationEditText = String(format: "%.2e", trainingParams.entropyBonus)
-        }
-        if drawPenaltyEditText.isEmpty {
-            drawPenaltyEditText = String(format: "%.3f", trainingParams.drawPenalty)
-        }
-        if weightDecayEditText.isEmpty {
-            weightDecayEditText = String(format: "%.2e", trainingParams.weightDecay)
-        }
-        if gradClipMaxNormEditText.isEmpty {
-            gradClipMaxNormEditText = String(format: "%.2f", trainingParams.gradClipMaxNorm)
-        }
-        if policyLossWeightEditText.isEmpty {
-            policyLossWeightEditText = String(format: "%.2f", trainingParams.policyLossWeight)
-        }
-        if valueLossWeightEditText.isEmpty {
-            valueLossWeightEditText = String(format: "%.2f", trainingParams.valueLossWeight)
-        }
-        if spStartTauEditText.isEmpty {
-            spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
-        }
-        if spFloorTauEditText.isEmpty {
-            spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
-        }
-        if spDecayPerPlyEditText.isEmpty {
-            spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
-        }
-        if replayBufferCapacityEditText.isEmpty {
-            replayBufferCapacityEditText = String(trainingParams.replayBufferCapacity)
-        }
-        if replayBufferMinPositionsBeforeTrainingEditText.isEmpty {
-            replayBufferMinPositionsBeforeTrainingEditText = String(trainingParams.replayBufferMinPositionsBeforeTraining)
+        trainingSettingsPopover.trainerProvider = { trainer }
+        trainingSettingsPopover.replayRatioControllerProvider = { replayRatioController }
+        trainingSettingsPopover.pushSelfPlaySchedule = {
+            samplingScheduleBox?.setSelfPlay(buildSelfPlaySchedule())
         }
         // Resume-sheet UX is correctly gated on the window being
         // visible — surfacing a sheet on a hidden window would do
@@ -6175,18 +6090,9 @@ struct UpperContentView: View {
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
         candidateProbeCount = 0
-        learningRateEditText = String(format: "%.1e", trainer.learningRate)
-        entropyRegularizationEditText = String(format: "%.2e", trainer.entropyRegularizationCoeff)
-        drawPenaltyEditText = String(format: "%.3f", Double(trainer.drawPenalty))
-        weightDecayEditText = String(format: "%.2e", trainer.weightDecayC)
-        gradClipMaxNormEditText = String(format: "%.2f", trainer.gradClipMaxNorm)
-        policyLossWeightEditText = String(format: "%.2f", trainer.policyLossWeight)
-        valueLossWeightEditText = String(format: "%.2f", trainer.valueLossWeight)
-        spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
-        spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
-        spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
-        // The Arena popover's edit fields are owned by `arenaSettingsPopover`
-        // and re-seed themselves from `trainingParams` each time the popover
+        // The Training and Arena popovers' edit fields are owned by
+        // `trainingSettingsPopover` / `arenaSettingsPopover` and re-seed
+        // themselves from `trainingParams` each time the popover
         // opens (its `onAppear`), so there's nothing to re-seed here.
         if continueMode {
             // Preserve `completedTrainingSegments` and
@@ -8150,7 +8056,7 @@ struct UpperContentView: View {
                     warmupCompletedSteps: trainerWarmupSnap?.completedSteps,
                     warmupTotalSteps: trainerWarmupSnap?.warmupSteps
                 )
-                trainingSettingsChipWithErrorClearing
+                trainingSettingsChip
                 ArenaCountdownChip(
                     isArenaRunning: isArenaRunning,
                     countdownText: { now in arenaCountdownText(at: now) },
@@ -8465,553 +8371,6 @@ struct UpperContentView: View {
     }
 
 
-    /// Seed the `TrainingSettingsPopover`'s edit-text bindings from
-    /// the live `trainingParams` snapshot. Called from
-    /// `onAppearSeed` so the user always sees the current values
-    /// when the popover opens, even if a CLI / parameters-file
-    /// override edited them since the last open.
-    private func trainingPopoverSeedFromParams() {
-        // --- Optimizer tab ---
-        learningRateEditText = String(format: "%.2e", trainingParams.learningRate)
-        lrWarmupStepsEditText = String(trainingParams.lrWarmupSteps)
-        momentumCoeffEditText = String(format: "%.3f", trainingParams.momentumCoeff)
-        sqrtBatchScalingEditValue = trainingParams.sqrtBatchScalingLR
-        entropyRegularizationEditText = String(format: "%.2e", trainingParams.entropyBonus)
-        illegalMassWeightEditText = String(format: "%.2f", trainingParams.illegalMassWeight)
-        gradClipMaxNormEditText = String(format: "%.1f", trainingParams.gradClipMaxNorm)
-        weightDecayEditText = String(format: "%.2e", trainingParams.weightDecay)
-        policyLossWeightEditText = String(format: "%.2f", trainingParams.policyLossWeight)
-        valueLossWeightEditText = String(format: "%.2f", trainingParams.valueLossWeight)
-        drawPenaltyEditText = String(format: "%.3f", trainingParams.drawPenalty)
-        trainingBatchSizeEditText = String(trainingParams.trainingBatchSize)
-        // --- Self Play tab ---
-        selfPlayWorkersEditText = String(trainingParams.selfPlayWorkers)
-        spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
-        spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
-        spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
-        // --- Replay tab ---
-        replayBufferCapacityEditText = String(trainingParams.replayBufferCapacity)
-        replayBufferMinPositionsBeforeTrainingEditText = String(
-            trainingParams.replayBufferMinPositionsBeforeTraining
-        )
-        replayRatioTargetEditText = String(format: "%.2f", trainingParams.replayRatioTarget)
-        replaySelfPlayDelayEditText = String(trainingParams.selfPlayDelayMs)
-        replayTrainingStepDelayEditText = String(trainingParams.trainingStepDelayMs)
-        replayRatioAutoAdjustEditValue = trainingParams.replayRatioAutoAdjust
-        // Stash pre-edit values for the four replay-ratio control
-        // fields. The Replay tab live-propagates changes to those
-        // fields; if the user hits Cancel we restore from this
-        // stash, matching the standard "Cancel discards" mental
-        // model from the user's POV even though the live writes
-        // already reached `trainingParams`.
-        originalReplayRatioTarget = trainingParams.replayRatioTarget
-        originalReplaySelfPlayDelayMs = trainingParams.selfPlayDelayMs
-        originalReplayTrainingStepDelayMs = trainingParams.trainingStepDelayMs
-        originalReplayRatioAutoAdjust = trainingParams.replayRatioAutoAdjust
-        // Reset every error flag — a fresh open should never carry
-        // red overlays from a previously-cancelled bad input.
-        trainingPopoverLRError = false
-        trainingPopoverWarmupError = false
-        trainingPopoverMomentumError = false
-        trainingPopoverEntropyError = false
-        trainingPopoverIllegalMassWeightError = false
-        trainingPopoverGradClipError = false
-        trainingPopoverWeightDecayError = false
-        trainingPopoverPolicyLossWeightError = false
-        trainingPopoverValueLossWeightError = false
-        trainingPopoverDrawPenaltyError = false
-        trainingPopoverTrainingBatchSizeError = false
-        trainingPopoverSelfPlayWorkersError = false
-        trainingPopoverSelfPlayStartTauError = false
-        trainingPopoverSelfPlayDecayPerPlyError = false
-        trainingPopoverSelfPlayFloorTauError = false
-        trainingPopoverReplayBufferCapacityError = false
-        trainingPopoverReplayBufferMinPositionsError = false
-        trainingPopoverReplayRatioTargetError = false
-        trainingPopoverReplaySelfPlayDelayError = false
-        trainingPopoverReplayTrainingStepDelayError = false
-    }
-
-    /// Cancel handler for `TrainingSettingsPopover`. Restores the
-    /// three live-propagated replay-ratio control fields from the
-    /// stash captured in `trainingPopoverSeedFromParams()`, then
-    /// dismisses the popover. Matches the user-facing "Cancel
-    /// discards changes" pattern even though the underlying
-    /// `trainingParams` writes already happened during the edit
-    /// session — the revert here puts everything back without a
-    /// confirmation prompt, by design. No `[PARAM]` log on revert
-    /// (the original live-update writes were not logged either —
-    /// see the Save path's commit-time logging for the source of
-    /// truth).
-    private func trainingPopoverCancel() {
-        if abs(trainingParams.replayRatioTarget - originalReplayRatioTarget) > Double.ulpOfOne {
-            trainingParams.replayRatioTarget = originalReplayRatioTarget
-            // The `ControlSideEffectsProbe` watches
-            // `trainingParams.replayRatioTarget` and pushes the new
-            // value into the live `ReplayRatioController`, so this
-            // single write is sufficient — no direct controller
-            // call needed here.
-        }
-        if trainingParams.selfPlayDelayMs != originalReplaySelfPlayDelayMs {
-            trainingParams.selfPlayDelayMs = originalReplaySelfPlayDelayMs
-            replayRatioController?.manualSelfPlayDelayMs = originalReplaySelfPlayDelayMs
-        }
-        if trainingParams.trainingStepDelayMs != originalReplayTrainingStepDelayMs {
-            trainingParams.trainingStepDelayMs = originalReplayTrainingStepDelayMs
-            replayRatioController?.manualDelayMs = originalReplayTrainingStepDelayMs
-        }
-        if trainingParams.replayRatioAutoAdjust != originalReplayRatioAutoAdjust {
-            trainingParams.replayRatioAutoAdjust = originalReplayRatioAutoAdjust
-        }
-        showTrainingPopover = false
-    }
-
-    /// Live-propagate the user's replay-ratio-target edit straight
-    /// to `trainingParams.replayRatioTarget`. The
-    /// `ControlSideEffectsProbe` watches that property and forwards
-    /// the new value into the live `ReplayRatioController`'s
-    /// `targetRatio`, so this single write is sufficient. Snapped
-    /// to the parameter's `[0.1, 5.0]` range to match the slider
-    /// validation in `trainingPopoverSave`.
-    private func trainingPopoverApplyLiveReplayRatioTarget(_ newValue: Double) {
-        guard newValue.isFinite else { return }
-        let snapped = max(0.1, min(5.0, newValue))
-        if abs(trainingParams.replayRatioTarget - snapped) > Double.ulpOfOne {
-            trainingParams.replayRatioTarget = snapped
-        }
-    }
-
-    /// Live-propagate the user's self-play-delay edit straight to
-    /// `trainingParams.selfPlayDelayMs` and the live
-    /// `ReplayRatioController`. Fired on every text-field commit
-    /// or stepper press while the popover is open. On Cancel the
-    /// parent restores the stashed pre-open value via
-    /// `trainingPopoverCancel()`.
-    private func trainingPopoverApplyLiveSelfPlayDelay(_ newValue: Int) {
-        let snapped = max(0, min(Self.selfPlayDelayMaxMs, newValue))
-        if trainingParams.selfPlayDelayMs != snapped {
-            trainingParams.selfPlayDelayMs = snapped
-            replayRatioController?.manualSelfPlayDelayMs = snapped
-        }
-    }
-
-    /// Live-propagate the user's train-step-delay edit. Same
-    /// rationale as `trainingPopoverApplyLiveSelfPlayDelay`. Also
-    /// writes through to `replayRatioController.manualDelayMs`
-    /// because that's what `recordTrainingBatchAndGetDelay` reads
-    /// each training step — without this push the controller would
-    /// keep returning the old delay despite `trainingParams` having
-    /// the new one.
-    private func trainingPopoverApplyLiveTrainingStepDelay(_ newValue: Int) {
-        let snapped = max(0, min(Self.stepDelayMaxMs, newValue))
-        if trainingParams.trainingStepDelayMs != snapped {
-            trainingParams.trainingStepDelayMs = snapped
-            replayRatioController?.manualDelayMs = snapped
-        }
-    }
-
-    /// Live-propagate the auto-control checkbox toggle. The
-    /// `ControlSideEffectsProbe` watches `replayRatioAutoAdjust`
-    /// and on the OFF transition writes inherited last-auto values
-    /// into `trainingParams.trainingStepDelayMs` / `selfPlayDelayMs`
-    /// — that runs after this setter returns. We defer a re-seed
-    /// of the popover's two delay text bindings to the next main-
-    /// actor tick so the editable PopoverRow that appears when
-    /// auto goes OFF shows the inherited values rather than the
-    /// pre-toggle stash. Without the deferral the user sees the
-    /// stale text and has to tap the Stepper before the probe's
-    /// inherit becomes visible.
-    private func trainingPopoverApplyLiveReplayRatioAutoAdjust(_ newValue: Bool) {
-        if trainingParams.replayRatioAutoAdjust != newValue {
-            trainingParams.replayRatioAutoAdjust = newValue
-            if !newValue {
-                Task { @MainActor in
-                    replaySelfPlayDelayEditText = String(trainingParams.selfPlayDelayMs)
-                    replayTrainingStepDelayEditText = String(trainingParams.trainingStepDelayMs)
-                }
-            }
-        }
-    }
-
-    /// Validate every `TrainingSettingsPopover` field against its
-    /// parameter range and write valid values back to
-    /// `trainingParams` (and mirror to the live `trainer` for the
-    /// optimizer-touching params). On any parse failure the
-    /// affected field's red-overlay flag is set and the popover
-    /// stays open. On full success the popover dismisses.
-    ///
-    /// Mirrors `ArenaSettingsPopoverModel.save()`: `[PARAM] name: old -> new`
-    /// log line on every actual change, no log when value is
-    /// unchanged. Trainer side-write uses `Float(parsed)` for the
-    /// optimizer floats, matching the inline-row pattern that this
-    /// popover replaces.
-    private func trainingPopoverSave() {
-        var anyError = false
-
-        // LR — Double in [1e-7, 1.0].
-        if let v = Double(learningRateEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 1e-7, v <= 1.0, v.isFinite {
-            trainingPopoverLRError = false
-            if abs(v - trainingParams.learningRate) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] learningRate: %.3e -> %.3e", trainingParams.learningRate, v)
-                )
-                trainingParams.learningRate = v
-                trainer?.learningRate = Float(v)
-            }
-        } else {
-            trainingPopoverLRError = true
-            anyError = true
-        }
-
-        // LR Warmup steps — Int in [0, 100_000].
-        if let n = Int(lrWarmupStepsEditText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 100_000 {
-            trainingPopoverWarmupError = false
-            if n != trainingParams.lrWarmupSteps {
-                SessionLogger.shared.log(
-                    "[PARAM] lrWarmupSteps: \(trainingParams.lrWarmupSteps) -> \(n)"
-                )
-                trainingParams.lrWarmupSteps = n
-                trainer?.lrWarmupSteps = n
-            }
-        } else {
-            trainingPopoverWarmupError = true
-            anyError = true
-        }
-
-        // Momentum — Double in [0, 0.99]. No inline UI before this
-        // popover, so this is the only edit surface.
-        if let v = Double(momentumCoeffEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.99, v.isFinite {
-            trainingPopoverMomentumError = false
-            if abs(v - trainingParams.momentumCoeff) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] momentumCoeff: %.3f -> %.3f", trainingParams.momentumCoeff, v)
-                )
-                trainingParams.momentumCoeff = v
-                trainer?.momentumCoeff = Float(v)
-            }
-        } else {
-            trainingPopoverMomentumError = true
-            anyError = true
-        }
-
-        // √batch scaling toggle — Bool, cannot fail to parse.
-        if sqrtBatchScalingEditValue != trainingParams.sqrtBatchScalingLR {
-            SessionLogger.shared.log(
-                "[PARAM] sqrtBatchScalingLR: \(trainingParams.sqrtBatchScalingLR) -> \(sqrtBatchScalingEditValue)"
-            )
-            trainingParams.sqrtBatchScalingLR = sqrtBatchScalingEditValue
-        }
-
-        // Entropy regularization — Double in [0, 0.1].
-        if let v = Double(entropyRegularizationEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.1, v.isFinite {
-            trainingPopoverEntropyError = false
-            if abs(v - trainingParams.entropyBonus) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] entropyBonus: %.3e -> %.3e", trainingParams.entropyBonus, v)
-                )
-                trainingParams.entropyBonus = v
-                trainer?.entropyRegularizationCoeff = Float(v)
-            }
-        } else {
-            trainingPopoverEntropyError = true
-            anyError = true
-        }
-
-        // Illegal mass penalty — Double in [0, 100].
-        if let v = Double(illegalMassWeightEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 100.0, v.isFinite {
-            trainingPopoverIllegalMassWeightError = false
-            if abs(v - trainingParams.illegalMassWeight) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] illegalMassWeight: %.2f -> %.2f", trainingParams.illegalMassWeight, v)
-                )
-                trainingParams.illegalMassWeight = v
-                trainer?.illegalMassPenaltyWeight = Float(v)
-            }
-        } else {
-            trainingPopoverIllegalMassWeightError = true
-            anyError = true
-        }
-
-        // Grad clip — Double in [0.1, 1000].
-        if let v = Double(gradClipMaxNormEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.1, v <= 1000.0, v.isFinite {
-            trainingPopoverGradClipError = false
-            if abs(v - trainingParams.gradClipMaxNorm) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] gradClipMaxNorm: %.2f -> %.2f", trainingParams.gradClipMaxNorm, v)
-                )
-                trainingParams.gradClipMaxNorm = v
-                trainer?.gradClipMaxNorm = Float(v)
-            }
-        } else {
-            trainingPopoverGradClipError = true
-            anyError = true
-        }
-
-        // Weight decay — Double in [0, 0.1].
-        if let v = Double(weightDecayEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 0.1, v.isFinite {
-            trainingPopoverWeightDecayError = false
-            if abs(v - trainingParams.weightDecay) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] weightDecay: %.3e -> %.3e", trainingParams.weightDecay, v)
-                )
-                trainingParams.weightDecay = v
-                trainer?.weightDecayC = Float(v)
-            }
-        } else {
-            trainingPopoverWeightDecayError = true
-            anyError = true
-        }
-
-        // Policy loss weight — Double in [0, 20].
-        if let v = Double(policyLossWeightEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 20.0, v.isFinite {
-            trainingPopoverPolicyLossWeightError = false
-            if abs(v - trainingParams.policyLossWeight) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] policyLossWeight: %.2f -> %.2f", trainingParams.policyLossWeight, v)
-                )
-                trainingParams.policyLossWeight = v
-                trainer?.policyLossWeight = Float(v)
-            }
-        } else {
-            trainingPopoverPolicyLossWeightError = true
-            anyError = true
-        }
-
-        // Value loss weight — Double in [0, 20].
-        if let v = Double(valueLossWeightEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 20.0, v.isFinite {
-            trainingPopoverValueLossWeightError = false
-            if abs(v - trainingParams.valueLossWeight) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] valueLossWeight: %.2f -> %.2f", trainingParams.valueLossWeight, v)
-                )
-                trainingParams.valueLossWeight = v
-                trainer?.valueLossWeight = Float(v)
-            }
-        } else {
-            trainingPopoverValueLossWeightError = true
-            anyError = true
-        }
-
-        // Draw penalty — Double in [-1, 1].
-        if let v = Double(drawPenaltyEditText.trimmingCharacters(in: .whitespaces)),
-           v >= -1.0, v <= 1.0, v.isFinite {
-            trainingPopoverDrawPenaltyError = false
-            if abs(v - trainingParams.drawPenalty) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] drawPenalty: %.3f -> %.3f", trainingParams.drawPenalty, v)
-                )
-                trainingParams.drawPenalty = v
-                trainer?.drawPenalty = Float(v)
-            }
-        } else {
-            trainingPopoverDrawPenaltyError = true
-            anyError = true
-        }
-
-        // Training batch size — Int in [32, 32_768]. Snapshot-only;
-        // the live trainer rebuilds its feed cache lazily on the
-        // next batch shape it sees, so the change takes effect at
-        // the next training step without an explicit trainer write.
-        if let n = Int(trainingBatchSizeEditText.trimmingCharacters(in: .whitespaces)),
-           n >= 32, n <= 32_768 {
-            trainingPopoverTrainingBatchSizeError = false
-            if n != trainingParams.trainingBatchSize {
-                SessionLogger.shared.log(
-                    "[PARAM] trainingBatchSize: \(trainingParams.trainingBatchSize) -> \(n)"
-                )
-                trainingParams.trainingBatchSize = n
-            }
-        } else {
-            trainingPopoverTrainingBatchSizeError = true
-            anyError = true
-        }
-
-        // Self-play workers — Int in [1, absoluteMaxSelfPlayWorkers].
-        // Live-tunable: the BatchedSelfPlayDriver reconcile loop
-        // picks up the new count on its next reconcile tick.
-        if let n = Int(selfPlayWorkersEditText.trimmingCharacters(in: .whitespaces)),
-           n >= 1, n <= Self.absoluteMaxSelfPlayWorkers {
-            trainingPopoverSelfPlayWorkersError = false
-            if n != trainingParams.selfPlayWorkers {
-                SessionLogger.shared.log(
-                    "[PARAM] selfPlayWorkers: \(trainingParams.selfPlayWorkers) -> \(n)"
-                )
-                trainingParams.selfPlayWorkers = n
-            }
-        } else {
-            trainingPopoverSelfPlayWorkersError = true
-            anyError = true
-        }
-
-        // Self-play tau schedule — Doubles in [0.01, 5.0] (start /
-        // floor) and [0.0, 1.0] (decay). The schedule is rebuilt
-        // by `buildSelfPlaySchedule()` next time the schedule box
-        // is constructed; mid-session changes don't retroactively
-        // alter games already in progress.
-        if let v = Double(spStartTauEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.01, v <= 5.0, v.isFinite {
-            trainingPopoverSelfPlayStartTauError = false
-            if abs(v - trainingParams.selfPlayStartTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] selfPlayStartTau: %.2f -> %.2f", trainingParams.selfPlayStartTau, v)
-                )
-                trainingParams.selfPlayStartTau = v
-            }
-        } else {
-            trainingPopoverSelfPlayStartTauError = true
-            anyError = true
-        }
-        if let v = Double(spDecayPerPlyEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 1.0, v.isFinite {
-            trainingPopoverSelfPlayDecayPerPlyError = false
-            if abs(v - trainingParams.selfPlayTauDecayPerPly) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] selfPlayTauDecayPerPly: %.3f -> %.3f", trainingParams.selfPlayTauDecayPerPly, v)
-                )
-                trainingParams.selfPlayTauDecayPerPly = v
-            }
-        } else {
-            trainingPopoverSelfPlayDecayPerPlyError = true
-            anyError = true
-        }
-        if let v = Double(spFloorTauEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.01, v <= 5.0, v.isFinite {
-            trainingPopoverSelfPlayFloorTauError = false
-            if abs(v - trainingParams.selfPlayTargetTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] selfPlayTargetTau: %.2f -> %.2f", trainingParams.selfPlayTargetTau, v)
-                )
-                trainingParams.selfPlayTargetTau = v
-            }
-        } else {
-            trainingPopoverSelfPlayFloorTauError = true
-            anyError = true
-        }
-        // Push the freshly-edited self-play schedule into the live
-        // `samplingScheduleBox` so the next self-play game on each
-        // worker slot picks up the new tau curve. Without this push
-        // the box would keep its session-start snapshot and the
-        // updated `trainingParams` values wouldn't take effect
-        // until the next Play-and-Train start. (The box's own
-        // `setSelfPlay` is a no-op when `samplingScheduleBox` is
-        // nil — i.e. before the first session — so the call is
-        // safe to make unconditionally.)
-        samplingScheduleBox?.setSelfPlay(buildSelfPlaySchedule())
-
-        // Replay buffer capacity — Int in [1024, 100_000_000].
-        // Snapshot-only: the live ReplayBuffer ring cannot resize
-        // mid-session, so this value takes effect at the next
-        // session start.
-        if let n = Int(replayBufferCapacityEditText.trimmingCharacters(in: .whitespaces)),
-           n >= 1024, n <= 100_000_000 {
-            trainingPopoverReplayBufferCapacityError = false
-            if n != trainingParams.replayBufferCapacity {
-                SessionLogger.shared.log(
-                    "[PARAM] replayBufferCapacity: \(trainingParams.replayBufferCapacity) -> \(n)"
-                )
-                trainingParams.replayBufferCapacity = n
-            }
-        } else {
-            trainingPopoverReplayBufferCapacityError = true
-            anyError = true
-        }
-
-        // Pre-train fill threshold — Int in [0, 100_000_000]. Live-
-        // tunable; the gate that holds the trainer until the
-        // buffer fills past this many positions reads from
-        // trainingParams every check.
-        if let n = Int(replayBufferMinPositionsBeforeTrainingEditText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 100_000_000 {
-            trainingPopoverReplayBufferMinPositionsError = false
-            if n != trainingParams.replayBufferMinPositionsBeforeTraining {
-                SessionLogger.shared.log(
-                    "[PARAM] replayBufferMinPositionsBeforeTraining: \(trainingParams.replayBufferMinPositionsBeforeTraining) -> \(n)"
-                )
-                trainingParams.replayBufferMinPositionsBeforeTraining = n
-            }
-        } else {
-            trainingPopoverReplayBufferMinPositionsError = true
-            anyError = true
-        }
-
-        // Replay-ratio control fields (replayRatioTarget,
-        // selfPlayDelayMs, trainingStepDelayMs, replayRatioAutoAdjust)
-        // are live-propagated during edits via
-        // `trainingPopoverApplyLive…` — the writes already reached
-        // `trainingParams`. Save validates the current text values
-        // for red-overlay display only; no parameter writes here.
-        if let v = Double(replayRatioTargetEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.1, v <= 5.0, v.isFinite {
-            trainingPopoverReplayRatioTargetError = false
-        } else {
-            trainingPopoverReplayRatioTargetError = true
-            anyError = true
-        }
-        if let n = Int(replaySelfPlayDelayEditText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= Self.selfPlayDelayMaxMs {
-            trainingPopoverReplaySelfPlayDelayError = false
-        } else {
-            trainingPopoverReplaySelfPlayDelayError = true
-            anyError = true
-        }
-        if let n = Int(replayTrainingStepDelayEditText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 10_000 {
-            trainingPopoverReplayTrainingStepDelayError = false
-        } else {
-            trainingPopoverReplayTrainingStepDelayError = true
-            anyError = true
-        }
-
-        if !anyError {
-            // Commit-time [PARAM] log lines for the four live-
-            // propagated replay-ratio fields. The live writes
-            // during the edit session are intentionally silent
-            // (a log per keystroke would be noise); this is the
-            // single authoritative log line per Save, mirroring
-            // the rest of the trainingPopoverSave fields.
-            if abs(trainingParams.replayRatioTarget - originalReplayRatioTarget) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(
-                        format: "[PARAM] replayRatioTarget: %.2f -> %.2f",
-                        originalReplayRatioTarget,
-                        trainingParams.replayRatioTarget
-                    )
-                )
-            }
-            if trainingParams.selfPlayDelayMs != originalReplaySelfPlayDelayMs {
-                SessionLogger.shared.log(
-                    "[PARAM] selfPlayDelayMs: \(originalReplaySelfPlayDelayMs) -> \(trainingParams.selfPlayDelayMs)"
-                )
-            }
-            if trainingParams.trainingStepDelayMs != originalReplayTrainingStepDelayMs {
-                SessionLogger.shared.log(
-                    "[PARAM] trainingStepDelayMs: \(originalReplayTrainingStepDelayMs) -> \(trainingParams.trainingStepDelayMs)"
-                )
-            }
-            if trainingParams.replayRatioAutoAdjust != originalReplayRatioAutoAdjust {
-                SessionLogger.shared.log(
-                    "[PARAM] replayRatioAutoAdjust: \(originalReplayRatioAutoAdjust) -> \(trainingParams.replayRatioAutoAdjust)"
-                )
-            }
-            // On successful save, the stash that backs Cancel
-            // becomes the new "pre-edit" baseline — closing the
-            // popover with Save commits the live ratio writes.
-            originalReplayRatioTarget = trainingParams.replayRatioTarget
-            originalReplaySelfPlayDelayMs = trainingParams.selfPlayDelayMs
-            originalReplayTrainingStepDelayMs = trainingParams.trainingStepDelayMs
-            originalReplayRatioAutoAdjust = trainingParams.replayRatioAutoAdjust
-            showTrainingPopover = false
-        }
-    }
 
     /// Backfill `finishedAt` / `candidateID` / `championID` on
     /// any `tournamentHistory` entries that lack them, by scanning
@@ -10308,192 +9667,25 @@ extension UpperContentView {
         )
     }
 
-    /// The Training Settings chip + popover, with 19 per-field
-    /// `.onChange` handlers attached that clear the matching
-    /// validation error flag when the user edits a previously-
-    /// invalid field. This is split into chained `@ViewBuilder`
-    /// chunks for a concrete reason: a single 19-deep `.onChange`
-    /// chain — even isolated in its own computed property — blows
-    /// past SwiftUI's per-expression type-check budget
-    /// ("the compiler is unable to type-check this expression in
-    /// reasonable time"). Splitting the chain into ~5-deep chunks
-    /// across separate properties keeps each property's
-    /// type-check cheap.
-    ///
-    /// Behavior: each `.onChange` clears only the error flag for
-    /// its matching text field. The next Save click re-validates
-    /// the full form transactionally — these handlers are *not* a
-    /// short-circuit validator, only a "user is fixing this field
-    /// now, optimistically clear its error so the Save button can
-    /// re-enable" hook.
-    /// Returns `AnyView` (not `some View`) on purpose: the body of
-    /// `UpperContentView` is already at the hard type-check timeout
-    /// boundary, and an opaque-return chain through five chained
-    /// `@ViewBuilder` properties (each adding 5 layers of
-    /// `ModifiedContent<_, _OnChangeViewModifier>`) materially
-    /// inflates the body's inference cost. `AnyView` collapses that
-    /// type cascade at every chunk boundary.
-    var trainingSettingsChipWithErrorClearing: AnyView {
-        trainingSettingsChipReplayErrorClearing
-    }
-
-    /// The bare Training Settings chip + popover, with no
-    /// `.onChange` handlers attached. Pulled out so the popover-
-    /// construction expression (~60 lines of named arguments) gets
-    /// its own type-check unit, separate from the four chunks of
-    /// edit-clears-error `.onChange` modifiers chained on top.
-    private var trainingSettingsChipBare: AnyView {
-        AnyView(TrainingSettingsChip(showPopover: $showTrainingPopover) {
+    /// The Training Settings chip + popover. All transactional state and
+    /// per-field validation now lives on `trainingSettingsPopover`
+    /// (`TrainingSettingsPopoverModel`) — editing a field clears its own
+    /// error via the model's `didSet`, so this is a single trivial wrapper:
+    /// no `.onChange` chain, no `AnyView`. (The old form had to split a
+    /// 19-deep `.onChange` chain into five `AnyView` chunks to stay under
+    /// the type-checker's per-expression budget; that's all gone.)
+    var trainingSettingsChip: some View {
+        TrainingSettingsChip(showPopover: $trainingSettingsPopover.isPresented) {
             TrainingSettingsPopover(
+                model: trainingSettingsPopover,
                 modelID: trainer?.identifier?.description ?? "—",
                 sessionStart: currentSessionStart ?? Date(),
-                lrText: $learningRateEditText,
-                warmupText: $lrWarmupStepsEditText,
-                momentumText: $momentumCoeffEditText,
-                sqrtBatchScalingValue: $sqrtBatchScalingEditValue,
-                entropyText: $entropyRegularizationEditText,
-                illegalMassWeightText: $illegalMassWeightEditText,
-                gradClipText: $gradClipMaxNormEditText,
-                weightDecayText: $weightDecayEditText,
-                policyLossWeightText: $policyLossWeightEditText,
-                valueLossWeightText: $valueLossWeightEditText,
-                drawPenaltyText: $drawPenaltyEditText,
-                trainingBatchSizeText: $trainingBatchSizeEditText,
-                lrError: trainingPopoverLRError,
-                warmupError: trainingPopoverWarmupError,
-                momentumError: trainingPopoverMomentumError,
-                entropyError: trainingPopoverEntropyError,
-                illegalMassWeightError: trainingPopoverIllegalMassWeightError,
-                gradClipError: trainingPopoverGradClipError,
-                weightDecayError: trainingPopoverWeightDecayError,
-                policyLossWeightError: trainingPopoverPolicyLossWeightError,
-                valueLossWeightError: trainingPopoverValueLossWeightError,
-                drawPenaltyError: trainingPopoverDrawPenaltyError,
-                trainingBatchSizeError: trainingPopoverTrainingBatchSizeError,
-                selfPlayWorkersText: $selfPlayWorkersEditText,
-                selfPlayStartTauText: $spStartTauEditText,
-                selfPlayDecayPerPlyText: $spDecayPerPlyEditText,
-                selfPlayFloorTauText: $spFloorTauEditText,
-                selfPlayWorkersError: trainingPopoverSelfPlayWorkersError,
-                selfPlayStartTauError: trainingPopoverSelfPlayStartTauError,
-                selfPlayDecayPerPlyError: trainingPopoverSelfPlayDecayPerPlyError,
-                selfPlayFloorTauError: trainingPopoverSelfPlayFloorTauError,
-                replayBufferCapacityText: $replayBufferCapacityEditText,
-                replayBufferMinPositionsText: $replayBufferMinPositionsBeforeTrainingEditText,
-                replayRatioTargetText: $replayRatioTargetEditText,
-                replaySelfPlayDelayText: $replaySelfPlayDelayEditText,
-                replayTrainingStepDelayText: $replayTrainingStepDelayEditText,
-                replayRatioAutoAdjust: $replayRatioAutoAdjustEditValue,
-                replayBufferCapacityError: trainingPopoverReplayBufferCapacityError,
-                replayBufferMinPositionsError: trainingPopoverReplayBufferMinPositionsError,
-                replayRatioTargetError: trainingPopoverReplayRatioTargetError,
-                replaySelfPlayDelayError: trainingPopoverReplaySelfPlayDelayError,
-                replayTrainingStepDelayError: trainingPopoverReplayTrainingStepDelayError,
                 replayRatioCurrent: replayRatioSnapshot?.currentRatio,
                 replayRatioComputedDelayMs: replayRatioSnapshot?.computedDelayMs,
                 replayRatioComputedSelfPlayDelayMs: replayRatioSnapshot?.computedSelfPlayDelayMs,
-                bytesPerPosition: ReplayBuffer.bytesPerPosition,
-                onLiveReplayRatioTargetChange: { newValue in
-                    trainingPopoverApplyLiveReplayRatioTarget(newValue)
-                },
-                onLiveSelfPlayDelayChange: { newValue in
-                    trainingPopoverApplyLiveSelfPlayDelay(newValue)
-                },
-                onLiveTrainingStepDelayChange: { newValue in
-                    trainingPopoverApplyLiveTrainingStepDelay(newValue)
-                },
-                onLiveReplayRatioAutoAdjustChange: { newValue in
-                    trainingPopoverApplyLiveReplayRatioAutoAdjust(newValue)
-                },
-                onCancel: { trainingPopoverCancel() },
-                onSave: { trainingPopoverSave() },
-                onAppearSeed: { trainingPopoverSeedFromParams() }
+                bytesPerPosition: ReplayBuffer.bytesPerPosition
             )
-        })
-    }
-
-    private var trainingSettingsChipOptimizerErrorClearingA: AnyView {
-        AnyView(
-            trainingSettingsChipBare
-                .onChange(of: learningRateEditText) { _, _ in
-                    trainingPopoverLRError = false
-                }
-                .onChange(of: lrWarmupStepsEditText) { _, _ in
-                    trainingPopoverWarmupError = false
-                }
-                .onChange(of: momentumCoeffEditText) { _, _ in
-                    trainingPopoverMomentumError = false
-                }
-                .onChange(of: entropyRegularizationEditText) { _, _ in
-                    trainingPopoverEntropyError = false
-                }
-                .onChange(of: illegalMassWeightEditText) { _, _ in
-                    trainingPopoverIllegalMassWeightError = false
-                }
-                .onChange(of: gradClipMaxNormEditText) { _, _ in
-                    trainingPopoverGradClipError = false
-                }
-        )
-    }
-
-    private var trainingSettingsChipOptimizerErrorClearingB: AnyView {
-        AnyView(
-            trainingSettingsChipOptimizerErrorClearingA
-                .onChange(of: weightDecayEditText) { _, _ in
-                    trainingPopoverWeightDecayError = false
-                }
-                .onChange(of: policyLossWeightEditText) { _, _ in
-                    trainingPopoverPolicyLossWeightError = false
-                }
-                .onChange(of: valueLossWeightEditText) { _, _ in
-                    trainingPopoverValueLossWeightError = false
-                }
-                .onChange(of: drawPenaltyEditText) { _, _ in
-                    trainingPopoverDrawPenaltyError = false
-                }
-                .onChange(of: trainingBatchSizeEditText) { _, _ in
-                    trainingPopoverTrainingBatchSizeError = false
-                }
-        )
-    }
-
-    private var trainingSettingsChipSelfPlayErrorClearing: AnyView {
-        AnyView(
-            trainingSettingsChipOptimizerErrorClearingB
-                .onChange(of: selfPlayWorkersEditText) { _, _ in
-                    trainingPopoverSelfPlayWorkersError = false
-                }
-                .onChange(of: spStartTauEditText) { _, _ in
-                    trainingPopoverSelfPlayStartTauError = false
-                }
-                .onChange(of: spDecayPerPlyEditText) { _, _ in
-                    trainingPopoverSelfPlayDecayPerPlyError = false
-                }
-                .onChange(of: spFloorTauEditText) { _, _ in
-                    trainingPopoverSelfPlayFloorTauError = false
-                }
-        )
-    }
-
-    private var trainingSettingsChipReplayErrorClearing: AnyView {
-        AnyView(
-            trainingSettingsChipSelfPlayErrorClearing
-                .onChange(of: replayBufferCapacityEditText) { _, _ in
-                    trainingPopoverReplayBufferCapacityError = false
-                }
-                .onChange(of: replayBufferMinPositionsBeforeTrainingEditText) { _, _ in
-                    trainingPopoverReplayBufferMinPositionsError = false
-                }
-                .onChange(of: replayRatioTargetEditText) { _, _ in
-                    trainingPopoverReplayRatioTargetError = false
-                }
-                .onChange(of: replaySelfPlayDelayEditText) { _, _ in
-                    trainingPopoverReplaySelfPlayDelayError = false
-                }
-                .onChange(of: replayTrainingStepDelayEditText) { _, _ in
-                    trainingPopoverReplayTrainingStepDelayError = false
-                }
-        )
+        }
     }
 
 }

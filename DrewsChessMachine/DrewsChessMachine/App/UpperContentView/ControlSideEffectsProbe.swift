@@ -19,7 +19,13 @@ struct ControlSideEffectsProbe: View {
     @Binding var probeNetworkTarget: ProbeNetworkTarget
     @Binding var candidateProbeDirty: Bool
     @Binding var selectedOverlay: Int
-    @Binding var lrWarmupStepsEditText: String
+    /// Re-sync the Training popover's LR-warmup edit text after a CLI /
+    /// parameters-file override changes `trainingParams.lrWarmupSteps`
+    /// behind the user's back (so the popover, if opened, shows the new
+    /// value rather than the stale pre-override one). The popover's edit
+    /// text now lives on `TrainingSettingsPopoverModel`, so this is a
+    /// closure into the model rather than a direct `@Binding`.
+    let resyncLrWarmupText: (String) -> Void
     @Binding var effectiveReplayRatioTarget: Double?
     @Binding var lastReplayRatioCompensatorAt: Date?
     @Bindable var trainingParams: TrainingParameters
@@ -88,13 +94,12 @@ struct ControlSideEffectsProbe: View {
             .onChange(of: trainingParams.lrWarmupSteps) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] lrWarmupSteps: \(oldValue) -> \(newValue)")
                 trainer?.lrWarmupSteps = newValue
-                // Re-sync the TextField's mirror state so the UI
-                // reflects CLI-driven overrides (applyCliConfigOverrides
-                // writes @AppStorage AFTER the view's onAppear has
-                // already copied the pre-override value into the edit
-                // text). Without this, the training loop sees the
-                // correct value but the field shows the stale one.
-                lrWarmupStepsEditText = String(newValue)
+                // Re-sync the popover's edit-text mirror so it reflects
+                // CLI-driven overrides (applyCliConfigOverrides writes
+                // `trainingParams` AFTER the popover model's last seed).
+                // Without this, the training loop sees the correct value
+                // but the popover (when opened) shows the stale one.
+                resyncLrWarmupText(String(newValue))
             }
             .onChange(of: trainingParams.replayRatioAutoAdjust) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] replayRatioAutoAdjust: \(oldValue) -> \(newValue)")
