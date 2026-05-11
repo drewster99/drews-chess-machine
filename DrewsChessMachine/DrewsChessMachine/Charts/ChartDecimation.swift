@@ -117,65 +117,38 @@ struct DecimatedChartFrame: Sendable, Equatable {
 
 // MARK: - Decimator
 
-/// Pure functions that walk a chart sample ring inside a visible
-/// window and reduce it to a fixed-budget bucket array. Bucket count
-/// is bounded by the chart cell's pixel width: there is no value in
-/// emitting more marks than the chart can paint.
-///
-/// All decimation runs on the main actor (the heartbeat path) so
-/// these functions are `@MainActor`-isolated to match the ring's
-/// isolation. Per-call cost is O(visible samples) for the walk plus
-/// O(bucket count) for the finalize pass.
-@MainActor
+/// Pure functions that walk a chart sample array inside a visible
+/// window and reduce it to a fixed-budget bucket array.
 enum ChartDecimator {
 
-    /// Floor on the bucket budget. The visible-window pixel count
-    /// can read very small during initial layout (e.g. a chart cell
-    /// hasn't been measured yet); clamping prevents pathological
-    /// 1-bucket frames that would smear the entire visible window
-    /// into a single mark.
+    /// Floor on the bucket budget.
     static let minimumBucketCount: Int = 32
-    /// Ceiling on the bucket budget. Nominal retina-class chart
-    /// cells run ~250-500 px wide; the cap is well above that to
-    /// leave headroom for ultrawide displays without devolving back
-    /// to per-sample mark counts.
+    /// Ceiling on the bucket budget.
     static let maximumBucketCount: Int = 1500
 
-    /// Compute a fresh `DecimatedChartFrame` from the supplied rings.
-    ///
-    /// - parameter visibleStart: Lower bound of the visible time
-    ///   window in elapsed seconds.
-    /// - parameter visibleLength: Length of the visible window in
-    ///   seconds. Always > 0; callers pass the chart-zoom value.
-    /// - parameter trainingBucketBudget: Maximum number of training
-    ///   buckets to emit. Clamped to `[minimumBucketCount,
-    ///   maximumBucketCount]`. Typical values come from a per-cell
-    ///   pixel measurement.
-    /// - parameter progressRateBucketBudget: Same for the progress-
-    ///   rate chart. Pixel width may differ (the big progress chart
-    ///   in `ContentView` is wider than a grid tile).
+    /// Compute a fresh `DecimatedChartFrame` from the supplied sample slices.
     static func decimate(
-        trainingRing: ChartSampleRing<TrainingChartSample>,
-        progressRateRing: ChartSampleRing<ProgressRateSample>,
+        trainingSamples: [TrainingChartSample],
+        progressRateSamples: [ProgressRateSample],
         visibleStart: Double,
-        visibleLength: Double,
+        visibleEnd: Double,
+        lastT: Double?,
+        lastP: Double?,
         trainingBucketBudget: Int,
         progressRateBucketBudget: Int
     ) -> DecimatedChartFrame {
-        let lower = max(0, visibleStart)
-        let upper = lower + max(0.001, visibleLength)
-        let domain = lower...upper
+        let domain = visibleStart...visibleEnd
 
         let trainingBuckets = decimateTraining(
-            ring: trainingRing,
-            visibleStart: lower,
-            visibleEnd: upper,
+            samples: trainingSamples,
+            visibleStart: visibleStart,
+            visibleEnd: visibleEnd,
             bucketBudget: trainingBucketBudget
         )
         let progressBuckets = decimateProgressRate(
-            ring: progressRateRing,
-            visibleStart: lower,
-            visibleEnd: upper,
+            samples: progressRateSamples,
+            visibleStart: visibleStart,
+            visibleEnd: visibleEnd,
             bucketBudget: progressRateBucketBudget
         )
 
@@ -183,33 +156,21 @@ enum ChartDecimator {
             trainingBuckets: trainingBuckets,
             progressRateBuckets: progressBuckets,
             visibleDomain: domain,
-            lastTrainingElapsedSec: trainingRing.last?.elapsedSec,
-            lastProgressRateElapsedSec: progressRateRing.last?.elapsedSec
+            lastTrainingElapsedSec: lastT,
+            lastProgressRateElapsedSec: lastP
         )
     }
 
     // MARK: - Training
 
     static func decimateTraining(
-        ring: ChartSampleRing<TrainingChartSample>,
+        samples: [TrainingChartSample],
         visibleStart: Double,
         visibleEnd: Double,
         bucketBudget: Int
     ) -> [TrainingBucket] {
         let bucketCount = clampBucketCount(bucketBudget)
-        guard bucketCount > 0, visibleEnd > visibleStart else { return [] }
-
-        // The visible window is `[visibleStart, visibleEnd]` — both
-        // endpoints inclusive. The end-index binary search uses
-        // `visibleEnd.nextUp` so a sample whose `elapsedSec` equals
-        // `visibleEnd` exactly is still processed; without this the
-        // 1-Hz auto-follow path would consistently exclude the most-
-        // recent sample (because auto-follow sets
-        // `visibleEnd == lastSample.elapsedSec`) and the chart would
-        // read one tick stale.
-        let startIdx = ring.firstIndex(elapsedSecAtLeast: visibleStart) { $0.elapsedSec }
-        let endIdx = ring.firstIndex(elapsedSecAtLeast: visibleEnd.nextUp) { $0.elapsedSec }
-        guard startIdx < endIdx else { return [] }
+        guard bucketCount > 0, visibleEnd > visibleStart, !samples.isEmpty else { return [] }
 
         let bucketWidth = (visibleEnd - visibleStart) / Double(bucketCount)
         var builders = Array(
@@ -217,8 +178,7 @@ enum ChartDecimator {
             count: bucketCount
         )
 
-        for i in startIdx..<endIdx {
-            let sample = ring[i]
+        for sample in samples {
             let raw = (sample.elapsedSec - visibleStart) / bucketWidth
             let idx = max(0, min(bucketCount - 1, Int(raw)))
             builders[idx].absorb(sample)
@@ -235,20 +195,13 @@ enum ChartDecimator {
     // MARK: - Progress rate
 
     static func decimateProgressRate(
-        ring: ChartSampleRing<ProgressRateSample>,
+        samples: [ProgressRateSample],
         visibleStart: Double,
         visibleEnd: Double,
         bucketBudget: Int
     ) -> [ProgressRateBucket] {
         let bucketCount = clampBucketCount(bucketBudget)
-        guard bucketCount > 0, visibleEnd > visibleStart else { return [] }
-
-        // See `decimateTraining` for the `nextUp` rationale — the
-        // boundary-inclusive end keeps auto-follow from leaving the
-        // latest sample off the chart for one tick.
-        let startIdx = ring.firstIndex(elapsedSecAtLeast: visibleStart) { $0.elapsedSec }
-        let endIdx = ring.firstIndex(elapsedSecAtLeast: visibleEnd.nextUp) { $0.elapsedSec }
-        guard startIdx < endIdx else { return [] }
+        guard bucketCount > 0, visibleEnd > visibleStart, !samples.isEmpty else { return [] }
 
         let bucketWidth = (visibleEnd - visibleStart) / Double(bucketCount)
         var builders = Array(
@@ -256,8 +209,7 @@ enum ChartDecimator {
             count: bucketCount
         )
 
-        for i in startIdx..<endIdx {
-            let sample = ring[i]
+        for sample in samples {
             let raw = (sample.elapsedSec - visibleStart) / bucketWidth
             let idx = max(0, min(bucketCount - 1, Int(raw)))
             builders[idx].absorb(sample)

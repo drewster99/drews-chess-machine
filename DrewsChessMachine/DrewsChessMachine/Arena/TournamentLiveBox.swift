@@ -20,9 +20,21 @@ final class TournamentLiveBox: @unchecked Sendable {
     /// on a global executor so the awaiter is never synchronously
     /// blocked on `_progress.value`.
     func asyncSnapshot() async -> TournamentProgress? {
-        await withCheckedContinuation { (cont: CheckedContinuation<TournamentProgress?, Never>) in
+        let start = Date()
+        return await withCheckedContinuation { (cont: CheckedContinuation<TournamentProgress?, Never>) in
+            let inContinuation = Date()
             DispatchQueue.global(qos: .userInitiated).async {
-                cont.resume(returning: self.snapshot())
+                let dispatched = Date()
+                let result = self.snapshot()
+                let now = Date()
+                let total = now.timeIntervalSince(start)
+                if total > 0.05 {
+                    let pre = inContinuation.timeIntervalSince(start)
+                    let queue = dispatched.timeIntervalSince(inContinuation)
+                    let work = now.timeIntervalSince(dispatched)
+                    print(String(format: "[DISPATCH-LATENCY] TournamentLiveBox.asyncSnapshot: total=%.2fms (pre=%.2fms queue=%.2fms work=%.2fms)", total*1000, pre*1000, queue*1000, work*1000))
+                }
+                cont.resume(returning: result)
             }
         }
     }

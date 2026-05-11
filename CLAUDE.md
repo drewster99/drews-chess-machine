@@ -73,7 +73,7 @@ A session holds exactly:
 - `candidateInferenceNetwork` — inference-mode, persists for the life of the app (lazy-built on first Play-and-Train start, reused across sessions). Receives the trainer's current weights at each arena start.
 - `arenaChampionNetwork` — inference-mode, also persists for the life of the app. Receives a snapshot of `network`'s weights at each arena start so the arena's "champion side" plays against a stable snapshot while the live champion remains free for continuous self-play.
 
-There are no per-worker inference networks. An earlier design allocated `secondarySelfPlayNetworks[1..N-1]` pre-built at session start and mirrored from champion at promotion; that design was replaced by the single shared batched evaluator (ContentView.swift comment near `candidateInferenceNetwork`).
+There are no per-worker inference networks. The original design ran a single self-play worker against `network` directly; the current N-worker setup added the shared batched evaluator rather than fanning out to per-worker networks.
 
 ### MoveEvaluationSource abstraction
 

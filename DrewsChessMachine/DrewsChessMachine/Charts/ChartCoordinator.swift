@@ -216,25 +216,64 @@ final class ChartCoordinator {
 
     // MARK: - Decimation
 
+    /// Background task managing the current decimation pass.
+    private var decimationTask: Task<Void, Never>?
+
     /// Recompute `decimatedFrame` from the current rings + visible
-    /// window. Skips the assignment when the new frame is
-    /// bit-identical to the current one (avoids triggering an
-    /// unnecessary chart re-render on a no-op tick — e.g. a scroll
-    /// jiggle that didn't actually move the visible bucket
-    /// boundary).
+    /// window. Captures the visible sample slices on the main actor
+    /// and offloads the heavy $O(N)$ decimation pass to a background
+    /// thread to keep the UI heartbeat responsive.
     func recomputeDecimatedFrame() {
+        // Cancel any stale decimation in flight.
+        decimationTask?.cancel()
+
         let visibleLength = ChartZoom.stops[chartZoomIdx]
         let visibleStart = max(0, scrollX)
-        let frame = ChartDecimator.decimate(
-            trainingRing: trainingRing,
-            progressRateRing: progressRateRing,
-            visibleStart: visibleStart,
-            visibleLength: visibleLength,
-            trainingBucketBudget: ChartDecimator.maximumBucketCount,
-            progressRateBucketBudget: ChartDecimator.maximumBucketCount
-        )
-        if frame != decimatedFrame {
-            decimatedFrame = frame
+        let lower = max(0, visibleStart)
+        let upper = lower + max(0.001, visibleLength)
+
+        // Locate the visible index range in each ring using binary search.
+        // We use `upper.nextUp` so a sample exactly at the boundary is inclusive.
+        let tStart = trainingRing.firstIndex(elapsedSecAtLeast: lower) { $0.elapsedSec }
+        let tEnd = trainingRing.firstIndex(elapsedSecAtLeast: upper.nextUp) { $0.elapsedSec }
+        let pStart = progressRateRing.firstIndex(elapsedSecAtLeast: lower) { $0.elapsedSec }
+        let pEnd = progressRateRing.firstIndex(elapsedSecAtLeast: upper.nextUp) { $0.elapsedSec }
+
+        // Copy the visible sample slices while on the main actor. Even for
+        // a full 24h window (86,400 samples), this memory copy is extremely
+        // fast compared to the subsequent decimation reduction.
+        var tSamples: [TrainingChartSample] = []
+        tSamples.reserveCapacity(tEnd - tStart)
+        for i in tStart..<tEnd { tSamples.append(trainingRing[i]) }
+
+        var pSamples: [ProgressRateSample] = []
+        pSamples.reserveCapacity(pEnd - pStart)
+        for i in pStart..<pEnd { pSamples.append(progressRateRing[i]) }
+
+        let lastT = trainingRing.last?.elapsedSec
+        let lastP = progressRateRing.last?.elapsedSec
+
+        decimationTask = Task {
+            // Heavy O(N) work runs on a background global executor.
+            let frame = ChartDecimator.decimate(
+                trainingSamples: tSamples,
+                progressRateSamples: pSamples,
+                visibleStart: lower,
+                visibleEnd: upper,
+                lastT: lastT,
+                lastP: lastP,
+                trainingBucketBudget: ChartDecimator.maximumBucketCount,
+                progressRateBucketBudget: ChartDecimator.maximumBucketCount
+            )
+
+            // Switch back to the main actor to publish the result.
+            if !Task.isCancelled {
+                await MainActor.run {
+                    if frame != self.decimatedFrame {
+                        self.decimatedFrame = frame
+                    }
+                }
+            }
         }
     }
 
