@@ -233,6 +233,157 @@ original rationale is not lost.
   package path, but this should be revisited only after measuring current
   steady-state `graph.run` overhead.
 
+## Code-review remediation roadmap (added 2026-05-11)
+
+Result of an in-depth review of the codebase against Swift / SwiftUI / macOS /
+ML best practices. The algorithmic core is in good shape (consistent
+`OSAllocatedUnfairLock`/`SyncBox` discipline, MPSGraph `.run` correctly bridged
+through `CheckedContinuation`, pure-logic XCTest coverage, no dead search code).
+The findings below are ordered by impact. **Part A is the dominant item and is
+being executed first** (see the staged plan); Parts B–D are recorded here for
+later.
+
+### Part A — decompose `App/UpperContentView/UpperContentView.swift` (10,978 lines)
+
+One `View` struct so large the team had to invent hidden zero-sized "probe"
+views (`ControlSideEffectsProbe`, `MenuHubSyncProbe`, `MenuHubSignature`) and
+`AnyView` chains *purely to keep the Swift type-checker under its inference
+timeout*. It holds a ~2,100-line `startRealTraining(mode:)`, a ~700-line
+`runArenaParallel(...)`, ~75 `@State` scratch vars for two popovers, a ~388-line
+`body`, and the alarm/checkpoint/auto-resume subsystems inline. This forces
+violations of the project's own SwiftUI rules (no `AnyView`; no non-trivial
+`var X: some View` outside `body`; one View struct per file) and makes the file
+untestable and slow to build.
+
+Target: `UpperContentView.swift` → ~1,500 lines composed of small
+`@MainActor @Observable` controllers (`@State`-owned by `UpperContentView`;
+`ContentView`/`DrewsChessMachineApp` need no change — verified `LowerContentView`
+reads only `chartCoordinator`) + small `View` structs; probe scaffolding and
+`AnyView` chains deleted; **zero behavior change** to the self-play→train→arena
+loop. Each stage: move state + the methods that mutate it together into a
+controller, leave then inline a one-line forwarding shim, build (compile check
+via xcode-mcp-server), commit + push. Stage ordering is load-bearing (Stage 4's
+`startRealTraining` move needs Stages 2–3's state already on controllers).
+
+- **Stage 0 — pure formatters out** (≈700 lines, near-zero risk; *first PR*):
+  `TrainingStatsTextFormatter.swift` (`trainingStatsText`/`playAndTrainStatsText`/
+  `sweepStatsText` + `rjust`/`pct`/`advFmt`), `ArenaTelemetryFormatter.swift`
+  (string-building parts of `logArenaResult`/`emitArena*`), `PanelColorizer.swift`
+  (`colorizedPanelBody`), `CliConfigOverrideApplier.swift`
+  (`applyCliConfigOverrides`/`formatParameterValue`). `UpperContentView` keeps
+  one-line forwards.
+- **Stage 1 — popover `@Observable` models** (kills 6 `AnyView`, ~165 lines, ~50
+  `@State`): `TrainingSettingsPopoverModel.swift` (~17 `*EditText`, ~21 `*Error`,
+  4 `original*`, `isPresented`, `seedFromParams`/`cancel`/`save`, live-apply
+  closures) + `ArenaSettingsPopoverModel.swift`. `TrainingSettingsPopover.swift`/
+  `ArenaSettingsPopover.swift` take `@Bindable model`. Delete the
+  `trainingSettingsChip*` `AnyView` chain.
+- **Stage 2 — `TrainingAlarmController`** (~150 lines + ~10 `@State`):
+  `@MainActor @Observable` owning `active`/`silenced`/streak counters/sound
+  `Task`/thresholds; `evaluate(from:)`/`raise`/`clear`/`silence`/`dismiss`. Also
+  **adds the missing value-head tanh-saturation alarm** (≈0.97–0.99 on `vAbs`,
+  same path as `policyEntropyAlarmThreshold`).
+- **Stage 3 — `CheckpointController` + `AutoResumeController`** (kills the
+  auto-resume `AnyView`): the checkpoint/segments/save bucket + slow-save
+  watchdog + `PeriodicSaveController` ref + the save/load handlers move to
+  `CheckpointController`; the auto-resume bucket + countdown + `maybePresentSheet`
+  (keeps the headless `XCTestConfigurationFilePath` guard) move to
+  `AutoResumeController`; `autoResumeSheetContentView() -> AnyView` becomes a real
+  `AutoResumeSheetView` struct. `.fileImporter`/`.fileExporter` stay in `body`.
+- **Stage 4 — `SessionController` + `CandidateProbeController` + `SessionHeartbeat`**
+  (the big lift; sub-stages 4a–4e). `SessionController` (`App/SessionController.swift`,
+  `@MainActor @Observable`) owns the networks / parallel-diversity / arena /
+  trainer-run / worker-count buckets + gates and the giant methods moved
+  **verbatim** (preserve statement order — accidental reordering could change
+  ModelID minting or BN warmup): `buildNetwork`/`ensure*`, `playSingleGame`/
+  continuous-play, `trainOnce`/continuous-training, `startTrainingFromMenu`,
+  `startRealTraining(mode:)`, `stopRealTraining`, `runArenaParallel` + `emitArena*`
+  + `cleanupArenaState`, `buildSelfPlaySchedule`/`buildArenaSchedule`,
+  `updateReplayRatioCompensator`, the diagnostics/recovery runners, sweep.
+  `CandidateProbeController` (`App/UpperContentView/CandidateProbeController.swift`)
+  owns the candidate-probe / on-board-display state shared by the driver and the
+  board UI (`playAndTrainBoardMode`, `probeNetworkTarget`, `candidateProbe*`, the
+  live `gameWatcher`/`gameSnapshot`, the probe `inferenceResult`) + `fireIfNeeded`
+  (takes board state as a param) + the "force candidate-test when workers>1" nudge.
+  `SessionHeartbeat` (`App/SessionHeartbeat.swift`, separate `@MainActor` class)
+  owns `processSnapshotTimerTick` + the four `refresh*` helpers + in-flight flags +
+  memory/usage caches. The interactive forward-pass / board-editing demo stays on
+  `UpperContentView`. `commandHub` closures capture the controller *class refs*,
+  never the View struct.
+- **Stage 5 — delete scaffolding, shrink `body`, extract helper views**:
+  dismantle + delete `ControlSideEffectsProbe.swift` (handlers re-homed in Stages
+  1/4); delete `MenuHubSyncProbe.swift` if `body` now tolerates a direct
+  `.onChange` (keep `MenuHubSignature.swift` — cheap Equatable, recomposed from
+  the controllers' fields); extract remaining inline `body` chunks into structs in
+  their own files (`UpperTitleBarView`, `InputTensorChannelStrip`, …); move the
+  `fileprivate struct`s `UpperCumulativeStatusBar`/`UpperTrainingStatsColumn` to
+  their own files; replace `cumulativeStatusBar: UpperCumulativeStatusBar<some View>`
+  with a `@ViewBuilder`/struct; audit → zero `AnyView` under `App/UpperContentView/`.
+  End state: `body` ~100–150 lines, file ~1,500 lines, no probe views, build never
+  hits "expression too complex" (if a `body` change reintroduces it, the subview
+  goes into a struct, not a probe).
+
+What stays in `UpperContentView` permanently: `body`; layout `@ViewBuilder`
+helpers (allowed in a same-file extension); the AppKit menu bridge
+(`wireMenuCommandHub`/`syncMenuCommandHubState`); window-lifecycle hooks; the
+view-local interaction state + the forward-pass/board-editing demo; the
+controller references.
+
+Risks: the verbatim `startRealTraining` (~2,100 lines) and `runArenaParallel`
+(~700 lines) moves are the dangerous ones — guard with line-level diff +
+behavioral baseline (`[STATS]`/`[ARENA]` ModelID lines, BN-warmup `[BATCHER]`
+probe, loss trajectory per the monitoring rubric, headless `--train --output`
+JSON). Don't touch `body` until Stages 1/3/5 or the type-checker may regress.
+
+### Part B — split `Training/ChessTrainer.swift` (4,991 lines)
+
+→ `ChessTrainerGraph.swift` (loss/optimizer graph construction — the advantage/CE/
+label-smoothing/entropy ops, the decoupled-weight-decay + grad-clip + Polyak-
+momentum update ops) + `ChessTrainerFeeds.swift` (`buildFeeds`/`runPreparedStep`
++ the long-wanted `BatchFeedsInput` named-field struct that closes the
+three-same-typed-`UnsafePointer<Float>` call-site hazard already noted under
+"Future improvements"). `ChessTrainer` keeps the step driver, `TrainingLiveStatsBox`,
+and the public surface. No behavior change. Lower priority than Part A.
+
+### Part C — small Swift / ML hygiene fixes (each a tiny standalone change)
+
+- `Training/TrainingParameters.swift:527,833` — `return try! K.decode(...)` →
+  explicit `do { return try ... } catch { preconditionFailure("default for \(K.id)
+  does not round-trip: \(error)") }`. (Per the "never `try!` without explicit
+  justification" rule.)
+- Force unwraps → `guard`/iteration that names the invariant:
+  `Network/ChessMPSNetwork.swift:134` `legal.randomElement()!`,
+  `Encoding/BoardEncoder.swift:325,336` `PieceType(rawValue:)!`,
+  `Chess/MoveGenerator.swift:73` `board[fromIndex]!`,
+  `Training/ReplayBuffer.swift:578,584,589,595` `d[$0]!` in `jsonLine()`.
+- `Network/ChessNetwork.swift:123` `policyHeadFinalWeights: MPSGraphTensor!` IUO →
+  return-and-store from `policyHead(...)`, or add a `// SAFETY:` justification.
+- Stale optimizer docs: `Training/ChessTrainer.swift:990` "plain SGD (no momentum,
+  no Adam state)" is false since Polyak-momentum velocity buffers were added —
+  reword to "SGD with Polyak momentum + decoupled (AdamW-style) weight decay; μ=0
+  reduces bit-exact to plain SGD". `Training/TrainingParameters.swift:240,260`
+  "Adam optimizer learning rate" / "Standard practice for Adam" — reword to
+  SGD-with-momentum (the LR/batch-scaling rule is shared, but it isn't Adam).
+- Module-wide `AnyView` audit → zero (most die in Part A Stages 1 and 3).
+- `try? await Task.sleep(...)` (≈27 sites) swallows `CancellationError` — behavior
+  is fine where a `while !Task.isCancelled` check follows, but standardize on a
+  tiny helper or add a one-line per-site justification.
+- Value-head tanh-saturation alarm (also done in Part A Stage 2).
+- Investigate the wasted ~80 MB/step GPU→CPU policy readback in the trainer's
+  fresh-baseline pass (it appears to use only the value output) → add
+  `needsPolicy: Bool = true` to `evaluate(batchBoards:count:)` that skips the
+  policy head + readback when false. (Do *not* touch the dense per-step legal-mask
+  allocation `[batch, 4864]` without a rework — it's required by the masked-CE loss
+  design; only flag if it shows up as a profiler hot spot.)
+
+### Part D — repo hygiene (non-code, light-touch)
+
+Fold the live scratch markdown (`CHECK_NEXT.md`, `TODO_NEXT.md`, `ML_REVIEW_NOTES.md`,
+`ROADMAP_NOTES.md`, `NEW_PARAMETERS.md`, `CONCURRENCY_CONCERNS.MD`, `CAPTURE_MOVE_MASK.md`)
+into `ROADMAP.md`/`CHANGELOG.md`; remove the 0-byte `default.profraw`; move bulky
+experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, the
+508-entry `experiments/` tree) out of the published tree. **Never edit `.gitignore`.**
+
 ## Completed / corrected from older Future entries
 
 - **Model and session save/load — implemented, with scope expanded beyond the
