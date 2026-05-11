@@ -63,14 +63,18 @@ enum MoveGenerator {
     /// **The move must be legal.** This is performance-critical code in the
     /// inner game loop, so legality is not checked here — callers (e.g.
     /// `ChessMachine`) are required to pass only moves drawn from
-    /// `legalMoves(for:)`. If the source square is empty this will trap on
-    /// the force unwrap below; that's intentional — it surfaces caller bugs
-    /// immediately rather than silently corrupting state.
+    /// `legalMoves(for:)`. If the source square is empty this traps via the
+    /// `preconditionFailure` below; that's intentional — it surfaces caller
+    /// bugs immediately rather than silently corrupting state.
     static func applyMove(_ move: ChessMove, to state: GameState) -> GameState {
         var board = state.board
         let fromIndex = move.fromRow * 8 + move.fromCol
         let toIndex = move.toRow * 8 + move.toCol
-        let piece = board[fromIndex]!
+        guard let piece = board[fromIndex] else {
+            preconditionFailure(
+                "applyMove: source square at row=\(move.fromRow) col=\(move.fromCol) is empty — caller passed an illegal/corrupt move"
+            )
+        }
 
         // Detect en passant capture before modifying the board
         let isEnPassant = piece.type == .pawn

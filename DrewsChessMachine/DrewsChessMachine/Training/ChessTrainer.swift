@@ -986,20 +986,19 @@ final class ChessTrainer: @unchecked Sendable {
 
     // MARK: Configuration
 
-    /// L2 weight-decay coefficient applied per training step. The
-    /// optimizer here is plain SGD (no momentum, no Adam state), so
-    /// the update rule for decay-eligible variables is
-    /// `v_new = v - lr * (clipped_grad + weightDecayC * v)`,
-    /// equivalent to `(1 - lr*c) * v - lr * clipped_grad`. With plain
-    /// SGD, "decoupled" weight decay and ordinary L2 regularization
-    /// are mathematically identical — the AdamW-vs-Adam-with-L2
-    /// distinction only matters for adaptive optimizers, so this is
-    /// just L2. Decay is applied only to conv and FC weight matrices;
-    /// BN gamma/beta and FC biases are excluded, matching the standard
-    /// PyTorch / AdamW recipe for which params to decay. (Decaying BN
-    /// gamma toward zero zeros out a channel and reduces effective
-    /// capacity — the prior "L2 on all params" decision was reverted
-    /// after the deep ML review.)
+    /// Weight-decay coefficient applied per training step. The optimizer here
+    /// is SGD with Polyak momentum (`momentumCoeff` μ, 0 by default) plus
+    /// decoupled (AdamW-style) weight decay: the decay is applied to the
+    /// weights directly rather than folded into the gradient, so μ and
+    /// `weightDecayC` tune independently (raising μ does not amplify decay).
+    /// With μ=0 the velocity term vanishes and the per-step update for
+    /// decay-eligible variables is `v_new = v - lr * (clipped_grad + weightDecayC * v)`,
+    /// i.e. `(1 - lr*c) * v - lr * clipped_grad`. Decay is applied only to
+    /// conv and FC weight matrices; BN gamma/beta and FC biases are excluded,
+    /// matching the standard PyTorch / AdamW recipe for which params to decay.
+    /// (Decaying BN gamma toward zero zeros out a channel and reduces effective
+    /// capacity — the prior "L2 on all params" decision was reverted after the
+    /// deep ML review.)
     ///
     /// The actual value applied by the graph is read from
     /// `weightDecayC` and fed as a per-step scalar so the user can

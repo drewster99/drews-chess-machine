@@ -237,7 +237,7 @@ public enum ValueLossWeight: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Learning Rate",
-    description: "Adam optimizer learning rate. Lower is slower but more stable. Pairs with sqrt_batch_scaling_lr.",
+    description: "SGD-with-momentum optimizer learning rate. Lower is slower but more stable. Pairs with sqrt_batch_scaling_lr.",
     default: 5.0e-5,
     range: 1.0e-7...1.0,
     category: "Optimizer",
@@ -257,7 +257,7 @@ public enum MomentumCoeff: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Sqrt-Batch Scaling LR",
-    description: "When true, scales the effective learning rate by sqrt(batch / referenceBatch). Standard practice for Adam.",
+    description: "When true, scales the effective learning rate by sqrt(batch / referenceBatch). Standard practice when scaling SGD-with-momentum by batch size.",
     default: true,
     category: "Optimizer",
     liveTunable: true
@@ -523,8 +523,15 @@ public struct TrainingParametersSnapshot: Sendable {
         do {
             return try K.decode(raw)
         } catch {
-            // Stored value validated on insert; should never happen.
-            return try! K.decode(K.definition.defaultValue)
+            // Stored value validated on insert; should never happen. If the
+            // baked-in default itself doesn't round-trip, that's a programmer
+            // error in the parameter declaration — surface it loudly rather
+            // than crash with an opaque `try!`.
+            do {
+                return try K.decode(K.definition.defaultValue)
+            } catch {
+                preconditionFailure("default value for \(K.id) does not round-trip through decode: \(error)")
+            }
         }
     }
 
@@ -829,8 +836,14 @@ public final class TrainingParameters {
                 }
             }
         }
-        // Fall back to definition default.
-        return try! K.decode(K.definition.defaultValue)
+        // Fall back to definition default. If the baked-in default doesn't
+        // round-trip, that's a programmer error — surface it rather than
+        // crash with an opaque `try!`.
+        do {
+            return try K.decode(K.definition.defaultValue)
+        } catch {
+            preconditionFailure("default value for \(K.id) does not round-trip through decode: \(error)")
+        }
     }
 
     private nonisolated static func persist<K: TrainingParameterKey>(_ key: K.Type, value: K.Value) {

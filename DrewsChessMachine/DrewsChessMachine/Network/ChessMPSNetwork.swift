@@ -126,12 +126,12 @@ final class ChessMPSNetwork: @unchecked Sendable {
                 )
                 BoardEncoder.encode(state, into: slot)
                 ply += 1
-                let legal = MoveGenerator.legalMoves(for: state)
-                if legal.isEmpty {
+                guard let move = MoveGenerator.legalMoves(for: state).randomElement() else {
+                    // No legal moves (mate/stalemate) — reset to the opening
+                    // and keep generating warmup positions.
                     state = .starting
                     continue
                 }
-                let move = legal.randomElement()!
                 state = MoveGenerator.applyMove(move, to: state)
             }
         }

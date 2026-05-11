@@ -575,24 +575,24 @@ final class ReplayBuffer: @unchecked Sendable {
         /// for grep/parse.
         public func jsonLine() -> String {
             func encodeIntDict(_ d: [String: Int]) -> String {
-                let pairs = d.keys.sorted().map { "\"\($0)\":\(d[$0]!)" }
+                let pairs = d.sorted { $0.key < $1.key }.map { "\"\($0.key)\":\($0.value)" }
                 return "{" + pairs.joined(separator: ",") + "}"
             }
             func encodePctDict(_ d: [String: Int], denom: Double) -> String {
                 guard denom > 0 else { return "{}" }
-                let pairs = d.keys.sorted().map {
-                    String(format: "\"%@\":%.4f", $0 as NSString, Double(d[$0]!) / denom)
+                let pairs = d.sorted { $0.key < $1.key }.map {
+                    String(format: "\"%@\":%.4f", $0.key as NSString, Double($0.value) / denom)
                 }
                 return "{" + pairs.joined(separator: ",") + "}"
             }
             func encodeIntKeyDict(_ d: [Int: Int]) -> String {
-                let pairs = d.keys.sorted().map { "\"\($0)\":\(d[$0]!)" }
+                let pairs = d.sorted { $0.key < $1.key }.map { "\"\($0.key)\":\($0.value)" }
                 return "{" + pairs.joined(separator: ",") + "}"
             }
             func encodeIntKeyPctDict(_ d: [Int: Int], denom: Double) -> String {
                 guard denom > 0 else { return "{}" }
-                let pairs = d.keys.sorted().map {
-                    String(format: "\"%d\":%.4f", $0, Double(d[$0]!) / denom)
+                let pairs = d.sorted { $0.key < $1.key }.map {
+                    String(format: "\"%d\":%.4f", $0.key, Double($0.value) / denom)
                 }
                 return "{" + pairs.joined(separator: ",") + "}"
             }

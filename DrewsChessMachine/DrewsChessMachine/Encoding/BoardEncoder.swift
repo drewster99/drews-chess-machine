@@ -322,7 +322,9 @@ enum BoardEncoder {
 
         // Planes 0-5: mover's pieces (pawn..king) — labeled as white.
         for plane in 0..<6 {
-            let pieceType = PieceType(rawValue: plane)!
+            guard let pieceType = PieceType(rawValue: plane) else {
+                preconditionFailure("plane \(plane) is out of PieceType's raw-value range (0..<6)")
+            }
             for row in 0..<8 {
                 for col in 0..<8 {
                     if buffer[plane * 64 + row * 8 + col] > 0.5 {
@@ -333,7 +335,9 @@ enum BoardEncoder {
         }
         // Planes 6-11: opponent's pieces — labeled as black.
         for plane in 6..<12 {
-            let pieceType = PieceType(rawValue: plane - 6)!
+            guard let pieceType = PieceType(rawValue: plane - 6) else {
+                preconditionFailure("plane \(plane) - 6 = \(plane - 6) is out of PieceType's raw-value range (0..<6)")
+            }
             for row in 0..<8 {
                 for col in 0..<8 {
                     if buffer[plane * 64 + row * 8 + col] > 0.5 {
