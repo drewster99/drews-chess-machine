@@ -405,20 +405,6 @@ struct UpperContentView: View {
     nonisolated static let drawPenaltyDefault: Float = 0.1
     nonisolated static let trainingBatchSize = 4096
 
-    /// Policy-entropy floor below which the periodic stats ticker
-    /// emits an `[ALARM]` log line.
-    ///
-    /// Since legal-move masking (acc5340), the training graph computes
-    /// entropy over the post-mask softmax — only legal moves. The
-    /// theoretical max is now `log(avg_legal_moves)`, roughly
-    /// ln(30) ≈ 3.4 nats in typical midgame. A fresh network starts
-    /// at pEnt ≈ 1.9 nats empirically.
-    ///
-    /// Threshold of 1.0 flags genuine collapse (≈ 2.7 effective legal
-    /// moves), leaving a ~0.9-nat margin below fresh-init baseline.
-    /// Normal training concentrates the policy over time, so moderate
-    /// decline from 1.9 is expected and healthy.
-    nonisolated static let policyEntropyAlarmThreshold: Double = 1.0
     /// Number of training steps at the start of a Play-and-Train
     /// session for which the `[STATS]` line fires on every step.
     /// After this many steps the STATS ticker switches to a 60 s
@@ -427,13 +413,11 @@ struct UpperContentView: View {
     /// initial loss curve shape without flooding the log once
     /// training settles.
     nonisolated static let bootstrapStatsStepCount: Int = 500
-    nonisolated static let divergenceAlarmGradNormWarningThreshold: Double = 50.0
-    nonisolated static let divergenceAlarmGradNormCriticalThreshold: Double = 500.0
-    /// Post-mask entropy critical floor: ≈ 1.6 effective legal moves.
-    nonisolated static let divergenceAlarmEntropyCriticalThreshold: Double = 0.5
-    nonisolated static let divergenceAlarmConsecutiveWarningSamples: Int = 3
-    nonisolated static let divergenceAlarmConsecutiveCriticalSamples: Int = 2
-    nonisolated static let divergenceAlarmRecoverySamples: Int = 10
+
+    // The training-alarm thresholds, divergence-streak detector, and the
+    // banner / beep state moved to `TrainingAlarmController` (held below as
+    // `@State private var trainingAlarm`). `policyEntropyAlarmThreshold` lives
+    // there now too — referenced as `TrainingAlarmController.policyEntropyAlarmThreshold`.
 
     // Real (self-play) training — generates games, labels positions from the
     // final outcome, pushes them through the shared trainer. Shares the
@@ -1019,12 +1003,12 @@ struct UpperContentView: View {
     /// `.dcmsession` next to every manual save. Defaulting to true
     /// means promoted models are never lost by default.
     nonisolated static let autosaveSessionsOnPromote: Bool = true
-    @State private var activeTrainingAlarm: TrainingAlarm?
-    @State private var trainingAlarmSilenced = false
-    @State private var divergenceWarningStreak = 0
-    @State private var divergenceCriticalStreak = 0
-    @State private var divergenceRecoveryStreak = 0
-    @State private var alarmSoundTask: Task<Void, Never>?
+    /// The training-alarm subsystem (divergence detector, banner state, beep
+    /// loop). Lives on its own `@MainActor @Observable` controller rather than
+    /// as a fistful of `@State` here. Fed each heartbeat via
+    /// `trainingAlarm.evaluate(from:)`; the legal-mass-collapse probe in
+    /// `startRealTraining` calls `trainingAlarm.raise(...)` directly.
+    @State private var trainingAlarm = TrainingAlarmController()
 
     /// Weak-captured reference to the NSWindow hosting this view.
     /// Set by `WindowAccessor` on first appearance; used by the
@@ -1310,12 +1294,12 @@ struct UpperContentView: View {
                 }
             }
 
-            if let alarm = activeTrainingAlarm {
+            if let alarm = trainingAlarm.active {
                 TrainingAlarmBanner(
                     alarm: alarm,
-                    isSilenced: trainingAlarmSilenced,
-                    onSilence: { silenceTrainingAlarm() },
-                    onDismiss: { dismissTrainingAlarm() }
+                    isSilenced: trainingAlarm.silenced,
+                    onSilence: { trainingAlarm.silence() },
+                    onDismiss: { trainingAlarm.dismiss() }
                 )
             }
 
@@ -2167,171 +2151,10 @@ struct UpperContentView: View {
         // owns the ring append, the id-counter bump, the GPU-ms
         // baseline update, and the decimated-frame recompute — see
         // `ChartCoordinator.appendTrainingChart(_:totalGpuMs:)`.
-        // Pre-evaluation of the training alarm stays here on
-        // `UpperContentView` because it mutates streak counters and
-        // surfaces the banner / sound-loop state, both of which
-        // are upper-layer concerns.
+        // The training-alarm evaluation (divergence streaks → banner / beep)
+        // lives on `TrainingAlarmController` — see `trainingAlarm`.
         await chartCoordinator.appendTrainingChart(sample, totalGpuMs: currentGpuMs)
-        evaluateTrainingAlarm(from: sample)
-    }
-
-    private func evaluateTrainingAlarm(from sample: TrainingChartSample) {
-        let entropy = sample.rollingPolicyEntropy
-        let gradNorm = sample.rollingGradNorm
-        let warningOutOfLine =
-            (entropy.map { $0 < Self.policyEntropyAlarmThreshold } ?? false)
-            && (gradNorm.map { $0 > Self.divergenceAlarmGradNormWarningThreshold } ?? false)
-        let criticalOutOfLine =
-            (entropy.map { $0 < Self.divergenceAlarmEntropyCriticalThreshold } ?? false)
-            || (gradNorm.map { $0 > Self.divergenceAlarmGradNormCriticalThreshold } ?? false)
-
-        if criticalOutOfLine {
-            divergenceCriticalStreak += 1
-            divergenceWarningStreak = 0
-            divergenceRecoveryStreak = 0
-        } else if warningOutOfLine {
-            divergenceWarningStreak += 1
-            divergenceCriticalStreak = 0
-            divergenceRecoveryStreak = 0
-        } else {
-            divergenceCriticalStreak = 0
-            divergenceWarningStreak = 0
-            divergenceRecoveryStreak += 1
-        }
-
-        if divergenceCriticalStreak >= Self.divergenceAlarmConsecutiveCriticalSamples {
-            raiseTrainingAlarm(
-                severity: .critical,
-                title: Self.divergenceCriticalAlarmTitle,
-                detail: alarmDetail(entropy: entropy, gradNorm: gradNorm)
-            )
-        } else if divergenceWarningStreak >= Self.divergenceAlarmConsecutiveWarningSamples {
-            raiseTrainingAlarm(
-                severity: .warning,
-                title: Self.divergenceWarningAlarmTitle,
-                detail: alarmDetail(entropy: entropy, gradNorm: gradNorm)
-            )
-        } else if divergenceRecoveryStreak >= Self.divergenceAlarmRecoverySamples {
-            // Scope the auto-clear to alarms this evaluator actually
-            // raised. Without this check, a healthy entropy / gNorm
-            // reading would wipe OUT the banner from any other
-            // detector (e.g. the legal-mass collapse detector that
-            // runs on a separate 15 s cadence) — the user would see
-            // unrelated alarms appear and disappear as the heartbeat
-            // races the 15 s probe cycle. Titles are the de-facto
-            // ownership marker because every raise in this file uses
-            // a distinct title string.
-            let activeTitle = activeTrainingAlarm?.title
-            let isOurs = activeTitle == Self.divergenceCriticalAlarmTitle
-                || activeTitle == Self.divergenceWarningAlarmTitle
-            if isOurs {
-                clearTrainingAlarm()
-            }
-        }
-    }
-
-    /// Alarm titles owned by `evaluateTrainingAlarm`. Anchored as
-    /// named constants so the raise path and the ownership-scoped
-    /// auto-clear check can't drift apart.
-    nonisolated static let divergenceCriticalAlarmTitle = "Critical Training Divergence"
-    nonisolated static let divergenceWarningAlarmTitle = "Training Divergence Warning"
-
-    private func alarmDetail(entropy: Double?, gradNorm: Double?) -> String {
-        let entropyStr = entropy.map { String(format: "%.4f", $0) } ?? "--"
-        let gradStr = gradNorm.map { String(format: "%.3f", $0) } ?? "--"
-        return "policy entropy=\(entropyStr), gNorm=\(gradStr)"
-    }
-
-    private func raiseTrainingAlarm(
-        severity: TrainingAlarm.Severity,
-        title: String,
-        detail: String
-    ) {
-        let next = TrainingAlarm(
-            id: UUID(),
-            severity: severity,
-            title: title,
-            detail: detail,
-            raisedAt: Date()
-        )
-        let isNewAlarm = activeTrainingAlarm == nil
-        let titleOrSeverityChanged = activeTrainingAlarm?.title != next.title
-            || activeTrainingAlarm?.severity != next.severity
-        activeTrainingAlarm = next
-        // Log on first raise OR on title/severity change so the session
-        // log captures every banner state the user could see. Periodic
-        // re-raises with identical title+severity (and just updated
-        // numeric detail) don't relog — those are already covered by
-        // the periodic [STATS] / threshold-alarm log lines.
-        if isNewAlarm || titleOrSeverityChanged {
-            SessionLogger.shared.log("[ALARM] \(title): \(detail)")
-        }
-        startAlarmSoundLoopIfNeeded()
-    }
-
-    private func clearTrainingAlarm() {
-        if let prior = activeTrainingAlarm {
-            SessionLogger.shared.log("[ALARM] cleared: \(prior.title)")
-        }
-        activeTrainingAlarm = nil
-        trainingAlarmSilenced = false
-        alarmSoundTask?.cancel()
-        alarmSoundTask = nil
-    }
-
-    private func silenceTrainingAlarm() {
-        if let active = activeTrainingAlarm {
-            SessionLogger.shared.log("[ALARM] silenced: \(active.title)")
-        }
-        trainingAlarmSilenced = true
-        alarmSoundTask?.cancel()
-        alarmSoundTask = nil
-    }
-
-    /// Clear the banner AND reset the divergence streak counters so
-    /// the alarm only re-raises on a *fresh* deterioration from a
-    /// healthy baseline. Different from `clearTrainingAlarm()`, which
-    /// is the auto-clear path triggered by the recovery streak (and
-    /// leaves the warning/critical streaks alone). User-initiated
-    /// "I've seen it, move on" gesture.
-    private func dismissTrainingAlarm() {
-        if let active = activeTrainingAlarm {
-            SessionLogger.shared.log("[ALARM] dismissed: \(active.title)")
-        }
-        activeTrainingAlarm = nil
-        trainingAlarmSilenced = false
-        alarmSoundTask?.cancel()
-        alarmSoundTask = nil
-        divergenceWarningStreak = 0
-        divergenceCriticalStreak = 0
-        divergenceRecoveryStreak = 0
-    }
-
-    private func startAlarmSoundLoopIfNeeded() {
-        guard activeTrainingAlarm != nil, !trainingAlarmSilenced, alarmSoundTask == nil else { return }
-        alarmSoundTask = Task {
-            while !Task.isCancelled {
-                await playAlarmBuzzBurst()
-                do {
-                    try await Task.sleep(for: .seconds(300))
-                } catch {
-                    return
-                }
-            }
-        }
-    }
-
-    @MainActor
-    private func playAlarmBuzzBurst() async {
-        for _ in 0..<3 {
-            if Task.isCancelled || activeTrainingAlarm == nil || trainingAlarmSilenced { return }
-            NSSound.beep()
-            do {
-                try await Task.sleep(for: .seconds(1.2))
-            } catch {
-                return
-            }
-        }
+        trainingAlarm.evaluate(from: sample)
     }
 
     private func refreshProgressRateIfNeeded() async {
@@ -4938,10 +4761,8 @@ struct UpperContentView: View {
                         }
                     }
                     trainingBox?.resetRollingWindows()
-                    divergenceWarningStreak = 0
-                    divergenceCriticalStreak = 0
-                    divergenceRecoveryStreak = 0
-                    clearTrainingAlarm()
+                    trainingAlarm.resetStreaks()
+                    trainingAlarm.clear()
                 } catch {
                     trainingBox?.recordError("Promotion copy failed: \(error.localizedDescription)")
                 }
@@ -5750,10 +5571,8 @@ struct UpperContentView: View {
         inferenceResult = nil
         gameWatcher.resetAll()
         gameSnapshot = gameWatcher.snapshot()
-        clearTrainingAlarm()
-        divergenceWarningStreak = 0
-        divergenceCriticalStreak = 0
-        divergenceRecoveryStreak = 0
+        trainingAlarm.clear()
+        trainingAlarm.resetStreaks()
 
         // `continueMode` controls whether we preserve in-memory state
         // from a prior Stop. When true: reuse replay buffer, stats
@@ -7438,9 +7257,9 @@ struct UpperContentView: View {
                         // story. Skipped if entropy isn't yet
                         // available (training hasn't started).
                         if let entropy = trainingSnap.rollingPolicyEntropy,
-                           entropy < Self.policyEntropyAlarmThreshold {
+                           entropy < TrainingAlarmController.policyEntropyAlarmThreshold {
                             SessionLogger.shared.log(
-                                "[ALARM] policy entropy \(String(format: "%.4f", entropy)) < \(String(format: "%.2f", Self.policyEntropyAlarmThreshold)) — policy may be collapsing (steps=\(trainingSnap.stats.steps))"
+                                "[ALARM] policy entropy \(String(format: "%.4f", entropy)) < \(String(format: "%.2f", TrainingAlarmController.policyEntropyAlarmThreshold)) — policy may be collapsing (steps=\(trainingSnap.stats.steps))"
                             )
                         }
                     }
@@ -7761,7 +7580,7 @@ struct UpperContentView: View {
                                     legalMassWindow.last ?? 0, legalMassWindow.first ?? 0)
                             )
                             await MainActor.run {
-                                self.raiseTrainingAlarm(
+                                self.trainingAlarm.raise(
                                     severity: .critical,
                                     title: "Policy Collapse (legal mass)",
                                     detail: String(format: "illegalMass>%.4f for %d probes with no improvement (legal_mass %.5f→%.5f)",
@@ -7822,7 +7641,7 @@ struct UpperContentView: View {
             }
 
             await MainActor.run {
-                clearTrainingAlarm()
+                trainingAlarm.clear()
                 realTraining = false
                 realTrainingTask = nil
                 isArenaRunning = false
@@ -7853,7 +7672,7 @@ struct UpperContentView: View {
     private func stopRealTraining() {
         realTrainingTask?.cancel()
         realTrainingTask = nil
-        clearTrainingAlarm()
+        trainingAlarm.clear()
         // Close the in-progress training segment so cumulative wall-time
         // totals exclude post-Stop idle. If saving immediately after,
         // buildCurrentSessionState will see the segment already closed
@@ -8014,7 +7833,7 @@ struct UpperContentView: View {
             return
         }
         stopAnyContinuous()
-        clearTrainingAlarm()
+        trainingAlarm.clear()
     }
 
     fileprivate var cumulativeStatusBar: UpperCumulativeStatusBar<some View> {
@@ -8273,7 +8092,7 @@ struct UpperContentView: View {
     /// calibrated against whatever values are currently in use.
     private func colorizedPanelBody(_ body: String) -> AttributedString {
         let thresholds = AttributedMetricColor.Thresholds.default(
-            entropyCollapseBelow: Self.policyEntropyAlarmThreshold,
+            entropyCollapseBelow: TrainingAlarmController.policyEntropyAlarmThreshold,
             gradClipMaxNorm: trainingParams.gradClipMaxNorm
         )
         return AttributedMetricColor.colorize(body: body, thresholds: thresholds)
