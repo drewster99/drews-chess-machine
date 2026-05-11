@@ -120,7 +120,8 @@ final class ChessNetwork: @unchecked Sendable {
     /// controls how concentrated the temperature-scaled policy becomes.
     /// Growing unbounded is the signature of weight-decay not being
     /// strong enough relative to LR to hold logits in a usable range.
-    private(set) var policyHeadFinalWeights: MPSGraphTensor!
+    /// Set in `init` from `policyHead`'s tuple return (non-optional — no IUO).
+    private(set) var policyHeadFinalWeights: MPSGraphTensor
 
     /// All graph variables that should receive gradient updates during
     /// training: every conv weight, FC weight, FC bias, and BN gamma/beta.
@@ -360,19 +361,15 @@ final class ChessNetwork: @unchecked Sendable {
 
         // --- Policy head ---
 
-        var policyFinalW: MPSGraphTensor? = nil
-        policyOutput = Self.policyHead(
+        let policy = Self.policyHead(
             graph: g, input: x, descriptor: conv1x1, bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
-            runningStatsAssignOps: &runningStatsAssigns,
-            finalWeights: &policyFinalW
+            runningStatsAssignOps: &runningStatsAssigns
         )
-        guard let captured = policyFinalW else {
-            preconditionFailure("policyHead failed to surface its final conv weights")
-        }
-        policyHeadFinalWeights = captured
+        policyOutput = policy.output
+        policyHeadFinalWeights = policy.finalWeights
 
         // --- Value head ---
 
@@ -1380,9 +1377,8 @@ final class ChessNetwork: @unchecked Sendable {
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool],
         runningStats: inout [MPSGraphTensor],
-        runningStatsAssignOps: inout [MPSGraphOperation],
-        finalWeights: inout MPSGraphTensor?
-    ) -> MPSGraphTensor {
+        runningStatsAssignOps: inout [MPSGraphOperation]
+    ) -> (output: MPSGraphTensor, finalWeights: MPSGraphTensor) {
         _ = bnMode  // intentionally unused — see doc above
         _ = runningStats
         _ = runningStatsAssignOps
@@ -1402,7 +1398,6 @@ final class ChessNetwork: @unchecked Sendable {
         )
         trainables.append(convW);    shouldDecay.append(true)
         trainables.append(convBias); shouldDecay.append(false)
-        finalWeights = convW
         var x = graph.convolution2D(
             input, weights: convW, descriptor: descriptor, name: "policy_conv"
         )
@@ -1411,7 +1406,8 @@ final class ChessNetwork: @unchecked Sendable {
         // Reshape [B, policyChannels, 8, 8] → [B, policySize] for
         // downstream consumption. NCHW row-major flatten matches
         // `PolicyEncoding.policyIndex = channel * 64 + row * 8 + col`.
-        return graph.reshape(x, shape: [-1, NSNumber(value: Self.policySize)], name: "policy_flatten")
+        let flat = graph.reshape(x, shape: [-1, NSNumber(value: Self.policySize)], name: "policy_flatten")
+        return (output: flat, finalWeights: convW)
     }
 
     /// Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 1) -> tanh
