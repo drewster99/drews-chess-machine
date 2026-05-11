@@ -7,13 +7,15 @@ import SwiftUI
 /// most recent tournament's date/time, W-L-D, AlphaZero score,
 /// and kept/promoted verdict, with a "More" link in the section
 /// header that opens the full `ArenaHistoryView` sheet. The
-/// bottom "Options" section edits the three arena knobs
-/// (#games, concurrency, interval — interval accepts
-/// 15m/500s/7d/etc.). Cancel discards edits; Save validates all
-/// three and writes them back to `trainingParams` (validation +
-/// write happen in the supplied `onSave` callback so the popover
-/// stays decoupled from the parameter store).
+/// bottom "Options" section edits the arena knobs (#games,
+/// concurrency, interval, promote threshold) plus the τ schedule.
+/// Cancel discards edits; Save validates everything and writes it
+/// back to `trainingParams` — all of which lives on the
+/// `ArenaSettingsPopoverModel` so this view stays a thin shell.
 struct ArenaSettingsPopover: View {
+    /// All editable / transactional state.
+    @Bindable var model: ArenaSettingsPopoverModel
+
     /// Wall-clock time when the next auto-arena will fire, or `nil`
     /// when there is no live session (in which case the row reads
     /// "Next session" instead of a timestamp).
@@ -23,25 +25,8 @@ struct ArenaSettingsPopover: View {
     let lastArena: TournamentRecord?
     let isArenaRunning: Bool
     let realTraining: Bool
-    @Binding var gamesText: String
-    @Binding var concurrencyText: String
-    @Binding var intervalText: String
-    @Binding var promoteThresholdText: String
-    @Binding var tauStartText: String
-    @Binding var tauDecayText: String
-    @Binding var tauFloorText: String
-    let gamesError: Bool
-    let concurrencyError: Bool
-    let intervalError: Bool
-    let promoteThresholdError: Bool
-    let tauStartError: Bool
-    let tauDecayError: Bool
-    let tauFloorError: Bool
     let onRunNow: () -> Void
     let onShowHistory: () -> Void
-    let onCancel: () -> Void
-    let onSave: () -> Void
-    let onAppearSeed: () -> Void
 
     var body: some View {
         let dateFmt: DateFormatter = {
@@ -106,7 +91,7 @@ struct ArenaSettingsPopover: View {
 
             // --- Match temperature section ---
             //
-            // tau (τ) schedule controls the per-ply softmax temperature
+            // τ schedule controls the per-ply softmax temperature
             // for arena games. Linear decay: tau(ply) = max(floor,
             // start - decay * ply). The "reached at N plies" hint
             // shows when the floor first activates, computed live
@@ -116,26 +101,26 @@ struct ArenaSettingsPopover: View {
                     .font(.subheadline.weight(.semibold))
                 ArenaPopoverField(
                     label: "Start of game:",
-                    text: $tauStartText,
-                    error: tauStartError,
+                    text: $model.tauStartText,
+                    error: model.tauStartError,
                     placeholder: "2.00",
                     width: 100
                 )
                 ArenaPopoverField(
                     label: "Decay:",
-                    text: $tauDecayText,
-                    error: tauDecayError,
+                    text: $model.tauDecayText,
+                    error: model.tauDecayError,
                     placeholder: "0.015",
                     width: 100,
                     hint: "per ply"
                 )
                 ArenaPopoverField(
                     label: "Floor:",
-                    text: $tauFloorText,
-                    error: tauFloorError,
+                    text: $model.tauFloorText,
+                    error: model.tauFloorError,
                     placeholder: "0.50",
                     width: 100,
-                    hint: tauReachedAtHint
+                    hint: model.tauReachedAtHint
                 )
             }
 
@@ -147,22 +132,22 @@ struct ArenaSettingsPopover: View {
                     .font(.subheadline.weight(.semibold))
                 ArenaPopoverField(
                     label: "# of games:",
-                    text: $gamesText,
-                    error: gamesError,
+                    text: $model.gamesText,
+                    error: model.gamesError,
                     placeholder: "200",
                     width: 100
                 )
                 ArenaPopoverField(
                     label: "Concurrency:",
-                    text: $concurrencyText,
-                    error: concurrencyError,
+                    text: $model.concurrencyText,
+                    error: model.concurrencyError,
                     placeholder: "200",
                     width: 100
                 )
                 ArenaPopoverField(
                     label: "Interval:",
-                    text: $intervalText,
-                    error: intervalError,
+                    text: $model.intervalText,
+                    error: model.intervalError,
                     placeholder: "15m",
                     width: 100,
                     hint: "(e.g. 15m, 500s, 7d, 90)"
@@ -173,8 +158,8 @@ struct ArenaSettingsPopover: View {
                 // any clearly-positive arena.
                 ArenaPopoverField(
                     label: "Promote threshold:",
-                    text: $promoteThresholdText,
-                    error: promoteThresholdError,
+                    text: $model.promoteThresholdText,
+                    error: model.promoteThresholdError,
                     placeholder: "0.550",
                     width: 100,
                     hint: "(score in [0.5, 1.0])"
@@ -183,32 +168,15 @@ struct ArenaSettingsPopover: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", action: onCancel)
+                Button("Cancel") { model.cancel() }
                     .keyboardShortcut(.cancelAction)
-                Button("Save", action: onSave)
+                Button("Save") { model.save() }
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)
         .frame(width: 380)
-        .onAppear { onAppearSeed() }
-    }
-
-    /// Live "reached at N plies" hint for the floor field. Reads
-    /// the *current* parsed values of all three tau fields and
-    /// recomputes on every render — typing into any field updates
-    /// the hint immediately. Returns "—" when any field is invalid
-    /// or the math is degenerate (decay = 0, floor >= start).
-    private var tauReachedAtHint: String {
-        guard let start = Double(tauStartText), start > 0,
-              let decay = Double(tauDecayText), decay >= 0,
-              let floor = Double(tauFloorText), floor > 0 else {
-            return "(reached at —)"
-        }
-        guard decay > 0 else { return "(no decay; floor unreached)" }
-        guard floor < start else { return "(reached at ply 0)" }
-        let plies = Int(((start - floor) / decay).rounded(.up))
-        return "(reached at ply \(plies))"
+        .onAppear { model.seedFromParams() }
     }
 
     /// Two-row last-arena summary. Extracted into a `@ViewBuilder`

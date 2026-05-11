@@ -571,27 +571,17 @@ struct UpperContentView: View {
     /// coordinator. See `ChartCoordinator.swift`.
     let chartCoordinator: ChartCoordinator
     @State private var showingInfoPopover: Bool = false
-    /// Drives the top-bar Arena countdown chip's popover. Toggled by
-    /// the chip's tap action; the popover anchors below the chip on
-    /// `.top` arrow edge so it reads as a menu-style overlay.
-    @State private var showArenaPopover: Bool = false
-    /// Edit-text mirrors used by the Arena popover form. Seeded from
-    /// `trainingParams` when the popover opens (via the form's
-    /// `.onAppear`) and validated on Save before being written back to
-    /// `trainingParams`. Kept here on the parent view rather than
-    /// inside the popover view so a parse error doesn't cause SwiftUI
-    /// to throw away in-progress text on a re-render.
-    @State private var arenaPopoverGamesText: String = ""
-    @State private var arenaPopoverConcurrencyText: String = ""
-    @State private var arenaPopoverIntervalText: String = ""
-    @State private var arenaPopoverPromoteThresholdText: String = ""
-    @State private var arenaPopoverGamesError: Bool = false
-    @State private var arenaPopoverConcurrencyError: Bool = false
-    @State private var arenaPopoverIntervalError: Bool = false
-    @State private var arenaPopoverPromoteThresholdError: Bool = false
-    @State private var arenaPopoverTauStartError: Bool = false
-    @State private var arenaPopoverTauDecayError: Bool = false
-    @State private var arenaPopoverTauFloorError: Bool = false
+    /// All transactional state for the top-bar Arena countdown chip's
+    /// popover (presentation flag, edit-text mirrors, per-field error
+    /// flags, validation + write-back). Lives on its own `@Observable`
+    /// model rather than as a forest of `@State` here. Wired with an
+    /// `onAfterSave` closure (in `handleBodyOnAppear`) that pushes the
+    /// freshly-edited arena τ-schedule into the live `samplingScheduleBox`.
+    @State private var arenaSettingsPopover = ArenaSettingsPopoverModel(
+        maxConcurrency: UpperContentView.absoluteMaxArenaConcurrency,
+        formatDurationSpec: UpperContentView.formatDurationSpec,
+        parseDurationSpec: UpperContentView.parseDurationSpec
+    )
     /// Lifetime training step count at the moment the current
     /// Play-and-Train segment started (the same instant
     /// `parallelWorkerStatsBox.sessionStart` is captured). On a
@@ -1190,9 +1180,6 @@ struct UpperContentView: View {
     @State private var spStartTauEditText: String = ""
     @State private var spFloorTauEditText: String = ""
     @State private var spDecayPerPlyEditText: String = ""
-    @State private var arStartTauEditText: String = ""
-    @State private var arFloorTauEditText: String = ""
-    @State private var arDecayPerPlyEditText: String = ""
     @State private var replayBufferCapacityEditText: String = ""
     @State private var replayBufferMinPositionsBeforeTrainingEditText: String = ""
     /// Edit-text + transactional checkbox state backing the new
@@ -1757,6 +1744,12 @@ struct UpperContentView: View {
     private func handleBodyOnAppear() {
         wireMenuCommandHub()
         syncMenuCommandHubState()
+        // After the Arena popover writes its edits back to `trainingParams`,
+        // push the new τ schedule into the live `samplingScheduleBox` so the
+        // next tournament picks it up without a Play-and-Train restart.
+        arenaSettingsPopover.onAfterSave = {
+            samplingScheduleBox?.setArena(buildArenaSchedule())
+        }
         if learningRateEditText.isEmpty {
             learningRateEditText = String(format: "%.1e", trainingParams.learningRate)
         }
@@ -1789,15 +1782,6 @@ struct UpperContentView: View {
         }
         if spDecayPerPlyEditText.isEmpty {
             spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
-        }
-        if arStartTauEditText.isEmpty {
-            arStartTauEditText = String(format: "%.2f", trainingParams.arenaStartTau)
-        }
-        if arFloorTauEditText.isEmpty {
-            arFloorTauEditText = String(format: "%.2f", trainingParams.arenaTargetTau)
-        }
-        if arDecayPerPlyEditText.isEmpty {
-            arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
         }
         if replayBufferCapacityEditText.isEmpty {
             replayBufferCapacityEditText = String(trainingParams.replayBufferCapacity)
@@ -6201,9 +6185,9 @@ struct UpperContentView: View {
         spStartTauEditText = String(format: "%.2f", trainingParams.selfPlayStartTau)
         spFloorTauEditText = String(format: "%.2f", trainingParams.selfPlayTargetTau)
         spDecayPerPlyEditText = String(format: "%.3f", trainingParams.selfPlayTauDecayPerPly)
-        arStartTauEditText = String(format: "%.2f", trainingParams.arenaStartTau)
-        arFloorTauEditText = String(format: "%.2f", trainingParams.arenaTargetTau)
-        arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
+        // The Arena popover's edit fields are owned by `arenaSettingsPopover`
+        // and re-seed themselves from `trainingParams` each time the popover
+        // opens (its `onAppear`), so there's nothing to re-seed here.
         if continueMode {
             // Preserve `completedTrainingSegments` and
             // `tournamentHistory` as they stood at Stop. The new
@@ -8170,42 +8154,26 @@ struct UpperContentView: View {
                 ArenaCountdownChip(
                     isArenaRunning: isArenaRunning,
                     countdownText: { now in arenaCountdownText(at: now) },
-                    showPopover: $showArenaPopover
+                    showPopover: $arenaSettingsPopover.isPresented
                 ) {
                     ArenaSettingsPopover(
+                        model: arenaSettingsPopover,
                         nextArenaDate: arenaTriggerBox.map {
                             $0.lastArenaTime.addingTimeInterval(trainingParams.arenaAutoIntervalSec)
                         },
                         lastArena: tournamentHistory.last,
                         isArenaRunning: isArenaRunning,
                         realTraining: realTraining,
-                        gamesText: $arenaPopoverGamesText,
-                        concurrencyText: $arenaPopoverConcurrencyText,
-                        intervalText: $arenaPopoverIntervalText,
-                        promoteThresholdText: $arenaPopoverPromoteThresholdText,
-                        tauStartText: $arStartTauEditText,
-                        tauDecayText: $arDecayPerPlyEditText,
-                        tauFloorText: $arFloorTauEditText,
-                        gamesError: arenaPopoverGamesError,
-                        concurrencyError: arenaPopoverConcurrencyError,
-                        intervalError: arenaPopoverIntervalError,
-                        promoteThresholdError: arenaPopoverPromoteThresholdError,
-                        tauStartError: arenaPopoverTauStartError,
-                        tauDecayError: arenaPopoverTauDecayError,
-                        tauFloorError: arenaPopoverTauFloorError,
                         onRunNow: {
                             SessionLogger.shared.log("[BUTTON] Run Arena (popover)")
                             arenaTriggerBox?.trigger()
-                            showArenaPopover = false
+                            arenaSettingsPopover.isPresented = false
                         },
                         onShowHistory: {
                             SessionLogger.shared.log("[BUTTON] Open Arena History")
-                            showArenaPopover = false
+                            arenaSettingsPopover.isPresented = false
                             showArenaHistorySheet = true
-                        },
-                        onCancel: { showArenaPopover = false },
-                        onSave: { arenaPopoverSave() },
-                        onAppearSeed: { arenaPopoverSeedFromParams() }
+                        }
                     )
                 }
             }
@@ -8462,7 +8430,7 @@ struct UpperContentView: View {
     /// is taken as seconds. Returns nil on any parse failure or
     /// non-positive result; consumers surface the parse error via the
     /// red-overlay-on-the-field pattern in the Arena popover form.
-    static func parseDurationSpec(_ raw: String) -> Double? {
+    nonisolated static func parseDurationSpec(_ raw: String) -> Double? {
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !s.isEmpty else { return nil }
         let suffixes: [(suffix: Character, mul: Double)] = [
@@ -8482,7 +8450,7 @@ struct UpperContentView: View {
     /// Format `seconds` back to the largest unit that divides cleanly,
     /// so a `1800`-second interval reads back as `30m` rather than
     /// `1800s` when the popover seeds its Interval text field.
-    static func formatDurationSpec(_ seconds: Double) -> String {
+    nonisolated static func formatDurationSpec(_ seconds: Double) -> String {
         let s = max(0, seconds)
         if s >= 86400, s.truncatingRemainder(dividingBy: 86400) == 0 {
             return "\(Int(s / 86400))d"
@@ -8496,147 +8464,6 @@ struct UpperContentView: View {
         return "\(Int(s))s"
     }
 
-
-    /// Seed the popover edit-text mirrors from the current
-    /// `trainingParams` values. Called from the form's `.onAppear`,
-    /// so opening the popover always reflects the live state, even if
-    /// the user edited a parameter elsewhere (CLI, params file) since
-    /// the last open.
-    private func arenaPopoverSeedFromParams() {
-        arenaPopoverGamesText = String(trainingParams.arenaGamesPerTournament)
-        arenaPopoverConcurrencyText = String(trainingParams.arenaConcurrency)
-        arenaPopoverIntervalText = Self.formatDurationSpec(trainingParams.arenaAutoIntervalSec)
-        arenaPopoverPromoteThresholdText = String(format: "%.3f", trainingParams.arenaPromoteThreshold)
-        // Reuse the same edit-text @State that backs the inline
-        // stats-panel tau row (now removed) so a single edit
-        // location keeps `trainingParams` and `@State` in sync.
-        arStartTauEditText = String(format: "%.2f", trainingParams.arenaStartTau)
-        arDecayPerPlyEditText = String(format: "%.3f", trainingParams.arenaTauDecayPerPly)
-        arFloorTauEditText = String(format: "%.2f", trainingParams.arenaTargetTau)
-        arenaPopoverGamesError = false
-        arenaPopoverConcurrencyError = false
-        arenaPopoverIntervalError = false
-        arenaPopoverPromoteThresholdError = false
-        arenaPopoverTauStartError = false
-        arenaPopoverTauDecayError = false
-        arenaPopoverTauFloorError = false
-    }
-
-    /// Validate all three popover fields against their parameter
-    /// ranges and write valid values back to `trainingParams`. On any
-    /// parse failure the field's red-overlay flag is set and the
-    /// popover stays open. On full success the popover dismisses.
-    private func arenaPopoverSave() {
-        var anyError = false
-
-        let parsedGames = Int(arenaPopoverGamesText.trimmingCharacters(in: .whitespaces))
-        if let g = parsedGames, g >= 4, g <= 10000 {
-            arenaPopoverGamesError = false
-            if g != trainingParams.arenaGamesPerTournament {
-                trainingParams.arenaGamesPerTournament = g
-            }
-        } else {
-            arenaPopoverGamesError = true
-            anyError = true
-        }
-
-        let parsedConcurrency = Int(arenaPopoverConcurrencyText.trimmingCharacters(in: .whitespaces))
-        if let c = parsedConcurrency, c >= 1, c <= Self.absoluteMaxArenaConcurrency {
-            arenaPopoverConcurrencyError = false
-            if c != trainingParams.arenaConcurrency {
-                trainingParams.arenaConcurrency = c
-            }
-        } else {
-            arenaPopoverConcurrencyError = true
-            anyError = true
-        }
-
-        if let secs = Self.parseDurationSpec(arenaPopoverIntervalText), secs >= 60, secs <= 86400 {
-            arenaPopoverIntervalError = false
-            if secs != trainingParams.arenaAutoIntervalSec {
-                trainingParams.arenaAutoIntervalSec = secs
-            }
-        } else {
-            arenaPopoverIntervalError = true
-            anyError = true
-        }
-
-        // Promote threshold — `[0.5, 1.0]` matches the parameter's
-        // declared range. Lower bound 0.5 means "at-least-even" —
-        // anything below would let the candidate displace the
-        // champion on a coin-flip arena, so the parameter type
-        // refuses to go there.
-        if let v = Double(arenaPopoverPromoteThresholdText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.5, v.isFinite, v <= 1.0 {
-            arenaPopoverPromoteThresholdError = false
-            if abs(v - trainingParams.arenaPromoteThreshold) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] arenaPromoteThreshold: %.3f -> %.3f", trainingParams.arenaPromoteThreshold, v)
-                )
-                trainingParams.arenaPromoteThreshold = v
-            }
-        } else {
-            arenaPopoverPromoteThresholdError = true
-            anyError = true
-        }
-
-        // tau Start — same range as the inline stats-panel
-        // editor it replaced: (0, 10].
-        if let v = Double(arStartTauEditText.trimmingCharacters(in: .whitespaces)),
-           v > 0, v.isFinite, v <= 10 {
-            arenaPopoverTauStartError = false
-            if abs(v - trainingParams.arenaStartTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] ar.startTau: %.3f -> %.3f", trainingParams.arenaStartTau, v)
-                )
-                trainingParams.arenaStartTau = v
-            }
-        } else {
-            arenaPopoverTauStartError = true
-            anyError = true
-        }
-
-        // tau Decay — [0, 1].
-        if let v = Double(arDecayPerPlyEditText.trimmingCharacters(in: .whitespaces)),
-           v >= 0, v.isFinite, v <= 1 {
-            arenaPopoverTauDecayError = false
-            if abs(v - trainingParams.arenaTauDecayPerPly) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] ar.decayPerPly: %.4f -> %.4f", trainingParams.arenaTauDecayPerPly, v)
-                )
-                trainingParams.arenaTauDecayPerPly = v
-            }
-        } else {
-            arenaPopoverTauDecayError = true
-            anyError = true
-        }
-
-        // tau Floor — same range as Start: (0, 10].
-        if let v = Double(arFloorTauEditText.trimmingCharacters(in: .whitespaces)),
-           v > 0, v.isFinite, v <= 10 {
-            arenaPopoverTauFloorError = false
-            if abs(v - trainingParams.arenaTargetTau) > Double.ulpOfOne {
-                SessionLogger.shared.log(
-                    String(format: "[PARAM] ar.floorTau: %.3f -> %.3f", trainingParams.arenaTargetTau, v)
-                )
-                trainingParams.arenaTargetTau = v
-            }
-        } else {
-            arenaPopoverTauFloorError = true
-            anyError = true
-        }
-        // Push the freshly-edited arena schedule into the live
-        // `samplingScheduleBox` so the next arena tournament picks
-        // up the new tau curve. Without this push the box keeps
-        // its session-start snapshot and updated `trainingParams`
-        // values don't take effect until the next Play-and-Train
-        // restart. (Pre-existing latent bug — the arena popover
-        // never wired this through. Cleaned up alongside the
-        // matching push from the new training popover.)
-        samplingScheduleBox?.setArena(buildArenaSchedule())
-
-        if !anyError { showArenaPopover = false }
-    }
 
     /// Seed the `TrainingSettingsPopover`'s edit-text bindings from
     /// the live `trainingParams` snapshot. Called from
@@ -8813,7 +8640,7 @@ struct UpperContentView: View {
     /// affected field's red-overlay flag is set and the popover
     /// stays open. On full success the popover dismisses.
     ///
-    /// Mirrors `arenaPopoverSave()`: `[PARAM] name: old -> new`
+    /// Mirrors `ArenaSettingsPopoverModel.save()`: `[PARAM] name: old -> new`
     /// log line on every actual change, no log when value is
     /// unchanged. Trainer side-write uses `Float(parsed)` for the
     /// optimizer floats, matching the inline-row pattern that this
