@@ -56,6 +56,18 @@ struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     /// illegal moves. Pulled from the periodic `LegalMassSnapshot`
     /// probe (same source as `rollingLegalEntropy`).
     let rollingLegalMass: Double?
+    /// Rolling-window mean of `|v|` over the value head's per-batch
+    /// outputs (in `[0, 1]` since `v ∈ [-1, +1]` via `tanh`). The
+    /// classic value-head saturation signal: when `vAbs → 1`, the
+    /// `tanh` is in its flat tails and gradients through it have
+    /// effectively vanished, which silently kills the value-loss
+    /// learning signal. Source: `TrainingRunStats.rollingValueAbsMean`,
+    /// the same number reported as `vAbs=` on the `[STATS]` line and
+    /// already surfaced in the post-mortem dump. Fed to the
+    /// value-head saturation alarm in `TrainingAlarmController` so
+    /// the banner raises before the value head has been silent for
+    /// a long time. Charted on the same tile as `rollingValueLoss`.
+    let rollingValueAbsMean: Double?
 
     // System metrics
     let cpuPercent: Double?

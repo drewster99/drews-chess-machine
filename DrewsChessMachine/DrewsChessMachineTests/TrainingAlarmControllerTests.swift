@@ -94,4 +94,118 @@ final class TrainingAlarmControllerTests: XCTestCase {
         XCTAssertEqual(c.active?.title, TrainingAlarmController.divergenceCriticalAlarmTitle,
                        "clear() must leave the streak counters alone")
     }
+
+    // MARK: - Value-head saturation detector
+
+    /// `vAbs` reading well below the warning threshold — a fresh-init value
+    /// head produces ~0.30 empirically (see CHANGELOG 2026-05-11 finding).
+    private let healthyValueAbsMean: Double = 0.30
+    /// `vAbs` at warning band: `tanh` gradient ~17× weaker than vAbs=0.
+    private let warningValueAbsMean: Double = 0.98
+    /// `vAbs` at critical band: `tanh` gradient ~100× weaker.
+    private let criticalValueAbsMean: Double = 0.999
+
+    private func feedV(_ c: TrainingAlarmController, valueAbsMean: Double, times: Int) {
+        // Drive the detector with healthy entropy/gradNorm so the divergence
+        // detector never trips and contaminates the saturation tests.
+        for _ in 0..<times {
+            c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                       rollingGradNorm: healthyGradNorm,
+                       rollingValueAbsMean: valueAbsMean)
+        }
+    }
+
+    func testCriticalValueAbsMeanSaturationRaises() {
+        let c = TrainingAlarmController()
+        feedV(c, valueAbsMean: criticalValueAbsMean,
+              times: TrainingAlarmController.valueAbsMeanSaturationConsecutiveCriticalSamples - 1)
+        XCTAssertNil(c.active, "should not raise before the consecutive-critical threshold")
+        c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                   rollingGradNorm: healthyGradNorm,
+                   rollingValueAbsMean: criticalValueAbsMean)
+        XCTAssertEqual(c.active?.title, TrainingAlarmController.valueAbsMeanSaturationCriticalAlarmTitle)
+        XCTAssertEqual(c.active?.severity, .critical)
+    }
+
+    func testWarningValueAbsMeanSaturationRaises() {
+        let c = TrainingAlarmController()
+        feedV(c, valueAbsMean: warningValueAbsMean,
+              times: TrainingAlarmController.valueAbsMeanSaturationConsecutiveWarningSamples - 1)
+        XCTAssertNil(c.active, "should not raise before the consecutive-warning threshold")
+        c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                   rollingGradNorm: healthyGradNorm,
+                   rollingValueAbsMean: warningValueAbsMean)
+        XCTAssertEqual(c.active?.title, TrainingAlarmController.valueAbsMeanSaturationWarningAlarmTitle)
+        XCTAssertEqual(c.active?.severity, .warning)
+    }
+
+    func testValueAbsMeanRecoveryAutoClearsOurOwnAlarm() {
+        let c = TrainingAlarmController()
+        feedV(c, valueAbsMean: criticalValueAbsMean,
+              times: TrainingAlarmController.valueAbsMeanSaturationConsecutiveCriticalSamples)
+        XCTAssertNotNil(c.active)
+        feedV(c, valueAbsMean: healthyValueAbsMean,
+              times: TrainingAlarmController.valueAbsMeanSaturationRecoverySamples - 1)
+        XCTAssertNotNil(c.active, "should not auto-clear before the recovery threshold")
+        c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                   rollingGradNorm: healthyGradNorm,
+                   rollingValueAbsMean: healthyValueAbsMean)
+        XCTAssertNil(c.active, "healthy vAbs streak should auto-clear our own alarm")
+    }
+
+    func testValueAbsMeanRecoveryDoesNotClearAnotherDetectorsAlarm() {
+        let c = TrainingAlarmController()
+        c.raise(severity: .critical, title: "Policy Collapse (legal mass)", detail: "x")
+        XCTAssertNotNil(c.active)
+        feedV(c, valueAbsMean: healthyValueAbsMean,
+              times: TrainingAlarmController.valueAbsMeanSaturationRecoverySamples + 5)
+        XCTAssertEqual(c.active?.title, "Policy Collapse (legal mass)",
+                       "the saturation auto-clear must not wipe an alarm it didn't raise")
+    }
+
+    func testValueAbsMeanNilResetsSaturationStreaks() {
+        let c = TrainingAlarmController()
+        // Almost trigger the critical alarm.
+        feedV(c, valueAbsMean: criticalValueAbsMean,
+              times: TrainingAlarmController.valueAbsMeanSaturationConsecutiveCriticalSamples - 1)
+        XCTAssertNil(c.active)
+        // One sample with no vAbs data — should reset the saturation streak.
+        c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                   rollingGradNorm: healthyGradNorm,
+                   rollingValueAbsMean: nil)
+        // One more critical-vAbs reading — with the streak reset, the critical
+        // streak is now 1, well below the threshold, so no alarm should raise.
+        c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                   rollingGradNorm: healthyGradNorm,
+                   rollingValueAbsMean: criticalValueAbsMean)
+        XCTAssertNil(c.active, "nil vAbs must reset the saturation streak counters")
+    }
+
+    func testDivergenceAndSaturationCoexistIndependently() {
+        let c = TrainingAlarmController()
+        // Build a divergence-critical streak with healthy vAbs.
+        for _ in 0..<TrainingAlarmController.divergenceAlarmConsecutiveCriticalSamples {
+            c.evaluate(rollingPolicyEntropy: criticalEntropy,
+                       rollingGradNorm: criticalGradNorm,
+                       rollingValueAbsMean: healthyValueAbsMean)
+        }
+        XCTAssertEqual(c.active?.title, TrainingAlarmController.divergenceCriticalAlarmTitle)
+        // Now flip to healthy entropy/gradNorm and a critical vAbs streak.
+        // Long enough for the divergence detector's recovery threshold
+        // *and* the saturation detector's critical threshold.
+        let recoveryAndSaturationStream = max(
+            TrainingAlarmController.divergenceAlarmRecoverySamples,
+            TrainingAlarmController.valueAbsMeanSaturationConsecutiveCriticalSamples
+        ) + 1
+        for _ in 0..<recoveryAndSaturationStream {
+            c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                       rollingGradNorm: healthyGradNorm,
+                       rollingValueAbsMean: criticalValueAbsMean)
+        }
+        // The divergence detector should have auto-cleared its banner (its
+        // own recovery streak completed); the saturation detector should
+        // have raised the saturation banner instead. The most-recent
+        // raise wins.
+        XCTAssertEqual(c.active?.title, TrainingAlarmController.valueAbsMeanSaturationCriticalAlarmTitle)
+    }
 }

@@ -34,6 +34,7 @@ final class ChartDecimatorTests: XCTestCase {
             rollingPolicyLossLoss: nil,
             rollingLegalEntropy: nil,
             rollingLegalMass: nil,
+            rollingValueAbsMean: nil,
             cpuPercent: cpuPercent,
             gpuBusyPercent: nil,
             gpuMemoryMB: nil,

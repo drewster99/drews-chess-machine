@@ -44,11 +44,36 @@ final class TrainingAlarmController {
     nonisolated static let divergenceAlarmConsecutiveCriticalSamples: Int = 2
     nonisolated static let divergenceAlarmRecoverySamples: Int = 10
 
+    /// Value-head saturation thresholds — `vAbs = mean(|v|)` for the
+    /// scalar value head's per-batch outputs, with `v ∈ [-1, +1]` via
+    /// `tanh`. As `vAbs → 1` the `tanh` enters its flat tails and the
+    /// gradient through it goes to zero, silently killing the value-loss
+    /// learning signal. The warning threshold (`0.97`) corresponds to
+    /// `tanh'(arctanh(0.97)) ≈ 0.0591` — ~17× weaker gradient than a
+    /// `vAbs=0` reference. The critical threshold (`0.995`) is
+    /// `tanh'(arctanh(0.995)) ≈ 0.00998` — ~100× weaker. Empirically the
+    /// AlphaZero-style bootstrap relies on this gradient to amplify
+    /// policy improvement; a saturated value head means the policy is
+    /// learning pure outcome-weighted imitation with no value
+    /// amplifier (see CHANGELOG 2026-05-11 15:30 finding).
+    nonisolated static let valueAbsMeanSaturationWarningThreshold: Double = 0.97
+    nonisolated static let valueAbsMeanSaturationCriticalThreshold: Double = 0.995
+
+    /// Streak counts for the value-head saturation detector. Match the
+    /// divergence detector's `(warning: 3, critical: 2, recovery: 10)`
+    /// shape — saturation creeps in over many heartbeats so a 2-/3-sample
+    /// streak is enough confirmation that it's not a single-batch blip.
+    nonisolated static let valueAbsMeanSaturationConsecutiveWarningSamples: Int = 3
+    nonisolated static let valueAbsMeanSaturationConsecutiveCriticalSamples: Int = 2
+    nonisolated static let valueAbsMeanSaturationRecoverySamples: Int = 10
+
     /// Alarm titles owned by `evaluate(from:)`. Anchored as named constants so
     /// the raise path and the ownership-scoped auto-clear check can't drift
     /// apart.
     nonisolated static let divergenceCriticalAlarmTitle = "Critical Training Divergence"
     nonisolated static let divergenceWarningAlarmTitle = "Training Divergence Warning"
+    nonisolated static let valueAbsMeanSaturationCriticalAlarmTitle = "Critical Value-Head Saturation"
+    nonisolated static let valueAbsMeanSaturationWarningAlarmTitle = "Value-Head Saturation Warning"
 
     // MARK: - Observable state (read by the banner)
 
@@ -60,6 +85,9 @@ final class TrainingAlarmController {
     private var divergenceWarningStreak = 0
     private var divergenceCriticalStreak = 0
     private var divergenceRecoveryStreak = 0
+    private var valueAbsMeanSaturationWarningStreak = 0
+    private var valueAbsMeanSaturationCriticalStreak = 0
+    private var valueAbsMeanSaturationRecoveryStreak = 0
     private var alarmSoundTask: Task<Void, Never>?
 
     // MARK: - Divergence detector
@@ -68,12 +96,20 @@ final class TrainingAlarmController {
     /// updating the streak counters and raising / auto-clearing the banner.
     func evaluate(from sample: TrainingChartSample) {
         evaluate(rollingPolicyEntropy: sample.rollingPolicyEntropy,
-                 rollingGradNorm: sample.rollingGradNorm)
+                 rollingGradNorm: sample.rollingGradNorm,
+                 rollingValueAbsMean: sample.rollingValueAbsMean)
     }
 
-    /// Core of `evaluate(from:)`, split out so tests can drive it with the two
+    /// Core of `evaluate(from:)`, split out so tests can drive it with the
     /// rolling-window values directly (no `TrainingChartSample` to construct).
-    func evaluate(rollingPolicyEntropy entropy: Double?, rollingGradNorm gradNorm: Double?) {
+    func evaluate(rollingPolicyEntropy entropy: Double?,
+                  rollingGradNorm gradNorm: Double?,
+                  rollingValueAbsMean valueAbsMean: Double? = nil) {
+        evaluateDivergence(entropy: entropy, gradNorm: gradNorm)
+        evaluateValueAbsMeanSaturation(valueAbsMean: valueAbsMean)
+    }
+
+    private func evaluateDivergence(entropy: Double?, gradNorm: Double?) {
         let warningOutOfLine =
             (entropy.map { $0 < Self.policyEntropyAlarmThreshold } ?? false)
             && (gradNorm.map { $0 > Self.divergenceAlarmGradNormWarningThreshold } ?? false)
@@ -99,13 +135,13 @@ final class TrainingAlarmController {
             raise(
                 severity: .critical,
                 title: Self.divergenceCriticalAlarmTitle,
-                detail: Self.alarmDetail(entropy: entropy, gradNorm: gradNorm)
+                detail: Self.divergenceAlarmDetail(entropy: entropy, gradNorm: gradNorm)
             )
         } else if divergenceWarningStreak >= Self.divergenceAlarmConsecutiveWarningSamples {
             raise(
                 severity: .warning,
                 title: Self.divergenceWarningAlarmTitle,
-                detail: Self.alarmDetail(entropy: entropy, gradNorm: gradNorm)
+                detail: Self.divergenceAlarmDetail(entropy: entropy, gradNorm: gradNorm)
             )
         } else if divergenceRecoveryStreak >= Self.divergenceAlarmRecoverySamples {
             // Scope the auto-clear to alarms this evaluator actually raised.
@@ -125,10 +161,68 @@ final class TrainingAlarmController {
         }
     }
 
-    private static func alarmDetail(entropy: Double?, gradNorm: Double?) -> String {
+    /// Value-head saturation detector. Symmetric to `evaluateDivergence` but
+    /// keyed off `rollingValueAbsMean` — the rolling mean of `|v|` over batch
+    /// outputs. A `nil` value (no chart sample with `vAbs` data yet) resets
+    /// the streaks defensively so a sequence of nils never auto-clears a
+    /// previously-raised banner via the recovery path. Ownership-scoped
+    /// auto-clear uses the saturation-specific titles so it never wipes a
+    /// divergence banner or a legal-mass-collapse banner.
+    private func evaluateValueAbsMeanSaturation(valueAbsMean: Double?) {
+        guard let vAbs = valueAbsMean else {
+            valueAbsMeanSaturationWarningStreak = 0
+            valueAbsMeanSaturationCriticalStreak = 0
+            valueAbsMeanSaturationRecoveryStreak = 0
+            return
+        }
+        let critical = vAbs >= Self.valueAbsMeanSaturationCriticalThreshold
+        let warning = vAbs >= Self.valueAbsMeanSaturationWarningThreshold
+        if critical {
+            valueAbsMeanSaturationCriticalStreak += 1
+            valueAbsMeanSaturationWarningStreak = 0
+            valueAbsMeanSaturationRecoveryStreak = 0
+        } else if warning {
+            valueAbsMeanSaturationWarningStreak += 1
+            valueAbsMeanSaturationCriticalStreak = 0
+            valueAbsMeanSaturationRecoveryStreak = 0
+        } else {
+            valueAbsMeanSaturationCriticalStreak = 0
+            valueAbsMeanSaturationWarningStreak = 0
+            valueAbsMeanSaturationRecoveryStreak += 1
+        }
+
+        if valueAbsMeanSaturationCriticalStreak >= Self.valueAbsMeanSaturationConsecutiveCriticalSamples {
+            raise(
+                severity: .critical,
+                title: Self.valueAbsMeanSaturationCriticalAlarmTitle,
+                detail: Self.valueAbsMeanSaturationAlarmDetail(valueAbsMean: vAbs)
+            )
+        } else if valueAbsMeanSaturationWarningStreak >= Self.valueAbsMeanSaturationConsecutiveWarningSamples {
+            raise(
+                severity: .warning,
+                title: Self.valueAbsMeanSaturationWarningAlarmTitle,
+                detail: Self.valueAbsMeanSaturationAlarmDetail(valueAbsMean: vAbs)
+            )
+        } else if valueAbsMeanSaturationRecoveryStreak >= Self.valueAbsMeanSaturationRecoverySamples {
+            let activeTitle = active?.title
+            let isOurs = activeTitle == Self.valueAbsMeanSaturationCriticalAlarmTitle
+                || activeTitle == Self.valueAbsMeanSaturationWarningAlarmTitle
+            if isOurs {
+                clear()
+            }
+        }
+    }
+
+    private static func divergenceAlarmDetail(entropy: Double?, gradNorm: Double?) -> String {
         let entropyStr = entropy.map { String(format: "%.4f", $0) } ?? "--"
         let gradStr = gradNorm.map { String(format: "%.3f", $0) } ?? "--"
         return "policy entropy=\(entropyStr), gNorm=\(gradStr)"
+    }
+
+    private static func valueAbsMeanSaturationAlarmDetail(valueAbsMean: Double) -> String {
+        String(format: "vAbs=%.4f — tanh value head saturated, value-loss gradient ≈ %.4f",
+               valueAbsMean,
+               1.0 - valueAbsMean * valueAbsMean)
     }
 
     // MARK: - Raise / clear / silence / dismiss
@@ -203,6 +297,9 @@ final class TrainingAlarmController {
         divergenceWarningStreak = 0
         divergenceCriticalStreak = 0
         divergenceRecoveryStreak = 0
+        valueAbsMeanSaturationWarningStreak = 0
+        valueAbsMeanSaturationCriticalStreak = 0
+        valueAbsMeanSaturationRecoveryStreak = 0
     }
 
     // MARK: - Beep loop

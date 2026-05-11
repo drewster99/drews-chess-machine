@@ -2019,6 +2019,7 @@ struct UpperContentView: View {
             rollingPolicyLossLoss: trainingSnap?.rollingPolicyLossLoss,
             rollingLegalEntropy: realLastLegalMassSnapshot.map { Double($0.legalEntropy) },
             rollingLegalMass: realLastLegalMassSnapshot.map { Double($0.legalMass) },
+            rollingValueAbsMean: trainingSnap?.rollingValueAbsMean,
             cpuPercent: cpuPercent,
             gpuBusyPercent: trainingSnap != nil ? gpuBusy : nil,
             gpuMemoryMB: gpuMemMB,
