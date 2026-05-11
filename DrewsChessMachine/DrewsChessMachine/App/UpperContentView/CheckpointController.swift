@@ -130,4 +130,152 @@ final class CheckpointController {
         slowSaveWatchdogTask?.cancel()
         slowSaveWatchdogTask = nil
     }
+
+    // MARK: - Parameter import / export (Stage 3c part 2a)
+
+    /// Drives the Load Parameters file importer sheet (File menu →
+    /// Load Parameters…). Loads a parameters JSON file with the same
+    /// shape as the CLI `--parameters` flag and applies every named
+    /// field as an override on top of the currently-effective values.
+    var showingLoadParametersImporter: Bool = false
+
+    /// Drives the Save Parameters file exporter sheet (File menu →
+    /// Save Parameters…). Set to `true` after `parametersDocumentForExport`
+    /// has been populated with a freshly-encoded snapshot of the
+    /// current configuration.
+    var showingSaveParametersExporter: Bool = false
+
+    /// Pre-encoded JSON document handed to the Save Parameters file
+    /// exporter. Built on the main actor at the moment the user
+    /// invokes the menu item, so the encoded values reflect the
+    /// session's state at that instant rather than at file-save time
+    /// (which can be seconds later if the user takes a while to pick
+    /// a destination).
+    var parametersDocumentForExport: CliParametersDocument?
+
+    /// Wired by `UpperContentView` to apply a `CliTrainingConfig` over the
+    /// currently-effective parameters (mirroring the launch-time `--parameters`
+    /// flag's behavior) and return the list of fields that actually changed
+    /// (label / before / after triples for the user-visible summary line).
+    var onApplyOverrides: (CliTrainingConfig) -> [(label: String, before: String, after: String)] = { _ in [] }
+
+    /// File menu > Load Parameters… handler. Decodes the picked JSON
+    /// file as a `CliTrainingConfig` and applies every named field on
+    /// top of the currently-effective configuration. Mirrors the
+    /// launch-time `--parameters` flag's behavior exactly, so the
+    /// `[APP] --parameters override: …` log lines emitted by
+    /// `applyCliConfigOverrides` show up in the session log identically
+    /// whether the file was loaded at launch or via this menu item.
+    func handleLoadParametersPickResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            setCheckpointStatus(
+                "Load Parameters cancelled: \(error.localizedDescription)",
+                kind: .error
+            )
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let needsAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if needsAccess { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let cfg = try CliTrainingConfig.load(from: url)
+                SessionLogger.shared.log(
+                    "[BUTTON] Load Parameters from \(url.lastPathComponent): \(cfg.summaryString())"
+                )
+                let changes = onApplyOverrides(cfg)
+                // Surface both the count and the field labels in the
+                // status row. `applyCliConfigOverrides` already logs
+                // a per-field `[APP] --parameters override: …` line
+                // for each entry plus a summary; this row is the
+                // user-visible mirror of that summary so they don't
+                // have to grep the session log to know what landed.
+                if changes.isEmpty {
+                    setCheckpointStatus(
+                        "Loaded \(url.lastPathComponent): no parameters changed",
+                        kind: .success
+                    )
+                } else {
+                    let labels = changes.map(\.label).joined(separator: ", ")
+                    setCheckpointStatus(
+                        "Loaded \(url.lastPathComponent): \(changes.count) parameter\(changes.count == 1 ? "" : "s") changed (\(labels))",
+                        kind: .success
+                    )
+                }
+            } catch {
+                setCheckpointStatus(
+                    "Load Parameters failed: \(error.localizedDescription)",
+                    kind: .error
+                )
+                SessionLogger.shared.log(
+                    "[CHECKPOINT-ERR] Load Parameters from \(url.lastPathComponent) failed: \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    /// File menu > Save Parameters… handler. Builds a fully-populated
+    /// `CliTrainingConfig` from the current `TrainingParameters.shared`
+    /// values, encodes it to JSON, stashes the bytes in
+    /// `parametersDocumentForExport`, and triggers the file exporter.
+    /// The exporter UI handles destination selection; on completion,
+    /// `handleSaveParametersExportResult` logs success/failure.
+    func handleSaveParametersMenuAction() {
+        do {
+            let snap = TrainingParameters.shared.snapshot().rawValueMap()
+            var dict: [String: Any] = [:]
+            for (id, raw) in snap {
+                switch raw {
+                case .bool(let x): dict[id] = x
+                case .int(let x): dict[id] = x
+                case .double(let x): dict[id] = x
+                }
+            }
+            let data = try JSONSerialization.data(
+                withJSONObject: dict,
+                options: [.prettyPrinted, .sortedKeys]
+            )
+            parametersDocumentForExport = CliParametersDocument(data: data)
+            showingSaveParametersExporter = true
+            SessionLogger.shared.log("[BUTTON] Save Parameters")
+        } catch {
+            setCheckpointStatus(
+                "Save Parameters failed (encode): \(error.localizedDescription)",
+                kind: .error
+            )
+        }
+    }
+
+    /// Completion handler for the Save Parameters file exporter.
+    /// Logs success or failure to the session log; user-visible
+    /// status appears in the checkpoint status row.
+    func handleSaveParametersExportResult(_ result: Result<URL, Error>) {
+        parametersDocumentForExport = nil
+        switch result {
+        case .success(let url):
+            setCheckpointStatus(
+                "Saved parameters to \(url.lastPathComponent)",
+                kind: .success
+            )
+            SessionLogger.shared.log(
+                "[CHECKPOINT] Saved parameters: \(url.lastPathComponent)"
+            )
+        case .failure(let error):
+            // SwiftUI's file exporter surfaces user-cancellation as
+            // a failure with `.userCancelled` — don't treat that as
+            // an error in the UI. Only real I/O failures get the
+            // red status.
+            if let cocoa = error as? CocoaError, cocoa.code == .userCancelled {
+                return
+            }
+            setCheckpointStatus(
+                "Save Parameters failed: \(error.localizedDescription)",
+                kind: .error
+            )
+            SessionLogger.shared.log(
+                "[CHECKPOINT-ERR] Save Parameters failed: \(error.localizedDescription)"
+            )
+        }
+    }
 }
