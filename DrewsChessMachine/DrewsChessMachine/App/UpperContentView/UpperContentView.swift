@@ -700,17 +700,13 @@ struct UpperContentView: View {
     /// weights from the loaded file. Cleared on apply.
     @State private var pendingLoadedModel: ModelCheckpointFile?
 
-    /// Last user-facing checkpoint status message. Shown briefly
-    /// in the busy row. Cleared after a few seconds.
-    @State private var checkpointStatusMessage: String?
-
-    /// Kind of the currently-shown checkpoint status message.
-    /// Drives both the icon (checkmark / error glyph) and the text
-    /// color, and the auto-clear lifetime. Success messages linger
-    /// noticeably longer than in-progress messages so the user
-    /// gets a durable "this actually saved" confirmation rather
-    /// than seeing the "Saving…" line silently vanish.
-    @State private var checkpointStatusKind: CheckpointStatusKind = .progress
+    /// The checkpoint subsystem (status display, slow-save watchdog, and —
+    /// in Stage 3c part 2 — the save/load/segments/periodic-save logic).
+    /// Read by the body's status row (`CheckpointStatusLineView`); written by
+    /// the save/load methods still on `UpperContentView` via
+    /// `checkpoint.checkpoint.setCheckpointStatus(_:kind:)` / `.checkpoint.startSlowSaveWatchdog(label:)`
+    /// / `.checkpoint.cancelSlowSaveWatchdog()` and the `.checkpoint.checkpointSaveInFlight` flag.
+    @State private var checkpoint = CheckpointController()
 
     /// Drives the Load Model file importer sheet.
     @State private var showingLoadModelImporter: Bool = false
@@ -737,14 +733,6 @@ struct UpperContentView: View {
     /// (which can be seconds later if the user takes a while to pick
     /// a destination).
     @State private var parametersDocumentForExport: CliParametersDocument?
-
-    /// Watchdog for in-flight checkpoint saves. Started when a save
-    /// begins; if the save hasn't completed within 5 s, the watchdog
-    /// promotes the status row to `.slowProgress` and emits a
-    /// `[CHECKPOINT-WARN]` log line. Every save-completion path
-    /// (success, error, timeout) cancels the task so a fast save's
-    /// watchdog never runs its body.
-    @State private var slowSaveWatchdogTask: Task<Void, Never>?
 
     /// Message text for the "can't do that right now" alert surfaced
     /// by in-function guards. Non-nil means show the alert. The same
@@ -788,12 +776,6 @@ struct UpperContentView: View {
         case newSessionResetTrainerFromChampion
     }
 
-    /// Whether an autosave is currently in flight, so repeated
-    /// promotions or rapid manual saves don't overlap. Advisory only
-    /// — the save path is idempotent except for the "already exists"
-    /// check which throws cleanly.
-    @State private var checkpointSaveInFlight: Bool = false
-
     /// Scheduler for the 4-hour periodic autosave. Created on
     /// Play-and-Train start and torn down on Stop; `nil` while no
     /// session is active. Polled on the main heartbeat (throttled
@@ -812,7 +794,7 @@ struct UpperContentView: View {
     /// `true` while a periodic autosave's write is in flight, so
     /// the heartbeat doesn't schedule another one on the very next
     /// tick. Set at fire time, cleared on success or failure.
-    /// Separate from `checkpointSaveInFlight` (which guards the
+    /// Separate from `checkpoint.checkpointSaveInFlight` (which guards the
     /// user-visible menu buttons) because a periodic save must be
     /// able to run even while the menu items remain enabled.
     @State private var periodicSaveInFlight: Bool = false
@@ -1077,7 +1059,7 @@ struct UpperContentView: View {
             sweepRunning: sweepRunning,
             realTraining: realTraining,
             isArenaRunning: isArenaRunning,
-            checkpointSaveInFlight: checkpointSaveInFlight,
+            checkpointSaveInFlight: checkpoint.checkpointSaveInFlight,
             isTrainingOnce: isTrainingOnce,
             isEvaluating: isEvaluating,
             gameIsPlaying: gameSnapshot.isPlaying,
@@ -1253,7 +1235,7 @@ struct UpperContentView: View {
             // idle; dialog / importer presentation hosts live on the
             // always-mounted root VStack below.
             let showsBusyContent: Bool = {
-                if let _ = checkpointStatusMessage { return true }
+                if let _ = checkpoint.checkpointStatusMessage { return true }
                 guard isBusy else { return false }
                 if !realTraining { return true }
                 return tournamentProgress != nil
@@ -1269,8 +1251,8 @@ struct UpperContentView: View {
                                 busyLabelView
                             }
                         }
-                        if let msg = checkpointStatusMessage {
-                            CheckpointStatusLineView(kind: checkpointStatusKind, message: msg)
+                        if let msg = checkpoint.checkpointStatusMessage {
+                            CheckpointStatusLineView(kind: checkpoint.checkpointStatusKind, message: msg)
                         }
                         Spacer(minLength: 0)
                     }
@@ -2369,111 +2351,10 @@ struct UpperContentView: View {
 
     // MARK: - Checkpoint save / load handlers
 
-    /// Publish a user-visible status line in the checkpoint row
-    /// and clear it after a few seconds. Safe to call repeatedly
-    /// — the latest message wins.
-    ///
-    /// `kind` drives the visual treatment (icon + color) and the
-    /// auto-clear lifetime. Success messages linger 20 s — long
-    /// enough for the user to glance up and confirm the save
-    /// actually landed — versus 6 s for progress lines and 12 s
-    /// for errors.
-    private func setCheckpointStatus(_ message: String, kind: CheckpointStatusKind) {
-        checkpointStatusMessage = message
-        checkpointStatusKind = kind
-        // Always echo errors to the session log so a transient on-screen
-        // error message that auto-clears in 12 seconds is still
-        // recoverable from the persistent log file. (Some callsites
-        // also log their own more-detailed [CHECKPOINT] line — minor
-        // duplication is fine; visibility is the priority.)
-        if kind == .error {
-            SessionLogger.shared.log("[CHECKPOINT-ERR] \(message)")
-        }
-        // Auto-clear after a kind-dependent lifetime. Grabs the
-        // current message at schedule time so a later message isn't
-        // wiped out by an earlier one's timer.
-        let snapshotMessage = message
-        let lifetimeSeconds: Int
-        switch kind {
-        case .progress: lifetimeSeconds = 6
-        // Slow-save status persists noticeably longer than a normal
-        // progress line — the user is presumably waiting on it, and a
-        // 6-second auto-clear in the middle of a stuck save would just
-        // leave them confused about whether anything is still happening.
-        case .slowProgress: lifetimeSeconds = 120
-        case .success: lifetimeSeconds = 20
-        case .error: lifetimeSeconds = 12
-        }
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(lifetimeSeconds))
-            if checkpointStatusMessage == snapshotMessage {
-                checkpointStatusMessage = nil
-                checkpointStatusKind = .progress
-            }
-        }
-    }
-
-    /// Slow-save watchdog deadline. If a save has not completed
-    /// within this many seconds of starting, the status row flips to
-    /// `.slowProgress` and a `[CHECKPOINT-WARN]` line is logged
-    /// exactly once per save (no progressive warnings — completion
-    /// will eventually flip the row to success/error and restore
-    /// normal styling). Calibrated to the typical save cost: a
-    /// healthy session save (two ~10 MB `.dcmmodel` files plus a 35
-    /// MB replay buffer at 500k positions) takes well under a second
-    /// on SSD; 10 s leaves headroom for the post-promotion path's
-    /// `.utility`-priority detached task to be scheduled under load
-    /// without firing false-positive warnings, while still surfacing
-    /// genuinely stuck saves promptly.
-    nonisolated static let slowSaveWatchdogSeconds: Int = 10
-
-    /// Start a watchdog that warns the user if the save tagged
-    /// `label` has not completed within `slowSaveWatchdogSeconds`.
-    /// The returned task is stored in `slowSaveWatchdogTask`; every
-    /// save path's completion branch must cancel it so a fast save's
-    /// watchdog body never runs. Calling this while a previous
-    /// watchdog is still pending cancels the previous one — only one
-    /// save can be in flight at a time, and the most recent label is
-    /// what should appear if it stalls.
-    @MainActor
-    private func startSlowSaveWatchdog(label: String) {
-        slowSaveWatchdogTask?.cancel()
-        let deadline = Self.slowSaveWatchdogSeconds
-        slowSaveWatchdogTask = Task { @MainActor in
-            do {
-                try await Task.sleep(for: .seconds(deadline))
-            } catch {
-                // The save completed before the deadline — its
-                // completion path called `cancelSlowSaveWatchdog()`,
-                // which cancelled this Task. The `Task.sleep` throws
-                // `CancellationError`. Exit silently; the fast-save
-                // case is the common one.
-                return
-            }
-            if Task.isCancelled { return }
-            // If the save already finished and emitted a final
-            // success/error status, don't clobber it. We only flip to
-            // .slowProgress if the row still shows the original
-            // "Saving…" line.
-            guard checkpointSaveInFlight else { return }
-            SessionLogger.shared.log(
-                "[CHECKPOINT-WARN] \(label) still running after \(deadline)s — disk busy or replay buffer large?"
-            )
-            setCheckpointStatus(
-                "Saving \(label)… (still running, \(deadline)s+)",
-                kind: .slowProgress
-            )
-        }
-    }
-
-    /// Cancel the slow-save watchdog if any. Safe to call on any
-    /// completion path — including success, error, and timeout
-    /// branches that don't involve `slowSaveWatchdogTask` directly.
-    @MainActor
-    private func cancelSlowSaveWatchdog() {
-        slowSaveWatchdogTask?.cancel()
-        slowSaveWatchdogTask = nil
-    }
+    // `setCheckpointStatus`, `startSlowSaveWatchdog`, `cancelSlowSaveWatchdog`,
+    // and the `slowSaveWatchdogSeconds` constant moved to
+    // `App/UpperContentView/CheckpointController.swift` (Stage 3c part 1).
+    // The save / load methods below still call them through `checkpoint.…`.
 
     /// File menu > Load Parameters… handler. Decodes the picked JSON
     /// file as a `CliTrainingConfig` and applies every named field on
@@ -2486,7 +2367,7 @@ struct UpperContentView: View {
     private func handleLoadParametersPickResult(_ result: Result<[URL], Error>) {
         switch result {
         case .failure(let error):
-            setCheckpointStatus(
+            checkpoint.setCheckpointStatus(
                 "Load Parameters cancelled: \(error.localizedDescription)",
                 kind: .error
             )
@@ -2509,19 +2390,19 @@ struct UpperContentView: View {
                 // user-visible mirror of that summary so they don't
                 // have to grep the session log to know what landed.
                 if changes.isEmpty {
-                    setCheckpointStatus(
+                    checkpoint.setCheckpointStatus(
                         "Loaded \(url.lastPathComponent): no parameters changed",
                         kind: .success
                     )
                 } else {
                     let labels = changes.map(\.label).joined(separator: ", ")
-                    setCheckpointStatus(
+                    checkpoint.setCheckpointStatus(
                         "Loaded \(url.lastPathComponent): \(changes.count) parameter\(changes.count == 1 ? "" : "s") changed (\(labels))",
                         kind: .success
                     )
                 }
             } catch {
-                setCheckpointStatus(
+                checkpoint.setCheckpointStatus(
                     "Load Parameters failed: \(error.localizedDescription)",
                     kind: .error
                 )
@@ -2558,7 +2439,7 @@ struct UpperContentView: View {
             showingSaveParametersExporter = true
             SessionLogger.shared.log("[BUTTON] Save Parameters")
         } catch {
-            setCheckpointStatus(
+            checkpoint.setCheckpointStatus(
                 "Save Parameters failed (encode): \(error.localizedDescription)",
                 kind: .error
             )
@@ -2573,7 +2454,7 @@ struct UpperContentView: View {
         parametersDocumentForExport = nil
         switch result {
         case .success(let url):
-            setCheckpointStatus(
+            checkpoint.setCheckpointStatus(
                 "Saved parameters to \(url.lastPathComponent)",
                 kind: .success
             )
@@ -2588,7 +2469,7 @@ struct UpperContentView: View {
             if let cocoa = error as? CocoaError, cocoa.code == .userCancelled {
                 return
             }
-            setCheckpointStatus(
+            checkpoint.setCheckpointStatus(
                 "Save Parameters failed: \(error.localizedDescription)",
                 kind: .error
             )
@@ -2801,7 +2682,7 @@ struct UpperContentView: View {
         // Belt-and-suspenders guards — menu disable is the primary
         // gate but these cover keyboard-shortcut / URL-scheme
         // invocations under a race.
-        if checkpointSaveInFlight {
+        if checkpoint.checkpointSaveInFlight {
             refuseMenuAction("A save is already in progress. Wait for it to finish.")
             return
         }
@@ -2822,9 +2703,9 @@ struct UpperContentView: View {
         // is no active session, we can safely export directly —
         // nobody is racing against us.
         let gate = activeSelfPlayGate
-        checkpointSaveInFlight = true
-        setCheckpointStatus("Saving champion…", kind: .progress)
-        startSlowSaveWatchdog(label: "champion save")
+        checkpoint.checkpointSaveInFlight = true
+        checkpoint.setCheckpointStatus("Saving champion…", kind: .progress)
+        checkpoint.startSlowSaveWatchdog(label: "champion save")
 
         Task {
             // Pause worker 0 if a session is running. Bail with a
@@ -2834,9 +2715,9 @@ struct UpperContentView: View {
             if let gate {
                 let acquired = await gate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
                 if !acquired {
-                    cancelSlowSaveWatchdog()
-                    checkpointSaveInFlight = false
-                    setCheckpointStatus("Save aborted: could not pause self-play (timeout)", kind: .error)
+                    checkpoint.cancelSlowSaveWatchdog()
+                    checkpoint.checkpointSaveInFlight = false
+                    checkpoint.setCheckpointStatus("Save aborted: could not pause self-play (timeout)", kind: .error)
                     return
                 }
             }
@@ -2853,9 +2734,9 @@ struct UpperContentView: View {
             gate?.resume()
 
             if let exportError {
-                cancelSlowSaveWatchdog()
-                checkpointSaveInFlight = false
-                setCheckpointStatus("Save failed (export): \(exportError.localizedDescription)", kind: .error)
+                checkpoint.cancelSlowSaveWatchdog()
+                checkpoint.checkpointSaveInFlight = false
+                checkpoint.setCheckpointStatus("Save failed (export): \(exportError.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save champion export failed: \(exportError.localizedDescription)")
                 return
             }
@@ -2882,14 +2763,14 @@ struct UpperContentView: View {
                     return .failure(error)
                 }
             }.value
-            cancelSlowSaveWatchdog()
-            checkpointSaveInFlight = false
+            checkpoint.cancelSlowSaveWatchdog()
+            checkpoint.checkpointSaveInFlight = false
             switch outcome {
             case .success(let url):
-                setCheckpointStatus("Saved \(url.lastPathComponent)", kind: .success)
+                checkpoint.setCheckpointStatus("Saved \(url.lastPathComponent)", kind: .success)
                 SessionLogger.shared.log("[CHECKPOINT] Saved champion: \(url.lastPathComponent)")
             case .failure(let error):
-                setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
+                checkpoint.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save champion failed: \(error.localizedDescription)")
             }
         }
@@ -2912,7 +2793,7 @@ struct UpperContentView: View {
         // Belt-and-suspenders guards — menu disable is the primary
         // gate but these cover keyboard-shortcut / URL-scheme
         // invocations under a race.
-        if checkpointSaveInFlight {
+        if checkpoint.checkpointSaveInFlight {
             refuseMenuAction("A save is already in progress. Wait for it to finish.")
             return
         }
@@ -2953,7 +2834,7 @@ struct UpperContentView: View {
         if isArenaRunning {
             return
         }
-        if checkpointSaveInFlight {
+        if checkpoint.checkpointSaveInFlight {
             SessionLogger.shared.log("[CHECKPOINT] Periodic save skipped — another save is in flight")
             return
         }
@@ -2996,9 +2877,9 @@ struct UpperContentView: View {
         let trainerID = trainer.identifier?.description ?? "unknown"
         let diskTag = trigger.diskTag
         let uiSuffix = trigger.uiSuffix
-        checkpointSaveInFlight = true
-        setCheckpointStatus("Saving session\(uiSuffix)…", kind: .progress)
-        startSlowSaveWatchdog(label: "session save\(uiSuffix)")
+        checkpoint.checkpointSaveInFlight = true
+        checkpoint.setCheckpointStatus("Saving session\(uiSuffix)…", kind: .progress)
+        checkpoint.startSlowSaveWatchdog(label: "session save\(uiSuffix)")
 
         // Build the state snapshot on the main actor before
         // jumping to detached work. Capture the replay buffer handle
@@ -3031,8 +2912,8 @@ struct UpperContentView: View {
             // watchdog too so a fast-failure path doesn't leave a
             // stale "Saving… (still running)" amber line behind.
             @MainActor func clearInFlight() {
-                cancelSlowSaveWatchdog()
-                checkpointSaveInFlight = false
+                checkpoint.cancelSlowSaveWatchdog()
+                checkpoint.checkpointSaveInFlight = false
                 periodicSaveInFlight = false
             }
 
@@ -3043,7 +2924,7 @@ struct UpperContentView: View {
             let selfPlayAcquired = await selfPlayGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
             guard selfPlayAcquired else {
                 clearInFlight()
-                setCheckpointStatus("Save aborted: could not pause self-play (timeout)", kind: .error)
+                checkpoint.setCheckpointStatus("Save aborted: could not pause self-play (timeout)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session aborted at self-play pause timeout")
                 return
             }
@@ -3060,7 +2941,7 @@ struct UpperContentView: View {
 
             if let championError {
                 clearInFlight()
-                setCheckpointStatus("Save failed (champion export): \(championError.localizedDescription)", kind: .error)
+                checkpoint.setCheckpointStatus("Save failed (champion export): \(championError.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session failed at champion export: \(championError.localizedDescription)")
                 return
             }
@@ -3069,7 +2950,7 @@ struct UpperContentView: View {
             let trainingAcquired = await trainingGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
             guard trainingAcquired else {
                 clearInFlight()
-                setCheckpointStatus("Save aborted: could not pause training (timeout)", kind: .error)
+                checkpoint.setCheckpointStatus("Save aborted: could not pause training (timeout)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session aborted at training pause timeout")
                 return
             }
@@ -3089,7 +2970,7 @@ struct UpperContentView: View {
 
             if let trainerError {
                 clearInFlight()
-                setCheckpointStatus("Save failed (trainer export): \(trainerError.localizedDescription)", kind: .error)
+                checkpoint.setCheckpointStatus("Save failed (trainer export): \(trainerError.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session failed at trainer export: \(trainerError.localizedDescription)")
                 return
             }
@@ -3135,7 +3016,7 @@ struct UpperContentView: View {
             clearInFlight()
             switch outcome {
             case .success(let url):
-                setCheckpointStatus("Saved \(url.lastPathComponent)\(uiSuffix)", kind: .success)
+                checkpoint.setCheckpointStatus("Saved \(url.lastPathComponent)\(uiSuffix)", kind: .success)
                 let bufStr: String
                 if let snap = bufferForSave?.stateSnapshot() {
                     bufStr = " replay=\(snap.storedCount)/\(snap.capacity)"
@@ -3153,7 +3034,7 @@ struct UpperContentView: View {
                 periodicSaveController?.noteSuccessfulSave(at: Date())
                 lastSavedAt = Date()
             case .failure(let error):
-                setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
+                checkpoint.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
             }
         }
@@ -3190,7 +3071,7 @@ struct UpperContentView: View {
     private func handleLoadModelPickResult(_ result: Result<[URL], Error>) {
         switch result {
         case .failure(let error):
-            setCheckpointStatus("Load cancelled: \(error.localizedDescription)", kind: .error)
+            checkpoint.setCheckpointStatus("Load cancelled: \(error.localizedDescription)", kind: .error)
         case .success(let urls):
             guard let url = urls.first else { return }
             loadModelFrom(url: url)
@@ -3204,8 +3085,8 @@ struct UpperContentView: View {
             return
         }
 
-        checkpointSaveInFlight = true
-        setCheckpointStatus("Loading \(url.lastPathComponent)…", kind: .progress)
+        checkpoint.checkpointSaveInFlight = true
+        checkpoint.setCheckpointStatus("Loading \(url.lastPathComponent)…", kind: .progress)
 
         Task {
             // Auto-build the champion shell if it doesn't exist yet.
@@ -3215,8 +3096,8 @@ struct UpperContentView: View {
             let championResult = await ensureChampionBuilt()
             switch championResult {
             case .failure(let error):
-                checkpointSaveInFlight = false
-                setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
+                checkpoint.checkpointSaveInFlight = false
+                checkpoint.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Load model auto-build failed: \(error.localizedDescription)")
                 return
             case .success(let champion):
@@ -3241,12 +3122,12 @@ struct UpperContentView: View {
                         return .failure(error)
                     }
                 }.value
-                checkpointSaveInFlight = false
+                checkpoint.checkpointSaveInFlight = false
                 switch outcome {
                 case .success(let file):
                     champion.identifier = ModelID(value: file.modelID)
                     networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
-                    setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
+                    checkpoint.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
                     SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
                     inferenceResult = nil
                     // Flag champion-replaced for the post-Stop Start
@@ -3256,7 +3137,7 @@ struct UpperContentView: View {
                         championLoadedSinceLastTrainingSegment = true
                     }
                 case .failure(let error):
-                    setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
+                    checkpoint.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
                     SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
                 }
             }
@@ -3271,7 +3152,7 @@ struct UpperContentView: View {
     private func handleLoadSessionPickResult(_ result: Result<[URL], Error>) {
         switch result {
         case .failure(let error):
-            setCheckpointStatus("Load cancelled: \(error.localizedDescription)", kind: .error)
+            checkpoint.setCheckpointStatus("Load cancelled: \(error.localizedDescription)", kind: .error)
         case .success(let urls):
             guard let url = urls.first else { return }
             loadSessionFrom(url: url)
@@ -3285,8 +3166,8 @@ struct UpperContentView: View {
             return
         }
 
-        checkpointSaveInFlight = true
-        setCheckpointStatus("Loading session \(url.lastPathComponent)…", kind: .progress)
+        checkpoint.checkpointSaveInFlight = true
+        checkpoint.setCheckpointStatus("Loading session \(url.lastPathComponent)…", kind: .progress)
 
         Task {
             // Auto-build the champion shell if it doesn't exist yet.
@@ -3295,9 +3176,9 @@ struct UpperContentView: View {
             // to require the user to press Build first.
             let championResult = await ensureChampionBuilt()
             guard case .success(let champion) = championResult else {
-                checkpointSaveInFlight = false
+                checkpoint.checkpointSaveInFlight = false
                 if case .failure(let error) = championResult {
-                    setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
+                    checkpoint.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
                     SessionLogger.shared.log("[CHECKPOINT] Load session auto-build failed: \(error.localizedDescription)")
                 }
                 return
@@ -3319,7 +3200,7 @@ struct UpperContentView: View {
                     return .failure(error)
                 }
             }.value
-            checkpointSaveInFlight = false
+            checkpoint.checkpointSaveInFlight = false
             switch outcome {
             case .success(let loaded):
                 champion.identifier = ModelID(value: loaded.championFile.modelID)
@@ -3332,7 +3213,7 @@ struct UpperContentView: View {
                     Click Play and Train to resume.
                     """
                 lastSavedAt = nil
-                setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", kind: .success)
+                checkpoint.setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", kind: .success)
                 let savedBuild = loaded.state.buildNumber.map(String.init) ?? "?"
                 let savedGit = loaded.state.buildGitHash ?? "?"
                 let bufStr: String
@@ -3354,7 +3235,7 @@ struct UpperContentView: View {
                     startRealTraining()
                 }
             case .failure(let error):
-                setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
+                checkpoint.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Load session failed: \(error.localizedDescription)")
             }
             if startAfterLoad {
@@ -3598,7 +3479,7 @@ struct UpperContentView: View {
         do {
             try CheckpointPaths.ensureDirectories()
         } catch {
-            setCheckpointStatus("Could not create save folder: \(error.localizedDescription)", kind: .error)
+            checkpoint.setCheckpointStatus("Could not create save folder: \(error.localizedDescription)", kind: .error)
             return
         }
         CheckpointManager.revealInFinder(CheckpointPaths.rootURL)
@@ -3685,7 +3566,7 @@ struct UpperContentView: View {
         commandHub.sweepRunning = sweepRunning
         commandHub.realTraining = realTraining
         commandHub.isArenaRunning = isArenaRunning
-        commandHub.checkpointSaveInFlight = checkpointSaveInFlight
+        commandHub.checkpointSaveInFlight = checkpoint.checkpointSaveInFlight
         commandHub.pendingLoadedSessionExists = pendingLoadedSession != nil
         commandHub.canResumeFromAutosave = canResumeFromAutosave
         commandHub.arenaRecoveryInProgress = arenaRecoveryInProgress
@@ -3710,7 +3591,7 @@ struct UpperContentView: View {
             || sweepRunning
             || gameSnapshot.isPlaying
             || isBuilding
-            || checkpointSaveInFlight
+            || checkpoint.checkpointSaveInFlight
     }
 
     /// Human-readable explanation of *why* `isBuildingOrBusy()` is
@@ -3731,7 +3612,7 @@ struct UpperContentView: View {
         if isBuilding {
             return "The network is still being built. Wait for it to finish."
         }
-        if checkpointSaveInFlight {
+        if checkpoint.checkpointSaveInFlight {
             return "A save/load is already in progress. Wait for it to finish."
         }
         return "Another operation is in progress."
@@ -4648,9 +4529,9 @@ struct UpperContentView: View {
             // copies have to happen here before we go detached.
             let chartSnapshotForAutosave = chartCoordinator.buildSnapshot()
 
-            setCheckpointStatus("Saving session (post-promotion)…", kind: .progress)
-            checkpointSaveInFlight = true
-            startSlowSaveWatchdog(label: "session save (post-promotion)")
+            checkpoint.setCheckpointStatus("Saving session (post-promotion)…", kind: .progress)
+            checkpoint.checkpointSaveInFlight = true
+            checkpoint.startSlowSaveWatchdog(label: "session save (post-promotion)")
             // Fire-and-forget detached task. The closure captures
             // only Sendable value types (weight arrays, metadata
             // structs, the session state snapshot, and a few
@@ -4692,7 +4573,7 @@ struct UpperContentView: View {
                 await MainActor.run {
                     switch outcome {
                     case .success(let (url, bufStr)):
-                        setCheckpointStatus(
+                        checkpoint.setCheckpointStatus(
                             "Saved \(url.lastPathComponent) (post-promotion)",
                             kind: .success
                         )
@@ -4707,7 +4588,7 @@ struct UpperContentView: View {
                         periodicSaveController?.noteSuccessfulSave(at: Date())
                         lastSavedAt = Date()
                     case .failure(let error):
-                        setCheckpointStatus(
+                        checkpoint.setCheckpointStatus(
                             "Autosave failed (post-promotion): \(error.localizedDescription)",
                             kind: .error
                         )
@@ -4715,8 +4596,8 @@ struct UpperContentView: View {
                             "[CHECKPOINT] Saved session (post-promotion) failed: \(error.localizedDescription)"
                         )
                     }
-                    cancelSlowSaveWatchdog()
-                    checkpointSaveInFlight = false
+                    checkpoint.cancelSlowSaveWatchdog()
+                    checkpoint.checkpointSaveInFlight = false
                 }
             }
         }
