@@ -100,6 +100,11 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 await stopAll(slots: &slots)
                 pauseGate.markWaiting()
                 while pauseGate.isRequestedToPause && !Task.isCancelled {
+                    // `try?` is intentional: `Task.sleep` only throws on
+                    // cancellation, and the next iteration of this loop
+                    // immediately re-checks `Task.isCancelled` and exits
+                    // cleanly. No error can be silently swallowed because
+                    // `CancellationError` is the only thing thrown.
                     try? await Task.sleep(for: .milliseconds(5))
                 }
                 pauseGate.markRunning()
@@ -160,6 +165,9 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             // are running and the driver just needs to re-check pause /
             // count on the next tick.
             let sleepMs = slots.isEmpty ? 50 : 100
+            // `try?` is intentional: only `CancellationError` is throwable
+            // here, and the next `while !Task.isCancelled` check at the top
+            // of the loop handles cancellation explicitly.
             try? await Task.sleep(for: .milliseconds(sleepMs))
         }
 
@@ -315,6 +323,11 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             // entirely so this adds no overhead in the common case.
             if let selfPlayDelayMs = replayRatioController?.computedSelfPlayDelayMs,
                selfPlayDelayMs > 0 {
+                // `try?` is intentional: cancellation is the normal exit
+                // path for a stop/arena-pause. The enclosing `while
+                // !Task.isCancelled` outer loop picks up the cancellation
+                // on the next iteration; the only thing `Task.sleep`
+                // throws is `CancellationError`.
                 try? await Task.sleep(for: .milliseconds(selfPlayDelayMs))
             }
         }

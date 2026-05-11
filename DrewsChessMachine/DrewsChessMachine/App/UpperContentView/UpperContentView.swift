@@ -6029,6 +6029,10 @@ struct UpperContentView: View {
                         if trainingGate.isRequestedToPause {
                             trainingGate.markWaiting()
                             while trainingGate.isRequestedToPause && !Task.isCancelled {
+                                // `try?` is intentional: `Task.sleep` only
+                                // throws `CancellationError`, and the loop
+                                // condition re-checks `Task.isCancelled` on
+                                // the very next iteration.
                                 try? await Task.sleep(for: .milliseconds(5))
                             }
                             trainingGate.markRunning()
@@ -6041,6 +6045,10 @@ struct UpperContentView: View {
                         // yet. Short sleep + retry keeps the worker
                         // responsive to Stop and to pause requests.
                         if buffer.count < sessionMinBufferBeforeTraining {
+                            // `try?` is intentional: only `CancellationError`
+                            // can be thrown; the enclosing
+                            // `while !Task.isCancelled` exits on the next
+                            // iteration.
                             try? await Task.sleep(for: .milliseconds(100))
                             continue
                         }
@@ -6059,6 +6067,9 @@ struct UpperContentView: View {
                                 replayBuffer: buffer,
                                 batchSize: sessionTrainingBatchSize
                             ) else {
+                                // `try?` is intentional: only `CancellationError`
+                                // is throwable; the enclosing loop's
+                                // `!Task.isCancelled` check exits cleanly.
                                 try? await Task.sleep(for: .milliseconds(100))
                                 continue
                             }
@@ -6117,6 +6128,10 @@ struct UpperContentView: View {
                         )
                         lastTrainingDelaySettingMs = stepDelayMs
                         if stepDelayMs > 0 {
+                            // `try?` is intentional: cancellation is the
+                            // normal exit path; the enclosing
+                            // `while !Task.isCancelled` re-checks
+                            // cancellation on the next pass.
                             try? await Task.sleep(for: .milliseconds(stepDelayMs))
                         }
                     }

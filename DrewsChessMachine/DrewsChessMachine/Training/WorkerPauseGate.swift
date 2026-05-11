@@ -50,6 +50,11 @@ final class WorkerPauseGate: @unchecked Sendable {
         setRequested(true)
         while !Task.isCancelled {
             if readIsWaiting() { return }
+            // `try?` is intentional: `Task.sleep` only throws
+            // `CancellationError`, and the enclosing
+            // `while !Task.isCancelled` loop re-checks cancellation on the
+            // very next iteration and exits cleanly. Nothing else can be
+            // silently swallowed.
             try? await Task.sleep(for: .milliseconds(5))
         }
     }
@@ -73,6 +78,9 @@ final class WorkerPauseGate: @unchecked Sendable {
                 setRequested(false)
                 return false
             }
+            // `try?` is intentional: see `pauseAndWait()` above. The
+            // enclosing `while !Task.isCancelled` loop is the cancellation-
+            // handling path; `Task.sleep` can only throw `CancellationError`.
             try? await Task.sleep(for: .milliseconds(5))
         }
         setRequested(false)

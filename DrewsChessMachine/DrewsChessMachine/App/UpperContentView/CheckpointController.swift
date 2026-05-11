@@ -80,6 +80,10 @@ final class CheckpointController {
         case .error: lifetimeSeconds = 12
         }
         Task { @MainActor in
+            // `try?` is intentional: `Task.sleep` only throws
+            // `CancellationError`. If the auto-clear Task is cancelled
+            // (which it isn't, today — nothing cancels it), the conditional
+            // clear below simply doesn't fire. No real error path exists.
             try? await Task.sleep(for: .seconds(lifetimeSeconds))
             if self.checkpointStatusMessage == snapshotMessage {
                 self.checkpointStatusMessage = nil
