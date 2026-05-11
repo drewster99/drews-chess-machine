@@ -1563,7 +1563,15 @@ struct UpperContentView: View {
         .background(WindowAccessor(window: $contentWindow, onAttached: handleWindowAttached))
         .onAppear { handleBodyOnAppear() }
         .sheet(isPresented: $autoResumeSheetShowing) {
-            autoResumeSheetContentView()
+            if let pointer = autoResumePointer {
+                AutoResumeSheetView(
+                    pointer: pointer,
+                    summary: autoResumeSummary,
+                    countdownRemaining: autoResumeCountdownRemaining,
+                    onDismiss: { dismissAutoResumeSheet() },
+                    onResume: { performAutoResume() }
+                )
+            }
         }
         .sheet(isPresented: $showArenaHistorySheet) {
             ArenaHistoryView(
@@ -3725,87 +3733,6 @@ struct UpperContentView: View {
         )
         loadSessionFrom(url: pointer.directoryURL, startAfterLoad: true)
     }
-
-    /// SwiftUI content for the auto-resume sheet. Returns `AnyView`
-    /// (rather than `some View` via `@ViewBuilder`) so the call
-    /// site in the main body doesn't contribute to the already-huge
-    /// body's type-inference cost — the `.sheet { ... }` modifier
-    /// only has to prove the closure returns a concrete `View`,
-    /// not figure out which of two opaque branches it is.
-    private func autoResumeSheetContentView() -> AnyView {
-        guard let pointer = autoResumePointer else {
-            return AnyView(EmptyView())
-        }
-        let savedAt = Date(timeIntervalSince1970: TimeInterval(pointer.savedAtUnix))
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        let savedAtString = formatter.string(from: savedAt)
-        let agoString = AutoResumeFormat.relativeAgo(savedAtUnix: pointer.savedAtUnix)
-        let remaining = autoResumeCountdownRemaining
-        let plural = (remaining == 1 ? "" : "s")
-        let sessionLine = "Session: \(pointer.sessionID)"
-        let savedLine = "Saved \(agoString) (\(savedAtString))"
-        let folderLine = pointer.directoryURL.lastPathComponent
-        let countdownLine = "Training will automatically resume in \(remaining) second\(plural)."
-        let resumeLabel = "Resume Training (\(remaining))"
-
-        let content = VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Resume last training session?")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Spacer()
-                AutoResumeTriggerBadgeView(trigger: pointer.trigger)
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                Text(sessionLine)
-                if let summary = autoResumeSummary {
-                    Text(AutoResumeFormat.startedLine(sessionStartUnix: summary.sessionStartUnix))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                Text(savedLine)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            if let summary = autoResumeSummary {
-                AutoResumeProgressBlockView(summary: summary)
-                AutoResumeBuildBlockView(summary: summary)
-            }
-            Button(action: {
-                CheckpointManager.revealInFinder(pointer.directoryURL)
-            }) {
-                Text(folderLine)
-                    .font(.system(.callout, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .underline()
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-            .help("Reveal in Finder")
-            Text(countdownLine)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            HStack(spacing: 12) {
-                Spacer()
-                Button("Not Now") {
-                    dismissAutoResumeSheet()
-                }
-                .keyboardShortcut(.cancelAction)
-                Button(resumeLabel) {
-                    performAutoResume()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(minWidth: 520)
-        return AnyView(content)
-    }
-
 
     /// File-menu entry point for "Resume training from autosave".
     /// Shares `performAutoResume`'s implementation but re-reads
