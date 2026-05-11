@@ -1781,9 +1781,10 @@ final class ChessTrainer: @unchecked Sendable {
 
         // --- Policy loss: L = mean( max(0, advNorm) · CE(smoothedTarget, p) ) ---
         //
-        // Two structural changes from the original outcome-weighted CE
-        // (see CHECK_NEXT.md for the divergence analysis that motivated
-        // them):
+        // Three structural pieces, each motivated by a distinct past
+        // failure mode (the first two by the divergence analysed in
+        // CHECK_NEXT.md, the third by the *opposite* failure — illegal
+        // mass saturating at ~0.997):
         //
         // 1. Label-smoothed target. The CE labels are no longer a hard
         //    one-hot at the played move; they're a smoothed distribution
@@ -1807,10 +1808,33 @@ final class ChessTrainer: @unchecked Sendable {
         //    (`−adv · log p` going to −∞ as `p → 0`); dropping it makes
         //    the policy loss bounded below by zero, supervised-CE-shaped.
         //
+        // 3. The CE softmax is over the **raw** policy logits
+        //    (`network.policyOutput`), NOT the legal-masked logits.
+        //    Commit `acc5340` had fed `maskedLogits` here, reasoning
+        //    that masking would stop mass accumulating on illegal cells.
+        //    It did the opposite: with `maskedLogits`, the softmax over
+        //    illegal cells is ≈0 *by the −1e9 bias*, so
+        //    `∂CE/∂(illegal logit) ≈ softmax_masked − target ≈ 0 − 0 = 0`
+        //    — the CE became blind to illegal logits and they drifted up
+        //    unopposed (the entropy bonus is also masked, and the
+        //    softmax-mass `illegalMassPenalty` has gradient ∝ p, which
+        //    → 0 once illegal mass ≈ 1, so there was *no* effective
+        //    restoring force; `pIllM` parked at ~0.997 for entire runs).
+        //    Over the raw logits the legal-only target is still zero on
+        //    illegal cells — the CE can never *reward* illegal mass —
+        //    but now `∂CE/∂(illegal logit) = softmax_raw(illegal) − 0
+        //    = softmax_raw(illegal) ∈ [0, 1]`, a bounded gradient that
+        //    always pushes illegal logits down and vanishes only once
+        //    illegal mass is genuinely ≈ 0 (the correct fixed point).
+        //    `maskedLogits` is still built — the entropy bonus, move
+        //    selection, and the legal-cell diagnostics all legitimately
+        //    need it — only the CE input changed back.
+        //
         // Together: the policy loss is now structurally identical to a
         // supervised classifier with label smoothing on the positive-
-        // advantage subset of positions. The value head still trains on
-        // all positions via the MSE term — only the policy gradient is
+        // advantage subset of positions, training over the full (legal +
+        // illegal) logit vector. The value head still trains on all
+        // positions via the MSE term — only the policy gradient is
         // gated.
         //
         // The graph still uses MPSGraph's fused `softMaxCrossEntropy`
@@ -1888,8 +1912,12 @@ final class ChessTrainer: @unchecked Sendable {
             name: "policy_smoothed_target"
         )
 
+        // Raw policy logits, NOT `maskedLogits` — the CE must see the
+        // illegal cells in order to drive their softmax mass to zero.
+        // See structural piece 3 in the comment block above (and the
+        // `acc5340` backfire it describes).
         let ceLossRaw = graph.softMaxCrossEntropy(
-            maskedLogits,
+            network.policyOutput,
             labels: smoothedTarget,
             axis: 1,
             reuctionType: .none,
@@ -1930,10 +1958,20 @@ final class ChessTrainer: @unchecked Sendable {
         // instead — label smoothing (above) gives the policy CE a
         // reachable fixed point, and `max(0, advNorm)` (below) drops
         // the negative-advantage branch that lacked any fixed point.
-        // Together they make the policy loss bounded below by zero,
-        // and the per-position CE is naturally bounded by the
-        // smoothed-target entropy (around `H(smoothed) ≈ 0.64 nats`
-        // at the configured ε=0.1). No graph-level CE clamp needed.
+        // Together they make the policy loss bounded below by zero, and
+        // at convergence the per-position CE settles near the smoothed-
+        // target entropy (`H(smoothed) ≈ 0.64 nats` at ε=0.1). It can
+        // be transiently *large* — up to ≈ log(policySize) ≈ 8.5 nats
+        // while raw softmax mass is still mostly on illegal cells, which
+        // is exactly the post-`acc5340` recovery regime — but a large
+        // CE *value* is not a large *update*: the CE's gradient on every
+        // logit (legal or illegal) is `softmax_raw − target ∈ [−1, 1]`,
+        // a hard bound that holds regardless of how concentrated the raw
+        // softmax is. So no graph-level CE clamp is needed, and feeding
+        // raw rather than masked logits adds no divergence vector — if
+        // anything it's stabilizing, since the illegal-logit gradient
+        // (`= softmax_raw(illegal) ≥ 0`) actively drains the mass that
+        // would otherwise inflate `pLogitAbsMax`.
         // --- Advantage baseline: (z − vBaseline) · −log p(a*) ---
         //
         // `vBaseline` is a placeholder — the inference-time v(position)
@@ -2152,7 +2190,13 @@ final class ChessTrainer: @unchecked Sendable {
         // encourages exploration within the set of legal moves without
         // perversely rewarding mass placement on illegal moves (the
         // prior unmasked form acted as an attractor for the ~4834
-        // illegal cells).
+        // illegal cells). This is the *opposite* of the policy CE,
+        // which is over the RAW logits (structural piece 3 above): the
+        // CE has a legal-only *target* so it can never reward illegal
+        // mass and it *must* see the raw logits to push them down; the
+        // entropy bonus has no target — it just rewards spreading — so
+        // over raw logits it would pay to spread onto the illegal cells.
+        // CE → raw, entropy bonus → masked.
         let softmaxLegal = graph.softMax(
             with: maskedLogits,
             axis: 1,
