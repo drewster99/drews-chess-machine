@@ -3163,14 +3163,14 @@ final class ChessTrainer: @unchecked Sendable {
                                     "ChessTrainer.trainStep(batchSize:): non-empty inputs should have baseAddress"
                                 )
                             }
-                            let feeds = buildFeeds(
+                            let feeds = buildFeeds(BatchFeedsInput(
                                 batchSize: batchSize,
                                 boards: boardsBase,
                                 moves: movesBase,
                                 zs: zsBase,
                                 vBaselines: vBaseBase,
                                 legalMasks: legalMasksBase
-                            )
+                            ))
                             let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
                             return try runPreparedStep(
                                 feeds: feeds,
@@ -3448,14 +3448,14 @@ final class ChessTrainer: @unchecked Sendable {
 //                )
 //            }
 
-            let feeds = self.buildFeeds(
+            let feeds = self.buildFeeds(BatchFeedsInput(
                 batchSize: batchSize,
                 boards: UnsafePointer(boards),
                 moves: UnsafePointer(moves),
                 zs: UnsafePointer(zs),
                 vBaselines: UnsafePointer(vBaselines),
                 legalMasks: UnsafePointer(masks)
-            )
+            ))
             let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
 
             // Run the training step. The returned timing has nil
@@ -4083,15 +4083,25 @@ final class ChessTrainer: @unchecked Sendable {
     /// Takes raw pointers so both the `[Float]`-backed random-data
     /// path and the `ReplayBuffer`-backed real-data path can feed
     /// through without any Swift Array CoW concerns.
-    private func buildFeeds(
-        batchSize: Int,
-        boards: UnsafePointer<Float>,
-        moves: UnsafePointer<Int32>,
-        zs: UnsafePointer<Float>,
-        vBaselines: UnsafePointer<Float>,
-        legalMasks: UnsafePointer<Float>
-    ) -> [MPSGraphTensor: MPSGraphTensorData] {
-        let cached = feedsForBatch(batchSize)
+    ///
+    /// Wrapped in `BatchFeedsInput` (rather than six positional args, four of
+    /// which are same-typed `UnsafePointer<Float>`) so the compiler binds the
+    /// batch's board / z / value-baseline / legal-mask buffers by name — a
+    /// future refactor can't silently swap two of them and still produce a
+    /// shaped batch. The struct is constructed at the call site and consumed
+    /// synchronously; the pointers it holds must outlive the call (the
+    /// caller's `withUnsafeBufferPointer` scope), exactly as before.
+    struct BatchFeedsInput {
+        let batchSize: Int
+        let boards: UnsafePointer<Float>
+        let moves: UnsafePointer<Int32>
+        let zs: UnsafePointer<Float>
+        let vBaselines: UnsafePointer<Float>
+        let legalMasks: UnsafePointer<Float>
+    }
+
+    private func buildFeeds(_ input: BatchFeedsInput) -> [MPSGraphTensor: MPSGraphTensorData] {
+        let cached = feedsForBatch(input.batchSize)
 
         // Float32-only hot path. The ND array's element type matches
         // ChessNetwork.dataType, so on .float32 we can hand it the raw
@@ -4103,23 +4113,23 @@ final class ChessTrainer: @unchecked Sendable {
         }
 
         cached.boardND.writeBytes(
-            UnsafeMutableRawPointer(mutating: boards),
+            UnsafeMutableRawPointer(mutating: input.boards),
             strideBytes: nil
         )
         cached.moveND.writeBytes(
-            UnsafeMutableRawPointer(mutating: moves),
+            UnsafeMutableRawPointer(mutating: input.moves),
             strideBytes: nil
         )
         cached.zND.writeBytes(
-            UnsafeMutableRawPointer(mutating: zs),
+            UnsafeMutableRawPointer(mutating: input.zs),
             strideBytes: nil
         )
         cached.vBaselineND.writeBytes(
-            UnsafeMutableRawPointer(mutating: vBaselines),
+            UnsafeMutableRawPointer(mutating: input.vBaselines),
             strideBytes: nil
         )
-        cached.legalMaskND.writeBytes(                     // <-- add
-            UnsafeMutableRawPointer(mutating: legalMasks),
+        cached.legalMaskND.writeBytes(
+            UnsafeMutableRawPointer(mutating: input.legalMasks),
             strideBytes: nil
         )
         // Write the current learning rate and weight decay into the
@@ -4145,7 +4155,7 @@ final class ChessTrainer: @unchecked Sendable {
         var lr: Float
         if sqrtBatchScalingForLR {
             let sqrtBatchScale: Float = Float(
-                sqrt(Double(batchSize) / Double(Self.sqrtScaleBaseBatchSize))
+                sqrt(Double(input.batchSize) / Double(Self.sqrtScaleBaseBatchSize))
             )
             lr = learningRate * sqrtBatchScale
         } else {
