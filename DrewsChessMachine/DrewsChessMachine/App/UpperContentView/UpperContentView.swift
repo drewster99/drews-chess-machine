@@ -1899,6 +1899,13 @@ struct UpperContentView: View {
                 lastTrainStep = snap.lastTiming
                 realRollingPolicyLoss = snap.rollingPolicyLoss
                 realRollingValueLoss = snap.rollingValueLoss
+                
+                // Periodic memory log to stdout to correlate with performance degradation
+                if snap.stats.steps % 100 == 0 {
+                    let appMB = Double(memoryStatsSnap?.appFootprintBytes ?? 0) / 1024 / 1024
+                    let gpuMB = Double(memoryStatsSnap?.gpuAllocatedBytes ?? 0) / 1024 / 1024
+                    print(String(format: "[MEMORY-DEBUG] step=%d app=%.1fMB gpu=%.1fMB", snap.stats.steps, appMB, gpuMB))
+                }
             }
             if let err = snap.error, trainingError == nil {
                 trainingError = err
