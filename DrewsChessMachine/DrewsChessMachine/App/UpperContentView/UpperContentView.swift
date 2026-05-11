@@ -1318,6 +1318,23 @@ struct UpperContentView: View {
     }
 
     var body: some View {
+        // TEMP perf instrumentation (heartbeat-tick stall investigation):
+        // time how long a single `body` evaluation (tree construction)
+        // takes and how often it fires, on the same stdout stream as the
+        // `>> after N:` / `[DISPATCH-LATENCY]` / `[MEMORY-DEBUG]` probes.
+        // The `defer` runs when this getter's scope exits — i.e. after the
+        // whole `VStack { … }` ViewBuilder below has finished — so `ms`
+        // covers all the subview construction and `@ViewBuilder` helper
+        // accesses. 2 ms floor keeps idle no-op renders out of the log.
+        let __bodyT0 = CFAbsoluteTimeGetCurrent()
+        defer {
+            let ms = (CFAbsoluteTimeGetCurrent() - __bodyT0) * 1000
+            if ms > 2 { print(String(format: "[BODY-EVAL] %.1f ms", ms)) }
+        }
+        #if DEBUG
+        // Logs which tracked dependency triggered this invalidation.
+        Self._printChanges()
+        #endif
         // Body-local @Bindable shadow of the TrainingParameters singleton
         // so `$trainingParams.<name>` projects a real `Binding<T>` for
         // Steppers/Toggles inside the body.
