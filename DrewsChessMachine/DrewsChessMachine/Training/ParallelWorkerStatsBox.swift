@@ -39,6 +39,9 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     private var _insufficientMaterialDraws: Int = 0
     private var _trainingSteps: Int = 0
     private var _recentGames: [GameRecord] = []
+    private var _recentGamesHead: Int = 0
+    private var _recentGamesRunningMoves: Int = 0
+    private var _recentGamesRunningWallMs: Double = 0.0
     /// Fixed-capacity ring of recent game lengths (plies), used to
     /// compute p50/p95 in `Snapshot`. Sized for a few hundred games
     /// — plenty for a meaningful percentile on the 10-minute
@@ -120,6 +123,9 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             self._threefoldRepetitionDraws = 0
             self._insufficientMaterialDraws = 0
             self._recentGames.removeAll()
+            self._recentGamesHead = 0
+            self._recentGamesRunningMoves = 0
+            self._recentGamesRunningWallMs = 0
             self._recentGameLengths.removeAll(keepingCapacity: true)
             self._recentGameLengthsHead = 0
         }
@@ -158,6 +164,8 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             }
 
             self._recentGames.append(GameRecord(timestamp: now, moves: moves, durationMs: durationMs))
+            self._recentGamesRunningMoves += moves
+            self._recentGamesRunningWallMs += durationMs
             self.pruneRecentLocked(now: now)
 
             // Percentile ring. Pre-sized lazily; FIFO overwrite once
@@ -184,8 +192,16 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// O(k) where k is the expired count.
     private func pruneRecentLocked(now: Date) {
         let cutoff = now.addingTimeInterval(-Self.recentWindow)
-        while let first = _recentGames.first, first.timestamp < cutoff {
-            _recentGames.removeFirst()
+        while _recentGamesHead < _recentGames.count, _recentGames[_recentGamesHead].timestamp < cutoff {
+            let r = _recentGames[_recentGamesHead]
+            _recentGamesRunningMoves -= r.moves
+            _recentGamesRunningWallMs -= r.durationMs
+            _recentGamesHead += 1
+        }
+
+        if _recentGamesHead > _recentGames.count / 2 && _recentGamesHead > 100 {
+            _recentGames.removeSubrange(0..<_recentGamesHead)
+            _recentGamesHead = 0
         }
     }
 
@@ -235,14 +251,11 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             let now = Date()
             pruneRecentLocked(now: now)
 
-            var recentMoves = 0
-            var recentGameWallMs: Double = 0
-            for r in _recentGames {
-                recentMoves += r.moves
-                recentGameWallMs += r.durationMs
-            }
+            let recentMoves = _recentGamesRunningMoves
+            let recentGameWallMs = _recentGamesRunningWallMs
             let recentWindowSec: Double
-            if let oldest = _recentGames.first?.timestamp {
+            if _recentGamesHead < _recentGames.count {
+                let oldest = _recentGames[_recentGamesHead].timestamp
                 recentWindowSec = min(Self.recentWindow, now.timeIntervalSince(oldest))
             } else {
                 recentWindowSec = 0
@@ -271,7 +284,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 insufficientMaterialDraws: _insufficientMaterialDraws,
                 trainingSteps: _trainingSteps,
                 sessionStart: _sessionStart,
-                recentGames: _recentGames.count,
+                recentGames: _recentGames.count - _recentGamesHead,
                 recentMoves: recentMoves,
                 recentGameWallMs: recentGameWallMs,
                 recentWindowSeconds: recentWindowSec,

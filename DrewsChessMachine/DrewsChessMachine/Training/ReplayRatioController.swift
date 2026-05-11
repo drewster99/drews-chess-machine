@@ -180,6 +180,8 @@ final class ReplayRatioController: @unchecked Sendable {
         let signedMs: Double
     }
     private var _delayHistory: [DelayHistoryEntry] = []
+    private var _delayHistoryHead: Int = 0
+    private var _delayHistoryRunningSum: Double = 0.0
 
     // MARK: - 1-minute rolling rate estimator
 
@@ -206,6 +208,7 @@ final class ReplayRatioController: @unchecked Sendable {
         let trainingTotal: Int
     }
     private var _rateSamples: [RateSample] = []
+    private var _rateSamplesHead: Int = 0
     private var _lastRateSampleAt: Date? = nil
 
     // MARK: - Init
@@ -378,6 +381,7 @@ final class ReplayRatioController: @unchecked Sendable {
         _delayHistory.append(
             DelayHistoryEntry(at: now, signedMs: signedPerTrainingBatchMs)
         )
+        _delayHistoryRunningSum += signedPerTrainingBatchMs
         pruneDelayHistory(now: now)
     }
 
@@ -387,8 +391,15 @@ final class ReplayRatioController: @unchecked Sendable {
     /// an event in a while (e.g. the training task paused).
     private func pruneDelayHistory(now: Date) {
         let cutoff = now.addingTimeInterval(-historyWindowSec)
-        while let first = _delayHistory.first, first.at < cutoff {
-            _delayHistory.removeFirst()
+        while _delayHistoryHead < _delayHistory.count, _delayHistory[_delayHistoryHead].at < cutoff {
+            _delayHistoryRunningSum -= _delayHistory[_delayHistoryHead].signedMs
+            _delayHistoryHead += 1
+        }
+
+        // Amortized O(1) compaction to avoid memory growth and O(N) shifts.
+        if _delayHistoryHead > _delayHistory.count / 2 && _delayHistoryHead > 1000 {
+            _delayHistory.removeSubrange(0..<_delayHistoryHead)
+            _delayHistoryHead = 0
         }
     }
 
@@ -414,8 +425,13 @@ final class ReplayRatioController: @unchecked Sendable {
 
     private func pruneRateSamples(now: Date) {
         let cutoff = now.addingTimeInterval(-rateWindowSec)
-        while let first = _rateSamples.first, first.at < cutoff {
-            _rateSamples.removeFirst()
+        while _rateSamplesHead < _rateSamples.count, _rateSamples[_rateSamplesHead].at < cutoff {
+            _rateSamplesHead += 1
+        }
+
+        if _rateSamplesHead > _rateSamples.count / 2 && _rateSamplesHead > 100 {
+            _rateSamples.removeSubrange(0..<_rateSamplesHead)
+            _rateSamplesHead = 0
         }
     }
 
@@ -425,10 +441,11 @@ final class ReplayRatioController: @unchecked Sendable {
     /// span in the window yet — short spans produce unstable rates.
     private func rollingRates() -> (production: Double, consumption: Double) {
         pruneRateSamples(now: Date())
-        guard let oldest = _rateSamples.first,
+        guard _rateSamplesHead < _rateSamples.count,
               let newest = _rateSamples.last else {
             return (0, 0)
         }
+        let oldest = _rateSamples[_rateSamplesHead]
         let dt = newest.at.timeIntervalSince(oldest.at)
         guard dt >= 1.0 else {
             return (0, 0)
@@ -445,11 +462,11 @@ final class ReplayRatioController: @unchecked Sendable {
     /// drain where all history entries have aged out.
     private func smoothedSignedDelayMs() -> Double {
         pruneDelayHistory(now: Date())
-        guard !_delayHistory.isEmpty else {
+        let count = _delayHistory.count - _delayHistoryHead
+        guard count > 0 else {
             return _rawSignedDelayMs
         }
-        let sum = _delayHistory.reduce(0.0) { $0 + $1.signedMs }
-        return sum / Double(_delayHistory.count)
+        return _delayHistoryRunningSum / Double(count)
     }
 
     /// Training-side projection: if the smoothed signed value is
@@ -635,6 +652,8 @@ final class ReplayRatioController: @unchecked Sendable {
                 // represent.
                 self._rawSignedDelayMs = Double(clamped)
                 self._delayHistory.removeAll(keepingCapacity: true)
+                self._delayHistoryHead = 0
+                self._delayHistoryRunningSum = Double(clamped)
                 self._delayHistory.append(
                     DelayHistoryEntry(at: Date(), signedMs: Double(clamped))
                 )

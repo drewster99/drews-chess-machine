@@ -198,6 +198,10 @@ final class ChartCoordinator {
     /// `chartElapsedAnchor` to `Date()` so a fresh session's chart
     /// axis starts at 0.
     func reset() {
+        decimationTask?.cancel()
+        decimationTask = nil
+        decimationGeneration += 1
+
         progressRateRing.reset()
         trainingRing.reset()
         decimatedFrame = .empty
@@ -218,6 +222,8 @@ final class ChartCoordinator {
 
     /// Background task managing the current decimation pass.
     private var decimationTask: Task<Void, Never>?
+    /// Generation token to prevent stale decimation frames from being published after a reset or rapid updates.
+    private var decimationGeneration: Int = 0
 
     /// Recompute `decimatedFrame` from the current rings + visible
     /// window. Captures the visible sample slices on the main actor
@@ -226,6 +232,8 @@ final class ChartCoordinator {
     func recomputeDecimatedFrame() {
         // Cancel any stale decimation in flight.
         decimationTask?.cancel()
+        decimationGeneration += 1
+        let generation = decimationGeneration
 
         let visibleLength = ChartZoom.stops[chartZoomIdx]
         let visibleStart = max(0, scrollX)
@@ -253,7 +261,7 @@ final class ChartCoordinator {
         let lastT = trainingRing.last?.elapsedSec
         let lastP = progressRateRing.last?.elapsedSec
 
-        decimationTask = Task {
+        decimationTask = Task.detached { [weak self] in
             // Heavy O(N) work runs on a background global executor.
             let frame = ChartDecimator.decimate(
                 trainingSamples: tSamples,
@@ -269,6 +277,8 @@ final class ChartCoordinator {
             // Switch back to the main actor to publish the result.
             if !Task.isCancelled {
                 await MainActor.run {
+                    guard let self = self else { return }
+                    guard self.decimationGeneration == generation else { return }
                     if frame != self.decimatedFrame {
                         self.decimatedFrame = frame
                     }
