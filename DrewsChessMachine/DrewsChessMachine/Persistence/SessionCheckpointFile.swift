@@ -179,12 +179,23 @@ struct SessionCheckpointState: Codable, Equatable {
     /// the term existed; absent → loader falls through to the user's
     /// current `TrainingParameters.shared.illegalMassWeight`.
     var illegalMassPenaltyWeight: Float?
+    /// Policy-CE label-smoothing coefficient ε in effect at save time.
+    /// ε=0 → one-hot played-move target; ε>0 → `(1−ε)·oneHot + ε·uniform(legal)`.
+    /// Optional for back-compat with session files written before this
+    /// term existed; absent → loader falls through to the user's
+    /// current `TrainingParameters.shared.policyLabelSmoothingEpsilon`.
+    var policyLabelSmoothingEpsilon: Float?
 
     // Replay-ratio controller settings. All Optional so older
     // session.json files that lack these keys still decode.
     var replayRatioTarget: Double?
     var replayRatioAutoAdjust: Bool?
     var stepDelayMs: Int?
+    /// Self-play-side per-game-per-worker delay (ms) in effect at save
+    /// time. Distinct from `stepDelayMs`, which is the training-side
+    /// inter-batch delay. Optional for back-compat; absent → loader
+    /// falls through to `TrainingParameters.shared.selfPlayDelayMs`.
+    var selfPlayDelayMs: Int?
     var lastAutoComputedDelayMs: Int?
 
     // Training-loop parameters that previously lived only in
@@ -202,6 +213,10 @@ struct SessionCheckpointState: Codable, Equatable {
     var legalMassCollapseThreshold: Double?
     var legalMassCollapseGraceSeconds: Double?
     var legalMassCollapseNoImprovementProbes: Int?
+    /// Interval (in training steps) between `[BATCH-STATS]` emissions.
+    /// Optional for back-compat; absent → loader falls through to
+    /// `TrainingParameters.shared.batchStatsInterval`.
+    var batchStatsInterval: Int?
 
     // Game-result breakdown (added v1.1 — Optional for compat)
     var whiteCheckmates: Int?

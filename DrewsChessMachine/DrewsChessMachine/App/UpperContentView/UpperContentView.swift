@@ -2997,9 +2997,11 @@ struct UpperContentView: View {
             valueLossWeight: Float(trainingParams.valueLossWeight),
             momentumCoeff: Float(trainingParams.momentumCoeff),
             illegalMassPenaltyWeight: Float(trainingParams.illegalMassWeight),
+            policyLabelSmoothingEpsilon: Float(trainingParams.policyLabelSmoothingEpsilon),
             replayRatioTarget: trainingParams.replayRatioTarget,
             replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust,
             stepDelayMs: trainingParams.trainingStepDelayMs,
+            selfPlayDelayMs: trainingParams.selfPlayDelayMs,
             lastAutoComputedDelayMs: lastAutoComputedDelayMs,
             // Schema-expansion fields (added to close the autotrain
             // reproducibility gap — these previously lived only in
@@ -3015,6 +3017,7 @@ struct UpperContentView: View {
             legalMassCollapseThreshold: trainingParams.legalMassCollapseThreshold,
             legalMassCollapseGraceSeconds: trainingParams.legalMassCollapseGraceSeconds,
             legalMassCollapseNoImprovementProbes: trainingParams.legalMassCollapseNoImprovementProbes,
+            batchStatsInterval: trainingParams.batchStatsInterval,
             whiteCheckmates: snap?.whiteCheckmates,
             blackCheckmates: snap?.blackCheckmates,
             stalemates: snap?.stalemates,
@@ -6185,6 +6188,30 @@ struct UpperContentView: View {
                         "[RESUME-PARAM] illegal_mass_weight: saved=nil applied=\(trainingParams.illegalMassWeight) (defaulted)"
                     )
                 }
+                if let lse = rs.policyLabelSmoothingEpsilon {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_epsilon: \(trainingParams.policyLabelSmoothingEpsilon) -> \(lse) (from session)"
+                    )
+                    trainer.policyLabelSmoothingEpsilon = lse
+                    trainingParams.policyLabelSmoothingEpsilon = Double(lse)
+                } else {
+                    trainer.policyLabelSmoothingEpsilon = Float(trainingParams.policyLabelSmoothingEpsilon)
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] policy_label_smoothing_epsilon: saved=nil applied=\(trainingParams.policyLabelSmoothingEpsilon) (defaulted)"
+                    )
+                }
+                if let bsi = rs.batchStatsInterval {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] batch_stats_interval: \(trainingParams.batchStatsInterval) -> \(bsi) (from session)"
+                    )
+                    trainer.batchStatsInterval = bsi
+                    trainingParams.batchStatsInterval = bsi
+                } else {
+                    trainer.batchStatsInterval = trainingParams.batchStatsInterval
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] batch_stats_interval: saved=nil applied=\(trainingParams.batchStatsInterval) (defaulted)"
+                    )
+                }
                 // LR warmup length and sqrt-batch LR scaling are now
                 // part of the session schema (Optional, for back-compat
                 // with older `.dcmsession` files that pre-date the
@@ -6464,6 +6491,9 @@ struct UpperContentView: View {
             }
             if let delay = rs.stepDelayMs {
                 trainingParams.trainingStepDelayMs = delay
+            }
+            if let spDelay = rs.selfPlayDelayMs {
+                trainingParams.selfPlayDelayMs = spDelay
             }
             if let autoDelay = rs.lastAutoComputedDelayMs {
                 lastAutoComputedDelayMs = autoDelay
