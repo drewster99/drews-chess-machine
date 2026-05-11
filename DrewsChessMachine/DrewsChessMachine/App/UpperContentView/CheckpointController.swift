@@ -391,6 +391,50 @@ final class CheckpointController {
         completedTrainingSegments.count + (activeSegmentStart != nil ? 1 : 0)
     }
 
+    // MARK: - Load file importers (Stage 3c part 2c)
+
+    /// Drives the Load Model file importer sheet (File menu → Load Model…).
+    /// Bound from the body's `Color.clear.fileImporter(isPresented:…)`. The
+    /// commandHub menu action flips this to `true`; the SwiftUI sheet's
+    /// completion handler calls `loadModelFrom(url:)` on `UpperContentView`,
+    /// which is the actual load engine (will move into this controller in a
+    /// later sub-stage once SessionController exists and can supply the
+    /// `network`/`runner`/`trainer` writeback).
+    var showingLoadModelImporter: Bool = false
+
+    /// Drives the Load Session file importer sheet (File menu → Load
+    /// Session…). Same lifecycle as `showingLoadModelImporter`.
+    var showingLoadSessionImporter: Bool = false
+
+    /// A parsed standalone model that was loaded from disk but not yet applied
+    /// (so the apply step can inspect/log the loaded weights before they go
+    /// live). The load path on `UpperContentView` consumes and clears this.
+    var pendingLoadedModel: ModelCheckpointFile?
+
+    // MARK: - Session pointer (Stage 3c part 2c)
+
+    /// Persist a pointer to the session directory that was just saved so the
+    /// next app launch can offer to auto-resume it. Called from every
+    /// successful session-save path (manual, post-promotion, periodic) so the
+    /// pointer always names the freshest on-disk session regardless of which
+    /// trigger wrote it.
+    func recordLastSessionPointer(
+        directoryURL: URL,
+        sessionID: String,
+        trigger: String
+    ) {
+        let pointer = LastSessionPointer(
+            sessionID: sessionID,
+            directoryPath: directoryURL.path,
+            savedAtUnix: Int64(Date().timeIntervalSince1970),
+            trigger: trigger
+        )
+        pointer.write()
+        SessionLogger.shared.log(
+            "[CHECKPOINT] resume-pointer set → \(directoryURL.lastPathComponent) (\(trigger))"
+        )
+    }
+
     /// Completion handler for the Save Parameters file exporter.
     /// Logs success or failure to the session log; user-visible
     /// status appears in the checkpoint status row.

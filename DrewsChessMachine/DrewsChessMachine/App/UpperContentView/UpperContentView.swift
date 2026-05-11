@@ -644,26 +644,20 @@ struct UpperContentView: View {
     /// clears it.
     @State private var pendingLoadedSession: LoadedSession?
 
-    /// A parsed standalone model that was loaded from disk but
-    /// not yet applied. Consumed by a follow-up network build
-    /// or by `startRealTraining` to initialize the champion's
-    /// weights from the loaded file. Cleared on apply.
-    @State private var pendingLoadedModel: ModelCheckpointFile?
-
     /// The checkpoint subsystem (status display, slow-save watchdog, segment
-    /// tracking, parameter import/export — the save/load/periodic-save logic
-    /// will join in Stage 3c parts 2c–2e). Read by the body's status row
+    /// tracking, parameter + load-model + load-session file importers + the
+    /// last-session pointer record — the save/load engines and periodic-save
+    /// will join in Stage 3c parts 2d–2e). Read by the body's status row
     /// (`CheckpointStatusLineView`); written by the save/load methods still on
     /// `UpperContentView` via `checkpoint.setCheckpointStatus(_:kind:)` /
     /// `.startSlowSaveWatchdog(label:)` / `.cancelSlowSaveWatchdog()` and the
     /// `.checkpointSaveInFlight` flag.
     @State private var checkpoint = CheckpointController()
 
-    /// Drives the Load Model file importer sheet.
-    @State private var showingLoadModelImporter: Bool = false
-
-    /// Drives the Load Session file importer sheet.
-    @State private var showingLoadSessionImporter: Bool = false
+    // checkpoint.showingLoadModelImporter / checkpoint.showingLoadSessionImporter / checkpoint.pendingLoadedModel
+    // moved to CheckpointController in Stage 3c part 2c; the `.fileImporter`
+    // modifiers in `body` now bind to `$checkpoint.checkpoint.showingLoadModelImporter`
+    // etc.
 
     // The Load Parameters / Save Parameters importer/exporter state and the
     // three Parameter-handler methods moved to `CheckpointController` in
@@ -1375,7 +1369,7 @@ struct UpperContentView: View {
             // status row above is absent.
             Color.clear
                 .fileImporter(
-                    isPresented: $showingLoadModelImporter,
+                    isPresented: $checkpoint.showingLoadModelImporter,
                     allowedContentTypes: [.data, .item],
                     allowsMultipleSelection: false,
                     onCompletion: { result in
@@ -1383,14 +1377,14 @@ struct UpperContentView: View {
                     }
                 )
                 .fileDialogDefaultDirectory(
-                    showingLoadModelImporter
+                    checkpoint.showingLoadModelImporter
                     ? CheckpointPaths.modelsDir
                     : CheckpointPaths.sessionsDir
                 )
 
             Color.clear
                 .fileImporter(
-                    isPresented: $showingLoadSessionImporter,
+                    isPresented: $checkpoint.showingLoadSessionImporter,
                     allowedContentTypes: [.folder],
                     allowsMultipleSelection: false,
                     onCompletion: { result in
@@ -2855,7 +2849,7 @@ struct UpperContentView: View {
                 SessionLogger.shared.log(
                     "[CHECKPOINT] Saved session (\(diskTag)): \(url.lastPathComponent) build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(bufStr)"
                 )
-                recordLastSessionPointer(
+                checkpoint.recordLastSessionPointer(
                     directoryURL: url,
                     sessionID: sessionState.sessionID,
                     trigger: diskTag
@@ -2867,30 +2861,6 @@ struct UpperContentView: View {
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
             }
         }
-    }
-
-    /// Persist a pointer to the session directory that was just
-    /// saved so the next app launch can offer to auto-resume it.
-    /// Called from every successful session-save path (manual,
-    /// post-promotion, periodic) so the pointer always names the
-    /// freshest on-disk session regardless of which trigger wrote
-    /// it.
-    @MainActor
-    private func recordLastSessionPointer(
-        directoryURL: URL,
-        sessionID: String,
-        trigger: String
-    ) {
-        let pointer = LastSessionPointer(
-            sessionID: sessionID,
-            directoryPath: directoryURL.path,
-            savedAtUnix: Int64(Date().timeIntervalSince1970),
-            trigger: trigger
-        )
-        pointer.write()
-        SessionLogger.shared.log(
-            "[CHECKPOINT] resume-pointer set → \(directoryURL.lastPathComponent) (\(trigger))"
-        )
     }
 
     /// Load a standalone `.dcmmodel` into the current champion
@@ -3358,11 +3328,11 @@ struct UpperContentView: View {
         }
         commandHub.loadSession = {
             SessionLogger.shared.log("[BUTTON] Load Session")
-            showingLoadSessionImporter = true
+            checkpoint.showingLoadSessionImporter = true
         }
         commandHub.loadModel = {
             SessionLogger.shared.log("[BUTTON] Load Model")
-            showingLoadModelImporter = true
+            checkpoint.showingLoadModelImporter = true
         }
         commandHub.loadParameters = {
             SessionLogger.shared.log("[BUTTON] Load Parameters")
@@ -4409,7 +4379,7 @@ struct UpperContentView: View {
                         SessionLogger.shared.log(
                             "[CHECKPOINT] Saved session (post-promotion): \(url.lastPathComponent) build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(bufStr)"
                         )
-                        recordLastSessionPointer(
+                        checkpoint.recordLastSessionPointer(
                             directoryURL: url,
                             sessionID: sessionState.sessionID,
                             trigger: "post-promotion"
