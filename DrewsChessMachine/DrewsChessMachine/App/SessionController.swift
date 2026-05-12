@@ -209,6 +209,93 @@ final class SessionController {
     /// never-deallocated `UpperContentView`.
     weak var checkpoint: CheckpointController?
 
+    // MARK: - Session-runtime boxes + replay-ratio compensator (Stage 4f)
+
+    /// Live `SamplingScheduleBox` for the current Play-and-Train session — the
+    /// `onChange` handlers on the tau fields push freshly-built `SamplingSchedule`s
+    /// into it so edits take effect at each slot's next game boundary. `nil`
+    /// between sessions.
+    var samplingScheduleBox: SamplingScheduleBox?
+
+    /// Worker-0 self-play pause gate for the current session. The checkpoint
+    /// save path uses it to briefly pause champion exports. `nil` between sessions.
+    var activeSelfPlayGate: WorkerPauseGate?
+
+    /// Training-worker pause gate for the current session. The checkpoint save
+    /// path uses it to briefly pause trainer-weight exports. `nil` between sessions.
+    var activeTrainingGate: WorkerPauseGate?
+
+    /// Replay-ratio controller (tracks the 1-minute rolling cons/prod ratio and
+    /// auto-adjusts the training step delay). Created at session start, polled
+    /// by the heartbeat, cleared at session end.
+    var replayRatioController: ReplayRatioController?
+
+    /// Latest `replayRatioController` snapshot, mirrored by the heartbeat for UI.
+    var replayRatioSnapshot: ReplayRatioController.RatioSnapshot?
+
+    /// Effective replay-ratio set-point (`T_eff`) — the outer integral
+    /// compensator's drifted internal target. `nil` when no session is active so
+    /// teardown produces a clean re-seed on the next start. See
+    /// `updateReplayRatioCompensator`.
+    var effectiveReplayRatioTarget: Double?
+
+    /// Wall-clock of the previous compensator tick — drives the `dt` for the
+    /// integral update so the gain is `target-units per second`.
+    var lastReplayRatioCompensatorAt: Date?
+
+    /// Outer integral compensator for the replay-ratio controller's per-tick
+    /// overhead-subtraction bias. Called every heartbeat tick while a session is
+    /// live. Wraps the inner controller without modifying it: each tick, observe
+    /// `gap = userTarget − snap.currentRatio`, nudge the controller's INTERNAL
+    /// set-point `T_eff` in the same sign (`T_eff += k·gap·dt`), bounded to
+    /// `[0.5, 5.0]·userTarget`. The user-facing parameter never moves. See the
+    /// long derivation comment that was on `UpperContentView` for the full why.
+    @MainActor
+    func updateReplayRatioCompensator(snap: ReplayRatioController.RatioSnapshot) {
+        guard realTraining, let rc = replayRatioController else {
+            if effectiveReplayRatioTarget != nil {
+                effectiveReplayRatioTarget = nil
+                lastReplayRatioCompensatorAt = nil
+            }
+            return
+        }
+        let userTarget = TrainingParameters.shared.replayRatioTarget
+        guard userTarget > 0 else { return }
+        if !snap.autoAdjust {
+            if effectiveReplayRatioTarget != nil {
+                effectiveReplayRatioTarget = nil
+                lastReplayRatioCompensatorAt = nil
+            }
+            return
+        }
+        let now = Date()
+        guard let prevTeff = effectiveReplayRatioTarget,
+              let prevAt = lastReplayRatioCompensatorAt else {
+            effectiveReplayRatioTarget = userTarget
+            lastReplayRatioCompensatorAt = now
+            rc.targetRatio = userTarget
+            return
+        }
+        guard snap.currentRatio > 0 else {
+            lastReplayRatioCompensatorAt = now
+            return
+        }
+        let dt = now.timeIntervalSince(prevAt)
+        let dtClamped = min(max(dt, 0.0), 1.0)
+        let gainPerSecond = 0.05
+        let gap = userTarget - snap.currentRatio
+        var nextTeff = prevTeff + gainPerSecond * gap * dtClamped
+        let lo = 0.5 * userTarget
+        let hi = 5.0 * userTarget
+        if nextTeff < lo { nextTeff = lo }
+        if nextTeff > hi { nextTeff = hi }
+        if abs(nextTeff - prevTeff) > 0.001 {
+            rc.targetRatio = nextTeff
+            effectiveReplayRatioTarget = nextTeff
+        }
+        lastReplayRatioCompensatorAt = now
+    }
+
     // MARK: - Trainer build / config + sampling schedules (Stage 4e)
 
     /// Ensure the trainer exists, (re)applying all live `TrainingParameters`

@@ -725,63 +725,39 @@ struct UpperContentView: View {
     /// tau fields call `setSelfPlay` / `setArena` with freshly
     /// constructed `SamplingSchedule` objects so edits take effect at
     /// each slot's next game boundary. Cleared when a session ends.
-    @State private var samplingScheduleBox: SamplingScheduleBox?
+    // Session-runtime boxes (samplingScheduleBox / activeSelfPlayGate /
+    // activeTrainingGate / replayRatioController / replayRatioSnapshot) and the
+    // replay-ratio compensator state (effectiveReplayRatioTarget /
+    // lastReplayRatioCompensatorAt) moved to SessionController in Stage 4f —
+    // forwarding proxies below. (Set at session start by startRealTraining,
+    // polled by the heartbeat, used by the checkpoint save path, cleared at
+    // session end.)
+    private var samplingScheduleBox: SamplingScheduleBox? {
+        get { session.samplingScheduleBox } nonmutating set { session.samplingScheduleBox = newValue }
+    }
+    private var activeSelfPlayGate: WorkerPauseGate? {
+        get { session.activeSelfPlayGate } nonmutating set { session.activeSelfPlayGate = newValue }
+    }
+    private var activeTrainingGate: WorkerPauseGate? {
+        get { session.activeTrainingGate } nonmutating set { session.activeTrainingGate = newValue }
+    }
+    private var replayRatioController: ReplayRatioController? {
+        get { session.replayRatioController } nonmutating set { session.replayRatioController = newValue }
+    }
+    private var replayRatioSnapshot: ReplayRatioController.RatioSnapshot? {
+        get { session.replayRatioSnapshot } nonmutating set { session.replayRatioSnapshot = newValue }
+    }
 
-    /// Live reference to worker 0's self-play pause gate for the
-    /// current Play-and-Train session. Set at session start by
-    /// `startRealTraining` and cleared at session end. Used by
-    /// the checkpoint save path to briefly pause champion exports
-    /// without having to reach into the task-group closure.
-    @State private var activeSelfPlayGate: WorkerPauseGate?
-
-    /// Live reference to the training worker's pause gate for
-    /// the current Play-and-Train session. Set at session start
-    /// and cleared at session end. Used by the checkpoint save
-    /// path to briefly pause trainer weight exports.
-    @State private var activeTrainingGate: WorkerPauseGate?
-
-    /// Replay-ratio controller that tracks the 1-minute rolling
-    /// ratio of training consumption to self-play production and
-    /// auto-adjusts the training step delay to keep them balanced.
-    /// Created at session start, polled by the UI heartbeat for
-    /// display, and cleared at session end.
-    @State private var replayRatioController: ReplayRatioController?
-    /// Latest snapshot from `replayRatioController`, mirrored by
-    /// the heartbeat for UI display.
-    @State private var replayRatioSnapshot: ReplayRatioController.RatioSnapshot?
-
-    /// Outer integral compensator for the replay-ratio controller's
-    /// per-tick overhead-subtraction bias. The inner controller's
-    /// barrier-tick overhead estimate (`D × P / G`) is dimensionally
-    /// internally consistent but observably mis-scaled relative to
-    /// the actual barrier-wall inflation under the batched
-    /// shared-evaluator architecture (workers serialize through one
-    /// barrier rather than running fully in parallel, so the per-game
-    /// sleep does not divide cleanly across the pool). Empirically the
-    /// inner controller's equilibrium settles at a `cons/prod` ratio
-    /// well below the user-configured `replayRatioTarget` (observed
-    /// ~0.78 vs target 1.10 in the failing autotrain runs). Rather
-    /// than altering the inner formula, we wrap the controller with a
-    /// slow integral compensator: each heartbeat we observe the gap
-    /// between the user's desired target (`trainingParams
-    /// .replayRatioTarget`) and the controller's reported
-    /// `currentRatio`, then nudge the controller's INTERNAL target
-    /// (`controller.targetRatio`) in the direction that closes the
-    /// gap. The user-facing parameter does not move; only the
-    /// internal control set-point drifts. Reset to the user value on
-    /// session start, on user edit of `replayRatioTarget`, and on
-    /// auto-adjust toggle.
-    ///
-    /// This is the controller's effective set-point (`T_eff` in the
-    /// derivation comments) — `nil` when no session is active so
-    /// teardown produces a clean re-seed on the next start.
-    @State private var effectiveReplayRatioTarget: Double?
-    /// Wall-clock stamp of the previous compensator tick. Drives the
-    /// dt for the integral update so the gain is expressed in
-    /// `target-units per second` rather than `per-heartbeat-tick`,
-    /// which keeps the compensator's behavior independent of any
-    /// future change to the heartbeat cadence.
-    @State private var lastReplayRatioCompensatorAt: Date?
+    // The replay-ratio compensator's state (`effectiveReplayRatioTarget` =
+    // T_eff, `lastReplayRatioCompensatorAt`) and the `updateReplayRatioCompensator`
+    // method moved to SessionController in Stage 4f — forwarding proxies below;
+    // the heartbeat calls `session.updateReplayRatioCompensator(snap:)`.
+    private var effectiveReplayRatioTarget: Double? {
+        get { session.effectiveReplayRatioTarget } nonmutating set { session.effectiveReplayRatioTarget = newValue }
+    }
+    private var lastReplayRatioCompensatorAt: Date? {
+        get { session.lastReplayRatioCompensatorAt } nonmutating set { session.lastReplayRatioCompensatorAt = newValue }
+    }
     // The training-parameter properties formerly stored here as
     // @AppStorage / @State are now exposed by `TrainingParameters.shared`
     // and accessed via `trainingParams.<name>`. See TrainingParameters.swift
@@ -1408,8 +1384,8 @@ struct UpperContentView: View {
             candidateProbeDirty: $candidateProbeDirty,
             selectedOverlay: $selectedOverlay,
             resyncLrWarmupText: trainingSettingsPopover.resyncLrWarmupText,
-            effectiveReplayRatioTarget: $effectiveReplayRatioTarget,
-            lastReplayRatioCompensatorAt: $lastReplayRatioCompensatorAt,
+            effectiveReplayRatioTarget: $session.effectiveReplayRatioTarget,
+            lastReplayRatioCompensatorAt: $session.lastReplayRatioCompensatorAt,
             trainingParams: trainingParams,
             workerCountBox: workerCountBox,
             trainer: trainer,
@@ -1769,7 +1745,7 @@ struct UpperContentView: View {
             // so the two loops don't fight; bounded so a long-tail
             // noise spike can't drift the controller into a
             // degenerate set-point.
-            updateReplayRatioCompensator(snap: snap)
+            session.updateReplayRatioCompensator(snap: snap)
         }
         elap("after 10")
         // Diversity-histogram mirror. Read once per heartbeat off the
@@ -7103,148 +7079,10 @@ struct UpperContentView: View {
         )
     }
 
-    /// Outer integral compensator step. Called every heartbeat tick
-    /// from `processSnapshotTimerTick` while a session is live.
-    ///
-    /// Wraps the replay-ratio controller without modifying it. The
-    /// inner controller's per-tick overhead estimate
-    /// (`currentDelaySettingMs × positionsProduced / G`) is
-    /// dimensionally consistent on its own terms, but in the batched-
-    /// shared-evaluator architecture the per-game self-play sleep does
-    /// not parallelize cleanly across `N` workers — they serialize
-    /// through one batcher barrier — so the wall inflation per tick
-    /// is observably mis-scaled relative to what the controller
-    /// expects to subtract. The mismatch lets the controller's signed
-    /// equilibrium settle at a `cons/prod` ratio meaningfully below
-    /// (or above, depending on workload) the user-configured
-    /// `replayRatioTarget`. Empirically, with `replayRatioTarget=1.10`
-    /// and `selfPlayWorkers=48`, the inner controller settles at
-    /// `currentRatio ≈ 0.78` and stays there — well outside the R1
-    /// monitoring band `[0.90, 1.25]`.
-    ///
-    /// Mechanism: each tick, observe `gap = userTarget −
-    /// snap.currentRatio`. Move the controller's INTERNAL set-point
-    /// `T_eff` in the same sign as `gap` (positive gap means observed
-    /// is too low → push the controller to demand more SP throttling
-    /// → raise `T_eff`). Update is `T_eff += k × gap × dt` with `k`
-    /// (`gainPerSecond` below) tuned so the outer loop is no faster
-    /// than the inner controller's SMA bandwidth
-    /// (`1 / ReplayRatioController.historyWindowSec`); the dead-band
-    /// and bounded `T_eff` clamp keep the two loops from fighting
-    /// even when the bandwidths are comparable. Convergence on
-    /// typical observed gaps lands inside the autotrain warm-up
-    /// window before R1/R2 monitoring begins.
-    ///
-    /// Bounds: `T_eff ∈ [0.5, 5.0] × userTarget`. Lower bound prevents
-    /// the compensator from disabling SP throttling entirely; upper
-    /// bound prevents a transient noise spike from drifting the
-    /// controller into a degenerate set-point that would take many
-    /// minutes to recover. Both bounds are far outside any healthy
-    /// equilibrium so they only trip on pathological inputs.
-    ///
-    /// Skips:
-    ///   • `autoAdjust == false` — the controller's SP delay is
-    ///     pinned at 0 in this mode, so there is no SP throttle to
-    ///     compensate. We also reset the saved `T_eff` so the next
-    ///     auto-on transition starts fresh.
-    ///   • `currentRatio <= 0` — the controller hasn't accumulated
-    ///     enough samples for a meaningful ratio yet. Holds the
-    ///     existing `T_eff` and waits for real data.
-    ///   • `realTraining == false` — out of an abundance of caution
-    ///     even though `replayRatioController` is itself nil outside
-    ///     a session. Cheap belt-and-braces.
-    @MainActor
-    private func updateReplayRatioCompensator(
-        snap: ReplayRatioController.RatioSnapshot
-    ) {
-        guard realTraining,
-              let rc = replayRatioController else {
-            // No active session — clear state so a fresh start
-            // re-seeds. Also handles the brief window between
-            // `replayRatioController = nil` (in the session-stop
-            // teardown) and the next session's start.
-            if effectiveReplayRatioTarget != nil {
-                effectiveReplayRatioTarget = nil
-                lastReplayRatioCompensatorAt = nil
-            }
-            return
-        }
-        let userTarget = trainingParams.replayRatioTarget
-        guard userTarget > 0 else { return }
-        // Auto-adjust off: SP throttle is pinned at 0, the inner
-        // controller is in manual training-delay mode, and the outer
-        // compensator has nothing to compensate. Drop saved state so
-        // a future flip back to auto starts from `userTarget`.
-        if !snap.autoAdjust {
-            if effectiveReplayRatioTarget != nil {
-                effectiveReplayRatioTarget = nil
-                lastReplayRatioCompensatorAt = nil
-            }
-            return
-        }
-        // First post-(re)start tick: seed `T_eff` to the user value
-        // and stamp the clock. No update this tick — the next tick's
-        // `dt` will be one heartbeat (~100 ms), which is long enough
-        // to integrate against. This matches the inner controller's
-        // first-call convention (stamp only, no measurement).
-        let now = Date()
-        guard let prevTeff = effectiveReplayRatioTarget,
-              let prevAt = lastReplayRatioCompensatorAt else {
-            effectiveReplayRatioTarget = userTarget
-            lastReplayRatioCompensatorAt = now
-            // Make sure the controller's internal target matches the
-            // user value at the start of compensation, in case any
-            // prior session left it drifted. The inner controller's
-            // own onChange handler also writes this value, but doing
-            // it here is robust to ordering on the very first tick
-            // after session start.
-            rc.targetRatio = userTarget
-            return
-        }
-        // No meaningful ratio yet (insufficient samples in the
-        // 60 s rolling window). Hold state and wait. The controller
-        // returns 0 from `rollingRates` until at least one second of
-        // span is in the window, which produces `currentRatio == 0`.
-        guard snap.currentRatio > 0 else {
-            lastReplayRatioCompensatorAt = now
-            return
-        }
-        let dt = now.timeIntervalSince(prevAt)
-        // Defensive: dt should be ~0.1s on the 10 Hz heartbeat. Bound
-        // it so a long pause (e.g. waking from sleep, a UI hang, an
-        // arena-pause that still left this tick running) doesn't
-        // produce a giant integration step. 1 s is far longer than
-        // any normal heartbeat gap and still small enough that the
-        // gain math doesn't blow up.
-        let dtClamped = min(max(dt, 0.0), 1.0)
-        // Integral gain in `target-units per (ratio-unit × second)`.
-        // Tuned to be no faster than the inner controller's SMA
-        // bandwidth (`1 / ReplayRatioController.historyWindowSec`);
-        // the dead-band below and the bounded `T_eff` clamp keep
-        // the two loops from fighting even when the bandwidths are
-        // comparable. Adjust both knobs together if `historyWindowSec`
-        // changes meaningfully — otherwise the outer loop can outrun
-        // the inner SMA and the controller starts hunting.
-        let gainPerSecond = 0.05
-        let gap = userTarget - snap.currentRatio
-        var nextTeff = prevTeff + gainPerSecond * gap * dtClamped
-        let lo = 0.5 * userTarget
-        let hi = 5.0 * userTarget
-        if nextTeff < lo { nextTeff = lo }
-        if nextTeff > hi { nextTeff = hi }
-        // Only push to the controller when the change is meaningful.
-        // A ~0.001 dead-band keeps us off the controller's serial
-        // queue when the loop is at equilibrium. The previous value
-        // we hold is the LAST PUSHED value, not the most recent
-        // unconverged compute, so this dead-band doesn't accumulate
-        // un-pushed drift.
-        if abs(nextTeff - prevTeff) > 0.001 {
-            rc.targetRatio = nextTeff
-            effectiveReplayRatioTarget = nextTeff
-        }
-        lastReplayRatioCompensatorAt = now
-    }
-
+    // updateReplayRatioCompensator(snap:) — the outer integral compensator
+    // for the replay-ratio controller's per-tick overhead-subtraction bias —
+    // moved to SessionController in Stage 4f. The heartbeat calls
+    // session.updateReplayRatioCompensator(snap:).
 
     /// Format the Score status-bar cell's value. `nil` lastArena
     /// renders a dimmed em-dash. Otherwise the cell toggles between a
