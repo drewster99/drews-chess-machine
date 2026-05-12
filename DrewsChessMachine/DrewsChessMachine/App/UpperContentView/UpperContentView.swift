@@ -1498,6 +1498,8 @@ struct UpperContentView: View {
             gameWatcher.resetAll()
             gameSnapshot = gameWatcher.snapshot()
         }
+        session.editableStateProvider = { editableState }
+        session.onInferenceResult = { inferenceResult = $0 }
         session.checkpoint = checkpoint
         // Resume-sheet UX is correctly gated on the window being
         // visible — surfacing a sheet on a hidden window would do
@@ -3381,198 +3383,11 @@ struct UpperContentView: View {
     /// step can run concurrently with the probe, so there's no contention
     /// on the shared ChessNetwork graph — which is exactly why we chose
     /// the cooperative-gap model over a parallel timer.
-    @MainActor
-    private func fireCandidateProbeIfNeeded() async {
-        // Guards: Candidate test active, probe runner and network
-        // built, trainer available for the trainer → probe sync. All
-        // of these are normally true during Play and Train — the
-        // early-return cases cover "just-started race before the
-        // probe network was built" or "trainer wasn't initialized."
-        // Arena-active is NOT a blanket skip any more: the candidate
-        // branch uses a dedicated probe network that the arena never
-        // touches, so it can fire freely through arenas. The champion
-        // branch still skips during arenas (see its case below) —
-        // the promotion step briefly writes into the champion under
-        // a self-play pause and we don't want to race that write.
-        guard
-            isCandidateTestActive,
-            let trainer,
-            let probeRunner = session.probeRunner,
-            let probeInference = session.probeInferenceNetwork,
-            let championRunner = runner
-        else { return }
-        let now = Date()
-        let dirty = candidateProbeDirty
-        let intervalElapsed = now.timeIntervalSince(lastCandidateProbeTime)
-        >= trainingParams.candidateProbeIntervalSec
-        guard dirty || intervalElapsed else { return }
-
-        let state = editableState
-        let target = probeNetworkTarget
-        let result: EvaluationResult
-        do {
-            switch target {
-            case .candidate:
-                // Snapshot the trainer's current state into the probe
-                // inference network, then immediately run the probe. Doing
-                // the copy here — rather than after every training block —
-                // means the ~11.6 MB trainer → probe transfer happens only
-                // when the probe is actually about to fire (every 15 s or
-                // on drag/side-to-move/mode-flip), not at the ~per-second
-                // cadence of training blocks.
-                //
-                // The probe network is dedicated — no one else reads or
-                // writes it — so the probe can run concurrently with an
-                // active arena (which reads `session.candidateInferenceNetwork`,
-                // a different object) without racing. The only potential
-                // concurrent operation is `trainer.network.exportWeights`
-                // during an arena's own trainer-snapshot step; both are
-                // reads under the network's internal lock and are safe.
-                //
-                // Both the sync and the forward pass run on a detached task
-                // so we don't stall MainActor while they execute.
-                result = try await Task.detached(priority: .userInitiated) {
-                    let weights = try await trainer.network.exportWeights()
-                    try await probeInference.loadWeights(weights)
-                    return await Self.performInference(with: probeRunner, state: state)
-                }.value
-                // Probe is a transient read-only snapshot, not a checkpoint —
-                // probeInference inherits the trainer's current ID rather
-                // than minting a fresh one. (Arena snapshots, by contrast,
-                // do mint — see runArenaParallel.)
-                probeInference.identifier = trainer.identifier
-            case .champion:
-                // Skip champion probes while an arena is running — the
-                // promotion step briefly writes into the champion under
-                // a self-play pause and the probe would race that write.
-                // (The candidate branch above has no such constraint: it
-                // uses a dedicated probe network.)
-                if session.arenaActiveFlag?.isActive == true { return }
-                // Probe the champion directly — no sync. The champion is
-                // frozen between promotions, so reading from it through
-                // its own runner is the same path Run Forward Pass uses
-                // and is safe to call concurrently with self-play workers
-                // (they all read through a batcher; direct runner reads
-                // just add another fair-share consumer).
-                result = await Task.detached(priority: .userInitiated) {
-                    await Self.performInference(with: championRunner, state: state)
-                }.value
-            }
-        } catch {
-            // Leave probe state unchanged so the previous result stays
-            // on screen; the next gap-point call will retry. The error
-            // lands in trainingBox via the driver loop's existing
-            // plumbing if something structural broke.
-            return
-        }
-        inferenceResult = result
-        candidateProbeDirty = false
-        lastCandidateProbeTime = Date()
-        candidateProbeCount += 1
-        // CLI-mode capture: if an output JSON is configured, append
-        // this probe's diagnostics alongside the arena and stats
-        // streams. No-op in normal interactive runs — the recorder
-        // is only allocated when `cliOutputURL` is non-nil. Skipped
-        // when the forward pass failed (rawInference == nil) so a
-        // failed probe doesn't show up as a zeroed entry in the
-        // output.
-        if let recorder = cliRecorder,
-           let inf = result.rawInference,
-           let sessionStart = checkpoint.currentSessionStart {
-            let elapsed = Date().timeIntervalSince(sessionStart)
-            let event = buildCliCandidateTestEvent(
-                elapsedSec: elapsed,
-                probeIndex: candidateProbeCount,
-                target: target,
-                state: state,
-                inference: inf
-            )
-            recorder.appendCandidateTest(event)
-        }
-    }
-
-    /// Build a `CliTrainingRecorder.CandidateTest` from a finished
-    /// forward-pass result. Computes the same on-screen policy
-    /// diagnostics the text output shows (top-100 sum, above-uniform
-    /// count, legal-mass sum, min/max) plus a structured top-10
-    /// list — mirroring `performInference` so the JSON and the UI
-    /// stay in sync. Factored out so the probe fire path is short
-    /// and the capture logic can be exercised independently in
-    /// the future if we ever add a headless test for it.
-    nonisolated private func buildCliCandidateTestEvent(
-        elapsedSec: Double,
-        probeIndex: Int,
-        target: ProbeNetworkTarget,
-        state: GameState,
-        inference: ChessRunner.InferenceResult
-    ) -> CliTrainingRecorder.CandidateTest {
-        let policy = inference.policy
-        let sum = Double(policy.reduce(0, +))
-        let top100Sum = Double(policy.sorted(by: >).prefix(100).reduce(0, +))
-        let minP = Double(policy.min() ?? 0)
-        let maxP = Double(policy.max() ?? 0)
-        let legalMoves = MoveGenerator.legalMoves(for: state)
-        let nLegal = max(1, legalMoves.count)
-        let legalUniformThreshold = 1.0 / Double(nLegal)
-        let legalIndices = legalMoves
-            .map { PolicyEncoding.policyIndex($0, currentPlayer: state.currentPlayer) }
-        let abovePerLegalCount = legalIndices.filter { idx in
-            idx >= 0 && idx < policy.count
-                && Double(policy[idx]) > legalUniformThreshold
-        }.count
-        let legalMassSum: Double = legalIndices.reduce(0.0) { acc, idx in
-            (idx >= 0 && idx < policy.count) ? acc + Double(policy[idx]) : acc
-        }
-        // Top-10 raw — same extraction path the UI uses for top-4
-        // (legality-agnostic, geometrically decoded), just with a
-        // larger K.
-        let top10 = ChessRunner.extractTopMoves(
-            from: policy,
-            state: state,
-            pieces: state.board,
-            count: 10
-        )
-        let topMovesOut: [CliTrainingRecorder.CandidateTest.TopMove] = top10.enumerated().map { (rank, mv) in
-            CliTrainingRecorder.CandidateTest.TopMove(
-                rank: rank + 1,
-                from: BoardEncoder.squareName(mv.fromRow * 8 + mv.fromCol),
-                to: BoardEncoder.squareName(mv.toRow * 8 + mv.toCol),
-                fromRow: mv.fromRow,
-                fromCol: mv.fromCol,
-                toRow: mv.toRow,
-                toCol: mv.toCol,
-                probability: Double(mv.probability),
-                isLegal: mv.isLegal
-            )
-        }
-        let stats = CliTrainingRecorder.CandidateTest.PolicyStats(
-            sum: sum,
-            top100Sum: top100Sum,
-            aboveUniformCount: abovePerLegalCount,
-            legalMoveCount: legalMoves.count,
-            legalUniformThreshold: legalUniformThreshold,
-            legalMassSum: legalMassSum,
-            illegalMassSum: max(0.0, 1.0 - legalMassSum),
-            min: minP,
-            max: maxP
-        )
-        let targetStr: String
-        switch target {
-        case .candidate: targetStr = "candidate"
-        case .champion: targetStr = "champion"
-        }
-        return CliTrainingRecorder.CandidateTest(
-            elapsedSec: elapsedSec,
-            probeIndex: probeIndex,
-            probeNetworkTarget: targetStr,
-            inferenceTimeMs: inference.inferenceTimeMs,
-            valueHead: CliTrainingRecorder.CandidateTest.ValueHead(output: Double(inference.value)),
-            policyHead: CliTrainingRecorder.CandidateTest.PolicyHead(
-                policyStats: stats,
-                topRaw: topMovesOut
-            )
-        )
-    }
+    // fireCandidateProbeIfNeeded() / buildCliCandidateTestEvent() moved to
+    // SessionController in Stage 4i — the Play-and-Train driver loop calls
+    // session.fireCandidateProbeIfNeeded(). It reads editableState via
+    // session.editableStateProvider and publishes the result via
+    // session.onInferenceResult (both wired in handleBodyOnAppear).
 
     /// Run one arena tournament in parallel mode — 200 games between
     /// the candidate (synced from trainer at start) and the arena
@@ -4450,7 +4265,7 @@ struct UpperContentView: View {
                 // `runner`. Candidate test mode takes a different path
                 // via `fireCandidateProbeIfNeeded`, which uses
                 // `session.probeRunner` → the dedicated probe inference network.
-                await Self.performInference(with: runner, state: state)
+                await SessionController.performInference(with: runner, state: state)
             }.value
             inferenceResult = evalResult
             isEvaluating = false
@@ -5823,7 +5638,7 @@ struct UpperContentView: View {
                         // including arena-active, so an unconditional
                         // call here is safe — it no-ops when nothing
                         // is due or when the arena is running.
-                        await fireCandidateProbeIfNeeded()
+                        await session.fireCandidateProbeIfNeeded()
 
                         // Auto-trigger the arena on the configured
                         // cadence. Fires the trigger inbox; the arena
@@ -8282,117 +8097,10 @@ struct UpperContentView: View {
 
     // `performBuild()` moved to `SessionController` in Stage 4a — call it as
     // `SessionController.performBuild()` from the detached build tasks.
-
-    nonisolated private static func performInference(
-        with runner: ChessRunner,
-        state: GameState
-    ) async -> EvaluationResult {
-        var lines: [String] = []
-        var topMoves: [MoveVisualization] = []
-        var rawInference: ChessRunner.InferenceResult? = nil
-        let board = BoardEncoder.encode(state)
-
-        do {
-            let inference = try await runner.evaluate(board: board, state: state, pieces: state.board)
-            topMoves = inference.topMoves
-            rawInference = inference
-
-            lines.append(String(format: "Forward pass: %.2f ms", inference.inferenceTimeMs))
-            lines.append("")
-            lines.append("Value Head")
-            lines.append(String(format: "  Output: %+.6f", inference.value))
-            // Removed the (v+1)/2 → "X% win / Y% loss" line. With a single
-            // tanh scalar (no WDL output) and a non-zero draw penalty in
-            // training, that mapping was misleading. Just show the raw
-            // value; readers familiar with the engine can interpret the
-            // sign and magnitude themselves.
-            lines.append("")
-            lines.append("Policy Head (Top 4 raw — includes illegal)")
-            // The list deliberately includes illegal candidates so we
-            // can see whether the network has learned move-validity.
-            // After enough training, illegal cells should fall out of
-            // the top-K; if they keep appearing, the policy hasn't
-            // learned legality conditioning on the current position.
-            for (rank, move) in inference.topMoves.enumerated() {
-                let fromName = BoardEncoder.squareName(move.fromRow * 8 + move.fromCol)
-                let toName = BoardEncoder.squareName(move.toRow * 8 + move.toCol)
-                let promoSuffix: String
-                switch move.promotion {
-                case .queen:  promoSuffix = "=Q"
-                case .rook:   promoSuffix = "=R"
-                case .bishop: promoSuffix = "=B"
-                case .knight: promoSuffix = "=N"
-                default:      promoSuffix = ""
-                }
-                let rankCol = String(rank + 1).padding(toLength: 4, withPad: " ", startingAt: 0)
-                let moveCol = "\(fromName)-\(toName)\(promoSuffix)".padding(toLength: 10, withPad: " ", startingAt: 0)
-                let legalMark = move.isLegal ? "" : "  (illegal)"
-                lines.append("  \(rankCol)\(moveCol)\(String(format: "%.6f%%", move.probability * 100))\(legalMark)")
-            }
-            // Sum of the top-100 move probabilities. With a freshly-
-            // initialized network this sits near 100/policySize ≈ 2.06%; as the
-            // policy head learns to concentrate mass on promising moves,
-            // this number climbs — a cheap scalar that changes visibly
-            // between candidate-test probes even when the top-4 move
-            // ordering stays stable.
-            let top100Sum = inference.policy.sorted(by: >).prefix(100).reduce(0, +)
-            lines.append(String(format: "  Top 100 sum: %.6f%%", top100Sum * 100))
-            lines.append("")
-            lines.append("Policy Stats")
-            lines.append(String(format: "  Sum: %.8f", inference.policy.reduce(0, +)))
-            // Legality-aware "above-uniform" count for THIS specific
-            // position. Counts how many of the legal moves the network
-            // gives mass above `1 / N_legal` (i.e., above what a
-            // perfectly-uniform-over-legal policy would produce).
-            // Direct, interpretable signal: at the starting position
-            // there are 20 legal moves and uniform-over-legal threshold
-            // is 5%; "8 / 20" means the network rates 8 of those 20
-            // moves above uniform. Replaces the old "NonNegligible:
-            // X / 4864" metric, which was confusing because most of
-            // the 4864 cells in the new 76-channel encoding correspond
-            // to physically-impossible moves and so always sit far
-            // below the 1/4864 baseline regardless of training.
-            let legalMoves = MoveGenerator.legalMoves(for: state)
-            let nLegal = max(1, legalMoves.count)
-            let legalUniformThreshold = 1.0 / Float(nLegal)
-            let abovePerLegalCount = legalMoves
-                .map { PolicyEncoding.policyIndex($0, currentPlayer: state.currentPlayer) }
-                .filter { idx in
-                    idx >= 0 && idx < inference.policy.count
-                        && inference.policy[idx] > legalUniformThreshold
-                }
-                .count
-            lines.append(String(
-                format: "  Legal moves above uniform (%.3f%%): %d / %d  (threshold = 1/legalCount = 1/%d)",
-                Double(legalUniformThreshold) * 100,
-                abovePerLegalCount, nLegal, nLegal
-            ))
-            // Total mass on legal moves vs illegal — at training
-            // convergence, mass-on-illegal should approach zero since
-            // illegal cells never appear as one-hot training targets.
-            let legalMassSum = legalMoves
-                .map { PolicyEncoding.policyIndex($0, currentPlayer: state.currentPlayer) }
-                .reduce(Float(0)) { acc, idx in
-                    (idx >= 0 && idx < inference.policy.count) ? acc + inference.policy[idx] : acc
-                }
-            lines.append(String(format: "  Legal mass sum: %.6f%%   (illegal = %.6f%%)",
-                                Double(legalMassSum) * 100,
-                                Double(1 - legalMassSum) * 100))
-            if let maxProb = inference.policy.max(), let minProb = inference.policy.min() {
-                lines.append(String(format: "  Min: %.8f", minProb))
-                lines.append(String(format: "  Max: %.8f", maxProb))
-            }
-        } catch {
-            lines.append("Error: \(error.localizedDescription)")
-        }
-
-        return EvaluationResult(
-            topMoves: topMoves,
-            textOutput: lines.joined(separator: "\n"),
-            inputTensor: board,
-            rawInference: rawInference
-        )
-    }
+    // performInference(with:state:) moved to SessionController in Stage 4i —
+    // call it as SessionController.performInference(with:state:). (runForwardPass
+    // uses it for the Run Forward Pass demo; the candidate probe uses it inside
+    // session.fireCandidateProbeIfNeeded.)
 }
 
 // MARK: - Body subviews
