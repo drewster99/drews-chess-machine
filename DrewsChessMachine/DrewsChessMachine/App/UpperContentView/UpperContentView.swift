@@ -353,8 +353,8 @@ struct UpperContentView: View {
     }
     @State private var trainerWarmupSnap: TrainerWarmupSnapshot?
 
-    nonisolated static let trainerLearningRateDefault: Float = 5e-5
-    nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-3
+    // `trainerLearningRateDefault` / `entropyRegularizationCoeffDefault` moved
+    // to `SessionController` in Stage 4m (used only by `buildCurrentSessionState`).
     nonisolated static let drawPenaltyDefault: Float = 0.1
     // `trainingBatchSize` (demo-training batch size) moved to
     // `SessionController` in Stage 4g — `SessionController.trainingBatchSize`.
@@ -2245,136 +2245,8 @@ struct UpperContentView: View {
     // override path is reached via `checkpoint.onApplyOverrides`, wired in
     // `handleBodyOnAppear` to `applyCliConfigOverridesFromMenu(cfg:)`.
 
-    /// Build the Codable snapshot of the current session state,
-    /// including counters, hyperparameters, and arena history.
-    /// Called at save time with the live state read off the main
-    /// actor. `championIDOverride` / `trainerIDOverride` let the
-    /// caller inject specific IDs when the on-disk identity should
-    /// differ from the live network identifiers (not currently used
-    /// but kept for future "rename on save" flows).
-    @MainActor
-    private func buildCurrentSessionState(
-        championID: String,
-        trainerID: String
-    ) -> SessionCheckpointState {
-        // Close the active segment at save time so the on-disk
-        // session captures up-to-date cumulative wall-time totals.
-        // If training is still in progress (the user saved without
-        // stopping), immediately re-open a fresh segment so the
-        // post-save training time continues to accumulate. Without
-        // this re-open, every minute after the save would silently
-        // disappear from cumulative wall-time totals — the
-        // "2 hours today + 1 hour tomorrow = 3 hours" arithmetic
-        // would only hold if the user never saved mid-training.
-        let wasTraining = realTraining
-        checkpoint.closeActiveTrainingSegment(reason: "save")
-        if wasTraining && checkpoint.activeSegmentStart == nil {
-            checkpoint.beginActiveTrainingSegment()
-        }
-        let now = Date()
-        let sessionStart = checkpoint.currentSessionStart ?? (session.parallelStats?.sessionStart ?? now)
-        let elapsedSec = max(0, now.timeIntervalSince(sessionStart))
-        let snap = session.parallelStats
-        let trainingSnap = trainingStats
-        let history = tournamentHistory.map { record in
-            ArenaHistoryEntryCodable(
-                finishedAtStep: record.finishedAtStep,
-                candidateWins: record.candidateWins,
-                championWins: record.championWins,
-                draws: record.draws,
-                score: record.score,
-                promoted: record.promoted,
-                promotedID: record.promotedID?.description,
-                durationSec: record.durationSec,
-                gamesPlayed: record.gamesPlayed,
-                promotionKind: record.promotionKind?.rawValue,
-                candidateWinsAsWhite: record.candidateWinsAsWhite,
-                candidateWinsAsBlack: record.candidateWinsAsBlack,
-                candidateLossesAsWhite: record.candidateLossesAsWhite,
-                candidateLossesAsBlack: record.candidateLossesAsBlack,
-                candidateDrawsAsWhite: record.candidateDrawsAsWhite,
-                candidateDrawsAsBlack: record.candidateDrawsAsBlack,
-                finishedAtUnix: record.finishedAt.map { Int64($0.timeIntervalSince1970) },
-                candidateID: record.candidateID?.description,
-                championID: record.championID?.description
-            )
-        }
-        let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
-        let entropyCoeff = trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault
-        let drawPen = trainer?.drawPenalty ?? Float(trainingParams.drawPenalty)
-        let bufferSnap = replayBuffer?.stateSnapshot()
-        let segments: [SessionCheckpointState.TrainingSegment]? = checkpoint.completedTrainingSegments.isEmpty
-            ? nil
-            : checkpoint.completedTrainingSegments
-        return SessionCheckpointState(
-            formatVersion: SessionCheckpointState.currentFormatVersion,
-            sessionID: checkpoint.currentSessionID ?? "unknown-session",
-            savedAtUnix: Int64(now.timeIntervalSince1970),
-            sessionStartUnix: Int64(sessionStart.timeIntervalSince1970),
-            elapsedTrainingSec: elapsedSec,
-            trainingSteps: trainingSnap?.steps ?? 0,
-            selfPlayGames: snap?.selfPlayGames ?? 0,
-            selfPlayMoves: snap?.selfPlayPositions ?? 0,
-            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * trainingParams.trainingBatchSize,
-            batchSize: trainingParams.trainingBatchSize,
-            learningRate: lr,
-            entropyRegularizationCoeff: entropyCoeff,
-            drawPenalty: drawPen,
-            promoteThreshold: trainingParams.arenaPromoteThreshold,
-            arenaGames: trainingParams.arenaGamesPerTournament,
-            arenaConcurrency: trainingParams.arenaConcurrency,
-            selfPlayTau: TauConfigCodable(samplingScheduleBox?.selfPlay ?? session.buildSelfPlaySchedule()),
-            arenaTau: TauConfigCodable(samplingScheduleBox?.arena ?? session.buildArenaSchedule()),
-            selfPlayWorkerCount: trainingParams.selfPlayWorkers,
-            gradClipMaxNorm: Float(trainingParams.gradClipMaxNorm),
-            weightDecayCoeff: Float(trainingParams.weightDecay),
-            policyLossWeight: Float(trainingParams.policyLossWeight),
-            valueLossWeight: Float(trainingParams.valueLossWeight),
-            momentumCoeff: Float(trainingParams.momentumCoeff),
-            illegalMassPenaltyWeight: Float(trainingParams.illegalMassWeight),
-            policyLabelSmoothingEpsilon: Float(trainingParams.policyLabelSmoothingEpsilon),
-            replayRatioTarget: trainingParams.replayRatioTarget,
-            replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust,
-            stepDelayMs: trainingParams.trainingStepDelayMs,
-            selfPlayDelayMs: trainingParams.selfPlayDelayMs,
-            lastAutoComputedDelayMs: lastAutoComputedDelayMs,
-            // Schema-expansion fields (added to close the autotrain
-            // reproducibility gap — these previously lived only in
-            // @AppStorage / @State and so silently picked up the
-            // user's current global preference on resume rather than
-            // the session's saved value). All Optional in the schema
-            // for back-compat with older session.json files.
-            lrWarmupSteps: trainingParams.lrWarmupSteps,
-            sqrtBatchScalingForLR: trainingParams.sqrtBatchScalingLR,
-            replayBufferMinPositionsBeforeTraining: trainingParams.replayBufferMinPositionsBeforeTraining,
-            arenaAutoIntervalSec: trainingParams.arenaAutoIntervalSec,
-            candidateProbeIntervalSec: trainingParams.candidateProbeIntervalSec,
-            legalMassCollapseThreshold: trainingParams.legalMassCollapseThreshold,
-            legalMassCollapseGraceSeconds: trainingParams.legalMassCollapseGraceSeconds,
-            legalMassCollapseNoImprovementProbes: trainingParams.legalMassCollapseNoImprovementProbes,
-            batchStatsInterval: trainingParams.batchStatsInterval,
-            whiteCheckmates: snap?.whiteCheckmates,
-            blackCheckmates: snap?.blackCheckmates,
-            stalemates: snap?.stalemates,
-            fiftyMoveDraws: snap?.fiftyMoveDraws,
-            threefoldRepetitionDraws: snap?.threefoldRepetitionDraws,
-            insufficientMaterialDraws: snap?.insufficientMaterialDraws,
-            totalGameWallMs: snap?.totalGameWallMs,
-            buildNumber: BuildInfo.buildNumber,
-            buildGitHash: BuildInfo.gitHash,
-            buildGitBranch: BuildInfo.gitBranch,
-            buildDate: BuildInfo.buildDate,
-            buildTimestamp: BuildInfo.buildTimestamp,
-            buildGitDirty: BuildInfo.gitDirty,
-            hasReplayBuffer: bufferSnap != nil,
-            replayBufferStoredCount: bufferSnap?.storedCount,
-            replayBufferCapacity: bufferSnap?.capacity,
-            replayBufferTotalPositionsAdded: bufferSnap?.totalPositionsAdded,
-            championID: championID,
-            trainerID: trainerID,
-            arenaHistory: history
-        ).withTrainingSegments(segments)
-    }
+    // buildCurrentSessionState(championID:trainerID:) moved to SessionController
+    // in Stage 4m — the save paths call session.buildCurrentSessionState(...).
 
     // seedChartCoordinatorFromLoadedSession(chartURLs:) moved to
     // SessionController in Stage 4k — the resume branch calls
@@ -2597,7 +2469,7 @@ struct UpperContentView: View {
         // `@unchecked Sendable` and serializes access via its own
         // lock, so the buffer can be written from a background task
         // while self-play workers (which only append) are paused.
-        let sessionState = buildCurrentSessionState(
+        let sessionState = session.buildCurrentSessionState(
             championID: championID,
             trainerID: trainerID
         )
@@ -3927,7 +3799,7 @@ struct UpperContentView: View {
         if promoted && Self.autosaveSessionsOnPromote && !promotedChampionWeights.isEmpty {
             let championID = champion.identifier?.description ?? "unknown"
             let trainerID = trainer.identifier?.description ?? "unknown"
-            let sessionState = buildCurrentSessionState(
+            let sessionState = session.buildCurrentSessionState(
                 championID: championID,
                 trainerID: trainerID
             )

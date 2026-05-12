@@ -338,6 +338,133 @@ final class SessionController {
         lastReplayRatioCompensatorAt = now
     }
 
+    // MARK: - Session-state snapshot (Stage 4m)
+
+    nonisolated static let trainerLearningRateDefault: Float = 5e-5
+    nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-3
+
+    /// Build the Codable snapshot of the current session state (counters,
+    /// hyperparameters, arena history, replay-buffer footprint, build info).
+    /// Called at save time with the live state read off the main actor by both
+    /// the manual/periodic save path and `runArenaParallel`'s post-promotion
+    /// save. Closes the active training segment at save time (and re-opens a
+    /// fresh one if training is still in progress) so the on-disk cumulative
+    /// wall-time totals stay correct across mid-training saves.
+    @MainActor
+    func buildCurrentSessionState(
+        championID: String,
+        trainerID: String
+    ) -> SessionCheckpointState {
+        let params = TrainingParameters.shared
+        let wasTraining = realTraining
+        checkpoint?.closeActiveTrainingSegment(reason: "save")
+        if wasTraining && checkpoint?.activeSegmentStart == nil {
+            checkpoint?.beginActiveTrainingSegment()
+        }
+        let now = Date()
+        let sessionStart = checkpoint?.currentSessionStart ?? (parallelStats?.sessionStart ?? now)
+        let elapsedSec = max(0, now.timeIntervalSince(sessionStart))
+        let snap = parallelStats
+        let trainingSnap = trainingStats
+        let history = tournamentHistory.map { record in
+            ArenaHistoryEntryCodable(
+                finishedAtStep: record.finishedAtStep,
+                candidateWins: record.candidateWins,
+                championWins: record.championWins,
+                draws: record.draws,
+                score: record.score,
+                promoted: record.promoted,
+                promotedID: record.promotedID?.description,
+                durationSec: record.durationSec,
+                gamesPlayed: record.gamesPlayed,
+                promotionKind: record.promotionKind?.rawValue,
+                candidateWinsAsWhite: record.candidateWinsAsWhite,
+                candidateWinsAsBlack: record.candidateWinsAsBlack,
+                candidateLossesAsWhite: record.candidateLossesAsWhite,
+                candidateLossesAsBlack: record.candidateLossesAsBlack,
+                candidateDrawsAsWhite: record.candidateDrawsAsWhite,
+                candidateDrawsAsBlack: record.candidateDrawsAsBlack,
+                finishedAtUnix: record.finishedAt.map { Int64($0.timeIntervalSince1970) },
+                candidateID: record.candidateID?.description,
+                championID: record.championID?.description
+            )
+        }
+        let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
+        let entropyCoeff = trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault
+        let drawPen = trainer?.drawPenalty ?? Float(params.drawPenalty)
+        let bufferSnap = replayBuffer?.stateSnapshot()
+        let segments: [SessionCheckpointState.TrainingSegment]? =
+            (checkpoint?.completedTrainingSegments.isEmpty ?? true)
+            ? nil
+            : checkpoint?.completedTrainingSegments
+        return SessionCheckpointState(
+            formatVersion: SessionCheckpointState.currentFormatVersion,
+            sessionID: checkpoint?.currentSessionID ?? "unknown-session",
+            savedAtUnix: Int64(now.timeIntervalSince1970),
+            sessionStartUnix: Int64(sessionStart.timeIntervalSince1970),
+            elapsedTrainingSec: elapsedSec,
+            trainingSteps: trainingSnap?.steps ?? 0,
+            selfPlayGames: snap?.selfPlayGames ?? 0,
+            selfPlayMoves: snap?.selfPlayPositions ?? 0,
+            trainingPositionsSeen: (trainingSnap?.steps ?? 0) * params.trainingBatchSize,
+            batchSize: params.trainingBatchSize,
+            learningRate: lr,
+            entropyRegularizationCoeff: entropyCoeff,
+            drawPenalty: drawPen,
+            promoteThreshold: params.arenaPromoteThreshold,
+            arenaGames: params.arenaGamesPerTournament,
+            arenaConcurrency: params.arenaConcurrency,
+            selfPlayTau: TauConfigCodable(samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()),
+            arenaTau: TauConfigCodable(samplingScheduleBox?.arena ?? buildArenaSchedule()),
+            selfPlayWorkerCount: params.selfPlayWorkers,
+            gradClipMaxNorm: Float(params.gradClipMaxNorm),
+            weightDecayCoeff: Float(params.weightDecay),
+            policyLossWeight: Float(params.policyLossWeight),
+            valueLossWeight: Float(params.valueLossWeight),
+            momentumCoeff: Float(params.momentumCoeff),
+            illegalMassPenaltyWeight: Float(params.illegalMassWeight),
+            policyLabelSmoothingEpsilon: Float(params.policyLabelSmoothingEpsilon),
+            replayRatioTarget: params.replayRatioTarget,
+            replayRatioAutoAdjust: params.replayRatioAutoAdjust,
+            stepDelayMs: params.trainingStepDelayMs,
+            selfPlayDelayMs: params.selfPlayDelayMs,
+            lastAutoComputedDelayMs: lastAutoComputedDelayMs,
+            // Schema-expansion fields (close the autotrain reproducibility gap
+            // — these previously lived only in @AppStorage / @State and so
+            // silently picked up the user's current preference on resume rather
+            // than the session's saved value). All Optional for back-compat.
+            lrWarmupSteps: params.lrWarmupSteps,
+            sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
+            replayBufferMinPositionsBeforeTraining: params.replayBufferMinPositionsBeforeTraining,
+            arenaAutoIntervalSec: params.arenaAutoIntervalSec,
+            candidateProbeIntervalSec: params.candidateProbeIntervalSec,
+            legalMassCollapseThreshold: params.legalMassCollapseThreshold,
+            legalMassCollapseGraceSeconds: params.legalMassCollapseGraceSeconds,
+            legalMassCollapseNoImprovementProbes: params.legalMassCollapseNoImprovementProbes,
+            batchStatsInterval: params.batchStatsInterval,
+            whiteCheckmates: snap?.whiteCheckmates,
+            blackCheckmates: snap?.blackCheckmates,
+            stalemates: snap?.stalemates,
+            fiftyMoveDraws: snap?.fiftyMoveDraws,
+            threefoldRepetitionDraws: snap?.threefoldRepetitionDraws,
+            insufficientMaterialDraws: snap?.insufficientMaterialDraws,
+            totalGameWallMs: snap?.totalGameWallMs,
+            buildNumber: BuildInfo.buildNumber,
+            buildGitHash: BuildInfo.gitHash,
+            buildGitBranch: BuildInfo.gitBranch,
+            buildDate: BuildInfo.buildDate,
+            buildTimestamp: BuildInfo.buildTimestamp,
+            buildGitDirty: BuildInfo.gitDirty,
+            hasReplayBuffer: bufferSnap != nil,
+            replayBufferStoredCount: bufferSnap?.storedCount,
+            replayBufferCapacity: bufferSnap?.capacity,
+            replayBufferTotalPositionsAdded: bufferSnap?.totalPositionsAdded,
+            championID: championID,
+            trainerID: trainerID,
+            arenaHistory: history
+        ).withTrainingSegments(segments)
+    }
+
     // MARK: - Session resume (Stage 4k)
 
     /// Resume helper — reads `training_chart.json` / `progress_rate_chart.json`
