@@ -9,6 +9,24 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-05-12 — WDL chart tiles: value-head row on the training grid + `vMean` plumbed; `pLoss`/`vLoss` axis split
+
+The W/D/L switch left `vLoss` on a shared Y-axis with `pLoss` (now unsharable — `vLoss` is categorical-CE-scale `~[0, ln 3 ≈ 1.10]`, `pLoss` is outcome-weighted CE that is unbounded and routinely negative) and left `pW/pD/pL`/`vAbs`/`vMean` either un-charted or not even persisted. This adds a fourth, value-head row to `TrainingChartGridView` and finishes the persistence/decimation plumbing the `pD→1` alarm entry below flagged as a follow-up.
+
+**Files / what.**
+- **`Training/TrainingChartSample.swift`** — new Optional `rollingValueMean` (the signed batch mean of `v = p_win − p_loss`; `~0` on a colour-balanced minibatch, a persistent offset = side bias in the value head). Additive-Optional, no `formatVersion` bump (same as `rollingValueProbWin/Draw/Loss` got in `e81c2b1`). `App/SessionController+Heartbeat.swift` populates it from `trainingSnap?.rollingValueMean` (the value already on `[STATS]` as `vMean=`).
+- **`Charts/ChartDecimation.swift`** — `TrainingBucket` + its builder gain min/max envelopes for `valueMean`, `valueAbsMean`, `valueProbWin`, `valueProbDraw`, `valueProbLoss` (only `valueLoss` was bucketed before — the others were on `TrainingChartSample` but had no path to a chart).
+- **`Views/Charts/TrainingChartGridView/PolicyValueLossChart.swift` → `PolicyLossChart.swift`** (renamed) — the row-2 tile drops the `vLoss` series and is now single-series `pLoss` (orange, with a `0` reference line), title `pLoss (outcome-weighted CE)`. `vLoss` moves to its own tile on the new row.
+- **`Views/Charts/TrainingChartGridView/WDLProbabilityChart.swift`** (new) — three-series tile `pW` (green) / `pD` (gray) / `pL` (red), Y-domain `0…1`, with a dashed `0.75` reference line (the `[0, ln 6, 0]` draw-bias init — a `pD` trace sitting persistently above it is the regress-toward-collapse signal). Header reads `W .. / D .. / L ..`.
+- **`Views/Charts/TrainingChartGridView.swift`** — grid goes 5×3 → 5×4. New row 4 (value head): `WDLProbabilityChart`, then three `MiniLineChart`s — `vLoss (W/D/L categorical CE)` (cyan), `vMean (p_win − p_loss)` (teal, gray `0` reference line), `vAbs |p_win − p_loss|` (mint). 5th cell intentionally empty. Row diagram comment updated; row-2 call site renamed to `PolicyLossChart`.
+- **Tests** — `ChartDataRoundTripTests` / `ChartDecimatorTests` fixtures gain `rollingValueMean`; `assertBitEqual` in the round-trip test also picks up the previously-missing `rollingValueAbsMean` / `rollingValueProbWin/Draw/Loss` comparisons (oversight from `e81c2b1`). No new behavioural tests — these are View-layer tiles plus pure-additive struct fields the decimator already exercises.
+
+**Why.** Post-WDL, the value head's behaviour is read off `pW/pD/pL` directly (and `pD → 1` is the collapse signature the alarm now catches) — but the only place those numbers appeared was the 15-minute `[STATS]` line and the post-mortem dump. `vAbs` had a doc comment claiming it was "charted on the same tile as `rollingValueLoss`" that was never true (no bucket field). Charting the value-head row makes the failure mode visible as it develops rather than after the fact, and splitting `pLoss`/`vLoss` stops the CE-scale `vLoss` decay from being crushed against `pLoss`'s swing.
+
+**Not changed.** `value_loss_weight` stays at `1.0` (the prior entry floated lowering it for the first WDL run; the live build-1040 run is being kept as the WDL baseline — the data so far shows the head learning, not collapsing, so the case for attenuating the value signal is weak). `CliTrainingRecorder` JSON still carries only the scalar value output, not the W/D/L breakdown.
+
+---
+
 ## 2026-05-12 — WDL follow-ups: dead-column removal, ε session-persistence + UI, `pD→1` collapse alarm, W/D/L at inference
 
 Closes the "deferred follow-ups" the value-head entry below listed, plus two new bits of instrumentation.
@@ -19,7 +37,7 @@ Closes the "deferred follow-ups" the value-head entry below listed, plus two new
 - **`pD → 1` value-head-collapse alarm** (`TrainingAlarmController`) — a third streak-based detector alongside divergence and value-head saturation, keyed off `rollingValueProbDraw` (warning at `pD ≥ 0.92`, critical at `0.97`, 3/2/10 streaks). This is the exact failure the W/D/L head was adopted to escape (and the one the old scalar head fell into) — `pD → 1`, `vAbs → 0`, value signal silent — and nothing alarmed on it before (the build-893 collapse was caught by eyeballing `[STATS]`). The fresh-init head sits at `pD = 0.75`; healthy training pulls it down, so a sustained `pD` above the fresh level is the regress-toward-collapse signal. `pW/pD/pL` are now also carried on `TrainingChartSample` (so the alarm can read `pD`, and a future W/D/L chart tile is a pure-additive View). Tests: 7 new in `TrainingAlarmControllerTests` covering raise/recovery/ownership-scoped-auto-clear/nil-reset and independence from the saturation detector; `ChartDataRoundTripTests` / `ChartDecimatorTests` fixtures updated for the new fields.
 - **W/D/L at inference for diagnostics** (`ChessNetwork.evaluateValueDistribution(board:)` → `ChessMPSNetwork` → `ChessRunner` passthroughs) — a forward-only pass returning `(p_win, p_draw, p_loss)` for one position. The universal inference closures still carry only the derived scalar `p_win − p_loss` (which can't be inverted back to the distribution); this is the way to *see* the W/D/L on a position. The candidate-test probe / Run Forward Pass panel now shows a `W/D/L: X% win / Y% draw / Z% loss` line under the `Output:` line (a second forward pass, fine at probe cadence). For the testing phase: eyeball it on a clearly-won endgame / a dead-drawn KvK / a sharp middlegame to see whether the head is calibrated.
 
-**Still deferred (small):** the `CliTrainingRecorder.CandidateTest.ValueHead` JSON still carries only `output` (not the W/D/L breakdown); no `pW/pD/pL` *chart tile* yet (the fields are plumbed, the tile is a follow-up); `value_loss_weight = 1.0` may want lowering for the first WDL run (CE-scale, not MSE-scale — live-tunable).
+**Still deferred (small):** the `CliTrainingRecorder.CandidateTest.ValueHead` JSON still carries only `output` (not the W/D/L breakdown); `value_loss_weight = 1.0` may want lowering for the first WDL run (CE-scale, not MSE-scale — live-tunable). *(The `pW/pD/pL` chart tile + the rest of the value-head chart row landed in the entry above.)*
 
 ---
 

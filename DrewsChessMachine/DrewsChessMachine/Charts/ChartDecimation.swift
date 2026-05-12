@@ -37,6 +37,16 @@ struct TrainingBucket: Sendable, Equatable, Identifiable {
 
     let policyLoss: ChartBucketRange?
     let valueLoss: ChartBucketRange?
+    /// W/D/L value-head metrics (post-WDL switch). `valueMean` /
+    /// `valueAbsMean` are the mean / mean-abs of the derived scalar
+    /// `v = p_win − p_loss`; `valueProbWin/Draw/Loss` are the batch
+    /// means of the W/D/L softmax (sum ≈ 1). Charted on the new
+    /// value-head row of `TrainingChartGridView`.
+    let valueMean: ChartBucketRange?
+    let valueAbsMean: ChartBucketRange?
+    let valueProbWin: ChartBucketRange?
+    let valueProbDraw: ChartBucketRange?
+    let valueProbLoss: ChartBucketRange?
     let policyEntropy: ChartBucketRange?
     let policyNonNegCount: ChartBucketRange?
     let policyNonNegIllegalCount: ChartBucketRange?
@@ -256,6 +266,11 @@ private struct TrainingBucketBuilder {
 
     var policyLoss = NumericAccumulator()
     var valueLoss = NumericAccumulator()
+    var valueMean = NumericAccumulator()
+    var valueAbsMean = NumericAccumulator()
+    var valueProbWin = NumericAccumulator()
+    var valueProbDraw = NumericAccumulator()
+    var valueProbLoss = NumericAccumulator()
     var policyEntropy = NumericAccumulator()
     var policyNonNegCount = NumericAccumulator()
     var policyNonNegIllegalCount = NumericAccumulator()
@@ -281,6 +296,11 @@ private struct TrainingBucketBuilder {
 
         policyLoss.absorb(s.rollingPolicyLoss)
         valueLoss.absorb(s.rollingValueLoss)
+        valueMean.absorb(s.rollingValueMean)
+        valueAbsMean.absorb(s.rollingValueAbsMean)
+        valueProbWin.absorb(s.rollingValueProbWin)
+        valueProbDraw.absorb(s.rollingValueProbDraw)
+        valueProbLoss.absorb(s.rollingValueProbLoss)
         policyEntropy.absorb(s.rollingPolicyEntropy)
         policyNonNegCount.absorb(s.rollingPolicyNonNegCount)
         policyNonNegIllegalCount.absorb(s.rollingPolicyNonNegIllegalCount)
@@ -307,6 +327,11 @@ private struct TrainingBucketBuilder {
             elapsedSec: lastElapsedSec,
             policyLoss: policyLoss.range,
             valueLoss: valueLoss.range,
+            valueMean: valueMean.range,
+            valueAbsMean: valueAbsMean.range,
+            valueProbWin: valueProbWin.range,
+            valueProbDraw: valueProbDraw.range,
+            valueProbLoss: valueProbLoss.range,
             policyEntropy: policyEntropy.range,
             policyNonNegCount: policyNonNegCount.range,
             policyNonNegIllegalCount: policyNonNegIllegalCount.range,

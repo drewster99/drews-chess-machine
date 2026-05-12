@@ -464,6 +464,7 @@ extension SessionController {
             rollingPolicyLossLoss: trainingSnap?.rollingPolicyLossLoss,
             rollingLegalEntropy: realLastLegalMassSnapshot.map { Double($0.legalEntropy) },
             rollingLegalMass: realLastLegalMassSnapshot.map { Double($0.legalMass) },
+            rollingValueMean: trainingSnap?.rollingValueMean,
             rollingValueAbsMean: trainingSnap?.rollingValueAbsMean,
             rollingValueProbWin: trainingSnap?.rollingValueProbWin,
             rollingValueProbDraw: trainingSnap?.rollingValueProbDraw,

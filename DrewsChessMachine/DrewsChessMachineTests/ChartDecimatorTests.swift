@@ -34,6 +34,7 @@ final class ChartDecimatorTests: XCTestCase {
             rollingPolicyLossLoss: nil,
             rollingLegalEntropy: nil,
             rollingLegalMass: nil,
+            rollingValueMean: nil,
             rollingValueAbsMean: nil,
             rollingValueProbWin: nil,
             rollingValueProbDraw: nil,

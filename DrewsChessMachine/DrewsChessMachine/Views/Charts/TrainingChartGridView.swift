@@ -90,13 +90,15 @@ struct TrainingChartGridView: View {
     )
 
     var body: some View {
-        // 5 columns × 3 rows, filled row-major:
+        // 5 columns × 4 rows, filled row-major:
         //   Row 1: legal-mass, policy entropy, progress rate (small),
         //          CPU %, RAM (App + GPU on shared axes)
-        //   Row 2: pLoss + vLoss, non-negligible policy count, replay
-        //          ratio, GPU %, power / thermal
+        //   Row 2: pLoss, non-negligible policy count, replay
+        //          ratio, pwNorm, power / thermal
         //   Row 3: pLoss split, gNorm, ||v|| (velocity L2 norm),
         //          longest move prefix histogram, arena activity
+        //   Row 4 (value head): W/D/L probabilities, vLoss, vMean,
+        //          vAbs, (empty)
         LazyVGrid(columns: Self.columns, spacing: 1) {
             // Row 1
             LegalMassChart(
@@ -132,7 +134,7 @@ struct TrainingChartGridView: View {
                 context: context
             )
             // Row 2
-            PolicyValueLossChart(
+            PolicyLossChart(
                 buckets: frame.trainingBuckets,
                 hoveredSec: $hoveredSec,
                 scrollX: $scrollX,
@@ -206,6 +208,46 @@ struct TrainingChartGridView: View {
                 scrollX: $scrollX,
                 context: context
             )
+            // Row 4 — value head (post-WDL switch)
+            WDLProbabilityChart(
+                buckets: frame.trainingBuckets,
+                hoveredSec: $hoveredSec,
+                scrollX: $scrollX,
+                context: context
+            )
+            MiniLineChart(
+                title: "vLoss (W/D/L categorical CE)",
+                buckets: frame.trainingBuckets,
+                rangeAccessor: { $0.valueLoss },
+                unit: "",
+                color: .cyan,
+                hoveredSec: $hoveredSec,
+                scrollX: $scrollX,
+                context: context
+            )
+            MiniLineChart(
+                title: "vMean (p_win − p_loss)",
+                buckets: frame.trainingBuckets,
+                rangeAccessor: { $0.valueMean },
+                unit: "",
+                color: .teal,
+                hoveredSec: $hoveredSec,
+                scrollX: $scrollX,
+                context: context,
+                referenceLine: 0,
+                referenceLineColor: Color.gray.opacity(0.4)
+            )
+            MiniLineChart(
+                title: "vAbs |p_win − p_loss|",
+                buckets: frame.trainingBuckets,
+                rangeAccessor: { $0.valueAbsMean },
+                unit: "",
+                color: .mint,
+                hoveredSec: $hoveredSec,
+                scrollX: $scrollX,
+                context: context
+            )
+            // 5th cell of the value-head row intentionally left empty.
         }
         .background(Color(nsColor: .separatorColor))
     }

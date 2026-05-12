@@ -63,6 +63,7 @@ final class ChartDataRoundTripTests: XCTestCase {
             rollingPolicyLossLoss: 1.6,
             rollingLegalEntropy: 3.2,
             rollingLegalMass: 0.92,
+            rollingValueMean: 0.05,
             rollingValueAbsMean: 0.55,
             rollingValueProbWin: 0.3,
             rollingValueProbDraw: 0.5,
@@ -93,6 +94,7 @@ final class ChartDataRoundTripTests: XCTestCase {
             rollingPolicyLossLoss: nil,
             rollingLegalEntropy: nil,
             rollingLegalMass: nil,
+            rollingValueMean: nil,
             rollingValueAbsMean: nil,
             rollingValueProbWin: nil,
             rollingValueProbDraw: nil,
@@ -144,6 +146,11 @@ final class ChartDataRoundTripTests: XCTestCase {
         assertBitEqual(a.rollingPolicyLossLoss, b.rollingPolicyLossLoss, "rollingPolicyLossLoss", line: line)
         assertBitEqual(a.rollingLegalEntropy, b.rollingLegalEntropy, "rollingLegalEntropy", line: line)
         assertBitEqual(a.rollingLegalMass, b.rollingLegalMass, "rollingLegalMass", line: line)
+        assertBitEqual(a.rollingValueMean, b.rollingValueMean, "rollingValueMean", line: line)
+        assertBitEqual(a.rollingValueAbsMean, b.rollingValueAbsMean, "rollingValueAbsMean", line: line)
+        assertBitEqual(a.rollingValueProbWin, b.rollingValueProbWin, "rollingValueProbWin", line: line)
+        assertBitEqual(a.rollingValueProbDraw, b.rollingValueProbDraw, "rollingValueProbDraw", line: line)
+        assertBitEqual(a.rollingValueProbLoss, b.rollingValueProbLoss, "rollingValueProbLoss", line: line)
         assertBitEqual(a.cpuPercent, b.cpuPercent, "cpuPercent", line: line)
         assertBitEqual(a.gpuBusyPercent, b.gpuBusyPercent, "gpuBusyPercent", line: line)
         assertBitEqual(a.gpuMemoryMB, b.gpuMemoryMB, "gpuMemoryMB", line: line)

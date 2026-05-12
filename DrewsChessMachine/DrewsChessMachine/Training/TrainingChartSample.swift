@@ -56,6 +56,15 @@ struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     /// illegal moves. Pulled from the periodic `LegalMassSnapshot`
     /// probe (same source as `rollingLegalEntropy`).
     let rollingLegalMass: Double?
+    /// Rolling-window mean of the value head's per-batch derived
+    /// scalar `v = p_win − p_loss` (signed, in `[-1, +1]`). Always
+    /// from the side-to-move's perspective, so over a colour-balanced
+    /// minibatch a healthy head sits near `0`; a persistent offset is
+    /// a side bias in the value head (or a genuinely lopsided buffer).
+    /// Charted next to `rollingValueAbsMean` with a `0` reference
+    /// line. Source: `TrainingRunStats.rollingValueMean`, the same
+    /// number reported as `vMean=` on the `[STATS]` line.
+    let rollingValueMean: Double?
     /// Rolling-window mean of `|v|` over the value head's per-batch
     /// derived scalar `v = p_win − p_loss` (post-WDL switch — a
     /// difference of two softmax probabilities, in `[-1, +1]` with no
