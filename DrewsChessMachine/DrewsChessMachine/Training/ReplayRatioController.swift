@@ -389,6 +389,12 @@ final class ReplayRatioController: @unchecked Sendable {
     /// the history. Called on every append and also on every read so
     /// the window stays honest even if the controller hasn't logged
     /// an event in a while (e.g. the training task paused).
+    ///
+    /// `_delayHistoryRunningSum` (Double) drifts by a tiny round-off
+    /// each add/subtract, so it's re-derived exactly from the
+    /// surviving window whenever the backing array is compacted.
+    /// That bounds the drift to "since the last compaction" rather
+    /// than "since the session started".
     private func pruneDelayHistory(now: Date) {
         let cutoff = now.addingTimeInterval(-historyWindowSec)
         while _delayHistoryHead < _delayHistory.count, _delayHistory[_delayHistoryHead].at < cutoff {
@@ -400,6 +406,7 @@ final class ReplayRatioController: @unchecked Sendable {
         if _delayHistoryHead > _delayHistory.count / 2 && _delayHistoryHead > 1000 {
             _delayHistory.removeSubrange(0..<_delayHistoryHead)
             _delayHistoryHead = 0
+            _delayHistoryRunningSum = _delayHistory.reduce(0.0) { $0 + $1.signedMs }
         }
     }
 
@@ -549,10 +556,29 @@ final class ReplayRatioController: @unchecked Sendable {
     /// Off-main async variant of `snapshot()`. Lock acquisition runs
     /// on a global executor so the awaiter (typically the main actor)
     /// is never synchronously blocked on `lock.withLock`.
+    ///
+    /// Emits a `[DISPATCH-LATENCY]` line to stdout (Xcode console only,
+    /// not the session log) when the round-trip exceeds 50 ms, broken
+    /// into pre-continuation / queue-wait / lock-work components so a
+    /// multi-second heartbeat tick can be attributed to a specific
+    /// off-main snapshot read. Matches the instrumentation on
+    /// `TournamentLiveBox.asyncSnapshot` / `GameDiversityTracker.asyncSnapshot`.
     func asyncSnapshot() async -> RatioSnapshot {
-        await withCheckedContinuation { (cont: CheckedContinuation<RatioSnapshot, Never>) in
+        let start = Date()
+        return await withCheckedContinuation { (cont: CheckedContinuation<RatioSnapshot, Never>) in
+            let inContinuation = Date()
             DispatchQueue.global(qos: .userInitiated).async {
-                cont.resume(returning: self.snapshot())
+                let dispatched = Date()
+                let result = self.snapshot()
+                let now = Date()
+                let total = now.timeIntervalSince(start)
+                if total > 0.05 {
+                    let pre = inContinuation.timeIntervalSince(start)
+                    let queue = dispatched.timeIntervalSince(inContinuation)
+                    let work = now.timeIntervalSince(dispatched)
+                    print(String(format: "[DISPATCH-LATENCY] ReplayRatioController.asyncSnapshot: total=%.2fms (pre=%.2fms queue=%.2fms work=%.2fms)", total * 1000, pre * 1000, queue * 1000, work * 1000))
+                }
+                cont.resume(returning: result)
             }
         }
     }

@@ -190,6 +190,14 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// Caller must already hold `lock`. Records are appended in
     /// monotonic timestamp order so this is a prefix removal —
     /// O(k) where k is the expired count.
+    ///
+    /// `_recentGamesRunningMoves` (Int) is decremented exactly; the
+    /// `Double` `_recentGamesRunningWallMs` accumulates a tiny amount
+    /// of floating-point error per add/subtract, so it's re-summed
+    /// from the surviving records whenever the backing array is
+    /// compacted (which during active self-play happens regularly).
+    /// That bounds the drift to "since the last compaction" rather
+    /// than "since the session started".
     private func pruneRecentLocked(now: Date) {
         let cutoff = now.addingTimeInterval(-Self.recentWindow)
         while _recentGamesHead < _recentGames.count, _recentGames[_recentGamesHead].timestamp < cutoff {
@@ -202,6 +210,9 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         if _recentGamesHead > _recentGames.count / 2 && _recentGamesHead > 100 {
             _recentGames.removeSubrange(0..<_recentGamesHead)
             _recentGamesHead = 0
+            // Re-derive the Double accumulator exactly from the
+            // surviving window, shedding any add/subtract round-off.
+            _recentGamesRunningWallMs = _recentGames.reduce(0.0) { $0 + $1.durationMs }
         }
     }
 
@@ -238,10 +249,29 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// Off-main async variant of `snapshot()`. Lock acquisition runs
     /// on a global executor so the awaiter (typically the main actor)
     /// is never synchronously blocked on `lock.withLock`.
+    ///
+    /// Emits a `[DISPATCH-LATENCY]` line to stdout (Xcode console only,
+    /// not the session log) when the round-trip exceeds 50 ms, broken
+    /// into pre-continuation / queue-wait / lock-work components so a
+    /// multi-second heartbeat tick can be attributed to a specific
+    /// off-main snapshot read. Matches the instrumentation on
+    /// `TournamentLiveBox.asyncSnapshot` / `GameDiversityTracker.asyncSnapshot`.
     func asyncSnapshot() async -> Snapshot {
-        await withCheckedContinuation { (cont: CheckedContinuation<Snapshot, Never>) in
+        let start = Date()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Snapshot, Never>) in
+            let inContinuation = Date()
             DispatchQueue.global(qos: .userInitiated).async {
-                cont.resume(returning: self.snapshot())
+                let dispatched = Date()
+                let result = self.snapshot()
+                let now = Date()
+                let total = now.timeIntervalSince(start)
+                if total > 0.05 {
+                    let pre = inContinuation.timeIntervalSince(start)
+                    let queue = dispatched.timeIntervalSince(inContinuation)
+                    let work = now.timeIntervalSince(dispatched)
+                    print(String(format: "[DISPATCH-LATENCY] ParallelWorkerStatsBox.asyncSnapshot: total=%.2fms (pre=%.2fms queue=%.2fms work=%.2fms)", total * 1000, pre * 1000, queue * 1000, work * 1000))
+                }
+                cont.resume(returning: result)
             }
         }
     }
