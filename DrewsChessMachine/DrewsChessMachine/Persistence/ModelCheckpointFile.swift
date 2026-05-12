@@ -110,9 +110,9 @@ struct ModelCheckpointFile {
 
     /// Hash of the shape constants that determine variable layout.
     /// Any change to `ChessNetwork.channels`, `numBlocks`,
-    /// `inputPlanes`, `boardSize`, or `policySize` changes this
-    /// value, so stale files refuse to load instead of silently
-    /// landing in wrong-sized slots.
+    /// `inputPlanes`, `boardSize`, `policySize`, or `valueHeadClasses`
+    /// changes this value, so stale files refuse to load instead of
+    /// silently landing in wrong-sized slots.
     static var currentArchHash: UInt32 {
         var h: UInt32 = 0x811C9DC5 // FNV-1a offset basis
         func mix(_ value: Int) {
@@ -132,6 +132,7 @@ struct ModelCheckpointFile {
         mix(ChessNetwork.inputPlanes)
         mix(ChessNetwork.boardSize)
         mix(ChessNetwork.policySize)
+        mix(ChessNetwork.valueHeadClasses)
         return h
     }
 

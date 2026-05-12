@@ -161,7 +161,7 @@ public protocol TrainingParameterKey: Sendable {
     static func decode(_ value: ParameterValue) throws -> Value
 }
 
-// MARK: - 29 parameter keys (macro-driven)
+// MARK: - 30 parameter keys (macro-driven)
 
 @TrainingParameter(
     name: "Entropy Bonus",
@@ -192,6 +192,16 @@ public enum IllegalMassWeight: TrainingParameterKey {}
     liveTunable: true
 )
 public enum PolicyLabelSmoothingEpsilon: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Value Label Smoothing ε",
+    description: "Label-smoothing coefficient on the value-head W/D/L cross-entropy target. The target is built in-graph as (1−ε)·one_hot(1−z) + ε·(1/3), where 1−z maps the play-time outcome z ∈ {+1,0,−1} to the [win,draw,loss] slot. ε=0 = hard one-hot on the game result (default for the first WDL run). ε>0 gives the value CE a reachable finite-logit equilibrium instead of ±∞, the same way Policy Label Smoothing does for the policy CE. Range [0, 0.5].",
+    default: 0.0,
+    range: 0.0...0.5,
+    category: "Optimizer",
+    liveTunable: true
+)
+public enum ValueLabelSmoothingEpsilon: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Gradient Clip Max Norm",
@@ -596,6 +606,7 @@ public final class TrainingParameters {
     public var entropyBonus: Double { didSet { Self.persist(EntropyBonus.self, value: entropyBonus) } }
     public var illegalMassWeight: Double { didSet { Self.persist(IllegalMassWeight.self, value: illegalMassWeight) } }
     public var policyLabelSmoothingEpsilon: Double { didSet { Self.persist(PolicyLabelSmoothingEpsilon.self, value: policyLabelSmoothingEpsilon) } }
+    public var valueLabelSmoothingEpsilon: Double { didSet { Self.persist(ValueLabelSmoothingEpsilon.self, value: valueLabelSmoothingEpsilon) } }
     public var gradClipMaxNorm: Double { didSet { Self.persist(GradClipMaxNorm.self, value: gradClipMaxNorm) } }
     public var weightDecay: Double { didSet { Self.persist(WeightDecay.self, value: weightDecay) } }
     public var policyLossWeight: Double { didSet { Self.persist(PolicyLossWeight.self, value: policyLossWeight) } }
@@ -635,6 +646,7 @@ public final class TrainingParameters {
         self.entropyBonus = Self.read(EntropyBonus.self)
         self.illegalMassWeight = Self.read(IllegalMassWeight.self)
         self.policyLabelSmoothingEpsilon = Self.read(PolicyLabelSmoothingEpsilon.self)
+        self.valueLabelSmoothingEpsilon = Self.read(ValueLabelSmoothingEpsilon.self)
         self.gradClipMaxNorm = Self.read(GradClipMaxNorm.self)
         self.weightDecay = Self.read(WeightDecay.self)
         self.policyLossWeight = Self.read(PolicyLossWeight.self)
@@ -680,6 +692,7 @@ public final class TrainingParameters {
         v[EntropyBonus.id] = EntropyBonus.encode(entropyBonus)
         v[IllegalMassWeight.id] = IllegalMassWeight.encode(illegalMassWeight)
         v[PolicyLabelSmoothingEpsilon.id] = PolicyLabelSmoothingEpsilon.encode(policyLabelSmoothingEpsilon)
+        v[ValueLabelSmoothingEpsilon.id] = ValueLabelSmoothingEpsilon.encode(valueLabelSmoothingEpsilon)
         v[GradClipMaxNorm.id] = GradClipMaxNorm.encode(gradClipMaxNorm)
         v[WeightDecay.id] = WeightDecay.encode(weightDecay)
         v[PolicyLossWeight.id] = PolicyLossWeight.encode(policyLossWeight)
@@ -734,6 +747,8 @@ public final class TrainingParameters {
             try IllegalMassWeight.definition.validate(raw); illegalMassWeight = try IllegalMassWeight.decode(raw)
         case PolicyLabelSmoothingEpsilon.id:
             try PolicyLabelSmoothingEpsilon.definition.validate(raw); policyLabelSmoothingEpsilon = try PolicyLabelSmoothingEpsilon.decode(raw)
+        case ValueLabelSmoothingEpsilon.id:
+            try ValueLabelSmoothingEpsilon.definition.validate(raw); valueLabelSmoothingEpsilon = try ValueLabelSmoothingEpsilon.decode(raw)
         case GradClipMaxNorm.id:
             try GradClipMaxNorm.definition.validate(raw); gradClipMaxNorm = try GradClipMaxNorm.decode(raw)
         case WeightDecay.id:
@@ -871,6 +886,7 @@ public final class TrainingParameters {
         EntropyBonus.self,
         IllegalMassWeight.self,
         PolicyLabelSmoothingEpsilon.self,
+        ValueLabelSmoothingEpsilon.self,
         GradClipMaxNorm.self,
         WeightDecay.self,
         PolicyLossWeight.self,

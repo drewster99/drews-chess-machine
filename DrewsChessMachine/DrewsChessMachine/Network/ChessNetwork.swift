@@ -107,13 +107,36 @@ final class ChessNetwork: @unchecked Sendable {
     /// the SE module compresses 128 channels to `128 / seReductionRatio` in
     /// the squeeze MLP before re-expanding to 128 with sigmoid scaling.
     static let seReductionRatio = 4
+    /// Number of value-head output classes — the W/D/L head emits this
+    /// many raw logits per position, in `[win, draw, loss]` slot order
+    /// (matched to the training target `idx = 1 − z`, z ∈ {+1, 0, −1}).
+    /// Bumped from the prior single tanh scalar; the checkpoint
+    /// `archHash` mixes this so files saved against the scalar head are
+    /// cleanly rejected.
+    static let valueHeadClasses = 3
 
     // MARK: Graph Tensors
 
     let graph: MPSGraph
     let inputPlaceholder: MPSGraphTensor
     let policyOutput: MPSGraphTensor
+    /// Derived scalar value, shape `[batch, 1]` = `p_win − p_loss`
+    /// (= E[outcome] ∈ [−1, +1], no tanh). This is what every inference
+    /// consumer reads and what the policy-gradient baseline is fed; the
+    /// full W/D/L distribution stays available via `valueLogits` /
+    /// `valueProbs` for the value loss and diagnostics.
     let valueOutput: MPSGraphTensor
+    /// Raw W/D/L value-head logits, shape `[batch, 3]` in `[win, draw,
+    /// loss]` slot order — matched to the training target `idx = 1 − z`
+    /// with z ∈ {+1, 0, −1} (win→0, draw→1, loss→2). Consumed by
+    /// `ChessTrainer.buildTrainingOps` for the categorical-cross-entropy
+    /// value loss and by the W/D/L probability diagnostics. The
+    /// inference path never reads this.
+    let valueLogits: MPSGraphTensor
+    /// Softmax of `valueLogits`, shape `[batch, 3]` — predicted
+    /// (p_win, p_draw, p_loss). Exposed for the W/D/L diagnostics in
+    /// the trainer; `valueOutput == Σ_c valueProbs_c · [+1, 0, −1]_c`.
+    let valueProbs: MPSGraphTensor
     /// The policy head's final 1×1 conv weight tensor (128 → 76 channels).
     /// Exposed so the trainer can compute diagnostic ||W||₂ per step — the
     /// sharpness of this tensor drives logit magnitudes, which directly
@@ -373,7 +396,7 @@ final class ChessNetwork: @unchecked Sendable {
 
         // --- Value head ---
 
-        valueOutput = Self.valueHead(
+        let valueHeadOut = Self.valueHead(
             graph: g, input: x, descriptor: conv1x1, bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
@@ -382,6 +405,9 @@ final class ChessNetwork: @unchecked Sendable {
             batchMeans: &batchMeans,
             batchVars: &batchVars
         )
+        valueOutput = valueHeadOut.scalar
+        valueLogits = valueHeadOut.logits
+        valueProbs = valueHeadOut.probs
 
         trainableVariables = trainables
         trainableShouldDecay = shouldDecay
@@ -1410,7 +1436,17 @@ final class ChessNetwork: @unchecked Sendable {
         return (output: flat, finalWeights: convW)
     }
 
-    /// Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 1) -> tanh
+    /// Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 3) -> W/D/L logits.
+    ///
+    /// Returns the raw 3-wide logits (`logits`, `[batch, 3]`, slot order
+    /// `[win, draw, loss]`), their softmax (`probs`, the predicted
+    /// `(p_win, p_draw, p_loss)`), and the derived scalar
+    /// `scalar = Σ_c probs_c · [+1, 0, −1]_c = p_win − p_loss` — which
+    /// is naturally in `[−1, +1]` (a difference of two probabilities),
+    /// so there is no tanh. The scalar is what move-selection's value
+    /// readback, the dashboard, and the policy-gradient baseline use;
+    /// the logits/probs feed the value cross-entropy loss and the
+    /// W/D/L diagnostics in `ChessTrainer`.
     private static func valueHead(
         graph: MPSGraph,
         input: MPSGraphTensor,
@@ -1422,7 +1458,7 @@ final class ChessNetwork: @unchecked Sendable {
         runningStatsAssignOps: inout [MPSGraphOperation],
         batchMeans: inout [MPSGraphTensor],
         batchVars: inout [MPSGraphTensor]
-    ) -> MPSGraphTensor {
+    ) -> (scalar: MPSGraphTensor, logits: MPSGraphTensor, probs: MPSGraphTensor) {
         // 1x1 conv: compress 128 channels to 1
         let convW = graph.variable(
             with: heInitDataConvOIHW(shape: [1, 128, 1, 1]),
@@ -1470,16 +1506,22 @@ final class ChessNetwork: @unchecked Sendable {
         x = graph.addition(x, fc1Bias, name: "value_fc1_bias_add")
         x = graph.reLU(with: x, name: "value_fc1_relu")
 
-        // FC2: 64 -> 1
+        // FC2: 64 -> 3  (W/D/L logits, slot order [win, draw, loss])
         let fc2W = graph.variable(
-            with: heInitDataFCInOut(shape: [64, 1]),
-            shape: [64, 1],
+            with: heInitDataFCInOut(shape: [64, 3]),
+            shape: [64, 3],
             dataType: Self.dataType,
             name: "value_fc2_weights"
         )
+        // Bias init [0, ln 6, 0] ≈ [0, 1.791759469, 0] so the initial
+        // softmax is (0.125, 0.75, 0.125) — the empirically draw-heavy
+        // prior of a fresh self-play buffer — and the derived scalar
+        // starts at p_win − p_loss = 0.125 − 0.125 = 0, matching the
+        // old tanh(0) = 0.
+        let lnSix: Float = 1.791759469228055
         let fc2Bias = graph.variable(
-            with: zerosData(count: 1),
-            shape: [1, 1],
+            with: makeWeightData([0.0, lnSix, 0.0]),
+            shape: [1, 3],
             dataType: Self.dataType,
             name: "value_fc2_bias"
         )
@@ -1488,12 +1530,28 @@ final class ChessNetwork: @unchecked Sendable {
         trainables.append(fc2Bias)
         shouldDecay.append(false)
         x = graph.matrixMultiplication(primary: x, secondary: fc2W, name: "value_fc2")
-        x = graph.addition(x, fc2Bias, name: "value_fc2_bias_add")
+        let logits = graph.addition(x, fc2Bias, name: "value_fc2_bias_add")
 
-        // Tanh: squash to [-1.0, +1.0]
-        x = graph.tanh(with: x, name: "value_tanh")
+        // W/D/L softmax and the derived scalar v = p_win − p_loss.
+        // No tanh — a difference of two probabilities is already in
+        // [−1, +1]. The full distribution stays available via `logits`
+        // / `probs` for the value cross-entropy loss and the W/D/L
+        // diagnostics.
+        let probs = graph.softMax(with: logits, axis: 1, name: "value_probs")
+        // [1, 3] reduction weights w = [+1, 0, −1]; scalar = Σ_c probs_c · w_c.
+        let scalarWeights = graph.constant(
+            makeWeightData([1.0, 0.0, -1.0]),
+            shape: [1, 3],
+            dataType: Self.dataType
+        )
+        let scalarWeighted = graph.multiplication(probs, scalarWeights, name: "value_scalar_weighted")
+        // reductionSum(axis:1) keeps the reduced dim → [batch, 1], same
+        // shape the old tanh scalar had, so every downstream readback
+        // (single-position `count: 1`, batched `count: count`) is
+        // unchanged.
+        let scalar = graph.reductionSum(with: scalarWeighted, axis: 1, name: "value_scalar")
 
-        return x
+        return (scalar: scalar, logits: logits, probs: probs)
     }
 
     // MARK: - Data Helpers

@@ -682,6 +682,7 @@ final class SessionController {
             trainer.valueLossWeight = Float(params.valueLossWeight)
             trainer.illegalMassPenaltyWeight = Float(params.illegalMassWeight)
             trainer.policyLabelSmoothingEpsilon = Float(params.policyLabelSmoothingEpsilon)
+            trainer.valueLabelSmoothingEpsilon = Float(params.valueLabelSmoothingEpsilon)
             trainer.momentumCoeff = Float(params.momentumCoeff)
             trainer.sqrtBatchScalingForLR = params.sqrtBatchScalingLR
             trainer.lrWarmupSteps = params.lrWarmupSteps
@@ -699,6 +700,7 @@ final class SessionController {
                 valueLossWeight: Float(params.valueLossWeight),
                 illegalMassPenaltyWeight: Float(params.illegalMassWeight),
                 policyLabelSmoothingEpsilon: Float(params.policyLabelSmoothingEpsilon),
+                valueLabelSmoothingEpsilon: Float(params.valueLabelSmoothingEpsilon),
                 momentumCoeff: Float(params.momentumCoeff),
                 sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
                 lrWarmupSteps: params.lrWarmupSteps

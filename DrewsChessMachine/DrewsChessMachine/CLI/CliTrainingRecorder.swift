@@ -485,7 +485,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let batchStats: BatchStatsSnapshot?
         let valueMean: Double?
         let valueAbsMean: Double?
-        let vBaselineDelta: Double?
+        let valueProbWin: Double?
+        let valueProbDraw: Double?
+        let valueProbLoss: Double?
         let advMean: Double?
         let advStd: Double?
         let advMin: Double?
@@ -573,7 +575,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case batchStats = "batch_stats"
             case valueMean = "value_mean"
             case valueAbsMean = "value_abs_mean"
-            case vBaselineDelta = "v_baseline_delta"
+            case valueProbWin = "value_prob_win"
+            case valueProbDraw = "value_prob_draw"
+            case valueProbLoss = "value_prob_loss"
             case advMean = "adv_mean"
             case advStd = "adv_std"
             case advMin = "adv_min"

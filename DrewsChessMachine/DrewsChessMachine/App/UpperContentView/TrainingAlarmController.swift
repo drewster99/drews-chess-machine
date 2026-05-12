@@ -44,18 +44,19 @@ final class TrainingAlarmController {
     nonisolated static let divergenceAlarmConsecutiveCriticalSamples: Int = 2
     nonisolated static let divergenceAlarmRecoverySamples: Int = 10
 
-    /// Value-head saturation thresholds — `vAbs = mean(|v|)` for the
-    /// scalar value head's per-batch outputs, with `v ∈ [-1, +1]` via
-    /// `tanh`. As `vAbs → 1` the `tanh` enters its flat tails and the
-    /// gradient through it goes to zero, silently killing the value-loss
-    /// learning signal. The warning threshold (`0.97`) corresponds to
-    /// `tanh'(arctanh(0.97)) ≈ 0.0591` — ~17× weaker gradient than a
-    /// `vAbs=0` reference. The critical threshold (`0.995`) is
-    /// `tanh'(arctanh(0.995)) ≈ 0.00998` — ~100× weaker. Empirically the
-    /// AlphaZero-style bootstrap relies on this gradient to amplify
-    /// policy improvement; a saturated value head means the policy is
-    /// learning pure outcome-weighted imitation with no value
-    /// amplifier (see CHANGELOG 2026-05-11 15:30 finding).
+    /// Value-head over-confidence thresholds — `vAbs = mean(|v|)` for
+    /// the W/D/L head's derived scalar `v = p_win − p_loss ∈ [-1, +1]`
+    /// (post-WDL switch: no tanh). `vAbs → 1` means the head is
+    /// confidently classifying nearly every batch position as a clean
+    /// win or loss — implausible for real chess (most positions are
+    /// near-balanced), so a sustained high value is a "something is
+    /// wrong" signal worth surfacing. (The *opposite* failure — the
+    /// head calling everything a draw, `vAbs → 0` / `pD → 1` — is the
+    /// collapse the WDL representation was adopted to escape; it shows
+    /// up directly as `pD=` on the `[STATS]` line rather than through
+    /// this alarm.) Thresholds kept at the prior `(0.97, 0.995)`
+    /// levels; they no longer index a tanh-gradient and are just
+    /// "very confident" / "near-degenerate" markers.
     nonisolated static let valueAbsMeanSaturationWarningThreshold: Double = 0.97
     nonisolated static let valueAbsMeanSaturationCriticalThreshold: Double = 0.995
 
@@ -220,9 +221,8 @@ final class TrainingAlarmController {
     }
 
     private static func valueAbsMeanSaturationAlarmDetail(valueAbsMean: Double) -> String {
-        String(format: "vAbs=%.4f — tanh value head saturated, value-loss gradient ≈ %.4f",
-               valueAbsMean,
-               1.0 - valueAbsMean * valueAbsMean)
+        String(format: "vAbs=%.4f — W/D/L value head calling nearly every position a clean win/loss (p_win − p_loss ≈ ±1)",
+               valueAbsMean)
     }
 
     // MARK: - Raise / clear / silence / dismiss

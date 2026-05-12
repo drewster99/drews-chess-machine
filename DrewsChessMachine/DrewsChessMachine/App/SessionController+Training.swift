@@ -1369,16 +1369,12 @@ extension SessionController {
                         } else {
                             vAbsStr = "--"
                         }
-                        // vBaseDelta = mean abs delta between trainer's
-                        // current v(s) and the play-time-frozen vBaseline
-                        // from the random-init champion. Higher = trainer
-                        // is genuinely diverging from the champion.
-                        let vBaseDeltaStr: String
-                        if let vbd = trainingSnap.rollingVBaselineDelta {
-                            vBaseDeltaStr = String(format: "%.4f", vbd)
-                        } else {
-                            vBaseDeltaStr = "--"
-                        }
+                        // W/D/L value-head softmax means (sum ≈ 1). pD→1
+                        // is the new "everything is a draw" collapse —
+                        // the failure the WDL head was adopted to escape.
+                        let pWStr = trainingSnap.rollingValueProbWin.map { String(format: "%.3f", $0) } ?? "--"
+                        let pDStr = trainingSnap.rollingValueProbDraw.map { String(format: "%.3f", $0) } ?? "--"
+                        let pLStr = trainingSnap.rollingValueProbLoss.map { String(format: "%.3f", $0) } ?? "--"
                         let h = Int(elapsedTarget) / 3600
                         let m = (Int(elapsedTarget) % 3600) / 60
                         let s = Int(elapsedTarget) % 60
@@ -1632,7 +1628,7 @@ extension SessionController {
                         // inputs).
                         let shapesStr = "feedCache=\(trainer.feedCacheCount)"
 
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) vBaseDelta=\(vBaseDeltaStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // CLI `--output` capture: one StatsLine per
@@ -1693,7 +1689,9 @@ extension SessionController {
                                 },
                                 valueMean: trainingSnap.rollingValueMean,
                                 valueAbsMean: trainingSnap.rollingValueAbsMean,
-                                vBaselineDelta: trainingSnap.rollingVBaselineDelta,
+                                valueProbWin: trainingSnap.rollingValueProbWin,
+                                valueProbDraw: trainingSnap.rollingValueProbDraw,
+                                valueProbLoss: trainingSnap.rollingValueProbLoss,
                                 advMean: trainingSnap.rollingAdvMean,
                                 advStd: trainingSnap.rollingAdvStd,
                                 advMin: trainingSnap.rollingAdvMin,

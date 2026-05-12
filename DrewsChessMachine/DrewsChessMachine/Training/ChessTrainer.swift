@@ -56,8 +56,13 @@ struct TrainStepTiming: Sendable {
     /// winning outcome, so it's unbounded on both sides and expected to be
     /// noisier than the value term.
     let policyLoss: Float
-    /// Value-only component of the loss. Mean-squared error of (z − v), so
-    /// bounded in [0, 4] — if it oscillates, training is genuinely unstable.
+    /// Value-only component of the loss. Categorical cross-entropy of the
+    /// W/D/L head against the smoothed one-hot target `oneHot(1 − z)`,
+    /// per position then mean over the batch — so bounded below by 0 and
+    /// roughly in [0, ln 3 ≈ 1.10] at convergence (more transiently while
+    /// the head is still learning the class boundaries). NOTE: this is no
+    /// longer the old MSE scale (~0.1–0.4); a value-loss curve compared
+    /// across the scalar→WDL switch is not apples-to-apples.
     let valueLoss: Float
     /// Mean Shannon entropy (in nats) of the trainee's policy softmax over
     /// this batch. Diagnostic only — not part of `loss`. Range is
@@ -84,29 +89,27 @@ struct TrainStepTiming: Sendable {
     /// clip event; steady values above it signal persistent overshoot
     /// that warrants a lower LR.
     let gradGlobalNorm: Float
-    /// Mean of the value-head output across the batch. Value head is
-    /// tanh-squashed so the output lives in [-1, +1]; a healthy batch
-    /// of self-play positions should sit near 0 (most positions are
-    /// drawn at early training). Drifting away from 0 signals the
-    /// value head is learning a bias — if it sticks at ±1 the head
-    /// has saturated and gradients through tanh are vanishing.
+    /// Mean of the derived scalar value `p_win − p_loss` across the
+    /// batch. No tanh — the scalar is a difference of two softmax
+    /// probabilities, naturally in [-1, +1]. A healthy batch of
+    /// early-training self-play positions should sit near 0 (most
+    /// positions ≈ draw → p_win ≈ p_loss). Drifting away from 0 means
+    /// the head is learning a systematic bias toward win or loss.
     let valueMean: Float
-    /// Mean of |value-head output| across the batch. Together with
-    /// `valueMean` this is the cheapest saturation probe available:
-    /// if `valueAbsMean` ≈ 1.0 the head is saturated everywhere
-    /// regardless of position, even if `valueMean` happens to sit
-    /// near 0. Range [0, 1].
+    /// Mean of |p_win − p_loss| across the batch. Together with
+    /// `valueMean` and the W/D/L probability means below, this is the
+    /// cheapest "is the value head doing anything?" probe: ≈ 0
+    /// everywhere = the head is calling every position a draw (the
+    /// failure WDL is meant to break out of), ≈ 1 = the head is
+    /// confidently classifying win-or-loss everywhere. Range [0, 1].
     let valueAbsMean: Float
-
-    /// Mean absolute delta between the fresh per-position v(s)
-    /// computed by the trainer's CURRENT value head and the stale
-    /// vBaseline that was stored in the replay buffer at play-time
-    /// (the champion's frozen-at-random-init value head). Nil on the
-    /// random-data sweep path which has no meaningful play-time
-    /// vBaseline. A rising delta shows the trainer's value head has
-    /// shifted away from the play-time champion's view — i.e., the
-    /// trainer is genuinely diverging.
-    let vBaselineDelta: Float?
+    /// Batch-mean of the value head's softmax `p_win`. Pairs with
+    /// `valueProbDraw` / `valueProbLoss` (they sum to 1). `valueProbDraw`
+    /// → 1.0 is the new representation's "everything is a draw" — watch
+    /// it the way the old code watched `vAbs → 0`.
+    let valueProbWin: Float
+    let valueProbDraw: Float
+    let valueProbLoss: Float
 
     /// Wall-clock cost of the fresh-baseline forward pass added to
     /// each real-data training step. Nil on paths that skip it
@@ -463,15 +466,14 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         let rollingGradGlobalNorm: Double?
         let rollingValueMean: Double?
         let rollingValueAbsMean: Double?
-        /// Rolling-window mean of `TrainStepTiming.vBaselineDelta` —
-        /// the per-step mean absolute distance between the trainer's
-        /// CURRENT v(s) and the play-time-frozen vBaseline that was
-        /// stored in the replay buffer when the move was originally
-        /// played. Higher = the trainer's value head has drifted
-        /// further from the random-init champion's view = the trainer
-        /// is genuinely diverging. nil while the random-data sweep
-        /// path is the source (no real vBaselines).
-        let rollingVBaselineDelta: Double?
+        /// Rolling-window means of the value head's softmax W/D/L
+        /// probabilities (`TrainStepTiming.valueProbWin/Draw/Loss`).
+        /// They sum to ≈1. `rollingValueProbDraw → 1.0` is the new
+        /// representation's "everything is a draw" collapse — surfaced
+        /// on `[STATS]` as `pW=/pD=/pL=`.
+        let rollingValueProbWin: Double?
+        let rollingValueProbDraw: Double?
+        let rollingValueProbLoss: Double?
         /// Rolling-window mean of `TrainStepTiming.policyHeadWeightNorm`.
         /// Growing over a long run alongside extreme logit concentration
         /// signals weight decay is too weak for the current learning rate.
@@ -569,7 +571,9 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     private var _gradNormWindow: RollingDoubleWindow
     private var _valueMeanWindow: RollingDoubleWindow
     private var _valueAbsMeanWindow: RollingDoubleWindow
-    private var _vBaselineDeltaWindow: RollingDoubleWindow
+    private var _valueProbWinWindow: RollingDoubleWindow
+    private var _valueProbDrawWindow: RollingDoubleWindow
+    private var _valueProbLossWindow: RollingDoubleWindow
     private var _policyHeadWeightNormWindow: RollingDoubleWindow
     private var _policyLogitAbsMaxWindow: RollingDoubleWindow
     private var _playedMoveProbWindow: RollingDoubleWindow
@@ -652,7 +656,9 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
         self._gradNormWindow = RollingDoubleWindow(limit: rollingWindow)
         self._valueMeanWindow = RollingDoubleWindow(limit: rollingWindow)
         self._valueAbsMeanWindow = RollingDoubleWindow(limit: rollingWindow)
-        self._vBaselineDeltaWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._valueProbWinWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._valueProbDrawWindow = RollingDoubleWindow(limit: rollingWindow)
+        self._valueProbLossWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyHeadWeightNormWindow = RollingDoubleWindow(limit: rollingWindow)
         self._policyLogitAbsMaxWindow = RollingDoubleWindow(limit: rollingWindow)
         self._playedMoveProbWindow = RollingDoubleWindow(limit: rollingWindow)
@@ -712,10 +718,9 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._gradNormWindow.append(Double(timing.gradGlobalNorm))
             self._valueMeanWindow.append(Double(timing.valueMean))
             self._valueAbsMeanWindow.append(Double(timing.valueAbsMean))
-            // Optional — only the real-data path supplies vBaselineDelta.
-            if let delta = timing.vBaselineDelta {
-                self._vBaselineDeltaWindow.append(Double(delta))
-            }
+            self._valueProbWinWindow.append(Double(timing.valueProbWin))
+            self._valueProbDrawWindow.append(Double(timing.valueProbDraw))
+            self._valueProbLossWindow.append(Double(timing.valueProbLoss))
             self._policyHeadWeightNormWindow.append(Double(timing.policyHeadWeightNorm))
             self._policyLogitAbsMaxWindow.append(Double(timing.policyLogitAbsMax))
             self._playedMoveProbWindow.append(Double(timing.playedMoveProb))
@@ -827,7 +832,9 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             self._gradNormWindow.removeAll()
             self._valueMeanWindow.removeAll()
             self._valueAbsMeanWindow.removeAll()
-            self._vBaselineDeltaWindow.removeAll()
+            self._valueProbWinWindow.removeAll()
+            self._valueProbDrawWindow.removeAll()
+            self._valueProbLossWindow.removeAll()
             self._policyHeadWeightNormWindow.removeAll()
             self._policyLogitAbsMaxWindow.removeAll()
             self._playedMoveProbWindow.removeAll()
@@ -876,7 +883,9 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             let rollingGradNorm = _gradNormWindow.mean
             let rollingVMean = _valueMeanWindow.mean
             let rollingVAbs = _valueAbsMeanWindow.mean
-            let rollingVBaseDelta = _vBaselineDeltaWindow.mean
+            let rollingVProbWin = _valueProbWinWindow.mean
+            let rollingVProbDraw = _valueProbDrawWindow.mean
+            let rollingVProbLoss = _valueProbLossWindow.mean
             let rollingPolicyHeadWNorm = _policyHeadWeightNormWindow.mean
             let rollingPLogitAbsMax = _policyLogitAbsMaxWindow.mean
             let rollingPlayedMoveP = _playedMoveProbWindow.mean
@@ -913,7 +922,9 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
                 rollingGradGlobalNorm: rollingGradNorm,
                 rollingValueMean: rollingVMean,
                 rollingValueAbsMean: rollingVAbs,
-                rollingVBaselineDelta: rollingVBaseDelta,
+                rollingValueProbWin: rollingVProbWin,
+                rollingValueProbDraw: rollingVProbDraw,
+                rollingValueProbLoss: rollingVProbLoss,
                 rollingPolicyHeadWeightNorm: rollingPolicyHeadWNorm,
                 rollingPolicyLogitAbsMax: rollingPLogitAbsMax,
                 rollingPlayedMoveProb: rollingPlayedMoveP,
@@ -1120,6 +1131,21 @@ final class ChessTrainer: @unchecked Sendable {
     /// motivated both changes.
     var policyLabelSmoothingEpsilon: Float
 
+    /// Label-smoothing coefficient ε for the value-head W/D/L CE
+    /// target. Fed to the training graph each step as a scalar
+    /// placeholder, so it's live-tunable.
+    ///
+    /// The value CE target is built in-graph as
+    ///   target = (1 − ε) · one_hot(1 − z) + ε · (1/3)
+    /// where `1 − z` maps the outcome z ∈ {+1, 0, −1} to the
+    /// `[win, draw, loss]` slot. At ε=0 the target is a hard one-hot
+    /// (the W/D/L equivalent of the legacy MSE-on-z target). At ε>0
+    /// the loss equilibrium becomes a finite, reachable logit gap
+    /// instead of `±∞`, exactly as for the policy label smoothing.
+    /// Default 0 for the first WDL run; the parameter exists so a
+    /// small positive value can be dialed in without rebuilding.
+    var valueLabelSmoothingEpsilon: Float
+
     /// Polyak momentum coefficient μ. Fed into the training graph as
     /// a scalar placeholder each step (live-tunable). The optimizer
     /// update is decoupled-decay SGD with momentum:
@@ -1214,6 +1240,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var valueLossWeightPlaceholder: MPSGraphTensor  // [] scalar float
     private var illegalMassWeightPlaceholder: MPSGraphTensor // [] scalar float
     private var labelSmoothingEpsilonPlaceholder: MPSGraphTensor // [] scalar float
+    private var valueLabelSmoothingEpsilonPlaceholder: MPSGraphTensor // [] scalar float
     private var momentumPlaceholder: MPSGraphTensor     // [] scalar float — Polyak μ
     /// Per-trainable-variable momentum velocity buffers, allocated parallel
     /// to `network.trainableVariables`. Each step's update is
@@ -1243,8 +1270,11 @@ final class ChessTrainer: @unchecked Sendable {
     private var policyNonNegCountTensor: MPSGraphTensor // scalar (diagnostic)
     private var policyNonNegIllegalCountTensor: MPSGraphTensor // scalar (diagnostic, illegal cells)
     private var gradGlobalNormTensor: MPSGraphTensor    // scalar (diagnostic)
-    private var valueMeanTensor: MPSGraphTensor         // scalar (diagnostic)
-    private var valueAbsMeanTensor: MPSGraphTensor      // scalar (diagnostic)
+    private var valueMeanTensor: MPSGraphTensor         // scalar (diagnostic) — mean of p_win − p_loss
+    private var valueAbsMeanTensor: MPSGraphTensor      // scalar (diagnostic) — mean |p_win − p_loss|
+    private var valueProbWinTensor: MPSGraphTensor      // scalar (diagnostic) — batch-mean p_win
+    private var valueProbDrawTensor: MPSGraphTensor     // scalar (diagnostic) — batch-mean p_draw
+    private var valueProbLossTensor: MPSGraphTensor     // scalar (diagnostic) — batch-mean p_loss
     private var policyHeadWeightNormTensor: MPSGraphTensor // scalar (diagnostic)
     private var policyLogitAbsMaxTensor: MPSGraphTensor // scalar (diagnostic)
     private var playedMoveProbTensor: MPSGraphTensor    // scalar (diagnostic)
@@ -1293,6 +1323,8 @@ final class ChessTrainer: @unchecked Sendable {
     private var illegalMassWeightTensorData: MPSGraphTensorData
     private var labelSmoothingEpsilonNDArray: MPSNDArray
     private var labelSmoothingEpsilonTensorData: MPSGraphTensorData
+    private var valueLabelSmoothingEpsilonNDArray: MPSNDArray
+    private var valueLabelSmoothingEpsilonTensorData: MPSGraphTensorData
     private var momentumNDArray: MPSNDArray
     private var momentumTensorData: MPSGraphTensorData
 
@@ -1362,7 +1394,10 @@ final class ChessTrainer: @unchecked Sendable {
     private static let lossReadbackSlotPolicyLossLoss: Int = 21
     private static let lossReadbackSlotNonNegIllegal: Int = 22
     private static let lossReadbackSlotVelocityNorm: Int = 23
-    private static let lossReadbackSlotCount: Int = 24
+    private static let lossReadbackSlotValueProbWin: Int = 24
+    private static let lossReadbackSlotValueProbDraw: Int = 25
+    private static let lossReadbackSlotValueProbLoss: Int = 26
+    private static let lossReadbackSlotCount: Int = 27
 
     /// Reusable host-side staging buffers for replay-buffer samples.
     /// The trainer owns these buffers so real-data training can hop
@@ -1415,6 +1450,7 @@ final class ChessTrainer: @unchecked Sendable {
         valueLossWeight: Float = ChessTrainer.valueLossWeightDefault,
         illegalMassPenaltyWeight: Float = 1.0,
         policyLabelSmoothingEpsilon: Float = 0.1,
+        valueLabelSmoothingEpsilon: Float = 0.0,
         momentumCoeff: Float = 0.0,
         sqrtBatchScalingForLR: Bool = true,
         lrWarmupSteps: Int = 100
@@ -1428,6 +1464,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossWeight = valueLossWeight
         self.illegalMassPenaltyWeight = illegalMassPenaltyWeight
         self.policyLabelSmoothingEpsilon = policyLabelSmoothingEpsilon
+        self.valueLabelSmoothingEpsilon = valueLabelSmoothingEpsilon
         self.momentumCoeff = momentumCoeff
         self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         self.lrWarmupSteps = lrWarmupSteps
@@ -1447,6 +1484,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossWeightPlaceholder = built.valueLossWeight
         self.illegalMassWeightPlaceholder = built.illegalMassWeight
         self.labelSmoothingEpsilonPlaceholder = built.labelSmoothingEpsilon
+        self.valueLabelSmoothingEpsilonPlaceholder = built.valueLabelSmoothingEpsilon
         self.momentumPlaceholder = built.momentum
         self.velocityVariables = built.velocityVariables
         self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
@@ -1463,6 +1501,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.gradGlobalNormTensor = built.gradGlobalNorm
         self.valueMeanTensor = built.valueMean
         self.valueAbsMeanTensor = built.valueAbsMean
+        self.valueProbWinTensor = built.valueProbWin
+        self.valueProbDrawTensor = built.valueProbDraw
+        self.valueProbLossTensor = built.valueProbLoss
         self.policyHeadWeightNormTensor = built.policyHeadWeightNorm
         self.policyLogitAbsMaxTensor = built.policyLogitAbsMax
         self.playedMoveProbTensor = built.playedMoveProb
@@ -1517,6 +1558,10 @@ final class ChessTrainer: @unchecked Sendable {
         labelSmoothingND.label = "labelSmoothingEpsilonND"
         self.labelSmoothingEpsilonNDArray = labelSmoothingND
         self.labelSmoothingEpsilonTensorData = MPSGraphTensorData(labelSmoothingND)
+        let valueLabelSmoothingND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        valueLabelSmoothingND.label = "valueLabelSmoothingEpsilonND"
+        self.valueLabelSmoothingEpsilonNDArray = valueLabelSmoothingND
+        self.valueLabelSmoothingEpsilonTensorData = MPSGraphTensorData(valueLabelSmoothingND)
         let momentumND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         momentumND.label = "momentumND"
         self.momentumNDArray = momentumND
@@ -1606,6 +1651,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLossWeightPlaceholder = built.valueLossWeight
         self.illegalMassWeightPlaceholder = built.illegalMassWeight
         self.labelSmoothingEpsilonPlaceholder = built.labelSmoothingEpsilon
+        self.valueLabelSmoothingEpsilonPlaceholder = built.valueLabelSmoothingEpsilon
         self.momentumPlaceholder = built.momentum
         self.velocityVariables = built.velocityVariables
         self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
@@ -1622,6 +1668,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.gradGlobalNormTensor = built.gradGlobalNorm
         self.valueMeanTensor = built.valueMean
         self.valueAbsMeanTensor = built.valueAbsMean
+        self.valueProbWinTensor = built.valueProbWin
+        self.valueProbDrawTensor = built.valueProbDraw
+        self.valueProbLossTensor = built.valueProbLoss
         self.policyHeadWeightNormTensor = built.policyHeadWeightNorm
         self.policyLogitAbsMaxTensor = built.policyLogitAbsMax
         self.playedMoveProbTensor = built.playedMoveProb
@@ -1668,6 +1717,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.labelSmoothingEpsilonNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.labelSmoothingEpsilonNDArray.label = "trainer.scalar.labelSmoothingEpsilon (reset)"
         self.labelSmoothingEpsilonTensorData = MPSGraphTensorData(labelSmoothingEpsilonNDArray)
+        self.valueLabelSmoothingEpsilonNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.valueLabelSmoothingEpsilonNDArray.label = "trainer.scalar.valueLabelSmoothingEpsilon (reset)"
+        self.valueLabelSmoothingEpsilonTensorData = MPSGraphTensorData(valueLabelSmoothingEpsilonNDArray)
         self.momentumNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.momentumNDArray.label = "trainer.scalar.momentum (reset)"
         self.momentumTensorData = MPSGraphTensorData(momentumNDArray)
@@ -1706,6 +1758,7 @@ final class ChessTrainer: @unchecked Sendable {
         valueLossWeight: MPSGraphTensor,
         illegalMassWeight: MPSGraphTensor,
         labelSmoothingEpsilon: MPSGraphTensor,
+        valueLabelSmoothingEpsilon: MPSGraphTensor,
         momentum: MPSGraphTensor,
         velocityVariables: [MPSGraphTensor],
         velocityLoadPlaceholders: [MPSGraphTensor],
@@ -1722,6 +1775,9 @@ final class ChessTrainer: @unchecked Sendable {
         gradGlobalNorm: MPSGraphTensor,
         valueMean: MPSGraphTensor,
         valueAbsMean: MPSGraphTensor,
+        valueProbWin: MPSGraphTensor,
+        valueProbDraw: MPSGraphTensor,
+        valueProbLoss: MPSGraphTensor,
         policyHeadWeightNorm: MPSGraphTensor,
         policyLogitAbsMax: MPSGraphTensor,
         playedMoveProb: MPSGraphTensor,
@@ -2124,22 +2180,109 @@ final class ChessTrainer: @unchecked Sendable {
             name: "policy_loss_loss"
         )
 
-        // --- Value loss: L = mean( (z - v)^2 ) ---
-
-        let diff = graph.subtraction(z, network.valueOutput, name: "value_diff")
-        let sq = graph.square(with: diff, name: "value_sq")
-        let valueLoss = graph.mean(of: sq, axes: [0, 1], name: "value_loss")
-
-        // --- Value-head output mean + abs-mean (diagnostic) ---
+        // --- Value loss: categorical cross-entropy over W/D/L logits ---
         //
-        // Tanh saturation probe. `valueMean` near 0 is healthy (most
-        // early-training positions are drawn, so batch mean should
-        // sit near z's mean, which is ~0). `valueAbsMean` close to 1
-        // means the tanh is saturated — every position reads as near
-        // ±1 regardless of content, which kills the (1−v²) factor in
-        // the MSE gradient and stalls value-head learning. Both are
-        // fetched via `targetTensors`, never feed into totalLoss, so
-        // autodiff never walks into them.
+        // The value head emits 3 raw logits per position
+        // (`network.valueLogits`, shape [batch, 3], slot order
+        // [win, draw, loss]). The training target is a one-hot over the
+        // play-time outcome z ∈ {+1, 0, −1}, mapped to a slot by
+        // `idx = 1 − z` (z=+1→0 win, z=0→1 draw, z=−1→2 loss),
+        // optionally label-smoothed by `value_label_smoothing_epsilon`:
+        //      target = (1 − ε)·oneHot(1−z) + ε·(1/3)
+        // Loss = mean over batch of −Σ_c target_c · logSoftmax(logits)_c
+        // (i.e. `softMaxCrossEntropy` with reductionType .none, then mean).
+        //
+        // Why CE-over-WDL instead of MSE-on-a-tanh-scalar: on a
+        // draw-heavy self-play buffer the scalar tanh head collapsed to
+        // ≈0 ("everything is a draw") and stopped producing useful
+        // gradient — the arena plateau-at-parity in the build-893 run.
+        // A 3-way classifier keeps a usable gradient because the draw
+        // class is just one of three competing logits. See
+        // wdl-value-head.md. `network.valueLogits` is referenced only
+        // here (the policy loss never touches it) and this CE never
+        // references the policy logits, so the two losses keep disjoint
+        // autograd subgraphs joined only at the shared trunk — same as
+        // the old MSE term.
+        //
+        // NOTE on `draw_penalty`: by the time `z` reaches the graph it
+        // may have been rewritten from 0.0 to `-drawPenalty` for drawn
+        // positions (see `trainStepFromReplay` phase 3). With the
+        // default `drawPenalty = 0` that's a no-op. With a small
+        // positive penalty (< 1), `int(1 − z)` truncates back to slot 1
+        // (draw); with a large one (≥ 1) it lands on slot 2 (loss).
+        // That is the intended contempt behavior — `drawPenalty` is the
+        // anti-draw lever — but it means the value target is *not*
+        // always a clean one-hot on the true game result when the
+        // penalty is on. Documented so it isn't mistaken for a bug.
+
+        // value_label_smoothing_epsilon — scalar placeholder, live-tunable;
+        // declared here next to its only consumer (the smoothed target).
+        let valueLabelSmoothingEpsilonTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "value_label_smoothing_epsilon"
+        )
+        // idx = 1 − z. z is [batch, 1] float in {−1, 0, +1} (exact in
+        // FP32), so `1 − z ∈ {2, 1, 0}` is exact; casting to int32
+        // truncates toward zero, which is identity on those values and
+        // maps a `-drawPenalty` rewrite as described above. oneHot adds
+        // the class axis, so reshape the indices to rank-1 first.
+        let valueSlotOneFloat = graph.constant(1.0, dataType: dtype)
+        let valueSlotIndexFloat = graph.subtraction(valueSlotOneFloat, z, name: "value_slot_index_float")
+        let valueSlotIndexInt = graph.cast(valueSlotIndexFloat, to: .int32, name: "value_slot_index")
+        let valueSlotIndexFlat = graph.reshape(valueSlotIndexInt, shape: [-1], name: "value_slot_index_flat")
+        let valueOneHot = graph.oneHot(
+            withIndicesTensor: valueSlotIndexFlat,
+            depth: 3,
+            axis: 1,
+            dataType: dtype,
+            onValue: 1.0,
+            offValue: 0.0,
+            name: "value_onehot"
+        )
+        // smoothed = (1 − ε)·oneHot + ε·(1/3). At ε = 0 this is
+        // bit-exact the hard one-hot.
+        let valueOneMinusEps = graph.subtraction(
+            valueSlotOneFloat,
+            valueLabelSmoothingEpsilonTensor,
+            name: "value_label_smoothing_one_minus_eps"
+        )
+        let valueUniformConst = graph.constant(1.0 / 3.0, shape: [1, 3], dataType: dtype)
+        let valueSmoothedTarget = graph.addition(
+            graph.multiplication(valueOneHot, valueOneMinusEps, name: "value_smoothed_target_onehot_part"),
+            graph.multiplication(valueUniformConst, valueLabelSmoothingEpsilonTensor, name: "value_smoothed_target_uniform_part"),
+            name: "value_smoothed_target"
+        )
+        // softMaxCrossEntropy has an autodiff rule and accepts an
+        // arbitrary (here: smoothed) label tensor — same reasoning as
+        // the policy CE above.
+        let valueCEPerPos = graph.softMaxCrossEntropy(
+            network.valueLogits,
+            labels: valueSmoothedTarget,
+            axis: 1,
+            reuctionType: .none,
+            name: "value_ce_raw"
+        )
+        // .none reduces the class axis → one loss per batch element
+        // ([batch]); reshape to [batch, 1] so the mean lines up with
+        // the rest of the scalar reductions.
+        let valueCEPerPosReshaped = graph.reshape(valueCEPerPos, shape: [-1, 1], name: "value_ce_per_pos")
+        let valueLoss = graph.mean(of: valueCEPerPosReshaped, axes: [0, 1], name: "value_loss")
+
+        // --- Value-head output diagnostics ---
+        //
+        // `network.valueOutput` is now the derived scalar p_win − p_loss
+        // (no tanh). `valueMean` near 0 = healthy on an early-training,
+        // draw-heavy buffer (most positions ≈ draw → p_win ≈ p_loss).
+        // `valueAbsMean` near 1 = the head confidently classifies
+        // win-or-loss everywhere. The W/D/L probability means
+        // (`valueProbWin/Draw/Loss` = batch means of the three softmax
+        // columns of `network.valueProbs`) are the direct collapse
+        // probe: `valueProbDraw → 1.0` is the new representation's
+        // "everything is a draw" — the exact failure the WDL head is
+        // meant to break out of, watch it like the old `vAbs`. All are
+        // diagnostic-only `targetTensors`, never on the totalLoss
+        // autograd path.
         let valueMean = graph.mean(
             of: network.valueOutput,
             axes: [0, 1],
@@ -2151,6 +2294,12 @@ final class ChessTrainer: @unchecked Sendable {
             axes: [0, 1],
             name: "value_abs_mean"
         )
+        let valueProbWinCol = graph.sliceTensor(network.valueProbs, dimension: 1, start: 0, length: 1, name: "value_prob_win_col")
+        let valueProbDrawCol = graph.sliceTensor(network.valueProbs, dimension: 1, start: 1, length: 1, name: "value_prob_draw_col")
+        let valueProbLossCol = graph.sliceTensor(network.valueProbs, dimension: 1, start: 2, length: 1, name: "value_prob_loss_col")
+        let valueProbWin = graph.mean(of: valueProbWinCol, axes: [0, 1], name: "value_prob_win")
+        let valueProbDraw = graph.mean(of: valueProbDrawCol, axes: [0, 1], name: "value_prob_draw")
+        let valueProbLoss = graph.mean(of: valueProbLossCol, axes: [0, 1], name: "value_prob_loss")
 
         // --- Policy entropy ---
         //
@@ -2977,10 +3126,13 @@ final class ChessTrainer: @unchecked Sendable {
             valueLossWeightTensor,
             illegalMassWeightTensor,
             labelSmoothingEpsilonTensor,
+            valueLabelSmoothingEpsilonTensor,
             momentumTensor, velocities,
             velLoadPlaceholders, velLoadAssignOps, velLoadNDArrays, velLoadTensorData,
             totalLossTensor, policyLoss, valueLoss,
-            policyEntropy, illegalMassPenalty, policyNonNegCount, policyNonNegIllegalCount, gradGlobalNorm, valueMean, valueAbsMean, policyHeadWeightNormTensor,
+            policyEntropy, illegalMassPenalty, policyNonNegCount, policyNonNegIllegalCount, gradGlobalNorm, valueMean, valueAbsMean,
+            valueProbWin, valueProbDraw, valueProbLoss,
+            policyHeadWeightNormTensor,
             policyLogitAbsMax, playedMoveProbTensor,
             playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
             advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
@@ -3218,11 +3370,9 @@ final class ChessTrainer: @unchecked Sendable {
     ) async throws -> TrainStepTiming? {
         // Phase 1 (trainer queue): sample into the staging buffers and
         // copy the boards out as a Sendable [Float] for the cross-queue
-        // hop into the network's evaluate. Also copy the stale
-        // vBaselines so we can compute the diagnostic delta at the end.
+        // hop into the network's evaluate.
         struct Phase1: Sendable {
             let boardsCopy: [Float]
-            let staleVBaselines: [Float]
         }
         let phase1: Phase1? = try await enqueue { [batchSize] in
             self.ensureReplayBatchCapacity(batchSize)
@@ -3286,8 +3436,7 @@ final class ChessTrainer: @unchecked Sendable {
             let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
             let totalFloats = batchSize * floatsPerBoard
             let boardsCopy = Array(UnsafeBufferPointer(start: boards, count: totalFloats))
-            let staleCopy = Array(UnsafeBufferPointer(start: vBaselines, count: batchSize))
-            return Phase1(boardsCopy: boardsCopy, staleVBaselines: staleCopy)
+            return Phase1(boardsCopy: boardsCopy)
         }
         guard let phase1 else { return nil }
 
@@ -3310,24 +3459,13 @@ final class ChessTrainer: @unchecked Sendable {
         }
         let freshBaselineMs = (CFAbsoluteTimeGetCurrent() - freshBaselineStart) * 1000
 
-        // Compute the diagnostic mean-absolute-delta between the
-        // trainer's current value head and the play-time champion's
-        // frozen value head. If this stays near zero, the trainer
-        // isn't diverging from the champion — bad. If it grows over
-        // time, the trainer is genuinely learning something different.
-        var sumAbsDelta: Float = 0
-        for i in 0..<batchSize {
-            sumAbsDelta += abs(freshValues[i] - phase1.staleVBaselines[i])
-        }
-        let meanAbsDelta = sumAbsDelta / Float(batchSize)
-
         // Phase 3 (trainer queue): overwrite vBaselines with the fresh
         // values, apply draw penalty, build feeds, run the training
         // graph. Same flow as the pre-fresh-baseline implementation,
         // just with vBaselines now containing current-trainer values
         // instead of replay-buffer-frozen values.
         let dispatchedAtPhase3 = CFAbsoluteTimeGetCurrent()
-        return try await enqueue { [batchSize, freshValues, freshBaselineMs, meanAbsDelta, dispatchedAtPhase3] in
+        return try await enqueue { [batchSize, freshValues, freshBaselineMs, dispatchedAtPhase3] in
             let phase3QueueWaitMs = (CFAbsoluteTimeGetCurrent() - dispatchedAtPhase3) * 1000
             let totalStart = CFAbsoluteTimeGetCurrent()
             let prepStart = CFAbsoluteTimeGetCurrent()
@@ -3508,7 +3646,9 @@ final class ChessTrainer: @unchecked Sendable {
                 gradGlobalNorm: baseTiming.gradGlobalNorm,
                 valueMean: baseTiming.valueMean,
                 valueAbsMean: baseTiming.valueAbsMean,
-                vBaselineDelta: meanAbsDelta,
+                valueProbWin: baseTiming.valueProbWin,
+                valueProbDraw: baseTiming.valueProbDraw,
+                valueProbLoss: baseTiming.valueProbLoss,
                 freshBaselineMs: freshBaselineMs,
                 policyHeadWeightNorm: baseTiming.policyHeadWeightNorm,
                 policyLogitAbsMax: baseTiming.policyLogitAbsMax,
@@ -4177,6 +4317,8 @@ final class ChessTrainer: @unchecked Sendable {
         illegalMassWeightNDArray.writeBytes(&illegalMassW, strideBytes: nil)
         var labelSmoothEps = policyLabelSmoothingEpsilon
         labelSmoothingEpsilonNDArray.writeBytes(&labelSmoothEps, strideBytes: nil)
+        var valueLabelSmoothEps = valueLabelSmoothingEpsilon
+        valueLabelSmoothingEpsilonNDArray.writeBytes(&valueLabelSmoothEps, strideBytes: nil)
         var momentum = momentumCoeff
         momentumNDArray.writeBytes(&momentum, strideBytes: nil)
 
@@ -4266,6 +4408,7 @@ final class ChessTrainer: @unchecked Sendable {
             valueLossWeightPlaceholder: valueLossWeightTensorData,
             illegalMassWeightPlaceholder: illegalMassWeightTensorData,
             labelSmoothingEpsilonPlaceholder: labelSmoothingEpsilonTensorData,
+            valueLabelSmoothingEpsilonPlaceholder: valueLabelSmoothingEpsilonTensorData,
             momentumPlaceholder: momentumTensorData
         ]
 
@@ -4312,7 +4455,9 @@ final class ChessTrainer: @unchecked Sendable {
             targetTensors: [
                 totalLoss, policyLossTensor, valueLossTensor,
                 policyEntropyTensor, illegalMassPenaltyTensor, policyNonNegCountTensor, policyNonNegIllegalCountTensor, gradGlobalNormTensor,
-                valueMeanTensor, valueAbsMeanTensor, policyHeadWeightNormTensor,
+                valueMeanTensor, valueAbsMeanTensor,
+                valueProbWinTensor, valueProbDrawTensor, valueProbLossTensor,
+                policyHeadWeightNormTensor,
                 policyLogitAbsMaxTensor, playedMoveProbTensor,
                 playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
                 advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
@@ -4337,6 +4482,9 @@ final class ChessTrainer: @unchecked Sendable {
             let gradNormData = results[gradGlobalNormTensor],
             let valueMeanData = results[valueMeanTensor],
             let valueAbsMeanData = results[valueAbsMeanTensor],
+            let valueProbWinData = results[valueProbWinTensor],
+            let valueProbDrawData = results[valueProbDrawTensor],
+            let valueProbLossData = results[valueProbLossTensor],
             let policyHeadWNormData = results[policyHeadWeightNormTensor],
             let pLogitAbsMaxData = results[policyLogitAbsMaxTensor],
             let playedMoveProbData = results[playedMoveProbTensor],
@@ -4403,6 +4551,21 @@ final class ChessTrainer: @unchecked Sendable {
         ChessNetwork.readFloats(
             from: valueAbsMeanData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueAbsMean),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: valueProbWinData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbWin),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: valueProbDrawData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbDraw),
+            count: 1
+        )
+        ChessNetwork.readFloats(
+            from: valueProbLossData,
+            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbLoss),
             count: 1
         )
         ChessNetwork.readFloats(
@@ -4499,6 +4662,9 @@ final class ChessTrainer: @unchecked Sendable {
         let gradNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotGradNorm]
         let valueMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueMean]
         let valueAbsMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueAbsMean]
+        let valueProbWinBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueProbWin]
+        let valueProbDrawBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueProbDraw]
+        let valueProbLossBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueProbLoss]
         let policyHeadWNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicyHeadWNorm]
         let pLogitAbsMaxBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPLogitAbsMax]
         let playedMoveProbBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProb]
@@ -4557,10 +4723,12 @@ final class ChessTrainer: @unchecked Sendable {
             gradGlobalNorm: gradNormBufValue,
             valueMean: valueMeanBufValue,
             valueAbsMean: valueAbsMeanBufValue,
-            // Defaults — the real-data path overwrites these at the
-            // outer trainStep level once it has computed the fresh
-            // baseline. The random-data sweep path leaves them nil.
-            vBaselineDelta: nil,
+            valueProbWin: valueProbWinBufValue,
+            valueProbDraw: valueProbDrawBufValue,
+            valueProbLoss: valueProbLossBufValue,
+            // Default — the real-data path overwrites this at the outer
+            // trainStep level once it has computed the fresh baseline.
+            // The random-data sweep path leaves it nil.
             freshBaselineMs: nil,
             policyHeadWeightNorm: policyHeadWNormBufValue,
             policyLogitAbsMax: pLogitAbsMaxBufValue,
