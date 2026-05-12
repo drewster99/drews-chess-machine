@@ -27,27 +27,32 @@ struct ArenaActivityChart: View {
         return nil
     }
 
+    /// "M:SS" from a duration in seconds.
+    private static func mmss(_ seconds: Double) -> String {
+        let total = Int(max(0, seconds))
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private func hoveredArenaHeader(_ e: ArenaChartEvent) -> String {
+        let verdict = e.promoted ? "PROMOTED" : "kept"
+        let dur = Self.mmss(e.endElapsedSec - e.startElapsedSec)
+        let scoreStr = String(format: "%.2f", e.score)
+        return "#\(e.id + 1)  \(verdict)  \(scoreStr)  \(dur)"
+    }
+
     private var headerText: String {
         if let start = activeArenaStartElapsed, let now = liveNow {
-            let elapsed = max(0, now - start)
-            let durMin = Int(elapsed) / 60
-            let durSec = Int(elapsed) % 60
-            return String(format: "ARENA RUNNING  %d:%02d", durMin, durSec)
-        } else if let id = hoverArenaID,
-                  let e = events.first(where: { $0.id == id }) {
-            let verdict = e.promoted ? "PROMOTED" : "kept"
-            let durMin = Int(e.endElapsedSec - e.startElapsedSec) / 60
-            let durSec = Int(e.endElapsedSec - e.startElapsedSec) % 60
-            return String(
-                format: "#%d  %@  %.2f  %d:%02d",
-                e.id + 1, verdict, e.score, durMin, durSec
-            )
-        } else if let last = events.last {
-            let verdict = last.promoted ? "PROMOTED" : "kept"
-            return String(format: "%d ran · last %@ %.2f", events.count, verdict, last.score)
-        } else {
-            return "no arenas yet"
+            return "ARENA RUNNING  \(Self.mmss(now - start))"
         }
+        if let id = hoverArenaID, let e = events.first(where: { $0.id == id }) {
+            return hoveredArenaHeader(e)
+        }
+        if let last = events.last {
+            let verdict = last.promoted ? "PROMOTED" : "kept"
+            let scoreStr = String(format: "%.2f", last.score)
+            return "\(events.count) ran · last \(verdict) \(scoreStr)"
+        }
+        return "no arenas yet"
     }
 
     /// True when the chart has nothing meaningful to render — no
@@ -58,51 +63,20 @@ struct ArenaActivityChart: View {
         events.isEmpty && activeArenaStartElapsed == nil
     }
 
+    /// Score-bar fill color for a completed arena (brighter when hovered).
+    private func barColor(for e: ArenaChartEvent, hoveredID: Int?) -> Color {
+        let hovered = hoveredID == e.id
+        if e.promoted {
+            return Color.green.opacity(hovered ? 1.0 : 0.7)
+        }
+        return Color.gray.opacity(hovered ? 1.0 : 0.5)
+    }
+
     var body: some View {
-        let hoveredID = hoverArenaID
-        let nowMark = liveNow
-        return VStack(alignment: .leading, spacing: 1) {
+        VStack(alignment: .leading, spacing: 1) {
             ChartTileHeader(title: "Arena activity", value: headerText)
             Chart {
-                ForEach(events) { e in
-                    RectangleMark(
-                        xStart: .value("Start", e.startElapsedSec),
-                        xEnd: .value("End", e.endElapsedSec),
-                        yStart: .value("Floor", 0.0),
-                        yEnd: .value("Top", 1.0)
-                    )
-                    .foregroundStyle(Color.secondary.opacity(hoveredID == e.id ? 0.25 : 0.12))
-                }
-                ForEach(events) { e in
-                    RectangleMark(
-                        xStart: .value("Start", e.startElapsedSec),
-                        xEnd: .value("End", e.endElapsedSec),
-                        yStart: .value("Floor", 0.0),
-                        yEnd: .value("Score", e.score)
-                    )
-                    .foregroundStyle(
-                        e.promoted
-                            ? Color.green.opacity(hoveredID == e.id ? 1.0 : 0.7)
-                            : Color.gray.opacity(hoveredID == e.id ? 1.0 : 0.5)
-                    )
-                }
-                if let start = activeArenaStartElapsed, let now = nowMark {
-                    RectangleMark(
-                        xStart: .value("Start", start),
-                        xEnd: .value("Now", now),
-                        yStart: .value("Floor", 0.0),
-                        yEnd: .value("Top", 1.0)
-                    )
-                    .foregroundStyle(Color.blue.opacity(0.35))
-                }
-                RuleMark(y: .value("Threshold", promoteThreshold))
-                    .foregroundStyle(Color.orange.opacity(0.6))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                if let t = hoveredSec {
-                    RuleMark(x: .value("Time", t))
-                        .foregroundStyle(Color.gray.opacity(0.5))
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                }
+                chartContent
             }
             .chartYScale(domain: 0...1.05)
             .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
@@ -144,5 +118,45 @@ struct ArenaActivityChart: View {
         }
         .frame(height: 75)
         .chartCard()
+    }
+
+    @ChartContentBuilder
+    private var chartContent: some ChartContent {
+        let hoveredID = hoverArenaID
+        ForEach(events) { e in
+            RectangleMark(
+                xStart: .value("Start", e.startElapsedSec),
+                xEnd: .value("End", e.endElapsedSec),
+                yStart: .value("Floor", 0.0),
+                yEnd: .value("Top", 1.0)
+            )
+            .foregroundStyle(Color.secondary.opacity(hoveredID == e.id ? 0.25 : 0.12))
+        }
+        ForEach(events) { e in
+            RectangleMark(
+                xStart: .value("Start", e.startElapsedSec),
+                xEnd: .value("End", e.endElapsedSec),
+                yStart: .value("Floor", 0.0),
+                yEnd: .value("Score", e.score)
+            )
+            .foregroundStyle(barColor(for: e, hoveredID: hoveredID))
+        }
+        if let start = activeArenaStartElapsed, let now = liveNow {
+            RectangleMark(
+                xStart: .value("Start", start),
+                xEnd: .value("Now", now),
+                yStart: .value("Floor", 0.0),
+                yEnd: .value("Top", 1.0)
+            )
+            .foregroundStyle(Color.blue.opacity(0.35))
+        }
+        RuleMark(y: .value("Threshold", promoteThreshold))
+            .foregroundStyle(Color.orange.opacity(0.6))
+            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+        if let t = hoveredSec {
+            RuleMark(x: .value("Time", t))
+                .foregroundStyle(Color.gray.opacity(0.5))
+                .lineStyle(StrokeStyle(lineWidth: 1))
+        }
     }
 }

@@ -134,78 +134,9 @@ extension SessionController {
         // (cancellation, sync errors) don't — clearing here keeps
         // all exit paths honest.
         _ = overrideBox.consume()
-        let arenaStartTrainingSnapshot = await trainingBox?.snapshot()
-        let steps = arenaStartTrainingSnapshot?.stats.steps ?? trainingStats?.steps ?? 0
-        if let arenaStartTrainingSnapshot {
-            trainingStats = arenaStartTrainingSnapshot.stats
-            lastTrainStep = arenaStartTrainingSnapshot.lastTiming
-            realRollingPolicyLoss = arenaStartTrainingSnapshot.rollingPolicyLoss
-            realRollingValueLoss = arenaStartTrainingSnapshot.rollingValueLoss
-        }
-
-        let trainerIDStart = trainer.identifier?.description ?? "?"
-        let championIDStart = champion.identifier?.description ?? "?"
-        SessionLogger.shared.log(
-            "[ARENA] start  step=\(steps) trainer=\(trainerIDStart) champion=\(championIDStart)"
+        let (steps, totalGames, startTime, arenaStartTrainingSnapshot) = await beginArenaRun(
+            trainer: trainer, champion: champion, tBox: tBox, arenaFlag: arenaFlag
         )
-        // Snapshot losses/entropy at arena start so the log shows
-        // the trainer's state entering the arena — especially
-        // useful for diagnosing whether divergence was already
-        // underway before the arena ran.
-        if let snap = arenaStartTrainingSnapshot {
-            let pStr = snap.rollingPolicyLoss.map { String(format: "%+.4f", $0) } ?? "--"
-            let vStr = snap.rollingValueLoss.map { String(format: "%+.4f", $0) } ?? "--"
-            let eStr = snap.rollingPolicyEntropy.map { String(format: "%.4f", $0) } ?? "--"
-            let gStr = snap.rollingGradGlobalNorm.map { String(format: "%.3f", $0) } ?? "--"
-            let vmStr = snap.rollingValueMean.map { String(format: "%+.4f", $0) } ?? "--"
-            let vaStr = snap.rollingValueAbsMean.map { String(format: "%.4f", $0) } ?? "--"
-            let bufCount = replayBuffer?.count ?? 0
-            let bufCap = replayBuffer?.capacity ?? TrainingParameters.shared.replayBufferCapacity
-            SessionLogger.shared.log(
-                "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) gNorm=\(gStr) vMean=\(vmStr) vAbs=\(vaStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
-            )
-        }
-
-        // Mark arena active and seed live progress. Arena-active
-        // suppresses the candidate test probe for the duration so
-        // probe and arena don't race on the candidate inference
-        // network. isArenaRunning is @State mirror the UI reads to
-        // disable the Run Arena button and adjust the busy label.
-        arenaFlag.set()
-        isArenaRunning = true
-        // Let the periodic-save scheduler know an arena is in
-        // progress. A 4-hour deadline that crosses while an arena
-        // runs will be held as a pending fire and only dispatched
-        // once the arena ends — unless a post-promotion autosave
-        // lands in the meantime, in which case the pending fire is
-        // swallowed (see `PeriodicSaveController`).
-        periodicSaveController?.noteArenaBegan()
-        // Record the arena's start elapsed-second position so the
-        // chart grid's arena activity tile can render a live band
-        // as the arena progresses, rather than only showing the
-        // arena post-hoc when the completed ArenaChartEvent lands.
-        // Anchors off `chartCoordinator?.chartElapsedAnchor` so the
-        // arena's x-position lands on the same axis as the training
-        // + progress-rate samples. (Routing this off
-        // `parallelStats.sessionStart` instead would put restored
-        // chart data and post-resume arena bands in different
-        // coordinate spaces — the back-dated chart axis vs. the
-        // fresh per-segment parallel-stats axis.)
-        chartCoordinator?.recordArenaStarted(
-            elapsedSec: Date().timeIntervalSince(chartCoordinator?.chartElapsedAnchor ?? Date())
-        )
-
-        let totalGames = TrainingParameters.shared.arenaGamesPerTournament
-        let startTime = Date()
-        tBox.update(TournamentProgress(
-            currentGame: 0,
-            totalGames: totalGames,
-            candidateWins: 0,
-            championWins: 0,
-            draws: 0,
-            startTime: startTime
-        ))
-        tournamentProgress = tBox.snapshot()
 
         // --- Trainer → candidate inference snapshot ---
         //
@@ -944,6 +875,106 @@ extension SessionController {
         // the pending fire) or not (dispatch the save a little
         // late).
         periodicSaveController?.noteArenaEnded()
+    }
+
+    /// Open an arena run: pull the trainer's start-of-arena snapshot (and
+    /// mirror it into the live training-stats fields), emit the start log
+    /// lines, mark the arena active for the probe / periodic-save / UI
+    /// machinery, anchor the chart's live arena band, and seed the
+    /// tournament-progress box. Returns the step count, configured game
+    /// count, and start time the rest of `runArenaParallel` needs. Split
+    /// out so `runArenaParallel`'s body stays under the long-type-check
+    /// budget; it's straight-line setup with no behavioral change.
+    private func beginArenaRun(
+        trainer: ChessTrainer,
+        champion: ChessMPSNetwork,
+        tBox: TournamentLiveBox,
+        arenaFlag: ArenaActiveFlag
+    ) async -> (steps: Int, totalGames: Int, startTime: Date, startSnapshot: TrainingLiveStatsBox.Snapshot?) {
+        let arenaStartTrainingSnapshot = await trainingBox?.snapshot()
+        let steps = arenaStartTrainingSnapshot?.stats.steps ?? trainingStats?.steps ?? 0
+        if let arenaStartTrainingSnapshot {
+            trainingStats = arenaStartTrainingSnapshot.stats
+            lastTrainStep = arenaStartTrainingSnapshot.lastTiming
+            realRollingPolicyLoss = arenaStartTrainingSnapshot.rollingPolicyLoss
+            realRollingValueLoss = arenaStartTrainingSnapshot.rollingValueLoss
+        }
+
+        logArenaStart(steps: steps, trainer: trainer, champion: champion, startSnapshot: arenaStartTrainingSnapshot)
+
+        // Mark arena active and seed live progress. Arena-active
+        // suppresses the candidate test probe for the duration so
+        // probe and arena don't race on the candidate inference
+        // network. isArenaRunning is @State mirror the UI reads to
+        // disable the Run Arena button and adjust the busy label.
+        arenaFlag.set()
+        isArenaRunning = true
+        // Let the periodic-save scheduler know an arena is in
+        // progress. A 4-hour deadline that crosses while an arena
+        // runs will be held as a pending fire and only dispatched
+        // once the arena ends — unless a post-promotion autosave
+        // lands in the meantime, in which case the pending fire is
+        // swallowed (see `PeriodicSaveController`).
+        periodicSaveController?.noteArenaBegan()
+        // Record the arena's start elapsed-second position so the
+        // chart grid's arena activity tile can render a live band
+        // as the arena progresses, rather than only showing the
+        // arena post-hoc when the completed ArenaChartEvent lands.
+        // Anchors off `chartCoordinator?.chartElapsedAnchor` so the
+        // arena's x-position lands on the same axis as the training
+        // + progress-rate samples. (Routing this off
+        // `parallelStats.sessionStart` instead would put restored
+        // chart data and post-resume arena bands in different
+        // coordinate spaces — the back-dated chart axis vs. the
+        // fresh per-segment parallel-stats axis.)
+        chartCoordinator?.recordArenaStarted(
+            elapsedSec: Date().timeIntervalSince(chartCoordinator?.chartElapsedAnchor ?? Date())
+        )
+
+        let totalGames = TrainingParameters.shared.arenaGamesPerTournament
+        let startTime = Date()
+        tBox.update(TournamentProgress(
+            currentGame: 0,
+            totalGames: totalGames,
+            candidateWins: 0,
+            championWins: 0,
+            draws: 0,
+            startTime: startTime
+        ))
+        tournamentProgress = tBox.snapshot()
+        return (steps, totalGames, startTime, arenaStartTrainingSnapshot)
+    }
+
+    /// Emit the `[ARENA] start` line and (if a trainer snapshot is
+    /// available) the `[STATS] arena-start` line, capturing the trainer's
+    /// loss/entropy/grad-norm state entering the arena — useful for
+    /// diagnosing whether divergence was already underway before the arena
+    /// ran. Split out of `runArenaParallel` so that function's body stays
+    /// under the long-type-check budget; this is pure logging with no
+    /// side effects on arena state.
+    private func logArenaStart(
+        steps: Int,
+        trainer: ChessTrainer,
+        champion: ChessMPSNetwork,
+        startSnapshot: TrainingLiveStatsBox.Snapshot?
+    ) {
+        let trainerIDStart = trainer.identifier?.description ?? "?"
+        let championIDStart = champion.identifier?.description ?? "?"
+        SessionLogger.shared.log(
+            "[ARENA] start  step=\(steps) trainer=\(trainerIDStart) champion=\(championIDStart)"
+        )
+        guard let snap = startSnapshot else { return }
+        let pStr = snap.rollingPolicyLoss.map { String(format: "%+.4f", $0) } ?? "--"
+        let vStr = snap.rollingValueLoss.map { String(format: "%+.4f", $0) } ?? "--"
+        let eStr = snap.rollingPolicyEntropy.map { String(format: "%.4f", $0) } ?? "--"
+        let gStr = snap.rollingGradGlobalNorm.map { String(format: "%.3f", $0) } ?? "--"
+        let vmStr = snap.rollingValueMean.map { String(format: "%+.4f", $0) } ?? "--"
+        let vaStr = snap.rollingValueAbsMean.map { String(format: "%.4f", $0) } ?? "--"
+        let bufCount = replayBuffer?.count ?? 0
+        let bufCap = replayBuffer?.capacity ?? TrainingParameters.shared.replayBufferCapacity
+        SessionLogger.shared.log(
+            "[STATS] arena-start  steps=\(steps) buffer=\(bufCount)/\(bufCap) pLoss=\(pStr) vLoss=\(vStr) pEnt=\(eStr) gNorm=\(gStr) vMean=\(vmStr) vAbs=\(vaStr) trainer=\(trainerIDStart) champion=\(championIDStart)"
+        )
     }
 
 }

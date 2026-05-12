@@ -60,45 +60,8 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Upper area takes natural height at minimum, but may
-            // grow to fill any vertical space the window provides
-            // above the chart pane. Without `maxHeight: .infinity`
-            // SwiftUI would size the upper area to its intrinsic
-            // content height and a `Spacer()` between upper and
-            // chart pane would absorb the leftover — leaving an
-            // empty gray band between them. Letting the upper area
-            // be the flexible one keeps the chart pane pinned to
-            // the bottom edge while the upper content sits flush
-            // against it.
-            UpperContentView(
-                commandHub: commandHub,
-                autoTrainOnLaunch: autoTrainOnLaunch,
-                cliConfig: cliConfig,
-                cliOutputURL: cliOutputURL,
-                chartCoordinator: chartCoordinator
-            )
-            .frame(minHeight: 400, maxHeight: .infinity)
-            // The chart pane is dropped entirely when the
-            // policy-channels panel is on — it's expanded to
-            // take over the freed space inside UpperContentView,
-            // so leaving even a zero-height LowerContentView in
-            // the layout would still steal a divider line.
-            if !showPolicyChannelsPanel {
-                VStack {
-                    Divider()
-                    LowerContentView(
-                        promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
-                        replayRatioTarget: TrainingParameters.shared.replayRatioTarget,
-                        gradClipMaxNorm: TrainingParameters.shared.gradClipMaxNorm,
-                        appMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
-                        gpuMemoryTotalGB: Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024),
-                        chartCoordinator: chartCoordinator
-                    )
-                }
-                .opacity((effectiveShowTrainingGraphs && chartCoordinator.isActive) ? 1.0 : 0.0)
-                .frame(height: !effectiveShowTrainingGraphs ? 0 : (chartCoordinator.isActive ? nil : 250))
-                .padding(.bottom, 4)
-            }
+            upperPane
+            lowerPane
         }
         .onAppear {
             // Bootstrap the coordinator's gate from the @AppStorage
@@ -113,6 +76,52 @@ struct ContentView: View {
             // Existing samples in the rings (if any) are left alone
             // so a brief perf-isolation toggle doesn't lose history.
             chartCoordinator.collectionEnabled = newValue
+        }
+    }
+
+    /// Upper area: takes natural height at minimum, but may grow to
+    /// fill any vertical space the window provides above the chart
+    /// pane. Without `maxHeight: .infinity` SwiftUI would size the
+    /// upper area to its intrinsic content height and a `Spacer()`
+    /// between upper and chart pane would absorb the leftover —
+    /// leaving an empty gray band between them. Letting the upper area
+    /// be the flexible one keeps the chart pane pinned to the bottom
+    /// edge while the upper content sits flush against it.
+    @ViewBuilder
+    private var upperPane: some View {
+        UpperContentView(
+            commandHub: commandHub,
+            autoTrainOnLaunch: autoTrainOnLaunch,
+            cliConfig: cliConfig,
+            cliOutputURL: cliOutputURL,
+            chartCoordinator: chartCoordinator
+        )
+        .frame(minHeight: 400, maxHeight: .infinity)
+    }
+
+    /// Chart pane (`LowerContentView` under a divider). Dropped
+    /// entirely when the policy-channels panel is on — that panel
+    /// expands to take over the freed space inside `UpperContentView`,
+    /// so leaving even a zero-height `LowerContentView` in the layout
+    /// would still steal a divider line.
+    @ViewBuilder
+    private var lowerPane: some View {
+        if !showPolicyChannelsPanel {
+            let totalGB: Double = Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024)
+            VStack {
+                Divider()
+                LowerContentView(
+                    promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
+                    replayRatioTarget: TrainingParameters.shared.replayRatioTarget,
+                    gradClipMaxNorm: TrainingParameters.shared.gradClipMaxNorm,
+                    appMemoryTotalGB: totalGB,
+                    gpuMemoryTotalGB: totalGB,
+                    chartCoordinator: chartCoordinator
+                )
+            }
+            .opacity((effectiveShowTrainingGraphs && chartCoordinator.isActive) ? 1.0 : 0.0)
+            .frame(height: !effectiveShowTrainingGraphs ? 0 : (chartCoordinator.isActive ? nil : 250))
+            .padding(.bottom, 4)
         }
     }
 

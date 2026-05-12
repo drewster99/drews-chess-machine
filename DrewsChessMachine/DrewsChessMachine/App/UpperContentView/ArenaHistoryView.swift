@@ -61,37 +61,10 @@ struct ArenaHistoryView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Arena History")
-                    .font(.title2.weight(.semibold))
-                Spacer()
-                Text("\(history.count) tournament\(history.count == 1 ? "" : "s")")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                if let onRecoverFromLogs, hasMissingFields {
-                    if recoveryInProgress {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    Button("Recover from logs", action: onRecoverFromLogs)
-                        .disabled(recoveryInProgress)
-                }
-                Button("Close", action: onClose)
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-
+            headerBar
             Divider()
-
             if history.isEmpty {
-                VStack {
-                    Spacer()
-                    Text("No data to display")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
+                emptyState
             } else {
                 ArenaTrendSparkline(
                     history: history,
@@ -106,47 +79,90 @@ struct ArenaHistoryView: View {
 
                 Divider()
 
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            // Newest first so the recent picture is
-                            // visible without scrolling. Reverse the
-                            // backing array; the original `id` from
-                            // `TournamentRecord` is stable so SwiftUI
-                            // can diff updates.
-                            ForEach(Array(history.enumerated().reversed()), id: \.element.id) { idx, record in
-                                ArenaHistoryRow(
-                                    index: idx + 1,
-                                    record: record,
-                                    promoteThreshold: promoteThreshold,
-                                    configuredGamesPerTournament: configuredGamesPerTournament,
-                                    rowParity: idx % 2,
-                                    showPopover: Binding(
-                                        get: { popoverShownForID == record.id },
-                                        set: { newValue in
-                                            popoverShownForID = newValue ? record.id : nil
-                                        }
-                                    )
-                                )
-                                .id(record.id)
-                                Divider()
-                            }
-                        }
-                    }
-                    .onChange(of: popoverShownForID) { _, newID in
-                        guard let id = newID else { return }
-                        // Animate the scroll so a sparkline-tap that
-                        // jumps to an offscreen row doesn't make the
-                        // popover appear out of nowhere — the row
-                        // visibly slides into view first.
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            proxy.scrollTo(id, anchor: .center)
-                        }
-                    }
-                }
+                historyList
             }
         }
         .frame(minWidth: 600, idealWidth: 760, minHeight: 380, idealHeight: 600)
+    }
+
+    @ViewBuilder
+    private var headerBar: some View {
+        HStack {
+            Text("Arena History")
+                .font(.title2.weight(.semibold))
+            Spacer()
+            Text("\(history.count) tournament\(history.count == 1 ? "" : "s")")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            if let onRecoverFromLogs, hasMissingFields {
+                if recoveryInProgress {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Button("Recover from logs", action: onRecoverFromLogs)
+                    .disabled(recoveryInProgress)
+            }
+            Button("Close", action: onClose)
+                .keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        VStack {
+            Spacer()
+            Text("No data to display")
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var historyList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    // Newest first so the recent picture is visible
+                    // without scrolling. Reverse the backing array;
+                    // the original `id` from `TournamentRecord` is
+                    // stable so SwiftUI can diff updates.
+                    ForEach(Array(history.enumerated().reversed()), id: \.element.id) { idx, record in
+                        row(idx: idx, record: record)
+                        Divider()
+                    }
+                }
+            }
+            .onChange(of: popoverShownForID) { _, newID in
+                guard let id = newID else { return }
+                // Animate the scroll so a sparkline-tap that jumps to
+                // an offscreen row doesn't make the popover appear out
+                // of nowhere — the row visibly slides into view first.
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func row(idx: Int, record: TournamentRecord) -> some View {
+        ArenaHistoryRow(
+            index: idx + 1,
+            record: record,
+            promoteThreshold: promoteThreshold,
+            configuredGamesPerTournament: configuredGamesPerTournament,
+            rowParity: idx % 2,
+            showPopover: Binding(
+                get: { popoverShownForID == record.id },
+                set: { newValue in
+                    popoverShownForID = newValue ? record.id : nil
+                }
+            )
+        )
+        .id(record.id)
     }
 }
 
@@ -230,36 +246,9 @@ private struct ArenaTrendSparkline: View {
     }
 
     var body: some View {
-        let pts = points
-        let lowRef = max(0, 1.0 - promoteThreshold)
-
+        let pts: [Point] = points
         Chart {
-            // Faint connecting line so the eye reads the time
-            // series even when most dots are clustered near 0.5.
-            ForEach(pts) { p in
-                LineMark(
-                    x: .value("Arena", p.index),
-                    y: .value("Score", p.score)
-                )
-                .foregroundStyle(Color.gray.opacity(0.35))
-                .lineStyle(StrokeStyle(lineWidth: 1))
-            }
-            // Promote-threshold reference (top) and its mirror
-            // (bottom) bracket the noise band visually.
-            RuleMark(y: .value("Promote", promoteThreshold))
-                .foregroundStyle(Color.green.opacity(0.45))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-            RuleMark(y: .value("Floor", lowRef))
-                .foregroundStyle(Color.red.opacity(0.45))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-            ForEach(pts) { p in
-                PointMark(
-                    x: .value("Arena", p.index),
-                    y: .value("Score", p.score)
-                )
-                .foregroundStyle(color(for: p.kind))
-                .symbolSize(36)
-            }
+            chartContent(pts: pts)
         }
         .chartYScale(domain: 0...1)
         .chartXScale(domain: 0.5...(Double(max(pts.count, 1)) + 0.5))
@@ -282,33 +271,70 @@ private struct ArenaTrendSparkline: View {
                     .fill(Color.clear)
                     .contentShape(Rectangle())
                     .onTapGesture { location in
-                        // Convert tap into chart-X coordinate, then
-                        // snap to the nearest arena index. A 14pt
-                        // capture radius keeps fat-finger taps in
-                        // the right neighborhood without grabbing
-                        // taps that aren't really on a dot.
-                        let origin = (proxy.plotFrame.map { geo[$0].origin } ?? .zero)
-                        let xInPlot = location.x - origin.x
-                        guard let xVal: Double = proxy.value(atX: xInPlot) else { return }
-                        let nearest = pts.min { a, b in
-                            abs(Double(a.index) - xVal) < abs(Double(b.index) - xVal)
-                        }
-                        guard let n = nearest else { return }
-                        // Distance-in-pixels guard so taps in empty
-                        // chart space are ignored. A real `guard let`
-                        // here — the prior `?? 0` fallback collapsed
-                        // `dotX` to the chart's `origin.x` whenever
-                        // `proxy.position(forX:)` returned nil, which
-                        // could spuriously match taps near the chart's
-                        // left edge or reject taps elsewhere that
-                        // genuinely landed near a dot.
-                        guard let plotX = proxy.position(forX: Double(n.index)) else { return }
-                        let dotX = plotX + origin.x
-                        if abs(location.x - dotX) <= 14 {
-                            onTapRecord(n.id)
-                        }
+                        handleTap(location: location, proxy: proxy, geo: geo, pts: pts)
                     }
             }
+        }
+    }
+
+    @ChartContentBuilder
+    private func chartContent(pts: [Point]) -> some ChartContent {
+        let lowRef = max(0, 1.0 - promoteThreshold)
+        // Faint connecting line so the eye reads the time series
+        // even when most dots are clustered near 0.5.
+        ForEach(pts) { p in
+            LineMark(
+                x: .value("Arena", p.index),
+                y: .value("Score", p.score)
+            )
+            .foregroundStyle(Color.gray.opacity(0.35))
+            .lineStyle(StrokeStyle(lineWidth: 1))
+        }
+        // Promote-threshold reference (top) and its mirror (bottom)
+        // bracket the noise band visually.
+        RuleMark(y: .value("Promote", promoteThreshold))
+            .foregroundStyle(Color.green.opacity(0.45))
+            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+        RuleMark(y: .value("Floor", lowRef))
+            .foregroundStyle(Color.red.opacity(0.45))
+            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+        ForEach(pts) { p in
+            PointMark(
+                x: .value("Arena", p.index),
+                y: .value("Score", p.score)
+            )
+            .foregroundStyle(color(for: p.kind))
+            .symbolSize(36)
+        }
+    }
+
+    /// Convert a tap into a chart-X coordinate, snap to the nearest
+    /// arena index, and fire `onTapRecord` if the tap landed within a
+    /// 14pt capture radius of that dot. The radius keeps fat-finger
+    /// taps in the right neighborhood without grabbing taps that
+    /// aren't really on a dot.
+    private func handleTap(
+        location: CGPoint,
+        proxy: ChartProxy,
+        geo: GeometryProxy,
+        pts: [Point]
+    ) {
+        let origin: CGPoint = proxy.plotFrame.map { geo[$0].origin } ?? .zero
+        let xInPlot = location.x - origin.x
+        guard let xVal: Double = proxy.value(atX: xInPlot) else { return }
+        let nearest = pts.min { a, b in
+            abs(Double(a.index) - xVal) < abs(Double(b.index) - xVal)
+        }
+        guard let n = nearest else { return }
+        // A real `guard let` here — the prior `?? 0` fallback collapsed
+        // `dotX` to the chart's `origin.x` whenever `proxy.position(forX:)`
+        // returned nil, which could spuriously match taps near the
+        // chart's left edge or reject taps elsewhere that genuinely
+        // landed near a dot.
+        guard let plotX = proxy.position(forX: Double(n.index)) else { return }
+        let dotX = plotX + origin.x
+        if abs(location.x - dotX) <= 14 {
+            onTapRecord(n.id)
         }
     }
 }

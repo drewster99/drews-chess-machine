@@ -548,9 +548,9 @@ actor BatchedMoveEvaluationSource: MoveEvaluationSource {
             // detached task per cancel (which can flood the pool
             // during session promotion), we use a structured Task to
             // notify the actor.
-            nonisolated(unsafe) let weakSelf = self
+            let actorSelf = self
             Task {
-                await weakSelf.cancelPending(token: token)
+                await actorSelf.cancelPending(token: token)
             }
         }
     }

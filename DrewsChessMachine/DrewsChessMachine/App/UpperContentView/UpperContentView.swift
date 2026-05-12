@@ -42,6 +42,27 @@ struct UpperContentView: View {
     /// when the flag wasn't passed.
     let cliOutputURL: URL?
 
+    /// Explicit initializer over the five injected (no-default) properties
+    /// (`chartCoordinator` is declared further down with the chart wiring).
+    /// Without it, the synthesized memberwise initializer carries a parameter
+    /// for every `@State` field too — resolving that ~50-parameter signature
+    /// at the lone call site (`ContentView`) was a ~180ms type-check hit.
+    /// Spelling the five real inputs out collapses the call to a five-argument
+    /// function; the `@State`-style properties keep their own declared defaults.
+    init(
+        commandHub: AppCommandHub,
+        autoTrainOnLaunch: Bool,
+        cliConfig: CliTrainingConfig?,
+        cliOutputURL: URL?,
+        chartCoordinator: ChartCoordinator
+    ) {
+        self.commandHub = commandHub
+        self.autoTrainOnLaunch = autoTrainOnLaunch
+        self.cliConfig = cliConfig
+        self.cliOutputURL = cliOutputURL
+        self.chartCoordinator = chartCoordinator
+    }
+
     /// Idempotency guard for the auto-train launch sequence.
     /// `.onAppear` can fire more than once over a view's lifetime
     /// (e.g. on window re-parenting), and the auto-train chain
@@ -90,7 +111,7 @@ struct UpperContentView: View {
     /// `probeInferenceNetwork` + `probeRunner`), the parallel-worker stats and
     /// arena coordination boxes. The training + arena orchestration migrate
     /// onto it in later Stage 4 slices.
-    @State private var session = SessionController()
+    @State private var session: SessionController = SessionController()
 
     // Network — these forward to `session` so the ~150 existing `network` /
     // `runner` / `networkStatus` / `isBuilding` references keep working
@@ -1025,44 +1046,7 @@ struct UpperContentView: View {
         // Steppers/Toggles inside the body.
         @Bindable var trainingParams = self.trainingParams
         return VStack(alignment: .leading, spacing: 8) {
-            // Title bar
-            HStack(spacing: 8) {
-                Text(BuildInfo.summary)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Button(action: { showingInfoPopover.toggle() }) {
-                    Image(systemName: "info.circle")
-                        .font(.title3)
-                }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showingInfoPopover) {
-                    AboutPopoverContent(network: network)
-                }
-                Spacer()
-                // Right-side ID + network status — bumped from .caption to
-                // .callout so they're readable at glance distance. Contrast
-                // (.secondary) was already fine; only the size changes.
-                if let net = network {
-                    Text("Self play ID: \(net.identifier?.description ?? "–")")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                Text(networkStatus.isEmpty ? "" : networkStatus.components(separatedBy: "\n").first ?? "")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                HStack(spacing: 4) {
-                    if checkpoint.lastSavedAt != nil {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    }
-                    Text(lastSavedDisplayString)
-                        .font(.callout)
-                        .foregroundStyle(checkpoint.lastSavedAt == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.green))
-                        .lineLimit(1)
-                }
-            }
-
+            titleBar
             if let alarm = trainingAlarm.active {
                 TrainingAlarmBanner(
                     alarm: alarm,
@@ -1071,211 +1055,11 @@ struct UpperContentView: View {
                     onDismiss: { trainingAlarm.dismiss() }
                 )
             }
-
             cumulativeStatusBar
-
-            // Status row — only renders when there's actually something
-            // to show (a non-realTraining busy state, an in-flight
-            // tournament, or a checkpoint status message). Keep the
-            // row itself conditional so the layout stays compact when
-            // idle; dialog / importer presentation hosts live on the
-            // always-mounted root VStack below.
-            let showsBusyContent: Bool = {
-                if let _ = checkpoint.checkpointStatusMessage { return true }
-                guard isBusy else { return false }
-                if !realTraining { return true }
-                return tournamentProgress != nil
-            }()
-            Group {
-                if showsBusyContent {
-                    HStack(spacing: 8) {
-                        if isBusy {
-                            if !realTraining {
-                                ProgressView().controlSize(.small)
-                                busyLabelView
-                            } else if tournamentProgress != nil {
-                                busyLabelView
-                            }
-                        }
-                        if let msg = checkpoint.checkpointStatusMessage {
-                            CheckpointStatusLineView(kind: checkpoint.checkpointStatusKind, message: msg)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                }
-            }
-            .alert(
-                "Can't do that right now",
-                isPresented: Binding(
-                    get: { menuActionError != nil },
-                    set: { newVal in
-                        if !newVal { menuActionError = nil }
-                    }
-                ),
-                actions: {
-                    Button("OK", role: .cancel) { menuActionError = nil }
-                },
-                message: {
-                    Text(menuActionError ?? "")
-                }
-            )
-            .confirmationDialog(
-                "Start training",
-                isPresented: $showStartTrainingDialog,
-                titleVisibility: .visible,
-                actions: {
-                    Button("Continue training") {
-                        session.startRealTraining(mode: .continueAfterStop)
-                    }
-                    Button("New session with current trainer") {
-                        session.startRealTraining(mode: .newSessionKeepTrainer)
-                    }
-                    Button("New session — trainer reset from champion") {
-                        session.startRealTraining(mode: .newSessionResetTrainerFromChampion)
-                    }
-                    Button("Cancel", role: .cancel) { }
-                },
-                message: {
-                    Text(startTrainingDialogMessage())
-                }
-            )
-            .confirmationDialog(
-                "Promote trainee to champion now?",
-                isPresented: $showPromoteTrainerNowDialog,
-                titleVisibility: .visible,
-                actions: {
-                    Button("Promote", role: .destructive) {
-                        SessionLogger.shared.log("[BUTTON] Promote Trainee Now")
-                        session.promoteTrainerNow()
-                    }
-                    Button("Cancel", role: .cancel) { }
-                },
-                message: {
-                    Text("The current trainee has not been validated by an arena. Promoting replaces the champion with the trainee's current weights; self-play and training continue afterward against the new champion.")
-                }
-            )
-
-            // Board + text side by side
-            HStack(alignment: .top, spacing: 24) {
-                BoardSideView(
-                    playAndTrainBoardMode: $session.playAndTrainBoardMode,
-                    sideToMoveBinding: sideToMoveBinding,
-                    probeNetworkTarget: $session.probeNetworkTarget,
-                    realTraining: realTraining,
-                    workerCount: trainingParams.selfPlayWorkers,
-                    inferenceResultPresent: inferenceResult != nil,
-                    showForwardPassUI: showForwardPassUI,
-                    forwardPassEditable: forwardPassEditable,
-                    isCandidateTestActive: isCandidateTestActive,
-                    overlayLabel: overlayLabel,
-                    board: LiveBoardWithNavigationView(
-                        pieces: displayedPieces,
-                        overlay: currentOverlay,
-                        selectedOverlay: selectedOverlay,
-                        inferenceResultPresent: inferenceResult != nil,
-                        forwardPassEditable: forwardPassEditable,
-                        realTraining: realTraining,
-                        isCandidateTestActive: isCandidateTestActive,
-                        workerCount: trainingParams.selfPlayWorkers,
-                        onNavigate: { navigateOverlay($0) },
-                        onApplyFreePlacementDrag: { from, to in
-                            applyFreePlacementDrag(from: from, to: to)
-                        },
-                        squareIndex: { point, size in
-                            Self.squareIndex(at: point, boardSize: size)
-                        },
-                        onHoverSquare: { sq in
-                            hoveredBoardSquare = sq
-                        }
-                    )
-                )
-
-                // Hover-driven top-3 channels overlay. When the
-                // cursor is over a square AND we have an inference
-                // result with raw logits, show a horizontal row of
-                // 3 mini-board tiles displaying the top-3 channels
-                // (by per-channel logit at that from-square) — each
-                // tile draws the channel's geometric move as an
-                // arrow from the hovered square. Replaces the
-                // MainTextPanel during hover; restores on un-hover.
-                if let sq = hoveredBoardSquare,
-                   let logits = inferenceResult?.rawInference?.logits,
-                   logits.count == ChessNetwork.policySize {
-                    HoverPolicyOverlay(
-                        hoveredRow: sq / 8,
-                        hoveredCol: sq % 8,
-                        currentPlayer: editableState.currentPlayer,
-                        pieces: displayedPieces,
-                        policyLogits: logits,
-                        policyProbs: inferenceResult?.rawInference?.policy
-                    )
-                } else {
-                    MainTextPanel(
-                        isGameMode: isGameMode,
-                        isTrainingMode: isTrainingMode,
-                        isCandidateTestActive: isCandidateTestActive,
-                        inferenceResultText: inferenceResult?.textOutput,
-                        trainingError: trainingError,
-                        selfPlayColumn: { selfPlayStatsColumn },
-                        trainingColumn: { trainingStatsColumnView }
-                    )
-                }
-            }
-            .layoutPriority(1)
-
-            // Full-area policy-channel decomposition. Toggled via
-            // View > Show Policy Channels Panel. When on, takes over
-            // the entire region freed up by the (now-hidden) chart
-            // pane — `ContentView` drops `LowerContentView` for the
-            // same toggle. When off, layout is unchanged. Gated on
-            // `showForwardPassUI` so it never renders against a
-            // stale result on an unrelated board (Game Run / Game
-            // Mode / pure-training paths) — passes nil logits in
-            // those cases so the panel shows its own placeholder.
-            if showPolicyChannelsPanel {
-                Divider()
-                PolicyChannelsPanel(
-                    pieces: displayedPieces,
-                    currentPlayer: editableState.currentPlayer,
-                    policyLogits: showForwardPassUI ? inferenceResult?.rawInference?.logits : nil,
-                    policyProbs: showForwardPassUI ? inferenceResult?.rawInference?.policy : nil
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .layoutPriority(1)
-            }
-
-            // Input tensor channel strip — hidden in plain-board mode
-            // (`selectedOverlay < 0`, the new -1 default). Right-paging
-            // off the plain board reveals the strip; right-arrow moves
-            // selection through it. Divider is gated on the same
-            // condition so collapsing the strip also drops its top
-            // separator.
-            if let result = inferenceResult, showForwardPassUI, selectedOverlay >= 0 {
-                Divider()
-                HStack(spacing: 2) {
-                    ForEach(0..<ChessNetwork.inputPlanes, id: \.self) { channel in
-                        let start = channel * 64
-                        let isSelected = selectedOverlay == channel + 1
-                        VStack(spacing: 1) {
-                            ChannelBoardView(values: Array(result.inputTensor[start..<start + 64]))
-                                .frame(width: 40, height: 40)
-                                .clipShape(RoundedRectangle(cornerRadius: 2))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .stroke(
-                                            isSelected ? Color.accentColor : Color.gray.opacity(0.2),
-                                            lineWidth: isSelected ? 2 : 0.5
-                                        )
-                                )
-                            Text(TensorChannelNames.shortNames[channel])
-                                .font(.system(size: 8))
-                                .foregroundStyle(isSelected ? .primary : .tertiary)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-            }
-
+            busyRowWithDialogs
+            boardAndTextRow
+            policyChannelsPanelSection
+            inputTensorStripSection
             // The chart layer (zoom-control row + chart grid) is no
             // longer rendered here — it lives in `LowerContentView`,
             // which `ContentView` mounts as a sibling of
@@ -1291,59 +1075,7 @@ struct UpperContentView: View {
         .focusEffectDisabled()
         .onKeyPress(.leftArrow) { navigateOverlay(-1); return .handled }
         .onKeyPress(.rightArrow) { navigateOverlay(1); return .handled }
-        .background {
-            // Each importer/exporter stays on its own host view:
-            // stacking multiple file-presentation modifiers on one
-            // SwiftUI host became unreliable on newer macOS builds.
-            // The important part is that the host itself must also be
-            // always mounted; File-menu actions can fire while the
-            // status row above is absent.
-            Color.clear
-                .fileImporter(
-                    isPresented: $checkpoint.showingLoadModelImporter,
-                    allowedContentTypes: [.data, .item],
-                    allowsMultipleSelection: false,
-                    onCompletion: { result in
-                        session.handleLoadModelPickResult(result)
-                    }
-                )
-                .fileDialogDefaultDirectory(
-                    checkpoint.showingLoadModelImporter
-                    ? CheckpointPaths.modelsDir
-                    : CheckpointPaths.sessionsDir
-                )
-
-            Color.clear
-                .fileImporter(
-                    isPresented: $checkpoint.showingLoadSessionImporter,
-                    allowedContentTypes: [.folder],
-                    allowsMultipleSelection: false,
-                    onCompletion: { result in
-                        session.handleLoadSessionPickResult(result)
-                    }
-                )
-
-            Color.clear
-                .fileImporter(
-                    isPresented: $checkpoint.showingLoadParametersImporter,
-                    allowedContentTypes: [.json],
-                    allowsMultipleSelection: false,
-                    onCompletion: { result in
-                        checkpoint.handleLoadParametersPickResult(result)
-                    }
-                )
-
-            Color.clear
-                .fileExporter(
-                    isPresented: $checkpoint.showingSaveParametersExporter,
-                    document: checkpoint.parametersDocumentForExport,
-                    contentType: .json,
-                    defaultFilename: "parameters",
-                    onCompletion: { result in
-                        checkpoint.handleSaveParametersExportResult(result)
-                    }
-                )
-        }
+        .background { filePresentationHosts }
         .background(WindowAccessor(window: $contentWindow, onAttached: handleWindowAttached))
         .onAppear { handleBodyOnAppear() }
         .sheet(isPresented: $autoResume.sheetShowing) {
@@ -1409,6 +1141,325 @@ struct UpperContentView: View {
             // of `UpperContentView`'s private @State.
             chartCoordinator.isActive = newValue
         }
+    }
+
+    // MARK: - body sub-views
+    //
+    // The top-level `VStack` in `body` is split into these `@ViewBuilder`
+    // helpers so each one's view tree is type-checked in its own scope —
+    // a single 200-line `body` blew past the `-warn-long-function-bodies`
+    // budget; the slices each stay well under it.
+
+    /// Title bar: build/git summary + info popover on the left, self-play
+    /// network ID / status / last-saved indicator on the right.
+    @ViewBuilder
+    private var titleBar: some View {
+        HStack(spacing: 8) {
+            Text(BuildInfo.summary)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Button(action: { showingInfoPopover.toggle() }) {
+                Image(systemName: "info.circle")
+                    .font(.title3)
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showingInfoPopover) {
+                AboutPopoverContent(network: network)
+            }
+            Spacer()
+            // Right-side ID + network status — bumped from .caption to
+            // .callout so they're readable at glance distance. Contrast
+            // (.secondary) was already fine; only the size changes.
+            if let net = network {
+                Text("Self play ID: \(net.identifier?.description ?? "–")")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Text(networkStatus.isEmpty ? "" : networkStatus.components(separatedBy: "\n").first ?? "")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            HStack(spacing: 4) {
+                if checkpoint.lastSavedAt != nil {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                Text(lastSavedDisplayString)
+                    .font(.callout)
+                    .foregroundStyle(checkpoint.lastSavedAt == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.green))
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    /// Whether the busy/status row has anything to show — a
+    /// non-`realTraining` busy state, an in-flight tournament, or a
+    /// checkpoint status message. Kept conditional so the layout stays
+    /// compact when idle; the dialog / importer presentation hosts live
+    /// on the always-mounted root regardless.
+    private var showsBusyContent: Bool {
+        if checkpoint.checkpointStatusMessage != nil { return true }
+        guard isBusy else { return false }
+        if !realTraining { return true }
+        return tournamentProgress != nil
+    }
+
+    /// The busy/status row plus the modal presentation hosts that ride on
+    /// it (the "can't do that" alert and the start-training / promote-now
+    /// confirmation dialogs).
+    @ViewBuilder
+    private var busyRowWithDialogs: some View {
+        Group {
+            if showsBusyContent {
+                HStack(spacing: 8) {
+                    if isBusy {
+                        if !realTraining {
+                            ProgressView().controlSize(.small)
+                            busyLabelView
+                        } else if tournamentProgress != nil {
+                            busyLabelView
+                        }
+                    }
+                    if let msg = checkpoint.checkpointStatusMessage {
+                        CheckpointStatusLineView(kind: checkpoint.checkpointStatusKind, message: msg)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .alert(
+            "Can't do that right now",
+            isPresented: Binding(
+                get: { menuActionError != nil },
+                set: { newVal in
+                    if !newVal { menuActionError = nil }
+                }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { menuActionError = nil }
+            },
+            message: {
+                Text(menuActionError ?? "")
+            }
+        )
+        .confirmationDialog(
+            "Start training",
+            isPresented: $showStartTrainingDialog,
+            titleVisibility: .visible,
+            actions: {
+                Button("Continue training") {
+                    session.startRealTraining(mode: .continueAfterStop)
+                }
+                Button("New session with current trainer") {
+                    session.startRealTraining(mode: .newSessionKeepTrainer)
+                }
+                Button("New session — trainer reset from champion") {
+                    session.startRealTraining(mode: .newSessionResetTrainerFromChampion)
+                }
+                Button("Cancel", role: .cancel) { }
+            },
+            message: {
+                Text(startTrainingDialogMessage())
+            }
+        )
+        .confirmationDialog(
+            "Promote trainee to champion now?",
+            isPresented: $showPromoteTrainerNowDialog,
+            titleVisibility: .visible,
+            actions: {
+                Button("Promote", role: .destructive) {
+                    SessionLogger.shared.log("[BUTTON] Promote Trainee Now")
+                    session.promoteTrainerNow()
+                }
+                Button("Cancel", role: .cancel) { }
+            },
+            message: {
+                Text("The current trainee has not been validated by an arena. Promoting replaces the champion with the trainee's current weights; self-play and training continue afterward against the new champion.")
+            }
+        )
+    }
+
+    /// Board + side-text row: the board (with navigation overlays) on the
+    /// left, and either the hover-driven top-3-channels overlay or the
+    /// main text panel on the right.
+    @ViewBuilder
+    private var boardAndTextRow: some View {
+        HStack(alignment: .top, spacing: 24) {
+            BoardSideView(
+                playAndTrainBoardMode: $session.playAndTrainBoardMode,
+                sideToMoveBinding: sideToMoveBinding,
+                probeNetworkTarget: $session.probeNetworkTarget,
+                realTraining: realTraining,
+                workerCount: trainingParams.selfPlayWorkers,
+                inferenceResultPresent: inferenceResult != nil,
+                showForwardPassUI: showForwardPassUI,
+                forwardPassEditable: forwardPassEditable,
+                isCandidateTestActive: isCandidateTestActive,
+                overlayLabel: overlayLabel,
+                board: LiveBoardWithNavigationView(
+                    pieces: displayedPieces,
+                    overlay: currentOverlay,
+                    selectedOverlay: selectedOverlay,
+                    inferenceResultPresent: inferenceResult != nil,
+                    forwardPassEditable: forwardPassEditable,
+                    realTraining: realTraining,
+                    isCandidateTestActive: isCandidateTestActive,
+                    workerCount: trainingParams.selfPlayWorkers,
+                    onNavigate: { navigateOverlay($0) },
+                    onApplyFreePlacementDrag: { from, to in
+                        applyFreePlacementDrag(from: from, to: to)
+                    },
+                    squareIndex: { point, size in
+                        Self.squareIndex(at: point, boardSize: size)
+                    },
+                    onHoverSquare: { sq in
+                        hoveredBoardSquare = sq
+                    }
+                )
+            )
+
+            // Hover-driven top-3 channels overlay. When the cursor is over
+            // a square AND we have an inference result with raw logits,
+            // show a horizontal row of 3 mini-board tiles displaying the
+            // top-3 channels (by per-channel logit at that from-square) —
+            // each tile draws the channel's geometric move as an arrow
+            // from the hovered square. Replaces the MainTextPanel during
+            // hover; restores on un-hover.
+            if let sq = hoveredBoardSquare,
+               let logits = inferenceResult?.rawInference?.logits,
+               logits.count == ChessNetwork.policySize {
+                HoverPolicyOverlay(
+                    hoveredRow: sq / 8,
+                    hoveredCol: sq % 8,
+                    currentPlayer: editableState.currentPlayer,
+                    pieces: displayedPieces,
+                    policyLogits: logits,
+                    policyProbs: inferenceResult?.rawInference?.policy
+                )
+            } else {
+                MainTextPanel(
+                    isGameMode: isGameMode,
+                    isTrainingMode: isTrainingMode,
+                    isCandidateTestActive: isCandidateTestActive,
+                    inferenceResultText: inferenceResult?.textOutput,
+                    trainingError: trainingError,
+                    selfPlayColumn: { selfPlayStatsColumn },
+                    trainingColumn: { trainingStatsColumnView }
+                )
+            }
+        }
+        .layoutPriority(1)
+    }
+
+    /// Full-area policy-channel decomposition. Toggled via
+    /// View > Show Policy Channels Panel. When on, takes over the entire
+    /// region freed up by the (now-hidden) chart pane — `ContentView`
+    /// drops `LowerContentView` for the same toggle. When off, layout is
+    /// unchanged. Gated on `showForwardPassUI` so it never renders against
+    /// a stale result on an unrelated board (Game Run / Game Mode /
+    /// pure-training paths) — passes nil logits in those cases so the
+    /// panel shows its own placeholder.
+    @ViewBuilder
+    private var policyChannelsPanelSection: some View {
+        if showPolicyChannelsPanel {
+            Divider()
+            PolicyChannelsPanel(
+                pieces: displayedPieces,
+                currentPlayer: editableState.currentPlayer,
+                policyLogits: showForwardPassUI ? inferenceResult?.rawInference?.logits : nil,
+                policyProbs: showForwardPassUI ? inferenceResult?.rawInference?.policy : nil
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .layoutPriority(1)
+        }
+    }
+
+    /// Input tensor channel strip — hidden in plain-board mode
+    /// (`selectedOverlay < 0`, the -1 default). Right-paging off the plain
+    /// board reveals the strip; right-arrow moves selection through it.
+    /// The Divider is gated on the same condition so collapsing the strip
+    /// also drops its top separator.
+    @ViewBuilder
+    private var inputTensorStripSection: some View {
+        if let result = inferenceResult, showForwardPassUI, selectedOverlay >= 0 {
+            Divider()
+            HStack(spacing: 2) {
+                ForEach(0..<ChessNetwork.inputPlanes, id: \.self) { channel in
+                    let start = channel * 64
+                    let isSelected = selectedOverlay == channel + 1
+                    VStack(spacing: 1) {
+                        ChannelBoardView(values: Array(result.inputTensor[start..<start + 64]))
+                            .frame(width: 40, height: 40)
+                            .clipShape(RoundedRectangle(cornerRadius: 2))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 2)
+                                    .stroke(
+                                        isSelected ? Color.accentColor : Color.gray.opacity(0.2),
+                                        lineWidth: isSelected ? 2 : 0.5
+                                    )
+                            )
+                        Text(TensorChannelNames.shortNames[channel])
+                            .font(.system(size: 8))
+                            .foregroundStyle(isSelected ? .primary : .tertiary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Always-mounted hosts for the file importers / exporter. Each stays
+    /// on its own `Color.clear` host: stacking multiple file-presentation
+    /// modifiers on one SwiftUI host became unreliable on newer macOS
+    /// builds, and the host itself must be always-mounted because
+    /// File-menu actions can fire while the status row above is absent.
+    @ViewBuilder
+    private var filePresentationHosts: some View {
+        Color.clear
+            .fileImporter(
+                isPresented: $checkpoint.showingLoadModelImporter,
+                allowedContentTypes: [.data, .item],
+                allowsMultipleSelection: false,
+                onCompletion: { result in
+                    session.handleLoadModelPickResult(result)
+                }
+            )
+            .fileDialogDefaultDirectory(
+                checkpoint.showingLoadModelImporter
+                ? CheckpointPaths.modelsDir
+                : CheckpointPaths.sessionsDir
+            )
+
+        Color.clear
+            .fileImporter(
+                isPresented: $checkpoint.showingLoadSessionImporter,
+                allowedContentTypes: [.folder],
+                allowsMultipleSelection: false,
+                onCompletion: { result in
+                    session.handleLoadSessionPickResult(result)
+                }
+            )
+
+        Color.clear
+            .fileImporter(
+                isPresented: $checkpoint.showingLoadParametersImporter,
+                allowedContentTypes: [.json],
+                allowsMultipleSelection: false,
+                onCompletion: { result in
+                    checkpoint.handleLoadParametersPickResult(result)
+                }
+            )
+
+        Color.clear
+            .fileExporter(
+                isPresented: $checkpoint.showingSaveParametersExporter,
+                document: checkpoint.parametersDocumentForExport,
+                contentType: .json,
+                defaultFilename: "parameters",
+                onCompletion: { result in
+                    checkpoint.handleSaveParametersExportResult(result)
+                }
+            )
     }
 
     /// Fires when the SwiftUI view tree is first materialized into

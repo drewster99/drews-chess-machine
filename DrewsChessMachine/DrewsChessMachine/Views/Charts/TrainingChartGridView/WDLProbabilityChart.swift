@@ -19,102 +19,57 @@ struct WDLProbabilityChart: View {
     @Binding var scrollX: Double
     let context: TrainingChartGridView.Context
 
-    var body: some View {
-        let wReadout = TrainingChartGridView.hoverReadoutTraining(
+    private var wReadout: TrainingChartGridView.HoverReadout {
+        TrainingChartGridView.hoverReadoutTraining(
             hoveredSec: hoveredSec,
             buckets: buckets,
             accessor: { $0.valueProbWin },
             bucketWidthSec: context.bucketWidthSec
         )
-        let dReadout = TrainingChartGridView.hoverReadoutTraining(
+    }
+    private var dReadout: TrainingChartGridView.HoverReadout {
+        TrainingChartGridView.hoverReadoutTraining(
             hoveredSec: hoveredSec,
             buckets: buckets,
             accessor: { $0.valueProbDraw },
             bucketWidthSec: context.bucketWidthSec
         )
-        let lReadout = TrainingChartGridView.hoverReadoutTraining(
+    }
+    private var lReadout: TrainingChartGridView.HoverReadout {
+        TrainingChartGridView.hoverReadoutTraining(
             hoveredSec: hoveredSec,
             buckets: buckets,
             accessor: { $0.valueProbLoss },
             bucketWidthSec: context.bucketWidthSec
         )
-        func value(
-            for readout: TrainingChartGridView.HoverReadout,
-            lastBucketValue: Double?
-        ) -> String {
-            switch readout {
-            case .notHovering:
-                return lastBucketValue.map { String(format: "%.3f", $0) } ?? "--"
-            case .hoveringNoData:
-                return "--"
-            case .hoveringWithData(_, let v):
-                return String(format: "%.3f", v)
-            }
-        }
-        let wStr = value(for: wReadout, lastBucketValue: buckets.last?.valueProbWin?.max)
-        let dStr = value(for: dReadout, lastBucketValue: buckets.last?.valueProbDraw?.max)
-        let lStr = value(for: lReadout, lastBucketValue: buckets.last?.valueProbLoss?.max)
-        let headerText: String
+    }
+
+    private var headerText: String {
+        let wStr = TrainingChartGridView.readoutValueString(
+            wReadout, lastBucketValue: buckets.last?.valueProbWin?.max, format: "%.3f"
+        )
+        let dStr = TrainingChartGridView.readoutValueString(
+            dReadout, lastBucketValue: buckets.last?.valueProbDraw?.max, format: "%.3f"
+        )
+        let lStr = TrainingChartGridView.readoutValueString(
+            lReadout, lastBucketValue: buckets.last?.valueProbLoss?.max, format: "%.3f"
+        )
         if wStr == "--" && dStr == "--" && lStr == "--" {
             switch dReadout {
             case .hoveringNoData, .hoveringWithData:
-                headerText = "— no data"
+                return "— no data"
             case .notHovering:
-                headerText = "--"
+                return "--"
             }
-        } else {
-            headerText = "W \(wStr) / D \(dStr) / L \(lStr)"
         }
-        return VStack(alignment: .leading, spacing: 1) {
+        return "W \(wStr) / D \(dStr) / L \(lStr)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
             ChartTileHeader(title: "value W/D/L probabilities", value: headerText)
             Chart {
-                ForEach(buckets) { b in
-                    LineMark(
-                        x: .value("Time", b.elapsedSec),
-                        y: .value("p", b.valueProbWin?.max ?? .nan)
-                    )
-                    .foregroundStyle(by: .value("Series", "pW"))
-                }
-                ForEach(buckets) { b in
-                    LineMark(
-                        x: .value("Time", b.elapsedSec),
-                        y: .value("p", b.valueProbDraw?.max ?? .nan)
-                    )
-                    .foregroundStyle(by: .value("Series", "pD"))
-                }
-                ForEach(buckets) { b in
-                    LineMark(
-                        x: .value("Time", b.elapsedSec),
-                        y: .value("p", b.valueProbLoss?.max ?? .nan)
-                    )
-                    .foregroundStyle(by: .value("Series", "pL"))
-                }
-                // 0.75 reference: the W/D/L head's draw-bias init. A
-                // pD trace sitting persistently above this is the
-                // regression-toward-collapse signal.
-                RuleMark(y: .value("init pD", 0.75))
-                    .foregroundStyle(Color.gray.opacity(0.4))
-                    .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
-                if let t = hoveredSec {
-                    RuleMark(x: .value("Time", t))
-                        .foregroundStyle(Color.gray.opacity(0.5))
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                }
-                if case .hoveringWithData(let t, let v) = wReadout {
-                    PointMark(x: .value("Time", t), y: .value("p", v))
-                        .foregroundStyle(Color.green)
-                        .symbolSize(40)
-                }
-                if case .hoveringWithData(let t, let v) = dReadout {
-                    PointMark(x: .value("Time", t), y: .value("p", v))
-                        .foregroundStyle(Color.gray)
-                        .symbolSize(40)
-                }
-                if case .hoveringWithData(let t, let v) = lReadout {
-                    PointMark(x: .value("Time", t), y: .value("p", v))
-                        .foregroundStyle(Color.red)
-                        .symbolSize(40)
-                }
+                chartContent
             }
             .chartYScale(domain: 0...1)
             .chartForegroundStyleScale([
@@ -130,5 +85,56 @@ struct WDLProbabilityChart: View {
         }
         .frame(height: 75)
         .chartCard()
+    }
+
+    @ChartContentBuilder
+    private var chartContent: some ChartContent {
+        ForEach(buckets) { b in
+            LineMark(
+                x: .value("Time", b.elapsedSec),
+                y: .value("p", b.valueProbWin?.max ?? .nan)
+            )
+            .foregroundStyle(by: .value("Series", "pW"))
+        }
+        ForEach(buckets) { b in
+            LineMark(
+                x: .value("Time", b.elapsedSec),
+                y: .value("p", b.valueProbDraw?.max ?? .nan)
+            )
+            .foregroundStyle(by: .value("Series", "pD"))
+        }
+        ForEach(buckets) { b in
+            LineMark(
+                x: .value("Time", b.elapsedSec),
+                y: .value("p", b.valueProbLoss?.max ?? .nan)
+            )
+            .foregroundStyle(by: .value("Series", "pL"))
+        }
+        // 0.75 reference: the W/D/L head's draw-bias init. A
+        // pD trace sitting persistently above this is the
+        // regression-toward-collapse signal.
+        RuleMark(y: .value("init pD", 0.75))
+            .foregroundStyle(Color.gray.opacity(0.4))
+            .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
+        if let t = hoveredSec {
+            RuleMark(x: .value("Time", t))
+                .foregroundStyle(Color.gray.opacity(0.5))
+                .lineStyle(StrokeStyle(lineWidth: 1))
+        }
+        if case .hoveringWithData(let t, let v) = wReadout {
+            PointMark(x: .value("Time", t), y: .value("p", v))
+                .foregroundStyle(Color.green)
+                .symbolSize(40)
+        }
+        if case .hoveringWithData(let t, let v) = dReadout {
+            PointMark(x: .value("Time", t), y: .value("p", v))
+                .foregroundStyle(Color.gray)
+                .symbolSize(40)
+        }
+        if case .hoveringWithData(let t, let v) = lReadout {
+            PointMark(x: .value("Time", t), y: .value("p", v))
+                .foregroundStyle(Color.red)
+                .symbolSize(40)
+        }
     }
 }

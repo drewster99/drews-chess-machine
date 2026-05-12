@@ -565,6 +565,15 @@ final class SessionController {
     // Candidate-probe execution (fireCandidateProbeIfNeeded / buildCliCandidateTestEvent /
     // performInference) moved to SessionController+CandidateProbe.swift.
 
+    /// Explicit (empty) designated initializer. Every stored property above
+    /// carries its own default, so the body has nothing to do — but spelling
+    /// the initializer out keeps the type-checker from re-deriving and
+    /// re-checking the `@Observable`-synthesized member-by-member init at
+    /// every `SessionController()` call site (which, with this many observed
+    /// stored properties, was a multi-hundred-millisecond hit at the one such
+    /// site, `UpperContentView`'s `@State var session`).
+    init() {}
+
     // MARK: - Demo training (Train Once / Continuous Training) (Stage 4g)
 
     /// Returns the board state the candidate-test probe should evaluate. Wired

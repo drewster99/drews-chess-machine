@@ -79,4 +79,29 @@ extension TrainingChartGridView {
         }
         return .hoveringWithData(sampleTime: bucket.elapsedSec, value: range.max)
     }
+
+    /// Format the value a chart tile's header should show for one
+    /// series, given that series' hover readout and its most-recent
+    /// bucket value. When not hovering we show the last sample (so the
+    /// header tracks the live tail); while hovering we show the hovered
+    /// sample, or `--` if the cursor is over the chart but off any
+    /// bucket. `format` is a `String(format:)` spec like `"%.3f"` or
+    /// `"%+.4f"`. Hoisted here so every tile shares one implementation
+    /// rather than re-declaring a nested `func value(...)` inside its
+    /// `body` (which the type-checker re-solves on every render).
+    static func readoutValueString(
+        _ readout: HoverReadout,
+        lastBucketValue: Double?,
+        format: String
+    ) -> String {
+        switch readout {
+        case .notHovering:
+            guard let v = lastBucketValue else { return "--" }
+            return String(format: format, v)
+        case .hoveringNoData:
+            return "--"
+        case .hoveringWithData(_, let v):
+            return String(format: format, v)
+        }
+    }
 }
