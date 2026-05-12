@@ -32,6 +32,7 @@
   "sqrt_batch_scaling_lr" : false,
   "training_batch_size" : 4096,
   "training_step_delay_ms" : 25,
+  "value_label_smoothing_epsilon" : 0,
   "value_loss_weight" : 1,
   "weight_decay" : 0.0001
 }

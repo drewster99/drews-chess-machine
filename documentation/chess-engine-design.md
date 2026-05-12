@@ -253,6 +253,8 @@ Squares numbered 0–63, row by row from rank 8. Most outputs will be near zero 
 
 ### The Value Head - Am I Winning?
 
+> **Update (2026-05-12): the value head is now a 3-way W/D/L softmax, not a scalar `tanh`.** The narrative below describes the *original* design (a single `tanh` scalar trained vs `z ∈ {−1, 0, +1}` with MSE — see the loss section). It was replaced because on a draw-heavy self-play buffer that head collapsed to ≈0 ("everything is a draw") and stopped producing useful gradient. The current head is `… → FC(64→3) → 3 raw logits` in `[win, draw, loss]` slot order (no `tanh`), trained with **categorical cross-entropy** against a one-hot on the game result (`slot = clamp(int(1 − z), 0, 2)`: z=+1→win, z=0→draw, z=−1→loss), optionally label-smoothed by `value_label_smoothing_epsilon`. Everything downstream that wants "am I winning?" as a scalar — move selection's readback, the dashboard, the policy-gradient baseline — reads the *derived* scalar `v = softmax(logits)·[+1, 0, −1] = p_win − p_loss`, which is naturally in `[−1, +1]` (a difference of two probabilities), so no `tanh` is needed; the full `(p_win, p_draw, p_loss)` distribution stays available inside the network for the value loss and the `pW=/pD=/pL=` diagnostics. The bias init `[0, ln 6, 0]` makes a fresh head's softmax `(0.125, 0.75, 0.125)` (the empirically draw-heavy prior) with the derived scalar starting at `0.125 − 0.125 = 0` — matching the old `tanh(0) = 0`. Full math and rationale: `wdl-value-head.md`. The shared-trunk, advantage-baseline, and policy-loss machinery below is unchanged by this.
+
 Takes the 128 × 8 × 8 trunk output and produces one float in [-1, 1].
 
 ```
@@ -267,7 +269,7 @@ tanh                       → float in [-1.0, +1.0]
 
 The intermediate 64→64 [fully connected layer](#fully-connected-layers) gives the head capacity to combine spatial features before collapsing to a scalar. Going straight to 1 output is too aggressive.
 
-**Tanh:** Squashes unbounded FC output to [-1, 1]. The FC layer could output -47 or +831 — tanh maps the entire real line to this fixed range to match the game outcome encoding.
+**Tanh:** Squashes unbounded FC output to [-1, 1]. The FC layer could output -47 or +831 — tanh maps the entire real line to this fixed range to match the game outcome encoding. *(Superseded — see the update note above; the difference of two softmax probabilities is already in `[−1, +1]` with no squashing.)*
 
 **What the value means:**
 ```
@@ -576,6 +578,8 @@ Unlike the policy side, **every position contributes** to the value loss — win
 
 **Why MSE instead of cross-entropy?** Value is a regression problem — predict a continuous scalar, minimize squared distance from the true number. Cross-entropy requires a probability distribution over discrete classes, which doesn't naturally fit a single `[−1, +1]` output. Some implementations discretize the outcome into {win, draw, loss} and use cross-entropy on that three-class distribution, but MSE on a scalar is simpler and works fine for our purposes.
 
+> **Update (2026-05-12): we now do exactly that — W/D/L cross-entropy.** "MSE on a scalar works fine" turned out to be false for *this* training regime: on the ~64–85%-draw self-play buffer the scalar head collapsed to ≈0 and the value-loss term went silent (`vLoss` flat, `vAbs → 0`), leaving the policy improving by pure outcome-weighted imitation with no value amplifier. The value loss is now `mean over batch of −Σ_c target_c · log softmax(value_logits)_c` with `target = (1−ε)·oneHot(slot) + ε·(1/3)`, `slot = clamp(int(1 − z), 0, 2)`, `ε = value_label_smoothing_epsilon`. It's bounded below by 0 and roughly `[0, ln 3 ≈ 1.10]` at convergence (transiently larger while the head is learning the class boundaries) — *not* the old MSE scale, so a `vLoss` curve compared across the switch is not apples-to-apples. The advantage baseline below still uses the *derived scalar* `v = p_win − p_loss` exactly as written (it's still a `[−1, +1]` scalar, just no longer via `tanh`), so `advantage = z − v` is still structurally in `[−2, +2]` — no clamp needed. Full design: `wdl-value-head.md`.
+
 #### Combined loss
 
 ```
@@ -614,7 +618,7 @@ The REINFORCE bootstrap described above is functionally correct but known to be 
 
 **2. Weight decay (L2 on all trainable parameters, `c = 1e-4`).** Add `(c/2) · Σ_i w_i²` to `totalLossTensor` — autodiff contributes a `c · w_i` gradient term per parameter. Applied uniformly to conv weights, FC weights, BN scale/shift (first implementation; refinement to exclude BN/bias is optional later). Prevents slow systematic weight growth that primes the network for runaway logits. Also provides standard generalization benefits. `c = 1e-4` is the AlphaZero / ResNet standard value.
 
-**3. Advantage baseline (`advantage = z − v(s).detached()`).** Replace raw `z ∈ {−1, 0, +1}` in the policy loss with the advantage against the value head's prediction, stop-gradient so the policy loss does not backprop into the value head. Loss becomes `mean(advantage · (−log p(a*)))`. This is the standard variance-reduction trick from actor-critic methods (A2C/PPO/TRPO); it reduces policy-gradient variance by roughly 5–20× depending on game phase. Since `v ∈ [−1, +1]` via tanh (ChessNetwork value head ends in `graph.tanh`), advantage is structurally bounded in `[−2, +2]`; no clamp needed. Moves in obvious wins/losses get near-zero gradient; surprise outcomes get strongly scaled gradient. The most important change for actual policy learning speed.
+**3. Advantage baseline (`advantage = z − v(s).detached()`).** Replace raw `z ∈ {−1, 0, +1}` in the policy loss with the advantage against the value head's prediction, stop-gradient so the policy loss does not backprop into the value head. Loss becomes `mean(advantage · (−log p(a*)))`. This is the standard variance-reduction trick from actor-critic methods (A2C/PPO/TRPO); it reduces policy-gradient variance by roughly 5–20× depending on game phase. Since `v ∈ [−1, +1]` (post-2026-05-12 it's the derived scalar `p_win − p_loss` from the W/D/L head — a difference of two probabilities, no `tanh` needed; pre-that it was `graph.tanh`), advantage is structurally bounded in `[−2, +2]`; no clamp needed. Moves in obvious wins/losses get near-zero gradient; surprise outcomes get strongly scaled gradient. The most important change for actual policy learning speed.
 
 **4. Batch size 1024 → 4096.** Per the batch-size sweep conducted 2026-04-17, GPU throughput is essentially flat from batch=128 onward (~4,000 positions/sec regardless of size), and self-play is the wall-clock bottleneck. Going to 4096 gives 2× gradient-variance reduction (`sqrt(4)`) for no throughput cost. Peak memory rises from ~8.7 GB to ~17.4 GB, well within the 37 GB recommended working set. Supports a higher lr and amplifies the advantage baseline's smoothing benefit.
 
