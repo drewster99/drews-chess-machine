@@ -209,6 +209,14 @@ final class SessionController {
     /// never-deallocated `UpperContentView`.
     weak var checkpoint: CheckpointController?
 
+    /// The chart coordinator (owned by `ContentView`, passed to `UpperContentView`
+    /// by `let`). Set in `handleBodyOnAppear`. Strong is fine — `ContentView`
+    /// never tears down, so there's no cycle to break; weak would just need an
+    /// unwrap at every use. Used by the resume path (`seedChartCoordinatorFromLoadedSession`)
+    /// and — once they migrate — by `startRealTraining` / `runArenaParallel` /
+    /// `buildCurrentSessionState`.
+    var chartCoordinator: ChartCoordinator?
+
     // MARK: - Session-runtime boxes + replay-ratio compensator (Stage 4f)
 
     /// Live `SamplingScheduleBox` for the current Play-and-Train session — the
@@ -294,6 +302,56 @@ final class SessionController {
             effectiveReplayRatioTarget = nextTeff
         }
         lastReplayRatioCompensatorAt = now
+    }
+
+    // MARK: - Session resume (Stage 4k)
+
+    /// Resume helper — reads `training_chart.json` / `progress_rate_chart.json`
+    /// from the previously-loaded session and seeds `chartCoordinator` with the
+    /// restored trajectory (plus the inline `arenaChartEvents` / `legalMassMaxAllTime`
+    /// from `pendingLoadedSession.state`). Decode failures log and skip so a
+    /// corrupt chart file never blocks the rest of the session-resume flow.
+    /// Honors "View > Collect Chart Data" being off.
+    func seedChartCoordinatorFromLoadedSession(
+        chartURLs: (training: URL, progressRate: URL)
+    ) {
+        guard let chartCoordinator, chartCoordinator.collectionEnabled else {
+            SessionLogger.shared.log(
+                "[CHECKPOINT] Skipping chart-data restore — collection is disabled in View > Collect Chart Data"
+            )
+            return
+        }
+        let trainingSamples: [TrainingChartSample]
+        let progressSamples: [ProgressRateSample]
+        do {
+            trainingSamples = try readChartFile(
+                [TrainingChartSample].self, from: chartURLs.training
+            )
+            progressSamples = try readChartFile(
+                [ProgressRateSample].self, from: chartURLs.progressRate
+            )
+        } catch {
+            SessionLogger.shared.log(
+                "[CHECKPOINT] Chart-data restore skipped — decode failed: \(error.localizedDescription)"
+            )
+            return
+        }
+        let arenaEvents = pendingLoadedSession?.state.arenaChartEvents ?? []
+        let legalMassMax = pendingLoadedSession?.state.legalMassMaxAllTime ?? 0
+        let lastTrainElapsed = trainingSamples.last?.elapsedSec ?? 0
+        let lastProgressElapsed = progressSamples.last?.elapsedSec ?? 0
+        let lastElapsed = max(lastTrainElapsed, lastProgressElapsed)
+        let snapshot = ChartCoordinatorSnapshot(
+            trainingSamples: trainingSamples,
+            progressRateSamples: progressSamples,
+            arenaChartEvents: arenaEvents,
+            legalMassMaxAllTime: legalMassMax,
+            lastElapsedSec: lastElapsed
+        )
+        chartCoordinator.seedFromRestoredSession(snapshot)
+        SessionLogger.shared.log(
+            "[CHECKPOINT] Restored chart data: \(trainingSamples.count) training samples, \(progressSamples.count) progress-rate samples, \(arenaEvents.count) arena events"
+        )
     }
 
     // MARK: - Tournament / arena display state (Stage 4j)

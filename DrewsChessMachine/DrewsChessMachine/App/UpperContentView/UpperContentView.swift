@@ -1504,6 +1504,7 @@ struct UpperContentView: View {
         session.editableStateProvider = { editableState }
         session.onInferenceResult = { inferenceResult = $0 }
         session.checkpoint = checkpoint
+        session.chartCoordinator = chartCoordinator
         // Resume-sheet UX is correctly gated on the window being
         // visible — surfacing a sheet on a hidden window would do
         // nothing useful. Skipped under `--train` because the
@@ -2375,62 +2376,9 @@ struct UpperContentView: View {
         ).withTrainingSegments(segments)
     }
 
-    /// Resume helper — reads `training_chart.json` and
-    /// `progress_rate_chart.json` from the previously-loaded session
-    /// and seeds the chart coordinator with the restored trajectory.
-    /// Called once from the resume branch of `runRealTraining`,
-    /// right after `chartCoordinator.reset()`.
-    ///
-    /// Pulls the small auxiliary fields (`arenaChartEvents`,
-    /// `legalMassMaxAllTime`) out of `pendingLoadedSession.state`
-    /// since those ride inline in `session.json`. Decode failures
-    /// log and skip — the rest of the session-resume flow keeps
-    /// going so a corrupt or truncated chart file never blocks the
-    /// network/replay-buffer load.
-    private func seedChartCoordinatorFromLoadedSession(
-        chartURLs: (training: URL, progressRate: URL)
-    ) {
-        guard chartCoordinator.collectionEnabled else {
-            // User has chart collection turned off; honor that and
-            // skip restore. The view still shows whatever live data
-            // is captured after they re-enable, the same as today.
-            SessionLogger.shared.log(
-                "[CHECKPOINT] Skipping chart-data restore — collection is disabled in View > Collect Chart Data"
-            )
-            return
-        }
-        let trainingSamples: [TrainingChartSample]
-        let progressSamples: [ProgressRateSample]
-        do {
-            trainingSamples = try readChartFile(
-                [TrainingChartSample].self, from: chartURLs.training
-            )
-            progressSamples = try readChartFile(
-                [ProgressRateSample].self, from: chartURLs.progressRate
-            )
-        } catch {
-            SessionLogger.shared.log(
-                "[CHECKPOINT] Chart-data restore skipped — decode failed: \(error.localizedDescription)"
-            )
-            return
-        }
-        let arenaEvents = pendingLoadedSession?.state.arenaChartEvents ?? []
-        let legalMassMax = pendingLoadedSession?.state.legalMassMaxAllTime ?? 0
-        let lastTrainElapsed = trainingSamples.last?.elapsedSec ?? 0
-        let lastProgressElapsed = progressSamples.last?.elapsedSec ?? 0
-        let lastElapsed = max(lastTrainElapsed, lastProgressElapsed)
-        let snapshot = ChartCoordinatorSnapshot(
-            trainingSamples: trainingSamples,
-            progressRateSamples: progressSamples,
-            arenaChartEvents: arenaEvents,
-            legalMassMaxAllTime: legalMassMax,
-            lastElapsedSec: lastElapsed
-        )
-        chartCoordinator.seedFromRestoredSession(snapshot)
-        SessionLogger.shared.log(
-            "[CHECKPOINT] Restored chart data: \(trainingSamples.count) training samples, \(progressSamples.count) progress-rate samples, \(arenaEvents.count) arena events"
-        )
-    }
+    // seedChartCoordinatorFromLoadedSession(chartURLs:) moved to
+    // SessionController in Stage 4k — the resume branch calls
+    // session.seedChartCoordinatorFromLoadedSession(chartURLs:).
 
     /// Manual "Save Champion as Model" — writes a standalone
     /// `.dcmmodel` containing the current champion's weights.
@@ -5040,7 +4988,7 @@ struct UpperContentView: View {
             // corrupt chart file never blocks the (more important)
             // network/replay-buffer load.
             if let chartURLs = pendingLoadedSession?.chartDataURLs {
-                seedChartCoordinatorFromLoadedSession(chartURLs: chartURLs)
+                session.seedChartCoordinatorFromLoadedSession(chartURLs: chartURLs)
             }
         }
         // Single self-play gate. All self-play workers now share one
