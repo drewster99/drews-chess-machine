@@ -529,11 +529,13 @@ struct UpperContentView: View {
     /// before flipping this flag so the sheet doesn't anchor to a
     /// dying popover.
     @State private var showArenaHistorySheet: Bool = false
-    /// Set true while a one-shot log-scan recovery pass is
-    /// running. Disables the "Recover from logs" button so the
-    /// user can't trigger overlapping scans, and shows a small
-    /// spinner in the sheet header.
-    @State private var arenaRecoveryInProgress: Bool = false
+    /// True while a one-shot log-scan recovery pass is running. Moved to
+    /// SessionController in Stage 4r (along with `runArenaHistoryRecovery`) —
+    /// forwarding proxy. (Disables the "Recover from logs" button against
+    /// overlapping scans; drives a spinner in the arena-history sheet header.)
+    private var arenaRecoveryInProgress: Bool {
+        get { session.arenaRecoveryInProgress } nonmutating set { session.arenaRecoveryInProgress = newValue }
+    }
     // Sampling cadence (`chartCoordinator.progressRateLastFetch`,
     // `chartCoordinator.progressRateNextId`, `chartCoordinator.trainingChartNextId`,
     // `chartCoordinator.prevChartTotalGpuMs`), chart navigation (`chartCoordinator.scrollX`,
@@ -3053,7 +3055,7 @@ struct UpperContentView: View {
         }
         commandHub.runEngineDiagnostics = { session.runEngineDiagnostics() }
         commandHub.runPolicyConditioningDiagnostic = { session.runPolicyConditioningDiagnostic() }
-        commandHub.recoverArenaHistoryFromLogs = { runArenaHistoryRecovery() }
+        commandHub.recoverArenaHistoryFromLogs = { session.runArenaHistoryRecovery() }
         commandHub.abortArena = {
             SessionLogger.shared.log("[BUTTON] Abort Arena")
             session.arenaOverrideBox?.abort()
@@ -3768,81 +3770,8 @@ struct UpperContentView: View {
     /// don't auto-save here so the recovery is reversible from
     /// the user's perspective until they confirm.
     @MainActor
-    private func runArenaHistoryRecovery() {
-        guard !arenaRecoveryInProgress else { return }
-        arenaRecoveryInProgress = true
-        SessionLogger.shared.log("[BUTTON] Recover Arena History from logs (start)")
-
-        Task.detached(priority: .userInitiated) { [tournamentHistory] in
-            let logsDir: URL
-            do {
-                logsDir = try ArenaLogRecovery.defaultLogsDirectory()
-            } catch {
-                await MainActor.run {
-                    SessionLogger.shared.log(
-                        "[RECOVER] failed: cannot resolve logs directory: \(error.localizedDescription)"
-                    )
-                    self.arenaRecoveryInProgress = false
-                }
-                return
-            }
-            let recovered = ArenaLogRecovery.scan(logsDirectory: logsDir)
-
-            // Merge in-place on a copy; only adopt the new array
-            // if at least one record actually changed.
-            var updated = tournamentHistory
-            var changedCount = 0
-            for (i, record) in tournamentHistory.enumerated() {
-                guard let hit = recovered[record.finishedAtStep] else { continue }
-                guard hit.candidateWins == record.candidateWins,
-                      hit.draws == record.draws,
-                      hit.championWins == record.championWins else {
-                    continue
-                }
-                let newFinishedAt = record.finishedAt ?? hit.finishedAt
-                let newCandidateID = record.candidateID
-                    ?? hit.candidateID.map { ModelID(value: $0) }
-                let newChampionID = record.championID
-                    ?? hit.championID.map { ModelID(value: $0) }
-                if newFinishedAt != record.finishedAt
-                    || newCandidateID != record.candidateID
-                    || newChampionID != record.championID {
-                    updated[i] = TournamentRecord(
-                        finishedAtStep: record.finishedAtStep,
-                        finishedAt: newFinishedAt,
-                        candidateID: newCandidateID,
-                        championID: newChampionID,
-                        gamesPlayed: record.gamesPlayed,
-                        candidateWins: record.candidateWins,
-                        championWins: record.championWins,
-                        draws: record.draws,
-                        score: record.score,
-                        promoted: record.promoted,
-                        promotionKind: record.promotionKind,
-                        promotedID: record.promotedID,
-                        durationSec: record.durationSec,
-                        candidateWinsAsWhite: record.candidateWinsAsWhite,
-                        candidateWinsAsBlack: record.candidateWinsAsBlack,
-                        candidateLossesAsWhite: record.candidateLossesAsWhite,
-                        candidateLossesAsBlack: record.candidateLossesAsBlack,
-                        candidateDrawsAsWhite: record.candidateDrawsAsWhite,
-                        candidateDrawsAsBlack: record.candidateDrawsAsBlack
-                    )
-                    changedCount += 1
-                }
-            }
-
-            await MainActor.run {
-                if changedCount > 0 {
-                    self.tournamentHistory = updated
-                }
-                SessionLogger.shared.log(
-                    "[RECOVER] Arena history scan: \(recovered.count) kv lines mapped, \(changedCount) records updated (of \(tournamentHistory.count) total). Save the session to persist."
-                )
-                self.arenaRecoveryInProgress = false
-            }
-        }
-    }
+    // runArenaHistoryRecovery() moved to SessionController in Stage 4r —
+    // commandHub.recoverArenaHistoryFromLogs calls session.runArenaHistoryRecovery().
 
     // The chart-zoom control row moved to `LowerContentView`
     // alongside the chart grid it controls. Keyboard shortcuts and
