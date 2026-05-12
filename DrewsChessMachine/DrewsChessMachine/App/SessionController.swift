@@ -390,36 +390,25 @@ final class SessionController {
     var autoTrainOnLaunch: Bool = false
 
     // Batch-size sweep (startSweep / stopSweep / runSweep / sweepStatsText / bytesToGB +
-    // sweepSizes / sweepSecondsPerSize statics) moved to SessionController+Sweep.swift.
+    // Subsystem implementations live in extension files:
+    //   • batch-size sweep actions       — SessionController+Sweep.swift
+    //   • engine diagnostics             — SessionController+Diagnostics.swift
+    //   • arena tournament + log-recovery — SessionController+Arena.swift
+    //   • candidate-probe + inference     — SessionController+CandidateProbe.swift
+    //   • checkpoint save/load/snapshot   — SessionController+Checkpoint.swift
+    //   • Play-and-Train orchestration    — SessionController+Training.swift
+    // The 100 ms heartbeat (processSnapshotTimerTick / __processSnapshotTimerTick /
+    // periodicSaveTick / refreshChartZoomTick / refresh{Memory,TrainingChart,
+    // ProgressRate,Usage}IfNeeded) is still below in this file. Stored properties
+    // for all of these stay here (extensions can't hold stored properties).
 
-    // MARK: - Heartbeat (Stage 4t)
+    // MARK: - Heartbeat-related state
 
     /// Re-syncs the AppKit menu command hub. Wired to `{ syncMenuCommandHubState() }`.
-    // Engine diagnostics (runEngineDiagnostics / runPolicyConditioningDiagnostic +
-    // their async runners) moved to SessionController+Diagnostics.swift.
-
-    // runArenaHistoryRecovery() moved to SessionController+Arena.swift.
-    /// True while a one-shot log-scan recovery pass is running (disables the
-    /// "Recover from logs" button against overlapping scans; drives a spinner
-    /// in the arena-history sheet header).
-    // MARK: - Batch-size sweep state (Stage 4p)
-
-    /// Batch-size-sweep running flag.
-    var sweepRunning = false
-    /// The sweep driver `Task` (cancel via `stopSweep`).
-    var sweepTask: Task<Void, Never>?
-    /// Completed sweep rows (throughput table).
-    var sweepResults: [SweepRow] = []
-    /// Live sweep progress mirrored from `sweepCancelBox` by the heartbeat.
-    var sweepProgress: SweepProgress?
-    /// Cancel box the sweep worker polls between steps.
-    var sweepCancelBox: CancelBox?
-    /// Device memory caps snapshot taken at sweep start (for the header).
-    var sweepDeviceCaps: MetalDeviceMemoryLimits?
-
-    var arenaRecoveryInProgress: Bool = false
-
-    // MARK: - Heartbeat display caches (Stage 4s)
+    var onSyncMenuCommandHubState: () -> Void = { }
+    /// Mirrors the live game state into the view's `gameSnapshot @State` for the
+    /// on-board display. Wired to `{ gameSnapshot = await gameWatcher.asyncSnapshot() }`.
+    var onUpdateGameSnapshot: () async -> Void = { }
 
     /// Mirror of the trainer's warmup-relevant state, refreshed by the heartbeat
     /// (top-bar Training Status chip + LR Warm-up status cell).
@@ -429,7 +418,6 @@ final class SessionController {
         var effectiveLR: Float
         var inWarmup: Bool { warmupSteps > 0 && completedSteps < warmupSteps }
     }
-
     /// Mirror of the trainer's warmup state, refreshed by the heartbeat. `nil` outside a session.
     var trainerWarmupSnap: TrainerWarmupSnapshot?
 
@@ -447,10 +435,28 @@ final class SessionController {
     /// Last-computed %GPU over the same interval. `nil` until the 2nd sample.
     var gpuPercent: Double?
 
-    var onSyncMenuCommandHubState: () -> Void = { }
-    /// Mirrors the live game state into the view's `gameSnapshot @State` for the
-    /// on-board display. Wired to `{ gameSnapshot = await gameWatcher.asyncSnapshot() }`.
-    var onUpdateGameSnapshot: () async -> Void = { }
+    // MARK: - Batch-size sweep state
+
+    /// Batch-size-sweep running flag.
+    var sweepRunning = false
+    /// The sweep driver `Task` (cancel via `stopSweep`).
+    var sweepTask: Task<Void, Never>?
+    /// Completed sweep rows (throughput table).
+    var sweepResults: [SweepRow] = []
+    /// Live sweep progress mirrored from `sweepCancelBox` by the heartbeat.
+    var sweepProgress: SweepProgress?
+    /// Cancel box the sweep worker polls between steps.
+    var sweepCancelBox: CancelBox?
+    /// Device memory caps snapshot taken at sweep start (for the header).
+    var sweepDeviceCaps: MetalDeviceMemoryLimits?
+
+    /// True while a one-shot log-scan arena-history recovery pass is running
+    /// (disables the "Recover from logs" button against overlapping scans;
+    /// drives a spinner in the arena-history sheet header).
+    var arenaRecoveryInProgress: Bool = false
+
+    // MARK: - Heartbeat
+
     nonisolated static let memoryStatsRefreshSec: Double = 10
     nonisolated static let usageStatsRefreshSec: Double = 5
     nonisolated static let progressRateRefreshSec: Double = 1.0
