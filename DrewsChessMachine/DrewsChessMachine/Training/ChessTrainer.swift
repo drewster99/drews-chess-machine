@@ -3368,11 +3368,12 @@ final class ChessTrainer: @unchecked Sendable {
     /// **Fresh-baseline forward pass:** before the actual training
     /// step runs, this method does a forward-only pass on the
     /// trainer's CURRENT network to compute v(s) for every position
-    /// in the batch. Those fresh v values overwrite the play-time-
-    /// frozen `vBaseline` values stored in the replay buffer, so the
-    /// policy-gradient advantage `(z - vBaseline)` reflects the
-    /// trainer's current belief instead of the random-init champion's
-    /// belief from when the move was played.
+    /// in the batch. Those fresh v values fill the trainer's
+    /// `vBaseline` staging buffer, so the policy-gradient advantage
+    /// `(z - vBaseline)` reflects the trainer's current belief. (The
+    /// replay buffer no longer stores any play-time baseline — the
+    /// W/D/L value-head rewrite made it dead, since the derived value
+    /// scalar is now recomputed here every step.)
     ///
     /// Why this is necessary: MPSGraph has no `stop_gradient` op, so
     /// computing v(s) inside the same training graph as both the
@@ -3404,7 +3405,6 @@ final class ChessTrainer: @unchecked Sendable {
                 let boards = self.replayBatchBoards,
                 let moves = self.replayBatchMoves,
                 let zs = self.replayBatchZs,
-                let vBaselines = self.replayBatchVBaselines,
                 let plies = self.replayBatchPlies,
                 let gameLengths = self.replayBatchGameLengths,
                 let taus = self.replayBatchTaus,
@@ -3427,7 +3427,6 @@ final class ChessTrainer: @unchecked Sendable {
                 intoBoards: boards,
                 moves: moves,
                 zs: zs,
-                vBaselines: vBaselines,
                 plies: isStatsStep ? plies : nil,
                 gameLengths: isStatsStep ? gameLengths : nil,
                 taus: isStatsStep ? taus : nil,
@@ -3483,11 +3482,11 @@ final class ChessTrainer: @unchecked Sendable {
         }
         let freshBaselineMs = (CFAbsoluteTimeGetCurrent() - freshBaselineStart) * 1000
 
-        // Phase 3 (trainer queue): overwrite vBaselines with the fresh
-        // values, apply draw penalty, build feeds, run the training
-        // graph. Same flow as the pre-fresh-baseline implementation,
-        // just with vBaselines now containing current-trainer values
-        // instead of replay-buffer-frozen values.
+        // Phase 3 (trainer queue): fill the vBaseline staging buffer
+        // with the fresh values, apply draw penalty, build feeds, run
+        // the training graph. Same flow as the pre-fresh-baseline
+        // implementation, just with vBaselines now containing
+        // current-trainer values from phase 2.
         let dispatchedAtPhase3 = CFAbsoluteTimeGetCurrent()
         return try await enqueue { [batchSize, freshValues, freshBaselineMs, dispatchedAtPhase3] in
             let phase3QueueWaitMs = (CFAbsoluteTimeGetCurrent() - dispatchedAtPhase3) * 1000
@@ -3504,8 +3503,10 @@ final class ChessTrainer: @unchecked Sendable {
                 preconditionFailure("ChessTrainer staging buffers vanished between phases")
             }
 
-            // Overwrite the play-time-frozen vBaselines with the
-            // fresh current-trainer values from phase 2.
+            // Fill the vBaseline staging buffer with the fresh
+            // current-trainer values from phase 2. The buffer is not
+            // pre-populated from the replay buffer (it holds nothing
+            // until this loop runs), so every entry is written here.
             for i in 0..<batchSize {
                 vBaselines[i] = freshValues[i]
             }
@@ -3724,8 +3725,7 @@ final class ChessTrainer: @unchecked Sendable {
     ) async throws -> LegalMassSnapshot? {
         // Sample boards on the trainer queue so we reuse the same
         // replay-buffer concurrency guards as trainStep. We only
-        // need the boards — moves/zs/vBaselines are ignored for
-        // this probe.
+        // need the boards — moves/zs are ignored for this probe.
         struct Sampled: Sendable {
             let boards: [Float]
             let count: Int
@@ -3735,8 +3735,7 @@ final class ChessTrainer: @unchecked Sendable {
             guard
                 let boards = self.replayBatchBoards,
                 let moves = self.replayBatchMoves,
-                let zs = self.replayBatchZs,
-                let vBaselines = self.replayBatchVBaselines
+                let zs = self.replayBatchZs
             else {
                 preconditionFailure("ChessTrainer staging buffers missing")
             }
@@ -3744,8 +3743,7 @@ final class ChessTrainer: @unchecked Sendable {
                 count: sampleSize,
                 intoBoards: boards,
                 moves: moves,
-                zs: zs,
-                vBaselines: vBaselines
+                zs: zs
             )
             guard ok else { return nil }
             let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize

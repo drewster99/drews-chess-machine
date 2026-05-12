@@ -6,7 +6,7 @@ import os
 ///
 /// Self-play workers push whole games via `append(boards:policyIndices:outcome:count:)`
 /// once each game ends and outcomes are known. The trainer pulls out
-/// minibatches via `sample(count:intoBoards:moves:zs:vBaselines:)`.
+/// minibatches via `sample(count:intoBoards:moves:zs:)`.
 /// Both sides run on background tasks; access is serialized by a
 /// private `OSAllocatedUnfairLock` so the buffer is safe to share
 /// across tasks.
@@ -50,16 +50,6 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Flat `[capacity]` outcome values (+1 / 0 / -1). Same ring index
     /// as `boardStorage`.
     private let outcomeStorage: UnsafeMutablePointer<Float>
-
-    /// Flat `[capacity]` baseline-value scalars captured at the time
-    /// the position was played — the inference network's `v(position)`
-    /// output from the forward pass that was already run to pick the
-    /// move. Used as the advantage baseline during training:
-    /// `policy loss = mean((z − vBaseline) · −log p(a*))`. Detaches
-    /// automatically because it enters the training graph through a
-    /// placeholder rather than the value-head's live tensor. Same ring
-    /// index as `boardStorage`.
-    private let vBaselineStorage: UnsafeMutablePointer<Float>
 
     /// Per-position 0-based ply index within its game. Same ring index
     /// as `boardStorage`. Observability-only; not persisted in v4.
@@ -138,10 +128,6 @@ final class ReplayBuffer: @unchecked Sendable {
         outcomes.initialize(repeating: 0, count: capacity)
         self.outcomeStorage = outcomes
 
-        let vBaselines = UnsafeMutablePointer<Float>.allocate(capacity: capacity)
-        vBaselines.initialize(repeating: 0, count: capacity)
-        self.vBaselineStorage = vBaselines
-
         let plies = UnsafeMutablePointer<UInt16>.allocate(capacity: capacity)
         plies.initialize(repeating: 0, count: capacity)
         self.plyIndexStorage = plies
@@ -177,9 +163,6 @@ final class ReplayBuffer: @unchecked Sendable {
 
         outcomeStorage.deinitialize(count: capacity)
         outcomeStorage.deallocate()
-
-        vBaselineStorage.deinitialize(count: capacity)
-        vBaselineStorage.deallocate()
 
         plyIndexStorage.deinitialize(count: capacity)
         plyIndexStorage.deallocate()
@@ -219,12 +202,11 @@ final class ReplayBuffer: @unchecked Sendable {
     }
 
     /// Per-position storage cost in bytes: board floats + move int32 +
-    /// outcome float + vBaseline float + observability fields
-    /// (ply UInt16 + gameLength UInt16 + tau Float + hash UInt64 +
-    /// workerGameId UInt32). Used by the UI to estimate buffer RAM usage.
+    /// outcome float + observability fields (ply UInt16 + gameLength
+    /// UInt16 + tau Float + hash UInt64 + workerGameId UInt32 +
+    /// materialCount UInt8). Used by the UI to estimate buffer RAM usage.
     static let bytesPerPosition: Int = floatsPerBoard * MemoryLayout<Float>.size
         + MemoryLayout<Int32>.size
-        + MemoryLayout<Float>.size
         + MemoryLayout<Float>.size
         + MemoryLayout<UInt16>.size      // plyIndex
         + MemoryLayout<UInt16>.size      // gameLength
@@ -309,7 +291,6 @@ final class ReplayBuffer: @unchecked Sendable {
     func append(
         boards: UnsafePointer<Float>,
         policyIndices: UnsafePointer<Int32>,
-        vBaselines: UnsafePointer<Float>,
         plyIndices: UnsafePointer<UInt16>,
         samplingTaus: UnsafePointer<Float>,
         stateHashes: UnsafePointer<UInt64>,
@@ -378,12 +359,6 @@ final class ReplayBuffer: @unchecked Sendable {
                 // Outcomes: broadcast — no source buffer, just fill.
                 (outcomeStorage + writeIndex).update(
                     repeating: outcome,
-                    count: chunk
-                )
-                // vBaselines: one float per position — the inference-time
-                // v(position) captured during move selection.
-                (vBaselineStorage + writeIndex).update(
-                    from: vBaselines + srcOffset,
                     count: chunk
                 )
                 // Observability fields (per-position): ply, hash, tau.
@@ -486,8 +461,8 @@ final class ReplayBuffer: @unchecked Sendable {
     /// if the buffer holds fewer than `sampleCount` positions — the
     /// caller should wait for more self-play to land before retrying.
     ///
-    /// The training-required outputs (`dstBoards`, `dstMoves`, `dstZs`,
-    /// `dstVBase`) are mandatory. The observability metadata outputs
+    /// The training-required outputs (`dstBoards`, `dstMoves`, `dstZs`)
+    /// are mandatory. The observability metadata outputs
     /// (`dstPlies`, `dstGameLengths`, `dstTaus`, `dstHashes`,
     /// `dstWorkerGameIds`) are optional — pass `nil` when the caller
     /// only needs the training payload (most batches), pass non-nil
@@ -497,7 +472,6 @@ final class ReplayBuffer: @unchecked Sendable {
         intoBoards dstBoards: UnsafeMutablePointer<Float>,
         moves dstMoves: UnsafeMutablePointer<Int32>,
         zs dstZs: UnsafeMutablePointer<Float>,
-        vBaselines dstVBase: UnsafeMutablePointer<Float>,
         plies dstPlies: UnsafeMutablePointer<UInt16>? = nil,
         gameLengths dstGameLengths: UnsafeMutablePointer<UInt16>? = nil,
         taus dstTaus: UnsafeMutablePointer<Float>? = nil,
@@ -522,7 +496,6 @@ final class ReplayBuffer: @unchecked Sendable {
                 )
                 dstMoves[i] = moveStorage[srcIndex]
                 dstZs[i] = outcomeStorage[srcIndex]
-                dstVBase[i] = vBaselineStorage[srcIndex]
                 if let dstPlies { dstPlies[i] = plyIndexStorage[srcIndex] }
                 if let dstGameLengths { dstGameLengths[i] = gameLengthStorage[srcIndex] }
                 if let dstTaus { dstTaus[i] = samplingTauStorage[srcIndex] }
@@ -804,7 +777,7 @@ final class ReplayBuffer: @unchecked Sendable {
     private static let fileMagic: [UInt8] = Array("DCMRPBUF".utf8)
     /// Format version. Bump on any on-disk layout change.
     ///
-    /// Current format is v6:
+    /// Current format is v7:
     ///   - Header: 8-byte magic + 4-byte version + 4-byte pad + 5 × Int64
     ///     (floatsPerBoard, capacity, storedCount, writeIndex,
     ///     totalPositionsAdded).
@@ -812,19 +785,24 @@ final class ReplayBuffer: @unchecked Sendable {
     ///     1. boards (`floatsPerBoard` × Float32)
     ///     2. moves (Int32)
     ///     3. outcomes (Float32)
-    ///     4. vBaselines (Float32)
-    ///     5. plyIndices (UInt16) ← v5
-    ///     6. gameLengths (UInt16) ← v5
-    ///     7. samplingTaus (Float32) ← v5
-    ///     8. stateHashes (UInt64) ← v5
-    ///     9. workerGameIds (UInt32) ← v5
-    ///     10. materialCounts (UInt8) ← v6 new
+    ///     4. plyIndices (UInt16) ← v5
+    ///     5. gameLengths (UInt16) ← v5
+    ///     6. samplingTaus (Float32) ← v5
+    ///     7. stateHashes (UInt64) ← v5
+    ///     8. workerGameIds (UInt32) ← v5
+    ///     9. materialCounts (UInt8) ← v6 new
     ///   - Trailer: 32-byte SHA-256 digest over every preceding byte.
+    ///
+    /// v7 dropped the per-slot `vBaselines` (Float32) column that used
+    /// to sit between `outcomes` and `plyIndices`: the W/D/L value-head
+    /// rewrite made the play-time-frozen baseline dead — the trainer now
+    /// recomputes the policy-gradient baseline from a fresh forward pass
+    /// every step, so there is nothing left to persist.
     ///
     /// Older replay-buffer versions are rejected rather than loaded
     /// with synthesized metadata. Session resume should either restore
     /// the exact saved state or fail loudly.
-    private static let fileVersion: UInt32 = 6
+    private static let fileVersion: UInt32 = 7
     /// Header size in bytes: 8 magic + 4 version + 4 pad + 5 × Int64 fields.
     private static let headerSize: Int = 8 + 4 + 4 + 8 * 5
     /// SHA-256 trailer size in bytes.
@@ -989,21 +967,6 @@ final class ReplayBuffer: @unchecked Sendable {
                 chunkPositions: outChunk,
                 elementBytes: MemoryLayout<Float>.size,
                 basePtr: UnsafeRawPointer(outcomeStorage),
-                elementsPerSlot: 1,
-                slotSize: MemoryLayout<Float>.size
-            )
-
-            // vBaselines — 4 bytes per slot. Present since v2.
-            let vBaseChunk = max(1, Self.persistenceChunkBytes / MemoryLayout<Float>.size)
-            try writeRange(
-                handle: handle,
-                hasher: &hasher,
-                start: startIndex,
-                total: stored,
-                capacity: cap,
-                chunkPositions: vBaseChunk,
-                elementBytes: MemoryLayout<Float>.size,
-                basePtr: UnsafeRawPointer(vBaselineStorage),
                 elementsPerSlot: 1,
                 slotSize: MemoryLayout<Float>.size
             )
@@ -1302,7 +1265,6 @@ final class ReplayBuffer: @unchecked Sendable {
         let basePerSlotBytes: Int64 = fpbFile * Int64(MemoryLayout<Float>.size)
             + Int64(MemoryLayout<Int32>.size)       // moves
             + Int64(MemoryLayout<Float>.size)       // outcomes
-            + Int64(MemoryLayout<Float>.size)       // vBaselines
         let metadataPerSlotBytes: Int64 = Int64(MemoryLayout<UInt16>.size)   // plyIndex
             + Int64(MemoryLayout<UInt16>.size)      // gameLength
             + Int64(MemoryLayout<Float>.size)       // samplingTau
@@ -1437,18 +1399,6 @@ final class ReplayBuffer: @unchecked Sendable {
             try readContiguous(
                 handle: handle,
                 into: UnsafeMutableRawPointer(outcomeStorage),
-                slotBytes: MemoryLayout<Float>.size,
-                count: target
-            )
-
-            // vBaselines — present since v2. Skip + read with the same
-            // pattern as the other fields.
-            if skip > 0 {
-                try seekForward(handle: handle, bytes: skip * MemoryLayout<Float>.size)
-            }
-            try readContiguous(
-                handle: handle,
-                into: UnsafeMutableRawPointer(vBaselineStorage),
                 slotBytes: MemoryLayout<Float>.size,
                 count: target
             )

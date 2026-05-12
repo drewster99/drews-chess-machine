@@ -55,7 +55,6 @@ final class ReplayBufferTests: XCTestCase {
         // Append a single fake position with deterministic content.
         let boardFloats = makeFakeBoard(seed: 42)
         var move: Int32 = 1234
-        var vBaseline: Float = 0.42
         var ply: UInt16 = 0
         var tau: Float = 1.0
         var hash: UInt64 = 0xCAFE_BABE_DEAD_BEEF
@@ -63,26 +62,23 @@ final class ReplayBufferTests: XCTestCase {
 
         boardFloats.withUnsafeBufferPointer { boardsBuf in
             withUnsafePointer(to: &move) { moveP in
-                withUnsafePointer(to: &vBaseline) { vP in
-                    withUnsafePointer(to: &ply) { plyP in
-                        withUnsafePointer(to: &tau) { tauP in
-                            withUnsafePointer(to: &hash) { hashP in
-                                withUnsafePointer(to: &mat) { matP in
-                                    buffer.append(
-                                        boards: boardsBuf.baseAddress!,
-                                        policyIndices: moveP,
-                                        vBaselines: vP,
-                                        plyIndices: plyP,
-                                        samplingTaus: tauP,
-                                        stateHashes: hashP,
-                                        materialCounts: matP,
-                                        gameLength: 1,
-                                        workerId: 0,
-                                        intraWorkerGameIndex: 0,
-                                        outcome: 1.0,
-                                        count: 1
-                                    )
-                                }
+                withUnsafePointer(to: &ply) { plyP in
+                    withUnsafePointer(to: &tau) { tauP in
+                        withUnsafePointer(to: &hash) { hashP in
+                            withUnsafePointer(to: &mat) { matP in
+                                buffer.append(
+                                    boards: boardsBuf.baseAddress!,
+                                    policyIndices: moveP,
+                                    plyIndices: plyP,
+                                    samplingTaus: tauP,
+                                    stateHashes: hashP,
+                                    materialCounts: matP,
+                                    gameLength: 1,
+                                    workerId: 0,
+                                    intraWorkerGameIndex: 0,
+                                    outcome: 1.0,
+                                    count: 1
+                                )
                             }
                         }
                     }
@@ -101,20 +97,16 @@ final class ReplayBufferTests: XCTestCase {
         var sampledBoard = [Float](repeating: 0, count: ReplayBuffer.floatsPerBoard)
         var sampledMove: Int32 = 0
         var sampledZ: Float = 0
-        var sampledV: Float = 0
 
         let success = sampledBoard.withUnsafeMutableBufferPointer { boardBuf -> Bool in
             withUnsafeMutablePointer(to: &sampledMove) { moveP in
                 withUnsafeMutablePointer(to: &sampledZ) { zP in
-                    withUnsafeMutablePointer(to: &sampledV) { vP in
-                        restored.sample(
-                            count: 1,
-                            intoBoards: boardBuf.baseAddress!,
-                            moves: moveP,
-                            zs: zP,
-                            vBaselines: vP
-                        )
-                    }
+                    restored.sample(
+                        count: 1,
+                        intoBoards: boardBuf.baseAddress!,
+                        moves: moveP,
+                        zs: zP
+                    )
                 }
             }
         }
@@ -122,7 +114,6 @@ final class ReplayBufferTests: XCTestCase {
         XCTAssertTrue(success)
         XCTAssertEqual(sampledMove, 1234, "Move index round-trip")
         XCTAssertEqual(sampledZ, 1.0, "Outcome round-trip")
-        XCTAssertEqual(sampledV, 0.42, accuracy: 1e-6, "vBaseline round-trip")
         XCTAssertEqual(sampledBoard, boardFloats, "Board floats round-trip exactly")
     }
 
@@ -362,13 +353,47 @@ final class ReplayBufferTests: XCTestCase {
         }
     }
 
+    func testV6FileRejectedWithUnsupportedVersion() throws {
+        // v6 was the last format before the W/D/L value-head rewrite
+        // dropped the per-slot vBaseline column (v7). Loading a v6
+        // file must fail cleanly via `unsupportedVersion(6)`.
+        let magic = "DCMRPBUF".data(using: .utf8)!
+        var version: UInt32 = 6
+        var pad: UInt32 = 0
+        var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
+        var cap: Int64 = 100
+        var stored: Int64 = 0
+        var writeIdx: Int64 = 0
+        var totalAdded: Int64 = 0
+
+        var header = Data()
+        header.append(magic)
+        withUnsafeBytes(of: &version) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &pad) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &fpb) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &cap) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &stored) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &writeIdx) { header.append(contentsOf: $0) }
+        withUnsafeBytes(of: &totalAdded) { header.append(contentsOf: $0) }
+        try header.write(to: tempFile)
+
+        let restored = ReplayBuffer(capacity: 100)
+        XCTAssertThrowsError(try restored.restore(from: tempFile)) { error in
+            guard case ReplayBuffer.PersistenceError.unsupportedVersion(let v) = error else {
+                XCTFail("Expected unsupportedVersion(6), got \(error)")
+                return
+            }
+            XCTAssertEqual(v, 6)
+        }
+    }
+
     func testUpperBoundRejectedOnCapacity() throws {
         // Synthesize a current-version header with capacity = Int64.max.
         // The upper-bound cap check runs after the header is parsed
         // but before any allocation or seek arithmetic — it must
         // throw upperBoundExceeded, not crash.
         let magic = "DCMRPBUF".data(using: .utf8)!
-        var version: UInt32 = 6
+        var version: UInt32 = 7
         var pad: UInt32 = 0
         var fpb: Int64 = Int64(ReplayBuffer.floatsPerBoard)
         var cap: Int64 = .max
@@ -409,33 +434,29 @@ final class ReplayBufferTests: XCTestCase {
     private func appendOnePosition(to buffer: ReplayBuffer, seed: UInt64) throws {
         let boardFloats = makeFakeBoard(seed: seed)
         var move: Int32 = Int32(seed % UInt64(ChessNetwork.policySize))
-        var vBaseline: Float = Float(seed % 100) / 100.0
         var ply: UInt16 = UInt16(seed % 100)
         var tau: Float = 1.0
         var hash: UInt64 = seed
         var mat: UInt8 = 32
         boardFloats.withUnsafeBufferPointer { boardsBuf in
             withUnsafePointer(to: &move) { moveP in
-                withUnsafePointer(to: &vBaseline) { vP in
-                    withUnsafePointer(to: &ply) { plyP in
-                        withUnsafePointer(to: &tau) { tauP in
-                            withUnsafePointer(to: &hash) { hashP in
-                                withUnsafePointer(to: &mat) { matP in
-                                    buffer.append(
-                                        boards: boardsBuf.baseAddress!,
-                                        policyIndices: moveP,
-                                        vBaselines: vP,
-                                        plyIndices: plyP,
-                                        samplingTaus: tauP,
-                                        stateHashes: hashP,
-                                        materialCounts: matP,
-                                        gameLength: 1,
-                                        workerId: 0,
-                                        intraWorkerGameIndex: UInt32(seed & 0xFFFF),
-                                        outcome: 1.0,
-                                        count: 1
-                                    )
-                                }
+                withUnsafePointer(to: &ply) { plyP in
+                    withUnsafePointer(to: &tau) { tauP in
+                        withUnsafePointer(to: &hash) { hashP in
+                            withUnsafePointer(to: &mat) { matP in
+                                buffer.append(
+                                    boards: boardsBuf.baseAddress!,
+                                    policyIndices: moveP,
+                                    plyIndices: plyP,
+                                    samplingTaus: tauP,
+                                    stateHashes: hashP,
+                                    materialCounts: matP,
+                                    gameLength: 1,
+                                    workerId: 0,
+                                    intraWorkerGameIndex: UInt32(seed & 0xFFFF),
+                                    outcome: 1.0,
+                                    count: 1
+                                )
                             }
                         }
                     }

@@ -254,16 +254,9 @@ final class MPSChessPlayer: ChessPlayer {
     /// exceeds the initial capacity.
     private var gamePolicyIndices: [Int32]
 
-    /// Inference-time value estimate `v(position)` for each recorded
-    /// ply, captured from the same forward pass that already runs to
-    /// pick the move. Bulk-flushed into `ReplayBuffer` at game end as
-    /// the advantage-baseline column. Same `ply` indexing as
-    /// `gamePolicyIndices`.
-    private var gameValueScalars: [Float]
-
     /// Per-recorded-ply observability metadata — flushed alongside
-    /// `gamePolicyIndices` / `gameValueScalars` into the replay buffer
-    /// at game end. Sized in lock-step with the move/value arrays.
+    /// `gamePolicyIndices` into the replay buffer at game end. Sized in
+    /// lock-step with the move-index array.
     /// - `gamePlyIndices[i]`: the player-local ply index for record `i`.
     ///   Note: in self-play with both players writing into the same
     ///   buffer, each player's first record is ply 0, second is ply 1,
@@ -400,10 +393,6 @@ final class MPSChessPlayer: ChessPlayer {
         indices.reserveCapacity(initialCapacity)
         self.gamePolicyIndices = indices
 
-        var values: [Float] = []
-        values.reserveCapacity(initialCapacity)
-        self.gameValueScalars = values
-
         var plies: [UInt16] = []
         plies.reserveCapacity(initialCapacity)
         self.gamePlyIndices = plies
@@ -434,7 +423,6 @@ final class MPSChessPlayer: ChessPlayer {
         // per-ply write loop overwrites slot contents before reading
         // them, so there's no need to zero the scratch between games.
         gamePolicyIndices.removeAll(keepingCapacity: true)
-        gameValueScalars.removeAll(keepingCapacity: true)
         gamePlyIndices.removeAll(keepingCapacity: true)
         gameSamplingTaus.removeAll(keepingCapacity: true)
         gameStateHashes.removeAll(keepingCapacity: true)
@@ -478,11 +466,12 @@ final class MPSChessPlayer: ChessPlayer {
         //
         // The source writes `policySize` raw policy logits directly
         // into our per-player `policyScratchPtr` (handed in as
-        // `intoPolicy`) and returns the scalar `v(position)` from the
-        // value head; we stash that as the advantage baseline so the
-        // training policy loss can compute
-        // `(z − vBaseline) * −log p(a*)` without paying for a second
-        // forward pass.
+        // `intoPolicy`); it also returns the scalar `v(position)` from
+        // the value head, but self-play no longer records that — the
+        // trainer recomputes the policy-gradient baseline from a fresh
+        // forward pass each step (the W/D/L value-head rewrite made the
+        // play-time-frozen baseline dead), so the return value is
+        // discarded here.
         let rowConst = UnsafeBufferPointer<Float>(rowMutable)
         let encoded = Array(rowConst)
 
@@ -510,7 +499,7 @@ final class MPSChessPlayer: ChessPlayer {
             start: policyScratchPtr,
             count: Self.policyScratchCount
         ))
-        let value = try await source.evaluate(encodedBoard: encoded, intoPolicy: policyDest)
+        _ = try await source.evaluate(encodedBoard: encoded, intoPolicy: policyDest)
         let policyView = UnsafeBufferPointer(
             start: policyScratchPtr,
             count: Self.policyScratchCount
@@ -522,7 +511,6 @@ final class MPSChessPlayer: ChessPlayer {
         )
 
         gamePolicyIndices.append(Int32(PolicyEncoding.policyIndex(move, currentPlayer: gameState.currentPlayer)))
-        gameValueScalars.append(value)
         // UInt16 caps at 65535 — chess games are at most ~6000 plies in
         // pathological cases (50-move/3-fold limits), so the cap is
         // fine; saturate just in case.
@@ -555,34 +543,30 @@ final class MPSChessPlayer: ChessPlayer {
         // per-position round-trips.
         let gameLength = UInt16(min(gamePliesRecorded, Int(UInt16.max)))
         gamePolicyIndices.withUnsafeBufferPointer { movesBuf in
-            gameValueScalars.withUnsafeBufferPointer { valuesBuf in
-                gamePlyIndices.withUnsafeBufferPointer { pliesBuf in
-                    gameSamplingTaus.withUnsafeBufferPointer { tausBuf in
-                        gameStateHashes.withUnsafeBufferPointer { hashesBuf in
-                            gameMaterialCounts.withUnsafeBufferPointer { matsBuf in
-                                guard
-                                    let movesBase = movesBuf.baseAddress,
-                                    let valuesBase = valuesBuf.baseAddress,
-                                    let pliesBase = pliesBuf.baseAddress,
-                                    let tausBase = tausBuf.baseAddress,
-                                    let hashesBase = hashesBuf.baseAddress,
-                                    let matsBase = matsBuf.baseAddress
-                                else { return }
-                                replayBuffer.append(
-                                    boards: UnsafePointer(gameBoardScratchPtr),
-                                    policyIndices: movesBase,
-                                    vBaselines: valuesBase,
-                                    plyIndices: pliesBase,
-                                    samplingTaus: tausBase,
-                                    stateHashes: hashesBase,
-                                    materialCounts: matsBase,
-                                    gameLength: gameLength,
-                                    workerId: workerId,
-                                    intraWorkerGameIndex: intraWorkerGameIndex,
-                                    outcome: myOutcome,
-                                    count: gamePliesRecorded
-                                )
-                            }
+            gamePlyIndices.withUnsafeBufferPointer { pliesBuf in
+                gameSamplingTaus.withUnsafeBufferPointer { tausBuf in
+                    gameStateHashes.withUnsafeBufferPointer { hashesBuf in
+                        gameMaterialCounts.withUnsafeBufferPointer { matsBuf in
+                            guard
+                                let movesBase = movesBuf.baseAddress,
+                                let pliesBase = pliesBuf.baseAddress,
+                                let tausBase = tausBuf.baseAddress,
+                                let hashesBase = hashesBuf.baseAddress,
+                                let matsBase = matsBuf.baseAddress
+                            else { return }
+                            replayBuffer.append(
+                                boards: UnsafePointer(gameBoardScratchPtr),
+                                policyIndices: movesBase,
+                                plyIndices: pliesBase,
+                                samplingTaus: tausBase,
+                                stateHashes: hashesBase,
+                                materialCounts: matsBase,
+                                gameLength: gameLength,
+                                workerId: workerId,
+                                intraWorkerGameIndex: intraWorkerGameIndex,
+                                outcome: myOutcome,
+                                count: gamePliesRecorded
+                            )
                         }
                     }
                 }
