@@ -593,7 +593,8 @@ private struct OptimizerTab: View {
                         text: $valueLabelSmoothingText,
                         error: valueLabelSmoothingError,
                         placeholder: "0.000",
-                        hint: "ε (W/D/L CE)"
+                        hint: "ε (W/D/L CE)",
+                        info: { ValueLabelSmoothingInfoButton() }
                     ) {
                         Stepper(
                             "",
@@ -1099,13 +1100,18 @@ private struct ReplayTab: View {
 /// monospaced text field with red error overlay, optional trailing
 /// stepper, optional trailing hint string. Pulled out of the per-
 /// tab subviews so the row layout stays consistent across tabs.
-private struct PopoverRow<Stepper: View>: View {
+private struct PopoverRow<Stepper: View, Info: View>: View {
     let label: String
     @Binding var text: String
     let error: Bool
     let placeholder: String
     var hint: String? = nil
     var disabled: Bool = false
+    /// Optional `ⓘ`-style button rendered immediately to the right of the
+    /// editable value (before the Stepper). `EmptyView` for the vast
+    /// majority of rows — see the `where Info == EmptyView` convenience
+    /// initializer below, which is what every plain call site binds to.
+    @ViewBuilder let info: () -> Info
     @ViewBuilder let stepper: () -> Stepper
 
     var body: some View {
@@ -1136,6 +1142,7 @@ private struct PopoverRow<Stepper: View>: View {
                     RoundedRectangle(cornerRadius: 6)
                         .stroke(Color.red, lineWidth: error ? 2 : 0)
                 )
+            info()
             stepper()
                 .labelsHidden()
             if let hint {
@@ -1145,6 +1152,32 @@ private struct PopoverRow<Stepper: View>: View {
             }
             Spacer()
         }
+    }
+}
+
+/// Convenience initializer for the common case: a row with no `ⓘ` info
+/// button. Keeps every existing `PopoverRow(...) { Stepper(...) }` call
+/// site compiling unchanged (`Info` is inferred as `EmptyView`).
+extension PopoverRow where Info == EmptyView {
+    init(
+        label: String,
+        text: Binding<String>,
+        error: Bool,
+        placeholder: String,
+        hint: String? = nil,
+        disabled: Bool = false,
+        @ViewBuilder stepper: @escaping () -> Stepper
+    ) {
+        self.init(
+            label: label,
+            text: text,
+            error: error,
+            placeholder: placeholder,
+            hint: hint,
+            disabled: disabled,
+            info: { EmptyView() },
+            stepper: stepper
+        )
     }
 }
 
