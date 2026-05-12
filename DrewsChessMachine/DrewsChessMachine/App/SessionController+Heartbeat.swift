@@ -1,7 +1,11 @@
 import SwiftUI
 import OSLog
 
-private let logger = Logger(subsystem: "Foo", category: "Bar")
+/// Trace logger for the per-stage `elap(_:)` probe in `__processSnapshotTimerTick`.
+/// Routed through `os_log` (not `SessionLogger`) so the ~13 lines/sec it emits
+/// land in the unified-logging stream rather than the session text file — they're
+/// stall-attribution breadcrumbs, not session telemetry.
+private let logger = Logger(subsystem: "com.drewben.DrewsChessMachine", category: "Heartbeat")
 
 /// `SessionController`'s 100 ms heartbeat — split out of `SessionController.swift`.
 /// Driven by `UpperContentView`'s `.onReceive(snapshotTimer)` once per tick;

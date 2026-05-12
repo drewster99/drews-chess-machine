@@ -562,15 +562,10 @@ final class SessionController {
     }
 
     // Candidate-probe execution (fireCandidateProbeIfNeeded / buildCliCandidateTestEvent /
-
     // performInference) moved to SessionController+CandidateProbe.swift.
 
     // MARK: - Demo training (Train Once / Continuous Training) (Stage 4g)
 
-    /// Batch size for the demo "Train Once" / "Continuous Training" buttons
-    /// (training on random data, not self-play). Distinct from
-    /// `TrainingParameters.shared.trainingBatchSize` which the Play-and-Train
-    /// loop uses.
     /// Returns the board state the candidate-test probe should evaluate. Wired
     /// to `UpperContentView`'s `editableState` (the free-placement forward-pass
     /// board) in `handleBodyOnAppear` — that state stays on the view because
@@ -581,6 +576,10 @@ final class SessionController {
     /// to `{ inferenceResult = $0 }` on the view.
     var onInferenceResult: (EvaluationResult) -> Void = { _ in }
 
+    /// Batch size for the demo "Train Once" / "Continuous Training" buttons
+    /// (training on random data, not self-play). Distinct from
+    /// `TrainingParameters.shared.trainingBatchSize` which the Play-and-Train
+    /// loop uses.
     nonisolated static let trainingBatchSize = 4096
 
     /// Rolling-window size for the live-loss averages in `TrainingLiveStatsBox`.

@@ -161,7 +161,7 @@ public protocol TrainingParameterKey: Sendable {
     static func decode(_ value: ParameterValue) throws -> Value
 }
 
-// MARK: - 30 parameter keys (macro-driven)
+// MARK: - 36 parameter keys (macro-driven)
 
 @TrainingParameter(
     name: "Entropy Bonus",

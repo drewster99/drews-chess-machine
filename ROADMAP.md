@@ -509,6 +509,16 @@ and the public surface. No behavior change. Lower priority than Part A.
   policy head + readback when false. (Do *not* touch the dense per-step legal-mask
   allocation `[batch, 4864]` without a rework — it's required by the masked-CE loss
   design; only flag if it shows up as a profiler hot spot.)
+- `App/UpperContentView/UpperContentView.swift` (≈lines 1340–1404) — two `.sheet`
+  modifiers (`autoResume.sheetShowing`, `showArenaHistorySheet`) sit *above* the
+  `.onReceive(NSWindow.willCloseNotification)` / `.onChange(menuHubSignature)` /
+  `.onReceive(snapshotTimer)` / `.onChange(realTraining)` chain, which violates the
+  repo's ".sheet/.alert after .onReceive/.onChange unless intentionally scoped to
+  the sheet content" rule. Pre-existing (the same ordering predates the Part A
+  decomposition — it was moved verbatim) and harmless today because both sheets are
+  `isPresented:`-driven and the onChange/onReceive handlers are app-wide signals
+  unrelated to sheet content; reorder for hygiene the next time that modifier chain
+  is touched.
 
 ### Part D — repo hygiene (non-code, light-touch)
 
