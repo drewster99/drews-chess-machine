@@ -51,14 +51,14 @@ struct UpperContentView: View {
     /// starts and never cleared.
     @State private var autoTrainFired: Bool = false
 
-    /// Live recorder for `--output` runs. Allocated at the start
-    /// of `startRealTraining` when `cliOutputURL` is set, and
-    /// appended to by the stats/arena/probe code paths while the
-    /// session is active. Nil in normal interactive runs — each
-    /// capture site guards on `cliRecorder != nil` so the
-    /// recording paths are zero-cost when the feature isn't
-    /// engaged.
-    @State private var cliRecorder: CliTrainingRecorder?
+    /// Live recorder for `--output` runs. Moved to SessionController in
+    /// Stage 4h — forwarding proxy. (Allocated at the start of startRealTraining
+    /// when cliOutputURL is set, appended to by the stats/arena/probe paths
+    /// while the session is active, nil in normal interactive runs — each
+    /// capture site guards on `!= nil`.)
+    private var cliRecorder: CliTrainingRecorder? {
+        get { session.cliRecorder } nonmutating set { session.cliRecorder = newValue }
+    }
 
     // MARK: - CLI-overridable effective values
     //
@@ -152,39 +152,31 @@ struct UpperContentView: View {
     /// doesn't read this (it shows `gameSnapshot.state.board` instead), and
     /// training modes ignore it entirely.
     @State private var editableState: GameState = .starting
-    /// Which board the Play and Train view is showing. `.gameRun` is the
-    /// live self-play game (current behavior); `.candidateTest` shows the
-    /// editable forward-pass board alongside the still-running training
-    /// loop so the user can watch the network's evaluation of a fixed
-    /// test position evolve as the weights update.
-    @State private var playAndTrainBoardMode: PlayAndTrainBoardMode = .gameRun
-    /// Which network the Candidate test probe runs against. Defaults to
-    /// `.candidate` (the historical behavior — probe the trainer's
-    /// latest weights by syncing them into the candidate inference
-    /// network). `.champion` probes the champion network directly,
-    /// giving a frozen reference point the candidate can be diffed
-    /// against at any position — useful for confirming whether the
-    /// value head is actually moving or is stuck at init saturation.
-    @State private var probeNetworkTarget: ProbeNetworkTarget = .candidate
-    /// Set when the user edits the candidate test board (drag, side-to-move
-    /// toggle, Board picker flip) while Play and Train is running. The
-    /// Play and Train driver task checks this at natural gap points (end
-    /// of game, end of training block) and fires a forward-pass probe
-    /// there — cooperatively, so inference never races with self-play or
-    /// training on the shared network graph.
-    @State private var candidateProbeDirty: Bool = false
-    /// Wall-clock timestamp of the last candidate-test probe. Combined
-    /// with `candidateProbeIntervalSec` to enforce the 15-second cadence:
-    /// gap-point checks fire a probe whenever this elapsed interval has
-    /// passed, regardless of whether the user has edited anything.
-    @State private var lastCandidateProbeTime: Date = .distantPast
-    /// Number of candidate-test probes that have actually fired since
-    /// Play and Train started. Displayed in the training stats text so
-    /// the user can confirm probes are running — the visible arrows may
-    /// barely change between 15-second probes (network deltas per 10
-    /// training steps are tiny), and without a counter it's impossible
-    /// to distinguish "firing but imperceptible" from "stuck".
-    @State private var candidateProbeCount: Int = 0
+    // The candidate-test probe state (playAndTrainBoardMode / probeNetworkTarget
+    // / candidateProbeDirty / lastCandidateProbeTime / candidateProbeCount) and
+    // the `cliRecorder` handle moved to SessionController in Stage 4h —
+    // forwarding proxies below. (playAndTrainBoardMode: which board the
+    // Play-and-Train view shows — .gameRun = the live self-play game,
+    // .candidateTest = the editable forward-pass board the user watches evolve.
+    // probeNetworkTarget: .candidate syncs trainer weights into the probe net,
+    // .champion probes the frozen champion directly. candidateProbeDirty: set
+    // on board edit; the driver fires a probe at the next gap point.
+    // lastCandidateProbeTime / candidateProbeCount: cadence + visible counter.)
+    private var playAndTrainBoardMode: PlayAndTrainBoardMode {
+        get { session.playAndTrainBoardMode } nonmutating set { session.playAndTrainBoardMode = newValue }
+    }
+    private var probeNetworkTarget: ProbeNetworkTarget {
+        get { session.probeNetworkTarget } nonmutating set { session.probeNetworkTarget = newValue }
+    }
+    private var candidateProbeDirty: Bool {
+        get { session.candidateProbeDirty } nonmutating set { session.candidateProbeDirty = newValue }
+    }
+    private var lastCandidateProbeTime: Date {
+        get { session.lastCandidateProbeTime } nonmutating set { session.lastCandidateProbeTime = newValue }
+    }
+    private var candidateProbeCount: Int {
+        get { session.candidateProbeCount } nonmutating set { session.candidateProbeCount = newValue }
+    }
 
     // MARK: - Arena Tournament State
     //
@@ -844,18 +836,8 @@ struct UpperContentView: View {
     /// self-play game). Centralizes the "override game mode with forward-
     /// pass UI" decision so every site that needs to branch on it reads
     /// the same condition.
-    private var isCandidateTestActive: Bool {
-        guard realTraining else { return false }
-        // Game-run mode with N > 1 self-play workers is a placeholder
-        // ("N concurrent games / Live board hidden"), and the
-        // Game-run / Candidate-test picker is hidden in that case
-        // anyway, so the user has no way to switch out. Treat the
-        // multi-worker case as Candidate-test active regardless of
-        // what the persisted mode setting happens to be — that's the
-        // only mode that produces useful left-side output here.
-        if trainingParams.selfPlayWorkers > 1 { return true }
-        return playAndTrainBoardMode == .candidateTest
-    }
+    // `isCandidateTestActive` moved to SessionController in Stage 4h — proxy.
+    private var isCandidateTestActive: Bool { session.isCandidateTestActive }
 
     /// True when the Play and Train Board picker is currently on the
     /// Progress rate line-chart tab. The chart takes over the board
@@ -1162,9 +1144,9 @@ struct UpperContentView: View {
             // Board + text side by side
             HStack(alignment: .top, spacing: 24) {
                 BoardSideView(
-                    playAndTrainBoardMode: $playAndTrainBoardMode,
+                    playAndTrainBoardMode: $session.playAndTrainBoardMode,
                     sideToMoveBinding: sideToMoveBinding,
-                    probeNetworkTarget: $probeNetworkTarget,
+                    probeNetworkTarget: $session.probeNetworkTarget,
                     realTraining: realTraining,
                     workerCount: trainingParams.selfPlayWorkers,
                     inferenceResultPresent: inferenceResult != nil,
@@ -1377,9 +1359,9 @@ struct UpperContentView: View {
             onSignatureChanged: { syncMenuCommandHubState() }
         ))
         .background(ControlSideEffectsProbe(
-            playAndTrainBoardMode: $playAndTrainBoardMode,
-            probeNetworkTarget: $probeNetworkTarget,
-            candidateProbeDirty: $candidateProbeDirty,
+            playAndTrainBoardMode: $session.playAndTrainBoardMode,
+            probeNetworkTarget: $session.probeNetworkTarget,
+            candidateProbeDirty: $session.candidateProbeDirty,
             selectedOverlay: $selectedOverlay,
             resyncLrWarmupText: trainingSettingsPopover.resyncLrWarmupText,
             effectiveReplayRatioTarget: $session.effectiveReplayRatioTarget,

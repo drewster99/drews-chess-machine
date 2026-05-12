@@ -296,6 +296,50 @@ final class SessionController {
         lastReplayRatioCompensatorAt = now
     }
 
+    // MARK: - Candidate-test probe state + CLI recorder (Stage 4h)
+
+    /// Which board the Play-and-Train view shows: `.gameRun` (the live self-play
+    /// game) or `.candidateTest` (the editable forward-pass board the user
+    /// watches evolve as the weights update).
+    var playAndTrainBoardMode: PlayAndTrainBoardMode = .gameRun
+
+    /// Which network the candidate-test probe runs against: `.candidate` syncs
+    /// the trainer's latest weights into the dedicated probe inference network,
+    /// `.champion` probes the frozen champion directly (a stable reference for
+    /// confirming whether the value head is moving or stuck at init saturation).
+    var probeNetworkTarget: ProbeNetworkTarget = .candidate
+
+    /// Set when the user edits the candidate-test board (drag, side-to-move
+    /// toggle, Board-picker flip) while Play-and-Train is running. The driver
+    /// task checks this at natural gap points and fires a forward-pass probe.
+    var candidateProbeDirty: Bool = false
+
+    /// Wall-clock of the last candidate-test probe — combined with
+    /// `candidateProbeIntervalSec` to enforce the probe cadence.
+    var lastCandidateProbeTime: Date = .distantPast
+
+    /// Number of candidate-test probes that have actually fired this session
+    /// — surfaced in the training stats text so the user can confirm probes
+    /// are running even when the visible arrows barely change.
+    var candidateProbeCount: Int = 0
+
+    /// Live recorder for `--output` runs. Allocated at the start of
+    /// `startRealTraining` when `cliOutputURL` is set, appended to by the
+    /// stats/arena/probe paths, `nil` in normal interactive runs.
+    var cliRecorder: CliTrainingRecorder?
+
+    /// Whether the Play-and-Train view should show the candidate-test forward-
+    /// pass board instead of the live game. True when training is active AND
+    /// (the persisted mode is `.candidateTest` OR there are >1 self-play
+    /// workers — in which case the live-game board is a hidden placeholder and
+    /// the picker is unavailable, so the candidate-test board is the only
+    /// useful left-side output).
+    var isCandidateTestActive: Bool {
+        guard realTraining else { return false }
+        if TrainingParameters.shared.selfPlayWorkers > 1 { return true }
+        return playAndTrainBoardMode == .candidateTest
+    }
+
     // MARK: - Demo training (Train Once / Continuous Training) (Stage 4g)
 
     /// Batch size for the demo "Train Once" / "Continuous Training" buttons
