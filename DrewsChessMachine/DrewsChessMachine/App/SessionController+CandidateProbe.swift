@@ -198,9 +198,14 @@ extension SessionController {
             lines.append("")
             lines.append("Value Head")
             lines.append(String(format: "  Output: %+.6f", inference.value))
-            // Removed the (v+1)/2 → "X% win / Y% loss" line. With a single
-            // tanh scalar (no WDL output) and a non-zero draw penalty in
-            // training, that mapping was misleading. Just show the raw value.
+            // No "X% win / Y% loss" breakdown here: `inference.value` is
+            // the derived scalar `p_win − p_loss` (the inference path
+            // returns only the scalar, not the W/D/L distribution), and
+            // you can't recover `(p_win, p_draw, p_loss)` from one
+            // number. Just show the raw value. (Pre-WDL this line showed
+            // `(v+1)/2` as a fake win%, which was dishonest; it stays
+            // gone — if a future feature needs the distribution at
+            // inference time, expose it on the inference path then.)
             lines.append("")
             lines.append("Policy Head (Top 4 raw — includes illegal)")
             // The list deliberately includes illegal candidates so we can see

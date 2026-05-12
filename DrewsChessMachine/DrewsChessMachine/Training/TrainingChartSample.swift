@@ -57,16 +57,18 @@ struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     /// probe (same source as `rollingLegalEntropy`).
     let rollingLegalMass: Double?
     /// Rolling-window mean of `|v|` over the value head's per-batch
-    /// outputs (in `[0, 1]` since `v ∈ [-1, +1]` via `tanh`). The
-    /// classic value-head saturation signal: when `vAbs → 1`, the
-    /// `tanh` is in its flat tails and gradients through it have
-    /// effectively vanished, which silently kills the value-loss
-    /// learning signal. Source: `TrainingRunStats.rollingValueAbsMean`,
-    /// the same number reported as `vAbs=` on the `[STATS]` line and
-    /// already surfaced in the post-mortem dump. Fed to the
-    /// value-head saturation alarm in `TrainingAlarmController` so
-    /// the banner raises before the value head has been silent for
-    /// a long time. Charted on the same tile as `rollingValueLoss`.
+    /// derived scalar `v = p_win − p_loss` (post-WDL switch — a
+    /// difference of two softmax probabilities, in `[-1, +1]` with no
+    /// `tanh`). The value-head activity / collapse probe: `vAbs ≈ 0`
+    /// means the head is calling almost every position a draw
+    /// (`p_win ≈ p_loss` — the failure the W/D/L head was adopted to
+    /// escape; equivalently `pD → 1` on the `[STATS]` line), `vAbs ≈ 1`
+    /// means it's confidently classifying win-or-loss everywhere.
+    /// Source: `TrainingRunStats.rollingValueAbsMean`, the same number
+    /// reported as `vAbs=` on the `[STATS]` line and surfaced in the
+    /// post-mortem dump. Fed to the value-head over-confidence alarm in
+    /// `TrainingAlarmController`. Charted on the same tile as
+    /// `rollingValueLoss`.
     let rollingValueAbsMean: Double?
 
     // System metrics

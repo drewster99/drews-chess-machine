@@ -68,7 +68,12 @@ enum BNMode {
 /// - Policy head: 1x1 conv (128 -> 76) → reshape to [B, 4864] (logits).
 ///   76 channels = 56 queen-style + 8 knight + 9 underpromotion +
 ///   3 queen-promotion. See `PolicyEncoding` for the layout.
-/// - Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 1) -> tanh
+/// - Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 3) -> 3 raw W/D/L logits.
+///   Exposed three ways: `valueLogits` (the [B, 3] logits, for the
+///   categorical-CE value loss + the W/D/L diagnostics), `valueProbs`
+///   (their softmax), and `valueOutput` — the derived scalar
+///   `Σ_c softmax(logits)_c·[+1, 0, −1]_c = p_win − p_loss ∈ [−1, +1]`,
+///   which is what every inference consumer reads (no tanh).
 ///
 /// Total parameters: ~2.47M (down from ~2.92M pre-refresh — the FC
 /// policy head was the largest single component and has been replaced

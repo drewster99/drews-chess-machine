@@ -166,8 +166,9 @@ final class SessionController {
     var replayBuffer: ReplayBuffer?
 
     /// Rolling-window averages of the most recent self-play training losses,
-    /// split into the policy (outcome-weighted CE) and value (bounded MSE)
-    /// components. Mirrored from `trainingBox` by the heartbeat.
+    /// split into the policy (outcome-weighted CE) and value (categorical
+    /// CE over the W/D/L head) components. Mirrored from `trainingBox` by
+    /// the heartbeat.
     var realRollingPolicyLoss: Double?
     var realRollingValueLoss: Double?
 

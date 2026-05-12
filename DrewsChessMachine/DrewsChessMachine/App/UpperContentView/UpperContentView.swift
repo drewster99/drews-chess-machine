@@ -2814,11 +2814,13 @@ struct UpperContentView: View {
             lines.append("  Loss total:  \(totalStr)")
             lines.append("    Loss policy:   \(policyStr)")
             lines.append("    Loss value:    \(valueStr)")
-            // Value-head diagnostics: signed mean and absolute mean of v
-            // across the trainer's rolling-window batches. vMean drifting
-            // strongly negative indicates the value head is over-predicting
-            // losses (often a draw-penalty interaction); vAbs near 1.0
-            // signals tanh saturation and impending gradient vanishing.
+            // Value-head diagnostics: signed mean and absolute mean of the
+            // derived scalar v = p_win − p_loss across the trainer's
+            // rolling-window batches. vMean drifting strongly negative =
+            // the value head over-predicting losses (often a draw-penalty
+            // interaction); vAbs near 0 = it's calling almost everything a
+            // draw (the W/D/L collapse — equivalently pD → 1 on [STATS]);
+            // vAbs near 1 = confidently classifying win-or-loss everywhere.
             if let snap = trainingBox?.snapshot() {
                 let vMeanStr = snap.rollingValueMean
                     .map { String(format: "%+.4f", $0) } ?? dash

@@ -392,9 +392,12 @@ struct TrainingRunStats: Sendable {
 /// The rolling-loss windows live here rather than on the view so the
 /// worker can maintain them without any main-actor round-trips. Policy
 /// and value losses are tracked in separate windows so the UI can show
-/// which head is oscillating — a bounded value MSE moving 5× means
-/// genuinely unstable training, while a noisy policy term alone is
-/// usually just metric noise from outcome-weighted CE.
+/// which head is oscillating — the value term is now a categorical
+/// cross-entropy over the W/D/L head (roughly `[0, ln 3]` at
+/// convergence, transiently larger while the head is learning the
+/// class boundaries), so a sustained 5× swing there means genuinely
+/// unstable training, while a noisy policy term alone is usually just
+/// metric noise from outcome-weighted CE.
 ///
 /// Marked `@unchecked Sendable` for the same reason as `CancelBox` and
 /// `ReplayBuffer`: a private serial `DispatchQueue` serializes all
@@ -1173,13 +1176,19 @@ final class ChessTrainer: @unchecked Sendable {
     /// insufficient material); anything with z=0.0 exactly becomes
     /// `-drawPenalty`.
     ///
-    /// What it actually does, math-wise: the value head's MSE target
-    /// for drawn positions becomes `-drawPenalty` instead of 0, so v
-    /// learns to predict slightly negative values for draw-prone
-    /// positions. The advantage `z − v` then sees a lower baseline
-    /// for non-draw positions, so winning-game gradients get a small
-    /// extra positive lift relative to the prior baseline — and
-    /// drawn-game gradients are roughly unchanged in expectation.
+    /// What it actually does, math-wise: the rewritten `z` flows into
+    /// (a) the advantage `z − vBaseline` — for non-draw positions the
+    /// baseline `vBaseline` is unchanged but the *threshold* draws sit
+    /// at moves down by `drawPenalty`, so winning-game gradients get a
+    /// small extra positive lift relative to the prior baseline and
+    /// drawn-game gradients are roughly unchanged in expectation — and
+    /// (b) the value head's W/D/L cross-entropy slot,
+    /// `slot = clamp(int(1 − z), 0, 2)`: for a fractional penalty
+    /// (`drawPenalty ∈ (0, 1)`) that truncates back to slot 1 (draw),
+    /// so the value *target* for drawn positions is unchanged at "draw";
+    /// only the full penalty (`drawPenalty = 1`) moves it to slot 2
+    /// (loss). So the dominant effect at the default `0.1` is the
+    /// advantage shift, not a value-target change.
     ///
     /// Caveat — the docstring USED to claim this "turns REINFORCE-
     /// silent drawn games into a mild negative signal." That framing
@@ -1889,8 +1898,9 @@ final class ChessTrainer: @unchecked Sendable {
         // supervised classifier with label smoothing on the positive-
         // advantage subset of positions, training over the full (legal +
         // illegal) logit vector. The value head still trains on all
-        // positions via the MSE term — only the policy gradient is
-        // gated.
+        // positions via its categorical-CE term (built below from
+        // `network.valueLogits`, independent of the policy path) — only
+        // the policy gradient is gated.
         //
         // The graph still uses MPSGraph's fused `softMaxCrossEntropy`
         // because (a) it has an autodiff rule (manual stable
@@ -2115,11 +2125,12 @@ final class ChessTrainer: @unchecked Sendable {
         // policy CE into the supervised-CE shape: bounded below by 0,
         // gradient vanishes at the (smoothed-target) equilibrium.
         // Negative-advantage positions contribute zero to the policy
-        // gradient but are still seen by the value head (the value
-        // loss is built independently from `z − network.valueOutput`
-        // below). This is equivalent to "reward-weighted regression
-        // on positive-reward samples," a known stable reformulation
-        // of REINFORCE.
+        // gradient but are still seen by the value head (its W/D/L
+        // cross-entropy loss is built independently from
+        // `network.valueLogits` vs the one-hot game result, below).
+        // This is equivalent to "reward-weighted regression on
+        // positive-reward samples," a known stable reformulation of
+        // REINFORCE.
         let zeroAdvantage = graph.constant(0.0, dataType: dtype)
         let advantagePositive = graph.maximum(
             advantageNormalized,

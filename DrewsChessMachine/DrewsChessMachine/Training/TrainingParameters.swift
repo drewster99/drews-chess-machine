@@ -225,7 +225,7 @@ public enum WeightDecay: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Policy Loss Weight",
-    description: "Per-component weighting on the POLICY-LOSS TENSOR inside total_loss = valueLossWeight · valueLoss + policyLossWeight · policyLoss − entropyCoeff · policyEntropy. Pairs with valueLossWeight. Higher values shift shared-trunk gradients toward policy fitting and away from value regression: at policyLossWeight = valueLossWeight = 1 the trunk is pulled equally by both heads (AlphaZero canonical); at policyLossWeight=5+ the policy head dominates trunk shaping and the value head trails. NOT a multiplier on policy logits — that's a common misreading. Without MCTS-quality policy targets (this engine has none), values above ~3 amplify policy-target noise faster than the value head can supply a useful baseline.",
+    description: "Per-component weighting on the POLICY-LOSS TENSOR inside total_loss = valueLossWeight · valueLoss + policyLossWeight · policyLoss − entropyCoeff · policyEntropy. Pairs with valueLossWeight. Higher values shift shared-trunk gradients toward policy fitting and away from the value head's W/D/L cross-entropy: at policyLossWeight = valueLossWeight = 1 the trunk is pulled equally by both heads (AlphaZero canonical); at policyLossWeight=5+ the policy head dominates trunk shaping and the value head trails. NOT a multiplier on policy logits — that's a common misreading. Without MCTS-quality policy targets (this engine has none), values above ~3 amplify policy-target noise faster than the value head can supply a useful baseline.",
     default: 1.0,
     range: 0.0...20.0,
     category: "Optimizer",
@@ -236,7 +236,7 @@ public enum PolicyLossWeight: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Value Loss Weight",
-    description: "Per-component weighting on the VALUE-LOSS TENSOR inside total_loss = valueLossWeight · valueLoss + policyLossWeight · policyLoss − entropyCoeff · policyEntropy. Mirrors policyLossWeight: at 1.0 the value MSE term feeds the trunk at its natural magnitude (AlphaZero canonical); raising it makes the trunk prioritize value regression over policy fitting. Lc0/KataGo expose the same knob as `value_loss_weight`. The two weights only matter relative to each other plus the entropy term — scaling both by the same factor is equivalent to scaling the learning rate.",
+    description: "Per-component weighting on the VALUE-LOSS TENSOR inside total_loss = valueLossWeight · valueLoss + policyLossWeight · policyLoss − entropyCoeff · policyEntropy. Mirrors policyLossWeight: at 1.0 the value head's W/D/L categorical-cross-entropy term feeds the trunk at its natural magnitude (AlphaZero canonical); raising it makes the trunk prioritize value fitting over policy fitting. Lc0/KataGo expose the same knob as `value_loss_weight`. The two weights only matter relative to each other plus the entropy term — scaling both by the same factor is equivalent to scaling the learning rate. NOTE: post-2026-05-12 the value loss is CE-scale (~[0, ln 3] at convergence), not the old MSE scale (~0.1–0.4), so the value term's contribution is a bit larger at the same weight — consider a value lower than 1.0 for early WDL runs.",
     default: 1.0,
     range: 0.0...20.0,
     category: "Optimizer",
