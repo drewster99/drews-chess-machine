@@ -65,8 +65,17 @@ extension SessionController {
                 }.value
             }
         } catch {
-            // Leave probe state unchanged so the previous result stays on
-            // screen; the next gap-point call retries.
+            // Only the `.candidate` weight-snapshot path can throw here
+            // (`exportWeights` / `loadWeights`); `performInference` swallows
+            // its own forward-pass errors into the result text. A snapshot
+            // failure is worth a log line — don't eat it silently — but it's
+            // a non-critical background diagnostic, so we don't disrupt the
+            // training loop or replace the on-screen result over a transient:
+            // probe state is left unchanged (the previous result stays on
+            // screen) and the next gap-point call retries.
+            SessionLogger.shared.log(
+                "[PROBE] candidate-probe weight snapshot failed: \(error.localizedDescription)"
+            )
             return
         }
         onInferenceResult(result)
