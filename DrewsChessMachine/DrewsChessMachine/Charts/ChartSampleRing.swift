@@ -4,14 +4,17 @@ import Foundation
 /// to keep long Play-and-Train sessions cheap on the main thread.
 ///
 /// The earlier design held chart samples in a `@State [Sample]` array
-/// that grew unbounded at 1 Hz: every appen forced SwiftUI to walk a
-/// thousands-long array on every chart re-render, and `Array`'s
-/// geometric growth periodically copied the entire backing storage
-/// during the heartbeat. This buffer replaces that pattern.
+/// that grew unbounded as the heartbeat fired: every append forced
+/// SwiftUI to walk a thousands-long array on every chart re-render,
+/// and `Array`'s geometric growth periodically copied the entire
+/// backing storage during the heartbeat. This buffer replaces that
+/// pattern.
 ///
 /// Storage is partitioned into fixed-size blocks of `blockSize`
-/// elements each (24 hours of 1 Hz samples per block). The first
-/// block is reserved up-front in `init`. When a block fills, a fresh
+/// elements each — comfortably more than a multi-hour training session
+/// produces at the heartbeat cadence, so the common case never leaves
+/// the first block. The first block is reserved up-front in `init`.
+/// When a block fills, a fresh
 /// block of the same size is reserved and appended to the block
 /// list. Existing blocks are never reallocated, so stored elements'
 /// addresses stay stable for the life of the ring.
@@ -31,10 +34,10 @@ import Foundation
 /// diffing never walks its contents.
 @MainActor
 final class ChartSampleRing<Element> {
-    /// Number of slots reserved per block. 24 hours of 1 Hz samples
-    /// = 86 400. Sized so a typical training session (single-digit
-    /// hours) finishes inside the first block; longer sessions
-    /// extend by adding more blocks on the same cadence.
+    /// Number of slots reserved per block. Sized so a typical
+    /// training session finishes inside the first block at the
+    /// heartbeat cadence; longer sessions extend by adding more
+    /// blocks on the same cadence.
     nonisolated static var blockSize: Int { 86_400 }
 
     /// Total number of elements appended since construction or the

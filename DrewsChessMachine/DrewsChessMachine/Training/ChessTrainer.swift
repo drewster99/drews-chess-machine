@@ -383,8 +383,8 @@ struct TrainingRunStats: Sendable {
 /// Same design as `CancelBox` for the sweep: the worker calls
 /// `recordStep(_:)` after each `trainStep`, which takes the lock briefly,
 /// updates the running `TrainingRunStats`, and returns — no main-actor
-/// hop per step. The SwiftUI `snapshotTimer` polls `snapshot()` at ~10 Hz
-/// and mirrors the current values into `@State`, which is what actually
+/// hop per step. The SwiftUI `snapshotTimer` polls `snapshot()` on the
+/// heartbeat and mirrors the current values into `@State`, which is what actually
 /// triggers view redraws. This decouples view-update frequency from
 /// training-step rate: a 20 ms/step training loop used to fire 50
 /// `MainActor.run` hops per second, now it fires zero.
@@ -615,8 +615,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// floats (see the constant for the full rationale). `snapshot()`
     /// sorts the live set for percentile extraction, and that sort
     /// runs on main via the UI heartbeat's `lock.withLock` — a larger
-    /// ring was blocking main for ~150 ms per snapshot at 10 Hz,
-    /// starving `fireCandidateProbeIfNeeded`'s MainActor hop and
+    /// ring was blocking main for ~150 ms per snapshot, every heartbeat
+    /// tick, starving `fireCandidateProbeIfNeeded`'s MainActor hop and
     /// collapsing training throughput to ~300 moves/sec from a
     /// normal 2300 moves/sec.
     private var _advRawRing: [Float] = []
@@ -1215,7 +1215,7 @@ final class ChessTrainer: @unchecked Sendable {
     ///
     /// Stored in a `SyncBox` (os_unfair_lock) rather than as a plain
     /// `Int` guarded by `executionQueue` so UI readers
-    /// (`__processSnapshotTimerTick` at 10 Hz) don't have to `.sync`
+    /// (`__processSnapshotTimerTick`) don't have to `.sync`
     /// onto the trainer's worker queue and wait for an in-flight
     /// SGD step — that pattern was producing 1–3 s main-thread
     /// stalls. The lock is held only across a scalar read/RMW so

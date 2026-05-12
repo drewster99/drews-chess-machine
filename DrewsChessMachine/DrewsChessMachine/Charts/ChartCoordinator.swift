@@ -90,7 +90,10 @@ final class ChartCoordinator {
     var chartElapsedAnchor: Date = Date()
 
     /// Most recent wall-clock timestamp at which a progress-rate
-    /// sample was appended. Used to throttle the heartbeat to 1 Hz.
+    /// sample was appended. Throttle clock for the sampler — caps it
+    /// at one append per second no matter how fast the heartbeat
+    /// fires (it currently fires slower than that, so this is a
+    /// ceiling, not the operating point).
     var progressRateLastFetch: Date = .distantPast
     /// Monotonic id counter for `ProgressRateSample.id`. Reset on
     /// session restart.
@@ -293,7 +296,7 @@ final class ChartCoordinator {
     /// `onChange` hook. Decides whether the user has scrolled away
     /// from the latest sample (suspending auto-follow) and
     /// re-decimates against the new visible window so the chart
-    /// marks update without waiting for the next 1 Hz append.
+    /// marks update without waiting for the next heartbeat append.
     func handleScrollChange(_ newValue: Double) {
         let latest = progressRateRing.last?.elapsedSec ?? 0
         let windowSec = ChartZoom.stops[chartZoomIdx]

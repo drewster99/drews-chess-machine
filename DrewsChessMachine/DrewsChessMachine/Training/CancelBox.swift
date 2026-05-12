@@ -69,9 +69,9 @@ final class CancelBox: @unchecked Sendable {
 
     /// Update the per-row peak with a new sample. The sweep's worker
     /// thread reads and resets this between rows via `takeRowPeak()`.
-    /// Called from both the UI heartbeat (every ~100ms) and from the
-    /// trainer at row boundaries — whichever produces the higher value
-    /// wins for that row.
+    /// Called from both the UI heartbeat and from the trainer at row
+    /// boundaries — whichever produces the higher value wins for that
+    /// row.
     func recordPeakSample(_ bytes: UInt64) {
         lock.withLock { state in
             if bytes > state.rowPeakBytes { state.rowPeakBytes = bytes }

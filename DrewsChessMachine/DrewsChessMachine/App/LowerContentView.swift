@@ -62,7 +62,7 @@ struct LowerContentView: View {
             // Visible window length changed — re-decimate so the
             // chart marks land on the new bucket grid. Without
             // this the chart would be stuck on the prior zoom's
-            // bucket positions until the next 1 Hz sample append.
+            // bucket positions until the next heartbeat sample append.
             chartCoordinator.recomputeDecimatedFrame()
         }
     }

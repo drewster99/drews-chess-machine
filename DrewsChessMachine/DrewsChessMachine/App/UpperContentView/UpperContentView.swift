@@ -292,7 +292,7 @@ struct UpperContentView: View {
     @State private var pendingReeval = false
 
     // Game — gameWatcher is mutated by the delegate queue and is NOT
-    // SwiftUI-observed. A 100ms timer copies its `snapshot()` into
+    // SwiftUI-observed. The heartbeat timer copies its `snapshot()` into
     // `gameSnapshot`, which is what the body actually reads. This caps UI
     // refresh rate regardless of game throughput.
     //
@@ -459,7 +459,7 @@ struct UpperContentView: View {
     /// Play and Train. Refreshed at most every
     /// `memoryStatsRefreshSec` seconds via
     /// `refreshMemoryStatsIfNeeded()` (called from the snapshot
-    /// timer) so the displayed numbers don't churn at 10 Hz.
+    /// timer) so the displayed numbers don't churn on every heartbeat.
     private var memoryStatsSnap: MemoryStatsSnapshot? {
         get { session.memoryStatsSnap } nonmutating set { session.memoryStatsSnap = newValue }
     }
@@ -654,9 +654,10 @@ struct UpperContentView: View {
     // periodicSaveLastPollAt / periodicSaveInFlight) moved to SessionController
     // in Stage 4l — forwarding proxies below. (periodicSaveController: the
     // 4-hour scheduler, created on Play-and-Train start, torn down on Stop,
-    // polled by the heartbeat ~1 Hz; see PeriodicSaveController for the
+    // polled on the heartbeat; see PeriodicSaveController for the
     // arena-deferral / save-reset invariants. periodicSaveLastPollAt: throttles
-    // the heartbeat poll to ~1 Hz. periodicSaveInFlight: guards against
+    // the poll — a multi-hour deadline doesn't need checking on every
+    // heartbeat. periodicSaveInFlight: guards against
     // double-firing while a periodic write is in flight — separate from
     // checkpoint.checkpointSaveInFlight because a periodic save runs even while
     // the menu items remain enabled.)
@@ -762,12 +763,19 @@ struct UpperContentView: View {
     /// the bare reference for reads/writes.
     private let trainingParams = TrainingParameters.shared
 
-    /// 100 ms heartbeat that pulls the latest snapshot from `gameWatcher`
-    /// into `gameSnapshot`. Standard SwiftUI Combine timer pattern — the
-    /// publisher is created when the view struct is initialized and SwiftUI
-    /// manages the subscription lifecycle via `.onReceive` below.
+    /// Heartbeat that pulls the latest snapshot from `gameWatcher` into
+    /// `gameSnapshot` and drives every other periodic main-actor refresh
+    /// (chart sampler, memory stats, periodic-save deadline, chart-zoom
+    /// auto-follow, replay-ratio overhead compensator, training-alarm
+    /// evaluation). The interval is the coarsest cadence that still feels
+    /// live for watching a game and keeps the per-tick main-actor work
+    /// off the critical path of self-play / training; the chart sampler
+    /// and the periodic-save poll throttle themselves further if they
+    /// ever need to. Standard SwiftUI Combine timer pattern — the
+    /// publisher is created when the view struct is initialized and
+    /// SwiftUI manages the subscription lifecycle via `.onReceive` below.
     private let snapshotTimer = Timer.publish(
-        every: 0.500, on: .main, in: .common
+        every: 5.0, on: .main, in: .common
     ).autoconnect()
 
     /// Default on/off toggle for "autosave the full session after
@@ -866,7 +874,7 @@ struct UpperContentView: View {
     // bridge treats as "binding changed" and pays to re-wire the
     // underlying `NSSegmentedControl` / `NSStepper` / `NSButton`
     // (~18 ms each for the segmented control, per Instruments) on
-    // every 100 ms heartbeat-driven body render. They're now bound
+    // every heartbeat-driven body render. They're now bound
     // directly to their stored `@State` / `@AppStorage` projected
     // values (stable identity), with side effects hoisted into the
     // `controlSideEffectsProbe` helper below. `.onChange` fires only
@@ -1525,7 +1533,7 @@ struct UpperContentView: View {
         }
     }
 
-    // The 100 ms heartbeat (processSnapshotTimerTick / __processSnapshotTimerTick /
+    // The heartbeat (processSnapshotTimerTick / __processSnapshotTimerTick /
     // periodicSaveTick / refreshChartZoomTick / refresh{Memory,TrainingChart,ProgressRate,Usage}
     // + the snapshotTick state/statics) moved to SessionController in Stage 4t. The
     // view's .onReceive(snapshotTimer) calls await session.processSnapshotTimerTick(dispatchedAt:).
@@ -2169,8 +2177,8 @@ struct UpperContentView: View {
         gameWatcher.resetCurrentGame()
         gameWatcher.markPlaying(true)
         // Synchronously refresh the snapshot so isBusy reflects the new
-        // playing state immediately — the polling task only runs every
-        // 100ms, which would otherwise leave a window where the Play
+        // playing state immediately — the polling task only runs on the
+        // heartbeat, which would otherwise leave a window where the Play
         // button stayed enabled and a fast double-click could spawn two
         // concurrent ChessMachine instances against the same gameWatcher.
         gameSnapshot = gameWatcher.snapshot()
@@ -2724,7 +2732,7 @@ struct UpperContentView: View {
     /// Value for the status bar's "Training rate" cell: the most
     /// recent 3-minute-rolling trainer moves/hour, or `"—"` before
     /// any sample has been recorded this session. `chartCoordinator.progressRateRing`
-    /// is populated at 1 Hz while `realTraining == true`; after Stop
+    /// is populated on the heartbeat while `realTraining == true`; after Stop
     /// the last value persists (until the next fresh Play-and-Train
     /// start clears the buffer), which matches the rest of the row's
     /// "last-known value" semantics.

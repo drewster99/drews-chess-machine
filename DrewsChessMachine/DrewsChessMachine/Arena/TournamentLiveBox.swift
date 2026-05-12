@@ -2,7 +2,7 @@ import Foundation
 
 /// Lock-protected holder for live tournament progress, shared between
 /// the driver task (writer, one update per finished game) and the UI
-/// heartbeat (reader, polling at 10 Hz). Backed by `SyncBox` (an
+/// heartbeat (reader). Backed by `SyncBox` (an
 /// `OSAllocatedUnfairLock`); reads and writes are sub-microsecond
 /// and never queue behind any other work.
 final class TournamentLiveBox: @unchecked Sendable {

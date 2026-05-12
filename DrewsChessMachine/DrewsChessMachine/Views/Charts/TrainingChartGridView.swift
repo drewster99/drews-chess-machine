@@ -256,10 +256,13 @@ struct TrainingChartGridView: View {
 
     /// Maximum distance in seconds between the hovered cursor time
     /// and the nearest bucket / sample for the data point to count
-    /// as "data at this hover time". Original samples were emitted
-    /// at 1 Hz; 1.5 s accommodates jitter while rejecting hovers
-    /// past the data's last sample.
-    nonisolated static let hoverMatchToleranceSec: Double = 1.5
+    /// as "data at this hover time". Wants to be a bit more than the
+    /// heartbeat interval — large enough that a hover anywhere inside
+    /// the data range still matches the nearest sample even after
+    /// decimation leaves gaps between sparsely-populated buckets,
+    /// small enough to still reject hovers that land out past the
+    /// data's last sample.
+    nonisolated static let hoverMatchToleranceSec: Double = 7.5
 
     /// Convert a Double to a compact short label suitable for chart
     /// axis labels and inline headers.

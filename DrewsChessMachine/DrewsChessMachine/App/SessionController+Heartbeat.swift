@@ -7,7 +7,7 @@ import OSLog
 /// stall-attribution breadcrumbs, not session telemetry.
 private let logger = Logger(subsystem: "com.drewben.DrewsChessMachine", category: "Heartbeat")
 
-/// `SessionController`'s 100 ms heartbeat — split out of `SessionController.swift`.
+/// `SessionController`'s heartbeat — split out of `SessionController.swift`.
 /// Driven by `UpperContentView`'s `.onReceive(snapshotTimer)` once per tick;
 /// `processSnapshotTimerTick` is the throttled wrapper, `__processSnapshotTimerTick`
 /// the body that mirrors every cross-thread state box (game / sweep / training /
@@ -36,11 +36,11 @@ extension SessionController {
 
         // Throttled session-log emit so a slow tick (or growing main-
         // actor wait) is visible in the session log without spamming
-        // it with one line per 100 ms heartbeat. Emits at most once
-        // per `Self.snapshotTickLogIntervalSec` seconds and ALWAYS on
-        // any tick whose tick body or main-actor enqueue wait exceeds
-        // the alarm threshold — those are the events worth seeing
-        // even if a recent throttled emit just landed.
+        // it with one line per heartbeat. Emits at most once per
+        // `Self.snapshotTickLogIntervalSec` and ALWAYS on any tick
+        // whose tick body or main-actor enqueue wait exceeds the
+        // alarm threshold — those are the events worth seeing even
+        // if a recent throttled emit just landed.
         let now = Date()
         let shouldEmitPeriodic = snapshotTickLastLogAt == nil
             || now.timeIntervalSince(snapshotTickLastLogAt!) >= Self.snapshotTickLogIntervalSec
@@ -56,18 +56,20 @@ extension SessionController {
         }
     }
 
-    /// Cadence for the periodic snapshot-tick log emit. 30 s gives a
-    /// readable log file at steady state while the anomaly threshold
+    /// Cadence for the periodic snapshot-tick log emit. Long enough to
+    /// keep the log file readable at steady state, short enough to
+    /// confirm the heartbeat is still alive; the anomaly threshold
     /// (`snapshotTickAlarmMs`) makes sure any genuine stall surfaces
-    /// promptly even between the periodic emits.
+    /// promptly between the periodic emits regardless.
     nonisolated static let snapshotTickLogIntervalSec: TimeInterval = 30
 
     /// Threshold above which a snapshot-tick wall or its main-actor
     /// enqueue wait is logged immediately (out-of-band) rather than
-    /// waiting for the next periodic emit. 50 ms is half the
-    /// heartbeat period — anything past that is a meaningful blip.
+    /// waiting for the next periodic emit. A tick body or main-actor
+    /// wait this long is a perceptible UI hitch regardless of how
+    /// often the heartbeat fires — worth surfacing on its own.
     nonisolated static let snapshotTickAlarmMs: Double = 50
-    /// Body of the 100 ms heartbeat. Pulls every cross-thread state
+    /// Body of the heartbeat. Pulls every cross-thread state
     /// box (game, sweep, training, arena, parallel-worker counters,
     /// replay-ratio controller, diversity tracker) into the matching
     /// `@State`, throttled internally where each consumer cares about
@@ -77,15 +79,15 @@ extension SessionController {
     /// dragged the whole modifier chain past the
     /// `-warn-long-expression-type-checking` budget.
     private func __processSnapshotTimerTick() async {
-        // Pull the latest game state into @State at most every 100ms.
+        // Pull the latest game state into @State once per heartbeat.
         // Cheap (single locked struct copy) and bounds UI work even
         // when the game loop is doing hundreds of moves per second.
         //
         // `elap(_:)` is the per-stage trace probe used to attribute a
         // UI stall to a specific block of this tick. Cheap enough to
-        // leave on at the 2 Hz heartbeat — `os_log` is hundreds of
-        // nanoseconds per emit and we're producing ~13 lines/sec,
-        // negligible against the work the tick body itself does.
+        // leave on at the heartbeat cadence — `os_log` is hundreds of
+        // nanoseconds per emit, negligible against the work the tick
+        // body itself does.
         func elap(_ s: String) {
             logger.log(">> \(s): \(Date().timeIntervalSince(start))")
         }
@@ -213,7 +215,7 @@ extension SessionController {
         // along with it.
         await refreshUsagePercentsIfNeeded()
         elap("after 8")
-        // Progress-rate chart sampler. 1 Hz during Play and Train;
+        // Progress-rate chart sampler — runs during Play and Train;
         // each sample carries the moves/hr averaged over the last 3
         // minutes of work. No-op outside of realTraining.
         await refreshProgressRateIfNeeded()
@@ -279,9 +281,10 @@ extension SessionController {
     }
 
     /// Per-heartbeat tick that asks the periodic-save scheduler
-    /// whether to fire. Throttled to ~1 Hz — a 4-hour deadline does
-    /// not benefit from 10 Hz polling and the throttle keeps the
-    /// heartbeat hot path from paying a decision cost per frame. A
+    /// whether to fire. Throttled — a multi-hour deadline doesn't
+    /// benefit from being re-checked on every heartbeat, and the
+    /// throttle keeps the heartbeat hot path from paying a decision
+    /// cost per tick. A
     /// no-op when no session is active, and an immediate no-op
     /// when a periodic save is already in flight (the fire flag is
     /// cleared when the write task resolves).
@@ -358,9 +361,9 @@ extension SessionController {
     /// `memoryStatsRefreshSec` seconds, caching the result in
     /// `memoryStatsSnap` for the busy label to read. Cheap on a
     /// no-op tick (a single timestamp diff) so it's fine to call
-    /// from the 10 Hz heartbeat. The actual sampling reads
-    /// `task_info` and a couple of `MTLDevice` properties via
-    /// the trainer's existing helpers.
+    /// from the heartbeat. The actual sampling reads `task_info`
+    /// and a couple of `MTLDevice` properties via the trainer's
+    /// existing helpers.
     private func refreshMemoryStatsIfNeeded() async {
         let now = Date()
         if now.timeIntervalSince(memoryStatsLastFetch) < Self.memoryStatsRefreshSec {
@@ -400,11 +403,11 @@ extension SessionController {
     /// No-op outside of `realTraining`. Sampler state is cleared
     /// by `startRealTraining()` so each session's chart starts
     /// fresh from t=0.
-    /// Sample training metrics at the same 1Hz cadence as the
-    /// progress rate sampler. Appends a `TrainingChartSample`
-    /// with rolling loss, entropy, ratio, and non-neg count.
+    /// Sample training metrics on the same cadence as the progress
+    /// rate sampler. Appends a `TrainingChartSample` with rolling
+    /// loss, entropy, ratio, and non-neg count.
     /// Append a training chart sample. Called from inside
-    /// `refreshProgressRateIfNeeded` at the same 1Hz cadence.
+    /// `refreshProgressRateIfNeeded` on the same cadence.
     private func refreshTrainingChartIfNeeded() async {
         let now = Date()
         // Chart sample elapsed-second axis comes off
@@ -561,7 +564,7 @@ extension SessionController {
         // `progressRateLastFetch` timestamp update, and the
         // auto-follow scroll-position adjustment in one shot.
         chartCoordinator?.appendProgressRate(sample)
-        // Append a training chart sample at the same 1Hz cadence.
+        // Append a training chart sample on the same cadence.
         await refreshTrainingChartIfNeeded()
     }
 

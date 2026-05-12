@@ -4,11 +4,11 @@ import os
 /// Holds live game state mutated by the ChessMachine delegate queue.
 ///
 /// **Not @Observable.** SwiftUI doesn't observe its mutations directly —
-/// instead, ContentView polls `snapshot()` on a 100ms timer and copies the
-/// values into local @State. That decouples UI redraw frequency from game
+/// instead, ContentView polls `snapshot()` on the heartbeat timer and copies
+/// the values into local @State. That decouples UI redraw frequency from game
 /// throughput: continuous self-play can run hundreds of moves per second
-/// while the UI updates at most 10 times per second, and the game loop
-/// never waits for SwiftUI invalidation.
+/// while the UI updates only on the heartbeat, and the game loop never waits
+/// for SwiftUI invalidation.
 ///
 /// Mutations come from two sources:
 /// 1. The ChessMachine delegate queue (didApplyMove, gameEnded, playerErrored).

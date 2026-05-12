@@ -96,8 +96,8 @@ struct ProgressRateBucket: Sendable, Equatable, Identifiable {
 /// the "same data structure throughout" rule from the design note.
 ///
 /// `Equatable` so SwiftUI's view-diff can skip re-rendering when a
-/// recomputation produces an identical frame (e.g. a 100 ms heartbeat
-/// tick that didn't cross a bucket boundary).
+/// recomputation produces an identical frame (e.g. a heartbeat tick
+/// that didn't cross a bucket boundary).
 struct DecimatedChartFrame: Sendable, Equatable {
     let trainingBuckets: [TrainingBucket]
     let progressRateBuckets: [ProgressRateBucket]

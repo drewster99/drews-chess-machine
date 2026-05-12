@@ -242,11 +242,12 @@ final class SessionController {
     // MARK: - Periodic-autosave scheduler state (Stage 4l)
 
     /// The 4-hour periodic autosave scheduler. Created on Play-and-Train start,
-    /// torn down on Stop, `nil` between sessions; polled by the heartbeat ~1 Hz.
+    /// torn down on Stop, `nil` between sessions; polled on the heartbeat.
     var periodicSaveController: PeriodicSaveController?
 
     /// Last wall-clock the heartbeat polled `periodicSaveController.decide(now:)`
-    /// — throttles the poll to ~1 Hz.
+    /// — throttles the poll so a multi-hour deadline isn't re-checked on every
+    /// heartbeat.
     var periodicSaveLastPollAt: Date?
 
     /// `true` while a periodic autosave's write is in flight (guards against
@@ -395,7 +396,7 @@ final class SessionController {
     //   • candidate-probe + inference     — SessionController+CandidateProbe.swift
     //   • checkpoint save/load/snapshot   — SessionController+Checkpoint.swift
     //   • Play-and-Train orchestration    — SessionController+Training.swift
-    // The 100 ms heartbeat (processSnapshotTimerTick / __processSnapshotTimerTick /
+    // The heartbeat (processSnapshotTimerTick / __processSnapshotTimerTick /
     // periodicSaveTick / refreshChartZoomTick / refresh{Memory,TrainingChart,
     // ProgressRate,Usage}IfNeeded) is still below in this file. Stored properties
     // for all of these stay here (extensions can't hold stored properties).
@@ -453,7 +454,7 @@ final class SessionController {
     /// drives a spinner in the arena-history sheet header).
     var arenaRecoveryInProgress: Bool = false
 
-    // The 100 ms heartbeat (processSnapshotTimerTick / __processSnapshotTimerTick /
+    // The heartbeat (processSnapshotTimerTick / __processSnapshotTimerTick /
     // periodicSaveTick / refreshChartZoomTick / chartZoom{In,Out,EnableAuto} /
     // refresh{Memory,TrainingChart,ProgressRate,Usage}IfNeeded / formatElapsedAxis +
     // its cadence statics) moved to SessionController+Heartbeat.swift.
