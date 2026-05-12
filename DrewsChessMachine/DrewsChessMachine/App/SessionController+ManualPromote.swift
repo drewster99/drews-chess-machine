@@ -89,6 +89,25 @@ extension SessionController {
                 return
             }
 
+            // 1b) Re-check liveness now that the pause-and-wait awaits
+            //     have suspended us. If the user stopped Play-and-Train
+            //     (or, in the tiny window, stopped and restarted it)
+            //     while we were parked on the gates, the captured
+            //     `champion` / `trainer` are orphaned and the `self.`
+            //     state we mutate at steps 3–4 (`tournamentHistory`,
+            //     `chartCoordinator`, `parallelWorkerStatsBox`,
+            //     `trainingStats`) belongs to a different (or no)
+            //     session. Bail out cleanly: resume the gates, clear
+            //     the in-flight flag, leave everything else untouched.
+            guard realTraining, network === champion, trainer === self.trainer else {
+                trainingGate.resume()
+                selfPlayGate.resume()
+                checkpoint?.checkpointSaveInFlight = false
+                checkpoint?.setCheckpointStatus("Promotion aborted: training session ended", kind: .error)
+                SessionLogger.shared.log("[STATS] promote(manual) aborted — session no longer active")
+                return
+            }
+
             // 2) Copy live trainer weights → champion, on a detached
             //    task so the GPU work doesn't sit on the cooperative
             //    pool. All errors surfaced — never swallowed.
