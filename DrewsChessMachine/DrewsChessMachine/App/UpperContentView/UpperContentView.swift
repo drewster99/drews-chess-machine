@@ -312,26 +312,39 @@ struct UpperContentView: View {
     @State private var continuousPlay = false
     @State private var continuousTask: Task<Void, Never>?
 
-    // Training — trainer is built lazily on first use. It owns its own
-    // training-mode ChessNetwork internally (not shared with the inference
-    // network used by Play / Forward Pass), so its weight updates do NOT
-    // flow into inference. The inference network keeps frozen-stats BN
-    // for fast play; the trainer measures realistic training-step costs
-    // through batch-stats BN and the full backward graph.
-    @State private var trainer: ChessTrainer?
-    @State private var isTrainingOnce = false
-    @State private var continuousTraining = false
-    @State private var trainingTask: Task<Void, Never>?
-    @State private var lastTrainStep: TrainStepTiming?
-    @State private var trainingStats: TrainingRunStats?
-    @State private var trainingError: String?
-    /// Lock-protected live-stats holder shared with the background training
-    /// task (continuous or self-play). The worker writes via `recordStep`
-    /// with no main-actor hop; the 2 Hz `snapshotTimer` poller mirrors the
-    /// latest values into `trainingStats` / `lastTrainStep` /
-    /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
-    /// count has actually advanced.
-    @State private var trainingBox: TrainingLiveStatsBox?
+    // Training — the trainer + training-run state moved to SessionController
+    // in Stage 4d. These forward to `session` so the existing references
+    // (heartbeat mirroring, status text, the giant `startRealTraining` /
+    // `runArenaParallel`, etc.) keep working unchanged while the source of
+    // truth lives on `SessionController`; they get inlined to `session.…` in
+    // a later cleanup pass. (The trainer owns its own training-mode
+    // `ChessNetwork` internally — not shared with `network` — so its weight
+    // updates do not flow into inference; only one training mode runs at a
+    // time so there's no cross-mode concurrency on the trainer.)
+    private var trainer: ChessTrainer? {
+        get { session.trainer } nonmutating set { session.trainer = newValue }
+    }
+    private var isTrainingOnce: Bool {
+        get { session.isTrainingOnce } nonmutating set { session.isTrainingOnce = newValue }
+    }
+    private var continuousTraining: Bool {
+        get { session.continuousTraining } nonmutating set { session.continuousTraining = newValue }
+    }
+    private var trainingTask: Task<Void, Never>? {
+        get { session.trainingTask } nonmutating set { session.trainingTask = newValue }
+    }
+    private var lastTrainStep: TrainStepTiming? {
+        get { session.lastTrainStep } nonmutating set { session.lastTrainStep = newValue }
+    }
+    private var trainingStats: TrainingRunStats? {
+        get { session.trainingStats } nonmutating set { session.trainingStats = newValue }
+    }
+    private var trainingError: String? {
+        get { session.trainingError } nonmutating set { session.trainingError = newValue }
+    }
+    private var trainingBox: TrainingLiveStatsBox? {
+        get { session.trainingBox } nonmutating set { session.trainingBox = newValue }
+    }
 
     /// Mirror of the trainer's warmup-relevant state, refreshed by the
     /// snapshot timer. Captures the data the top-bar Training Status
@@ -365,25 +378,26 @@ struct UpperContentView: View {
     // `@State private var trainingAlarm`). `policyEntropyAlarmThreshold` lives
     // there now too — referenced as `TrainingAlarmController.policyEntropyAlarmThreshold`.
 
-    // Real (self-play) training — generates games, labels positions from the
-    // final outcome, pushes them through the shared trainer. Shares the
-    // lazily-built `trainer` with the random-data training path above so the
-    // trainer's MPSGraph is built at most once per session. Only one training
-    // mode is allowed to run at a time (enforced by the button hide rules and
-    // by `isBusy`), so there's no cross-mode concurrency on the trainer.
-    @State private var realTraining = false
-    @State private var realTrainingTask: Task<Void, Never>?
-    @State private var replayBuffer: ReplayBuffer?
-    /// Rolling-window averages of the most recent self-play training losses,
-    /// split into the policy (outcome-weighted cross-entropy) and value
-    /// (bounded MSE) components. Mirrored from `trainingBox` by the 10 Hz
-    /// poller. The windows themselves live inside the box — these are just
-    /// the most recent display values. Split so we can tell whether an
-    /// oscillating total-loss plot is the bounded value term going unstable
-    /// (training problem) or the unbounded policy term bouncing around
-    /// (usually just metric noise).
-    @State private var realRollingPolicyLoss: Double?
-    @State private var realRollingValueLoss: Double?
+    // Real (self-play) training run state moved to SessionController in
+    // Stage 4d — forwarding proxies below. (Self-play generates games, labels
+    // positions from the final outcome, pushes them through the shared
+    // `trainer`; only one training mode runs at a time so no cross-mode
+    // concurrency on the trainer.)
+    private var realTraining: Bool {
+        get { session.realTraining } nonmutating set { session.realTraining = newValue }
+    }
+    private var realTrainingTask: Task<Void, Never>? {
+        get { session.realTrainingTask } nonmutating set { session.realTrainingTask = newValue }
+    }
+    private var replayBuffer: ReplayBuffer? {
+        get { session.replayBuffer } nonmutating set { session.replayBuffer = newValue }
+    }
+    private var realRollingPolicyLoss: Double? {
+        get { session.realRollingPolicyLoss } nonmutating set { session.realRollingPolicyLoss = newValue }
+    }
+    private var realRollingValueLoss: Double? {
+        get { session.realRollingValueLoss } nonmutating set { session.realRollingValueLoss = newValue }
+    }
     /// Latest legal-mass snapshot the [STATS] logger computed. Cached
     /// here so the chart-sample heartbeat (which fires more often
     /// than the [STATS] tick) can render the legal-masked entropy
@@ -442,14 +456,15 @@ struct UpperContentView: View {
     // the training worker reads the live delay from
     // `replayRatioController.recordTrainingBatchAndGetDelay(...)` each
     // step, so no separate lock-protected mirror is needed.
-    /// Shared lock-protected mirror of `trainingParams.selfPlayWorkers` that
-    /// the self-play worker tasks read between games. The Stepper
-    /// updates `trainingParams.selfPlayWorkers` AND this box atomically (via
-    /// the binding side-effect); workers poll the box at the top
-    /// of each iteration to decide whether to play another game
-    /// or stay in their idle wait state. Allocated at session
-    /// start, cleared on session end.
-    @State private var workerCountBox: WorkerCountBox?
+    /// Shared lock-protected mirror of `trainingParams.selfPlayWorkers` the
+    /// self-play worker tasks read between games. Moved to SessionController in
+    /// Stage 4d — forwarding proxy. (The Stepper updates
+    /// `trainingParams.selfPlayWorkers` AND this box atomically via the
+    /// binding side-effect; workers poll the box at the top of each iteration.
+    /// Allocated at session start, cleared on session end.)
+    private var workerCountBox: WorkerCountBox? {
+        get { session.workerCountBox } nonmutating set { session.workerCountBox = newValue }
+    }
     /// Cached memory-stats line shown in the top busy row during
     /// Play and Train. Refreshed at most every
     /// `memoryStatsRefreshSec` seconds via

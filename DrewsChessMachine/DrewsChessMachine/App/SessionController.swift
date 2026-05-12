@@ -117,6 +117,64 @@ final class SessionController {
     /// on-screen probe activity).
     var isArenaRunning: Bool = false
 
+    // MARK: - Trainer + training-run state (Stage 4d)
+    //
+    // The trainer is built lazily on first use. It owns its own training-mode
+    // `ChessNetwork` internally (not shared with `network`), so its weight
+    // updates do NOT flow into inference. Only one training mode runs at a
+    // time (Train Once / Continuous Training / Play-and-Train), so there's no
+    // cross-mode concurrency on the trainer.
+
+    /// The lazily-built trainer. `nil` before the first training start.
+    var trainer: ChessTrainer?
+
+    /// Demo "Train Once" in flight.
+    var isTrainingOnce: Bool = false
+
+    /// Demo "Continuous Training" (on random data) running.
+    var continuousTraining: Bool = false
+
+    /// Handle to the demo continuous-training `Task`. Cancelled on Stop.
+    var trainingTask: Task<Void, Never>?
+
+    /// Most recent single training-step timing — mirrored from `trainingBox`
+    /// by the heartbeat when the step count advances.
+    var lastTrainStep: TrainStepTiming?
+
+    /// Latest training-run stats — mirrored from `trainingBox` by the heartbeat.
+    var trainingStats: TrainingRunStats?
+
+    /// Latest training error string, if a step threw. `nil` when healthy.
+    var trainingError: String?
+
+    /// Lock-protected live-stats holder shared with the background training
+    /// task (continuous or self-play). The worker writes via `recordStep` with
+    /// no main-actor hop; the heartbeat polls `snapshot()` and mirrors the
+    /// latest values into `trainingStats` / `lastTrainStep` /
+    /// `realRollingPolicyLoss` / `realRollingValueLoss` only when the step
+    /// count has advanced. `nil` outside a training run.
+    var trainingBox: TrainingLiveStatsBox?
+
+    /// `true` while a Play-and-Train (self-play) session is active.
+    var realTraining: Bool = false
+
+    /// Handle to the Play-and-Train driver `Task`. Cancelled on Stop.
+    var realTrainingTask: Task<Void, Never>?
+
+    /// The replay buffer self-play workers fill and the trainer samples from.
+    /// `nil` outside a Play-and-Train session.
+    var replayBuffer: ReplayBuffer?
+
+    /// Rolling-window averages of the most recent self-play training losses,
+    /// split into the policy (outcome-weighted CE) and value (bounded MSE)
+    /// components. Mirrored from `trainingBox` by the heartbeat.
+    var realRollingPolicyLoss: Double?
+    var realRollingValueLoss: Double?
+
+    /// Live-tunable self-play worker-count box the driver's reconcile loop
+    /// reads. `nil` outside a Play-and-Train session.
+    var workerCountBox: WorkerCountBox?
+
     // MARK: - View-facing hooks (Stage 4c)
     //
     // Until the gate / clear-display / trainer-drop logic migrates here too,
