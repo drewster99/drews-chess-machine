@@ -339,18 +339,11 @@ struct UpperContentView: View {
         get { session.trainingBox } nonmutating set { session.trainingBox = newValue }
     }
 
-    /// Mirror of the trainer's warmup-relevant state, refreshed by the
-    /// snapshot timer. Captures the data the top-bar Training Status
-    /// chip and the LR Warm-up status cell need without touching the
-    /// trainer from inside `body`. `effectiveLR` is the same value the
-    /// optimizer is being fed this step (warmup × sqrt-batch × base).
-    private struct TrainerWarmupSnapshot: Equatable {
-        var completedSteps: Int
-        var warmupSteps: Int
-        var effectiveLR: Float
-        var inWarmup: Bool { warmupSteps > 0 && completedSteps < warmupSteps }
+    // TrainerWarmupSnapshot struct + trainerWarmupSnap moved to SessionController
+    // in Stage 4s — forwarding proxy. (Heartbeat refreshes it; body/status read it.)
+    private var trainerWarmupSnap: SessionController.TrainerWarmupSnapshot? {
+        get { session.trainerWarmupSnap } nonmutating set { session.trainerWarmupSnap = newValue }
     }
-    @State private var trainerWarmupSnap: TrainerWarmupSnapshot?
 
     // `trainerLearningRateDefault` / `entropyRegularizationCoeffDefault` moved
     // to `SessionController` in Stage 4m (used only by `buildCurrentSessionState`).
@@ -467,12 +460,16 @@ struct UpperContentView: View {
     /// `memoryStatsRefreshSec` seconds via
     /// `refreshMemoryStatsIfNeeded()` (called from the snapshot
     /// timer) so the displayed numbers don't churn at 10 Hz.
-    @State private var memoryStatsSnap: MemoryStatsSnapshot?
+    private var memoryStatsSnap: MemoryStatsSnapshot? {
+        get { session.memoryStatsSnap } nonmutating set { session.memoryStatsSnap = newValue }
+    }
     /// Wall-clock timestamp of the most recent `memoryStatsSnap`
     /// refresh. Defaults to `.distantPast` so the first refresh
     /// always fires. Compared against `now - memoryStatsRefreshSec`
     /// inside the heartbeat to decide whether to take a new sample.
-    @State private var memoryStatsLastFetch: Date = .distantPast
+    private var memoryStatsLastFetch: Date {
+        get { session.memoryStatsLastFetch } nonmutating set { session.memoryStatsLastFetch = newValue }
+    }
     /// How long the cached memory stats are reused before the
     /// next sample. The user explicitly asked for a 10-second
     /// cadence — RAM and GPU footprint don't change visibly more
@@ -483,21 +480,29 @@ struct UpperContentView: View {
     /// can compute %CPU and %GPU from the delta. `nil` until the
     /// first successful sample lands; after that it rolls forward
     /// at the `usageStatsRefreshSec` cadence.
-    @State private var lastUsageSample: ProcessUsageSample?
+    private var lastUsageSample: ProcessUsageSample? {
+        get { session.lastUsageSample } nonmutating set { session.lastUsageSample = newValue }
+    }
     /// Wall-clock timestamp of the most recent usage refresh.
     /// Defaults to `.distantPast` so the first heartbeat tick
     /// always fires a sample.
-    @State private var usageStatsLastFetch: Date = .distantPast
+    private var usageStatsLastFetch: Date {
+        get { session.usageStatsLastFetch } nonmutating set { session.usageStatsLastFetch = newValue }
+    }
     /// Last-computed %CPU over the real wall-clock elapsed since
     /// the previous sample. Relative to one core, so on multi-core
     /// CPUs this can exceed 100% (matching `top`'s convention).
     /// `nil` until the second sample lands — no delta to divide
     /// from a single reading.
-    @State private var cpuPercent: Double?
+    private var cpuPercent: Double? {
+        get { session.cpuPercent } nonmutating set { session.cpuPercent = newValue }
+    }
     /// Last-computed %GPU over the same interval as `cpuPercent`.
     /// Relative to one GPU engine; workloads that keep several
     /// engines busy can exceed 100%. `nil` until the second sample.
-    @State private var gpuPercent: Double?
+    private var gpuPercent: Double? {
+        get { session.gpuPercent } nonmutating set { session.gpuPercent = newValue }
+    }
     /// Cadence at which the CPU/GPU utilisation refreshes.
     /// The user asked for ~5 s; the computed percentages always
     /// divide by the actual wall-clock gap between samples, so
@@ -1636,7 +1641,7 @@ struct UpperContentView: View {
                 completedSteps: completedTrainSteps
             )
             elap("after 3.2")
-            let next = TrainerWarmupSnapshot(
+            let next = SessionController.TrainerWarmupSnapshot(
                 completedSteps: completedTrainSteps,
                 warmupSteps: trainer.lrWarmupSteps,
                 effectiveLR: effectiveLR

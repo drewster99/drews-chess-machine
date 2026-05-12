@@ -997,6 +997,34 @@ final class SessionController {
         }
     }
 
+    // MARK: - Heartbeat display caches (Stage 4s)
+
+    /// Mirror of the trainer's warmup-relevant state, refreshed by the heartbeat
+    /// (top-bar Training Status chip + LR Warm-up status cell).
+    struct TrainerWarmupSnapshot: Equatable {
+        var completedSteps: Int
+        var warmupSteps: Int
+        var effectiveLR: Float
+        var inWarmup: Bool { warmupSteps > 0 && completedSteps < warmupSteps }
+    }
+
+    /// Mirror of the trainer's warmup state, refreshed by the heartbeat. `nil` outside a session.
+    var trainerWarmupSnap: TrainerWarmupSnapshot?
+
+    /// Cached memory-stats line shown in the busy row, refreshed at most every
+    /// `memoryStatsRefreshSec` by the heartbeat.
+    var memoryStatsSnap: MemoryStatsSnapshot?
+    /// Wall-clock of the most recent `memoryStatsSnap` refresh (`.distantPast` until first).
+    var memoryStatsLastFetch: Date = .distantPast
+    /// Previous `ProcessUsageSample` held so the heartbeat can compute %CPU/%GPU from the delta.
+    var lastUsageSample: ProcessUsageSample?
+    /// Wall-clock of the most recent usage refresh (`.distantPast` until first).
+    var usageStatsLastFetch: Date = .distantPast
+    /// Last-computed %CPU over the real wall-clock since the previous sample. `nil` until the 2nd sample.
+    var cpuPercent: Double?
+    /// Last-computed %GPU over the same interval. `nil` until the 2nd sample.
+    var gpuPercent: Double?
+
     // MARK: - Real (self-play) training run (Stage 4o)
 
     /// Kick off real-data training in parallel mode: self-play, training,
