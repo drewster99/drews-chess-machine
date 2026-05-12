@@ -83,19 +83,35 @@ struct UpperContentView: View {
     // via `trainingParams.<name>`. Defaults and persistence are
     // centralized in TrainingParameters.swift.
 
-    // Network
-    @State private var network: ChessMPSNetwork?
-    @State private var runner: ChessRunner?
-    @State private var networkStatus = ""
-    @State private var isBuilding = false
-
-    /// Session-lifecycle controller. Currently owns the three life-of-app
-    /// inference networks the arena / probe run against (`session.candidateInferenceNetwork`
-    /// / `session.arenaChampionNetwork` / `session.probeInferenceNetwork` + `session.probeRunner`) and the
-    /// `performBuild()` static. The champion `network` / `runner` / `networkStatus`
-    /// / `isBuilding` and the build + training + arena orchestration migrate onto
-    /// it in later Stage 4 slices.
+    /// Session-lifecycle controller. Owns the champion `network` / `runner` /
+    /// `networkStatus` / `isBuilding`, the build flow (`buildNetwork()` /
+    /// `ensureChampionBuilt()`), the three life-of-app inference networks
+    /// (`candidateInferenceNetwork` / `arenaChampionNetwork` /
+    /// `probeInferenceNetwork` + `probeRunner`), the parallel-worker stats and
+    /// arena coordination boxes. The training + arena orchestration migrate
+    /// onto it in later Stage 4 slices.
     @State private var session = SessionController()
+
+    // Network — these forward to `session` so the ~150 existing `network` /
+    // `runner` / `networkStatus` / `isBuilding` references keep working
+    // unchanged while the source of truth lives on `SessionController`. They
+    // can be inlined to `session.…` in a later cleanup pass.
+    private var network: ChessMPSNetwork? {
+        get { session.network }
+        nonmutating set { session.network = newValue }
+    }
+    private var runner: ChessRunner? {
+        get { session.runner }
+        nonmutating set { session.runner = newValue }
+    }
+    private var networkStatus: String {
+        get { session.networkStatus }
+        nonmutating set { session.networkStatus = newValue }
+    }
+    private var isBuilding: Bool {
+        get { session.isBuilding }
+        nonmutating set { session.isBuilding = newValue }
+    }
     // Legacy `secondarySelfPlayNetworks` removed — all self-play
     // workers now share the champion network (`network`) through a
     // `BatchedMoveEvaluationSource` barrier batcher, so N per-worker
@@ -1497,6 +1513,16 @@ struct UpperContentView: View {
         checkpoint.totalPositionsAddedProvider = { replayBuffer?.totalPositionsAdded }
         checkpoint.selfPlayGamesProvider = { session.parallelStats?.selfPlayGames }
         checkpoint.trainingBoxSnapshotProvider = { trainingBox?.snapshot() }
+        // Wire the build flow's view-facing hooks. SessionController owns the
+        // build path now but still reaches the busy gate / refuse alert /
+        // clear-training-display / trainer-drop / last-saved-at marker through
+        // these until that state migrates too.
+        session.isBusyProvider = { isBusy }
+        session.busyReasonProvider = { busyReasonMessage() }
+        session.onRefuseMenuAction = { refuseMenuAction($0) }
+        session.onClearTrainingDisplay = { clearTrainingDisplay() }
+        session.onDropTrainer = { trainer = nil }
+        session.checkpoint = checkpoint
         // Resume-sheet UX is correctly gated on the window being
         // visible — surfacing a sheet on a hidden window would do
         // nothing useful. Skipped under `--train` because the
@@ -2823,7 +2849,7 @@ struct UpperContentView: View {
             // The weights are about to be overwritten, so the random
             // init is only satisfying graph compilation — no reason
             // to require the user to press Build first.
-            let championResult = await ensureChampionBuilt()
+            let championResult = await session.ensureChampionBuilt()
             switch championResult {
             case .failure(let error):
                 checkpoint.checkpointSaveInFlight = false
@@ -2904,7 +2930,7 @@ struct UpperContentView: View {
             // The weights are about to be overwritten, so the random
             // init is only satisfying graph compilation — no reason
             // to require the user to press Build first.
-            let championResult = await ensureChampionBuilt()
+            let championResult = await session.ensureChampionBuilt()
             guard case .success(let champion) = championResult else {
                 checkpoint.checkpointSaveInFlight = false
                 if case .failure(let error) = championResult {
@@ -3027,7 +3053,7 @@ struct UpperContentView: View {
         // `applyCliConfigOverridesFromMenu(cfg:)`, so the override
         // logic is shared rather than CLI-only.
         applyCliConfigOverrides()
-        buildNetwork()
+        session.buildNetwork()
         Task { @MainActor in
             while isBuilding {
                 do {
@@ -3224,7 +3250,7 @@ struct UpperContentView: View {
     /// because the `@State` storage is keyed by view identity, not
     /// by the struct value).
     private func wireMenuCommandHub() {
-        commandHub.buildNetwork = { buildNetwork() }
+        commandHub.buildNetwork = { session.buildNetwork() }
         commandHub.runForwardPass = { runForwardPass() }
         commandHub.playSingleGame = { playSingleGame() }
         commandHub.startContinuousPlay = { startContinuousPlay() }
@@ -3348,84 +3374,12 @@ struct UpperContentView: View {
         return "Another operation is in progress."
     }
 
-    /// Ensure `network` exists. If it's already built, returns it.
-    /// Otherwise runs the same detached `performBuild` path the
-    /// menu's Build Network button uses and wires the result into
-    /// the view's state. Returns the champion network on success,
-    /// or the build error on failure.
-    private func ensureChampionBuilt() async -> Result<ChessMPSNetwork, Error> {
-        if let champion = network {
-            return .success(champion)
-        }
-        isBuilding = true
-        networkStatus = ""
-        trainer = nil
-        clearTrainingDisplay()
-        SessionLogger.shared.log("[BUILD] Auto-build before load")
-        let result = await Task.detached(priority: .userInitiated) {
-            SessionController.performBuild()
-        }.value
-        switch result {
-        case .success(let net):
-            net.identifier = ModelIDMinter.mint()
-            network = net
-            runner = ChessRunner(network: net)
-            isBuilding = false
-            return .success(net)
-        case .failure(let error):
-            network = nil
-            runner = nil
-            networkStatus = "Build failed: \(error.localizedDescription)"
-            isBuilding = false
-            return .failure(error)
-        }
-    }
-
-    private func buildNetwork() {
-        SessionLogger.shared.log("[BUTTON] Build Network")
-        // In-function guards (belt-and-suspenders with menu disable).
-        if isBusy {
-            refuseMenuAction(busyReasonMessage())
-            return
-        }
-        if networkReady {
-            refuseMenuAction("A network is already built. Load Model or Load Session to replace its weights.")
-            return
-        }
-        isBuilding = true
-        networkStatus = ""
-        // Drop the trainer (it owns graph state we're about to invalidate
-        // by rebuilding) and wipe all training/sweep display state.
-        trainer = nil
-        clearTrainingDisplay()
-
-        Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                SessionController.performBuild()
-            }.value
-
-            switch result {
-            case .success(let net):
-                net.identifier = ModelIDMinter.mint()
-                network = net
-                runner = ChessRunner(network: net)
-                let idStr = net.identifier?.description ?? "?"
-                networkStatus = """
-                    Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
-                    ID: \(idStr)
-                    Parameters: ~2,400,000 (~2.4M)
-                    Architecture: 20x8x8 -> stem(128)
-                      -> 8 res+SE blocks -> policy(4864) + value(1)
-                    """
-                checkpoint.lastSavedAt = nil
-            case .failure(let error):
-                network = nil
-                runner = nil
-                networkStatus = "Build failed: \(error.localizedDescription)"
-            }
-            isBuilding = false
-        }
-    }
+    // `ensureChampionBuilt()` and `buildNetwork()` moved to `SessionController`
+    // in Stage 4c — call them as `session.ensureChampionBuilt()` /
+    // `session.buildNetwork()`. The view-facing bits they touch (the busy
+    // gate, the menu-refuse alert, `clearTrainingDisplay()`, dropping the
+    // trainer, `checkpoint.lastSavedAt`) are wired into `session` via closures
+    // / weak reference in `handleBodyOnAppear`.
 
     private func runForwardPass() {
         SessionLogger.shared.log("[BUTTON] Run Forward Pass")

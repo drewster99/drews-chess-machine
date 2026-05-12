@@ -27,6 +27,26 @@ import SwiftUI
 @Observable
 final class SessionController {
 
+    // MARK: - Champion network + build state
+
+    /// The live champion network. Self-play workers evaluate against this via
+    /// the shared `BatchedMoveEvaluationSource`; Play Game / Run Forward Pass
+    /// use it directly; the arena snapshots it into `arenaChampionNetwork`.
+    /// `nil` until Build Network (or a load) populates it.
+    var network: ChessMPSNetwork?
+
+    /// `ChessRunner` wrapping `network`. Rebuilt whenever `network` is.
+    var runner: ChessRunner?
+
+    /// Human-readable build status / error text shown under the Build button.
+    var networkStatus: String = ""
+
+    /// True while a `performBuild()` detached task is in flight.
+    var isBuilding: Bool = false
+
+    /// Whether a champion network exists. (Was `UpperContentView.networkReady`.)
+    var networkReady: Bool { network != nil }
+
     // MARK: - Inference networks (life-of-app caches)
 
     /// Inference-mode network used as the arena's "candidate side" player. The
@@ -97,7 +117,122 @@ final class SessionController {
     /// on-screen probe activity).
     var isArenaRunning: Bool = false
 
+    // MARK: - View-facing hooks (Stage 4c)
+    //
+    // Until the gate / clear-display / trainer-drop logic migrates here too,
+    // the build flow reaches the bits that still live on `UpperContentView`
+    // through these. Wired in `UpperContentView.handleBodyOnAppear`.
+
+    /// Returns whether some operation that should block a build is in progress
+    /// (training, a continuous task, a sweep, a game, a save/load). Mirrors the
+    /// view's `isBusy`.
+    var isBusyProvider: () -> Bool = { false }
+
+    /// User-facing reason string for the current busy state, shown when
+    /// refusing a build. Mirrors the view's `busyReasonMessage()`.
+    var busyReasonProvider: () -> String = { "Another operation is in progress." }
+
+    /// Surfaces a "can't do that right now" alert + logs a refused-action
+    /// line. Wired to `UpperContentView.refuseMenuAction(_:)`.
+    var onRefuseMenuAction: (String) -> Void = { _ in }
+
+    /// Wipes the training/sweep display state. Wired to
+    /// `UpperContentView.clearTrainingDisplay()` — called on Build (and the
+    /// auto-build) because rebuilding invalidates the trainer's graph state.
+    var onClearTrainingDisplay: () -> Void = { }
+
+    /// Drops the trainer (it owns graph state invalidated by a rebuild). Wired
+    /// to `{ trainer = nil }` on the view until the trainer migrates here.
+    var onDropTrainer: () -> Void = { }
+
+    /// The checkpoint controller, so a successful build can reset `lastSavedAt`
+    /// (a freshly-built network has never been saved). Weak — the view keeps
+    /// sole ownership; safe because both are `@State`-owned by the same
+    /// never-deallocated `UpperContentView`.
+    weak var checkpoint: CheckpointController?
+
     // MARK: - Build
+
+    /// File > Build Network. Belt-and-suspenders guards mirror the menu's
+    /// disable conditions for keyboard-shortcut / URL-scheme invocations under
+    /// a race. On success, mints a fresh `ModelID`, wires the new network +
+    /// runner, fills `networkStatus`, and clears the last-saved-at marker.
+    func buildNetwork() {
+        SessionLogger.shared.log("[BUTTON] Build Network")
+        if isBusyProvider() {
+            onRefuseMenuAction(busyReasonProvider())
+            return
+        }
+        if networkReady {
+            onRefuseMenuAction("A network is already built. Load Model or Load Session to replace its weights.")
+            return
+        }
+        isBuilding = true
+        networkStatus = ""
+        // Drop the trainer (it owns graph state we're about to invalidate by
+        // rebuilding) and wipe all training/sweep display state.
+        onDropTrainer()
+        onClearTrainingDisplay()
+
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.performBuild()
+            }.value
+
+            switch result {
+            case .success(let net):
+                net.identifier = ModelIDMinter.mint()
+                network = net
+                runner = ChessRunner(network: net)
+                let idStr = net.identifier?.description ?? "?"
+                networkStatus = """
+                    Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
+                    ID: \(idStr)
+                    Parameters: ~2,400,000 (~2.4M)
+                    Architecture: 20x8x8 -> stem(128)
+                      -> 8 res+SE blocks -> policy(4864) + value(1)
+                    """
+                checkpoint?.lastSavedAt = nil
+            case .failure(let error):
+                network = nil
+                runner = nil
+                networkStatus = "Build failed: \(error.localizedDescription)"
+            }
+            isBuilding = false
+        }
+    }
+
+    /// Ensure `network` exists. If it's already built, returns it. Otherwise
+    /// runs the same detached `performBuild()` path the menu's Build button
+    /// uses and wires the result in. Used by the load paths so the user doesn't
+    /// have to press Build first when the weights are about to be overwritten.
+    func ensureChampionBuilt() async -> Result<ChessMPSNetwork, Error> {
+        if let champion = network {
+            return .success(champion)
+        }
+        isBuilding = true
+        networkStatus = ""
+        onDropTrainer()
+        onClearTrainingDisplay()
+        SessionLogger.shared.log("[BUILD] Auto-build before load")
+        let result = await Task.detached(priority: .userInitiated) {
+            Self.performBuild()
+        }.value
+        switch result {
+        case .success(let net):
+            net.identifier = ModelIDMinter.mint()
+            network = net
+            runner = ChessRunner(network: net)
+            isBuilding = false
+            return .success(net)
+        case .failure(let error):
+            network = nil
+            runner = nil
+            networkStatus = "Build failed: \(error.localizedDescription)"
+            isBuilding = false
+            return .failure(error)
+        }
+    }
 
     /// The actual network construction. Runs on a detached `.userInitiated`
     /// task at the call sites (MPSGraph build is long synchronous work), so
