@@ -211,11 +211,6 @@ final class SessionController {
     /// reads it through this to pass into the self-play driver / child tasks.
     var gameWatcherProvider: () -> GameWatcher = { GameWatcher() }
 
-    /// Clears the view's "champion was replaced (Load Model) since the last
-    /// training run" flag — `startRealTraining` does this after a successful
-    /// start. Wired to `{ championLoadedSinceLastTrainingSegment = false }`.
-    var onClearChampionLoadedFlag: () -> Void = { }
-
     /// The launch-time `--parameters` config (`nil` outside `--parameters` runs).
     /// Read by `startRealTraining`'s headless path. Set in `handleBodyOnAppear`.
     var cliConfig: CliTrainingConfig?
@@ -1035,10 +1030,6 @@ final class SessionController {
     /// Mirrors the live game state into the view's `gameSnapshot @State` for the
     /// on-board display. Wired to `{ gameSnapshot = await gameWatcher.asyncSnapshot() }`.
     var onUpdateGameSnapshot: () async -> Void = { }
-    /// Runs the periodic-autosave write. Wired to `{ handleSaveSessionPeriodic() }` —
-    /// the save path itself still lives on `UpperContentView`.
-    var onHandleSaveSessionPeriodic: () -> Void = { }
-
     nonisolated static let memoryStatsRefreshSec: Double = 10
     nonisolated static let usageStatsRefreshSec: Double = 5
     nonisolated static let progressRateRefreshSec: Double = 1.0
@@ -1331,7 +1322,7 @@ final class SessionController {
             SessionLogger.shared.log(
                 "[CHECKPOINT] Periodic save tick — firing (interval=\(Int(UpperContentView.periodicSaveIntervalSec))s)"
             )
-            onHandleSaveSessionPeriodic()
+            handleSaveSessionPeriodic()
         }
     }
 
@@ -1648,6 +1639,576 @@ final class SessionController {
             }
         }
         lastUsageSample = sample
+    }
+
+    // MARK: - Checkpoint save / load (Stage 5a)
+
+    /// "Champion was replaced (Load Model) since the last training run" flag — set
+    /// by `loadModelFrom`, cleared by `startRealTraining`, read by the view's
+    /// post-Stop three-way Start dialog to annotate the "trainer still has its
+    /// pre-load weights" note.
+    var championLoadedSinceLastTrainingSegment: Bool = false
+
+    /// Tells the auto-resume controller a resume-and-start completed. Wired to
+    /// `{ autoResume.markResumeFinished() }` — used by `loadSessionFrom`.
+    var onResumeFinished: () -> Void = { }
+
+    /// Returns whether some operation is in progress that should block a load
+    /// (training / a continuous task / a sweep / a game / a build / a save/load).
+    /// Mirrors the view's `isBuildingOrBusy()`. Wired in `handleBodyOnAppear`.
+    var isBuildingOrBusyProvider: () -> Bool = { false }
+    /// Clears the view's `inferenceResult @State` (the forward-pass demo result).
+    /// Wired to `{ inferenceResult = nil }` — used by the load paths after new
+    /// weights land so a stale result doesn't linger on the board.
+    var onClearInferenceResult: () -> Void = { }
+
+    /// Manual "Save Champion as Model" — writes a standalone
+    /// `.dcmmodel` containing the current champion's weights.
+    /// If Play-and-Train is active, pauses self-play worker 0
+    /// briefly so the export doesn't race with in-flight
+    /// inference calls on the shared champion graph, then
+    /// resumes. Uses `pauseAndWait(timeoutMs:)` so a
+    /// mid-save session end can't deadlock the save task.
+    func handleSaveChampionAsModel() {
+        // Belt-and-suspenders guards — menu disable is the primary
+        // gate but these cover keyboard-shortcut / URL-scheme
+        // invocations under a race.
+        if checkpoint?.checkpointSaveInFlight == true {
+            onRefuseMenuAction("A save is already in progress. Wait for it to finish.")
+            return
+        }
+        if isArenaRunning {
+            onRefuseMenuAction("Can't save the champion while the arena is running. Wait for it to finish.")
+            return
+        }
+        if isBusyProvider() && !realTraining {
+            onRefuseMenuAction("Another operation is in progress. Wait for it to finish, then try again.")
+            return
+        }
+        guard let champion = network else {
+            onRefuseMenuAction("Build or load a model first.")
+            return
+        }
+        let championID = champion.identifier?.description ?? "unknown"
+        // Snapshot the active self-play gate up front. If there
+        // is no active session, we can safely export directly —
+        // nobody is racing against us.
+        let gate = activeSelfPlayGate
+        checkpoint?.checkpointSaveInFlight = true
+        checkpoint?.setCheckpointStatus("Saving champion…", kind: .progress)
+        checkpoint?.startSlowSaveWatchdog(label: "champion save")
+
+        Task {
+            // Pause worker 0 if a session is running. Bail with a
+            // user-visible error on timeout (indicates the session
+            // has already ended or the worker is stuck — either way
+            // we shouldn't spin forever).
+            if let gate {
+                let acquired = await gate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
+                if !acquired {
+                    checkpoint?.cancelSlowSaveWatchdog()
+                    checkpoint?.checkpointSaveInFlight = false
+                    checkpoint?.setCheckpointStatus("Save aborted: could not pause self-play (timeout)", kind: .error)
+                    return
+                }
+            }
+
+            var championWeights: [[Float]] = []
+            var exportError: Error?
+            do {
+                championWeights = try await Task.detached(priority: .userInitiated) {
+                    try await champion.exportWeights()
+                }.value
+            } catch {
+                exportError = error
+            }
+            gate?.resume()
+
+            if let exportError {
+                checkpoint?.cancelSlowSaveWatchdog()
+                checkpoint?.checkpointSaveInFlight = false
+                checkpoint?.setCheckpointStatus("Save failed (export): \(exportError.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save champion export failed: \(exportError.localizedDescription)")
+                return
+            }
+
+            let metadata = ModelCheckpointMetadata(
+                creator: "manual",
+                trainingStep: trainingStats?.steps,
+                parentModelID: "",
+                notes: "Manual Save Champion export"
+            )
+            let createdAtUnix = Int64(Date().timeIntervalSince1970)
+
+            let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
+                do {
+                    let url = try await CheckpointManager.saveModel(
+                        weights: championWeights,
+                        modelID: championID,
+                        createdAtUnix: createdAtUnix,
+                        metadata: metadata,
+                        trigger: "manual"
+                    )
+                    return .success(url)
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            checkpoint?.cancelSlowSaveWatchdog()
+            checkpoint?.checkpointSaveInFlight = false
+            switch outcome {
+            case .success(let url):
+                checkpoint?.setCheckpointStatus("Saved \(url.lastPathComponent)", kind: .success)
+                SessionLogger.shared.log("[CHECKPOINT] Saved champion: \(url.lastPathComponent)")
+            case .failure(let error):
+                checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save champion failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Upper bound on how long a save path will wait for a
+    /// worker to acknowledge a pause request. Has to cover one
+    /// in-flight self-play game or training step, so 15 s is a
+    /// comfortable margin above the worst-case game length at
+    /// typical self-play rates. On timeout the save bails with
+    /// a user-visible error rather than blocking forever.
+    nonisolated static let saveGateTimeoutMs: Int = 15_000
+
+    /// Manual "Save Session" — writes a full `.dcmsession` with
+    /// champion and trainer model files plus `session.json`.
+    /// Requires an active Play-and-Train session and an available
+    /// trainer. Briefly pauses both self-play worker 0 and the
+    /// training gate to snapshot the two networks' weights.
+    func handleSaveSessionManual() {
+        // Belt-and-suspenders guards — menu disable is the primary
+        // gate but these cover keyboard-shortcut / URL-scheme
+        // invocations under a race.
+        if checkpoint?.checkpointSaveInFlight == true {
+            onRefuseMenuAction("A save is already in progress. Wait for it to finish.")
+            return
+        }
+        if isArenaRunning {
+            onRefuseMenuAction("Can't save the session while the arena is running. Wait for it to finish.")
+            return
+        }
+        guard realTraining,
+              let champion = network,
+              let trainer,
+              let selfPlayGate = activeSelfPlayGate,
+              let trainingGate = activeTrainingGate else {
+            onRefuseMenuAction("No active training session to save. Start Play and Train first.")
+            return
+        }
+        saveSessionInternal(
+            champion: champion,
+            trainer: trainer,
+            selfPlayGate: selfPlayGate,
+            trainingGate: trainingGate,
+            trigger: .manual
+        )
+    }
+
+    /// Fired by `PeriodicSaveController` when its 4-hour deadline
+    /// elapses (after any arena-deferral has resolved). Behaves
+    /// exactly like the manual save path but tagged `.periodic` so
+    /// the filename, status-line, and log line distinguish the two
+    /// triggers. The controller has already decided we should fire;
+    /// any remaining guard failures here (no session, save already
+    /// in flight) just make the periodic attempt a no-op — the next
+    /// tick of the controller will re-fire since `noteSuccessfulSave`
+    /// is never called.
+    @MainActor
+    private func handleSaveSessionPeriodic() {
+        // Guard against an arena starting in the tiny race window
+        // between the controller's decide() and this call.
+        if isArenaRunning {
+            return
+        }
+        if checkpoint?.checkpointSaveInFlight == true {
+            SessionLogger.shared.log("[CHECKPOINT] Periodic save skipped — another save is in flight")
+            return
+        }
+        guard realTraining,
+              let champion = network,
+              let trainer,
+              let selfPlayGate = activeSelfPlayGate,
+              let trainingGate = activeTrainingGate else {
+            // Should not happen if the controller is armed correctly,
+            // but disarm ourselves and bail to be safe.
+            periodicSaveController?.disarm()
+            return
+        }
+        periodicSaveInFlight = true
+        saveSessionInternal(
+            champion: champion,
+            trainer: trainer,
+            selfPlayGate: selfPlayGate,
+            trainingGate: trainingGate,
+            trigger: .periodic
+        )
+    }
+
+    /// Shared save-session internal used by both the manual save
+    /// button and the periodic autosave. Handles the gate dance,
+    /// exports both networks, builds the session state on the main
+    /// actor, and fires off the actual write to a detached task.
+    /// The post-promotion autosave uses its own inline code path
+    /// (in the arena coordinator) because it re-uses weights already
+    /// snapshotted under the arena's own pause and so does not need
+    /// to dance the gates again here.
+    private func saveSessionInternal(
+        champion: ChessMPSNetwork,
+        trainer: ChessTrainer,
+        selfPlayGate: WorkerPauseGate,
+        trainingGate: WorkerPauseGate,
+        trigger: SessionSaveTrigger
+    ) {
+        let championID = champion.identifier?.description ?? "unknown"
+        let trainerID = trainer.identifier?.description ?? "unknown"
+        let diskTag = trigger.diskTag
+        let uiSuffix = trigger.uiSuffix
+        checkpoint?.checkpointSaveInFlight = true
+        checkpoint?.setCheckpointStatus("Saving session\(uiSuffix)…", kind: .progress)
+        checkpoint?.startSlowSaveWatchdog(label: "session save\(uiSuffix)")
+
+        // Build the state snapshot on the main actor before
+        // jumping to detached work. Capture the replay buffer handle
+        // here too so the detached write path can serialize it
+        // alongside the two network files — `ReplayBuffer` is
+        // `@unchecked Sendable` and serializes access via its own
+        // lock, so the buffer can be written from a background task
+        // while self-play workers (which only append) are paused.
+        let sessionState = buildCurrentSessionState(
+            championID: championID,
+            trainerID: trainerID
+        )
+        let trainingStep = trainingStats?.steps ?? 0
+        let bufferForSave = replayBuffer
+        // Snapshot the chart-coordinator state on the main actor
+        // BEFORE jumping to detached work — the rings are
+        // `@MainActor`-isolated so the array copies have to happen
+        // here. `buildSnapshot()` returns nil when collection is off
+        // or both rings are empty, in which case the save path skips
+        // writing chart-companion files entirely (matching the
+        // existing `bufferForSave == nil` skip).
+        let chartSnapshotForSave = chartCoordinator?.buildSnapshot()
+
+        Task {
+            // Helper to clear both in-flight flags consistently on
+            // every early-return path below. The periodic flag is
+            // only meaningful when `trigger == .periodic`, but it's
+            // cheap to always clear so we don't have to repeat the
+            // branch on every error exit. Cancels the slow-save
+            // watchdog too so a fast-failure path doesn't leave a
+            // stale "Saving… (still running)" amber line behind.
+            @MainActor func clearInFlight() {
+                checkpoint?.cancelSlowSaveWatchdog()
+                checkpoint?.checkpointSaveInFlight = false
+                periodicSaveInFlight = false
+            }
+
+            // Pause self-play briefly so the champion export is
+            // race-free, snapshot weights, then resume. Uses the
+            // bounded variant so a session end mid-save doesn't
+            // spin forever waiting for workers that have exited.
+            let selfPlayAcquired = await selfPlayGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
+            guard selfPlayAcquired else {
+                clearInFlight()
+                checkpoint?.setCheckpointStatus("Save aborted: could not pause self-play (timeout)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session aborted at self-play pause timeout")
+                return
+            }
+            var championWeights: [[Float]] = []
+            var championError: Error?
+            do {
+                championWeights = try await Task.detached(priority: .userInitiated) {
+                    try await champion.exportWeights()
+                }.value
+            } catch {
+                championError = error
+            }
+            selfPlayGate.resume()
+
+            if let championError {
+                clearInFlight()
+                checkpoint?.setCheckpointStatus("Save failed (champion export): \(championError.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed at champion export: \(championError.localizedDescription)")
+                return
+            }
+
+            // Pause training briefly to snapshot trainer weights.
+            let trainingAcquired = await trainingGate.pauseAndWait(timeoutMs: Self.saveGateTimeoutMs)
+            guard trainingAcquired else {
+                clearInFlight()
+                checkpoint?.setCheckpointStatus("Save aborted: could not pause training (timeout)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session aborted at training pause timeout")
+                return
+            }
+            var trainerWeights: [[Float]] = []
+            var trainerError: Error?
+            do {
+                // exportTrainerWeights bundles trainables + bn +
+                // momentum velocity. Caller is responsible for
+                // pausing both gates, which we did above.
+                trainerWeights = try await Task.detached(priority: .userInitiated) {
+                    try await trainer.exportTrainerWeights()
+                }.value
+            } catch {
+                trainerError = error
+            }
+            trainingGate.resume()
+
+            if let trainerError {
+                clearInFlight()
+                checkpoint?.setCheckpointStatus("Save failed (trainer export): \(trainerError.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session failed at trainer export: \(trainerError.localizedDescription)")
+                return
+            }
+
+            // Final write + verify on a detached task so UI stays
+            // responsive during the ~150 ms scratch-network build.
+            let championMetadata = ModelCheckpointMetadata(
+                creator: diskTag,
+                trainingStep: trainingStep,
+                parentModelID: "",
+                notes: "Session checkpoint (\(diskTag))"
+            )
+            let trainerMetadata = ModelCheckpointMetadata(
+                creator: diskTag,
+                trainingStep: trainingStep,
+                parentModelID: championID,
+                notes: "Trainer lineage at session checkpoint (\(diskTag))"
+            )
+            let now = Int64(Date().timeIntervalSince1970)
+            let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
+                [bufferForSave, chartSnapshotForSave] in
+                do {
+                    let url = try await CheckpointManager.saveSession(
+                        championWeights: championWeights,
+                        championID: championID,
+                        championMetadata: championMetadata,
+                        championCreatedAtUnix: now,
+                        trainerWeights: trainerWeights,
+                        trainerID: trainerID,
+                        trainerMetadata: trainerMetadata,
+                        trainerCreatedAtUnix: now,
+                        state: sessionState,
+                        replayBuffer: bufferForSave,
+                        chartSnapshot: chartSnapshotForSave,
+                        trigger: diskTag
+                    )
+                    return .success(url)
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+
+            clearInFlight()
+            switch outcome {
+            case .success(let url):
+                checkpoint?.setCheckpointStatus("Saved \(url.lastPathComponent)\(uiSuffix)", kind: .success)
+                let bufStr: String
+                if let snap = bufferForSave?.stateSnapshot() {
+                    bufStr = " replay=\(snap.storedCount)/\(snap.capacity)"
+                } else {
+                    bufStr = ""
+                }
+                SessionLogger.shared.log(
+                    "[CHECKPOINT] Saved session (\(diskTag)): \(url.lastPathComponent) build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(bufStr)"
+                )
+                checkpoint?.recordLastSessionPointer(
+                    directoryURL: url,
+                    sessionID: sessionState.sessionID,
+                    trigger: diskTag
+                )
+                periodicSaveController?.noteSuccessfulSave(at: Date())
+                checkpoint?.lastSavedAt = Date()
+            case .failure(let error):
+                checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Load a standalone `.dcmmodel` into the current champion
+    /// network. Triggered from the Load Model file importer. The
+    /// network must exist (loading into a built network preserves
+    /// the existing graph compilation; we don't rebuild).
+    func handleLoadModelPickResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            checkpoint?.setCheckpointStatus("Load cancelled: \(error.localizedDescription)", kind: .error)
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            loadModelFrom(url: url)
+        }
+    }
+
+    func loadModelFrom(url: URL) {
+        // In-function guards (belt-and-suspenders with menu disable).
+        if isBuildingOrBusyProvider() {
+            onRefuseMenuAction(busyReasonProvider())
+            return
+        }
+
+        checkpoint?.checkpointSaveInFlight = true
+        checkpoint?.setCheckpointStatus("Loading \(url.lastPathComponent)…", kind: .progress)
+
+        Task {
+            // Auto-build the champion shell if it doesn't exist yet.
+            // The weights are about to be overwritten, so the random
+            // init is only satisfying graph compilation — no reason
+            // to require the user to press Build first.
+            let championResult = await self.ensureChampionBuilt()
+            switch championResult {
+            case .failure(let error):
+                checkpoint?.checkpointSaveInFlight = false
+                checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Load model auto-build failed: \(error.localizedDescription)")
+                return
+            case .success(let champion):
+                // Keep the security scope open across the entire
+                // detached read+load so files picked from outside the
+                // sandbox (Downloads, AirDrop, external volumes) stay
+                // accessible until the work finishes. Start/stop must
+                // happen inside the detached closure to bracket the
+                // actual I/O.
+                let outcome: Result<ModelCheckpointFile, Error> = await Task.detached(priority: .userInitiated) {
+                    let scopeAccessed = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if scopeAccessed {
+                            url.stopAccessingSecurityScopedResource()
+                        }
+                    }
+                    do {
+                        let file = try CheckpointManager.loadModelFile(at: url)
+                        try await champion.loadWeights(file.weights)
+                        return .success(file)
+                    } catch {
+                        return .failure(error)
+                    }
+                }.value
+                checkpoint?.checkpointSaveInFlight = false
+                switch outcome {
+                case .success(let file):
+                    champion.identifier = ModelID(value: file.modelID)
+                    networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
+                    checkpoint?.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
+                    SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
+                    onClearInferenceResult()
+                    // Flag champion-replaced for the post-Stop Start
+                    // dialog's "Continue" annotation. Cleared as
+                    // soon as a new training segment starts.
+                    if replayBuffer != nil {
+                        championLoadedSinceLastTrainingSegment = true
+                    }
+                case .failure(let error):
+                    checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Load a `.dcmsession` directory. Parses everything, loads
+    /// champion weights immediately into the live champion
+    /// network, and stores the session state + trainer weights
+    /// in `pendingLoadedSession` so the next Play-and-Train start
+    /// resumes from them.
+    func handleLoadSessionPickResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            checkpoint?.setCheckpointStatus("Load cancelled: \(error.localizedDescription)", kind: .error)
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            loadSessionFrom(url: url)
+        }
+    }
+
+    func loadSessionFrom(url: URL, startAfterLoad: Bool = false) {
+        // In-function guards (belt-and-suspenders with menu disable).
+        if isBuildingOrBusyProvider() {
+            onRefuseMenuAction(busyReasonProvider())
+            return
+        }
+
+        checkpoint?.checkpointSaveInFlight = true
+        checkpoint?.setCheckpointStatus("Loading session \(url.lastPathComponent)…", kind: .progress)
+
+        Task {
+            // Auto-build the champion shell if it doesn't exist yet.
+            // The weights are about to be overwritten, so the random
+            // init is only satisfying graph compilation — no reason
+            // to require the user to press Build first.
+            let championResult = await self.ensureChampionBuilt()
+            guard case .success(let champion) = championResult else {
+                checkpoint?.checkpointSaveInFlight = false
+                if case .failure(let error) = championResult {
+                    checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load session auto-build failed: \(error.localizedDescription)")
+                }
+                return
+            }
+            let outcome: Result<LoadedSession, Error> = await Task.detached(priority: .userInitiated) {
+                let scopeAccessed = url.startAccessingSecurityScopedResource()
+                defer {
+                    if scopeAccessed {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                do {
+                    let loaded = try CheckpointManager.loadSession(at: url)
+                    // Apply champion weights immediately; trainer
+                    // weights are held for the next startRealTraining.
+                    try await champion.loadWeights(loaded.championFile.weights)
+                    return .success(loaded)
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            checkpoint?.checkpointSaveInFlight = false
+            switch outcome {
+            case .success(let loaded):
+                champion.identifier = ModelID(value: loaded.championFile.modelID)
+                pendingLoadedSession = loaded
+                networkStatus = """
+                    Loaded session \(loaded.state.sessionID)
+                    Champion: \(loaded.championFile.modelID)
+                    Trainer: \(loaded.trainerFile.modelID)
+                    Steps: \(loaded.state.trainingSteps) / Games: \(loaded.state.selfPlayGames)
+                    Click Play and Train to resume.
+                    """
+                checkpoint?.lastSavedAt = nil
+                checkpoint?.setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", kind: .success)
+                let savedBuild = loaded.state.buildNumber.map(String.init) ?? "?"
+                let savedGit = loaded.state.buildGitHash ?? "?"
+                let bufStr: String
+                if let stored = loaded.state.replayBufferStoredCount,
+                   let cap = loaded.state.replayBufferCapacity {
+                    bufStr = " replay=\(stored)/\(cap)"
+                } else {
+                    bufStr = " replay=none"
+                }
+                SessionLogger.shared.log("[CHECKPOINT] Loaded session: \(url.lastPathComponent) savedBuild=\(savedBuild) savedGit=\(savedGit)\(bufStr)")
+                onClearInferenceResult()
+                if startAfterLoad {
+                    // Auto-resume path (from the launch-time sheet or
+                    // the File menu "Resume training from autosave"
+                    // command). Chain straight into Play-and-Train so
+                    // the user's single click results in the session
+                    // both loaded AND running.
+                    SessionLogger.shared.log("[CHECKPOINT] Auto-resume: starting Play-and-Train on loaded session")
+                    startRealTraining()
+                }
+            case .failure(let error):
+                checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Load session failed: \(error.localizedDescription)")
+            }
+            if startAfterLoad {
+                onResumeFinished()
+            }
+        }
     }
 
     // MARK: - Real (self-play) training run (Stage 4o)
@@ -2596,7 +3157,7 @@ final class SessionController {
                 // A training segment has started, so clear the
                 // "champion replaced since last training" flag
                 // (the Start dialog's annotation is resolved).
-                onClearChampionLoadedFlag()
+                championLoadedSinceLastTrainingSegment = false
             }
 
             // Grab the candidate inference network and arena champion
