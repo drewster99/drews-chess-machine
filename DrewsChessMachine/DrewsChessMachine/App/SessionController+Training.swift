@@ -858,6 +858,24 @@ extension SessionController {
                 return
             }
 
+            // `resetNetwork()` above reset the trainer's completed-step
+            // counter to 0 (correct for the fresh random network it just
+            // built — see the comment at the tail of `internalResetNetwork`).
+            // On a session resume that wipes the count we seeded from
+            // `rs.trainingSteps` earlier, so the LR-warmup ramp
+            // (`min(1, completedTrainSteps / lrWarmupSteps)`) would restart
+            // from zero on every resume — i.e. warmup re-runs each time the
+            // session is reopened. Re-apply the saved count here, *after* the
+            // reset, so warmup picks up mid-session as the line-287 seed
+            // intended. `.continueAfterStop` / `.newSessionKeepTrainer`
+            // skipped `resetNetwork()` entirely (their counter is already
+            // correct), and `.newSessionResetTrainerFromChampion` forks from
+            // the champion and deliberately *wants* warmup to restart, so
+            // both are excluded.
+            if case .freshOrFromLoadedSession = mode, let rs = resumeState {
+                trainer.completedTrainSteps = rs.trainingSteps
+            }
+
             // Dump every live MTLCommandQueue's (label, address) pair
             // so subsequent Metal-trace captures can be matched back
             // to the network they came from. The address printed here
