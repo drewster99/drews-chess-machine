@@ -187,23 +187,25 @@ struct UpperContentView: View {
     // (AlphaZero-style 0.55 score threshold) or leave the champion
     // alone. History is appended to `tournamentHistory` for display.
 
-    /// Live progress mirrored from `tournamentBox` by the heartbeat.
-    /// Non-nil while a tournament is running; nil otherwise.
-    @State private var tournamentProgress: TournamentProgress?
-    /// Lock-protected box the driver task writes into after each arena
-    /// game completes. The heartbeat polls it and lifts the latest
-    /// progress into `tournamentProgress` so the busy label and the
-    /// text panel update live without cross-actor hops per game.
-    @State private var tournamentBox: TournamentLiveBox?
-    /// History of all completed tournaments in this session. Appended
-    /// after each arena finishes. In-memory only for now — disk
-    /// persistence is deferred.
-    @State private var tournamentHistory: [TournamentRecord] = []
-    /// Status-bar "Score" cell display mode toggle. `false` =
-    /// percentage view (e.g. `"51.2%"`), `true` = Elo-with-CI view
-    /// (e.g. `"+28 [+13, +34]"`). Click on the cell flips it. Session-
-    /// local only — not persisted.
-    @State private var scoreStatusShowElo: Bool = false
+    // Tournament/arena display state (tournamentProgress / tournamentBox /
+    // tournamentHistory / scoreStatusShowElo) moved to SessionController in
+    // Stage 4j — forwarding proxies below. (tournamentProgress: live progress
+    // mirrored from tournamentBox by the heartbeat. tournamentBox: lock-protected
+    // box the arena driver writes per-game. tournamentHistory: all completed
+    // tournaments this session, appended after each arena, in-memory only.
+    // scoreStatusShowElo: status-bar "Score" cell percentage↔Elo toggle.)
+    private var tournamentProgress: TournamentProgress? {
+        get { session.tournamentProgress } nonmutating set { session.tournamentProgress = newValue }
+    }
+    private var tournamentBox: TournamentLiveBox? {
+        get { session.tournamentBox } nonmutating set { session.tournamentBox = newValue }
+    }
+    private var tournamentHistory: [TournamentRecord] {
+        get { session.tournamentHistory } nonmutating set { session.tournamentHistory = newValue }
+    }
+    private var scoreStatusShowElo: Bool {
+        get { session.scoreStatusShowElo } nonmutating set { session.scoreStatusShowElo = newValue }
+    }
 
     // MARK: - Chart zoom state
     //
@@ -588,12 +590,13 @@ struct UpperContentView: View {
     // computed properties have moved to CheckpointController in Stage 3c
     // part 2b. External readers/writers reach them through `checkpoint.…`.
 
-    /// A parsed session that was loaded from disk but not yet
-    /// applied. The user loads a session while Play-and-Train is
-    /// stopped; the next `startRealTraining` call consumes this
-    /// and seeds the trainer / counters / IDs from it, then
-    /// clears it.
-    @State private var pendingLoadedSession: LoadedSession?
+    /// A parsed session loaded from disk but not yet applied (the next
+    /// `startRealTraining` consumes it and seeds the trainer / counters / IDs,
+    /// then clears it). Moved to SessionController in Stage 4j — forwarding
+    /// proxy.
+    private var pendingLoadedSession: LoadedSession? {
+        get { session.pendingLoadedSession } nonmutating set { session.pendingLoadedSession = newValue }
+    }
 
     /// The checkpoint subsystem (status display, slow-save watchdog, segment
     /// tracking, parameter + load-model + load-session file importers + the

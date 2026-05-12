@@ -296,6 +296,33 @@ final class SessionController {
         lastReplayRatioCompensatorAt = now
     }
 
+    // MARK: - Tournament / arena display state (Stage 4j)
+
+    /// Live tournament progress mirrored from `tournamentBox` by the heartbeat.
+    /// Non-nil while an arena is running, `nil` otherwise.
+    var tournamentProgress: TournamentProgress?
+
+    /// Lock-protected box the arena driver task writes into after each game
+    /// completes; the heartbeat polls it into `tournamentProgress`. `nil`
+    /// outside an arena.
+    var tournamentBox: TournamentLiveBox?
+
+    /// All completed tournaments this session, appended after each arena
+    /// finishes. In-memory only (disk persistence deferred).
+    var tournamentHistory: [TournamentRecord] = []
+
+    /// Status-bar "Score" cell display-mode toggle: `false` = percentage
+    /// (`"51.2%"`), `true` = Elo-with-CI (`"+28 [+13, +34]"`). Session-local.
+    var scoreStatusShowElo: Bool = false
+
+    // MARK: - Pending loaded session (Stage 4j)
+
+    /// A parsed `.dcmsession` loaded from disk but not yet applied. The user
+    /// loads a session while Play-and-Train is stopped; the next
+    /// `startRealTraining` consumes this and seeds the trainer / counters / IDs
+    /// from it, then clears it.
+    var pendingLoadedSession: LoadedSession?
+
     // MARK: - Candidate-test probe state + CLI recorder (Stage 4h)
 
     /// Which board the Play-and-Train view shows: `.gameRun` (the live self-play
