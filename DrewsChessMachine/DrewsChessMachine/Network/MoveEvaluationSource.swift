@@ -70,7 +70,8 @@ struct PolicyDestination: @unchecked Sendable {
 ///
 /// Caller-owned destination contract: every `evaluate` call writes
 /// exactly `ChessNetwork.policySize` floats into `intoPolicy` (provided
-/// by the caller) and returns the scalar value head output. The
+/// by the caller) and returns the derived scalar value `p_win − p_loss
+/// ∈ [−1, +1]` (the W/D/L head's softmax · `[+1, 0, −1]`). The
 /// destination buffer:
 ///
 /// - must have `count == ChessNetwork.policySize` (preconditioned),

@@ -524,7 +524,8 @@ final class ChessNetwork: @unchecked Sendable {
     /// `executionQueue` work block and inside an `autoreleasepool`.
     ///
     /// `consume` receives an `UnsafeBufferPointer<Float>` of `policySize`
-    /// policy logits plus the scalar value head output. The buffer
+    /// policy logits plus the derived scalar value `p_win − p_loss ∈
+    /// [−1, +1]` (the W/D/L head's softmax · `[+1, 0, −1]`). The buffer
     /// aliases the network's shared inference scratch and is valid only
     /// for the duration of the closure call — copy any bytes that need
     /// to outlive the closure (e.g. into a caller-owned destination)

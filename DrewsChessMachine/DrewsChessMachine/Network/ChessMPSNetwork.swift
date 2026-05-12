@@ -202,7 +202,7 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// (closure-validity window, non-throwing requirement).
     ///
     /// - Parameter board: `inputPlanes`×8×8 = 1,280 floats (from `BoardEncoder.encode`).
-    /// - Parameter consume: receives `policySize` (4,864) raw policy logits and the scalar value head.
+    /// - Parameter consume: receives `policySize` (4,864) raw policy logits and the derived scalar value `p_win − p_loss ∈ [−1, +1]` (the W/D/L head's softmax · `[+1, 0, −1]`; the W/D/L distribution itself is not exposed at inference).
     func evaluate(
         board: [Float],
         consume: @Sendable @escaping (UnsafeBufferPointer<Float>, Float) -> Void

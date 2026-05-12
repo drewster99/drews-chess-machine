@@ -531,6 +531,8 @@ Always train a *candidate* — never update the current network in place while i
 let policyLoss = -z * log(policyOutput[movePlayed])
 
 // value: mean squared error vs actual game outcome
+//   (ORIGINAL design — superseded 2026-05-12 by categorical CE over a
+//    3-class W/D/L head: valueLoss = mean(−Σ oneHot(1−z)·logSoftmax(valueLogits)))
 let valueLoss = (z - valueOutput) * (z - valueOutput)
 
 // L2 weight decay on network parameters
@@ -569,9 +571,9 @@ Two details of `ChessTrainer.buildTrainingOps` that the math above doesn't captu
 
 **Policy entropy diagnostic uses a separate stable log-softmax path** built with `reductionMaximum`. That's safe because `policyEntropy` is a fetched output but *not* an input to `totalLoss`, so the autodiff walk from `totalLoss` never enters the entropy subgraph and never tries to differentiate `reductionMaximum`. Forward-only evaluation of `reductionMaximum` works fine; only the gradient is missing.
 
-#### Value loss: `L = (z − v)²`
+#### Value loss: `L = (z − v)²`  *(superseded 2026-05-12 → categorical CE over the W/D/L head; see the "Why MSE…" update note just below — the formula and discussion in this subsection describe the original scalar/MSE design)*
 
-- **v** — the value head's predicted outcome, a scalar in `[−1, +1]` (via `tanh`) from the side-to-move's perspective.
+- **v** — the value head's predicted outcome, a scalar in `[−1, +1]` from the side-to-move's perspective (post-2026-05-12 it's the *derived* scalar `p_win − p_loss` from the W/D/L head; in the original design it was `tanh(FC output)`).
 - **z** — the same outcome target as above: `+1` won, `−1` lost, `0` drew.
 
 Unlike the policy side, **every position contributes** to the value loss — winners, losers, *and* draws. A draw isn't a zero signal here; `z = 0` is an informative target that says "this position was balanced, predict zero." Over many positions the value head converges to the *expected* outcome: "what fraction of a win is this position worth, averaged across all positions like it."

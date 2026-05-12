@@ -536,8 +536,10 @@ func moveIndex(from: Int, to: Int) -> Int {
 
 ## Loss Functions
 
+> **Update (2026-05-12): the value loss below is the ORIGINAL design (MSE on a scalar).** The current value loss is categorical cross-entropy over the 3-class W/D/L head — `graph.softMaxCrossEntropy(valueLogits, labels: smoothedOneHot, axis: 1, reuctionType: .none)` then `mean`, where `labels` is `oneHot(clamp(int(1 − z), 0, 2), depth: 3)` blended with `ε·(1/3)` — i.e. the same `softMaxCrossEntropy` op the policy loss uses, just over 3 classes. The MSE-from-primitives snippet below is still a fine worked example of building a loss from `subtraction`/`multiplication`/`mean`; it just isn't this engine's value loss anymore. See `chess-engine-design.md` / `wdl-value-head.md`.
+
 ```swift
-// value loss: mean squared error between prediction and actual outcome
+// value loss: mean squared error between prediction and actual outcome  (ORIGINAL — see update note above)
 // valueTarget is +1.0 (win), 0.0 (draw), or -1.0 (loss) for current player
 // NOTE: MPSGraph has no built-in MSE op — build from primitives
 let valueDiff = graph.subtraction(valueOutput, valueTarget, name: "value_diff")
@@ -808,8 +810,8 @@ value 1×1 conv:              1 × 8 × 8
 value bn + relu:              1 × 8 × 8
 value flatten:                       64
 value FC1 + relu:                    64
-value FC2:                            1
-value tanh:                           1  ← position value [-1, +1]
+value FC2:                            3  ← W/D/L logits  (was 1, pre-2026-05-12)
+value softmax → derived scalar:       1  ← p_win − p_loss ∈ [-1, +1]  (was: FC2 → tanh)
 ```
 
 ---
@@ -831,7 +833,7 @@ value tanh:                           1  ← position value [-1, +1]
 | softMax | Converts logits to probabilities summing to 1.0 |
 | tanh | Squashes unbounded float to [-1, 1] |
 | softMaxCrossEntropy | Policy loss — combines softmax and cross entropy in one numerically stable op |
-| subtraction/multiplication/mean | Value loss (MSE) — built from primitives since MPSGraph has no built-in MSE |
+| subtraction/multiplication/mean | MSE-from-primitives pattern (was the value loss; superseded 2026-05-12 — the value loss is now `softMaxCrossEntropy` over a 3-class W/D/L head) |
 | gradients(of:with:) | Automatic differentiation — computes ∂loss/∂weight for every weight |
 | graph.adam() | Applies gradients to weights with adaptive learning rates — method on MPSGraph, not a standalone class |
 | targetOperations | Operations to run (e.g. weight updates) when executing graph |
