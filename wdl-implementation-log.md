@@ -46,7 +46,14 @@ Post-`/recheck` fix (build still green): added an in-graph clamp of the value-ta
 
 Concern still open (unchanged from setup): cannot verify *training* works — only that it builds. Highest-risk spot for morning review is the `buildTrainingOps` value-loss block (one-hot construction, smoothed-target blend, `softMaxCrossEntropy` over `valueLogits`) and whether `valueLossWeight=1.0` is well-balanced now that the value term is CE-scale (~0.5–1.1) rather than MSE-scale (~0.1–0.4) — may want a lower `value_loss_weight` for the first WDL run; it's live-tunable so no rebuild needed.
 
-### Stage 2 — tests
+### Stage 2 — tests — DONE (355/355 green)
+
+- **New `ValueHeadWDLTests.swift`** (6 tests, standalone-MPSGraph style like `MPSGraphReshapeLayoutTests`): rebuilds the exact value-CE op chain from `buildTrainingOps` (`clamp(int(1−z))` → `oneHot(depth:3)` → blend with `ε·1/3` → `softMaxCrossEntropy(reuctionType:.none)` → reshape → mean) and the derived-scalar chain from `valueHead` (`softMax` → `reductionSum(probs·[+1,0,−1])`), runs them on a real MTLDevice, and asserts against a Swift reference. Covers: slot mapping z∈{+1,0,−1}→{0,1,2} plus a partial draw-penalty (z=−0.3 → still slot 1) and a full one (z=−1.0 → slot 2); hard-one-hot CE = `−log softmax[idx]`; label-smoothed CE for ε∈{0.025, 0.05, 0.2}; derived scalar = `p_win − p_loss` and in [−1,1]; bias init `[0, ln6, 0]` ⇒ softmax (0.125, 0.75, 0.125) ⇒ scalar 0. (Picked up automatically — the test target is a `PBXFileSystemSynchronizedRootGroup`.)
+- **`CliTrainingRecorderTests`** — the tick-snapshot fixture's `vBaselineDelta: 0.02` → `valueProbWin/Draw/Loss: 0.2/0.6/0.2` (the renamed fields). No JSON-key assertions on the old key, so nothing else changed.
+- **`TrainingAlarmControllerTests`** / **`TrainingParametersTests`** — stale-comment cleanup only (de-tanh the `vAbs` band descriptions; "29 keys" → "36 keys" header). The alarm-detector tests pass unchanged: `rollingValueAbsMean` is still on `Snapshot` and the 0.97/0.999 bands still exercise warning/critical/recovery; a fresh WDL head's `vAbs ≈ 0` is still "healthy" (< 0.97).
+- **Verified unchanged & still green**: `MPSGraphGradientSemanticsTests` (its `valueHead` is a toy `graph.variable`, not `ChessNetwork`'s), `SignConsistencyTests` (no tanh / value-range assertions), `CheckpointManagerRoundTripTests` (encodes & decodes with the same `currentArchHash`, so the `valueHeadClasses` bump is transparent to the round-trip), `MomentumOptimizerTests`. No test asserted a hardcoded archHash literal or a "golden" forward-pass output, so nothing needed re-baselining.
+
+### Stage 3 — docs
 *(pending)*
 
 ### Stage 3 — docs

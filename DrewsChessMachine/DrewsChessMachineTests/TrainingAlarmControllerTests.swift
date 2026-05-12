@@ -97,12 +97,14 @@ final class TrainingAlarmControllerTests: XCTestCase {
 
     // MARK: - Value-head saturation detector
 
-    /// `vAbs` reading well below the warning threshold — a fresh-init value
-    /// head produces ~0.30 empirically (see CHANGELOG 2026-05-11 finding).
+    /// `vAbs` (= mean |p_win − p_loss| for the W/D/L head) well below
+    /// the warning threshold — a fresh-init head sits near 0 (bias init
+    /// [0, ln6, 0] ⇒ p_win = p_loss); anything < 0.97 is "healthy".
     private let healthyValueAbsMean: Double = 0.30
-    /// `vAbs` at warning band: `tanh` gradient ~17× weaker than vAbs=0.
+    /// `vAbs` in the warning band (head calling nearly every position a
+    /// clean win/loss).
     private let warningValueAbsMean: Double = 0.98
-    /// `vAbs` at critical band: `tanh` gradient ~100× weaker.
+    /// `vAbs` in the critical band.
     private let criticalValueAbsMean: Double = 0.999
 
     private func feedV(_ c: TrainingAlarmController, valueAbsMean: Double, times: Int) {
