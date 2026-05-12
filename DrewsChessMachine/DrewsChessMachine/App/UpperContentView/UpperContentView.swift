@@ -88,49 +88,14 @@ struct UpperContentView: View {
     @State private var runner: ChessRunner?
     @State private var networkStatus = ""
     @State private var isBuilding = false
-    /// Separate inference-mode network used during arena as the
-    /// "candidate side" player. Distinct from `network` (the
-    /// "champion" used by self-play / Play Game / Run Forward Pass)
-    /// because we explicitly want the champion to stay frozen at
-    /// whatever weights it was built with until a future arena-based
-    /// promotion step decides otherwise. The trainer's current SGD
-    /// state is copied into this network at arena start so the
-    /// candidate plays its tournament games from a coherent, stable
-    /// snapshot rather than drifting mid-match as training continues.
-    ///
-    /// Cached across Play and Train sessions so the ~100 ms
-    /// MPSGraph-build cost only happens once per app launch, not on
-    /// every start.
-    @State private var candidateInferenceNetwork: ChessMPSNetwork?
-    /// Fifth network — dedicated exclusively to the candidate-test
-    /// probe. An earlier design had the probe share
-    /// `candidateInferenceNetwork` with the arena, which forced the
-    /// probe to pause for the entire duration of every arena (the
-    /// arena's games read the network while the probe would want to
-    /// overwrite it with a fresh trainer snapshot). Pausing produced
-    /// a visible discontinuity in `candidate_tests[]` across every
-    /// arena boundary — before the gap the probe tracked the trainer
-    /// smoothly, after the gap it jumped to reflect ~one-arena-
-    /// duration of accumulated SGD. Giving the probe its own network
-    /// removes that conflict, so the probe can fire through arenas
-    /// and the trajectory stays continuous.
-    ///
-    /// Built lazily on the first Play and Train session and cached
-    /// for the life of the app, same as the other inference
-    /// networks.
-    @State private var probeInferenceNetwork: ChessMPSNetwork?
-    /// ChessRunner wrapping `probeInferenceNetwork`. Used by
-    /// `fireCandidateProbeIfNeeded` via the same `performInference`
-    /// code path as the pure forward-pass mode.
-    @State private var probeRunner: ChessRunner?
-    /// Fourth network — dedicated to the arena's "champion side"
-    /// player. During arena, champion is copied into this network
-    /// once at the start (under a brief self-play pause) and the
-    /// arena games run on this network alone, leaving the real
-    /// champion free for continuous self-play throughout the
-    /// tournament. Built lazily on the first Play and Train session
-    /// and cached for the life of the app.
-    @State private var arenaChampionNetwork: ChessMPSNetwork?
+
+    /// Session-lifecycle controller. Currently owns the three life-of-app
+    /// inference networks the arena / probe run against (`session.candidateInferenceNetwork`
+    /// / `session.arenaChampionNetwork` / `session.probeInferenceNetwork` + `session.probeRunner`) and the
+    /// `performBuild()` static. The champion `network` / `runner` / `networkStatus`
+    /// / `isBuilding` and the build + training + arena orchestration migrate onto
+    /// it in later Stage 4 slices.
+    @State private var session = SessionController()
     // Legacy `secondarySelfPlayNetworks` removed — all self-play
     // workers now share the champion network (`network`) through a
     // `BatchedMoveEvaluationSource` barrier batcher, so N per-worker
@@ -3433,7 +3398,7 @@ struct UpperContentView: View {
         clearTrainingDisplay()
         SessionLogger.shared.log("[BUILD] Auto-build before load")
         let result = await Task.detached(priority: .userInitiated) {
-            Self.performBuild()
+            SessionController.performBuild()
         }.value
         switch result {
         case .success(let net):
@@ -3471,7 +3436,7 @@ struct UpperContentView: View {
 
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                Self.performBuild()
+                SessionController.performBuild()
             }.value
 
             switch result {
@@ -3537,8 +3502,8 @@ struct UpperContentView: View {
         guard
             isCandidateTestActive,
             let trainer,
-            let probeRunner,
-            let probeInference = probeInferenceNetwork,
+            let probeRunner = session.probeRunner,
+            let probeInference = session.probeInferenceNetwork,
             let championRunner = runner
         else { return }
         let now = Date()
@@ -3563,7 +3528,7 @@ struct UpperContentView: View {
                 //
                 // The probe network is dedicated — no one else reads or
                 // writes it — so the probe can run concurrently with an
-                // active arena (which reads `candidateInferenceNetwork`,
+                // active arena (which reads `session.candidateInferenceNetwork`,
                 // a different object) without racing. The only potential
                 // concurrent operation is `trainer.network.exportWeights`
                 // during an arena's own trainer-snapshot step; both are
@@ -4589,7 +4554,7 @@ struct UpperContentView: View {
                 // Pure forward-pass mode runs through the champion via
                 // `runner`. Candidate test mode takes a different path
                 // via `fireCandidateProbeIfNeeded`, which uses
-                // `probeRunner` → the dedicated probe inference network.
+                // `session.probeRunner` → the dedicated probe inference network.
                 await Self.performInference(with: runner, state: state)
             }.value
             inferenceResult = evalResult
@@ -5664,7 +5629,7 @@ struct UpperContentView: View {
 
             // --- Setup: build any missing networks, reset the trainer ---
 
-            let needsCandidateBuild = await MainActor.run { candidateInferenceNetwork == nil }
+            let needsCandidateBuild = await MainActor.run { session.candidateInferenceNetwork == nil }
             if needsCandidateBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
@@ -5672,7 +5637,7 @@ struct UpperContentView: View {
                     }.value
                     built.network.commandQueue.label = "startrealTraining candidate Inference"
                     await MainActor.run {
-                        candidateInferenceNetwork = built
+                        session.candidateInferenceNetwork = built
                     }
                 } catch {
                     box.recordError("Candidate network init failed: \(error.localizedDescription)")
@@ -5684,7 +5649,7 @@ struct UpperContentView: View {
                 }
             }
 
-            let needsProbeBuild = await MainActor.run { probeInferenceNetwork == nil }
+            let needsProbeBuild = await MainActor.run { session.probeInferenceNetwork == nil }
             if needsProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
@@ -5692,8 +5657,8 @@ struct UpperContentView: View {
                     }.value
                     built.network.commandQueue.label = "startrealTraining probe Inference"
                     await MainActor.run {
-                        probeInferenceNetwork = built
-                        probeRunner = ChessRunner(network: built)
+                        session.probeInferenceNetwork = built
+                        session.probeRunner = ChessRunner(network: built)
                     }
                 } catch {
                     box.recordError("Probe network init failed: \(error.localizedDescription)")
@@ -5705,7 +5670,7 @@ struct UpperContentView: View {
                 }
             }
 
-            let needsArenaChampionBuild = await MainActor.run { arenaChampionNetwork == nil }
+            let needsArenaChampionBuild = await MainActor.run { session.arenaChampionNetwork == nil }
             if needsArenaChampionBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
@@ -5713,7 +5678,7 @@ struct UpperContentView: View {
                     }.value
                     built.network.commandQueue.label = "startrealTraining arena champion"
                     await MainActor.run {
-                        arenaChampionNetwork = built
+                        session.arenaChampionNetwork = built
                     }
                 } catch {
                     box.recordError("Arena champion init failed: \(error.localizedDescription)")
@@ -5804,13 +5769,13 @@ struct UpperContentView: View {
             // accurate for every later capture in the same launch.
             do {
                 let candidateQ = await MainActor.run {
-                    candidateInferenceNetwork?.network.commandQueue
+                    session.candidateInferenceNetwork?.network.commandQueue
                 }
                 let probeQ = await MainActor.run {
-                    probeInferenceNetwork?.network.commandQueue
+                    session.probeInferenceNetwork?.network.commandQueue
                 }
                 let arenaChampionQ = await MainActor.run {
-                    arenaChampionNetwork?.network.commandQueue
+                    session.arenaChampionNetwork?.network.commandQueue
                 }
                 let championQ = network.network.commandQueue
                 let trainerQ = trainer.network.commandQueue
@@ -5911,8 +5876,8 @@ struct UpperContentView: View {
             // now guaranteed non-nil from the setup above. The
             // workers capture them as values for the duration of the
             // session.
-            let candidateInference = await MainActor.run { candidateInferenceNetwork }
-            let arenaChampion = await MainActor.run { arenaChampionNetwork }
+            let candidateInference = await MainActor.run { session.candidateInferenceNetwork }
+            let arenaChampion = await MainActor.run { session.arenaChampionNetwork }
             guard let candidateInference, let arenaChampion else {
                 box.recordError("Networks missing after setup")
                 await MainActor.run {
@@ -5979,7 +5944,7 @@ struct UpperContentView: View {
             // than fall back to the pollution-prone trainer-network
             // probe path.
             let probeInferenceForProbes: ChessMPSNetwork? = await MainActor.run {
-                probeInferenceNetwork
+                session.probeInferenceNetwork
             }
 
             await withTaskGroup(of: Void.self) { group in
@@ -8683,9 +8648,8 @@ struct UpperContentView: View {
 
     // MARK: - Background Work
 
-    nonisolated private static func performBuild() -> Result<ChessMPSNetwork, Error> {
-        Result { try ChessMPSNetwork(.randomWeights) }
-    }
+    // `performBuild()` moved to `SessionController` in Stage 4a — call it as
+    // `SessionController.performBuild()` from the detached build tasks.
 
     nonisolated private static func performInference(
         with runner: ChessRunner,
