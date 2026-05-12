@@ -660,28 +660,25 @@ struct UpperContentView: View {
         case newSessionResetTrainerFromChampion
     }
 
-    /// Scheduler for the 4-hour periodic autosave. Created on
-    /// Play-and-Train start and torn down on Stop; `nil` while no
-    /// session is active. Polled on the main heartbeat (throttled
-    /// to once per second — a 4-hour deadline doesn't need 10 Hz
-    /// resolution). See `PeriodicSaveController` for the
-    /// arena-deferral and save-reset invariants.
-    @State private var periodicSaveController: PeriodicSaveController?
-
-    /// Last wall-clock time the heartbeat polled
-    /// `periodicSaveController.decide(now:)`. Throttles the poll to
-    /// roughly 1 Hz regardless of the 10 Hz heartbeat cadence,
-    /// which is more than sufficient resolution for a multi-hour
-    /// deadline and keeps the hot path cheap.
-    @State private var periodicSaveLastPollAt: Date?
-
-    /// `true` while a periodic autosave's write is in flight, so
-    /// the heartbeat doesn't schedule another one on the very next
-    /// tick. Set at fire time, cleared on success or failure.
-    /// Separate from `checkpoint.checkpointSaveInFlight` (which guards the
-    /// user-visible menu buttons) because a periodic save must be
-    /// able to run even while the menu items remain enabled.
-    @State private var periodicSaveInFlight: Bool = false
+    // The periodic-autosave scheduler state (periodicSaveController /
+    // periodicSaveLastPollAt / periodicSaveInFlight) moved to SessionController
+    // in Stage 4l — forwarding proxies below. (periodicSaveController: the
+    // 4-hour scheduler, created on Play-and-Train start, torn down on Stop,
+    // polled by the heartbeat ~1 Hz; see PeriodicSaveController for the
+    // arena-deferral / save-reset invariants. periodicSaveLastPollAt: throttles
+    // the heartbeat poll to ~1 Hz. periodicSaveInFlight: guards against
+    // double-firing while a periodic write is in flight — separate from
+    // checkpoint.checkpointSaveInFlight because a periodic save runs even while
+    // the menu items remain enabled.)
+    private var periodicSaveController: PeriodicSaveController? {
+        get { session.periodicSaveController } nonmutating set { session.periodicSaveController = newValue }
+    }
+    private var periodicSaveLastPollAt: Date? {
+        get { session.periodicSaveLastPollAt } nonmutating set { session.periodicSaveLastPollAt = newValue }
+    }
+    private var periodicSaveInFlight: Bool {
+        get { session.periodicSaveInFlight } nonmutating set { session.periodicSaveInFlight = newValue }
+    }
 
     /// Interval between scheduled periodic saves while a
     /// Play-and-Train session is active. 4 hours per the
@@ -756,12 +753,14 @@ struct UpperContentView: View {
     // and accessed via `trainingParams.<name>`. See TrainingParameters.swift
     // for the canonical definitions, defaults, and persistence.
 
-    /// Last auto-computed step delay, persisted so the next session
-    /// starts from where the auto-adjuster left off instead of
-    /// falling back to the manual default. Note: this is auto-controller
-    /// state, not a training parameter — it is intentionally NOT migrated
-    /// to TrainingParameters.shared.
-    @AppStorage("lastAutoComputedDelayMs") private var lastAutoComputedDelayMs: Int = 50
+    /// Last auto-computed step delay (auto-controller state, persisted across
+    /// sessions, intentionally NOT a training parameter). Moved to
+    /// SessionController in Stage 4l — forwarding proxy; the source of truth is
+    /// `SessionController.lastAutoComputedDelayMs`, a `UserDefaults`-backed
+    /// computed property (was `@AppStorage("lastAutoComputedDelayMs")` here).
+    private var lastAutoComputedDelayMs: Int {
+        get { session.lastAutoComputedDelayMs } nonmutating set { session.lastAutoComputedDelayMs = newValue }
+    }
 
     /// Singleton container for all training parameters that were
     /// previously stored as @AppStorage / @State on this view.
@@ -1505,6 +1504,7 @@ struct UpperContentView: View {
         session.onInferenceResult = { inferenceResult = $0 }
         session.checkpoint = checkpoint
         session.chartCoordinator = chartCoordinator
+        session.trainingAlarm = trainingAlarm
         // Resume-sheet UX is correctly gated on the window being
         // visible — surfacing a sheet on a hidden window would do
         // nothing useful. Skipped under `--train` because the

@@ -217,6 +217,40 @@ final class SessionController {
     /// `buildCurrentSessionState`.
     var chartCoordinator: ChartCoordinator?
 
+    /// The training-alarm controller (banner + beep + divergence/value-head
+    /// detectors). Weak — the view keeps sole ownership; safe because both are
+    /// `@State`-owned by the same never-deallocated `UpperContentView`. Set in
+    /// `handleBodyOnAppear`. Used by `startRealTraining` (`clear()` /
+    /// `resetStreaks()`) and the legal-mass-collapse probe (`raise(...)`) once
+    /// those migrate.
+    weak var trainingAlarm: TrainingAlarmController?
+
+    // MARK: - Periodic-autosave scheduler state (Stage 4l)
+
+    /// The 4-hour periodic autosave scheduler. Created on Play-and-Train start,
+    /// torn down on Stop, `nil` between sessions; polled by the heartbeat ~1 Hz.
+    var periodicSaveController: PeriodicSaveController?
+
+    /// Last wall-clock the heartbeat polled `periodicSaveController.decide(now:)`
+    /// — throttles the poll to ~1 Hz.
+    var periodicSaveLastPollAt: Date?
+
+    /// `true` while a periodic autosave's write is in flight (guards against
+    /// double-firing). Separate from `checkpoint.checkpointSaveInFlight` because
+    /// a periodic save runs even while the menu items stay enabled.
+    var periodicSaveInFlight: Bool = false
+
+    /// Last auto-computed step delay (auto-controller state, persisted across
+    /// sessions so the next session resumes where the auto-adjuster left off).
+    /// `UserDefaults`-backed (was `@AppStorage("lastAutoComputedDelayMs")` on
+    /// the view). Not a training parameter — intentionally NOT in
+    /// `TrainingParameters`. Not read during `body`, so a plain computed
+    /// (non-observable) UserDefaults accessor is fine.
+    var lastAutoComputedDelayMs: Int {
+        get { UserDefaults.standard.object(forKey: "lastAutoComputedDelayMs") as? Int ?? 50 }
+        set { UserDefaults.standard.set(newValue, forKey: "lastAutoComputedDelayMs") }
+    }
+
     // MARK: - Session-runtime boxes + replay-ratio compensator (Stage 4f)
 
     /// Live `SamplingScheduleBox` for the current Play-and-Train session — the
