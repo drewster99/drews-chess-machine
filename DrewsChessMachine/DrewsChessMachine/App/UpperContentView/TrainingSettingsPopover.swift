@@ -90,6 +90,7 @@ struct TrainingSettingsPopover: View {
             || model.weightDecayError
             || model.policyLossWeightError
             || model.valueLossWeightError
+            || model.valueLabelSmoothingError
             || model.drawPenaltyError
             || model.trainingBatchSizeError
     }
@@ -170,6 +171,7 @@ struct TrainingSettingsPopover: View {
                     weightDecayText: $model.weightDecayText,
                     policyLossWeightText: $model.policyLossWeightText,
                     valueLossWeightText: $model.valueLossWeightText,
+                    valueLabelSmoothingText: $model.valueLabelSmoothingText,
                     drawPenaltyText: $model.drawPenaltyText,
                     trainingBatchSizeText: $model.trainingBatchSizeText,
                     lrError: model.lrError,
@@ -181,6 +183,7 @@ struct TrainingSettingsPopover: View {
                     weightDecayError: model.weightDecayError,
                     policyLossWeightError: model.policyLossWeightError,
                     valueLossWeightError: model.valueLossWeightError,
+                    valueLabelSmoothingError: model.valueLabelSmoothingError,
                     drawPenaltyError: model.drawPenaltyError,
                     trainingBatchSizeError: model.trainingBatchSizeError
                 )
@@ -397,6 +400,7 @@ private struct OptimizerTab: View {
     @Binding var weightDecayText: String
     @Binding var policyLossWeightText: String
     @Binding var valueLossWeightText: String
+    @Binding var valueLabelSmoothingText: String
     @Binding var drawPenaltyText: String
     @Binding var trainingBatchSizeText: String
 
@@ -409,6 +413,7 @@ private struct OptimizerTab: View {
     let weightDecayError: Bool
     let policyLossWeightError: Bool
     let valueLossWeightError: Bool
+    let valueLabelSmoothingError: Bool
     let drawPenaltyError: Bool
     let trainingBatchSizeError: Bool
 
@@ -581,6 +586,24 @@ private struct OptimizerTab: View {
                             ),
                             in: 0.0...20.0,
                             step: 0.5
+                        )
+                    }
+                    PopoverRow(
+                        label: "Value label smoothing:",
+                        text: $valueLabelSmoothingText,
+                        error: valueLabelSmoothingError,
+                        placeholder: "0.000",
+                        hint: "ε (W/D/L CE)"
+                    ) {
+                        Stepper(
+                            "",
+                            value: PopoverBindings.doubleBinding(
+                                text: $valueLabelSmoothingText,
+                                fallback: 0.0,
+                                format: "%.3f"
+                            ),
+                            in: 0.0...0.5,
+                            step: 0.05
                         )
                     }
                 }

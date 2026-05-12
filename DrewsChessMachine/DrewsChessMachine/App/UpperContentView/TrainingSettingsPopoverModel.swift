@@ -47,6 +47,7 @@ final class TrainingSettingsPopoverModel {
     var weightDecayText = "" { didSet { weightDecayError = false } }
     var policyLossWeightText = "" { didSet { policyLossWeightError = false } }
     var valueLossWeightText = "" { didSet { valueLossWeightError = false } }
+    var valueLabelSmoothingText = "" { didSet { valueLabelSmoothingError = false } }
     var drawPenaltyText = "" { didSet { drawPenaltyError = false } }
     var trainingBatchSizeText = "" { didSet { trainingBatchSizeError = false } }
 
@@ -59,6 +60,7 @@ final class TrainingSettingsPopoverModel {
     private(set) var weightDecayError = false
     private(set) var policyLossWeightError = false
     private(set) var valueLossWeightError = false
+    private(set) var valueLabelSmoothingError = false
     private(set) var drawPenaltyError = false
     private(set) var trainingBatchSizeError = false
 
@@ -150,6 +152,7 @@ final class TrainingSettingsPopoverModel {
         weightDecayText = String(format: "%.2e", p.weightDecay)
         policyLossWeightText = String(format: "%.2f", p.policyLossWeight)
         valueLossWeightText = String(format: "%.2f", p.valueLossWeight)
+        valueLabelSmoothingText = String(format: "%.3f", p.valueLabelSmoothingEpsilon)
         drawPenaltyText = String(format: "%.3f", p.drawPenalty)
         trainingBatchSizeText = String(p.trainingBatchSize)
         // --- Self Play tab ---
@@ -184,6 +187,7 @@ final class TrainingSettingsPopoverModel {
         weightDecayError = false
         policyLossWeightError = false
         valueLossWeightError = false
+        valueLabelSmoothingError = false
         drawPenaltyError = false
         trainingBatchSizeError = false
         selfPlayWorkersError = false
@@ -447,6 +451,22 @@ final class TrainingSettingsPopoverModel {
             }
         } else {
             valueLossWeightError = true
+            anyError = true
+        }
+
+        // Value-head label smoothing ε — Double in [0, 0.5].
+        if let v = Double(valueLabelSmoothingText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.5, v.isFinite {
+            valueLabelSmoothingError = false
+            if abs(v - p.valueLabelSmoothingEpsilon) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] valueLabelSmoothingEpsilon: %.3f -> %.3f", p.valueLabelSmoothingEpsilon, v)
+                )
+                p.valueLabelSmoothingEpsilon = v
+                trainer?.valueLabelSmoothingEpsilon = Float(v)
+            }
+        } else {
+            valueLabelSmoothingError = true
             anyError = true
         }
 

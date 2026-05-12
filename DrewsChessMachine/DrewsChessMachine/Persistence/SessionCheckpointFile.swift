@@ -185,6 +185,13 @@ struct SessionCheckpointState: Codable, Equatable {
     /// term existed; absent → loader falls through to the user's
     /// current `TrainingParameters.shared.policyLabelSmoothingEpsilon`.
     var policyLabelSmoothingEpsilon: Float?
+    /// Value-head W/D/L cross-entropy label-smoothing coefficient ε in
+    /// effect at save time. ε=0 → hard one-hot on the game result;
+    /// ε>0 → `(1−ε)·oneHot(slot) + ε·(⅓,⅓,⅓)`. Optional for back-compat
+    /// with session files written before the WDL value head landed;
+    /// absent → loader falls through to the user's current
+    /// `TrainingParameters.shared.valueLabelSmoothingEpsilon`.
+    var valueLabelSmoothingEpsilon: Float?
 
     // Replay-ratio controller settings. All Optional so older
     // session.json files that lack these keys still decode.

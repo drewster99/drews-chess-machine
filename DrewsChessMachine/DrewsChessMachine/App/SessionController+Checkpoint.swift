@@ -655,6 +655,7 @@ extension SessionController {
             momentumCoeff: Float(params.momentumCoeff),
             illegalMassPenaltyWeight: Float(params.illegalMassWeight),
             policyLabelSmoothingEpsilon: Float(params.policyLabelSmoothingEpsilon),
+            valueLabelSmoothingEpsilon: Float(params.valueLabelSmoothingEpsilon),
             replayRatioTarget: params.replayRatioTarget,
             replayRatioAutoAdjust: params.replayRatioAutoAdjust,
             stepDelayMs: params.trainingStepDelayMs,
