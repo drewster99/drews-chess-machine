@@ -1340,10 +1340,12 @@ struct UpperContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
             handleWindowWillClose(note: note)
         }
-        .background(MenuHubSyncProbe(
-            signature: menuHubSignature,
-            onSignatureChanged: { syncMenuCommandHubState() }
-        ))
+        // Re-sync the AppKit menu command hub whenever any of the flags that
+        // gate its items changes. Driven off the single `MenuHubSignature`
+        // Equatable so this is one `.onChange`, not the 13-deep chain it used
+        // to be — `body` tolerates it directly now that the surrounding view
+        // is far smaller, so the old `MenuHubSyncProbe` carrier is gone.
+        .onChange(of: menuHubSignature) { syncMenuCommandHubState() }
         .background(ControlSideEffectsProbe(
             playAndTrainBoardMode: $session.playAndTrainBoardMode,
             probeNetworkTarget: $session.probeNetworkTarget,
