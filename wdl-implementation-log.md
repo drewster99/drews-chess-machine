@@ -53,8 +53,7 @@ Concern still open (unchanged from setup): cannot verify *training* works — on
 - **`TrainingAlarmControllerTests`** / **`TrainingParametersTests`** — stale-comment cleanup only (de-tanh the `vAbs` band descriptions; "29 keys" → "36 keys" header). The alarm-detector tests pass unchanged: `rollingValueAbsMean` is still on `Snapshot` and the 0.97/0.999 bands still exercise warning/critical/recovery; a fresh WDL head's `vAbs ≈ 0` is still "healthy" (< 0.97).
 - **Verified unchanged & still green**: `MPSGraphGradientSemanticsTests` (its `valueHead` is a toy `graph.variable`, not `ChessNetwork`'s), `SignConsistencyTests` (no tanh / value-range assertions), `CheckpointManagerRoundTripTests` (encodes & decodes with the same `currentArchHash`, so the `valueHeadClasses` bump is transparent to the round-trip), `MomentumOptimizerTests`. No test asserted a hardcoded archHash literal or a "golden" forward-pass output, so nothing needed re-baselining.
 
-### Stage 3 — docs
-*(pending)*
+Post-`/recheck` (Stage 2): added `testFloatToIntCastTruncatesForDrawPenaltySlot` — pins that MPSGraph's float→int32 cast truncates toward zero (so a fractional `drawPenalty ∈ (0,1)` keeps the value target on the draw slot, not the loss slot); passes ⇒ truncation confirmed, with a failure message documenting the explicit-`floor` remedy if it ever flips. 356/356 green. `/recheck` otherwise confirmed the new tests faithfully replicate the production op chains, the Swift references are correct, nothing is flaky, and no other test needed updating (the stale `./parameters.json` is read by the experiment harness at runtime but by no test — Stage 3).
 
 ### Stage 3 — docs
 *(pending)*

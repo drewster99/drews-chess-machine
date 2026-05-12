@@ -201,6 +201,34 @@ final class ValueHeadWDLTests: XCTestCase {
                        "z=−1 (full draw penalty) should target the loss slot (idx 2)")
     }
 
+    /// Pins the load-bearing assumption that MPSGraph's float→int32 cast
+    /// **truncates toward zero** (not rounds): a fractional draw-penalty
+    /// `drawPenalty ∈ (0, 1)` ⇒ `z ∈ (−1, 0)` ⇒ `1 − z ∈ (1, 2)`, and
+    /// `int(1.7) = 1` (draw slot), `int(1.9) = 1` (draw slot). If
+    /// MPSGraph ever rounds, `int(1.7)` would become 2 (loss slot) and a
+    /// 0.7-penalized draw would be trained as a *loss* — a silent
+    /// behavior change. If this test fails, add an explicit `graph.floor`
+    /// before the int cast in `ChessTrainer.buildTrainingOps` (and in
+    /// `runValueCE` here) and reconsider the intended slot for
+    /// partial-penalty draws.
+    func testFloatToIntCastTruncatesForDrawPenaltySlot() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal not available")
+        }
+        let logits: [[Float]] = [
+            [ 0.2, -0.1,  0.4],
+            [-0.6,  0.3,  0.1],
+        ]
+        // z = −0.7 (1 − z = 1.7) and z = −0.9 (1 − z = 1.9): both must
+        // truncate to slot 1 (draw).
+        let zs: [Float] = [ -0.7, -0.9 ]
+        let got = try runValueCE(device: device, logits: logits, zs: zs, eps: 0.0)
+        let want = logits.map { -Float(log(Double(softmax3($0)[1]))) }.reduce(0, +) / Float(logits.count)
+        XCTAssertEqual(got, want, accuracy: 1e-4,
+                       "fractional draw penalty must keep the value target on the draw slot — "
+                       + "MPSGraph float→int32 cast must truncate toward zero, not round")
+    }
+
     /// ε>0: the loss is the label-smoothed CE
     /// `−Σ_c [(1−ε)·1[c==idx] + ε/3]·log softmax(logits)_c`.
     func testLabelSmoothedCEMatchesReference() throws {
