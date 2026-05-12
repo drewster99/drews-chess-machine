@@ -209,6 +209,76 @@ final class SessionController {
     /// never-deallocated `UpperContentView`.
     weak var checkpoint: CheckpointController?
 
+    // MARK: - Trainer build / config + sampling schedules (Stage 4e)
+
+    /// Ensure the trainer exists, (re)applying all live `TrainingParameters`
+    /// hyperparameters to it. Returns `nil` (and sets `trainingError`) if the
+    /// trainer's MPSGraph build fails on first construction.
+    func ensureTrainer() -> ChessTrainer? {
+        let params = TrainingParameters.shared
+        if let trainer {
+            trainer.learningRate = Float(params.learningRate)
+            trainer.entropyRegularizationCoeff = Float(params.entropyBonus)
+            trainer.drawPenalty = Float(params.drawPenalty)
+            trainer.weightDecayC = Float(params.weightDecay)
+            trainer.gradClipMaxNorm = Float(params.gradClipMaxNorm)
+            trainer.policyLossWeight = Float(params.policyLossWeight)
+            trainer.valueLossWeight = Float(params.valueLossWeight)
+            trainer.illegalMassPenaltyWeight = Float(params.illegalMassWeight)
+            trainer.policyLabelSmoothingEpsilon = Float(params.policyLabelSmoothingEpsilon)
+            trainer.momentumCoeff = Float(params.momentumCoeff)
+            trainer.sqrtBatchScalingForLR = params.sqrtBatchScalingLR
+            trainer.lrWarmupSteps = params.lrWarmupSteps
+            trainer.batchStatsInterval = params.batchStatsInterval
+            return trainer
+        }
+        do {
+            let t = try ChessTrainer(
+                learningRate: Float(params.learningRate),
+                entropyRegularizationCoeff: Float(params.entropyBonus),
+                drawPenalty: Float(params.drawPenalty),
+                weightDecayC: Float(params.weightDecay),
+                gradClipMaxNorm: Float(params.gradClipMaxNorm),
+                policyLossWeight: Float(params.policyLossWeight),
+                valueLossWeight: Float(params.valueLossWeight),
+                illegalMassPenaltyWeight: Float(params.illegalMassWeight),
+                policyLabelSmoothingEpsilon: Float(params.policyLabelSmoothingEpsilon),
+                momentumCoeff: Float(params.momentumCoeff),
+                sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
+                lrWarmupSteps: params.lrWarmupSteps
+            )
+            trainer = t
+            return t
+        } catch {
+            trainingError = "Trainer init failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Build a `SamplingSchedule` for self-play from the live tau parameters.
+    /// Dirichlet noise matches the `.selfPlay` preset (AlphaZero noise) — not
+    /// exposed in the UI; only the temperature schedule is editable.
+    func buildSelfPlaySchedule() -> SamplingSchedule {
+        let params = TrainingParameters.shared
+        return SamplingSchedule(
+            startTau: Float(max(0.01, params.selfPlayStartTau)),
+            decayPerPly: Float(max(0.0, params.selfPlayTauDecayPerPly)),
+            floorTau: Float(max(0.01, params.selfPlayTargetTau)),
+            dirichletNoise: SamplingSchedule.selfPlay.dirichletNoise
+        )
+    }
+
+    /// Build a `SamplingSchedule` for arena play from the live tau parameters.
+    /// Arena never applies Dirichlet noise (pure strength measurement).
+    func buildArenaSchedule() -> SamplingSchedule {
+        let params = TrainingParameters.shared
+        return SamplingSchedule(
+            startTau: Float(max(0.01, params.arenaStartTau)),
+            decayPerPly: Float(max(0.0, params.arenaTauDecayPerPly)),
+            floorTau: Float(max(0.01, params.arenaTargetTau))
+        )
+    }
+
     // MARK: - Build
 
     /// File > Build Network. Belt-and-suspenders guards mirror the menu's

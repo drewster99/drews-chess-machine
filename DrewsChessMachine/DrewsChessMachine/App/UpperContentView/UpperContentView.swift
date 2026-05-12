@@ -1503,12 +1503,12 @@ struct UpperContentView: View {
         // `trainer`, `replayRatioController` are `@State` — reference-backed — so
         // these closures see the current values even when re-evaluated.)
         arenaSettingsPopover.onAfterSave = {
-            samplingScheduleBox?.setArena(buildArenaSchedule())
+            samplingScheduleBox?.setArena(session.buildArenaSchedule())
         }
         trainingSettingsPopover.trainerProvider = { trainer }
         trainingSettingsPopover.replayRatioControllerProvider = { replayRatioController }
         trainingSettingsPopover.pushSelfPlaySchedule = {
-            samplingScheduleBox?.setSelfPlay(buildSelfPlaySchedule())
+            samplingScheduleBox?.setSelfPlay(session.buildSelfPlaySchedule())
         }
         // The auto-resume controller chains into the load-and-start path here.
         autoResume.onResume = { pointer in
@@ -2356,8 +2356,8 @@ struct UpperContentView: View {
             promoteThreshold: trainingParams.arenaPromoteThreshold,
             arenaGames: trainingParams.arenaGamesPerTournament,
             arenaConcurrency: trainingParams.arenaConcurrency,
-            selfPlayTau: TauConfigCodable(samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()),
-            arenaTau: TauConfigCodable(samplingScheduleBox?.arena ?? buildArenaSchedule()),
+            selfPlayTau: TauConfigCodable(samplingScheduleBox?.selfPlay ?? session.buildSelfPlaySchedule()),
+            arenaTau: TauConfigCodable(samplingScheduleBox?.arena ?? session.buildArenaSchedule()),
             selfPlayWorkerCount: trainingParams.selfPlayWorkers,
             gradClipMaxNorm: Float(trainingParams.gradClipMaxNorm),
             weightDecayCoeff: Float(trainingParams.weightDecay),
@@ -3819,7 +3819,7 @@ struct UpperContentView: View {
         // Snapshot the current arena schedule once at tournament start
         // so every game in this arena uses the same tau settings, even
         // if the user edits the fields mid-tournament.
-        let arenaScheduleSnapshot = samplingScheduleBox?.arena ?? buildArenaSchedule()
+        let arenaScheduleSnapshot = samplingScheduleBox?.arena ?? session.buildArenaSchedule()
 
         // --- Concurrent arena: build per-network batchers ---
         //
@@ -4332,8 +4332,8 @@ struct UpperContentView: View {
         championSide: ChessMPSNetwork,
         diversity: GameDiversityTracker.Snapshot
     ) {
-        let sp = samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()
-        let ar = samplingScheduleBox?.arena ?? buildArenaSchedule()
+        let sp = samplingScheduleBox?.selfPlay ?? session.buildSelfPlaySchedule()
+        let ar = samplingScheduleBox?.arena ?? session.buildArenaSchedule()
         let candidateIDStr = candidate.identifier?.description ?? "?"
         let championIDStr = championSide.identifier?.description ?? "?"
         let trainerIDStr = trainer.identifier?.description ?? "?"
@@ -4637,73 +4637,16 @@ struct UpperContentView: View {
     /// the inference network used by Play / Forward Pass — so the inference
     /// network can keep its frozen-stats BN for fast play while the trainer
     /// measures realistic training-step costs through batch-stats BN.
-    private func ensureTrainer() -> ChessTrainer? {
-        if let trainer {
-            trainer.learningRate = Float(trainingParams.learningRate)
-            trainer.entropyRegularizationCoeff = Float(trainingParams.entropyBonus)
-            trainer.drawPenalty = Float(trainingParams.drawPenalty)
-            trainer.weightDecayC = Float(trainingParams.weightDecay)
-            trainer.gradClipMaxNorm = Float(trainingParams.gradClipMaxNorm)
-            trainer.policyLossWeight = Float(trainingParams.policyLossWeight)
-            trainer.valueLossWeight = Float(trainingParams.valueLossWeight)
-            trainer.illegalMassPenaltyWeight = Float(trainingParams.illegalMassWeight)
-            trainer.policyLabelSmoothingEpsilon = Float(trainingParams.policyLabelSmoothingEpsilon)
-            trainer.momentumCoeff = Float(trainingParams.momentumCoeff)
-            trainer.sqrtBatchScalingForLR = trainingParams.sqrtBatchScalingLR
-            trainer.lrWarmupSteps = trainingParams.lrWarmupSteps
-            trainer.batchStatsInterval = trainingParams.batchStatsInterval
-            return trainer
-        }
-        do {
-            let t = try ChessTrainer(
-                learningRate: Float(trainingParams.learningRate),
-                entropyRegularizationCoeff: Float(trainingParams.entropyBonus),
-                drawPenalty: Float(trainingParams.drawPenalty),
-                weightDecayC: Float(trainingParams.weightDecay),
-                gradClipMaxNorm: Float(trainingParams.gradClipMaxNorm),
-                policyLossWeight: Float(trainingParams.policyLossWeight),
-                valueLossWeight: Float(trainingParams.valueLossWeight),
-                illegalMassPenaltyWeight: Float(trainingParams.illegalMassWeight),
-                policyLabelSmoothingEpsilon: Float(trainingParams.policyLabelSmoothingEpsilon),
-                momentumCoeff: Float(trainingParams.momentumCoeff),
-                sqrtBatchScalingForLR: trainingParams.sqrtBatchScalingLR,
-                lrWarmupSteps: trainingParams.lrWarmupSteps
-            )
-            trainer = t
-            return t
-        } catch {
-            trainingError = "Trainer init failed: \(error.localizedDescription)"
-            return nil
-        }
-    }
-
-    /// Build a `SamplingSchedule` for self-play from the live
-    /// `@AppStorage` tau values. Dirichlet noise matches the default
-    /// `.selfPlay` preset (AlphaZero noise) — not exposed in the UI,
-    /// only the temperature schedule is editable.
-    private func buildSelfPlaySchedule() -> SamplingSchedule {
-        SamplingSchedule(
-            startTau: Float(max(0.01, trainingParams.selfPlayStartTau)),
-            decayPerPly: Float(max(0.0, trainingParams.selfPlayTauDecayPerPly)),
-            floorTau: Float(max(0.01, trainingParams.selfPlayTargetTau)),
-            dirichletNoise: SamplingSchedule.selfPlay.dirichletNoise
-        )
-    }
-
-    /// Build a `SamplingSchedule` for arena play from the live
-    /// `@AppStorage` tau values. Arena never applies Dirichlet noise
-    /// (pure strength measurement).
-    private func buildArenaSchedule() -> SamplingSchedule {
-        SamplingSchedule(
-            startTau: Float(max(0.01, trainingParams.arenaStartTau)),
-            decayPerPly: Float(max(0.0, trainingParams.arenaTauDecayPerPly)),
-            floorTau: Float(max(0.01, trainingParams.arenaTargetTau))
-        )
-    }
+    // `session.ensureTrainer()`, `session.buildSelfPlaySchedule()`, `session.buildArenaSchedule()`
+    // moved to `SessionController` in Stage 4e — call them as
+    // `session.ensureTrainer()` / `session.buildSelfPlaySchedule()` /
+    // `session.buildArenaSchedule()`. They only depend on
+    // `TrainingParameters.shared` plus the (now session-owned) `trainer` /
+    // `trainingError`, so the move is closure-free.
 
     private func trainOnce() {
         SessionLogger.shared.log("[BUTTON] Train Once")
-        guard let trainer = ensureTrainer() else { return }
+        guard let trainer = session.ensureTrainer() else { return }
         // Switching modes — clear any stale game/inference output and
         // start a fresh stats run (single-step still uses TrainingRunStats
         // so the formatter has one path to render).
@@ -4732,7 +4675,7 @@ struct UpperContentView: View {
 
     private func startContinuousTraining() {
         SessionLogger.shared.log("[BUTTON] Train Continuous")
-        guard let trainer = ensureTrainer() else { return }
+        guard let trainer = session.ensureTrainer() else { return }
         inferenceResult = nil
         gameWatcher.resetAll()
         gameSnapshot = gameWatcher.snapshot()
@@ -4896,7 +4839,7 @@ struct UpperContentView: View {
         if initialWorkerCount != trainingParams.selfPlayWorkers {
             trainingParams.selfPlayWorkers = initialWorkerCount
         }
-        guard let trainer = ensureTrainer(), let network else { return }
+        guard let trainer = session.ensureTrainer(), let network else { return }
         inferenceResult = nil
         gameWatcher.resetAll()
         gameSnapshot = gameWatcher.snapshot()
@@ -5408,8 +5351,8 @@ struct UpperContentView: View {
         // this box; the self-play driver's slots read at the top of
         // each new game, so the next game played uses the edited
         // values.
-        let spSchedule = buildSelfPlaySchedule()
-        let arSchedule = buildArenaSchedule()
+        let spSchedule = session.buildSelfPlaySchedule()
+        let arSchedule = session.buildArenaSchedule()
         let scheduleBox = SamplingScheduleBox(
             selfPlay: spSchedule,
             arena: arSchedule
@@ -7913,7 +7856,7 @@ struct UpperContentView: View {
 
     private func startSweep() async {
         SessionLogger.shared.log("[BUTTON] Sweep Batch Sizes")
-        guard let trainer = ensureTrainer() else { return }
+        guard let trainer = session.ensureTrainer() else { return }
         inferenceResult = nil
         gameWatcher.resetAll()
         gameSnapshot = gameWatcher.snapshot()
