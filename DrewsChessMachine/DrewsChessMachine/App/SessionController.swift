@@ -53,6 +53,50 @@ final class SessionController {
     /// Built lazily, cached for the app's life.
     var arenaChampionNetwork: ChessMPSNetwork?
 
+    // MARK: - Parallel-worker stats / diversity (Stage 4b)
+
+    /// Live-progress snapshot from the parallel self-play workers, mirrored
+    /// from `parallelWorkerStatsBox` by the UI heartbeat. `nil` outside of a
+    /// Play-and-Train session.
+    var parallelStats: ParallelWorkerStatsBox.Snapshot?
+
+    /// Lock-protected counter box shared across the parallel self-play and
+    /// training worker tasks. Workers call `recordSelfPlayGame` /
+    /// `recordTrainingStep`; the heartbeat polls `snapshot()` and mirrors into
+    /// `parallelStats`. Created on Play-and-Train start, `nil` otherwise.
+    var parallelWorkerStatsBox: ParallelWorkerStatsBox?
+
+    /// Rolling-window game-diversity tracker for self-play. Fed by every
+    /// self-play worker at game end; snapshot polled by the heartbeat for
+    /// display and by the stats logger for `[STATS]` lines. `nil` outside a
+    /// Play-and-Train session.
+    var selfPlayDiversityTracker: GameDiversityTracker?
+
+    // MARK: - Arena coordination boxes (Stage 4b)
+
+    /// Cancellation-aware flag set while an arena tournament is in flight. The
+    /// candidate-test probe checks this and skips firing so probe and arena
+    /// never contend on the candidate inference network. `nil` between
+    /// Play-and-Train sessions.
+    var arenaActiveFlag: ArenaActiveFlag?
+
+    /// Trigger inbox the arena coordinator polls — set by the training
+    /// worker's auto-interval check and by the Run Arena button. `nil` between
+    /// Play-and-Train sessions.
+    var arenaTriggerBox: ArenaTriggerBox?
+
+    /// User-override inbox for an in-flight arena. The Abort / Promote buttons
+    /// (visible only while an arena is running) write to this box;
+    /// `runArenaParallel` polls it to break the game loop early and to branch
+    /// on promote-vs-no-promote once the driver returns. `nil` between
+    /// Play-and-Train sessions.
+    var arenaOverrideBox: ArenaOverrideBox?
+
+    /// `true` while an arena is running — mirror of `arenaActiveFlag` the
+    /// heartbeat maintains for UI purposes (disabling Run Arena, suppressing
+    /// on-screen probe activity).
+    var isArenaRunning: Bool = false
+
     // MARK: - Build
 
     /// The actual network construction. Runs on a detached `.userInitiated`

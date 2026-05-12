@@ -100,48 +100,13 @@ struct UpperContentView: View {
     // workers now share the champion network (`network`) through a
     // `BatchedMoveEvaluationSource` barrier batcher, so N per-worker
     // inference networks are no longer needed.
-    /// Live-progress snapshot from the parallel workers, mirrored
-    /// from `parallelWorkerStatsBox` by the heartbeat. Nil outside of
-    /// Play and Train sessions.
-    @State private var parallelStats: ParallelWorkerStatsBox.Snapshot?
-    /// Lock-protected counter box shared across the parallel self-
-    /// play and training worker tasks. Writers (workers) call
-    /// `recordSelfPlayGame` / `recordTrainingStep`; the UI heartbeat
-    /// polls `snapshot()` and mirrors into `parallelStats` so the
-    /// busy label shows live positions/sec rates.
-    @State private var parallelWorkerStatsBox: ParallelWorkerStatsBox?
-    /// Rolling-window game diversity tracker for self-play. Fed by
-    /// every self-play worker at game end; snapshot polled by the UI
-    /// heartbeat for display and by the stats logger for [STATS] lines.
-    @State private var selfPlayDiversityTracker: GameDiversityTracker?
-
-    /// Latest divergence-ply histogram bars mirrored from
-    /// `selfPlayDiversityTracker` by the UI heartbeat, at the same
-    // Diversity histogram, completed arena events, and the live
-    // arena-start marker live on `chartCoordinator` (see
-    // `ChartCoordinator.swift`). Heartbeat updates them via the
-    // coordinator's `setDiversityHistogramBars(_:)`,
-    // `recordArenaCompleted(_:)`, and `recordArenaStarted(elapsedSec:)`
-    // helpers; `LowerContentView` reads them directly from the
-    // coordinator.
-    /// Shared cancellation-aware flag set while an arena tournament
-    /// is in flight. The Candidate test probe checks this and skips
-    /// firing so probe and arena never contend on the candidate
-    /// inference network.
-    @State private var arenaActiveFlag: ArenaActiveFlag?
-    /// Trigger inbox the arena coordinator polls. Set by the training
-    /// worker's 30-minute auto check and by the Run Arena button.
-    @State private var arenaTriggerBox: ArenaTriggerBox?
-    /// User-override inbox for an in-flight arena. The Abort and
-    /// Promote buttons (visible only while an arena is running) write
-    /// to this box; `runArenaParallel` polls it to break the game
-    /// loop early and to branch on promote-vs-no-promote once the
-    /// driver returns. Nil between Play-and-Train sessions.
-    @State private var arenaOverrideBox: ArenaOverrideBox?
-    /// True while an arena is running — mirror of `arenaActiveFlag`
-    /// maintained by the heartbeat for UI purposes (disabling the
-    /// Run Arena button, suppressing probe activity on screen).
-    @State private var isArenaRunning: Bool = false
+    // The parallel-worker stats (parallelStats / parallelWorkerStatsBox), the
+    // self-play diversity tracker (selfPlayDiversityTracker), and the arena
+    // coordination boxes (arenaActiveFlag / arenaTriggerBox / arenaOverrideBox
+    // / isArenaRunning) moved to SessionController in Stage 4b — accessed via
+    // `session.…`. (Diversity histogram, completed arena events, and the live
+    // arena-start marker still live on `chartCoordinator` — see
+    // ChartCoordinator.swift — and LowerContentView reads them from there.)
 
     /// View-menu toggle: when on, the 76-channel policy panel is
     /// rendered to the right of the chess board, sourced from
@@ -953,7 +918,7 @@ struct UpperContentView: View {
             continuousTraining: continuousTraining,
             sweepRunning: sweepRunning,
             realTraining: realTraining,
-            isArenaRunning: isArenaRunning,
+            isArenaRunning: session.isArenaRunning,
             checkpointSaveInFlight: checkpoint.checkpointSaveInFlight,
             isTrainingOnce: isTrainingOnce,
             isEvaluating: isEvaluating,
@@ -1530,7 +1495,7 @@ struct UpperContentView: View {
         // back them.
         checkpoint.trainingStepsProvider = { trainingStats?.steps }
         checkpoint.totalPositionsAddedProvider = { replayBuffer?.totalPositionsAdded }
-        checkpoint.selfPlayGamesProvider = { parallelStats?.selfPlayGames }
+        checkpoint.selfPlayGamesProvider = { session.parallelStats?.selfPlayGames }
         checkpoint.trainingBoxSnapshotProvider = { trainingBox?.snapshot() }
         // Resume-sheet UX is correctly gated on the window being
         // visible — surfacing a sheet on a hidden window would do
@@ -1706,9 +1671,9 @@ struct UpperContentView: View {
         // compares the fields that advance on self-play and training
         // events; if either has changed (or the rolling-window count
         // has shifted because an entry aged out), push a new snapshot.
-        if let pBox = parallelWorkerStatsBox {
+        if let pBox = session.parallelWorkerStatsBox {
             let snap = await pBox.asyncSnapshot()
-            let prev = parallelStats
+            let prev = session.parallelStats
             // `sessionStart` is included in the dirty check so the
             // one-time shift performed by `markWorkersStarted()` lands
             // in @State immediately, even if no game or training step
@@ -1718,7 +1683,7 @@ struct UpperContentView: View {
             || snap.recentGames != (prev?.recentGames ?? -1)
             || snap.sessionStart != prev?.sessionStart
             if changed {
-                parallelStats = snap
+                session.parallelStats = snap
             }
         }
         elap("after 6")
@@ -1771,7 +1736,7 @@ struct UpperContentView: View {
         // the bucket totals actually change (or the bar array is
         // currently empty) so SwiftUI doesn't invalidate the chart
         // every tick for a stable reading.
-        if let tracker = selfPlayDiversityTracker {
+        if let tracker = session.selfPlayDiversityTracker {
             let divSnap = await tracker.asyncSnapshot()
             let labels = GameDiversityTracker.histogramLabels
             var newBars: [DiversityHistogramBar] = []
@@ -1929,7 +1894,7 @@ struct UpperContentView: View {
         let now = Date()
         // Chart sample elapsed-second axis comes off
         // `chartCoordinator.chartElapsedAnchor`, NOT
-        // `parallelStats.sessionStart` or `checkpoint.currentSessionStart`.
+        // `session.parallelStats.sessionStart` or `checkpoint.currentSessionStart`.
         // The chart anchor is back-dated on session resume so a
         // restored chart trajectory and post-resume samples share
         // one continuous elapsed-sec axis (no visible gap, no
@@ -1939,7 +1904,7 @@ struct UpperContentView: View {
         // sources land in different coordinate spaces and the
         // shared `scrollX` binding parks some sources off-screen
         // (the same bug class an earlier mismatch between
-        // `parallelStats.sessionStart` and the back-dated
+        // `session.parallelStats.sessionStart` and the back-dated
         // `checkpoint.currentSessionStart` originally introduced).
         let elapsed = max(0, now.timeIntervalSince(chartCoordinator.chartElapsedAnchor))
         let trainingSnap: TrainingLiveStatsBox.Snapshot?
@@ -2009,7 +1974,7 @@ struct UpperContentView: View {
             return
         }
 
-        guard let session = parallelStats else { return }
+        guard let session = session.parallelStats else { return }
         // ElapsedSec on chart axis comes off the chart-coordinator's
         // anchor, NOT `session.sessionStart`. See the matching block
         // in `refreshTrainingChartIfNeeded` for full reasoning —
@@ -2299,9 +2264,9 @@ struct UpperContentView: View {
             checkpoint.beginActiveTrainingSegment()
         }
         let now = Date()
-        let sessionStart = checkpoint.currentSessionStart ?? (parallelStats?.sessionStart ?? now)
+        let sessionStart = checkpoint.currentSessionStart ?? (session.parallelStats?.sessionStart ?? now)
         let elapsedSec = max(0, now.timeIntervalSince(sessionStart))
-        let snap = parallelStats
+        let snap = session.parallelStats
         let trainingSnap = trainingStats
         let history = tournamentHistory.map { record in
             ArenaHistoryEntryCodable(
@@ -2475,7 +2440,7 @@ struct UpperContentView: View {
             refuseMenuAction("A save is already in progress. Wait for it to finish.")
             return
         }
-        if isArenaRunning {
+        if session.isArenaRunning {
             refuseMenuAction("Can't save the champion while the arena is running. Wait for it to finish.")
             return
         }
@@ -2586,7 +2551,7 @@ struct UpperContentView: View {
             refuseMenuAction("A save is already in progress. Wait for it to finish.")
             return
         }
-        if isArenaRunning {
+        if session.isArenaRunning {
             refuseMenuAction("Can't save the session while the arena is running. Wait for it to finish.")
             return
         }
@@ -2620,7 +2585,7 @@ struct UpperContentView: View {
     private func handleSaveSessionPeriodic() {
         // Guard against an arena starting in the tiny race window
         // between the controller's decide() and this call.
-        if isArenaRunning {
+        if session.isArenaRunning {
             return
         }
         if checkpoint.checkpointSaveInFlight {
@@ -3270,19 +3235,19 @@ struct UpperContentView: View {
         commandHub.stopAnyContinuous = { stopAnyContinuous() }
         commandHub.runArena = {
             SessionLogger.shared.log("[BUTTON] Run Arena")
-            guard !isArenaRunning else { return }
-            arenaTriggerBox?.trigger()
+            guard !session.isArenaRunning else { return }
+            session.arenaTriggerBox?.trigger()
         }
         commandHub.runEngineDiagnostics = { runEngineDiagnostics() }
         commandHub.runPolicyConditioningDiagnostic = { runPolicyConditioningDiagnostic() }
         commandHub.recoverArenaHistoryFromLogs = { runArenaHistoryRecovery() }
         commandHub.abortArena = {
             SessionLogger.shared.log("[BUTTON] Abort Arena")
-            arenaOverrideBox?.abort()
+            session.arenaOverrideBox?.abort()
         }
         commandHub.promoteCandidate = {
             SessionLogger.shared.log("[BUTTON] Promote")
-            arenaOverrideBox?.promote()
+            session.arenaOverrideBox?.promote()
         }
         commandHub.saveSession = {
             SessionLogger.shared.log("[BUTTON] Save Session")
@@ -3330,7 +3295,7 @@ struct UpperContentView: View {
         commandHub.continuousTraining = continuousTraining
         commandHub.sweepRunning = sweepRunning
         commandHub.realTraining = realTraining
-        commandHub.isArenaRunning = isArenaRunning
+        commandHub.isArenaRunning = session.isArenaRunning
         commandHub.checkpointSaveInFlight = checkpoint.checkpointSaveInFlight
         commandHub.pendingLoadedSessionExists = pendingLoadedSession != nil
         commandHub.canResumeFromAutosave = canResumeFromAutosave
@@ -3552,7 +3517,7 @@ struct UpperContentView: View {
                 // a self-play pause and the probe would race that write.
                 // (The candidate branch above has no such constraint: it
                 // uses a dedicated probe network.)
-                if arenaActiveFlag?.isActive == true { return }
+                if session.arenaActiveFlag?.isActive == true { return }
                 // Probe the champion directly — no sync. The champion is
                 // frozen between promotions, so reading from it through
                 // its own runner is the same path Run Forward Pass uses
@@ -3750,10 +3715,10 @@ struct UpperContentView: View {
         // Mark arena active and seed live progress. Arena-active
         // suppresses the candidate test probe for the duration so
         // probe and arena don't race on the candidate inference
-        // network. isArenaRunning is @State mirror the UI reads to
+        // network. session.isArenaRunning is @State mirror the UI reads to
         // disable the Run Arena button and adjust the busy label.
         arenaFlag.set()
-        isArenaRunning = true
+        session.isArenaRunning = true
         // Let the periodic-save scheduler know an arena is in
         // progress. A 4-hour deadline that crosses while an arena
         // runs will be held as a pending fire and only dispatched
@@ -3768,7 +3733,7 @@ struct UpperContentView: View {
         // Anchors off `chartCoordinator.chartElapsedAnchor` so the
         // arena's x-position lands on the same axis as the training
         // + progress-rate samples. (Routing this off
-        // `parallelStats.sessionStart` instead would put restored
+        // `session.parallelStats.sessionStart` instead would put restored
         // chart data and post-resume arena bands in different
         // coordinate spaces — the back-dated chart axis vs. the
         // fresh per-segment parallel-stats axis.)
@@ -4195,7 +4160,7 @@ struct UpperContentView: View {
         // anchor so the band lands on the same X axis as the
         // time-series charts. (See `recordArenaStarted` site for
         // why this MUST be the chart anchor and not
-        // `parallelStats.sessionStart` — the chart anchor is
+        // `session.parallelStats.sessionStart` — the chart anchor is
         // back-dated on resume so the band lines up with restored
         // chart data; the parallel-stats anchor is intentionally
         // fresh per segment for rate-display.)
@@ -4234,7 +4199,7 @@ struct UpperContentView: View {
         // may not fire for up to an hour at this point in the
         // schedule).
         if promoted {
-            parallelWorkerStatsBox?.resetGameStats()
+            session.parallelWorkerStatsBox?.resetGameStats()
             let trainerIDStr = trainer.identifier?.description ?? "?"
             let championIDStr = champion.identifier?.description ?? "?"
             SessionLogger.shared.log(
@@ -4512,11 +4477,11 @@ struct UpperContentView: View {
     /// `runArenaParallel`. Clears the active flag (so the candidate
     /// probe resumes), clears the live-progress box and mirror (so
     /// the busy label reverts to normal Play and Train mode), and
-    /// resets the UI's `isArenaRunning` mirror.
+    /// resets the UI's `session.isArenaRunning` mirror.
     @MainActor
     private func cleanupArenaState(arenaFlag: ArenaActiveFlag, tBox: TournamentLiveBox) {
         arenaFlag.clear()
-        isArenaRunning = false
+        session.isArenaRunning = false
         tBox.clear()
         tournamentProgress = nil
         // Early-exit cleanup — make sure the live arena band on
@@ -5380,7 +5345,7 @@ struct UpperContentView: View {
         let tBox = TournamentLiveBox()
         tournamentBox = tBox
         let pStatsBox: ParallelWorkerStatsBox
-        if continueMode, let existing = parallelWorkerStatsBox {
+        if continueMode, let existing = session.parallelWorkerStatsBox {
             pStatsBox = existing
             // continueMode preserves the prior box's sessionStart, so
             // the segment baseline must stay where it was — don't
@@ -5425,14 +5390,14 @@ struct UpperContentView: View {
             checkpoint.trainingStepsAtSegmentStart = 0
             pStatsBox = ParallelWorkerStatsBox(sessionStart: Date())
         }
-        parallelWorkerStatsBox = pStatsBox
-        parallelStats = pStatsBox.snapshot()
+        session.parallelWorkerStatsBox = pStatsBox
+        session.parallelStats = pStatsBox.snapshot()
         let spDiversityTracker: GameDiversityTracker
-        if continueMode, let existing = selfPlayDiversityTracker {
+        if continueMode, let existing = session.selfPlayDiversityTracker {
             spDiversityTracker = existing
         } else {
             spDiversityTracker = GameDiversityTracker(windowSize: 200)
-            selfPlayDiversityTracker = spDiversityTracker
+            session.selfPlayDiversityTracker = spDiversityTracker
             chartCoordinator.setDiversityHistogramBars([])
         }
         if !continueMode {
@@ -5499,12 +5464,12 @@ struct UpperContentView: View {
         replayRatioController = ratioController
         let trainingGate = WorkerPauseGate()
         let arenaFlag = ArenaActiveFlag()
-        arenaActiveFlag = arenaFlag
+        session.arenaActiveFlag = arenaFlag
         let triggerBox = ArenaTriggerBox()
-        arenaTriggerBox = triggerBox
+        session.arenaTriggerBox = triggerBox
         let overrideBox = ArenaOverrideBox()
-        arenaOverrideBox = overrideBox
-        isArenaRunning = false
+        session.arenaOverrideBox = overrideBox
+        session.isArenaRunning = false
         realTraining = true
         // Arm the 4-hour periodic-save scheduler. Always construct
         // a fresh controller on each start — a previous stop will
@@ -7054,12 +7019,12 @@ struct UpperContentView: View {
                 trainingAlarm.clear()
                 realTraining = false
                 realTrainingTask = nil
-                isArenaRunning = false
-                arenaActiveFlag = nil
-                arenaTriggerBox = nil
-                arenaOverrideBox = nil
-                parallelWorkerStatsBox = nil
-                parallelStats = nil
+                session.isArenaRunning = false
+                session.arenaActiveFlag = nil
+                session.arenaTriggerBox = nil
+                session.arenaOverrideBox = nil
+                session.parallelWorkerStatsBox = nil
+                session.parallelStats = nil
                 chartCoordinator.setDiversityHistogramBars([])
                 chartCoordinator.arenaChartEvents = []
                 chartCoordinator.cancelActiveArena()
@@ -7160,7 +7125,7 @@ struct UpperContentView: View {
     fileprivate var cumulativeStatusBar: UpperCumulativeStatusBar<some View> {
         let totalSteps = trainingStats?.steps ?? 0
         let hasHistory = checkpoint.cumulativeRunCount > 0 || totalSteps > 0
-        let canRunArena = !isArenaRunning && network != nil && trainer != nil
+        let canRunArena = !session.isArenaRunning && network != nil && trainer != nil
         let totalPositions = totalSteps * trainingParams.trainingBatchSize
         let warmupLR: String? = {
             if let snap = trainerWarmupSnap, snap.inWarmup {
@@ -7198,21 +7163,21 @@ struct UpperContentView: View {
                 )
                 trainingSettingsChip
                 ArenaCountdownChip(
-                    isArenaRunning: isArenaRunning,
+                    isArenaRunning: session.isArenaRunning,
                     countdownText: { now in arenaCountdownText(at: now) },
                     showPopover: $arenaSettingsPopover.isPresented
                 ) {
                     ArenaSettingsPopover(
                         model: arenaSettingsPopover,
-                        nextArenaDate: arenaTriggerBox.map {
+                        nextArenaDate: session.arenaTriggerBox.map {
                             $0.lastArenaTime.addingTimeInterval(trainingParams.arenaAutoIntervalSec)
                         },
                         lastArena: tournamentHistory.last,
-                        isArenaRunning: isArenaRunning,
+                        isArenaRunning: session.isArenaRunning,
                         realTraining: realTraining,
                         onRunNow: {
                             SessionLogger.shared.log("[BUTTON] Run Arena (popover)")
-                            arenaTriggerBox?.trigger()
+                            session.arenaTriggerBox?.trigger()
                             arenaSettingsPopover.isPresented = false
                         },
                         onShowHistory: {
@@ -7438,7 +7403,7 @@ struct UpperContentView: View {
     /// inside so the `TimelineView` schedule below can drive updates
     /// off `context.date` deterministically.
     private func secondsUntilNextArena(at now: Date) -> Double? {
-        guard let box = arenaTriggerBox, realTraining else { return nil }
+        guard let box = session.arenaTriggerBox, realTraining else { return nil }
         let elapsed = now.timeIntervalSince(box.lastArenaTime)
         let interval = trainingParams.arenaAutoIntervalSec
 
@@ -8259,7 +8224,7 @@ struct UpperContentView: View {
                 lines.append("  1m gen rate: \(prodStr)")
                 lines.append("  1m trn rate: \(consStr)")
             }
-            if let divSnap = selfPlayDiversityTracker?.snapshot(),
+            if let divSnap = session.selfPlayDiversityTracker?.snapshot(),
                divSnap.gamesInWindow > 0 {
                 let pctStr = String(format: "%.0f%%", divSnap.uniquePercent)
                 let divStr = String(format: "%.1f", divSnap.avgDivergencePly)
@@ -8314,7 +8279,7 @@ struct UpperContentView: View {
             // `trainingSeconds`, which in those modes IS the session
             // time anyway because the trainer is the only worker.
             let rateDenomSec: Double
-            if let ps = parallelStats {
+            if let ps = session.parallelStats {
                 rateDenomSec = max(0.1, Date().timeIntervalSince(ps.sessionStart))
             } else {
                 rateDenomSec = max(0.1, stats.trainingSeconds)
@@ -8780,7 +8745,7 @@ extension UpperContentView {
 
     var selfPlayStatsColumn: SelfPlayStatsColumn {
         let column: (header: String, body: String)?
-        if realTraining, let session = parallelStats {
+        if realTraining, let session = session.parallelStats {
             column = playAndTrainStatsText(game: gameSnapshot, session: session)
         } else {
             column = nil
