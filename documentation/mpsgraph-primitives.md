@@ -479,6 +479,8 @@ let valueFCOutput2 = graph.addition(
 
 ## Softmax and Tanh
 
+> **Update (2026-05-12): the value head no longer ends in `tanh`.** It now emits 3 raw logits (`FC 64→3`, slot order `[win, draw, loss]`), and the scalar everything downstream reads is the *derived* `v = softMax(logits)·[+1, 0, −1] = p_win − p_loss` — built with `graph.softMax(axis: 1)` then `graph.reductionSum(with:axis:1)` against a `[1,3]` constant `[+1, 0, −1]` — which is naturally in `[−1, +1]` (a difference of two probabilities), so no `tanh`. The value *loss* is `graph.softMaxCrossEntropy(valueLogits, labels: smoothedOneHot, axis: 1, reuctionType: .none)` then `mean` (same op as the policy loss below, just over 3 classes; the one-hot index is `graph.cast(clamp(1 − z), to: .int32)` then `graph.oneHot(depth: 3, axis: 1)`). The `64→1 → tanh` snippet below is the *old* head, kept for the worked example of `tanh`; for the current value head see `chess-engine-design.md` and `wdl-value-head.md`.
+
 ```swift
 // policy head: convert 4096 logits to probabilities summing to 1.0
 let policyOutput = graph.softMax(
@@ -487,7 +489,7 @@ let policyOutput = graph.softMax(
     name: "policy_softmax"
 )
 
-// value head: squash unbounded float to [-1.0, +1.0]
+// value head (OLD — pre-2026-05-12): squash unbounded float to [-1.0, +1.0]
 let valueOutput = graph.tanh(
     with: valueFCOutput2,
     name: "value_tanh"
@@ -496,7 +498,7 @@ let valueOutput = graph.tanh(
 
 **Softmax:** Exponentiates each value then divides by the sum. Result is all-positive, sums to 1.0. The exponentiation amplifies differences — the network's most confident move gets disproportionately more probability, weak moves get squeezed toward zero. Most of the 4096 outputs will be near zero (illegal or obviously bad moves).
 
-**Tanh:** Squashes the entire real line to [-1, 1]. The FC layer could output -47 or +831 — tanh maps everything to the fixed range matching the game outcome encoding (-1 loss, 0 draw, +1 win).
+**Tanh:** Squashes the entire real line to [-1, 1]. The FC layer could output -47 or +831 — tanh maps everything to the fixed range matching the game outcome encoding (-1 loss, 0 draw, +1 win). *(No longer used by the value head — see the update note above.)*
 
 ---
 

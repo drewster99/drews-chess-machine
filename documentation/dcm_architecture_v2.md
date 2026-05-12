@@ -793,6 +793,8 @@ These came up during planning but are explicitly NOT part of this bundle. Record
 
 ### WDL value head (3-class win/draw/loss output)
 
+> **DONE — 2026-05-12 (commits `4c00983` … `29b8597`).** Implemented essentially as described below. The "why deferred / when to revisit" reasoning was overtaken by events: the build-893 fresh-from-random run showed the scalar `tanh` head goes *silent* on a draw-heavy self-play buffer (`vAbs → 0`, `vLoss` flat) and the arena candidate plateaus at ≈parity — so the WDL switch became the fix for an active bottleneck, not a future MCTS-coupled nicety. The actual implementation matched the "implementation cost" estimate closely (FC2 1→3, drop tanh, derived scalar `p_win − p_loss`, MSE→CE, arch-hash bump via a new `valueHeadClasses` constant, `vMean`/`vAbs` kept + `pW`/`pD`/`pL` added, `vBaselineDelta` *removed* rather than re-derived). Two small deviations: a defensive `clamp(slot, 0, 2)` before the one-hot, and the inference path was left scalar (the 3-wide distribution is training-graph-only — no inference call site needed changing). See `wdl-value-head.md` (design), the 2026-05-12 CHANGELOG entry, and `wdl-implementation-log.md` (build-by-build record + deferred follow-ups). The original deferral note is kept below as the historical rationale.
+
 **What:** replace the current scalar `tanh` value head with a 3-logit softmax head outputting `(P_W, P_D, P_L)`. Train against one-hot game outcome with cross-entropy loss. Convert to scalar at inference via `v = P(W) - P(L)` for the advantage baseline and UI displays.
 
 **Why:** distinguishes "certain draw" `(0, 1, 0)` from "uncertain anything" `(0.5, 0, 0.5)` — the scalar head conflates these. Avoids tanh saturation (better gradients near ±1). Tunable inference behavior (draw aversion / draw seeking via weighted scalar conversion). lc0 standard since ~2019; reported ~10-30 Elo gain.
@@ -841,7 +843,7 @@ From `ChessNetwork.swift`:
 | `seReductionRatio` | `4` | SE bottleneck = `channels/4 = 32` |
 | `policyChannels` | `76` | 56 queen-style + 8 knight + 9 underpromotion + 3 queen-promotion |
 | `policySize` | `4864` | `= policyChannels × 64` |
-| Value head | `tanh` scalar | WDL remains deferred |
+| Value head | 3-logit W/D/L softmax + categorical CE | scalar `tanh` removed 2026-05-12; downstream reads derived `v = p_win − p_loss`; `valueHeadClasses = 3` |
 | Total trainable params | ~2.4 M | |
 
 ### Training-loop structure (as built)
@@ -930,10 +932,10 @@ All figures below appear as fields on `TrainStepTiming`, are aggregated in `Trai
 - `policyEntropy` — Shannon entropy over the softmaxed policy, in nats; uniform = `log(4864) ≈ 8.49`
 - `policyNonNegligibleCount` — count of cells with `p > 1/policySize` (displayed as "Above-uniform policy count")
 - `gradGlobalNorm` — pre-clip L2 norm across all trainable vars
-- `valueMean`, `valueAbsMean` — tanh-saturation probe
+- `valueMean`, `valueAbsMean` — mean / mean-abs of the derived value scalar `p_win − p_loss` (post-2026-05-12; was a tanh-saturation probe). `valueProbWin` / `valueProbDraw` / `valueProbLoss` — the W/D/L softmax batch-means (`pW=/pD=/pL=` on `[STATS]`); `pD → 1` is the value-head collapse signature.
 
 **Value-baseline divergence:**
-- `vBaselineDelta` — batch mean of `|v_fresh(s) − v_playtime(s)|`. Rising delta = trainer value head has shifted away from the play-time champion's view. Nil on random-data sweep path.
+- `vBaselineDelta` — *removed 2026-05-12* (it was the only consumer of the replay buffer's stored play-time value; the WDL switch dropped the drift diagnostic, and the trainer's `vBaseline` placeholder is fed entirely from the fresh trainer-forward).
 - `freshBaselineMs` — wall-clock cost of Phase 2.
 
 **Policy health (added by `068f805` / `7757418`):**
