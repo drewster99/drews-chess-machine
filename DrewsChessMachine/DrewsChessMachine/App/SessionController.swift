@@ -389,7 +389,20 @@ final class SessionController {
     /// `handleBodyOnAppear`. `startRealTraining` reads it for the headless path.
     var autoTrainOnLaunch: Bool = false
 
-    // MARK: - Batch-size sweep (Stage 4p)
+    // Batch-size sweep (startSweep / stopSweep / runSweep / sweepStatsText / bytesToGB +
+    // sweepSizes / sweepSecondsPerSize statics) moved to SessionController+Sweep.swift.
+
+    // MARK: - Heartbeat (Stage 4t)
+
+    /// Re-syncs the AppKit menu command hub. Wired to `{ syncMenuCommandHubState() }`.
+    // Engine diagnostics (runEngineDiagnostics / runPolicyConditioningDiagnostic +
+    // their async runners) moved to SessionController+Diagnostics.swift.
+
+    // runArenaHistoryRecovery() moved to SessionController+Arena.swift.
+    /// True while a one-shot log-scan recovery pass is running (disables the
+    /// "Recover from logs" button against overlapping scans; drives a spinner
+    /// in the arena-history sheet header).
+    // MARK: - Batch-size sweep state (Stage 4p)
 
     /// Batch-size-sweep running flag.
     var sweepRunning = false
@@ -403,210 +416,7 @@ final class SessionController {
     var sweepCancelBox: CancelBox?
     /// Device memory caps snapshot taken at sweep start (for the header).
     var sweepDeviceCaps: MetalDeviceMemoryLimits?
-    nonisolated static let sweepSizes: [Int] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
-    nonisolated static let sweepSecondsPerSize: Double = 1.0
 
-    // MARK: - Sweep Actions
-
-    func startSweep() async {
-        SessionLogger.shared.log("[BUTTON] Sweep Batch Sizes")
-        guard let trainer = ensureTrainer() else { return }
-        onResetBoardDisplay()
-        onClearTrainingDisplay()
-        sweepRunning = true
-        // Snapshot device caps once at sweep start so the header has a
-        // stable reference point regardless of what else is running.
-        sweepDeviceCaps = await trainer.currentMetalMemoryLimits()
-
-        let sizes = Self.sweepSizes
-        let secondsPerSize = Self.sweepSecondsPerSize
-        let cancelBox = CancelBox()
-        sweepCancelBox = cancelBox
-
-        sweepTask = Task { [trainer, cancelBox] in
-            // Reset the trainer's internal weights so loss starts fresh
-            // and small batches don't inherit overfit weights from prior
-            // continuous-training runs.
-            do {
-                try await trainer.resetNetwork()
-            } catch {
-                await MainActor.run {
-                    trainingError = "Reset failed: \(error.localizedDescription)"
-                    sweepRunning = false
-                    sweepCancelBox = nil
-                }
-                return
-            }
-
-            let result = await Self.runSweep(
-                trainer: trainer,
-                sizes: sizes,
-                secondsPerSize: secondsPerSize,
-                cancelBox: cancelBox
-            )
-
-            await MainActor.run {
-                // Pull any final completed rows out of the box (the
-                // heartbeat may have a stale cached snapshot).
-                sweepResults = cancelBox.completedRows
-                if case .failure(let error) = result {
-                    trainingError = "Sweep failed: \(error.localizedDescription)"
-                }
-                sweepProgress = nil
-                sweepCancelBox = nil
-                sweepRunning = false
-            }
-        }
-    }
-
-    func stopSweep() {
-        // Flip the box directly — the worker polls this between steps and
-        // breaks out of the loops. Cancelling the Swift Task wouldn't help
-        // because Task.isCancelled doesn't propagate to the unstructured
-        // detached worker we spawned, and the worker doesn't await anything
-        // it could check Task.isCancelled on.
-        sweepCancelBox?.cancel()
-    }
-
-    nonisolated private static func runSweep(
-        trainer: ChessTrainer,
-        sizes: [Int],
-        secondsPerSize: Double,
-        cancelBox: CancelBox
-    ) async -> Result<[SweepRow], Error> {
-        do {
-            return .success(try await trainer.runSweep(
-                sizes: sizes,
-                targetSecondsPerSize: secondsPerSize,
-                cancelled: { cancelBox.isCancelled },
-                progress: { batchSize, stepsSoFar, elapsed in
-                    cancelBox.updateProgress(
-                        SweepProgress(
-                            batchSize: batchSize,
-                            stepsSoFar: stepsSoFar,
-                            elapsedSec: elapsed
-                        )
-                    )
-                },
-                recordPeakSampleNow: {
-                    // Worker-thread sample — guarantees every row gets a
-                    // fresh reading at start and end even if no UI
-                    // heartbeat fired during the row's lifetime.
-                    cancelBox.recordPeakSample(ChessTrainer.currentPhysFootprintBytes())
-                },
-                consumeRowPeak: {
-                    cancelBox.takeRowPeak()
-                },
-                onRowCompleted: { row in
-                    // Worker thread — push the completed row into the box
-                    // so the heartbeat can pick it up. Lets the table grow
-                    // one row at a time as the sweep progresses.
-                    cancelBox.appendRow(row)
-                }
-            ))
-        } catch {
-            return .failure(error)
-        }
-    }
-
-    /// Format the sweep results as a fixed-column monospaced table.
-    /// Updates live as rows complete; after the run finishes, includes
-    /// the throughput peak.
-    func sweepStatsText() -> String {
-        var lines: [String] = []
-        lines.append("Batch Size Sweep (training-mode BN)")
-        lines.append(String(format: "  Target: %.0f s per size", Self.sweepSecondsPerSize))
-        if let caps = sweepDeviceCaps {
-            lines.append(String(
-                format: "  Device:  recommendedMaxWorkingSetSize=%.2f GB,  maxBufferLength=%.2f GB",
-                Self.bytesToGB(caps.recommendedMaxWorkingSet),
-                Self.bytesToGB(caps.maxBufferLength)
-            ))
-            lines.append(String(
-                format: "           currentAllocatedSize=%.2f GB (at sweep start)",
-                Self.bytesToGB(caps.currentAllocated)
-            ))
-        }
-        lines.append("")
-
-        lines.append(" Batch    Warmup    Steps    Time   Avg/step   Avg GPU    Pos/sec     Loss      Peak")
-        lines.append(" -----    ------    -----    ----   --------   -------    -------     ----      ----")
-
-        for row in sweepResults {
-            switch row {
-            case .completed(let r):
-                let posPerSec = Int(r.positionsPerSec.rounded())
-                    .formatted(.number.grouping(.automatic))
-                    .padding(toLength: 9, withPad: " ", startingAt: 0)
-                lines.append(String(
-                    format: "%6d  %7.1f ms %6d %6.1fs  %7.2f ms %7.2f ms  %@  %+.3f  %6.2f GB",
-                    r.batchSize,
-                    r.warmupMs,
-                    r.steps,
-                    r.elapsedSec,
-                    r.avgStepMs,
-                    r.avgGpuMs,
-                    posPerSec,
-                    r.lastLoss,
-                    Self.bytesToGB(r.peakResidentBytes)
-                ))
-            case .skipped(let s):
-                let reason: String
-                if s.exceededWorkingSet && s.exceededBufferLength {
-                    reason = "working-set & buffer cap"
-                } else if s.exceededWorkingSet {
-                    reason = "working-set cap"
-                } else {
-                    reason = "buffer cap"
-                }
-                lines.append(String(
-                    format: "%6d  skipped — est RAM %6.2f GB, max buf %6.2f GB  [%@]",
-                    s.batchSize,
-                    Self.bytesToGB(s.estimatedBytes),
-                    Self.bytesToGB(s.largestBufferBytes),
-                    reason
-                ))
-            }
-        }
-
-        if sweepRunning {
-            lines.append("")
-            if let p = sweepProgress {
-                lines.append(String(
-                    format: "  Running: batch size %d, %d steps, %.1fs",
-                    p.batchSize, p.stepsSoFar, p.elapsedSec
-                ))
-            } else {
-                lines.append("  Starting...")
-            }
-        } else if !sweepResults.isEmpty {
-            let completed: [SweepResult] = sweepResults.compactMap {
-                if case .completed(let r) = $0 { return r } else { return nil }
-            }
-            if let best = completed.max(by: { $0.positionsPerSec < $1.positionsPerSec }) {
-                lines.append("")
-                lines.append(String(
-                    format: "  Best: batch size %d at %d positions/sec",
-                    best.batchSize,
-                    Int(best.positionsPerSec.rounded())
-                ))
-            }
-        }
-
-        return lines.joined(separator: "\n")
-    }
-
-    private static func bytesToGB(_ bytes: UInt64) -> Double {
-        Double(bytes) / 1_073_741_824.0
-    }
-
-    // Engine diagnostics (runEngineDiagnostics / runPolicyConditioningDiagnostic +
-    // their async runners) moved to SessionController+Diagnostics.swift.
-
-    // runArenaHistoryRecovery() moved to SessionController+Arena.swift.
-    /// True while a one-shot log-scan recovery pass is running (disables the
-    /// "Recover from logs" button against overlapping scans; drives a spinner
-    /// in the arena-history sheet header).
     var arenaRecoveryInProgress: Bool = false
 
     // MARK: - Heartbeat display caches (Stage 4s)
@@ -637,9 +447,6 @@ final class SessionController {
     /// Last-computed %GPU over the same interval. `nil` until the 2nd sample.
     var gpuPercent: Double?
 
-    // MARK: - Heartbeat (Stage 4t)
-
-    /// Re-syncs the AppKit menu command hub. Wired to `{ syncMenuCommandHubState() }`.
     var onSyncMenuCommandHubState: () -> Void = { }
     /// Mirrors the live game state into the view's `gameSnapshot @State` for the
     /// on-board display. Wired to `{ gameSnapshot = await gameWatcher.asyncSnapshot() }`.
@@ -1353,8 +1160,15 @@ final class SessionController {
         return playAndTrainBoardMode == .candidateTest
     }
 
-    // MARK: - Candidate-test probe execution + forward-pass inference (Stage 4i)
+    // Candidate-probe execution (fireCandidateProbeIfNeeded / buildCliCandidateTestEvent /
+    // performInference) moved to SessionController+CandidateProbe.swift.
 
+    // MARK: - Demo training (Train Once / Continuous Training) (Stage 4g)
+
+    /// Batch size for the demo "Train Once" / "Continuous Training" buttons
+    /// (training on random data, not self-play). Distinct from
+    /// `TrainingParameters.shared.trainingBatchSize` which the Play-and-Train
+    /// loop uses.
     /// Returns the board state the candidate-test probe should evaluate. Wired
     /// to `UpperContentView`'s `editableState` (the free-placement forward-pass
     /// board) in `handleBodyOnAppear` — that state stays on the view because
@@ -1365,265 +1179,6 @@ final class SessionController {
     /// to `{ inferenceResult = $0 }` on the view.
     var onInferenceResult: (EvaluationResult) -> Void = { _ in }
 
-    /// Fire a candidate-test forward-pass probe if one is due (board edited
-    /// since last probe, or the cadence interval elapsed) and the preconditions
-    /// hold (candidate-test active, probe runner + network built, trainer up).
-    /// Called from the Play-and-Train driver's trainer loop at natural gap
-    /// points. The probe runs on a detached task so it never stalls the main
-    /// actor; on the `.candidate` path it first snapshots the trainer's current
-    /// weights into the dedicated probe inference network (so the probe can run
-    /// concurrently with an active arena, which reads `candidateInferenceNetwork`,
-    /// a different object). On the `.champion` path it reads the frozen champion
-    /// directly, skipping if an arena is running (the promotion step briefly
-    /// writes into the champion under a self-play pause and the probe would race
-    /// that write).
-    func fireCandidateProbeIfNeeded() async {
-        guard
-            isCandidateTestActive,
-            let trainer,
-            let probeRunner = probeRunner,
-            let probeInference = probeInferenceNetwork,
-            let championRunner = runner
-        else { return }
-        let now = Date()
-        let dirty = candidateProbeDirty
-        let intervalElapsed = now.timeIntervalSince(lastCandidateProbeTime)
-            >= TrainingParameters.shared.candidateProbeIntervalSec
-        guard dirty || intervalElapsed else { return }
-
-        let state = editableStateProvider()
-        let target = probeNetworkTarget
-        let result: EvaluationResult
-        do {
-            switch target {
-            case .candidate:
-                // Snapshot the trainer's current state into the probe inference
-                // network, then immediately run the probe. Doing the ~11.6 MB
-                // trainer → probe copy here — not after every training block —
-                // means it happens only when the probe is actually about to
-                // fire. The probe network is dedicated; the only potentially
-                // concurrent op is `trainer.network.exportWeights` during an
-                // arena's own trainer-snapshot step — both reads under the
-                // network's internal lock, safe. Detached so MainActor isn't
-                // stalled.
-                result = try await Task.detached(priority: .userInitiated) {
-                    let weights = try await trainer.network.exportWeights()
-                    try await probeInference.loadWeights(weights)
-                    return await Self.performInference(with: probeRunner, state: state)
-                }.value
-                // Transient read-only snapshot — inherit the trainer's ID
-                // rather than minting (arena snapshots do mint; see runArenaParallel).
-                probeInference.identifier = trainer.identifier
-            case .champion:
-                if arenaActiveFlag?.isActive == true { return }
-                result = await Task.detached(priority: .userInitiated) {
-                    await Self.performInference(with: championRunner, state: state)
-                }.value
-            }
-        } catch {
-            // Leave probe state unchanged so the previous result stays on
-            // screen; the next gap-point call retries.
-            return
-        }
-        onInferenceResult(result)
-        candidateProbeDirty = false
-        lastCandidateProbeTime = Date()
-        candidateProbeCount += 1
-        // CLI-mode capture: append this probe's diagnostics if an output JSON
-        // is configured. No-op in interactive runs; skipped on a failed pass.
-        if let recorder = cliRecorder,
-           let inf = result.rawInference,
-           let sessionStart = checkpoint?.currentSessionStart {
-            let elapsed = Date().timeIntervalSince(sessionStart)
-            let event = buildCliCandidateTestEvent(
-                elapsedSec: elapsed,
-                probeIndex: candidateProbeCount,
-                target: target,
-                state: state,
-                inference: inf
-            )
-            recorder.appendCandidateTest(event)
-        }
-    }
-
-    /// Build a `CliTrainingRecorder.CandidateTest` from a finished forward-pass
-    /// result — the same on-screen policy diagnostics (top-100 sum,
-    /// above-uniform count, legal-mass sum, min/max) plus a structured top-10,
-    /// mirroring `performInference` so the JSON and the UI stay in sync.
-    nonisolated private func buildCliCandidateTestEvent(
-        elapsedSec: Double,
-        probeIndex: Int,
-        target: ProbeNetworkTarget,
-        state: GameState,
-        inference: ChessRunner.InferenceResult
-    ) -> CliTrainingRecorder.CandidateTest {
-        let policy = inference.policy
-        let sum = Double(policy.reduce(0, +))
-        let top100Sum = Double(policy.sorted(by: >).prefix(100).reduce(0, +))
-        let minP = Double(policy.min() ?? 0)
-        let maxP = Double(policy.max() ?? 0)
-        let legalMoves = MoveGenerator.legalMoves(for: state)
-        let nLegal = max(1, legalMoves.count)
-        let legalUniformThreshold = 1.0 / Double(nLegal)
-        let legalIndices = legalMoves
-            .map { PolicyEncoding.policyIndex($0, currentPlayer: state.currentPlayer) }
-        let abovePerLegalCount = legalIndices.filter { idx in
-            idx >= 0 && idx < policy.count
-                && Double(policy[idx]) > legalUniformThreshold
-        }.count
-        let legalMassSum: Double = legalIndices.reduce(0.0) { acc, idx in
-            (idx >= 0 && idx < policy.count) ? acc + Double(policy[idx]) : acc
-        }
-        let top10 = ChessRunner.extractTopMoves(
-            from: policy,
-            state: state,
-            pieces: state.board,
-            count: 10
-        )
-        let topMovesOut: [CliTrainingRecorder.CandidateTest.TopMove] = top10.enumerated().map { (rank, mv) in
-            CliTrainingRecorder.CandidateTest.TopMove(
-                rank: rank + 1,
-                from: BoardEncoder.squareName(mv.fromRow * 8 + mv.fromCol),
-                to: BoardEncoder.squareName(mv.toRow * 8 + mv.toCol),
-                fromRow: mv.fromRow,
-                fromCol: mv.fromCol,
-                toRow: mv.toRow,
-                toCol: mv.toCol,
-                probability: Double(mv.probability),
-                isLegal: mv.isLegal
-            )
-        }
-        let stats = CliTrainingRecorder.CandidateTest.PolicyStats(
-            sum: sum,
-            top100Sum: top100Sum,
-            aboveUniformCount: abovePerLegalCount,
-            legalMoveCount: legalMoves.count,
-            legalUniformThreshold: legalUniformThreshold,
-            legalMassSum: legalMassSum,
-            illegalMassSum: max(0.0, 1.0 - legalMassSum),
-            min: minP,
-            max: maxP
-        )
-        let targetStr: String
-        switch target {
-        case .candidate: targetStr = "candidate"
-        case .champion: targetStr = "champion"
-        }
-        return CliTrainingRecorder.CandidateTest(
-            elapsedSec: elapsedSec,
-            probeIndex: probeIndex,
-            probeNetworkTarget: targetStr,
-            inferenceTimeMs: inference.inferenceTimeMs,
-            valueHead: CliTrainingRecorder.CandidateTest.ValueHead(output: Double(inference.value)),
-            policyHead: CliTrainingRecorder.CandidateTest.PolicyHead(
-                policyStats: stats,
-                topRaw: topMovesOut
-            )
-        )
-    }
-
-    /// Run a single forward pass through `runner` for `state` and assemble the
-    /// `EvaluationResult` (top moves, the formatted text panel, the input
-    /// tensor, the raw inference). `nonisolated` — called from detached tasks
-    /// by `fireCandidateProbeIfNeeded` and by `UpperContentView`'s Run Forward
-    /// Pass.
-    nonisolated static func performInference(
-        with runner: ChessRunner,
-        state: GameState
-    ) async -> EvaluationResult {
-        var lines: [String] = []
-        var topMoves: [MoveVisualization] = []
-        var rawInference: ChessRunner.InferenceResult? = nil
-        let board = BoardEncoder.encode(state)
-
-        do {
-            let inference = try await runner.evaluate(board: board, state: state, pieces: state.board)
-            topMoves = inference.topMoves
-            rawInference = inference
-
-            lines.append(String(format: "Forward pass: %.2f ms", inference.inferenceTimeMs))
-            lines.append("")
-            lines.append("Value Head")
-            lines.append(String(format: "  Output: %+.6f", inference.value))
-            // Removed the (v+1)/2 → "X% win / Y% loss" line. With a single
-            // tanh scalar (no WDL output) and a non-zero draw penalty in
-            // training, that mapping was misleading. Just show the raw value.
-            lines.append("")
-            lines.append("Policy Head (Top 4 raw — includes illegal)")
-            // The list deliberately includes illegal candidates so we can see
-            // whether the network has learned move-validity.
-            for (rank, move) in inference.topMoves.enumerated() {
-                let fromName = BoardEncoder.squareName(move.fromRow * 8 + move.fromCol)
-                let toName = BoardEncoder.squareName(move.toRow * 8 + move.toCol)
-                let promoSuffix: String
-                switch move.promotion {
-                case .queen:  promoSuffix = "=Q"
-                case .rook:   promoSuffix = "=R"
-                case .bishop: promoSuffix = "=B"
-                case .knight: promoSuffix = "=N"
-                default:      promoSuffix = ""
-                }
-                let rankCol = String(rank + 1).padding(toLength: 4, withPad: " ", startingAt: 0)
-                let moveCol = "\(fromName)-\(toName)\(promoSuffix)".padding(toLength: 10, withPad: " ", startingAt: 0)
-                let legalMark = move.isLegal ? "" : "  (illegal)"
-                lines.append("  \(rankCol)\(moveCol)\(String(format: "%.6f%%", move.probability * 100))\(legalMark)")
-            }
-            // Sum of the top-100 move probabilities — a cheap scalar that
-            // changes visibly between probes even when the top-4 ordering is stable.
-            let top100Sum = inference.policy.sorted(by: >).prefix(100).reduce(0, +)
-            lines.append(String(format: "  Top 100 sum: %.6f%%", top100Sum * 100))
-            lines.append("")
-            lines.append("Policy Stats")
-            lines.append(String(format: "  Sum: %.8f", inference.policy.reduce(0, +)))
-            // Legality-aware "above-uniform" count for THIS position: how many
-            // legal moves the network gives mass above `1 / N_legal`.
-            let legalMoves = MoveGenerator.legalMoves(for: state)
-            let nLegal = max(1, legalMoves.count)
-            let legalUniformThreshold = 1.0 / Float(nLegal)
-            let abovePerLegalCount = legalMoves
-                .map { PolicyEncoding.policyIndex($0, currentPlayer: state.currentPlayer) }
-                .filter { idx in
-                    idx >= 0 && idx < inference.policy.count
-                        && inference.policy[idx] > legalUniformThreshold
-                }
-                .count
-            lines.append(String(
-                format: "  Legal moves above uniform (%.3f%%): %d / %d  (threshold = 1/legalCount = 1/%d)",
-                Double(legalUniformThreshold) * 100,
-                abovePerLegalCount, nLegal, nLegal
-            ))
-            // Total mass on legal moves vs illegal — at convergence,
-            // mass-on-illegal should approach zero.
-            let legalMassSum = legalMoves
-                .map { PolicyEncoding.policyIndex($0, currentPlayer: state.currentPlayer) }
-                .reduce(Float(0)) { acc, idx in
-                    (idx >= 0 && idx < inference.policy.count) ? acc + inference.policy[idx] : acc
-                }
-            lines.append(String(format: "  Legal mass sum: %.6f%%   (illegal = %.6f%%)",
-                                Double(legalMassSum) * 100,
-                                Double(1 - legalMassSum) * 100))
-            if let maxProb = inference.policy.max(), let minProb = inference.policy.min() {
-                lines.append(String(format: "  Min: %.8f", minProb))
-                lines.append(String(format: "  Max: %.8f", maxProb))
-            }
-        } catch {
-            lines.append("Error: \(error.localizedDescription)")
-        }
-
-        return EvaluationResult(
-            topMoves: topMoves,
-            textOutput: lines.joined(separator: "\n"),
-            inputTensor: board,
-            rawInference: rawInference
-        )
-    }
-
-    // MARK: - Demo training (Train Once / Continuous Training) (Stage 4g)
-
-    /// Batch size for the demo "Train Once" / "Continuous Training" buttons
-    /// (training on random data, not self-play). Distinct from
-    /// `TrainingParameters.shared.trainingBatchSize` which the Play-and-Train
-    /// loop uses.
     nonisolated static let trainingBatchSize = 4096
 
     /// Rolling-window size for the live-loss averages in `TrainingLiveStatsBox`.
