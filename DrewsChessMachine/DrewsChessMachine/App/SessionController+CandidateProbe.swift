@@ -191,21 +191,22 @@ extension SessionController {
 
         do {
             let inference = try await runner.evaluate(board: board, state: state, pieces: state.board)
+            // Second forward pass for the full W/D/L distribution — the
+            // closure path `runner.evaluate(...)` returns only the
+            // derived scalar `p_win − p_loss`, which can't be inverted
+            // back to `(p_win, p_draw, p_loss)`. Cheap here (a probe
+            // fires a handful of positions per interval), but it does
+            // re-run the trunk, so it's a diagnostics-only call.
+            let valueWDL = try await runner.evaluateValueDistribution(board: board)
             topMoves = inference.topMoves
             rawInference = inference
 
             lines.append(String(format: "Forward pass: %.2f ms", inference.inferenceTimeMs))
             lines.append("")
             lines.append("Value Head")
-            lines.append(String(format: "  Output: %+.6f", inference.value))
-            // No "X% win / Y% loss" breakdown here: `inference.value` is
-            // the derived scalar `p_win − p_loss` (the inference path
-            // returns only the scalar, not the W/D/L distribution), and
-            // you can't recover `(p_win, p_draw, p_loss)` from one
-            // number. Just show the raw value. (Pre-WDL this line showed
-            // `(v+1)/2` as a fake win%, which was dishonest; it stays
-            // gone — if a future feature needs the distribution at
-            // inference time, expose it on the inference path then.)
+            lines.append(String(format: "  Output:  %+.6f   (= p_win − p_loss)", inference.value))
+            lines.append(String(format: "  W/D/L:   %.1f%% win  /  %.1f%% draw  /  %.1f%% loss",
+                                valueWDL.win * 100, valueWDL.draw * 100, valueWDL.loss * 100))
             lines.append("")
             lines.append("Policy Head (Top 4 raw — includes illegal)")
             // The list deliberately includes illegal candidates so we can see

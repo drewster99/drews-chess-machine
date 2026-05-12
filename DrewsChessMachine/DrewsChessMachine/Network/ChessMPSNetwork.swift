@@ -202,12 +202,21 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// (closure-validity window, non-throwing requirement).
     ///
     /// - Parameter board: `inputPlanes`×8×8 = 1,280 floats (from `BoardEncoder.encode`).
-    /// - Parameter consume: receives `policySize` (4,864) raw policy logits and the derived scalar value `p_win − p_loss ∈ [−1, +1]` (the W/D/L head's softmax · `[+1, 0, −1]`; the W/D/L distribution itself is not exposed at inference).
+    /// - Parameter consume: receives `policySize` (4,864) raw policy logits and the derived scalar value `p_win − p_loss ∈ [−1, +1]` (the W/D/L head's softmax · `[+1, 0, −1]`). The full `(p_win, p_draw, p_loss)` distribution is not carried by this closure — call `evaluateValueDistribution(board:)` for that.
     func evaluate(
         board: [Float],
         consume: @Sendable @escaping (UnsafeBufferPointer<Float>, Float) -> Void
     ) async throws {
         try await network.evaluate(board: board, consume: consume)
+    }
+
+    /// Forward-only pass returning the value head's W/D/L softmax
+    /// `(p_win, p_draw, p_loss)` for a single position — passthrough to
+    /// `ChessNetwork.evaluateValueDistribution(board:)`. For diagnostics
+    /// (the candidate-test probe / Run Forward Pass panel); the hot
+    /// inference paths use the scalar via `evaluate(board:consume:)`.
+    func evaluateValueDistribution(board: [Float]) async throws -> (win: Float, draw: Float, loss: Float) {
+        try await network.evaluateValueDistribution(board: board)
     }
 
     /// Run a batched forward pass and hand the policy/value readback to

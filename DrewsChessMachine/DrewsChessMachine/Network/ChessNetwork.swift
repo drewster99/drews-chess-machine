@@ -250,6 +250,11 @@ final class ChessNetwork: @unchecked Sendable {
     /// policy scratch; returned to the caller by value rather than as a
     /// pointer, so the aliasing concern does not apply there.
     private let inferenceValueScratchPtr: UnsafeMutablePointer<Float>
+    /// Readback scratch for the 3-wide W/D/L softmax — used only by
+    /// `evaluateValueDistribution(board:)` (a diagnostics path; the
+    /// universal inference closures carry only the derived scalar).
+    /// Capacity 3, returned to the caller by value.
+    private let inferenceValueProbsScratchPtr: UnsafeMutablePointer<Float>
 
     /// Zero-filled `[1, inputPlanes, 8, 8]` feed shared by `exportWeights()` and
     /// `loadWeights(_:)` to satisfy MPSGraph's requirement that every
@@ -500,6 +505,9 @@ final class ChessNetwork: @unchecked Sendable {
         let valueScratch = UnsafeMutablePointer<Float>.allocate(capacity: 1)
         valueScratch.initialize(repeating: 0, count: 1)
         inferenceValueScratchPtr = valueScratch
+        let valueProbsScratch = UnsafeMutablePointer<Float>.allocate(capacity: Self.valueHeadClasses)
+        valueProbsScratch.initialize(repeating: 0, count: Self.valueHeadClasses)
+        inferenceValueProbsScratchPtr = valueProbsScratch
     }
 
     deinit {
@@ -507,6 +515,8 @@ final class ChessNetwork: @unchecked Sendable {
         inferencePolicyScratchPtr.deallocate()
         inferenceValueScratchPtr.deinitialize(count: 1)
         inferenceValueScratchPtr.deallocate()
+        inferenceValueProbsScratchPtr.deinitialize(count: Self.valueHeadClasses)
+        inferenceValueProbsScratchPtr.deallocate()
         if let ptr = batchPolicyScratchPtr {
             ptr.deinitialize(count: batchPolicyScratchCapacity)
             ptr.deallocate()
@@ -605,6 +615,48 @@ final class ChessNetwork: @unchecked Sendable {
     ) throws {
         try board.withUnsafeBufferPointer { buf in
             try internalEvaluate(board: buf, consume: consume)
+        }
+    }
+
+    /// Forward-only pass returning the value head's W/D/L softmax
+    /// `(p_win, p_draw, p_loss)` for a single position. Separate from
+    /// `evaluate(board:consume:)` because the universal inference path
+    /// returns only the *derived scalar* `p_win − p_loss`; this is for
+    /// diagnostics (the candidate-test probe / Run Forward Pass panel)
+    /// that want the full distribution. Runs on the network's
+    /// `executionQueue`, inside an `autoreleasepool`, like `evaluate`.
+    /// Returns immediately after the readback — does not invoke a
+    /// closure (the three floats are cheap to return by value).
+    func evaluateValueDistribution(board: [Float]) async throws -> (win: Float, draw: Float, loss: Float) {
+        try await enqueue {
+            try self.internalEvaluateValueDistribution(board: board)
+        }
+    }
+
+    private func internalEvaluateValueDistribution(board: [Float]) throws -> (win: Float, draw: Float, loss: Float) {
+        let expected = 1 * Self.inputPlanes * Self.boardSize * Self.boardSize
+        guard board.count == expected else {
+            throw ChessNetworkError.boardSizeMismatch(expected: expected, got: board.count)
+        }
+        return try board.withUnsafeBufferPointer { buf in
+            try autoreleasepool {
+                Self.writeInferenceInput(buf, into: inferenceInputNDArray)
+                let results = graph.run(
+                    with: commandQueue,
+                    feeds: inferenceFeeds,
+                    targetTensors: [valueProbs],
+                    targetOperations: nil
+                )
+                guard let probsData = results[valueProbs] else {
+                    throw ChessNetworkError.outputMissing("valueProbs")
+                }
+                Self.readFloats(from: probsData, into: inferenceValueProbsScratchPtr, count: Self.valueHeadClasses)
+                return (
+                    win: inferenceValueProbsScratchPtr[0],
+                    draw: inferenceValueProbsScratchPtr[1],
+                    loss: inferenceValueProbsScratchPtr[2]
+                )
+            }
         }
     }
 

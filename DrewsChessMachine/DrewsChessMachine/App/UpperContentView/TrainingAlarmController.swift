@@ -3,14 +3,19 @@ import SwiftUI
 /// Owns the in-app training-alarm subsystem, lifted out of `UpperContentView`.
 ///
 /// Two raise paths feed the single banner:
-///   - **Divergence detector** (`evaluate(from:)`): called every heartbeat tick
-///     with the latest chart sample. Tracks consecutive warning / critical /
-///     recovery streaks of (low policy entropy, high gradient norm) and
-///     raises a `.warning` or `.critical` alarm once a streak threshold is hit;
+///   - **`evaluate(from:)` family** — called every heartbeat tick with the
+///     latest chart sample; runs three streak-based detectors against it:
+///     (1) **divergence** — low policy entropy + high gradient norm;
+///     (2) **value-head saturation** — `vAbs → 1` (the W/D/L head calling
+///     almost every position a clean win/loss); (3) **value-head draw
+///     collapse** — `pD → 1` (the head calling everything a draw — the
+///     failure the W/D/L representation was adopted to escape). Each tracks
+///     consecutive warning / critical / recovery streaks and raises a
+///     `.warning` or `.critical` alarm once a streak threshold is hit;
 ///     auto-clears once a healthy-reading streak is reached — but only if the
-///     banner currently shows one of *its own* titles (so it never wipes an
-///     alarm raised by the legal-mass-collapse detector, which runs on its own
-///     cadence and calls `raise(...)` directly).
+///     banner currently shows one of *that detector's own* titles (so a
+///     recovery in one detector never wipes an alarm another detector — or
+///     the legal-mass-collapse probe below — raised).
 ///   - **Other detectors** (e.g. the legal-mass-collapse probe inside
 ///     `startRealTraining`): call `raise(severity:title:detail:)` directly.
 ///
@@ -68,6 +73,27 @@ final class TrainingAlarmController {
     nonisolated static let valueAbsMeanSaturationConsecutiveCriticalSamples: Int = 2
     nonisolated static let valueAbsMeanSaturationRecoverySamples: Int = 10
 
+    /// Value-head **draw-collapse** thresholds — `pD = mean(p_draw)`,
+    /// the batch-mean of the W/D/L head's softmax draw probability.
+    /// This is the failure mode the W/D/L representation was adopted to
+    /// escape (and the one the old scalar `tanh` head fell into on a
+    /// draw-heavy buffer): the head learns "every position is a draw"
+    /// (`pD → 1`, `p_win ≈ p_loss ≈ 0`, `vAbs → 0`) and stops supplying
+    /// a useful policy-gradient baseline / value signal. A fresh head
+    /// starts at `pD = 0.75` (the `[0, ln 6, 0]` bias init) and healthy
+    /// training pulls it *down* as the head learns to call decisive
+    /// games; a sustained `pD` well *above* the fresh-init level is the
+    /// regression-toward-collapse signal. Warning at 0.92 (comfortably
+    /// above 0.75 and any plausible healthy value on a draw-heavy
+    /// buffer), critical at 0.97 (basically degenerate). Distinct from
+    /// `valueAbsMeanSaturation` above, which catches the *opposite*
+    /// extreme (`vAbs → 1`, over-confident win/loss everywhere).
+    nonisolated static let valueDrawCollapseWarningThreshold: Double = 0.92
+    nonisolated static let valueDrawCollapseCriticalThreshold: Double = 0.97
+    nonisolated static let valueDrawCollapseConsecutiveWarningSamples: Int = 3
+    nonisolated static let valueDrawCollapseConsecutiveCriticalSamples: Int = 2
+    nonisolated static let valueDrawCollapseRecoverySamples: Int = 10
+
     /// Alarm titles owned by `evaluate(from:)`. Anchored as named constants so
     /// the raise path and the ownership-scoped auto-clear check can't drift
     /// apart.
@@ -75,6 +101,8 @@ final class TrainingAlarmController {
     nonisolated static let divergenceWarningAlarmTitle = "Training Divergence Warning"
     nonisolated static let valueAbsMeanSaturationCriticalAlarmTitle = "Critical Value-Head Saturation"
     nonisolated static let valueAbsMeanSaturationWarningAlarmTitle = "Value-Head Saturation Warning"
+    nonisolated static let valueDrawCollapseCriticalAlarmTitle = "Critical Value-Head Draw Collapse"
+    nonisolated static let valueDrawCollapseWarningAlarmTitle = "Value-Head Draw Collapse Warning"
 
     // MARK: - Observable state (read by the banner)
 
@@ -89,6 +117,9 @@ final class TrainingAlarmController {
     private var valueAbsMeanSaturationWarningStreak = 0
     private var valueAbsMeanSaturationCriticalStreak = 0
     private var valueAbsMeanSaturationRecoveryStreak = 0
+    private var valueDrawCollapseWarningStreak = 0
+    private var valueDrawCollapseCriticalStreak = 0
+    private var valueDrawCollapseRecoveryStreak = 0
     private var alarmSoundTask: Task<Void, Never>?
 
     // MARK: - Divergence detector
@@ -98,16 +129,19 @@ final class TrainingAlarmController {
     func evaluate(from sample: TrainingChartSample) {
         evaluate(rollingPolicyEntropy: sample.rollingPolicyEntropy,
                  rollingGradNorm: sample.rollingGradNorm,
-                 rollingValueAbsMean: sample.rollingValueAbsMean)
+                 rollingValueAbsMean: sample.rollingValueAbsMean,
+                 rollingValueProbDraw: sample.rollingValueProbDraw)
     }
 
     /// Core of `evaluate(from:)`, split out so tests can drive it with the
     /// rolling-window values directly (no `TrainingChartSample` to construct).
     func evaluate(rollingPolicyEntropy entropy: Double?,
                   rollingGradNorm gradNorm: Double?,
-                  rollingValueAbsMean valueAbsMean: Double? = nil) {
+                  rollingValueAbsMean valueAbsMean: Double? = nil,
+                  rollingValueProbDraw valueProbDraw: Double? = nil) {
         evaluateDivergence(entropy: entropy, gradNorm: gradNorm)
         evaluateValueAbsMeanSaturation(valueAbsMean: valueAbsMean)
+        evaluateValueDrawCollapse(valueProbDraw: valueProbDraw)
     }
 
     private func evaluateDivergence(entropy: Double?, gradNorm: Double?) {
@@ -214,6 +248,57 @@ final class TrainingAlarmController {
         }
     }
 
+    /// Value-head **draw-collapse** detector. Symmetric to the saturation
+    /// detector but keyed off `rollingValueProbDraw` (high = bad — the
+    /// head is heading toward "everything is a draw"). A `nil` value
+    /// resets the streaks defensively so a run of nils never auto-clears
+    /// a previously-raised banner. Ownership-scoped auto-clear uses the
+    /// draw-collapse titles so it never wipes a different detector's banner.
+    private func evaluateValueDrawCollapse(valueProbDraw: Double?) {
+        guard let pD = valueProbDraw else {
+            valueDrawCollapseWarningStreak = 0
+            valueDrawCollapseCriticalStreak = 0
+            valueDrawCollapseRecoveryStreak = 0
+            return
+        }
+        let critical = pD >= Self.valueDrawCollapseCriticalThreshold
+        let warning = pD >= Self.valueDrawCollapseWarningThreshold
+        if critical {
+            valueDrawCollapseCriticalStreak += 1
+            valueDrawCollapseWarningStreak = 0
+            valueDrawCollapseRecoveryStreak = 0
+        } else if warning {
+            valueDrawCollapseWarningStreak += 1
+            valueDrawCollapseCriticalStreak = 0
+            valueDrawCollapseRecoveryStreak = 0
+        } else {
+            valueDrawCollapseCriticalStreak = 0
+            valueDrawCollapseWarningStreak = 0
+            valueDrawCollapseRecoveryStreak += 1
+        }
+
+        if valueDrawCollapseCriticalStreak >= Self.valueDrawCollapseConsecutiveCriticalSamples {
+            raise(
+                severity: .critical,
+                title: Self.valueDrawCollapseCriticalAlarmTitle,
+                detail: Self.valueDrawCollapseAlarmDetail(valueProbDraw: pD)
+            )
+        } else if valueDrawCollapseWarningStreak >= Self.valueDrawCollapseConsecutiveWarningSamples {
+            raise(
+                severity: .warning,
+                title: Self.valueDrawCollapseWarningAlarmTitle,
+                detail: Self.valueDrawCollapseAlarmDetail(valueProbDraw: pD)
+            )
+        } else if valueDrawCollapseRecoveryStreak >= Self.valueDrawCollapseRecoverySamples {
+            let activeTitle = active?.title
+            let isOurs = activeTitle == Self.valueDrawCollapseCriticalAlarmTitle
+                || activeTitle == Self.valueDrawCollapseWarningAlarmTitle
+            if isOurs {
+                clear()
+            }
+        }
+    }
+
     private static func divergenceAlarmDetail(entropy: Double?, gradNorm: Double?) -> String {
         let entropyStr = entropy.map { String(format: "%.4f", $0) } ?? "--"
         let gradStr = gradNorm.map { String(format: "%.3f", $0) } ?? "--"
@@ -223,6 +308,11 @@ final class TrainingAlarmController {
     private static func valueAbsMeanSaturationAlarmDetail(valueAbsMean: Double) -> String {
         String(format: "vAbs=%.4f — W/D/L value head calling nearly every position a clean win/loss (p_win − p_loss ≈ ±1)",
                valueAbsMean)
+    }
+
+    private static func valueDrawCollapseAlarmDetail(valueProbDraw: Double) -> String {
+        String(format: "pD=%.4f — W/D/L value head collapsing toward \"everything is a draw\" (the failure the W/D/L head was meant to escape; try a small draw_penalty / value_label_smoothing_epsilon)",
+               valueProbDraw)
     }
 
     // MARK: - Raise / clear / silence / dismiss
@@ -300,6 +390,9 @@ final class TrainingAlarmController {
         valueAbsMeanSaturationWarningStreak = 0
         valueAbsMeanSaturationCriticalStreak = 0
         valueAbsMeanSaturationRecoveryStreak = 0
+        valueDrawCollapseWarningStreak = 0
+        valueDrawCollapseCriticalStreak = 0
+        valueDrawCollapseRecoveryStreak = 0
     }
 
     // MARK: - Beep loop

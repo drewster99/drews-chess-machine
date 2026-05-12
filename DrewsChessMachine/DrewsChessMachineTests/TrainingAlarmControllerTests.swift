@@ -210,4 +210,113 @@ final class TrainingAlarmControllerTests: XCTestCase {
         // raise wins.
         XCTAssertEqual(c.active?.title, TrainingAlarmController.valueAbsMeanSaturationCriticalAlarmTitle)
     }
+
+    // MARK: - Value-head draw-collapse detector
+
+    /// `pD` (= mean p_draw for the W/D/L head) — a fresh head sits at
+    /// 0.75 (the [0, ln6, 0] bias init) and healthy training pulls it
+    /// down; anything below the 0.92 warning threshold is "healthy".
+    private let healthyValueProbDraw: Double = 0.55
+    /// `pD` in the warning band (regressing toward all-draws).
+    private let warningValueProbDraw: Double = 0.93
+    /// `pD` in the critical band (essentially collapsed).
+    private let criticalValueProbDraw: Double = 0.99
+
+    private func feedPD(_ c: TrainingAlarmController, valueProbDraw: Double, times: Int) {
+        // Healthy entropy/gradNorm and nil vAbs so neither the divergence
+        // nor the saturation detector contaminates the draw-collapse tests.
+        for _ in 0..<times {
+            c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                       rollingGradNorm: healthyGradNorm,
+                       rollingValueAbsMean: nil,
+                       rollingValueProbDraw: valueProbDraw)
+        }
+    }
+
+    func testCriticalValueDrawCollapseRaises() {
+        let c = TrainingAlarmController()
+        feedPD(c, valueProbDraw: criticalValueProbDraw,
+               times: TrainingAlarmController.valueDrawCollapseConsecutiveCriticalSamples - 1)
+        XCTAssertNil(c.active, "should not raise before the consecutive-critical threshold")
+        c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                   rollingGradNorm: healthyGradNorm,
+                   rollingValueProbDraw: criticalValueProbDraw)
+        XCTAssertEqual(c.active?.title, TrainingAlarmController.valueDrawCollapseCriticalAlarmTitle)
+        XCTAssertEqual(c.active?.severity, .critical)
+    }
+
+    func testWarningValueDrawCollapseRaises() {
+        let c = TrainingAlarmController()
+        feedPD(c, valueProbDraw: warningValueProbDraw,
+               times: TrainingAlarmController.valueDrawCollapseConsecutiveWarningSamples - 1)
+        XCTAssertNil(c.active, "should not raise before the consecutive-warning threshold")
+        c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                   rollingGradNorm: healthyGradNorm,
+                   rollingValueProbDraw: warningValueProbDraw)
+        XCTAssertEqual(c.active?.title, TrainingAlarmController.valueDrawCollapseWarningAlarmTitle)
+        XCTAssertEqual(c.active?.severity, .warning)
+    }
+
+    func testValueDrawCollapseRecoveryAutoClearsOurOwnAlarm() {
+        let c = TrainingAlarmController()
+        feedPD(c, valueProbDraw: criticalValueProbDraw,
+               times: TrainingAlarmController.valueDrawCollapseConsecutiveCriticalSamples)
+        XCTAssertNotNil(c.active)
+        feedPD(c, valueProbDraw: healthyValueProbDraw,
+               times: TrainingAlarmController.valueDrawCollapseRecoverySamples - 1)
+        XCTAssertNotNil(c.active, "should not auto-clear before the recovery threshold")
+        c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                   rollingGradNorm: healthyGradNorm,
+                   rollingValueProbDraw: healthyValueProbDraw)
+        XCTAssertNil(c.active, "healthy pD streak should auto-clear our own alarm")
+    }
+
+    func testValueDrawCollapseRecoveryDoesNotClearAnotherDetectorsAlarm() {
+        let c = TrainingAlarmController()
+        c.raise(severity: .critical, title: "Policy Collapse (legal mass)", detail: "x")
+        XCTAssertNotNil(c.active)
+        feedPD(c, valueProbDraw: healthyValueProbDraw,
+               times: TrainingAlarmController.valueDrawCollapseRecoverySamples + 5)
+        XCTAssertEqual(c.active?.title, "Policy Collapse (legal mass)",
+                       "the draw-collapse auto-clear must not wipe an alarm it didn't raise")
+    }
+
+    func testValueProbDrawNilResetsCollapseStreaks() {
+        let c = TrainingAlarmController()
+        feedPD(c, valueProbDraw: criticalValueProbDraw,
+               times: TrainingAlarmController.valueDrawCollapseConsecutiveCriticalSamples - 1)
+        XCTAssertNil(c.active)
+        c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                   rollingGradNorm: healthyGradNorm,
+                   rollingValueProbDraw: nil)
+        c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                   rollingGradNorm: healthyGradNorm,
+                   rollingValueProbDraw: criticalValueProbDraw)
+        XCTAssertNil(c.active, "nil pD must reset the draw-collapse streak counters")
+    }
+
+    /// The two value-head detectors key off mutually-exclusive extremes
+    /// (`vAbs → 1` vs `pD → 1`), so a sample can't trip both — but their
+    /// streak state and ownership-scoped auto-clear must stay independent.
+    func testSaturationAndDrawCollapseAreIndependent() {
+        let c = TrainingAlarmController()
+        // Raise the draw-collapse banner.
+        feedPD(c, valueProbDraw: criticalValueProbDraw,
+               times: TrainingAlarmController.valueDrawCollapseConsecutiveCriticalSamples)
+        XCTAssertEqual(c.active?.title, TrainingAlarmController.valueDrawCollapseCriticalAlarmTitle)
+        // Now flip to a saturation-critical streak (high vAbs, low pD).
+        // Long enough for the draw-collapse recovery AND the saturation
+        // critical threshold.
+        let stream = max(
+            TrainingAlarmController.valueDrawCollapseRecoverySamples,
+            TrainingAlarmController.valueAbsMeanSaturationConsecutiveCriticalSamples
+        ) + 1
+        for _ in 0..<stream {
+            c.evaluate(rollingPolicyEntropy: healthyEntropy,
+                       rollingGradNorm: healthyGradNorm,
+                       rollingValueAbsMean: criticalValueAbsMean,
+                       rollingValueProbDraw: healthyValueProbDraw)
+        }
+        XCTAssertEqual(c.active?.title, TrainingAlarmController.valueAbsMeanSaturationCriticalAlarmTitle)
+    }
 }

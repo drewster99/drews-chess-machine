@@ -57,6 +57,17 @@ final class ChessRunner: @unchecked Sendable {
         )
     }
 
+    /// Forward-only pass returning the value head's W/D/L softmax
+    /// `(p_win, p_draw, p_loss)` for a single position — passthrough to
+    /// `ChessMPSNetwork.evaluateValueDistribution(board:)`. For the
+    /// diagnostic panels (candidate-test probe / Run Forward Pass) that
+    /// want to show the full distribution alongside the derived scalar
+    /// `evaluate(...)` already returns; runs the trunk a second time, so
+    /// keep it off any per-move hot path.
+    func evaluateValueDistribution(board: [Float]) async throws -> (win: Float, draw: Float, loss: Float) {
+        try await network.evaluateValueDistribution(board: board)
+    }
+
     /// Package raw logits + value from any forward pass into the
     /// `InferenceResult` the UI consumes: softmaxes the logits, extracts
     /// the top-4 LEGAL move visualizations, and records the inference

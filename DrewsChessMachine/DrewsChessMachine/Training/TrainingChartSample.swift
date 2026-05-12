@@ -70,6 +70,17 @@ struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     /// `TrainingAlarmController`. Charted on the same tile as
     /// `rollingValueLoss`.
     let rollingValueAbsMean: Double?
+    /// Rolling-window means of the value head's W/D/L softmax
+    /// probabilities (`p_win`, `p_draw`, `p_loss`; sum ≈ 1). Source:
+    /// `TrainingLiveStatsBox.Snapshot.rollingValueProbWin/Draw/Loss`,
+    /// the same numbers shown as `pW=/pD=/pL=` on the `[STATS]` line.
+    /// `rollingValueProbDraw → 1` is the value-head collapse signature
+    /// (the post-WDL "everything is a draw" — the failure the W/D/L
+    /// head was adopted to escape) and feeds the draw-collapse alarm in
+    /// `TrainingAlarmController`.
+    let rollingValueProbWin: Double?
+    let rollingValueProbDraw: Double?
+    let rollingValueProbLoss: Double?
 
     // System metrics
     let cpuPercent: Double?
