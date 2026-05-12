@@ -42,6 +42,8 @@ Decisions / deviations made autonomously (review):
 5. **Used `int(1 − z)` truncation, no `graph.round`** — z ∈ {−1,0,+1} is exact in FP32 so `1 − z ∈ {2,1,0}` truncates identity; a `-drawPenalty` rewrite (default 0) truncates to slot 1 (`<1`) or slot 2 (`≥1`) which is the intended contempt behavior. Documented in the buildTrainingOps comment so it isn't read as a bug.
 6. **`sliceTensor`** is the only API in the diff not already used elsewhere in the repo; build confirms it compiles.
 
+Post-`/recheck` fix (build still green): added an in-graph clamp of the value-target slot index to `[0, valueHeadClasses-1]` before `oneHot` — mirrors the policy path's `max(|legal|, 1)` defensive guard. Unreachable with the current `DrawPenalty` range (`[-1, 1]` ⇒ `1−z ∈ [1, 2]`), but an out-of-range `oneHot` index would *silently* produce an all-zero, gradient-free target row rather than erroring, so it's defended the same way the codebase defends the analogous divide-by-zero. `/recheck` otherwise found no bugs / no missed call sites / no MPSGraph misuse / no shape mismatches.
+
 Concern still open (unchanged from setup): cannot verify *training* works — only that it builds. Highest-risk spot for morning review is the `buildTrainingOps` value-loss block (one-hot construction, smoothed-target blend, `softMaxCrossEntropy` over `valueLogits`) and whether `valueLossWeight=1.0` is well-balanced now that the value term is CE-scale (~0.5–1.1) rather than MSE-scale (~0.1–0.4) — may want a lower `value_loss_weight` for the first WDL run; it's live-tunable so no rebuild needed.
 
 ### Stage 2 — tests

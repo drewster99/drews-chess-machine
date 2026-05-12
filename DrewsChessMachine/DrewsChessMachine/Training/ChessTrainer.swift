@@ -2225,11 +2225,24 @@ final class ChessTrainer: @unchecked Sendable {
         // idx = 1 − z. z is [batch, 1] float in {−1, 0, +1} (exact in
         // FP32), so `1 − z ∈ {2, 1, 0}` is exact; casting to int32
         // truncates toward zero, which is identity on those values and
-        // maps a `-drawPenalty` rewrite as described above. oneHot adds
-        // the class axis, so reshape the indices to rank-1 first.
+        // maps a `-drawPenalty` rewrite as described above. With the
+        // current drawPenalty range ([-1, 1]) the rewritten z stays in
+        // [-1, 0], so `1 − z ∈ [1, 2]` and the truncated index is
+        // always in {1, 2} ⊂ {0, 1, 2} — but clamp to [0, 2] anyway
+        // (same defensive stance as the policy path's `max(|legal|, 1)`
+        // guard): an out-of-range oneHot index would silently produce
+        // an all-zero, gradient-free target row, not an error. oneHot
+        // adds the class axis, so reshape the indices to rank-1 first.
         let valueSlotOneFloat = graph.constant(1.0, dataType: dtype)
         let valueSlotIndexFloat = graph.subtraction(valueSlotOneFloat, z, name: "value_slot_index_float")
-        let valueSlotIndexInt = graph.cast(valueSlotIndexFloat, to: .int32, name: "value_slot_index")
+        let valueSlotIndexLow = graph.constant(0.0, dataType: dtype)
+        let valueSlotIndexHigh = graph.constant(Double(ChessNetwork.valueHeadClasses - 1), dataType: dtype)
+        let valueSlotIndexClamped = graph.minimum(
+            graph.maximum(valueSlotIndexFloat, valueSlotIndexLow, name: "value_slot_index_lo"),
+            valueSlotIndexHigh,
+            name: "value_slot_index_clamped"
+        )
+        let valueSlotIndexInt = graph.cast(valueSlotIndexClamped, to: .int32, name: "value_slot_index")
         let valueSlotIndexFlat = graph.reshape(valueSlotIndexInt, shape: [-1], name: "value_slot_index_flat")
         let valueOneHot = graph.oneHot(
             withIndicesTensor: valueSlotIndexFlat,
