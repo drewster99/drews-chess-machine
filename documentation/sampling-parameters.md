@@ -96,6 +96,45 @@ Both metrics appear in the on-screen training stats panel and in periodic `[STAT
 - For each new game, prefix comparison runs against all stored games: O(window_size * avg_game_length). With window=200 and ~80-ply games this is ~16,000 comparisons — negligible vs. neural network inference.
 - Thread-safe via `NSLock` (self-play tracker is shared across concurrent workers).
 
+## Model identity (ModelID): mint and inherit rules
+
+Every network carries a `ModelID` (`yyyymmdd-N-XXXX`, with an optional
+`-<generation>` suffix on a mutable trainer — e.g. `20260511-3-Ab9q-2`).
+A *fresh* ID is minted (`ModelIDMinter.mint()`) only at a handful of
+well-defined events; everywhere else an ID is **inherited verbatim** so
+a snapshot can always be traced back to the weights it came from. Each
+`[STATS]` and `[ARENA]` log line prints `trainer=…`, `champion=…`, and
+(during an arena) `candidate=…` for exactly this reason.
+
+- **Build Network** → the champion (`network`) gets a freshly minted ID.
+- **Play-and-Train start (fresh)** → the trainer gets the *next trainer
+  generation* of the champion's lineage (`mintTrainerGeneration(from: champion.id)`),
+  e.g. champion `…-Ab9q` → trainer `…-Ab9q-1`.
+- **Play-and-Train start (resume from a `.dcmsession`)** → champion and
+  trainer keep the IDs stored in the loaded session file.
+- **Arena start** → the candidate inference network inherits the
+  *trainer's current ID* and the arena-champion network inherits the
+  *live champion's ID*, both verbatim — the arena plays the trainer's
+  arena-start snapshot against the champion's arena-start snapshot.
+- **Arena promotion** (score ≥ `arenaPromoteThreshold`) → the live
+  champion inherits the candidate's ID (i.e. the trainer's ID *as of
+  arena start*), and the live trainer rolls forward to a fresh next
+  generation forked from the new champion (`…-Ab9q` → `…-Ab9q-1` →
+  `…-Ab9q-2`…). So both lineages converge on the arena-validated
+  weights, then the trainer immediately forks off again to mutate.
+- **`Engine ▸ Promote Trainee Now`** (manual, no arena) follows the
+  *same rule* as arena promotion, just keyed on the trainer's *current*
+  weights rather than an arena-start snapshot: the champion inherits the
+  trainer's current ID and the trainer forks a fresh next generation
+  from it. The resulting arena-history record has `gamesPlayed == 0` and
+  `promotionKind == .manual`.
+- **Save Champion as Model / Save Session** → the on-disk `.dcmmodel` /
+  `.dcmsession` records whatever IDs the live networks have; no mint.
+
+When in doubt, the invariant is: *only* Build, fresh Play-and-Train
+start, and "roll the trainer to a new generation" mint or derive new
+IDs; weight copies (snapshots, promotions, loads) inherit.
+
 ## History
 
 ### v1: Flat tau=1.0 everywhere
