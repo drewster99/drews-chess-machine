@@ -199,15 +199,18 @@ extension SessionController {
         )
     }
 
-    /// Shared save-session internal used by both the manual save
-    /// button and the periodic autosave. Handles the gate dance,
-    /// exports both networks, builds the session state on the main
-    /// actor, and fires off the actual write to a detached task.
-    /// The post-promotion autosave uses its own inline code path
-    /// (in the arena coordinator) because it re-uses weights already
-    /// snapshotted under the arena's own pause and so does not need
-    /// to dance the gates again here.
-    private func saveSessionInternal(
+    /// Shared save-session internal used by the manual save button,
+    /// the periodic autosave, and the post-"Promote Trainee Now"
+    /// autosave (`SessionController+ManualPromote.swift`). Handles the
+    /// gate dance, exports both networks, builds the session state on
+    /// the main actor, and fires off the actual write to a detached
+    /// task. The *arena's* post-promotion autosave uses its own inline
+    /// code path (in the arena coordinator) instead, because it re-uses
+    /// weights already snapshotted under the arena's own pause and so
+    /// does not need to dance the gates again here. (`internal` rather
+    /// than `private` so the manual-promote path in another extension
+    /// file can reach it.)
+    func saveSessionInternal(
         champion: ChessMPSNetwork,
         trainer: ChessTrainer,
         selfPlayGate: WorkerPauseGate,

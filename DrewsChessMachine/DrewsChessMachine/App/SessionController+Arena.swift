@@ -479,13 +479,15 @@ extension SessionController {
 
         // --- Score and promotion ---
         //
-        // Branch on the user override first. `.abort` ends the
-        // tournament with no promotion regardless of score; `.promote`
-        // forces promotion regardless of score and games played; `nil`
-        // is the normal path where the usual score-threshold check
-        // decides. The consume also clears the box for the next
+        // A user Abort ends the tournament with no promotion regardless
+        // of score. Otherwise the usual score-threshold check decides:
+        // a full tournament must have been played AND the candidate's
+        // score must meet `arenaPromoteThreshold`. (There is no
+        // force-promote override anymore — `Engine ▸ Promote Trainee
+        // Now` covers "promote the current trainer right now" without
+        // an arena.) The consume also clears the box for the next
         // tournament.
-        let overrideDecision = overrideBox.consume()
+        let aborted = overrideBox.consume()
         let playedGames = stats.gamesPlayed
         let score: Double
         if playedGames > 0 {
@@ -495,23 +497,14 @@ extension SessionController {
         }
         var promoted = false
         var promotedID: ModelID?
-        let shouldPromote: Bool
-        // `promotionKind` tracks WHY the promotion is happening, so
-        // the history / logs can distinguish a user-forced promotion
-        // (Promote button) from a score-threshold one. Only read if
+        let shouldPromote = !aborted
+            && playedGames >= totalGames
+            && score >= TrainingParameters.shared.arenaPromoteThreshold
+        // `promotionKind` is `.automatic` for any arena-driven
+        // promotion (the only kind this path can produce); `.manual`
+        // is reserved for `promoteTrainerNow()`. Only read if
         // `promoted` ends up true.
-        let promotionKind: PromotionKind?
-        switch overrideDecision {
-        case .abort:
-            shouldPromote = false
-            promotionKind = nil
-        case .promote:
-            shouldPromote = true
-            promotionKind = .manual
-        case .none:
-            shouldPromote = playedGames >= totalGames && score >= TrainingParameters.shared.arenaPromoteThreshold
-            promotionKind = shouldPromote ? .automatic : nil
-        }
+        let promotionKind: PromotionKind? = shouldPromote ? .automatic : nil
         // Holds the new champion weights if promotion succeeds,
         // so we can hand them to a detached autosave task at the
         // end without needing to re-read them from the live

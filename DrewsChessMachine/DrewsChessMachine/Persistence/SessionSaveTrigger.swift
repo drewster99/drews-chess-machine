@@ -19,14 +19,27 @@ enum SessionSaveTrigger: Sendable {
     /// elapsed. Arena-conflicts are already resolved by the
     /// controller before we get here.
     case periodic
+    /// Fired right after a user-initiated "Promote Trainee Now"
+    /// (`Engine ▸ Promote Trainee Now`) so the just-promoted champion
+    /// + trainer pair is captured to disk the same way an arena
+    /// promotion is. Distinct from the arena's own post-promotion
+    /// autosave (which is inline in the arena coordinator and reuses
+    /// arena-snapshot weights) — this one goes through the shared
+    /// `saveSessionInternal` gate dance because there is no arena
+    /// snapshot to reuse, just the live trainer weights we just
+    /// copied into the champion.
+    case manualPromote
 
     /// Short tag written into the `.dcmsession` filename.
     /// Matches the `trigger:` string the existing `CheckpointManager`
-    /// API already expects.
+    /// API already expects. `manualPromote` reuses the `promote` tag
+    /// so its filename is grep-identical to an arena post-promotion
+    /// save (`…-promote.dcmsession`).
     var diskTag: String {
         switch self {
         case .manual: "manual"
         case .periodic: "periodic"
+        case .manualPromote: "promote"
         }
     }
 
@@ -39,6 +52,7 @@ enum SessionSaveTrigger: Sendable {
         switch self {
         case .manual: ""
         case .periodic: " (periodic)"
+        case .manualPromote: " (post-promotion)"
         }
     }
 }

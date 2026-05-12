@@ -413,8 +413,9 @@ struct DrewsChessMachineApp: App {
                     .disabled(!commandHub.realTraining || commandHub.isArenaRunning)
                 Button("Abort Arena") { commandHub.abortArena() }
                     .disabled(!commandHub.realTraining || !commandHub.isArenaRunning)
-                Button("Promote Trainee") { commandHub.promoteCandidate() }
-                    .disabled(!commandHub.realTraining || !commandHub.isArenaRunning)
+                Divider()
+                Button("Promote Trainee Now") { commandHub.promoteTrainerNow() }
+                    .disabled(!commandHub.realTraining || commandHub.isArenaRunning)
             }
 
             CommandMenu("Debug") {

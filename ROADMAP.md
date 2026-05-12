@@ -233,6 +233,140 @@ original rationale is not lost.
   package path, but this should be revisited only after measuring current
   steady-state `graph.run` overhead.
 
+- **Replace `Engine ▸ Promote Trainee` (arena-only override) with a standalone
+  "Promote Trainee Now" action.** **IMPLEMENTED 2026-05-11** (see CHANGELOG entry
+  of the same date; pending the usual build + manual-validation pass below). Planned
+  2026-05-11 after a user report that `Engine ▸ Promote Trainee` "didn't seem to do
+  anything." Decision: **remove** the arena-override Promote entirely (not rename it)
+  and add a new no-arena Promote-the-current-trainer action. Rationale: the
+  arena-override semantics
+  ("force-promote the in-flight candidate, ignore the score") are confusing and
+  rarely what the user wants — if an arena is running and you want that candidate
+  in, just let the arena finish or abort it; if you want the *current trainer*
+  promoted right now, you want the new action. Keeping both is two near-identical
+  buttons with subtly different targets.
+
+  Why the old button felt broken, for the record (it was working as designed):
+  `Engine ▸ Promote Trainee` → `commandHub.promoteCandidate` →
+  `session.arenaOverrideBox?.promote()` (`UpperContentView.swift` ~1922,
+  `ArenaOverrideBox.swift`) set a one-shot `.promote` decision that
+  `runArenaParallel` consumed only when the tournament driver returned
+  (`SessionController+Arena.swift` ~488–514, `promotionKind = .manual`); it was
+  `.disabled(!realTraining || !isArenaRunning)` (`DrewsChessMachineApp.swift`
+  ~417); and `TournamentDriver` only checks the override flag *between games*
+  (`group.next()` loop ~298–299) and does **not** cancel in-flight arena games —
+  they run to completion, replacements just stop spawning — so with several
+  concurrent arena slots and slow games there is a long "nothing happened yet"
+  window before `[ARENA] … promoted … kind=manual` and the `-promote.dcmsession`
+  autosave appear.
+
+  ### Part 1 — remove the arena-override Promote
+
+  - `DrewsChessMachineApp.swift`: delete the `Button("Promote Trainee") { commandHub.promoteCandidate() }`
+    line (and its `.disabled(...)`).
+  - `AppCommandHub.swift`: delete `var promoteCandidate: () -> Void = {}`.
+  - `UpperContentView.swift` `wireMenuCommandHub()`: delete the
+    `commandHub.promoteCandidate = { … session.arenaOverrideBox?.promote() }` block.
+  - `ArenaOverrideBox.swift`: the box now has exactly one user action — abort.
+    Drop the `Decision` enum and the `promote()` method; make it abort-only
+    (`requestAbort()` / `isActive` / `consumeAbort() -> Bool`), or rename to
+    `ArenaAbortBox`. Update the class doc.
+  - `SessionController+Arena.swift`: replace the
+    `switch overrideDecision { case .abort / .promote / .none }` with a plain
+    `let aborted = overrideBox.consumeAbort()` → `shouldPromote = !aborted && playedGames >= totalGames && score >= threshold`. The arena path's `promotionKind`
+    is now always `.automatic` when `shouldPromote`.
+  - `PromotionKind.swift`: keep `.manual` — it's now produced only by Part 2.
+    Update its doc comment ("user clicked the Promote button" → "user invoked
+    Promote Trainee Now").
+  - Tests: no XCTest references `ArenaOverrideBox.Decision.promote` /
+    `commandHub.promoteCandidate` (checked 2026-05-11); `PromotionKind` is still
+    referenced by `ArenaLogFormatterTests` / `TournamentRecordTests` and stays
+    valid. Re-grep at implementation time in case that drifts.
+
+  ### Part 2 — add `Engine ▸ Promote Trainee Now`
+
+  - `AppCommandHub.swift`: add `var promoteTrainerNow: () -> Void = {}`. Gating
+    reuses the existing published `realTraining` / `isArenaRunning`.
+  - `DrewsChessMachineApp.swift`: `Button("Promote Trainee Now") { commandHub.promoteTrainerNow() }`
+    `.disabled(!commandHub.realTraining || commandHub.isArenaRunning)` in the
+    Engine menu (in the old button's slot).
+  - `UpperContentView.swift`: wire `commandHub.promoteTrainerNow = { promoteTrainerNowFromMenu() }`;
+    `promoteTrainerNowFromMenu()` flips a `@State` bool that drives a
+    `.confirmationDialog` (the view already uses `.confirmationDialog` — follow
+    that pattern; do not add a `.alert` ahead of existing `.onChange`/`.onReceive`).
+    Confirmation copy must say the weights are **not arena-validated**, e.g.
+    title "Promote trainee to champion now?", message "The current trainee has
+    not been validated by an arena. Promoting replaces the champion with the
+    trainee's current weights.", buttons "Promote" (destructive role) / "Cancel".
+    On confirm: `SessionLogger.shared.log("[BUTTON] Promote Trainee Now")` then
+    `session.promoteTrainerNow()`.
+  - New `SessionController` method `promoteTrainerNow()` — put it in a new file
+    `App/SessionController+ManualPromote.swift` (one-File-per-View/feature house
+    style), `@MainActor`:
+    - Guard `realTraining && !isArenaRunning`; otherwise
+      `checkpoint?.setCheckpointStatus("Cannot promote: …", kind: .error)` and
+      return (so a stale menu state can't fire it mid-arena).
+    - `await activeSelfPlayGate?.pauseAndWait()`; `await activeTrainingGate?.pauseAndWait()`.
+    - In a `Task.detached(priority: .userInitiated)` capturing only the needed
+      `Sendable` references: `let weights = try await trainer.network.exportWeights(); try await network.loadWeights(weights); return weights`.
+      Note vs. the arena path: arena exports from `candidateInferenceNetwork`
+      (the arena-*start* snapshot); here we export the **live** trainer weights,
+      and we do **not** re-load them into `trainer.network` (it already has them).
+      All `try` surfaced via `.value` inside a `do/catch` that records the error
+      and still resumes both gates.
+    - ModelID: `champion.identifier = trainer.identifier`;
+      `trainer.identifier = ModelIDMinter.mintTrainerGeneration(from: champion.identifier ?? trainer.identifier ?? ModelIDMinter.mint())`
+      — same rule as arena promotion. **Re-read `sampling-parameters.md` first.**
+    - Do **NOT** touch trainer velocity, `trainer.completedTrainSteps`,
+      `trainingBox` stats, alarms, or rolling windows: champion is taking the
+      trainer's *current* state verbatim, so unlike the arena path there is no
+      earlier weight surface to rewind the optimizer/step-count to. Add a comment
+      stating this asymmetry explicitly.
+    - `activeTrainingGate?.resume(); activeSelfPlayGate?.resume()`.
+    - History/chart: append a `TournamentRecord` with `gamesPlayed: 0`,
+      `candidateWins/championWins/draws = 0`, `score` = whatever sentinel the
+      record/Elo code already tolerates for 0-game records, `promoted: true`,
+      `promotionKind: .manual`, `promotedID: champion.identifier`,
+      `durationSec: 0`. **Open decision** — confirm `ArenaEloStats` ignores
+      0-game records before doing this (it has XCTest coverage; add a case if
+      not). If it can't be made safe cheaply, fall back to: no `TournamentRecord`,
+      just the log line + a point `ArenaChartEvent` (`recordArenaCompleted` with
+      `startElapsedSec == endElapsedSec`, `promoted: true`).
+    - `parallelWorkerStatsBox?.resetGameStats()` and a
+      `[STATS] post-promote(manual) steps=… champion=… trainer=…` line, mirroring
+      the arena path's post-promote logging.
+    - Post-promotion autosave: if `Self.autosaveSessionsOnPromote`, reuse the
+      arena path's detached `-promote.dcmsession` tail. Extract that tail
+      (currently inline at ~685–~720 in `SessionController+Arena.swift`) into a
+      shared helper `schedulePostPromotionAutosave(championWeights: [[Float]], championID: String, trainerID: String, creator: String)` so both call sites
+      stay in lockstep; pass the just-exported `weights` so it never re-reads a
+      live network. (This extraction is the only refactor of existing arena code
+      this plan does — the rest of the arena promotion block stays as-is, since
+      its velocity/step-rewind semantics genuinely differ.)
+  - `sampling-parameters.md`: add a sentence noting that "Promote Trainee Now"
+    follows the same champion-inherits-trainer-ID / mint-fresh-trainer-generation
+    rule as arena promotion.
+
+  ### Validation
+
+  - Build via xcode-mcp-server (only when no live training session is running).
+  - XCTest suite green — including any `ArenaEloStats` 0-game-record case added
+    for the history decision above; no existing test modified.
+  - Manual, with Play-and-Train running and the trainer advanced a few hundred
+    steps:
+    - Invoke `Promote Trainee Now`, confirm. Session log shows
+      `[BUTTON] Promote Trainee Now`, the promotion/`[STATS] post-promote(manual)`
+      lines, and (if `autosaveSessionsOnPromote`) `[CHECKPOINT] Saved session (post-promotion): …`.
+    - Champion `ModelID` == the trainer's `ModelID` from immediately before;
+      trainer now has a fresh forked-generation ID; `trainer.completedTrainSteps`
+      unchanged across the action.
+    - Self-play and training resume normally afterward (no parked workers, ratio
+      controller continues).
+    - Menu item is disabled when not in Play-and-Train and while an arena is
+      running; if forced (stale state) it surfaces an error and does not promote.
+    - Load the autosaved `.dcmsession` back; the existing bit-exact forward-pass
+      verification on load passes.
+
 ## Code-review remediation roadmap (added 2026-05-11)
 
 Result of an in-depth review of the codebase against Swift / SwiftUI / macOS /

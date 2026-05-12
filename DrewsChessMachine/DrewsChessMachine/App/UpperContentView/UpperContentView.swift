@@ -639,6 +639,11 @@ struct UpperContentView: View {
     /// loaded session (a disk load has its own resume path).
     @State private var showStartTrainingDialog: Bool = false
 
+    /// Drives the confirmation dialog for `Engine ▸ Promote Trainee
+    /// Now`. The action promotes un-arena-validated weights, so it
+    /// always asks first.
+    @State private var showPromoteTrainerNowDialog: Bool = false
+
     /// Distinguishes how Play-and-Train should treat in-memory state
     /// when the user presses Start. Consumed inside
     /// `startRealTraining(mode:)` to branch replay-buffer, counter,
@@ -1124,6 +1129,21 @@ struct UpperContentView: View {
                 },
                 message: {
                     Text(startTrainingDialogMessage())
+                }
+            )
+            .confirmationDialog(
+                "Promote trainee to champion now?",
+                isPresented: $showPromoteTrainerNowDialog,
+                titleVisibility: .visible,
+                actions: {
+                    Button("Promote", role: .destructive) {
+                        SessionLogger.shared.log("[BUTTON] Promote Trainee Now")
+                        session.promoteTrainerNow()
+                    }
+                    Button("Cancel", role: .cancel) { }
+                },
+                message: {
+                    Text("The current trainee has not been validated by an arena. Promoting replaces the champion with the trainee's current weights; self-play and training continue afterward against the new champion.")
                 }
             )
 
@@ -1919,10 +1939,7 @@ struct UpperContentView: View {
             SessionLogger.shared.log("[BUTTON] Abort Arena")
             session.arenaOverrideBox?.abort()
         }
-        commandHub.promoteCandidate = {
-            SessionLogger.shared.log("[BUTTON] Promote")
-            session.arenaOverrideBox?.promote()
-        }
+        commandHub.promoteTrainerNow = { promoteTrainerNowFromMenu() }
         commandHub.saveSession = {
             SessionLogger.shared.log("[BUTTON] Save Session")
             session.handleSaveSessionManual()
@@ -2328,6 +2345,32 @@ struct UpperContentView: View {
         } else {
             session.startRealTraining(mode: .freshOrFromLoadedSession)
         }
+    }
+
+    /// Entry point for `Engine ▸ Promote Trainee Now`. In-function
+    /// guards (belt-and-suspenders with the menu-item disable), then
+    /// raises the confirmation dialog — the actual promotion runs from
+    /// the dialog's "Promote" button so a stray keyboard-shortcut /
+    /// URL-scheme invocation can't skip the confirmation. `SessionController.promoteTrainerNow()`
+    /// re-checks the same preconditions before touching any weights.
+    private func promoteTrainerNowFromMenu() {
+        if isBusy && !realTraining {
+            refuseMenuAction("Another operation is in progress. Wait for it to finish, then try again.")
+            return
+        }
+        guard realTraining else {
+            refuseMenuAction("Start Play and Train first — there's no trainee to promote.")
+            return
+        }
+        if session.isArenaRunning {
+            refuseMenuAction("An arena is running. Wait for it to finish (it promotes on its own if the candidate wins), then try again.")
+            return
+        }
+        if checkpoint.checkpointSaveInFlight {
+            refuseMenuAction("A save is in progress. Wait for it to finish, then try again.")
+            return
+        }
+        showPromoteTrainerNowDialog = true
     }
 
     // startRealTraining(mode:) and stopRealTraining() moved to SessionController
