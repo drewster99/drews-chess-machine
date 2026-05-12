@@ -362,7 +362,8 @@ struct UpperContentView: View {
     nonisolated static let trainerLearningRateDefault: Float = 5e-5
     nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-3
     nonisolated static let drawPenaltyDefault: Float = 0.1
-    nonisolated static let trainingBatchSize = 4096
+    // `trainingBatchSize` (demo-training batch size) moved to
+    // `SessionController` in Stage 4g — `SessionController.trainingBatchSize`.
 
     /// Number of training steps at the start of a Play-and-Train
     /// session for which the `[STATS]` line fires on every step.
@@ -571,11 +572,8 @@ struct UpperContentView: View {
     /// clock so they're correct from the first completed game.
     nonisolated static let statsWarmupSeconds: Double = 5.0
 
-    /// Size of the rolling-loss window displayed in the Self-Play training
-    /// column. 512 steps × 256 batch = ~131k positions averaged per reported
-    /// number, which should be more than enough to smooth through batch-
-    /// composition noise and show the real underlying trend.
-    nonisolated static let rollingLossWindow = 512
+    // `rollingLossWindow` (live-loss rolling-window size) moved to
+    // `SessionController` in Stage 4g — `SessionController.rollingLossWindow`.
 
     // Batch-size sweep — runs each size in `sweepSizes` for ~15 s, then
     // displays the throughput table. Driven by its own task / cancel path
@@ -1513,6 +1511,11 @@ struct UpperContentView: View {
         session.onRefuseMenuAction = { refuseMenuAction($0) }
         session.onClearTrainingDisplay = { clearTrainingDisplay() }
         session.onDropTrainer = { trainer = nil }
+        session.onResetBoardDisplay = {
+            inferenceResult = nil
+            gameWatcher.resetAll()
+            gameSnapshot = gameWatcher.snapshot()
+        }
         session.checkpoint = checkpoint
         // Resume-sheet UX is correctly gated on the window being
         // visible — surfacing a sheet on a hidden window would do
@@ -3245,8 +3248,8 @@ struct UpperContentView: View {
         commandHub.runForwardPass = { runForwardPass() }
         commandHub.playSingleGame = { playSingleGame() }
         commandHub.startContinuousPlay = { startContinuousPlay() }
-        commandHub.trainOnce = { trainOnce() }
-        commandHub.startContinuousTraining = { startContinuousTraining() }
+        commandHub.trainOnce = { session.trainOnce() }
+        commandHub.startContinuousTraining = { session.startContinuousTraining() }
         commandHub.startRealTraining = { startTrainingFromMenu() }
         commandHub.startSweep = { Task.detached { await startSweep() } }
         commandHub.stopAnyContinuous = { stopAnyContinuous() }
@@ -4601,7 +4604,7 @@ struct UpperContentView: View {
     private func stopAnyContinuous() {
         SessionLogger.shared.log("[BUTTON] Stop")
         if continuousPlay { stopContinuousPlay() }
-        if continuousTraining { stopContinuousTraining() }
+        if continuousTraining { session.stopContinuousTraining() }
         if sweepRunning { stopSweep() }
         if realTraining { stopRealTraining() }
     }
@@ -4620,80 +4623,12 @@ struct UpperContentView: View {
     // `TrainingParameters.shared` plus the (now session-owned) `trainer` /
     // `trainingError`, so the move is closure-free.
 
-    private func trainOnce() {
-        SessionLogger.shared.log("[BUTTON] Train Once")
-        guard let trainer = session.ensureTrainer() else { return }
-        // Switching modes — clear any stale game/inference output and
-        // start a fresh stats run (single-step still uses TrainingRunStats
-        // so the formatter has one path to render).
-        inferenceResult = nil
-        gameWatcher.resetAll()
-        gameSnapshot = gameWatcher.snapshot()
-        clearTrainingDisplay()
-        isTrainingOnce = true
-
-        Task { [trainer] in
-            let result = await Self.runOneTrainStep(trainer: trainer)
-            await MainActor.run {
-                switch result {
-                case .success(let timing):
-                    var stats = TrainingRunStats()
-                    stats.record(timing)
-                    trainingStats = stats
-                    lastTrainStep = timing
-                case .failure(let error):
-                    trainingError = error.localizedDescription
-                }
-                isTrainingOnce = false
-            }
-        }
-    }
-
-    private func startContinuousTraining() {
-        SessionLogger.shared.log("[BUTTON] Train Continuous")
-        guard let trainer = session.ensureTrainer() else { return }
-        inferenceResult = nil
-        gameWatcher.resetAll()
-        gameSnapshot = gameWatcher.snapshot()
-        clearTrainingDisplay()
-
-        // Seed trainingStats with a fresh zero so the formatter shows
-        // "Steps done: 0" immediately; the heartbeat poller replaces it
-        // with the real stats out of the box as soon as the first step
-        // lands.
-        let box = TrainingLiveStatsBox(rollingWindow: Self.rollingLossWindow)
-        trainingBox = box
-        trainingStats = TrainingRunStats()
-        continuousTraining = true
-
-        trainingTask = Task { [trainer, box] in
-            var shouldStop = false
-            while !Task.isCancelled && !shouldStop {
-                let result = await Self.runOneTrainStep(trainer: trainer)
-                switch result {
-                case .success(let timing):
-                    box.recordStep(timing)
-                case .failure(let error):
-                    box.recordError(error.localizedDescription)
-                    shouldStop = true
-                }
-            }
-            await MainActor.run { continuousTraining = false }
-        }
-    }
-
-    private func stopContinuousTraining() {
-        trainingTask?.cancel()
-        trainingTask = nil
-    }
-
-    nonisolated private static func runOneTrainStep(trainer: ChessTrainer) async -> Result<TrainStepTiming, Error> {
-        do {
-            return .success(try await trainer.trainStep(batchSize: trainingBatchSize))
-        } catch {
-            return .failure(error)
-        }
-    }
+    // `trainOnce()` / `startContinuousTraining()` / `stopContinuousTraining()`
+    // / `runOneTrainStep` and the `trainingBatchSize` / `rollingLossWindow`
+    // statics moved to `SessionController` in Stage 4g — call them as
+    // `session.trainOnce()` etc. The on-board display reset they do (clearing
+    // `inferenceResult` / resetting `gameWatcher`) goes through
+    // `session.onResetBoardDisplay`, wired in `handleBodyOnAppear`.
 
     // MARK: - Real Training (Self-Play) Actions
 
@@ -4844,7 +4779,7 @@ struct UpperContentView: View {
         if continueMode, let existing = trainingBox {
             box = existing
         } else {
-            let fresh = TrainingLiveStatsBox(rollingWindow: Self.rollingLossWindow)
+            let fresh = TrainingLiveStatsBox(rollingWindow: SessionController.rollingLossWindow)
             if let rs = pendingLoadedSession?.state {
                 var seeded = TrainingRunStats()
                 seeded.steps = rs.trainingSteps

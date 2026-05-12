@@ -296,6 +296,97 @@ final class SessionController {
         lastReplayRatioCompensatorAt = now
     }
 
+    // MARK: - Demo training (Train Once / Continuous Training) (Stage 4g)
+
+    /// Batch size for the demo "Train Once" / "Continuous Training" buttons
+    /// (training on random data, not self-play). Distinct from
+    /// `TrainingParameters.shared.trainingBatchSize` which the Play-and-Train
+    /// loop uses.
+    nonisolated static let trainingBatchSize = 4096
+
+    /// Rolling-window size for the live-loss averages in `TrainingLiveStatsBox`.
+    nonisolated static let rollingLossWindow = 512
+
+    /// Resets the on-board demo display (forward-pass inference result + the
+    /// live game watcher). Wired to `UpperContentView` in `handleBodyOnAppear`
+    /// — `gameWatcher` must stay `@State` on the view (SwiftUI reconstruction
+    /// semantics), so this controller reaches it through the closure.
+    var onResetBoardDisplay: () -> Void = { }
+
+    /// Demo "Train Once": one SGD step on random data, then mirror the result
+    /// into `trainingStats` / `lastTrainStep`.
+    func trainOnce() {
+        SessionLogger.shared.log("[BUTTON] Train Once")
+        guard let trainer = ensureTrainer() else { return }
+        // Switching modes — clear any stale game/inference output and start a
+        // fresh stats run (single-step still uses TrainingRunStats so the
+        // formatter has one path to render).
+        onResetBoardDisplay()
+        onClearTrainingDisplay()
+        isTrainingOnce = true
+
+        Task { [trainer] in
+            let result = await Self.runOneTrainStep(trainer: trainer)
+            await MainActor.run {
+                switch result {
+                case .success(let timing):
+                    var stats = TrainingRunStats()
+                    stats.record(timing)
+                    trainingStats = stats
+                    lastTrainStep = timing
+                case .failure(let error):
+                    trainingError = error.localizedDescription
+                }
+                isTrainingOnce = false
+            }
+        }
+    }
+
+    /// Demo "Continuous Training": a tight SGD loop on random data until Stop.
+    func startContinuousTraining() {
+        SessionLogger.shared.log("[BUTTON] Train Continuous")
+        guard let trainer = ensureTrainer() else { return }
+        onResetBoardDisplay()
+        onClearTrainingDisplay()
+
+        // Seed trainingStats with a fresh zero so the formatter shows "Steps
+        // done: 0" immediately; the heartbeat poller replaces it with the real
+        // stats as soon as the first step lands.
+        let box = TrainingLiveStatsBox(rollingWindow: Self.rollingLossWindow)
+        trainingBox = box
+        trainingStats = TrainingRunStats()
+        continuousTraining = true
+
+        trainingTask = Task { [trainer, box] in
+            var shouldStop = false
+            while !Task.isCancelled && !shouldStop {
+                let result = await Self.runOneTrainStep(trainer: trainer)
+                switch result {
+                case .success(let timing):
+                    box.recordStep(timing)
+                case .failure(let error):
+                    box.recordError(error.localizedDescription)
+                    shouldStop = true
+                }
+            }
+            await MainActor.run { continuousTraining = false }
+        }
+    }
+
+    /// Cancel the demo continuous-training task.
+    func stopContinuousTraining() {
+        trainingTask?.cancel()
+        trainingTask = nil
+    }
+
+    nonisolated private static func runOneTrainStep(trainer: ChessTrainer) async -> Result<TrainStepTiming, Error> {
+        do {
+            return .success(try await trainer.trainStep(batchSize: trainingBatchSize))
+        } catch {
+            return .failure(error)
+        }
+    }
+
     // MARK: - Trainer build / config + sampling schedules (Stage 4e)
 
     /// Ensure the trainer exists, (re)applying all live `TrainingParameters`
