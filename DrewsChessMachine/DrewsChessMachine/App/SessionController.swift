@@ -80,6 +80,11 @@ final class SessionController {
     /// Play-and-Train session.
     var parallelStats: ParallelWorkerStatsBox.Snapshot?
 
+    /// Resident-set composition of the replay buffer (game-length means,
+    /// W/D/L position fractions), mirrored from `replayBuffer.compositionSnapshot()`
+    /// by the UI heartbeat. `nil` outside a Play-and-Train session.
+    var bufferComposition: ReplayBuffer.CompositionSnapshot?
+
     /// Lock-protected counter box shared across the parallel self-play and
     /// training worker tasks. Workers call `recordSelfPlayGame` /
     /// `recordTrainingStep`; the heartbeat polls `snapshot()` and mirrors into

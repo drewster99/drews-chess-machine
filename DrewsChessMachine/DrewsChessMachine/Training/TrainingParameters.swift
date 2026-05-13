@@ -161,7 +161,7 @@ public protocol TrainingParameterKey: Sendable {
     static func decode(_ value: ParameterValue) throws -> Value
 }
 
-// MARK: - 36 parameter keys (macro-driven)
+// MARK: - 39 parameter keys (macro-driven)
 
 @TrainingParameter(
     name: "Entropy Bonus",
@@ -434,6 +434,36 @@ public enum ReplayBufferCapacity: TrainingParameterKey {}
 public enum ReplayBufferMinPositionsBeforeTraining: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Max Plies From Any 1 Game",
+    description: "Cap on how many plies may be drawn from any single self-play game within one training batch. Decorrelates the minibatch by forcing it to span many distinct games rather than letting one long marathon dominate. Default 10. Range capped at 400 — with typical batch sizes (e.g. 4096) the cap is always active.",
+    default: 10,
+    range: 1...400,
+    category: "Replay Buffer",
+    liveTunable: true
+)
+public enum MaxPliesFromAnyOneGame: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Target Sampled Game Length (plies)",
+    description: "When > 0, the batch sampler exponentially down-weights positions from long games so the position-weighted mean game length of the sampled batch approaches this value (in plies). 0 disables the length tilt. Intended to be set below the buffer's natural mean to de-weight shuffle-draw marathons.",
+    default: 0,
+    range: 0...10000,
+    category: "Replay Buffer",
+    liveTunable: true
+)
+public enum TargetSampledGameLengthPlies: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Max Draws Per Batch (%)",
+    description: "Ceiling on the percentage of positions in a training batch that come from drawn games. If the buffer holds fewer drawn positions than the cap allows, the batch simply contains fewer (no padding); freed slots go to positions from decisive games. 100 disables the cap.",
+    default: 100,
+    range: 0...100,
+    category: "Replay Buffer",
+    liveTunable: true
+)
+public enum MaxDrawPercentPerBatch: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Arena Promote Threshold",
     description: "Minimum candidate score (in [0, 1]) required to promote the candidate over the champion.",
     default: 0.55,
@@ -583,6 +613,9 @@ public extension TrainingParametersSnapshot {
     var trainingBatchSize: Int { value(for: TrainingBatchSize.self) }
     var replayBufferCapacity: Int { value(for: ReplayBufferCapacity.self) }
     var replayBufferMinPositionsBeforeTraining: Int { value(for: ReplayBufferMinPositionsBeforeTraining.self) }
+    var maxPliesFromAnyOneGame: Int { value(for: MaxPliesFromAnyOneGame.self) }
+    var targetSampledGameLengthPlies: Int { value(for: TargetSampledGameLengthPlies.self) }
+    var maxDrawPercentPerBatch: Int { value(for: MaxDrawPercentPerBatch.self) }
     var arenaPromoteThreshold: Double { value(for: ArenaPromoteThreshold.self) }
     var arenaGamesPerTournament: Int { value(for: ArenaGamesPerTournament.self) }
     var arenaAutoIntervalSec: Double { value(for: ArenaAutoIntervalSec.self) }
@@ -630,6 +663,9 @@ public final class TrainingParameters {
     public var trainingBatchSize: Int { didSet { Self.persist(TrainingBatchSize.self, value: trainingBatchSize) } }
     public var replayBufferCapacity: Int { didSet { Self.persist(ReplayBufferCapacity.self, value: replayBufferCapacity) } }
     public var replayBufferMinPositionsBeforeTraining: Int { didSet { Self.persist(ReplayBufferMinPositionsBeforeTraining.self, value: replayBufferMinPositionsBeforeTraining) } }
+    public var maxPliesFromAnyOneGame: Int { didSet { Self.persist(MaxPliesFromAnyOneGame.self, value: maxPliesFromAnyOneGame) } }
+    public var targetSampledGameLengthPlies: Int { didSet { Self.persist(TargetSampledGameLengthPlies.self, value: targetSampledGameLengthPlies) } }
+    public var maxDrawPercentPerBatch: Int { didSet { Self.persist(MaxDrawPercentPerBatch.self, value: maxDrawPercentPerBatch) } }
     public var arenaPromoteThreshold: Double { didSet { Self.persist(ArenaPromoteThreshold.self, value: arenaPromoteThreshold) } }
     public var arenaGamesPerTournament: Int { didSet { Self.persist(ArenaGamesPerTournament.self, value: arenaGamesPerTournament) } }
     public var arenaAutoIntervalSec: Double { didSet { Self.persist(ArenaAutoIntervalSec.self, value: arenaAutoIntervalSec) } }
@@ -670,6 +706,9 @@ public final class TrainingParameters {
         self.trainingBatchSize = Self.read(TrainingBatchSize.self)
         self.replayBufferCapacity = Self.read(ReplayBufferCapacity.self)
         self.replayBufferMinPositionsBeforeTraining = Self.read(ReplayBufferMinPositionsBeforeTraining.self)
+        self.maxPliesFromAnyOneGame = Self.read(MaxPliesFromAnyOneGame.self)
+        self.targetSampledGameLengthPlies = Self.read(TargetSampledGameLengthPlies.self)
+        self.maxDrawPercentPerBatch = Self.read(MaxDrawPercentPerBatch.self)
         self.arenaPromoteThreshold = Self.read(ArenaPromoteThreshold.self)
         self.arenaGamesPerTournament = Self.read(ArenaGamesPerTournament.self)
         self.arenaAutoIntervalSec = Self.read(ArenaAutoIntervalSec.self)
@@ -716,6 +755,9 @@ public final class TrainingParameters {
         v[TrainingBatchSize.id] = TrainingBatchSize.encode(trainingBatchSize)
         v[ReplayBufferCapacity.id] = ReplayBufferCapacity.encode(replayBufferCapacity)
         v[ReplayBufferMinPositionsBeforeTraining.id] = ReplayBufferMinPositionsBeforeTraining.encode(replayBufferMinPositionsBeforeTraining)
+        v[MaxPliesFromAnyOneGame.id] = MaxPliesFromAnyOneGame.encode(maxPliesFromAnyOneGame)
+        v[TargetSampledGameLengthPlies.id] = TargetSampledGameLengthPlies.encode(targetSampledGameLengthPlies)
+        v[MaxDrawPercentPerBatch.id] = MaxDrawPercentPerBatch.encode(maxDrawPercentPerBatch)
         v[ArenaPromoteThreshold.id] = ArenaPromoteThreshold.encode(arenaPromoteThreshold)
         v[ArenaGamesPerTournament.id] = ArenaGamesPerTournament.encode(arenaGamesPerTournament)
         v[ArenaAutoIntervalSec.id] = ArenaAutoIntervalSec.encode(arenaAutoIntervalSec)
@@ -795,6 +837,12 @@ public final class TrainingParameters {
             try ReplayBufferCapacity.definition.validate(raw); replayBufferCapacity = try ReplayBufferCapacity.decode(raw)
         case ReplayBufferMinPositionsBeforeTraining.id:
             try ReplayBufferMinPositionsBeforeTraining.definition.validate(raw); replayBufferMinPositionsBeforeTraining = try ReplayBufferMinPositionsBeforeTraining.decode(raw)
+        case MaxPliesFromAnyOneGame.id:
+            try MaxPliesFromAnyOneGame.definition.validate(raw); maxPliesFromAnyOneGame = try MaxPliesFromAnyOneGame.decode(raw)
+        case TargetSampledGameLengthPlies.id:
+            try TargetSampledGameLengthPlies.definition.validate(raw); targetSampledGameLengthPlies = try TargetSampledGameLengthPlies.decode(raw)
+        case MaxDrawPercentPerBatch.id:
+            try MaxDrawPercentPerBatch.definition.validate(raw); maxDrawPercentPerBatch = try MaxDrawPercentPerBatch.decode(raw)
         case ArenaPromoteThreshold.id:
             try ArenaPromoteThreshold.definition.validate(raw); arenaPromoteThreshold = try ArenaPromoteThreshold.decode(raw)
         case ArenaGamesPerTournament.id:
@@ -910,6 +958,9 @@ public final class TrainingParameters {
         TrainingBatchSize.self,
         ReplayBufferCapacity.self,
         ReplayBufferMinPositionsBeforeTraining.self,
+        MaxPliesFromAnyOneGame.self,
+        TargetSampledGameLengthPlies.self,
+        MaxDrawPercentPerBatch.self,
         ArenaPromoteThreshold.self,
         ArenaGamesPerTournament.self,
         ArenaAutoIntervalSec.self,

@@ -367,8 +367,34 @@ original rationale is not lost.
     - Load the autosaved `.dcmsession` back; the existing bit-exact forward-pass
       verification on load passes.
 
-- **Composition-aware replay-buffer batch sampler (added 2026-05-12).** Still
-  open. Today `ReplayBuffer.sample(count:…)` does `count` independent uniform
+- **Composition-aware replay-buffer batch sampler (added 2026-05-12).**
+  **✅ COMPLETED 2026-05-12.** Implemented as designed below (recommended v1:
+  stratified-rejection + exponential length tilt + per-game tally; no alias
+  tables). Deviations from the design text: (1) the constraints live *on*
+  `ReplayBuffer` (`SamplingConstraints` struct + `setSamplingConstraints(_:)`),
+  pushed from the main actor every UI heartbeat via
+  `ReplayBuffer.SamplingConstraints.fromCurrentParameters()` plus once at session
+  start — so `ChessTrainer`'s `sample(...)` call sites are unchanged and the
+  off-main trainer never reads `TrainingParameters.shared`; (2) no `[SAMPLER]`
+  degradation log line for v1 (the draw cap is documented as a ceiling and the
+  per-batch `[BATCH-STATS]` line already shows the post-constraint distribution);
+  (3) the popover "Replay sampling" section uses heartbeat-driven persistence on
+  Save (no per-keystroke live callback) — the buffer picks up the change on the
+  next ≤5 s tick. Files: `Training/ReplayBuffer.swift` (composition aggregates +
+  `CompositionSnapshot` + `SamplingConstraints` + `sample` rewrite + `solveLengthTiltBeta`),
+  `Training/TrainingParameters.swift` (3 new `Replay Buffer`-category `liveTunable`
+  Int params, registry 36→39), `App/SessionController.swift` (`bufferComposition`
+  mirrored prop), `App/SessionController+Heartbeat.swift` (push + mirror),
+  `App/SessionController+Training.swift` (seed at session start; `comp=(…)` on
+  `[STATS]`), `App/UpperContentView/UpperContentView.swift` (`Composition:` line),
+  `App/UpperContentView/TrainingSettingsPopover.swift` + `…Model.swift` ("Replay
+  sampling" section: 3 control rows + composition readout). Tests:
+  `DrewsChessMachineTests/ReplayBufferSamplingConstraintsTests.swift` (no-op
+  validity + aggregates, exact draw-cap ceiling, exact per-game cap, length-tilt
+  tracking + monotonicity, write/restore round-trip of aggregates, under-fill).
+  Original plan text retained below for the record.
+
+  Today `ReplayBuffer.sample(count:…)` did `count` independent uniform
   draws over the resident ring — no awareness of which game a position came
   from, the game's length, or its outcome. On the current draw-saturated buffer
   (~85% of resident positions are from drawn games; mean game length ~370 plies;

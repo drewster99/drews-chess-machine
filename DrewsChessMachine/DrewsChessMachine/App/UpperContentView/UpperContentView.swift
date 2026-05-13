@@ -400,6 +400,9 @@ struct UpperContentView: View {
     private var replayBuffer: ReplayBuffer? {
         get { session.replayBuffer } nonmutating set { session.replayBuffer = newValue }
     }
+    private var bufferComposition: ReplayBuffer.CompositionSnapshot? {
+        session.bufferComposition
+    }
     private var realRollingPolicyLoss: Double? {
         get { session.realRollingPolicyLoss } nonmutating set { session.realRollingPolicyLoss = newValue }
     }
@@ -2845,6 +2848,19 @@ struct UpperContentView: View {
             let bufRamMB = Double(bufCap * ReplayBuffer.bytesPerPosition) / (1024.0 * 1024.0)
             let bufStr = String(format: "%6d / %d  (%.0f MB)", bufCount, bufCap, bufRamMB)
             lines.append("  Buffer:     \(bufStr)")
+            // Pre-constraint composition: game-weighted mean game length,
+            // position-weighted mean game length, and W/D/L position split.
+            let compStr: String
+            if let c = bufferComposition, c.storedCount > 0 {
+                compStr = String(
+                    format: "len/game=%5.0f  len/pos=%5.0f  W/D/L=%2.0f%%/%2.0f%%/%2.0f%%",
+                    c.meanGameLengthPerGame, c.meanGameLengthPerSampledPosition,
+                    c.winFraction * 100, c.drawFraction * 100, c.lossFraction * 100
+                )
+            } else {
+                compStr = "len/game=\(dash)  len/pos=\(dash)  W/D/L=\(dash)"
+            }
+            lines.append("  Composition: \(compStr)")
             let policyStr: String
             if let loss = realRollingPolicyLoss {
                 policyStr = String(format: "%+.6f", loss)
@@ -3347,7 +3363,8 @@ extension UpperContentView {
                 replayRatioCurrent: replayRatioSnapshot?.currentRatio,
                 replayRatioComputedDelayMs: replayRatioSnapshot?.computedDelayMs,
                 replayRatioComputedSelfPlayDelayMs: replayRatioSnapshot?.computedSelfPlayDelayMs,
-                bytesPerPosition: ReplayBuffer.bytesPerPosition
+                bytesPerPosition: ReplayBuffer.bytesPerPosition,
+                bufferComposition: session.bufferComposition
             )
         }
     }

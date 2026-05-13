@@ -204,6 +204,20 @@ extension SessionController {
             }
         }
         elap("after 6")
+        // Replay-buffer composition mirror + per-batch sampling-constraint
+        // push. The buffer owns its `SamplingConstraints` (so the off-main
+        // trainer never reads `TrainingParameters.shared`); we re-push the
+        // current values every tick — cheap (one lock op) and idempotent.
+        // The composition snapshot is dirty-checked so @State only churns
+        // when the resident set actually changed.
+        if let buf = replayBuffer {
+            buf.setSamplingConstraints(.fromCurrentParameters())
+            let comp = buf.compositionSnapshot()
+            if comp != bufferComposition { bufferComposition = comp }
+        } else if bufferComposition != nil {
+            bufferComposition = nil
+        }
+        elap("after 6b")
         // Memory stats refresh. Throttled internally to
         // `memoryStatsRefreshSec` so this is a cheap timestamp compare
         // on most heartbeats.

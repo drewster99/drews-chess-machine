@@ -74,6 +74,9 @@ extension SessionController {
             buffer = ReplayBuffer(capacity: TrainingParameters.shared.replayBufferCapacity)
             replayBuffer = buffer
         }
+        // Seed the buffer's per-batch sampling constraints from the current
+        // parameters immediately (the heartbeat re-pushes every tick).
+        buffer.setSamplingConstraints(ReplayBuffer.SamplingConstraints.fromCurrentParameters())
         let box: TrainingLiveStatsBox
         if continueMode, let existing = trainingBox {
             box = existing
@@ -1323,6 +1326,7 @@ extension SessionController {
                         let parallelSnap = pStatsBox.snapshot()
                         let bufCount = buffer.count
                         let bufCap = buffer.capacity
+                        let bufComp = buffer.compositionSnapshot()
                         let ratioSnap = ratioController.snapshot()
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
@@ -1594,6 +1598,17 @@ extension SessionController {
                         } else {
                             bufUniqStr = "--"
                         }
+                        // Pre-constraint replay-buffer composition (the
+                        // post-constraint distribution of an actual sampled
+                        // batch is the [BATCH-STATS] line). lenG = game-weighted
+                        // mean game length, lenP = position-weighted (= E[L²]/E[L]).
+                        let compStr = String(
+                            format: "games=%d lenG=%.1f lenP=%.1f W=%.3f D=%.3f L=%.3f",
+                            bufComp.distinctResidentGames,
+                            bufComp.meanGameLengthPerGame,
+                            bufComp.meanGameLengthPerSampledPosition,
+                            bufComp.winFraction, bufComp.drawFraction, bufComp.lossFraction
+                        )
                         // Per-step timing means over the rolling timing
                         // window. Splits `recentStepMs` into prep/gpu/
                         // read/queueWait/step so a slowdown can be
@@ -1658,7 +1673,7 @@ extension SessionController {
                         // inputs).
                         let shapesStr = "feedCache=\(trainer.feedCacheCount)"
 
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // CLI `--output` capture: one StatsLine per

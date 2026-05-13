@@ -66,6 +66,10 @@ struct TrainingSettingsPopover: View {
     let replayRatioComputedSelfPlayDelayMs: Int?
     /// Bytes-per-position for the auto-GB readout (`ReplayBuffer.bytesPerPosition`).
     let bytesPerPosition: Int
+    /// Live resident-set composition of the replay buffer, for the
+    /// "Replay sampling" section's pre-constraint readout. `nil` outside
+    /// a Play-and-Train session / before the first heartbeat.
+    let bufferComposition: ReplayBuffer.CompositionSnapshot?
 
     // MARK: - Tab selection
 
@@ -108,6 +112,9 @@ struct TrainingSettingsPopover: View {
             || model.replayRatioTargetError
             || model.replaySelfPlayDelayError
             || model.replayTrainingStepDelayError
+            || model.maxPliesFromAnyOneGameError
+            || model.targetSampledGameLengthPliesError
+            || model.maxDrawPercentPerBatchError
     }
 
     private var anyTabHasError: Bool {
@@ -206,15 +213,22 @@ struct TrainingSettingsPopover: View {
                     replaySelfPlayDelayText: $model.replaySelfPlayDelayText,
                     replayTrainingStepDelayText: $model.replayTrainingStepDelayText,
                     replayRatioAutoAdjust: $model.replayRatioAutoAdjust,
+                    maxPliesFromAnyOneGameText: $model.maxPliesFromAnyOneGameText,
+                    targetSampledGameLengthPliesText: $model.targetSampledGameLengthPliesText,
+                    maxDrawPercentPerBatchText: $model.maxDrawPercentPerBatchText,
                     replayBufferCapacityError: model.replayBufferCapacityError,
                     replayBufferMinPositionsError: model.replayBufferMinPositionsError,
                     replayRatioTargetError: model.replayRatioTargetError,
                     replaySelfPlayDelayError: model.replaySelfPlayDelayError,
                     replayTrainingStepDelayError: model.replayTrainingStepDelayError,
+                    maxPliesFromAnyOneGameError: model.maxPliesFromAnyOneGameError,
+                    targetSampledGameLengthPliesError: model.targetSampledGameLengthPliesError,
+                    maxDrawPercentPerBatchError: model.maxDrawPercentPerBatchError,
                     replayRatioCurrent: replayRatioCurrent,
                     replayRatioComputedDelayMs: replayRatioComputedDelayMs,
                     replayRatioComputedSelfPlayDelayMs: replayRatioComputedSelfPlayDelayMs,
                     bytesPerPosition: bytesPerPosition,
+                    bufferComposition: bufferComposition,
                     onLiveReplayRatioTargetChange: { model.applyLiveReplayRatioTarget($0) },
                     onLiveSelfPlayDelayChange: { model.applyLiveSelfPlayDelay($0) },
                     onLiveTrainingStepDelayChange: { model.applyLiveTrainingStepDelay($0) },
@@ -803,17 +817,24 @@ private struct ReplayTab: View {
     @Binding var replaySelfPlayDelayText: String
     @Binding var replayTrainingStepDelayText: String
     @Binding var replayRatioAutoAdjust: Bool
+    @Binding var maxPliesFromAnyOneGameText: String
+    @Binding var targetSampledGameLengthPliesText: String
+    @Binding var maxDrawPercentPerBatchText: String
 
     let replayBufferCapacityError: Bool
     let replayBufferMinPositionsError: Bool
     let replayRatioTargetError: Bool
     let replaySelfPlayDelayError: Bool
     let replayTrainingStepDelayError: Bool
+    let maxPliesFromAnyOneGameError: Bool
+    let targetSampledGameLengthPliesError: Bool
+    let maxDrawPercentPerBatchError: Bool
 
     let replayRatioCurrent: Double?
     let replayRatioComputedDelayMs: Int?
     let replayRatioComputedSelfPlayDelayMs: Int?
     let bytesPerPosition: Int
+    let bufferComposition: ReplayBuffer.CompositionSnapshot?
 
     let onLiveReplayRatioTargetChange: (Double) -> Void
     let onLiveSelfPlayDelayChange: (Int) -> Void
@@ -979,7 +1000,173 @@ private struct ReplayTab: View {
                     Spacer()
                 }
             }
+
+            Divider()
+
+            // --- Replay sampling ---
+            //
+            // Per-training-batch composition constraints, plus the
+            // current (pre-constraint) composition of the resident
+            // buffer. The post-constraint distribution of an actual
+            // sampled batch shows up on the [BATCH-STATS] log line.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Replay sampling")
+                    .font(.subheadline.weight(.semibold))
+                PopoverRow(
+                    label: "Max plies from any 1 game:",
+                    text: $maxPliesFromAnyOneGameText,
+                    error: maxPliesFromAnyOneGameError,
+                    placeholder: "10",
+                    hint: "plies from 1 game"
+                ) {
+                    Stepper(
+                        "",
+                        value: PopoverBindings.intBinding(
+                            text: $maxPliesFromAnyOneGameText,
+                            fallback: 10
+                        ),
+                        in: 1...400,
+                        step: 1
+                    )
+                }
+                PopoverRow(
+                    label: "Target avg game plies:",
+                    text: $targetSampledGameLengthPliesText,
+                    error: targetSampledGameLengthPliesError,
+                    placeholder: "0",
+                    hint: "plies"
+                ) {
+                    Stepper(
+                        "",
+                        value: PopoverBindings.intBinding(
+                            text: $targetSampledGameLengthPliesText,
+                            fallback: 0
+                        ),
+                        in: 0...10_000,
+                        step: 10
+                    )
+                }
+                PopoverRow(
+                    label: "Max draws % per batch:",
+                    text: $maxDrawPercentPerBatchText,
+                    error: maxDrawPercentPerBatchError,
+                    placeholder: "100",
+                    hint: maxDrawPercentHint
+                ) {
+                    Stepper(
+                        "",
+                        value: PopoverBindings.intBinding(
+                            text: $maxDrawPercentPerBatchText,
+                            fallback: 100
+                        ),
+                        in: 0...100,
+                        step: 5
+                    )
+                }
+                replayCompositionReadout
+            }
         }
+    }
+
+    /// Pre-constraint composition of the resident buffer. One fact per
+    /// line, deliberately verbose — the popover is the one place the
+    /// user comes to read these. Labels are right-aligned to a fixed
+    /// column so the values line up.
+    ///
+    /// - "avg game length" is the simple per-game mean (each game
+    ///   contributes once).
+    /// - "avg sampled game length" is the position-weighted mean
+    ///   `E[L²]/E[L]` — the expected game length of the game a
+    ///   randomly-drawn position came from. The gap between the two
+    ///   is the game-length dispersion; long shuffle marathons pull
+    ///   the sampled mean above the per-game mean.
+    /// - The within-decisive `+z / −z` split should sit near 50/50;
+    ///   we colour it orange when it slips outside `[45, 55]` as a
+    ///   sign-assignment / colour-imbalance smell.
+    @ViewBuilder
+    private var replayCompositionReadout: some View {
+        // Always render the same 8-row tree (one title + seven value rows)
+        // regardless of whether `bufferComposition` is yet populated — values
+        // collapse to "—" before the first heartbeat. Keeps the SwiftUI view
+        // tree shape stable across the nil-to-populated transition (matches
+        // the project's view-stability rule).
+        let c = bufferComposition
+        let dash = "—"
+        let decisive = (c?.winPositions ?? 0) + (c?.lossPositions ?? 0)
+        let plusZ = decisive > 0 ? Double(c?.winPositions ?? 0) / Double(decisive) * 100 : 0.0
+        let minusZ = decisive > 0 ? Double(c?.lossPositions ?? 0) / Double(decisive) * 100 : 0.0
+        let skewed = decisive > 0 && (plusZ < 45 || plusZ > 55)
+        let hasData = (c?.storedCount ?? 0) > 0
+
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Buffer composition")
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 2)
+            readoutRow(
+                label: "games stored:",
+                value: c.map { numberString($0.distinctResidentGames) } ?? dash
+            )
+            readoutRow(
+                label: "avg game length:",
+                value: c.map { String(format: "%.0f plies", $0.meanGameLengthPerGame) } ?? dash
+            )
+            readoutRow(
+                label: "avg sampled game length:",
+                value: c.map { String(format: "%.0f plies", $0.meanGameLengthPerSampledPosition) } ?? dash
+            )
+            readoutRow(
+                label: "W:",
+                value: c.map { String(format: "%.1f%%", $0.winFraction * 100) } ?? dash
+            )
+            readoutRow(
+                label: "D:",
+                value: c.map { String(format: "%.1f%%", $0.drawFraction * 100) } ?? dash
+            )
+            readoutRow(
+                label: "L:",
+                value: c.map { String(format: "%.1f%%", $0.lossFraction * 100) } ?? dash
+            )
+            readoutRow(
+                label: "decisive split:",
+                value: hasData ? String(format: "+z %.0f%% / −z %.0f%%", plusZ, minusZ) : dash,
+                valueColor: skewed ? .orange : nil
+            )
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.top, 4)
+    }
+
+    /// One right-aligned label / left-aligned value row used by the
+    /// buffer-composition readout. Label column width matches the
+    /// rest of the popover (`PopoverRow` uses 160). `valueColor` is
+    /// applied unconditionally — nil resolves to the parent's
+    /// inherited secondary style, so the view tree never branches on
+    /// it (one `Text` in both shapes; matches the project's view-
+    /// stability rule).
+    @ViewBuilder
+    private func readoutRow(label: String, value: String, valueColor: Color? = nil) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .frame(width: 160, alignment: .trailing)
+            Text(value)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(valueColor ?? Color.secondary)
+            Spacer()
+        }
+    }
+
+    /// Format an Int with thousands separators ("2,722" not "2722").
+    private func numberString(_ n: Int) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        return f.string(from: NSNumber(value: n)) ?? String(n)
+    }
+
+    private var maxDrawPercentHint: String {
+        let t = maxDrawPercentPerBatchText.trimmingCharacters(in: .whitespaces)
+        if let n = Int(t), n >= 100 { return "off — no draw cap" }
+        return "% per batch"
     }
 
     /// Live "≈ X.X GB" hint for the capacity field. Updates as the

@@ -84,12 +84,18 @@ final class TrainingSettingsPopoverModel {
     var replaySelfPlayDelayText = "" { didSet { replaySelfPlayDelayError = false } }
     var replayTrainingStepDelayText = "" { didSet { replayTrainingStepDelayError = false } }
     var replayRatioAutoAdjust = true
+    var maxPliesFromAnyOneGameText = "" { didSet { maxPliesFromAnyOneGameError = false } }
+    var targetSampledGameLengthPliesText = "" { didSet { targetSampledGameLengthPliesError = false } }
+    var maxDrawPercentPerBatchText = "" { didSet { maxDrawPercentPerBatchError = false } }
 
     private(set) var replayBufferCapacityError = false
     private(set) var replayBufferMinPositionsError = false
     private(set) var replayRatioTargetError = false
     private(set) var replaySelfPlayDelayError = false
     private(set) var replayTrainingStepDelayError = false
+    private(set) var maxPliesFromAnyOneGameError = false
+    private(set) var targetSampledGameLengthPliesError = false
+    private(set) var maxDrawPercentPerBatchError = false
 
     // MARK: - Cancel stash (for the live-propagated replay-ratio fields)
 
@@ -167,6 +173,9 @@ final class TrainingSettingsPopoverModel {
         replaySelfPlayDelayText = String(p.selfPlayDelayMs)
         replayTrainingStepDelayText = String(p.trainingStepDelayMs)
         replayRatioAutoAdjust = p.replayRatioAutoAdjust
+        maxPliesFromAnyOneGameText = String(p.maxPliesFromAnyOneGame)
+        targetSampledGameLengthPliesText = String(p.targetSampledGameLengthPlies)
+        maxDrawPercentPerBatchText = String(p.maxDrawPercentPerBatch)
         // Stash pre-edit values for the four replay-ratio control fields. The
         // Replay tab live-propagates changes to those fields; if the user hits
         // Cancel we restore from this stash, matching the standard
@@ -199,6 +208,9 @@ final class TrainingSettingsPopoverModel {
         replayRatioTargetError = false
         replaySelfPlayDelayError = false
         replayTrainingStepDelayError = false
+        maxPliesFromAnyOneGameError = false
+        targetSampledGameLengthPliesError = false
+        maxDrawPercentPerBatchError = false
     }
 
     /// Restore the four live-propagated replay-ratio control fields from the
@@ -589,6 +601,42 @@ final class TrainingSettingsPopoverModel {
             }
         } else {
             replayBufferMinPositionsError = true
+            anyError = true
+        }
+
+        // Replay-sampling constraints — all Int, live-tunable (the buffer
+        // re-reads them via the heartbeat's `setSamplingConstraints` push).
+        if let n = Int(maxPliesFromAnyOneGameText.trimmingCharacters(in: .whitespaces)),
+           n >= 1, n <= 400 {
+            maxPliesFromAnyOneGameError = false
+            if n != p.maxPliesFromAnyOneGame {
+                SessionLogger.shared.log("[PARAM] maxPliesFromAnyOneGame: \(p.maxPliesFromAnyOneGame) -> \(n)")
+                p.maxPliesFromAnyOneGame = n
+            }
+        } else {
+            maxPliesFromAnyOneGameError = true
+            anyError = true
+        }
+        if let n = Int(targetSampledGameLengthPliesText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 10_000 {
+            targetSampledGameLengthPliesError = false
+            if n != p.targetSampledGameLengthPlies {
+                SessionLogger.shared.log("[PARAM] targetSampledGameLengthPlies: \(p.targetSampledGameLengthPlies) -> \(n)")
+                p.targetSampledGameLengthPlies = n
+            }
+        } else {
+            targetSampledGameLengthPliesError = true
+            anyError = true
+        }
+        if let n = Int(maxDrawPercentPerBatchText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 100 {
+            maxDrawPercentPerBatchError = false
+            if n != p.maxDrawPercentPerBatch {
+                SessionLogger.shared.log("[PARAM] maxDrawPercentPerBatch: \(p.maxDrawPercentPerBatch) -> \(n)")
+                p.maxDrawPercentPerBatch = n
+            }
+        } else {
+            maxDrawPercentPerBatchError = true
             anyError = true
         }
 
