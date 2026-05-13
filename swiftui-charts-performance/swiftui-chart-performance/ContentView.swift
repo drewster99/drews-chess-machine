@@ -32,7 +32,6 @@ struct ContentView: View {
     }
     @State var foo = 0
     @State private var selectedChart: ChartType = .native
-
     let timer = Timer.publish(
         every: 0.01,
         on: .main,
@@ -153,19 +152,23 @@ struct ChartLineShape: Shape {
         guard data.count > 1 else { return path }
 
         let step = rect.width / CGFloat(data.count - 1)
-
+        var lastX: CGFloat = .leastNonzeroMagnitude
         for (index, point) in data.enumerated() {
             // Normalize y from -1.2...1.2 to 0...1
             let val = (point.y + 1.2) / 2.4
-            let p = CGPoint(
+            let point = CGPoint(
                 x: CGFloat(index) * step,
                 y: (1 - CGFloat(val)) * rect.height
             )
 
             if index == 0 {
-                path.move(to: p)
+                path.move(to: point)
             } else {
-                path.addLine(to: p)
+                // Note: I added this check to improve performance but I'm not sure it did
+                if lastX != point.x {
+                    path.addLine(to: point)
+                    lastX = point.x
+                }
             }
         }
         return path
