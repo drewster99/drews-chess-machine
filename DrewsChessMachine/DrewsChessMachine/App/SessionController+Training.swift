@@ -243,6 +243,43 @@ extension SessionController {
                         "[RESUME-PARAM] batch_stats_interval: saved=nil applied=\(TrainingParameters.shared.batchStatsInterval) (defaulted)"
                     )
                 }
+                // Composition-aware replay-buffer sampler constraints. Unlike
+                // most params on this resume path these don't shadow on the
+                // trainer — the sampler reads them straight off
+                // `TrainingParameters.shared` each `sample(count:)` call
+                // (see ReplayBuffer.swift). So the resume action is just
+                // "write the saved value back onto the singleton" with the
+                // same `[RESUME-PARAM]` audit line as everything else here.
+                if let v = rs.maxPliesFromAnyOneGame {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_plies_from_any_one_game: \(TrainingParameters.shared.maxPliesFromAnyOneGame) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.maxPliesFromAnyOneGame = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_plies_from_any_one_game: saved=nil applied=\(TrainingParameters.shared.maxPliesFromAnyOneGame) (defaulted)"
+                    )
+                }
+                if let v = rs.targetSampledGameLengthPlies {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] target_sampled_game_length_plies: \(TrainingParameters.shared.targetSampledGameLengthPlies) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.targetSampledGameLengthPlies = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] target_sampled_game_length_plies: saved=nil applied=\(TrainingParameters.shared.targetSampledGameLengthPlies) (defaulted)"
+                    )
+                }
+                if let v = rs.maxDrawPercentPerBatch {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_draw_percent_per_batch: \(TrainingParameters.shared.maxDrawPercentPerBatch) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.maxDrawPercentPerBatch = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_draw_percent_per_batch: saved=nil applied=\(TrainingParameters.shared.maxDrawPercentPerBatch) (defaulted)"
+                    )
+                }
                 // LR warmup length and sqrt-batch LR scaling are now
                 // part of the session schema (Optional, for back-compat
                 // with older `.dcmsession` files that pre-date the

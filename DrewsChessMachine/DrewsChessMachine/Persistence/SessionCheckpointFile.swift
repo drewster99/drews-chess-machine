@@ -224,6 +224,16 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → loader falls through to
     /// `TrainingParameters.shared.batchStatsInterval`.
     var batchStatsInterval: Int?
+    /// Composition-aware replay-buffer sampler constraints in effect at
+    /// save time. All Optional for back-compat with session files written
+    /// before these knobs existed; absent → loader falls through to the
+    /// user's current `TrainingParameters.shared` value. The sampler reads
+    /// these directly off `TrainingParameters.shared` per `sample(count:)`
+    /// call (see `ReplayBuffer.swift`), so resume just needs to write the
+    /// saved value back onto the singleton.
+    var maxPliesFromAnyOneGame: Int?
+    var targetSampledGameLengthPlies: Int?
+    var maxDrawPercentPerBatch: Int?
 
     // Game-result breakdown (added v1.1 — Optional for compat)
     var whiteCheckmates: Int?

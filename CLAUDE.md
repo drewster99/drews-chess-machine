@@ -30,7 +30,21 @@ The app terminal console only shows SwiftUI chart warnings and bring-up noise. A
 
 ## Training parameters
 
-All 39 tunable training parameters live in a single `@MainActor @Observable` singleton: `TrainingParameters.shared` (`DrewsChessMachine/DrewsChessMachine/TrainingParameters.swift`). Each parameter is declared via the `@TrainingParameter` macro (in the local SwiftPM package `DrewsChessMachine/Packages/TrainingParametersMacro/`) which generates the id, definition (with range + category + liveTunable flag), and typed encode/decode. Adding a parameter: write a `@TrainingParameter(...) public enum FooBar: TrainingParameterKey {}` declaration plus a stored property + collectValues / applyOne entry in `TrainingParameters`; add the type to `allKeys`.
+All tunable training parameters live in a single `@MainActor @Observable` singleton: `TrainingParameters.shared` (`DrewsChessMachine/DrewsChessMachine/Training/TrainingParameters.swift`). Each parameter is declared via the `@TrainingParameter` macro (in the local SwiftPM package `DrewsChessMachine/Packages/TrainingParametersMacro/`) which generates the id, definition (with range + category + liveTunable flag), and typed encode/decode.
+
+### Adding / removing / renaming a parameter — full checklist
+
+The macro covers id + persistence + JSON encode/decode, but several touchpoints are still manual. **Walk all of these every time a parameter is added, removed, or renamed** — drift between them tends not to fail the build, just silently desync at runtime.
+
+1. **Declare it.** Write a `@TrainingParameter(...) public enum FooBar: TrainingParameterKey {}` declaration and add the type to `allKeys` in `TrainingParameters.swift`.
+2. **Wire the singleton.** Add a stored property + matching entries in `collectValues` / `applyOne` (and the snapshot's read accessor).
+3. **`parameters.json` save/load.** Confirm the new key appears in `--show-default-parameters` output and that the round-trip of `--create-parameters-file` → manual edit → reload behaves. (Macro-generated, but verify nothing is hand-listed in the CLI path.)
+4. **Session save/load (`.dcmsession`).** Add an Optional field to `SessionCheckpointState` in `Persistence/SessionCheckpointFile.swift` (Optional so older sessions still decode), pass it through `buildCurrentSessionState` in `SessionController+Checkpoint.swift`, and add a `[RESUME-PARAM]` block in `SessionController+Training.swift` that writes the saved value back onto `TrainingParameters.shared` (and, where applicable, onto the trainer) — mirroring the `batchStatsInterval` block. Both the "from session" and "saved=nil (defaulted)" branches must log.
+5. **`results.json` / `CliTrainingRecorder`.** If the parameter influences sampling, training math, or anything a CLI/autotrain run cares to compare, surface it in the recorder's snapshot (e.g. `BatchStatsSnapshot.samplingConstraints`) so it shows up in `results.json` alongside metrics.
+6. **Runtime log.** Make sure the parameter's *value* (or an observable derived from it) is visible in `[STATS]`, `[SAMPLER]`, `[BATCH-STATS]`, or a similar tag — otherwise a misconfiguration is invisible while the run is in progress.
+7. **UI position.** Decide where the parameter lives in `TrainingSettingsPopover.swift` (or another popover/control if it's not a training-loop knob), and add a binding + validation entry to `TrainingSettingsPopoverModel.swift`. A parameter with no UI is reachable only via `parameters.json` editing — fine for autotrain-only knobs but make that choice deliberately.
+8. **Live tunability.** If `liveTunable: true`, confirm the consumer re-reads from `TrainingParameters.shared` on a periodic reconcile loop instead of caching it in a snapshot at session start.
+9. **Renames.** Update the parameter's `id` (snake_case key in `UserDefaults` and JSON) **and** the Swift property name. Old `UserDefaults` entries under the previous id will then be ignored on load and the user's preference is silently reset to default — note this in the commit message; do not write migration code unless the user asks.
 
 Reading values:
 - **From SwiftUI views**: `@Bindable var trainingParams = TrainingParameters.shared`, then read `trainingParams.entropyBonus` or bind `$trainingParams.entropyBonus`. Re-renders fire automatically.
