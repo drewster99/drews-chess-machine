@@ -3337,13 +3337,26 @@ extension UpperContentView {
 
     fileprivate var trainingStatsColumnView: UpperTrainingStatsColumn {
         let column = trainingStatsText()
+        // Self-play section rendered below the policy stats. Always
+        // shown during Play-and-Train (regardless of board mode) so
+        // multi-worker sessions — where `SelfPlayStatsColumn` on the
+        // left is hidden by `isCandidateTestActive` — don't lose the
+        // Games/Moves/Avg-move/Results readout.
+        let selfPlay: (header: String, body: AttributedString)?
+        if realTraining, let stats = session.parallelStats {
+            let sp = playAndTrainStatsText(game: gameSnapshot, session: stats)
+            selfPlay = (sp.header, colorizedPanelBody(sp.body))
+        } else {
+            selfPlay = nil
+        }
         return UpperTrainingStatsColumn(
             header: column.header,
             bodyText: colorizedPanelBody(column.body),
             realTraining: realTraining,
             replayRatioSnapshot: replayRatioSnapshot,
             replayRatioTarget: trainingParams.replayRatioTarget,
-            replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust
+            replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust,
+            selfPlayStats: selfPlay
         )
     }
 
