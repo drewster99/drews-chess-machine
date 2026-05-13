@@ -248,4 +248,199 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         XCTAssertTrue(b2.ok)
         XCTAssertEqual(b2.zs.filter { $0 == 0 }.count, 64)  // all draws, decisive stratum empty
     }
+
+    // MARK: - SamplingResult / [SAMPLER] diagnostics
+
+    /// No-op fast path: `wasConstrainedPath` is false and `wasDegraded`
+    /// never fires (the [SAMPLER] line won't be emitted on these batches).
+    func testSamplingResultNoOpPath() {
+        let buf = makeMixedBuffer(capacity: 10_000, nDrawGames: 10, drawLen: 40, nDecGames: 10, decLen: 30)
+        buf.setSamplingConstraints(.unconstrained)
+        let b = drawBatch(buf, count: 128)
+        XCTAssertTrue(b.ok)
+        let sr = buf.lastSamplingResult()
+        XCTAssertTrue(sr.didSample)
+        XCTAssertFalse(sr.wasConstrainedPath)
+        XCTAssertFalse(sr.wasDegraded)
+        XCTAssertEqual(sr.batchSize, 128)
+    }
+
+    /// Buffer is heavily draw-skewed (1700 draws, only 200 decisive).
+    /// With a draw cap of 25% on a batch of 512, the decisive stratum
+    /// requests `bDec = 384` positions, but the buffer only has 200
+    /// decisive — `bDec` clamps down to 200 and the slack moves into
+    /// `bDraw`, pushing achievedDrawCount above the requested ceiling.
+    /// That's a *cap violation* on the draw ceiling; the trainer
+    /// surfaces this on [SAMPLER].
+    func testSamplingResultReportsDrawStratumOverflow() {
+        // 17 drawn 100-ply + 2 decisive 100-ply ⇒ 1700 draws, 200 decisive.
+        // 200 < 384 (the requested bDec) forces the clamp branch in sample().
+        let buf = makeMixedBuffer(capacity: 100_000, nDrawGames: 17, drawLen: 100, nDecGames: 2, decLen: 100)
+        let batchSize = 512
+        buf.setSamplingConstraints(constraints(maxDrawPercent: 25))
+        let b = drawBatch(buf, count: batchSize)
+        XCTAssertTrue(b.ok)
+        let sr = buf.lastSamplingResult()
+        XCTAssertTrue(sr.didSample)
+        XCTAssertTrue(sr.wasConstrainedPath)
+        XCTAssertEqual(sr.batchSize, batchSize)
+        // Request was 25% of 512 = 128 draws.
+        XCTAssertEqual(sr.requestedDrawCount, Int((0.25 * 512).rounded()))
+        // After the clamp: bDec = 200, deficit = 184, bDraw = 128 + 184 = 312.
+        XCTAssertEqual(sr.achievedDrawCount, 312,
+            "expected post-clamp bDraw = 312, got \(sr.achievedDrawCount)")
+        XCTAssertGreaterThan(sr.achievedDrawCount, sr.requestedDrawCount,
+            "achieved=\(sr.achievedDrawCount) should overshoot requested=\(sr.requestedDrawCount)")
+        XCTAssertTrue(sr.wasDegraded)
+    }
+
+    /// Buffer is mostly decisive. With a *high* draw cap of 90%, the
+    /// draw stratum gets requested ~460 positions but the buffer only
+    /// has ~80 drawn — `bDraw` clamps down, the decisive stratum eats
+    /// the slack. Achieved < requested. Still flagged as degraded so
+    /// the operator notices the buffer can't support the cap.
+    func testSamplingResultReportsDrawStratumUndershoot() {
+        // 2 drawn 40-ply + 20 decisive 40-ply ⇒ 80 draws, 800 decisive.
+        let buf = makeMixedBuffer(capacity: 50_000, nDrawGames: 2, drawLen: 40, nDecGames: 20, decLen: 40)
+        let batchSize = 512
+        buf.setSamplingConstraints(constraints(maxDrawPercent: 90))
+        let b = drawBatch(buf, count: batchSize)
+        XCTAssertTrue(b.ok)
+        let sr = buf.lastSamplingResult()
+        XCTAssertTrue(sr.wasConstrainedPath)
+        XCTAssertEqual(sr.requestedDrawCount, Int((0.90 * 512).rounded()))
+        XCTAssertLessThan(sr.achievedDrawCount, sr.requestedDrawCount,
+            "achieved=\(sr.achievedDrawCount) should undershoot requested=\(sr.requestedDrawCount)")
+        XCTAssertTrue(sr.wasDegraded)
+    }
+
+    /// Length target *above* the shortest resident game is feasible —
+    /// β bisection converges and `lengthTargetInfeasible` stays false.
+    /// `shortestResidentLength` is still reported (for [SAMPLER]'s
+    /// orientation context).
+    func testSamplingResultLengthTargetFeasible() {
+        // Lengths 50, 100, 200, 400. Shortest = 50.
+        let buf = ReplayBuffer(capacity: 1_000_000)
+        var gi: UInt32 = 0
+        for len in [50, 100, 200, 400] {
+            for _ in 0..<20 { appendGame(to: buf, length: len, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
+        }
+        // Target 120 — above shortest (50), below natural position-
+        // weighted mean ⇒ a finite β exists.
+        buf.setSamplingConstraints(constraints(targetLen: 120))
+        let b = drawBatch(buf, count: 1024)
+        XCTAssertTrue(b.ok)
+        let sr = buf.lastSamplingResult()
+        XCTAssertTrue(sr.wasConstrainedPath)
+        XCTAssertFalse(sr.lengthTargetInfeasible,
+            "shortest=50, target=120 should be feasible")
+        XCTAssertEqual(sr.shortestResidentLength, 50)
+    }
+
+    /// Length target *at or below* the shortest resident game is
+    /// infeasible — the position-weighted tilted mean cannot fall
+    /// below the shortest game length even at β→∞. The solver must
+    /// flag this rather than runaway-grow the bracket; the trainer
+    /// surfaces it on [SAMPLER] so the operator can either widen the
+    /// buffer's length distribution or relax the target.
+    func testSamplingResultLengthTargetInfeasibleBelowShortest() {
+        // Shortest resident length = 50; target 30 is unreachable.
+        let buf = ReplayBuffer(capacity: 1_000_000)
+        var gi: UInt32 = 0
+        for len in [50, 100, 200, 400] {
+            for _ in 0..<20 { appendGame(to: buf, length: len, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
+        }
+        buf.setSamplingConstraints(constraints(targetLen: 30))
+        let b = drawBatch(buf, count: 1024)
+        XCTAssertTrue(b.ok)
+        let sr = buf.lastSamplingResult()
+        XCTAssertTrue(sr.wasConstrainedPath)
+        XCTAssertTrue(sr.lengthTargetInfeasible,
+            "shortest=50, target=30 must be flagged infeasible")
+        XCTAssertEqual(sr.shortestResidentLength, 50)
+        XCTAssertTrue(sr.wasDegraded)
+        // The achieved batch should still complete (clamped β rejects
+        // all but the shortest games) — the achieved mean should be
+        // near 50, not the natural mean.
+        XCTAssertLessThan(sr.achievedMeanGameLength, 80,
+            "with infeasible target the achieved mean should still collapse near shortest")
+    }
+
+    /// Length target equal to the shortest resident length is also
+    /// infeasible whenever any longer game is present (equality only
+    /// reachable at β = ∞).
+    func testSamplingResultLengthTargetInfeasibleAtShortest() {
+        let buf = ReplayBuffer(capacity: 1_000_000)
+        var gi: UInt32 = 0
+        for len in [50, 100, 200] {
+            for _ in 0..<10 { appendGame(to: buf, length: len, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
+        }
+        buf.setSamplingConstraints(constraints(targetLen: 50))
+        let b = drawBatch(buf, count: 256)
+        XCTAssertTrue(b.ok)
+        let sr = buf.lastSamplingResult()
+        XCTAssertTrue(sr.lengthTargetInfeasible)
+        XCTAssertEqual(sr.shortestResidentLength, 50)
+    }
+
+    /// `BatchStatsSummary` carries the constraints that produced its
+    /// histograms (the post-sampling-constraints caption). Verified by
+    /// checking the JSON line contents — `applied` toggles with the
+    /// constraint state.
+    func testBatchStatsSummaryCarriesConstraints() {
+        let buf = makeMixedBuffer(capacity: 10_000, nDrawGames: 10, drawLen: 40, nDecGames: 10, decLen: 30)
+        // No-op path.
+        buf.setSamplingConstraints(.unconstrained)
+        let summary1 = sampleAndCompute(buf, count: 128)
+        XCTAssertFalse(summary1.samplingConstraintsApplied)
+        let json1 = summary1.jsonLine()
+        XCTAssertTrue(json1.contains("\"sampling_constraints\":{\"applied\":false"),
+            "no-op path should emit applied:false; got: \(json1.prefix(200))")
+        // Constrained path.
+        buf.setSamplingConstraints(constraints(maxPerGame: 5, maxDrawPercent: 50, targetLen: 35))
+        let summary2 = sampleAndCompute(buf, count: 128)
+        XCTAssertTrue(summary2.samplingConstraintsApplied)
+        let json2 = summary2.jsonLine()
+        XCTAssertTrue(json2.contains("\"applied\":true"), "got: \(json2.prefix(200))")
+        XCTAssertTrue(json2.contains("\"max_per_game\":5"))
+        XCTAssertTrue(json2.contains("\"max_draw_pct\":50"))
+        XCTAssertTrue(json2.contains("\"target_length\":35"))
+    }
+
+    /// Sample one batch with the full metadata pointers filled, then
+    /// hand the same buffers to `computeBatchStats` so the test can
+    /// inspect the resulting summary. Single sample call — keeps
+    /// `_lastSamplingResult` aligned with the summary returned.
+    private func sampleAndCompute(_ buffer: ReplayBuffer, count: Int) -> ReplayBuffer.BatchStatsSummary {
+        let fpb = ReplayBuffer.floatsPerBoard
+        let b = UnsafeMutablePointer<Float>.allocate(capacity: count * fpb)
+        let m = UnsafeMutablePointer<Int32>.allocate(capacity: count)
+        let z = UnsafeMutablePointer<Float>.allocate(capacity: count)
+        let pl = UnsafeMutablePointer<UInt16>.allocate(capacity: count)
+        let gl = UnsafeMutablePointer<UInt16>.allocate(capacity: count)
+        let ta = UnsafeMutablePointer<Float>.allocate(capacity: count)
+        let ha = UnsafeMutablePointer<UInt64>.allocate(capacity: count)
+        let wi = UnsafeMutablePointer<UInt32>.allocate(capacity: count)
+        let ma = UnsafeMutablePointer<UInt8>.allocate(capacity: count)
+        defer {
+            b.deallocate(); m.deallocate(); z.deallocate()
+            pl.deallocate(); gl.deallocate(); ta.deallocate()
+            ha.deallocate(); wi.deallocate(); ma.deallocate()
+        }
+        // sample() unconditionally writes to every slot — uninitialized
+        // POD storage is fine to pass in; computeBatchStats reads only
+        // what sample just wrote.
+        let ok = buffer.sample(
+            count: count, intoBoards: b, moves: m, zs: z,
+            plies: pl, gameLengths: gl, taus: ta, hashes: ha,
+            workerGameIds: wi, materialCounts: ma
+        )
+        XCTAssertTrue(ok, "sample under-fill in sampleAndCompute helper")
+        return buffer.computeBatchStats(
+            step: 0, batchSize: count,
+            plies: pl, gameLengths: gl, taus: ta,
+            hashes: ha, workerGameIds: wi,
+            materialCounts: ma, zs: z
+        )
+    }
 }

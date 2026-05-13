@@ -307,8 +307,26 @@ final class CliTrainingRecorder: @unchecked Sendable {
     /// each `[STATS]` tick from the trainer's most-recent stats
     /// batch. Field semantics match `ReplayBuffer.BatchStatsSummary`.
     struct BatchStatsSnapshot: Encodable, Sendable {
+        /// Composition constraints in effect when the batch summarised
+        /// here was sampled. `applied == false` means the batch took
+        /// the legacy uniform fast path; the histograms below are then
+        /// the pre-constraint distribution. `applied == true` means
+        /// the histograms are post-sampling-constraints.
+        struct SamplingConstraintsSnapshot: Encodable, Sendable {
+            let applied: Bool
+            let maxPerGame: Int
+            let maxDrawPct: Int
+            let targetLength: Int
+            enum CodingKeys: String, CodingKey {
+                case applied
+                case maxPerGame = "max_per_game"
+                case maxDrawPct = "max_draw_pct"
+                case targetLength = "target_length"
+            }
+        }
         let step: Int
         let batchSize: Int
+        let samplingConstraints: SamplingConstraintsSnapshot
         let uniqueCount: Int
         let uniquePct: Double
         let dupMax: Int
@@ -346,6 +364,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         enum CodingKeys: String, CodingKey {
             case step
             case batchSize = "batch_size"
+            case samplingConstraints = "sampling_constraints"
             case uniqueCount = "unique_count"
             case uniquePct = "unique_pct"
             case dupMax = "dup_max"
@@ -374,6 +393,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         init(
             step: Int,
             batchSize: Int,
+            samplingConstraints: SamplingConstraintsSnapshot,
             uniqueCount: Int,
             uniquePct: Double,
             dupMax: Int,
@@ -390,6 +410,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         ) {
             self.step = step
             self.batchSize = batchSize
+            self.samplingConstraints = samplingConstraints
             self.uniqueCount = uniqueCount
             self.uniquePct = uniquePct
             self.dupMax = dupMax

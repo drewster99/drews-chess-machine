@@ -360,6 +360,103 @@ final class ReplayBuffer: @unchecked Sendable {
         }
     }
 
+    /// Achievement report for the most recent `sample(...)` call. Captures
+    /// both what the caller asked for (the active `SamplingConstraints`)
+    /// and what the buffer was actually able to deliver — the trainer
+    /// uses the gap between requested and achieved to emit a `[SAMPLER]`
+    /// log line when constraints were degraded, and the `BatchStatsSummary`
+    /// uses it to caption the post-constraint histograms.
+    ///
+    /// All fields are zero / `false` after a sample call that took the
+    /// no-op fast path (`wasConstrainedPath == false`), and after an
+    /// under-fill (`didSample == false`). The default value
+    /// (`.uninitialized`) is what's reported before any `sample` call has
+    /// happened against this buffer.
+    public struct SamplingResult: Sendable {
+        /// Mirrors the legacy `sample(...) -> Bool` return: `false` when
+        /// the buffer held fewer positions than `sampleCount` and no
+        /// emit happened.
+        public let didSample: Bool
+        /// `false` when `sample` took the bit-for-bit uniform fast path
+        /// (constraints at their no-op settings). When `false` the rest
+        /// of the fields below are zero / `false` — there is nothing to
+        /// report on a no-op batch.
+        public let wasConstrainedPath: Bool
+        public let constraints: SamplingConstraints
+        public let batchSize: Int
+        /// `round(maxDrawPercent% · batchSize)` — the draw stratum size
+        /// that would have been emitted if both strata had unlimited
+        /// resident positions. Compare with `achievedDrawCount` to spot
+        /// stratum clamping.
+        public let requestedDrawCount: Int
+        public let achievedDrawCount: Int
+        public let achievedMaxPerGame: Int
+        /// Σ over emitted positions of that position's game length.
+        /// `achievedMeanGameLength = achievedSumGameLength / batchSize`.
+        public let achievedSumGameLength: Int
+        /// `true` when the requested `targetMeanGameLengthPlies` lies at
+        /// or below the shortest resident game length in the buffer —
+        /// the tilted-mean limit at β→∞ is the shortest length, so the
+        /// target is unreachable. β is clamped to a large value and the
+        /// trainer surfaces a `[SAMPLER]` line on the next stats step.
+        public let lengthTargetInfeasible: Bool
+        /// Shortest game length present in the resident histogram at the
+        /// time of this `sample` call. `0` when the buffer was empty or
+        /// the length tilt was disabled.
+        public let shortestResidentLength: Int
+        /// `true` when the rejection loop hit `attemptBudget` and fell
+        /// back to a uniform fill of the remaining slots. Indicates a
+        /// jointly-pathological constraint combination for the current
+        /// buffer composition.
+        public let attemptBudgetHit: Bool
+
+        public var achievedDrawPercent: Double {
+            batchSize > 0 ? Double(achievedDrawCount) * 100.0 / Double(batchSize) : 0
+        }
+        public var requestedDrawPercent: Double {
+            batchSize > 0 ? Double(requestedDrawCount) * 100.0 / Double(batchSize) : 0
+        }
+        public var achievedMeanGameLength: Double {
+            batchSize > 0 ? Double(achievedSumGameLength) / Double(batchSize) : 0
+        }
+        /// True when the achieved batch deviates from the request in a
+        /// way worth surfacing on `[SAMPLER]`: a draw-count gap > 1
+        /// position (i.e. the buffer's draw share couldn't support the
+        /// requested stratum, in either direction), the length target
+        /// was infeasible, or the attempt-budget fallback fired. A
+        /// no-op-path or undersampled batch never registers as degraded.
+        public var wasDegraded: Bool {
+            guard wasConstrainedPath, didSample else { return false }
+            if attemptBudgetHit || lengthTargetInfeasible { return true }
+            return abs(achievedDrawCount - requestedDrawCount) > max(1, batchSize / 100)
+        }
+
+        public static let uninitialized = SamplingResult(
+            didSample: false, wasConstrainedPath: false,
+            constraints: .unconstrained, batchSize: 0,
+            requestedDrawCount: 0, achievedDrawCount: 0,
+            achievedMaxPerGame: 0, achievedSumGameLength: 0,
+            lengthTargetInfeasible: false, shortestResidentLength: 0,
+            attemptBudgetHit: false
+        )
+    }
+
+    /// Record of the most-recent `sample(...)` call. Mutated only while
+    /// holding `lock`; read by `lastSamplingResult()` and by
+    /// `computeBatchStats(...)` so the `BatchStatsSummary` can carry
+    /// the constraints that produced its histograms.
+    private var _lastSamplingResult: SamplingResult = .uninitialized
+
+    /// Diagnostic report for the most recent `sample(...)` call —
+    /// constraints in effect, requested vs achieved draw counts,
+    /// per-game cap utilisation, length-target feasibility, and whether
+    /// the rejection loop hit its attempt budget. Trainer queue reads
+    /// this immediately after `sample` returns to decide whether to
+    /// emit a `[SAMPLER]` log line.
+    func lastSamplingResult() -> SamplingResult {
+        lock.withLock { _lastSamplingResult }
+    }
+
     /// O(1) snapshot of the resident-set composition, for the UI's
     /// "Replay sampling" readout and the `[STATS]` line.
     public struct CompositionSnapshot: Sendable, Equatable {
@@ -686,7 +783,10 @@ final class ReplayBuffer: @unchecked Sendable {
         // synchronously under the lock and doesn't outlive the call.
         return lock.withLockUnchecked {
             let held = storedCount
-            guard held >= sampleCount else { return false }
+            guard held >= sampleCount else {
+                _lastSamplingResult = .uninitialized
+                return false
+            }
 
             let floatsPerBoard = Self.floatsPerBoard
 
@@ -711,6 +811,14 @@ final class ReplayBuffer: @unchecked Sendable {
             // Fast path — bit-for-bit the legacy uniform-with-replacement sampler.
             if constraints.isNoOp(forBatchSize: sampleCount) {
                 for i in 0..<sampleCount { emit(i, Int.random(in: 0..<held)) }
+                _lastSamplingResult = SamplingResult(
+                    didSample: true, wasConstrainedPath: false,
+                    constraints: constraints, batchSize: sampleCount,
+                    requestedDrawCount: 0, achievedDrawCount: 0,
+                    achievedMaxPerGame: 0, achievedSumGameLength: 0,
+                    lengthTargetInfeasible: false, shortestResidentLength: 0,
+                    attemptBudgetHit: false
+                )
                 return true
             }
 
@@ -723,8 +831,14 @@ final class ReplayBuffer: @unchecked Sendable {
             // (the slack goes to decisive positions). Conversely, if there
             // aren't enough decisive positions to fill the decisive
             // stratum, the slack goes back to draws (the cap under-shoots).
+            //
+            // `requestedDrawCount` is the pre-clamp value (what the cap
+            // would have produced if both strata had unlimited resident
+            // positions); the trainer compares it against `bDraw` after
+            // clamping to decide whether to emit a `[SAMPLER]` line.
             let pct = min(max(constraints.maxDrawPercent, 0), 100)
-            var bDraw = min(Int((Double(pct) / 100.0 * Double(sampleCount)).rounded()), drawCount)
+            let requestedDrawCount = Int((Double(pct) / 100.0 * Double(sampleCount)).rounded())
+            var bDraw = min(requestedDrawCount, drawCount)
             var bDec = sampleCount - bDraw
             if bDec > decisiveCount {
                 let deficit = bDec - decisiveCount
@@ -736,8 +850,29 @@ final class ReplayBuffer: @unchecked Sendable {
             // jointly cover sampleCount.
 
             // Length-tilt β over the resident length histogram (0 ⇒ no tilt).
+            // The solver also reports whether the request is infeasible
+            // (target ≤ shortest resident game length) and the shortest
+            // resident length itself, so the trainer can surface both on
+            // the `[SAMPLER]` line.
+            //
+            // When the target is infeasible the *effective* target used
+            // by `tiltAccepts` is the shortest resident length: with
+            // β = 1e18 the tilt then rejects every length > shortest
+            // (factor ≈ 0) and accepts every length == shortest (the
+            // `len > effectiveTarget` early-return). Without this
+            // redirection the original target would force the tilt to
+            // reject *every* length (since all lens > target on the
+            // infeasible branch), and the loop would hit the attempt
+            // budget on every batch.
             let target = constraints.targetMeanGameLengthPlies
-            let beta: Double = target > 0 ? solveLengthTiltBeta(target: target) : 0.0
+            let tiltSolve: (beta: Double, infeasible: Bool, shortestResidentLength: Int)
+            if target > 0 {
+                tiltSolve = solveLengthTiltBeta(target: target)
+            } else {
+                tiltSolve = (0.0, false, 0)
+            }
+            let beta = tiltSolve.beta
+            let effectiveTarget: Int = tiltSolve.infeasible ? tiltSolve.shortestResidentLength : target
 
             // Per-game tally for the K cap, scoped to this batch.
             let cap = max(constraints.maxPerGame, 1)
@@ -757,9 +892,16 @@ final class ReplayBuffer: @unchecked Sendable {
             func tiltAccepts(_ srcIndex: Int) -> Bool {
                 guard beta > 0 else { return true }
                 let len = Int(gameLengthStorage[srcIndex])
-                guard len > target else { return true }
-                return Double.random(in: 0..<1) < exp(-beta * Double(len - target))
+                guard len > effectiveTarget else { return true }
+                return Double.random(in: 0..<1) < exp(-beta * Double(len - effectiveTarget))
             }
+
+            // Achievement tallies — accumulate as we emit, then publish
+            // to `_lastSamplingResult` before returning.
+            var achievedDrawCount = 0
+            var achievedMaxPerGame = 0
+            var achievedSumGameLength = 0
+            var attemptBudgetHit = false
 
             var emitted = 0
             var attempts = 0
@@ -769,8 +911,15 @@ final class ReplayBuffer: @unchecked Sendable {
                 while filled < quota {
                     attempts += 1
                     if attempts > attemptBudget {
-                        while emitted < sampleCount { emit(emitted, Int.random(in: 0..<held)); emitted += 1 }
-                        return true
+                        attemptBudgetHit = true
+                        while emitted < sampleCount {
+                            let srcIndex = Int.random(in: 0..<held)
+                            emit(emitted, srcIndex)
+                            if outcomeStorage[srcIndex] == 0.0 { achievedDrawCount += 1 }
+                            achievedSumGameLength += Int(gameLengthStorage[srcIndex])
+                            emitted += 1
+                        }
+                        break
                     }
                     let srcIndex = Int.random(in: 0..<held)
                     let isDraw = outcomeStorage[srcIndex] == 0.0
@@ -781,27 +930,53 @@ final class ReplayBuffer: @unchecked Sendable {
                     if c >= cap { continue }
                     perGameCount[gid] = c + 1
                     emit(emitted, srcIndex)
+                    if isDraw { achievedDrawCount += 1 }
+                    achievedSumGameLength += Int(gameLengthStorage[srcIndex])
                     emitted += 1
                     filled += 1
                 }
+                if attemptBudgetHit { break }
             }
+            for (_, c) in perGameCount where c > achievedMaxPerGame { achievedMaxPerGame = c }
+            _lastSamplingResult = SamplingResult(
+                didSample: true, wasConstrainedPath: true,
+                constraints: constraints, batchSize: sampleCount,
+                requestedDrawCount: requestedDrawCount,
+                achievedDrawCount: achievedDrawCount,
+                achievedMaxPerGame: achievedMaxPerGame,
+                achievedSumGameLength: achievedSumGameLength,
+                lengthTargetInfeasible: tiltSolve.infeasible,
+                shortestResidentLength: tiltSolve.shortestResidentLength,
+                attemptBudgetHit: attemptBudgetHit
+            )
             return true
         }
     }
 
     /// Solve for β ≥ 0 such that the position-weighted mean resident game
     /// length, exponentially down-weighted by `exp(-β·max(0, L−T))`,
-    /// equals `target` plies. The tilted mean is monotone-decreasing in β.
-    /// Returns 0 when the untilted mean is already ≤ `target` (no tilt
-    /// needed), or a large clamp value when even β→∞ can't pull the mean
-    /// down to `target` (i.e. `target` is below the shortest resident
-    /// game). Must be called while holding `lock`.
-    private func solveLengthTiltBeta(target: Int) -> Double {
-        if residentLengthHistogram.isEmpty { return 0 }
+    /// equals `target` plies. The tilted mean is monotone-decreasing in
+    /// β, and its limit at β→∞ is the shortest resident game length
+    /// (all weight collapses onto the shortest games). So:
+    ///
+    ///   - target ≥ untilted mean ⇒ β = 0, no tilt needed.
+    ///   - shortest_resident < target < untilted mean ⇒ bracket and bisect.
+    ///   - target ≤ shortest_resident (with any longer games present)
+    ///     ⇒ infeasible: the tilted mean cannot fall below the shortest
+    ///     game length. Clamp β to a large value (effectively reject
+    ///     everything but the shortest games) and report
+    ///     `infeasible: true` so the trainer can surface a `[SAMPLER]`
+    ///     line. Avoids the prior bracket-grow loop that silently
+    ///     runaway-clamped on this case.
+    ///
+    /// Must be called while holding `lock`.
+    private func solveLengthTiltBeta(target: Int) -> (beta: Double, infeasible: Bool, shortestResidentLength: Int) {
+        if residentLengthHistogram.isEmpty { return (0, false, 0) }
         let t = Double(target)
         // Snapshot histogram into arrays for the tight inner loop.
         let lens = residentLengthHistogram.keys.map { Double($0) }
         let wts = residentLengthHistogram.keys.map { Double(residentLengthHistogram[$0] ?? 0) }
+        let shortestLen = Int(lens.min() ?? 0)
         func tiltedMean(_ beta: Double) -> Double {
             var num = 0.0, den = 0.0
             for k in lens.indices {
@@ -812,21 +987,32 @@ final class ReplayBuffer: @unchecked Sendable {
             }
             return den > 0 ? num / den : 0
         }
-        if tiltedMean(0) <= t { return 0 }   // already short enough
+        if tiltedMean(0) <= t { return (0, false, shortestLen) }   // already short enough
+        // Achievability check: the position-weighted mean at β→∞
+        // converges to the shortest resident length. If the target is
+        // at or below that limit (and there exist longer games), no β
+        // can bring the mean down to the target. Reaching equality
+        // exactly requires β = ∞; treat that as infeasible too so the
+        // operator sees a clear message.
+        if Double(shortestLen) >= t {
+            return (1.0e18, true, shortestLen)
+        }
         // Bracket: grow β until the tilted mean drops to/below target.
+        // With the infeasibility guard above, this terminates in
+        // O(log(target / minMargin)) steps in practice — no runaway.
         var hi = 1.0e-3
         var grows = 0
         while tiltedMean(hi) > t {
             hi *= 4
             grows += 1
-            if grows > 40 { return hi }   // unreachable target — clamp
+            if grows > 40 { return (hi, false, shortestLen) }   // safety clamp
         }
         var lo = 0.0
         for _ in 0..<60 {   // bisection
             let mid = 0.5 * (lo + hi)
             if tiltedMean(mid) > t { lo = mid } else { hi = mid }
         }
-        return 0.5 * (lo + hi)
+        return (0.5 * (lo + hi), false, shortestLen)
     }
 
     // MARK: - Per-batch stats summarizer
@@ -840,6 +1026,13 @@ final class ReplayBuffer: @unchecked Sendable {
     /// `"short"`, `"med"`, `"long"` for game length; `"W"`, `"D"`,
     /// `"L"` for outcome; etc.). Counts sum to `batchSize` for any
     /// partition-style histogram.
+    ///
+    /// The histograms describe a *post-sampling-constraints* batch when
+    /// `samplingConstraintsApplied == true` — i.e. the per-batch
+    /// `maxPerGame` / `maxDrawPercent` / `targetMeanGameLengthPlies`
+    /// were active during the sample. Consumers reading the JSON for
+    /// post-run analysis should branch on `sampling_constraints.applied`
+    /// before comparing histograms across runs.
     public struct BatchStatsSummary: Sendable {
         public let step: Int
         public let batchSize: Int
@@ -861,6 +1054,16 @@ final class ReplayBuffer: @unchecked Sendable {
         public let phaseByPlyXOutcomeHistogram: [String: Int]
         public let bufferUniquePositions: Int     // global, dict.count
         public let bufferStoredCount: Int
+        /// Composition constraints in effect when this batch was
+        /// sampled. Captioning so a reader of the JSON line (or of
+        /// `result.json`) can tell whether the histograms reflect a
+        /// constrained-path batch.
+        public let samplingConstraints: SamplingConstraints
+        /// Mirrors `lastSamplingResult().wasConstrainedPath` — `false`
+        /// when the sample call took the bit-for-bit uniform fast path
+        /// (constraints at their no-op settings), `true` when the
+        /// composition controls actively shaped the batch.
+        public let samplingConstraintsApplied: Bool
 
         /// Render to a single-line JSON string for the `[BATCH-STATS]`
         /// log entry. Counts AND fractions of every histogram are
@@ -896,6 +1099,15 @@ final class ReplayBuffer: @unchecked Sendable {
             var out = "{"
             out += "\"step\":\(step),"
             out += "\"batch_size\":\(batchSize),"
+            // Caption: the constraints that produced this batch. Placed
+            // early so a grep on `[BATCH-STATS]` lines can branch on
+            // `applied` before reading the histograms.
+            out += "\"sampling_constraints\":{"
+            out += "\"applied\":\(samplingConstraintsApplied ? "true" : "false"),"
+            out += "\"max_per_game\":\(samplingConstraints.maxPerGame),"
+            out += "\"max_draw_pct\":\(samplingConstraints.maxDrawPercent),"
+            out += "\"target_length\":\(samplingConstraints.targetMeanGameLengthPlies)"
+            out += "},"
             out += "\"unique_count\":\(uniqueCount),"
             out += String(format: "\"unique_pct\":%.4f,", uniquePct)
             out += "\"dup_max\":\(dupMax),"
@@ -1032,9 +1244,15 @@ final class ReplayBuffer: @unchecked Sendable {
             phaseByPlyXOutcome["\(phasePlyLabel)_\(outcomeLabel)", default: 0] += 1
         }
 
-        // Snapshot buffer-global counters under the lock so the
-        // summary reflects a single consistent view.
-        let (uniqBuf, storedBuf) = lock.withLock { (hashStats.count, storedCount) }
+        // Snapshot buffer-global counters AND the constraints/path
+        // taken by the most-recent `sample(...)` under the lock so the
+        // summary reflects a single consistent view. The caller is
+        // expected to have just called `sample(...)` on the trainer
+        // queue, so `_lastSamplingResult` describes the batch whose
+        // histograms we're summarising.
+        let (uniqBuf, storedBuf, lastResult) = lock.withLock {
+            (hashStats.count, storedCount, _lastSamplingResult)
+        }
 
         return BatchStatsSummary(
             step: step,
@@ -1051,7 +1269,9 @@ final class ReplayBuffer: @unchecked Sendable {
             outcomeHistogram: outcomeHist,
             phaseByPlyXOutcomeHistogram: phaseByPlyXOutcome,
             bufferUniquePositions: uniqBuf,
-            bufferStoredCount: storedBuf
+            bufferStoredCount: storedBuf,
+            samplingConstraints: lastResult.constraints,
+            samplingConstraintsApplied: lastResult.wasConstrainedPath
         )
     }
 

@@ -1715,6 +1715,12 @@ extension SessionController {
                                     CliTrainingRecorder.BatchStatsSnapshot(
                                         step: s.step,
                                         batchSize: s.batchSize,
+                                        samplingConstraints: CliTrainingRecorder.BatchStatsSnapshot.SamplingConstraintsSnapshot(
+                                            applied: s.samplingConstraintsApplied,
+                                            maxPerGame: s.samplingConstraints.maxPerGame,
+                                            maxDrawPct: s.samplingConstraints.maxDrawPercent,
+                                            targetLength: s.samplingConstraints.targetMeanGameLengthPlies
+                                        ),
                                         uniqueCount: s.uniqueCount,
                                         uniquePct: s.uniquePct,
                                         dupMax: s.dupMax,

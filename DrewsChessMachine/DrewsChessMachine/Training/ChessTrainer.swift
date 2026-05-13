@@ -3455,6 +3455,26 @@ final class ChessTrainer: @unchecked Sendable {
                 self.lastBatchStatsUniquePct = summary.uniquePct
                 self.lastBatchStatsSummary = summary
                 SessionLogger.shared.log("[BATCH-STATS] " + summary.jsonLine())
+
+                // Surface composition-constraint deviations: stratum
+                // clamps on the draw cap (in either direction), length
+                // targets below the shortest resident game, and the
+                // attempt-budget fallback. Gated on `isStatsStep` so log
+                // volume tracks `batch_stats_interval`; only fires when
+                // there's something to report.
+                let sr = replayBuffer.lastSamplingResult()
+                if sr.wasDegraded {
+                    let reqD = String(format: "%.1f", sr.requestedDrawPercent)
+                    let gotD = String(format: "%.1f", sr.achievedDrawPercent)
+                    let mlen = String(format: "%.1f", sr.achievedMeanGameLength)
+                    let infeasible = sr.lengthTargetInfeasible ? "Y" : "N"
+                    let budget = sr.attemptBudgetHit ? "Y" : "N"
+                    let line = "[SAMPLER] step=\(nextStep) batch=\(sr.batchSize)"
+                        + " req=(K=\(sr.constraints.maxPerGame) D=\(reqD)% T=\(sr.constraints.targetMeanGameLengthPlies))"
+                        + " got=(D=\(gotD)% maxG=\(sr.achievedMaxPerGame) mlen=\(mlen))"
+                        + " flags=(infeasible_target=\(infeasible) shortest_resident=\(sr.shortestResidentLength) budget_hit=\(budget))"
+                    SessionLogger.shared.log(line)
+                }
             }
             let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
             let totalFloats = batchSize * floatsPerBoard
