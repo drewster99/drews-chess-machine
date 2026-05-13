@@ -316,7 +316,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Per-training-batch composition constraints for `sample(...)`. The
     /// defaults make `sample` behave exactly like the legacy
     /// uniform-with-replacement sampler — see `isNoOp(forBatchSize:)`.
-    public struct SamplingConstraints: Sendable {
+    public struct SamplingConstraints: Sendable, Equatable {
         /// Max positions drawn from any one game within a single batch.
         /// No-op for any value ≥ the batch size.
         public var maxPerGame: Int
@@ -367,30 +367,41 @@ final class ReplayBuffer: @unchecked Sendable {
     /// log line when constraints were degraded, and the `BatchStatsSummary`
     /// uses it to caption the post-constraint histograms.
     ///
-    /// All fields are zero / `false` after a sample call that took the
-    /// no-op fast path (`wasConstrainedPath == false`), and after an
-    /// under-fill (`didSample == false`). The default value
-    /// (`.uninitialized`) is what's reported before any `sample` call has
-    /// happened against this buffer.
-    public struct SamplingResult: Sendable {
+    /// Per-batch achievement counters (`achievedDrawCount` and friends,
+    /// `distinctGamesInBatch`, `achievedMaxPerGame`, `achievedSumGameLength`)
+    /// are populated on **both** the no-op fast path and the constrained
+    /// path so the UI's "Last sampled batch" readout works regardless of
+    /// constraint state. `wasConstrainedPath == false` means the fast
+    /// path was taken (no stratification / no tilt / no per-game cap
+    /// enforcement) — the counters describe what came out anyway. The
+    /// pre-constraint *requested* fields (`requestedDrawCount`) are
+    /// zero on the fast path because there was no request to compare
+    /// against. The default value (`.uninitialized`) is what's reported
+    /// before any `sample` call has happened against this buffer.
+    public struct SamplingResult: Sendable, Equatable {
         /// Mirrors the legacy `sample(...) -> Bool` return: `false` when
         /// the buffer held fewer positions than `sampleCount` and no
         /// emit happened.
         public let didSample: Bool
         /// `false` when `sample` took the bit-for-bit uniform fast path
-        /// (constraints at their no-op settings). When `false` the rest
-        /// of the fields below are zero / `false` — there is nothing to
-        /// report on a no-op batch.
+        /// (constraints at their no-op settings). The achievement counters
+        /// below are populated in both paths; this flag only says which
+        /// code path produced the batch.
         public let wasConstrainedPath: Bool
         public let constraints: SamplingConstraints
         public let batchSize: Int
         /// `round(maxDrawPercent% · batchSize)` — the draw stratum size
         /// that would have been emitted if both strata had unlimited
         /// resident positions. Compare with `achievedDrawCount` to spot
-        /// stratum clamping.
+        /// stratum clamping. `0` on the no-op fast path (no request).
         public let requestedDrawCount: Int
+        public let achievedWinCount: Int
         public let achievedDrawCount: Int
+        public let achievedLossCount: Int
         public let achievedMaxPerGame: Int
+        /// Distinct `workerGameId` values present in the emitted batch.
+        /// `batchSize / distinctGamesInBatch` is the avg samples per game.
+        public let distinctGamesInBatch: Int
         /// Σ over emitted positions of that position's game length.
         /// `achievedMeanGameLength = achievedSumGameLength / batchSize`.
         public let achievedSumGameLength: Int
@@ -410,14 +421,23 @@ final class ReplayBuffer: @unchecked Sendable {
         /// buffer composition.
         public let attemptBudgetHit: Bool
 
+        public var achievedWinPercent: Double {
+            batchSize > 0 ? Double(achievedWinCount) * 100.0 / Double(batchSize) : 0
+        }
         public var achievedDrawPercent: Double {
             batchSize > 0 ? Double(achievedDrawCount) * 100.0 / Double(batchSize) : 0
+        }
+        public var achievedLossPercent: Double {
+            batchSize > 0 ? Double(achievedLossCount) * 100.0 / Double(batchSize) : 0
         }
         public var requestedDrawPercent: Double {
             batchSize > 0 ? Double(requestedDrawCount) * 100.0 / Double(batchSize) : 0
         }
         public var achievedMeanGameLength: Double {
             batchSize > 0 ? Double(achievedSumGameLength) / Double(batchSize) : 0
+        }
+        public var achievedMeanSamplesPerGame: Double {
+            distinctGamesInBatch > 0 ? Double(batchSize) / Double(distinctGamesInBatch) : 0
         }
         /// True when the achieved batch deviates from the request in a
         /// way worth surfacing on `[SAMPLER]`: a draw-count gap > 1
@@ -434,8 +454,10 @@ final class ReplayBuffer: @unchecked Sendable {
         public static let uninitialized = SamplingResult(
             didSample: false, wasConstrainedPath: false,
             constraints: .unconstrained, batchSize: 0,
-            requestedDrawCount: 0, achievedDrawCount: 0,
-            achievedMaxPerGame: 0, achievedSumGameLength: 0,
+            requestedDrawCount: 0,
+            achievedWinCount: 0, achievedDrawCount: 0, achievedLossCount: 0,
+            achievedMaxPerGame: 0, distinctGamesInBatch: 0,
+            achievedSumGameLength: 0,
             lengthTargetInfeasible: false, shortestResidentLength: 0,
             attemptBudgetHit: false
         )
@@ -808,14 +830,42 @@ final class ReplayBuffer: @unchecked Sendable {
 
             let constraints = samplingConstraints
 
-            // Fast path — bit-for-bit the legacy uniform-with-replacement sampler.
+            // Fast path — bit-for-bit the legacy uniform-with-replacement
+            // sampler. The emit loop is identical to the legacy
+            // implementation; the extra book-keeping below is the per-batch
+            // composition tally for the UI's "Last sampled batch" readout
+            // (W/D/L counts, distinct games, per-game max, Σ game length).
+            // O(batchSize) dict/array ops; negligible vs the per-position
+            // board memcpy in `emit`. Same fields are populated on the
+            // constrained path further down, so the UI doesn't have to
+            // branch on which path produced the batch.
             if constraints.isNoOp(forBatchSize: sampleCount) {
-                for i in 0..<sampleCount { emit(i, Int.random(in: 0..<held)) }
+                var fastWin = 0, fastDraw = 0, fastLoss = 0
+                var fastSumLen = 0
+                var fastPerGame: [UInt32: Int] = [:]
+                fastPerGame.reserveCapacity(min(sampleCount, residentGames.count) + 1)
+                for i in 0..<sampleCount {
+                    let srcIndex = Int.random(in: 0..<held)
+                    emit(i, srcIndex)
+                    let z = outcomeStorage[srcIndex]
+                    if z > 0 { fastWin += 1 }
+                    else if z < 0 { fastLoss += 1 }
+                    else { fastDraw += 1 }
+                    fastSumLen += Int(gameLengthStorage[srcIndex])
+                    fastPerGame[workerGameIdStorage[srcIndex], default: 0] += 1
+                }
+                var fastMaxPerGame = 0
+                for (_, c) in fastPerGame where c > fastMaxPerGame { fastMaxPerGame = c }
                 _lastSamplingResult = SamplingResult(
                     didSample: true, wasConstrainedPath: false,
                     constraints: constraints, batchSize: sampleCount,
-                    requestedDrawCount: 0, achievedDrawCount: 0,
-                    achievedMaxPerGame: 0, achievedSumGameLength: 0,
+                    requestedDrawCount: 0,
+                    achievedWinCount: fastWin,
+                    achievedDrawCount: fastDraw,
+                    achievedLossCount: fastLoss,
+                    achievedMaxPerGame: fastMaxPerGame,
+                    distinctGamesInBatch: fastPerGame.count,
+                    achievedSumGameLength: fastSumLen,
                     lengthTargetInfeasible: false, shortestResidentLength: 0,
                     attemptBudgetHit: false
                 )
@@ -897,11 +947,24 @@ final class ReplayBuffer: @unchecked Sendable {
             }
 
             // Achievement tallies — accumulate as we emit, then publish
-            // to `_lastSamplingResult` before returning.
+            // to `_lastSamplingResult` before returning. The attempt-budget
+            // fallback also tallies perGameCount (so distinctGamesInBatch
+            // and achievedMaxPerGame remain meaningful even on the
+            // pathological-combination path).
+            var achievedWinCount = 0
             var achievedDrawCount = 0
+            var achievedLossCount = 0
             var achievedMaxPerGame = 0
             var achievedSumGameLength = 0
             var attemptBudgetHit = false
+
+            @inline(__always)
+            func tallyOutcome(_ srcIndex: Int) {
+                let z = outcomeStorage[srcIndex]
+                if z > 0 { achievedWinCount += 1 }
+                else if z < 0 { achievedLossCount += 1 }
+                else { achievedDrawCount += 1 }
+            }
 
             var emitted = 0
             var attempts = 0
@@ -915,8 +978,9 @@ final class ReplayBuffer: @unchecked Sendable {
                         while emitted < sampleCount {
                             let srcIndex = Int.random(in: 0..<held)
                             emit(emitted, srcIndex)
-                            if outcomeStorage[srcIndex] == 0.0 { achievedDrawCount += 1 }
+                            tallyOutcome(srcIndex)
                             achievedSumGameLength += Int(gameLengthStorage[srcIndex])
+                            perGameCount[workerGameIdStorage[srcIndex], default: 0] += 1
                             emitted += 1
                         }
                         break
@@ -930,7 +994,7 @@ final class ReplayBuffer: @unchecked Sendable {
                     if c >= cap { continue }
                     perGameCount[gid] = c + 1
                     emit(emitted, srcIndex)
-                    if isDraw { achievedDrawCount += 1 }
+                    tallyOutcome(srcIndex)
                     achievedSumGameLength += Int(gameLengthStorage[srcIndex])
                     emitted += 1
                     filled += 1
@@ -942,8 +1006,11 @@ final class ReplayBuffer: @unchecked Sendable {
                 didSample: true, wasConstrainedPath: true,
                 constraints: constraints, batchSize: sampleCount,
                 requestedDrawCount: requestedDrawCount,
+                achievedWinCount: achievedWinCount,
                 achievedDrawCount: achievedDrawCount,
+                achievedLossCount: achievedLossCount,
                 achievedMaxPerGame: achievedMaxPerGame,
+                distinctGamesInBatch: perGameCount.count,
                 achievedSumGameLength: achievedSumGameLength,
                 lengthTargetInfeasible: tiltSolve.infeasible,
                 shortestResidentLength: tiltSolve.shortestResidentLength,

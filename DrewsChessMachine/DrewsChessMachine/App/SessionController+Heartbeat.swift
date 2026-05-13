@@ -214,8 +214,17 @@ extension SessionController {
             buf.setSamplingConstraints(.fromCurrentParameters())
             let comp = buf.compositionSnapshot()
             if comp != bufferComposition { bufferComposition = comp }
-        } else if bufferComposition != nil {
-            bufferComposition = nil
+            // Mirror the latest per-batch achievement report into @State
+            // for the popover's "Last sampled batch" readout. The
+            // `.uninitialized` sentinel (no batch yet this session) is
+            // surfaced as `nil` on the controller so the popover UI can
+            // collapse the column to dashes without inspecting fields.
+            let sr = buf.lastSamplingResult()
+            let mirrored: ReplayBuffer.SamplingResult? = sr.didSample ? sr : nil
+            if mirrored != lastSamplingResult { lastSamplingResult = mirrored }
+        } else {
+            if bufferComposition != nil { bufferComposition = nil }
+            if lastSamplingResult != nil { lastSamplingResult = nil }
         }
         elap("after 6b")
         // Memory stats refresh. Throttled internally to

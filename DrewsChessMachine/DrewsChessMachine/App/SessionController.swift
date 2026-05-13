@@ -85,6 +85,15 @@ final class SessionController {
     /// by the UI heartbeat. `nil` outside a Play-and-Train session.
     var bufferComposition: ReplayBuffer.CompositionSnapshot?
 
+    /// Most recent `ReplayBuffer.sample(...)` achievement report — the
+    /// post-constraint W/D/L counts, distinct game count, max samples
+    /// per game, and Σ game length over the emitted batch. Mirrored
+    /// from `replayBuffer.lastSamplingResult()` by the heartbeat and
+    /// displayed in the "Last sampled batch" column of the Replay
+    /// Sampling popover readout. `nil` until the first batch has
+    /// landed in the current Play-and-Train session.
+    var lastSamplingResult: ReplayBuffer.SamplingResult?
+
     /// Lock-protected counter box shared across the parallel self-play and
     /// training worker tasks. Workers call `recordSelfPlayGame` /
     /// `recordTrainingStep`; the heartbeat polls `snapshot()` and mirrors into

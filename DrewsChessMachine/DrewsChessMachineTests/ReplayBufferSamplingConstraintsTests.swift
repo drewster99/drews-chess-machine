@@ -265,6 +265,40 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         XCTAssertEqual(sr.batchSize, 128)
     }
 
+    /// No-op fast path also populates the per-batch achievement counters
+    /// (so the popover's "Last batch" readout works regardless of
+    /// constraint state). W/D/L sum to the batch size, distinct game
+    /// count and max-per-game are in plausible ranges, and the
+    /// achieved-mean-game-length comes out near the buffer's
+    /// position-weighted mean.
+    func testSamplingResultNoOpPathPopulatesAchievementCounters() {
+        // 10 drawn 40-ply + 10 decisive 30-ply = 700 positions across 20 games.
+        // Buffer composition: 400 draws, 150 wins, 150 losses; position-
+        // weighted mean game length ≈ (400*40 + 300*30) / 700 ≈ 35.71.
+        let buf = makeMixedBuffer(capacity: 10_000, nDrawGames: 10, drawLen: 40, nDecGames: 10, decLen: 30)
+        buf.setSamplingConstraints(.unconstrained)
+        let batchSize = 4096
+        let b = drawBatch(buf, count: batchSize)
+        XCTAssertTrue(b.ok)
+        let sr = buf.lastSamplingResult()
+        XCTAssertFalse(sr.wasConstrainedPath)
+        // W + D + L must sum to batch size.
+        XCTAssertEqual(sr.achievedWinCount + sr.achievedDrawCount + sr.achievedLossCount, batchSize)
+        // Distinct games in batch ≤ resident game count and > 0.
+        XCTAssertGreaterThan(sr.distinctGamesInBatch, 0)
+        XCTAssertLessThanOrEqual(sr.distinctGamesInBatch, 20)
+        // Max per game is at least the average and at most the batch size.
+        let avgPerGame = Double(batchSize) / Double(sr.distinctGamesInBatch)
+        XCTAssertGreaterThanOrEqual(Double(sr.achievedMaxPerGame), avgPerGame)
+        XCTAssertLessThanOrEqual(sr.achievedMaxPerGame, batchSize)
+        // Achieved mean game length should be close to the position-
+        // weighted mean of the buffer (35.71). 4096 samples ⇒ tight CLT.
+        let bufferMean = Double(400 * 40 + 300 * 30) / 700.0
+        XCTAssertEqual(sr.achievedMeanGameLength, bufferMean, accuracy: 2.0,
+            "fast-path achieved mean \(sr.achievedMeanGameLength) should track buffer mean \(bufferMean)")
+        XCTAssertEqual(sr.achievedMeanSamplesPerGame, avgPerGame, accuracy: 1e-9)
+    }
+
     /// Buffer is heavily draw-skewed (1700 draws, only 200 decisive).
     /// With a draw cap of 25% on a batch of 512, the decisive stratum
     /// requests `bDec = 384` positions, but the buffer only has 200

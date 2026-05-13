@@ -71,6 +71,13 @@ struct TrainingSettingsPopover: View {
     /// a Play-and-Train session / before the first heartbeat.
     let bufferComposition: ReplayBuffer.CompositionSnapshot?
 
+    /// Most recent `ReplayBuffer.sample(...)` achievement report — drives
+    /// the "Last batch" column of the two-column composition readout in
+    /// the Replay tab. `nil` until the first batch has landed in the
+    /// current Play-and-Train session, at which point the heartbeat
+    /// mirrors `replayBuffer.lastSamplingResult()` into it.
+    let lastSamplingResult: ReplayBuffer.SamplingResult?
+
     // MARK: - Tab selection
 
     /// Local tab selection. Resets to `.optimizer` each time the
@@ -229,6 +236,7 @@ struct TrainingSettingsPopover: View {
                     replayRatioComputedSelfPlayDelayMs: replayRatioComputedSelfPlayDelayMs,
                     bytesPerPosition: bytesPerPosition,
                     bufferComposition: bufferComposition,
+                    lastSamplingResult: lastSamplingResult,
                     onLiveReplayRatioTargetChange: { model.applyLiveReplayRatioTarget($0) },
                     onLiveSelfPlayDelayChange: { model.applyLiveSelfPlayDelay($0) },
                     onLiveTrainingStepDelayChange: { model.applyLiveTrainingStepDelay($0) },
@@ -251,7 +259,7 @@ struct TrainingSettingsPopover: View {
             }
         }
         .padding(16)
-        .frame(width: 480)
+        .frame(width: 540)
         .onAppear { model.seedFromParams() }
         .onDisappear {
             // macOS popovers dismiss on outside-click without ever
@@ -835,6 +843,7 @@ private struct ReplayTab: View {
     let replayRatioComputedSelfPlayDelayMs: Int?
     let bytesPerPosition: Int
     let bufferComposition: ReplayBuffer.CompositionSnapshot?
+    let lastSamplingResult: ReplayBuffer.SamplingResult?
 
     let onLiveReplayRatioTargetChange: (Double) -> Void
     let onLiveSelfPlayDelayChange: (Int) -> Void
@@ -1068,68 +1077,134 @@ private struct ReplayTab: View {
         }
     }
 
-    /// Pre-constraint composition of the resident buffer. One fact per
-    /// line, deliberately verbose — the popover is the one place the
-    /// user comes to read these. Labels are right-aligned to a fixed
-    /// column so the values line up.
+    /// Pre-constraint resident-buffer composition next to the post-
+    /// constraint composition of the most-recent sampled training batch.
+    /// Layout: a right-aligned label column + two left-aligned value
+    /// columns ("Buffer" | "Last batch"). Rows that have no counterpart
+    /// in one of the columns render `—` in that cell so the row spacing
+    /// stays uniform.
     ///
-    /// - "avg game length" is the simple per-game mean (each game
-    ///   contributes once).
-    /// - "avg sampled game length" is the position-weighted mean
+    /// Buffer-side facts (left column):
+    /// - "games": distinct resident games (whole-game count).
+    /// - "avg game length": simple per-game mean (each resident game
+    ///   contributes once). No batch analog.
+    /// - "avg sampled game length": position-weighted mean
     ///   `E[L²]/E[L]` — the expected game length of the game a
     ///   randomly-drawn position came from. The gap between the two
-    ///   is the game-length dispersion; long shuffle marathons pull
-    ///   the sampled mean above the per-game mean.
-    /// - The within-decisive `+z / −z` split should sit near 50/50;
-    ///   we colour it orange when it slips outside `[45, 55]` as a
-    ///   sign-assignment / colour-imbalance smell.
+    ///   is the buffer's game-length dispersion.
+    /// - W / D / L: position-share of each outcome in the resident set.
+    /// - "decisive split": within-decisive `+z / −z` share; coloured
+    ///   orange when it slips outside [45, 55] as a sign-assignment
+    ///   smell.
+    ///
+    /// Batch-side facts (right column, post-constraint achievement):
+    /// - "games": `distinctGamesInBatch / batchSize`.
+    /// - "avg sampled game length": Σ game-length / batch size.
+    /// - "samples / game (avg)": batchSize / distinctGamesInBatch.
+    /// - "samples / game (max)": `maxPerGame` achieved this batch.
+    /// - W / D / L: achieved outcome shares (also coloured by
+    ///   sign skew within decisive).
     @ViewBuilder
     private var replayCompositionReadout: some View {
-        // Always render the same 8-row tree (one title + seven value rows)
-        // regardless of whether `bufferComposition` is yet populated — values
-        // collapse to "—" before the first heartbeat. Keeps the SwiftUI view
-        // tree shape stable across the nil-to-populated transition (matches
-        // the project's view-stability rule).
+        // Always render the same 11-row tree (one title + one header
+        // strip + nine value rows) regardless of whether the inputs are
+        // yet populated — empty cells collapse to "—". Keeps the SwiftUI
+        // view tree shape stable across the nil-to-populated transition.
         let c = bufferComposition
+        let sr = lastSamplingResult
         let dash = "—"
-        let decisive = (c?.winPositions ?? 0) + (c?.lossPositions ?? 0)
-        let plusZ = decisive > 0 ? Double(c?.winPositions ?? 0) / Double(decisive) * 100 : 0.0
-        let minusZ = decisive > 0 ? Double(c?.lossPositions ?? 0) / Double(decisive) * 100 : 0.0
-        let skewed = decisive > 0 && (plusZ < 45 || plusZ > 55)
-        let hasData = (c?.storedCount ?? 0) > 0
+
+        // --- Buffer side ---
+        let bufHas = (c?.storedCount ?? 0) > 0
+        let bufDecisive = (c?.winPositions ?? 0) + (c?.lossPositions ?? 0)
+        let bufPlusZ = bufDecisive > 0 ? Double(c?.winPositions ?? 0) / Double(bufDecisive) * 100 : 0.0
+        let bufMinusZ = bufDecisive > 0 ? Double(c?.lossPositions ?? 0) / Double(bufDecisive) * 100 : 0.0
+        let bufSkewed = bufDecisive > 0 && (bufPlusZ < 45 || bufPlusZ > 55)
+
+        // --- Batch side ---
+        let batchHas = (sr?.batchSize ?? 0) > 0
+        let batchDecisive = (sr?.achievedWinCount ?? 0) + (sr?.achievedLossCount ?? 0)
+        let batchPlusZ = batchDecisive > 0 ? Double(sr?.achievedWinCount ?? 0) / Double(batchDecisive) * 100 : 0.0
+        let batchMinusZ = batchDecisive > 0 ? Double(sr?.achievedLossCount ?? 0) / Double(batchDecisive) * 100 : 0.0
+        let batchSkewed = batchDecisive > 0 && (batchPlusZ < 45 || batchPlusZ > 55)
 
         VStack(alignment: .leading, spacing: 2) {
-            Text("Buffer composition")
+            Text("Composition")
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 2)
-            readoutRow(
-                label: "games stored:",
-                value: c.map { numberString($0.distinctResidentGames) } ?? dash
+            // Header strip: two column titles aligned with the value
+            // cells below. Empty label cell on the left so the
+            // titles sit directly above their data.
+            HStack(spacing: 8) {
+                Text("")
+                    .frame(width: 160, alignment: .trailing)
+                Text("Buffer")
+                    .frame(width: 140, alignment: .leading)
+                Text("Last batch")
+                    .frame(width: 140, alignment: .leading)
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+            twoColRow(
+                label: "games:",
+                bufferValue: bufHas
+                    ? numberString(c?.distinctResidentGames ?? 0)
+                    : dash,
+                batchValue: batchHas
+                    ? "\(numberString(sr?.distinctGamesInBatch ?? 0)) of \(numberString(sr?.batchSize ?? 0))"
+                    : dash
             )
-            readoutRow(
+            twoColRow(
                 label: "avg game length:",
-                value: c.map { String(format: "%.0f plies", $0.meanGameLengthPerGame) } ?? dash
+                bufferValue: c.map { String(format: "%.0f plies", $0.meanGameLengthPerGame) } ?? dash,
+                batchValue: dash
             )
-            readoutRow(
+            twoColRow(
                 label: "avg sampled game length:",
-                value: c.map { String(format: "%.0f plies", $0.meanGameLengthPerSampledPosition) } ?? dash
+                bufferValue: c.map { String(format: "%.0f plies", $0.meanGameLengthPerSampledPosition) } ?? dash,
+                batchValue: batchHas
+                    ? String(format: "%.0f plies", sr?.achievedMeanGameLength ?? 0)
+                    : dash
             )
-            readoutRow(
+            twoColRow(
+                label: "samples / game (avg):",
+                bufferValue: dash,
+                batchValue: batchHas
+                    ? String(format: "%.2f", sr?.achievedMeanSamplesPerGame ?? 0)
+                    : dash
+            )
+            twoColRow(
+                label: "samples / game (max):",
+                bufferValue: dash,
+                batchValue: batchHas
+                    ? numberString(sr?.achievedMaxPerGame ?? 0)
+                    : dash
+            )
+            twoColRow(
                 label: "W:",
-                value: c.map { String(format: "%.1f%%", $0.winFraction * 100) } ?? dash
+                bufferValue: c.map { String(format: "%.1f%%", $0.winFraction * 100) } ?? dash,
+                batchValue: batchHas ? String(format: "%.1f%%", sr?.achievedWinPercent ?? 0) : dash
             )
-            readoutRow(
+            twoColRow(
                 label: "D:",
-                value: c.map { String(format: "%.1f%%", $0.drawFraction * 100) } ?? dash
+                bufferValue: c.map { String(format: "%.1f%%", $0.drawFraction * 100) } ?? dash,
+                batchValue: batchHas ? String(format: "%.1f%%", sr?.achievedDrawPercent ?? 0) : dash
             )
-            readoutRow(
+            twoColRow(
                 label: "L:",
-                value: c.map { String(format: "%.1f%%", $0.lossFraction * 100) } ?? dash
+                bufferValue: c.map { String(format: "%.1f%%", $0.lossFraction * 100) } ?? dash,
+                batchValue: batchHas ? String(format: "%.1f%%", sr?.achievedLossPercent ?? 0) : dash
             )
-            readoutRow(
+            twoColRow(
                 label: "decisive split:",
-                value: hasData ? String(format: "+z %.0f%% / −z %.0f%%", plusZ, minusZ) : dash,
-                valueColor: skewed ? .orange : nil
+                bufferValue: bufHas
+                    ? String(format: "+z %.0f%% / −z %.0f%%", bufPlusZ, bufMinusZ)
+                    : dash,
+                bufferValueColor: bufSkewed ? .orange : nil,
+                batchValue: batchHas
+                    ? String(format: "+z %.0f%% / −z %.0f%%", batchPlusZ, batchMinusZ)
+                    : dash,
+                batchValueColor: batchSkewed ? .orange : nil
             )
         }
         .font(.caption)
@@ -1137,21 +1212,34 @@ private struct ReplayTab: View {
         .padding(.top, 4)
     }
 
-    /// One right-aligned label / left-aligned value row used by the
-    /// buffer-composition readout. Label column width matches the
-    /// rest of the popover (`PopoverRow` uses 160). `valueColor` is
-    /// applied unconditionally — nil resolves to the parent's
-    /// inherited secondary style, so the view tree never branches on
-    /// it (one `Text` in both shapes; matches the project's view-
-    /// stability rule).
+    /// One right-aligned label + two left-aligned value cells. Label
+    /// column width matches the rest of the popover (`PopoverRow` uses
+    /// 160). Each value column is a fixed 140pt so the "Buffer" /
+    /// "Last batch" header titles line up directly above the data.
+    /// `*ValueColor` is applied unconditionally — nil resolves to the
+    /// parent's inherited secondary style, so the view tree never
+    /// branches on it (matches the project's view-stability rule).
     @ViewBuilder
-    private func readoutRow(label: String, value: String, valueColor: Color? = nil) -> some View {
+    private func twoColRow(
+        label: String,
+        bufferValue: String,
+        bufferValueColor: Color? = nil,
+        batchValue: String,
+        batchValueColor: Color? = nil
+    ) -> some View {
         HStack(spacing: 8) {
             Text(label)
                 .frame(width: 160, alignment: .trailing)
-            Text(value)
+            Text(bufferValue)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(valueColor ?? Color.secondary)
+                .foregroundStyle(bufferValueColor ?? Color.secondary)
+                .lineLimit(1)
+                .frame(width: 140, alignment: .leading)
+            Text(batchValue)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(batchValueColor ?? Color.secondary)
+                .lineLimit(1)
+                .frame(width: 140, alignment: .leading)
             Spacer()
         }
     }
