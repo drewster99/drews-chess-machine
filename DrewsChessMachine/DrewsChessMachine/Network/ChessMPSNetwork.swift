@@ -226,9 +226,8 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// the full contract.
     ///
     /// - Parameters:
-    ///   - batchBoards: `count * BoardEncoder.tensorLength` floats (currently
-    ///                  `count * 1280`), NCHW order, positions laid
-    ///                  out back-to-back.
+    ///   - batchBoards: `count * BoardEncoder.tensorLength` floats,
+    ///                  NCHW order, positions laid out back-to-back.
     ///   - count: batch size; must be >= 1.
     ///   - consume: receives `policy` (`count * policySize` logits, position-major)
     ///              and `values` (`count` scalars in [-1, +1]).

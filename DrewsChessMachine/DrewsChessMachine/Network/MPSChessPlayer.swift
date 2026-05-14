@@ -477,7 +477,7 @@ final class MPSChessPlayer: ChessPlayer {
 
         // Hash the encoded position BEFORE evaluation so the hash key
         // matches exactly what the network sees. Cheap (~5 µs at
-        // 1280 floats with stdlib SipHash).
+        // `BoardEncoder.tensorLength` floats with stdlib SipHash).
         let stateHash = ReplayBuffer.hashBoard(rowBase, count: boardFloats)
         let plyTau = schedule.tau(forPly: gamePliesRecorded)
         // Non-pawn piece count for the by-material phase bucket.

@@ -61,8 +61,8 @@ struct PolicyDestination: @unchecked Sendable {
 ///   submission fires one batched `graph.run`; all N resume after their
 ///   policy bytes have been written into their per-slot destinations.
 ///
-/// `encodedBoard` is `BoardEncoder.tensorLength` floats (currently
-/// `inputPlanes` × 8 × 8 = 1280 floats in NCHW layout) produced by
+/// `encodedBoard` is `BoardEncoder.tensorLength` floats
+/// (= `ChessNetwork.inputPlanes` × 8 × 8 in NCHW layout) produced by
 /// `BoardEncoder.encode`, wrapped in a plain `[Float]` so the value
 /// can cross the actor boundary into `BatchedMoveEvaluationSource`
 /// (raw `UnsafeBufferPointer` is not `Sendable`). `MPSChessPlayer`

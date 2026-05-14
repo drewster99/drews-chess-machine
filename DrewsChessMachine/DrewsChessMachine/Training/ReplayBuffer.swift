@@ -23,8 +23,9 @@ import os
 /// mutable state access. The lock is never held across an `await`.
 final class ReplayBuffer: @unchecked Sendable {
     /// Number of floats required to hold one encoded board position
-    /// (`inputPlanes` × 8 × 8 — currently 20 × 64 = 1280 with the v2
-    /// architecture refresh that added two repetition planes).
+    /// (`inputPlanes` × 8 × 8 — currently 30 × 64 = 1920 with the v3
+    /// architecture refresh that added 10 binary temporal-repetition
+    /// history planes on top of the v2 baseline).
     static let floatsPerBoard = ChessNetwork.inputPlanes
         * ChessNetwork.boardSize
         * ChessNetwork.boardSize

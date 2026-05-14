@@ -69,11 +69,33 @@ struct GameState: Sendable {
     /// `ChessGameEngine` populates the actual count after each move.
     let repetitionCount: Int
 
-    /// Explicit memberwise initializer with default for `repetitionCount`
-    /// so legacy callsites (tests, UI editable position, applyMove that
-    /// doesn't know about game history) keep compiling without changes.
-    /// `ChessGameEngine` is the only caller that supplies a non-default
-    /// value, derived from its `positionCounts` table after each move.
+    /// Packed 10-bit mask of which recent prior positions equal this
+    /// position under `PositionKey` semantics (board + side-to-move +
+    /// all four castling rights + en-passant target). Bit `i` (0-indexed)
+    /// is 1 iff the position `i + 1` plies ago is a strict chess-rules
+    /// duplicate of the current position. Drives `BoardEncoder` planes
+    /// 20–29 — plane `20 + i` is all-1 iff bit `i` is set.
+    ///
+    /// Unlike `repetitionCount` (which counts total occurrences regardless
+    /// of when they happened), this carries the *temporal pattern* of
+    /// recent repetitions — e.g. a 2-ply cycle visited three times sets
+    /// bit 1 and bit 3 simultaneously. The intended use is letting the
+    /// network see "I'm caught in an N-ply shuffle" as a distinct feature
+    /// from "I've been at this position before."
+    ///
+    /// Cleared (along with `repetitionCount`) on any irreversible move
+    /// (halfmove clock = 0), matching `ChessGameEngine.positionCounts`
+    /// semantics — positions before an irreversible move can never recur.
+    /// Default 0 so existing test/UI constructions of `GameState` produce
+    /// the correct "no recent repetitions" encoding without breaking.
+    let recentRepetitionMask: UInt16
+
+    /// Explicit memberwise initializer with defaults for `repetitionCount`
+    /// and `recentRepetitionMask` so legacy callsites (tests, UI editable
+    /// position, applyMove that doesn't know about game history) keep
+    /// compiling without changes. `ChessGameEngine` is the only caller
+    /// that supplies non-default values, derived from its `positionCounts`
+    /// table and `recentPositionKeys` window after each move.
     init(
         board: [Piece?],
         currentPlayer: PieceColor,
@@ -83,7 +105,8 @@ struct GameState: Sendable {
         blackQueensideCastle: Bool,
         enPassantSquare: (row: Int, col: Int)?,
         halfmoveClock: Int,
-        repetitionCount: Int = 0
+        repetitionCount: Int = 0,
+        recentRepetitionMask: UInt16 = 0
     ) {
         self.board = board
         self.currentPlayer = currentPlayer
@@ -94,6 +117,7 @@ struct GameState: Sendable {
         self.enPassantSquare = enPassantSquare
         self.halfmoveClock = halfmoveClock
         self.repetitionCount = repetitionCount
+        self.recentRepetitionMask = recentRepetitionMask
     }
 
     /// Convenience: read the piece at (row, col). Equivalent to board[row * 8 + col].
@@ -115,7 +139,26 @@ struct GameState: Sendable {
             blackQueensideCastle: blackQueensideCastle,
             enPassantSquare: enPassantSquare,
             halfmoveClock: halfmoveClock,
-            repetitionCount: count
+            repetitionCount: count,
+            recentRepetitionMask: recentRepetitionMask
+        )
+    }
+
+    /// Return a copy with `recentRepetitionMask` replaced. Used by
+    /// `ChessGameEngine` to layer the temporal-repetition signal onto
+    /// a state after each move, in parallel with `withRepetitionCount`.
+    func withRecentRepetitionMask(_ mask: UInt16) -> GameState {
+        GameState(
+            board: board,
+            currentPlayer: currentPlayer,
+            whiteKingsideCastle: whiteKingsideCastle,
+            whiteQueensideCastle: whiteQueensideCastle,
+            blackKingsideCastle: blackKingsideCastle,
+            blackQueensideCastle: blackQueensideCastle,
+            enPassantSquare: enPassantSquare,
+            halfmoveClock: halfmoveClock,
+            repetitionCount: repetitionCount,
+            recentRepetitionMask: mask
         )
     }
 
@@ -143,7 +186,7 @@ struct GameState: Sendable {
 
 // MARK: - Board Encoder
 
-/// Encodes chess positions into the 20x8x8 tensor format expected by the network.
+/// Encodes chess positions into the 30x8x8 tensor format expected by the network.
 ///
 /// Always encoded from the current player's perspective:
 /// - Board flipped vertically if black is playing (so current player is always at bottom)
@@ -157,12 +200,26 @@ struct GameState: Sendable {
 ///   (this is at least the 2nd visit — a repeat that signals possible shuffling)
 /// - Plane 19: 1.0 if current position has occurred ≥2 times before
 ///   (this is at least the 3rd visit — the game is at the 3-fold draw threshold)
+/// - Planes 20-29: temporal-repetition history, broadcast-scalar (all-0 or
+///   all-1 across 64 cells). Plane `20 + i` is all-1 iff the position
+///   `i + 1` plies ago is a strict chess-rules duplicate (under
+///   `PositionKey` semantics: board + side-to-move + all four castling
+///   rights + en-passant target) of the current position. Index 0 = 1 ply
+///   ago (the most recent prior position); index 9 = 10 plies ago. Zero-
+///   padded when fewer than `i + 1` plies of history are available (game
+///   start, or after an irreversible move that clears the window). Drives
+///   the network's awareness of the *temporal pattern* of repetitions —
+///   distinguishing a 2-ply shuffle (bits 1 and 3 set after two visits)
+///   from a longer maneuvering cycle — which planes 18-19 cannot express.
 enum BoardEncoder {
 
-    /// Number of floats one encoded position occupies: 20 planes × 64 squares = 1280.
+    /// Number of floats one encoded position occupies: `inputPlanes`
+    /// × 64 squares. With the v3 architecture refresh (10 binary
+    /// temporal-repetition planes added on top of the v2 baseline) this
+    /// is 30 × 64 = 1920.
     static let tensorLength = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
 
-    /// Encode a game state into a caller-owned slice of `tensorLength` (= 1,280) floats.
+    /// Encode a game state into a caller-owned slice of `tensorLength` (= 1,920) floats.
     ///
     /// The per-move inference hot path uses this variant so the encoded
     /// tensor can live in a pre-allocated per-game scratch buffer,
@@ -267,9 +324,29 @@ enum BoardEncoder {
         let repCount = state.repetitionCount
         fillPlane(base, plane: 18, value: repCount >= 1 ? 1.0 : 0.0)
         fillPlane(base, plane: 19, value: repCount >= 2 ? 1.0 : 0.0)
+
+        // Planes 20–29: temporal-repetition history. Plane `20 + i` is
+        // all-1 iff bit `i` of `state.recentRepetitionMask` is set,
+        // meaning the position `i + 1` plies ago is a `PositionKey`
+        // duplicate of the current position. Skip-if-zero is fine here
+        // (unlike planes 18/19) because the leading `base.update` at
+        // line 192 already cleared the full tensorLength region — we
+        // only need to fill the 1-bits, not also zero out the 0-bits.
+        //
+        // The mask is read from the GameState itself (populated by
+        // ChessGameEngine after every move from its recentPositionKeys
+        // window). For tests / UI editable positions / .starting where
+        // the mask defaults to 0, all 10 planes stay zero — the correct
+        // "no recent repetitions" encoding.
+        let recentMask = state.recentRepetitionMask
+        if recentMask != 0 {
+            for i in 0..<10 where (recentMask >> i) & 1 == 1 {
+                fillPlane(base, plane: 20 + i)
+            }
+        }
     }
 
-    /// Encode a game state into a 20×8×8 = 1,280 float tensor.
+    /// Encode a game state into a 30×8×8 = 1,920 float tensor.
     ///
     /// Allocating variant — delegates to `encode(_:into:)` so both
     /// paths share the same encoding logic. Used by non-hot-path
@@ -310,7 +387,7 @@ enum BoardEncoder {
     /// legality (the 50-move-rule fires at clock ≥ 100, handled
     /// separately in `MoveGenerator`), so we ignore them.
     ///
-    /// - Parameter buffer: Exactly `tensorLength` (1280) floats in the
+    /// - Parameter buffer: Exactly `tensorLength` floats in the
     ///   NCHW row-major layout produced by `encode(_:into:)`.
     /// - Returns: A `GameState` with `currentPlayer = .white` whose
     ///   `MoveGenerator.legalMoves` output lines up with the policy

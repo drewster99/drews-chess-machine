@@ -99,7 +99,15 @@ final class ChessNetwork: @unchecked Sendable {
     static let dataType: MPSDataType = .float32
 
     static let channels = 128
-    static let inputPlanes = 20
+    /// Input plane count. v3 architecture: 20 baseline planes (pieces +
+    /// castling + EP + halfmove clock + 2 repetition-count planes) plus
+    /// 10 binary temporal-repetition-history planes (planes 20–29 in
+    /// `BoardEncoder`). Changing this value automatically propagates
+    /// through `BoardEncoder.tensorLength`, `ReplayBuffer.floatsPerBoard`,
+    /// the stem's weight shape `[channels, inputPlanes, 3, 3]`, and the
+    /// network's `arch_hash`, so old checkpoints with a different value
+    /// fail to load with a clear shape mismatch at startup.
+    static let inputPlanes = 30
     static let boardSize = 8
     static let numBlocks = 8
     /// Number of policy output channels: 56 queen-style (8 dirs × 7 dists)
@@ -687,7 +695,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// hot path — steady-state batches allocate nothing.
     ///
     /// - Parameters:
-    ///   - batchBoards: `count * inputPlanes * 8 * 8 = count * 1280` floats in
+    ///   - batchBoards: `count * inputPlanes * 8 * 8` floats in
     ///                  NCHW order, one position after another.
     ///   - count: number of positions in the batch; must be >= 1.
     ///   - consume: non-throwing closure invoked once with the policy

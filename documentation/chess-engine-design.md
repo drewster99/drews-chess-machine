@@ -39,11 +39,11 @@ The system has two major components that work together:
 > **[16, 4, 2]** - a 3-dimensional array, with sizes 16, 4, and 2. You can think of this as a 16x4 rectangular grid that is two layers deep. Or you could think of it as a 4x2 grid that is 16 layers deep.
 > 
 
-The board is represented as a 3D array — 18 planes/layers, each an 8×8 grid of floats. Think of it as 18 spreadsheets stacked on top of each other, each answering one specific question about the board.
+The board is represented as a 3D array — 30 planes/layers, each an 8×8 grid of floats. Think of it as 30 spreadsheets stacked on top of each other, each answering one specific question about the board.
 
 **Always encoded from the <u>current</u> player's perspective.** Whoever's turn it is, their pieces are "my pieces." The board is flipped vertically if needed so the current player is always at the bottom. This means the network never needs to learn separate strategies for white and black — chess knowledge is symmetric.
 
-### The 18 Planes
+### The 30 Planes
 
 | Plane | Content | Encoding |
 |-------|---------|----------|
@@ -64,7 +64,23 @@ The board is represented as a 3D array — 18 planes/layers, each an 8×8 grid o
 | 14 | Opponent kingside castling right | All 1.0s or all 0.0s |
 | 15 | Opponent queenside castling right | All 1.0s or all 0.0s |
 | 16 | En passant target square | Single 1.0 on capturable square, 0.0 elsewhere |
-| 17 | Halfmove clock | All same value, normalized 0.0–1.0 |
+| 17 | Halfmove clock | All same value, normalized `min(clock, 99) / 99` (Leela convention) |
+| 18 | Position has occurred ≥1 time before in this game | All 1.0s or all 0.0s |
+| 19 | Position has occurred ≥2 times before in this game | All 1.0s or all 0.0s |
+| 20 | Position 1 ply ago is a strict chess-rules duplicate of the current position | All 1.0s or all 0.0s |
+| 21 | Position 2 plies ago is a strict chess-rules duplicate | All 1.0s or all 0.0s |
+| 22 | Position 3 plies ago is a strict chess-rules duplicate | All 1.0s or all 0.0s |
+| 23 | Position 4 plies ago is a strict chess-rules duplicate | All 1.0s or all 0.0s |
+| 24 | Position 5 plies ago is a strict chess-rules duplicate | All 1.0s or all 0.0s |
+| 25 | Position 6 plies ago is a strict chess-rules duplicate | All 1.0s or all 0.0s |
+| 26 | Position 7 plies ago is a strict chess-rules duplicate | All 1.0s or all 0.0s |
+| 27 | Position 8 plies ago is a strict chess-rules duplicate | All 1.0s or all 0.0s |
+| 28 | Position 9 plies ago is a strict chess-rules duplicate | All 1.0s or all 0.0s |
+| 29 | Position 10 plies ago is a strict chess-rules duplicate | All 1.0s or all 0.0s |
+
+Planes 18 and 19 give the network the *count* of how many times the current position has occurred before (saturated at 2, since the 3rd visit forces a draw). Planes 20–29 give it the *temporal pattern* of those recurrences — e.g. a 2-ply knight shuffle visited twice sets bits 3 and 7 (the position 4 and 8 plies ago match the current), distinguishing "I'm caught in an N-ply cycle" from "I've simply been here before."
+
+"Strict chess-rules duplicate" means matching under FIDE Article 9.2: identical piece placement AND same side to move AND identical castling rights for both sides AND identical en-passant target. After any irreversible move (pawn move, capture, or anything else that resets the halfmove clock to 0) the 10-ply history window is cleared — no position before an irreversible move can ever match a later one.
 
 ### Design Decisions Worth Remembering
 
@@ -83,7 +99,7 @@ The board is represented as a 3D array — 18 planes/layers, each an 8×8 grid o
 ### Overview
 
 ```
-input (18 × 8 × 8)
+input (30 × 8 × 8)
     ↓
 stem — expands to 128 channels
     ↓
@@ -99,7 +115,7 @@ probabilities    [-1.0, +1.0]
 
 ### The Stem
 
-One conv layer that takes 18 input planes to 128 output channels:
+One conv layer that takes 30 input planes to 128 output channels:
 
 ```
 3×3 conv, 128 filters, padding=1
@@ -108,7 +124,7 @@ ReLU
 → 128 × 8 × 8
 ```
 
-Its only job is to translate from "18 planes of chess facts" into "128 channels of learned features" that the tower can work with.
+Its only job is to translate from "30 planes of chess facts" into "128 channels of learned features" that the tower can work with.
 
 **Terminology note — planes vs channels:** These mean the same thing (one 8×8 grid in the tensor), but convention shifts here. The input uses "planes" because each layer has a human-interpretable meaning you designed — "my pawns," "castling rights." After the stem, the 128 layers are abstract features the network discovered during training with no human-interpretable meaning, so they're called "channels" (the standard neural network term).
 
@@ -153,7 +169,7 @@ output_size = input_size - kernel_size + 2×padding + 1
             = 8
 ```
 
-This padding happens independently on each of the 18 input planes. The filter reads across all 18 padded planes simultaneously at each position (see [The Convolution Operation](#the-convolution-operation) for the full breakdown of this math). 128 filters produce 128 output channels. Board edges matter (rooks on the a-file, kings in corners) so you never want to lose them.
+This padding happens independently on each of the 30 input planes. The filter reads across all 30 padded planes simultaneously at each position (see [The Convolution Operation](#the-convolution-operation) for the full breakdown of this math). 128 filters produce 128 output channels. Board edges matter (rooks on the a-file, kings in corners) so you never want to lose them.
 
 Skip the math and move on to [The Tower](#the-tower)
 

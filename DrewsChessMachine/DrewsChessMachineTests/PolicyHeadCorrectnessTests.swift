@@ -696,14 +696,14 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
 
     // MARK: - Test 11: Encoder vs network input shape consistency
     //
-    // Encoder produces 1280 floats per position; network input tensor
-    // expects exactly inputPlanes * 8 * 8 = 1280. Hard-coded constants
-    // in different files MUST match.
+    // Encoder produces 1920 floats per position; network input tensor
+    // expects exactly inputPlanes * 8 * 8 = 1920 (v3 architecture: 30
+    // input planes). Hard-coded constants in different files MUST match.
 
     func testEncoderTensorLengthMatchesNetworkInputShape() {
         XCTAssertEqual(BoardEncoder.tensorLength,
                        ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
-        XCTAssertEqual(BoardEncoder.tensorLength, 1280)
+        XCTAssertEqual(BoardEncoder.tensorLength, 1920)
         XCTAssertEqual(ChessNetwork.policySize,
                        ChessNetwork.policyChannels * ChessNetwork.boardSize * ChessNetwork.boardSize)
         XCTAssertEqual(ChessNetwork.policySize, 4864)
@@ -1248,7 +1248,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         return out
     }
 
-    /// Sum of plane `plane` in a 1280-float encoded tensor.
+    /// Sum of plane `plane` in an encoded tensor (`tensorLength` floats).
     private func sumPlane(tensor: [Float], plane: Int) -> Float {
         var s: Float = 0
         for i in (plane * 64)..<((plane + 1) * 64) {
