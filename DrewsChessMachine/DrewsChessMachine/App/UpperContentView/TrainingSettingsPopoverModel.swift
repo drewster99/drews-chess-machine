@@ -671,8 +671,16 @@ final class TrainingSettingsPopoverModel {
         // `seedFromParams()` call into `originalSelfPlayDrawKeepFraction`
         // so a subsequent Cancel after Save reverts to "what Save
         // committed," not the original pre-edit value.
-        if let v = Double(selfPlayDrawKeepFractionText.trimmingCharacters(in: .whitespaces)),
-           v >= 0.0, v <= 1.0, v.isFinite {
+        // Empty text is treated as the parameter's default (1.0 =
+        // keep every drawn game) — matches the popover's placeholder
+        // and the `.onChange` handler's "blank means default" branch
+        // (which has already fired the live propagation by the time
+        // we get here).
+        let drawKeepTrimmed = selfPlayDrawKeepFractionText.trimmingCharacters(in: .whitespaces)
+        if drawKeepTrimmed.isEmpty {
+            selfPlayDrawKeepFractionError = false
+        } else if let v = Double(drawKeepTrimmed),
+                  v >= 0.0, v <= 1.0, v.isFinite {
             selfPlayDrawKeepFractionError = false
         } else {
             selfPlayDrawKeepFractionError = true
@@ -720,22 +728,35 @@ final class TrainingSettingsPopoverModel {
         // text against each parameter's range for the red-overlay display;
         // the [PARAM] log line fires below if the committed value differs
         // from the pre-edit stash (mirrors the four replay-ratio fields).
-        if let n = Int(maxPliesFromAnyOneGameText.trimmingCharacters(in: .whitespaces)),
-           n >= 1, n <= 400 {
+        // Empty text on each live-propagated field is treated as the
+        // parameter's default — matches the popover's placeholder
+        // and the `.onChange` handler's "blank means default" branch
+        // (which has already fired the live propagation by the time
+        // we get here). Without this, Save would error-flag the
+        // field for blank input even though the live readout below
+        // the field already shows the default value.
+        let maxPliesTrimmed = maxPliesFromAnyOneGameText.trimmingCharacters(in: .whitespaces)
+        if maxPliesTrimmed.isEmpty {
+            maxPliesFromAnyOneGameError = false
+        } else if let n = Int(maxPliesTrimmed), n >= 1, n <= 400 {
             maxPliesFromAnyOneGameError = false
         } else {
             maxPliesFromAnyOneGameError = true
             anyError = true
         }
-        if let n = Int(targetSampledGameLengthPliesText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 10_000 {
+        let targetLenTrimmed = targetSampledGameLengthPliesText.trimmingCharacters(in: .whitespaces)
+        if targetLenTrimmed.isEmpty {
+            targetSampledGameLengthPliesError = false
+        } else if let n = Int(targetLenTrimmed), n >= 0, n <= 10_000 {
             targetSampledGameLengthPliesError = false
         } else {
             targetSampledGameLengthPliesError = true
             anyError = true
         }
-        if let n = Int(maxDrawPercentPerBatchText.trimmingCharacters(in: .whitespaces)),
-           n >= 0, n <= 100 {
+        let maxDrawTrimmed = maxDrawPercentPerBatchText.trimmingCharacters(in: .whitespaces)
+        if maxDrawTrimmed.isEmpty {
+            maxDrawPercentPerBatchError = false
+        } else if let n = Int(maxDrawTrimmed), n >= 0, n <= 100 {
             maxDrawPercentPerBatchError = false
         } else {
             maxDrawPercentPerBatchError = true

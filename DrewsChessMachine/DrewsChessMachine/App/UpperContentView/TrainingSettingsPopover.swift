@@ -881,8 +881,11 @@ private struct SelfPlayTab: View {
                     )
                 }
                 .onChange(of: selfPlayDrawKeepFractionText) { _, newValue in
-                    if let v = Double(newValue.trimmingCharacters(in: .whitespaces)),
-                       v >= 0.0, v <= 1.0, v.isFinite {
+                    let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                    if trimmed.isEmpty {
+                        onLiveSelfPlayDrawKeepFractionChange(1.0)
+                    } else if let v = Double(trimmed),
+                              v >= 0.0, v <= 1.0, v.isFinite {
                         onLiveSelfPlayDrawKeepFractionChange(v)
                     }
                 }
@@ -1004,14 +1007,16 @@ private struct SelfPlayTab: View {
                     ? Self.numberString(Int(emittedRate.rounded()))
                     : dash
             )
+            // Game-total counts. The Played vs Emitted gap is exactly
+            // what the keep-fraction filter has dropped — the
+            // headline number for "is my filter doing what I want."
+            // The W/D/L breakdown lives one row down as percentages
+            // to keep this cell narrow enough to read at the standard
+            // 140-pt column width.
             twoColRow(
-                label: "games (W / D / L):",
-                playedValue: hasStats
-                    ? "\(Self.numberString(playedW)) / \(Self.numberString(playedDraws)) / \(Self.numberString(playedL))"
-                    : dash,
-                emittedValue: hasStats
-                    ? "\(Self.numberString(playedW)) / \(Self.numberString(emittedDraws)) / \(Self.numberString(playedL))"
-                    : dash
+                label: "games:",
+                playedValue: hasStats ? Self.numberString(playedTotal) : dash,
+                emittedValue: hasStats ? Self.numberString(emittedTotal) : dash
             )
             twoColRow(
                 label: "W / D / L %:",
@@ -1333,8 +1338,16 @@ private struct ReplayTab: View {
                     )
                 }
                 .onChange(of: maxPliesFromAnyOneGameText) { _, newValue in
-                    if let v = Int(newValue.trimmingCharacters(in: .whitespaces)),
-                       v >= 1, v <= 400 {
+                    // Empty (or whitespace-only) text is treated as
+                    // the parameter's default and live-propagated as
+                    // such — the placeholder text shows that default
+                    // so clearing the field reads visually as "use
+                    // the default" and the live readout below
+                    // matches what's about to be saved.
+                    let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                    if trimmed.isEmpty {
+                        onLiveMaxPliesFromAnyOneGameChange(10)
+                    } else if let v = Int(trimmed), v >= 1, v <= 400 {
                         onLiveMaxPliesFromAnyOneGameChange(v)
                     }
                 }
@@ -1357,8 +1370,10 @@ private struct ReplayTab: View {
                     )
                 }
                 .onChange(of: targetSampledGameLengthPliesText) { _, newValue in
-                    if let v = Int(newValue.trimmingCharacters(in: .whitespaces)),
-                       v >= 0, v <= 10_000 {
+                    let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                    if trimmed.isEmpty {
+                        onLiveTargetSampledGameLengthPliesChange(0)
+                    } else if let v = Int(trimmed), v >= 0, v <= 10_000 {
                         onLiveTargetSampledGameLengthPliesChange(v)
                     }
                 }
@@ -1381,8 +1396,10 @@ private struct ReplayTab: View {
                     )
                 }
                 .onChange(of: maxDrawPercentPerBatchText) { _, newValue in
-                    if let v = Int(newValue.trimmingCharacters(in: .whitespaces)),
-                       v >= 0, v <= 100 {
+                    let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                    if trimmed.isEmpty {
+                        onLiveMaxDrawPercentPerBatchChange(100)
+                    } else if let v = Int(trimmed), v >= 0, v <= 100 {
                         onLiveMaxDrawPercentPerBatchChange(v)
                     }
                 }
