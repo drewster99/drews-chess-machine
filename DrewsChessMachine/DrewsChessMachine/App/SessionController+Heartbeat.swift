@@ -23,7 +23,7 @@ extension SessionController {
     nonisolated static let memoryStatsRefreshSec: Double = 10
     nonisolated static let usageStatsRefreshSec: Double = 5
     nonisolated static let progressRateRefreshSec: Double = 1.0
-    nonisolated static let progressRateWindowSec: Double = 180.0
+    nonisolated static let progressRateWindowSec: Double = 60.0
 
     func processSnapshotTimerTick(dispatchedAt: CFAbsoluteTime) async {
         guard !snapshotTickInFlight else { return }
@@ -409,19 +409,20 @@ extension SessionController {
     }
 
     /// Append a new progress-rate sample at most once per
-    /// `progressRateRefreshSec` during a Play and Train 
+    /// `progressRateRefreshSec` during a Play and Train.
     /// The moves/hr fields are computed over a real trailing
-    /// 3-minute window: we walk backward from the newest stored
-    /// sample until we find the first one whose `timestamp` is
-    /// still inside the window, then subtract its cumulative
-    /// counters from the current cumulative counters and divide
-    /// by the actual elapsed seconds between the two samples.
+    /// `progressRateWindowSec` window: we walk backward from the
+    /// newest stored sample until we find the first one whose
+    /// `timestamp` is still inside the window, then subtract its
+    /// cumulative counters from the current cumulative counters
+    /// and divide by the actual elapsed seconds between the two
+    /// samples.
     ///
-    /// Before the session has 3 minutes of history, the window
+    /// Before the session has a full window of history, the window
     /// shrinks gracefully to "whatever we have" — the first
     /// sample reports zero (no earlier sample to subtract from),
     /// the second reports over ~1 s, and so on until the window
-    /// reaches its full 180 s width.
+    /// reaches its full width.
     ///
     /// No-op outside of `realTraining`. Sampler state is cleared
     /// by `startRealTraining()` so each session's chart starts
@@ -526,7 +527,7 @@ extension SessionController {
         // both samplers must share an anchor or `scrollX` ends up
         // straddling two coordinate spaces. `sessionStart`
         // remains the correct anchor for everything else this
-        // function does (cumulative-counter deltas use 3-minute
+        // function does (cumulative-counter deltas use the 1-minute
         // window timestamps, not elapsedSec).
         let elapsed = max(0, now.timeIntervalSince(chartCoordinator?.chartElapsedAnchor ?? Date()))
         let curSp = pStats.selfPlayPositions
@@ -534,11 +535,12 @@ extension SessionController {
 
         // Walk newest → oldest through the coordinator's ring,
         // recording the last sample we see that still falls inside
-        // the 3-minute window. Breaks out as soon as we hit a
+        // the rolling window. Breaks out as soon as we hit a
         // sample older than the cutoff — the ring is timestamp-
         // sorted, so anything older is also out of window. Bounded
-        // at ~180 iterations per call in steady state regardless of
-        // total session length.
+        // at `progressRateWindowSec / progressRateRefreshSec`
+        // iterations per call in steady state regardless of total
+        // session length (~60 at the current 60s window / 1s refresh).
         let cutoff = now.addingTimeInterval(-Self.progressRateWindowSec)
         var windowStart: ProgressRateSample?
         var i = (chartCoordinator?.progressRateRing.count ?? 0) - 1

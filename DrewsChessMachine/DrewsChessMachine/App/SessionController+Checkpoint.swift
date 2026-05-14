@@ -377,6 +377,7 @@ extension SessionController {
                 )
                 periodicSaveController?.noteSuccessfulSave(at: Date())
                 checkpoint?.lastSavedAt = Date()
+                checkpoint?.lastResumedAt = nil
             case .failure(let error):
                 checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
@@ -533,6 +534,7 @@ extension SessionController {
                     Click Play and Train to resume.
                     """
                 checkpoint?.lastSavedAt = nil
+                checkpoint?.lastResumedAt = Date()
                 checkpoint?.setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", kind: .success)
                 let savedBuild = loaded.state.buildNumber.map(String.init) ?? "?"
                 let savedGit = loaded.state.buildGitHash ?? "?"
@@ -687,6 +689,12 @@ extension SessionController {
             threefoldRepetitionDraws: snap?.threefoldRepetitionDraws,
             insufficientMaterialDraws: snap?.insufficientMaterialDraws,
             totalGameWallMs: snap?.totalGameWallMs,
+            emittedWhiteCheckmates: snap?.emittedWhiteCheckmates,
+            emittedBlackCheckmates: snap?.emittedBlackCheckmates,
+            emittedStalemates: snap?.emittedStalemates,
+            emittedFiftyMoveDraws: snap?.emittedFiftyMoveDraws,
+            emittedThreefoldRepetitionDraws: snap?.emittedThreefoldRepetitionDraws,
+            emittedInsufficientMaterialDraws: snap?.emittedInsufficientMaterialDraws,
             buildNumber: BuildInfo.buildNumber,
             buildGitHash: BuildInfo.gitHash,
             buildGitBranch: BuildInfo.gitBranch,

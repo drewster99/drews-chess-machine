@@ -555,7 +555,13 @@ extension SessionController {
                 insufficientMaterialDraws: rs.insufficientMaterialDraws ?? 0,
                 trainingSteps: rs.trainingSteps,
                 emittedGames: rs.emittedGames,
-                emittedPositions: rs.emittedPositions
+                emittedPositions: rs.emittedPositions,
+                emittedWhiteCheckmates: rs.emittedWhiteCheckmates,
+                emittedBlackCheckmates: rs.emittedBlackCheckmates,
+                emittedStalemates: rs.emittedStalemates,
+                emittedFiftyMoveDraws: rs.emittedFiftyMoveDraws,
+                emittedThreefoldRepetitionDraws: rs.emittedThreefoldRepetitionDraws,
+                emittedInsufficientMaterialDraws: rs.emittedInsufficientMaterialDraws
             )
             if let workerCount = resumeState?.selfPlayWorkerCount {
                 TrainingParameters.shared.selfPlayWorkers = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, workerCount))
@@ -1535,12 +1541,13 @@ extension SessionController {
                             valueW,
                             momentum
                         )
-                        // Average game length: lifetime and 10-min
-                        // rolling window. `selfPlayPositions` counts
-                        // every ply played, so dividing by the number
-                        // of completed games gives the mean plies-per-
-                        // game. Rolling avg tracks recent behavior;
-                        // lifetime avg catches longer-term drift.
+                        // Average game length: lifetime and rolling-
+                        // window (`recentWindow`, currently 1 minute).
+                        // `selfPlayPositions` counts every ply played,
+                        // so dividing by the number of completed games
+                        // gives the mean plies-per-game. Rolling avg
+                        // tracks recent behavior; lifetime avg catches
+                        // longer-term drift.
                         let lifetimeAvgLen: Double = parallelSnap.selfPlayGames > 0
                         ? Double(parallelSnap.selfPlayPositions) / Double(parallelSnap.selfPlayGames)
                         : 0

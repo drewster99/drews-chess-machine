@@ -583,25 +583,13 @@ struct UpperContentView: View {
     /// second. Matches the user's spec.
     /// Rolling window width used to compute each sample's
     /// moves/hr from the delta between "now" and "the sample
-    /// closest to 3 minutes ago". 180 s, as requested.
+    /// closest to one window-width ago". Owned by
+    /// `SessionController.progressRateWindowSec` (currently 60 s).
     /// Visible X-axis length shown on the Progress rate chart
     /// at any one time, in elapsed seconds. The chart scrolls
     /// horizontally through the full session's data in chunks
-    /// of this size. 10 minutes matches the existing "last 10m"
-    /// rolling column in the Self Play stats panel, so the eye
-    /// can correlate chart movement with the numeric column.
+    /// of this size.
     nonisolated static let progressRateVisibleDomainSec: Double = 1800
-    /// Wall-clock seconds the Play and Train Session panel waits
-    /// after session start before showing rate-based stats fields
-    /// (Moves/hr, Games/hr in both lifetime and 10-min columns).
-    /// Below this threshold the very first game's near-zero
-    /// elapsed denominator would print absurd millions-of-moves/hr
-    /// values; the dashes fade in once the session has had enough
-    /// wall clock for the rates to be meaningful. Per-game and
-    /// per-move averages aren't gated — they don't divide by wall
-    /// clock so they're correct from the first completed game.
-    nonisolated static let statsWarmupSeconds: Double = 5.0
-
     // `rollingLossWindow` (live-loss rolling-window size) moved to
     // `SessionController` in Stage 4g — `SessionController.rollingLossWindow`.
 
@@ -1004,16 +992,22 @@ struct UpperContentView: View {
         return "Channel \(selectedOverlay - 1): \(TensorChannelNames.names[selectedOverlay - 1])"
     }
 
-    /// "Last saved: 5/6/26 at 4:34 PM" or "Last saved: Never" — the
-    /// "Never" case covers both a fresh Build Network with no save
-    /// yet and a session that was resumed from disk but hasn't been
-    /// re-saved in this app run. The on-disk `.dcmsession`'s age is
-    /// deliberately ignored; this label tracks save activity *in
-    /// this app session* so the user can see at a glance whether
-    /// the trainer's current state has been written anywhere.
+    /// "Last saved: 5/6/26 at 4:34 PM", "Resumed 5/6/26 at 4:34 PM",
+    /// or "Last saved: Never". A successful save wins ("Last saved:");
+    /// a load with no subsequent save shows the resume timestamp; a
+    /// fresh Build Network with neither shows "Never". The on-disk
+    /// `.dcmsession`'s age is deliberately ignored — this label tracks
+    /// save / resume activity *in this app session* so the user can
+    /// see at a glance whether the trainer's current state has been
+    /// written anywhere since the most recent load.
     private var lastSavedDisplayString: String {
-        guard let when = checkpoint.lastSavedAt else { return "Last saved: Never" }
-        return "Last saved: \(when.formatted(date: .abbreviated, time: .shortened))"
+        if let when = checkpoint.lastSavedAt {
+            return "Last saved: \(when.formatted(date: .abbreviated, time: .shortened))"
+        }
+        if let resumedAt = checkpoint.lastResumedAt {
+            return "Resumed \(resumedAt.formatted(date: .abbreviated, time: .shortened))"
+        }
+        return "Last saved: Never"
     }
 
     private var currentOverlay: ChessBoardView.Overlay {
@@ -1379,6 +1373,22 @@ struct UpperContentView: View {
             // builds.
             Color.clear
                 .frame(height: 0)
+            }
+
+            // Self Play + Results card column. Sits between the chess
+            // board (left) and the existing left/right text columns
+            // (the `MainTextPanel` below). Always rendered — the cards
+            // gracefully show "—" placeholders when no Play-and-Train
+            // session has produced stats yet, so the layout doesn't
+            // reflow on session start. Bound to the live
+            // `parallelStats` snapshot so SwiftUI re-renders the card
+            // body whenever the heartbeat ticks.
+            VStack(alignment: .leading, spacing: 8) {
+                SelfPlayStatsCard(
+                    snapshot: session.parallelStats,
+                    modelID: network?.identifier?.description ?? "—"
+                )
+                ResultsCard(snapshot: session.parallelStats)
             }
 
             // Hover-driven top-3 channels overlay. When the cursor is over
@@ -2870,7 +2880,7 @@ struct UpperContentView: View {
     }
 
     /// Value for the status bar's "Training rate" cell: the most
-    /// recent 3-minute-rolling trainer moves/hour, or `"—"` before
+    /// recent 1-minute-rolling trainer moves/hour, or `"—"` before
     /// any sample has been recorded this session. `chartCoordinator.progressRateRing`
     /// is populated on the heartbeat while `realTraining == true`; after Stop
     /// the last value persists (until the next fresh Play-and-Train
@@ -3190,12 +3200,12 @@ struct UpperContentView: View {
     /// Play and Train self-play stats text. Built from the aggregate
     /// `ParallelWorkerStatsBox` snapshot so all N workers contribute
     /// identically, plus the live `GameWatcher` snapshot used only
-    /// when `trainingParams.selfPlayWorkers == 1` to render the current-game
-    /// Status line. Session rates are computed against wall clock
-    /// since `sessionStart` (not the old `GameWatcher` stopwatch,
-    /// which was worker-0-only and had an async-dispatch race); a
-    /// second column shows the same rates restricted to the rolling
-    /// 10-minute window for short-term throughput visibility.
+    /// when `trainingParams.selfPlayWorkers == 1` to render the current-
+    /// game Status line. Session rates and the per-outcome Results
+    /// breakdown moved to the `SelfPlayStatsCard` and `ResultsCard`
+    /// SwiftUI views in the new card column between the chess board
+    /// and `MainTextPanel`; this function now only emits the Status
+    /// line for single-worker mode.
     private func playAndTrainStatsText(
         game: GameWatcher.Snapshot,
         session: ParallelWorkerStatsBox.Snapshot
@@ -3208,6 +3218,16 @@ struct UpperContentView: View {
         // the live board can re-appear instantly when the user
         // drops back to N=1) but the Status line is hidden because
         // it would only describe one of N concurrent games.
+        //
+        // The Self Play counts / averages / rates / Results blocks
+        // moved off this text path onto SwiftUI cards
+        // (`SelfPlayStatsCard`, `ResultsCard`) rendered in the new
+        // column between the chess board and `MainTextPanel`. The
+        // `session` parameter is intentionally unused here —
+        // retained so the call sites match the old signature, and
+        // because the Status line still wants the GameWatcher
+        // snapshot for the to-move readout.
+        _ = session
         if trainingParams.selfPlayWorkers == 1 {
             let status: String
             if game.isPlaying {
@@ -3231,135 +3251,10 @@ struct UpperContentView: View {
                 status = dash
             }
             lines.append("Status: \(status)")
-            lines.append("")
         }
 
-        // Section header — labelled with the champion model ID
-        // (the network all self-play slots share through the
-        // barrier batcher). The lifetime "Time" field
-        // used to live here too but moved to the top busy row
-        // alongside memory stats — see `busyLabel` for that. The
-        // Concurrency row used to live as the first body line but
-        // is now rendered outside this string as a SwiftUI HStack
-        // with an inline Stepper so the user can adjust N without
-        // leaving the stats panel.
         let championIDStr = network?.identifier?.description ?? "no id"
         let header = "Self Play [\(championIDStr)]"
-
-        let games = session.selfPlayGames
-        let moves = session.selfPlayPositions
-        let elapsed = max(0.1, Date().timeIntervalSince(session.sessionStart))
-
-        let sGames = games > 0 ? games.formatted(.number.grouping(.automatic)) : dash
-        let sMoves = moves > 0 ? moves.formatted(.number.grouping(.automatic)) : dash
-        // `Time` left this panel on the layout refactor — it now
-        // lives in the top busy row next to memory stats. The
-        // formatHMS helper still drives that display, just not
-        // from here.
-
-        // Wall-clock-derived rate denominator. Rate fields show "--"
-        // for the first few seconds of a session so the first game
-        // (with elapsed near zero) doesn't flash an absurd
-        // millions-of-moves/hr value.
-        let ratesValid = elapsed >= Self.statsWarmupSeconds && games > 0
-
-        // System-level averages: every metric measures the
-        // collective rate the N workers produce, not the per-worker
-        // average. With N workers, "Avg move" is wall-clock seconds
-        // divided by total moves (N times faster than per-worker
-        // move time), and "Avg game" is wall-clock seconds divided
-        // by total games. This matches the user's natural reading:
-        // "the system pops out a move every X ms" / "a game every
-        // Y ms," which is what the busy label's positions/sec also
-        // reports. Per-worker averages are not displayed.
-        let elapsedMs = elapsed * 1000
-        let lifetimeAvgMoveMs = moves > 0 ? elapsedMs / Double(moves) : 0
-        let lifetimeAvgGameMs = games > 0 ? elapsedMs / Double(games) : 0
-        let lifetimeMovesPerHour = Double(moves) / elapsed * 3600
-        let lifetimeGamesPerHour = Double(games) / elapsed * 3600
-
-        // Rolling-window aggregates. The right denominator for "rate
-        // over the last 10 minutes" is `min(recentWindow, elapsed)`,
-        // *not* the gap between the oldest stored entry and now —
-        // the gap form collapses to zero on the first game and
-        // understates the window in steady state. With min(window,
-        // elapsed): during the first 10 minutes of a session the
-        // rolling values equal the lifetime values (the window
-        // covers everything since sessionStart); after 10 minutes
-        // the rolling window is exactly 10 minutes wide.
-        let recentGames = session.recentGames
-        let recentMoves = session.recentMoves
-        let recentDenom = min(ParallelWorkerStatsBox.recentWindow, elapsed)
-        let recentDenomMs = recentDenom * 1000
-
-        let recentAvgMoveMs = recentMoves > 0 ? recentDenomMs / Double(recentMoves) : 0
-        let recentAvgGameMs = recentGames > 0 ? recentDenomMs / Double(recentGames) : 0
-        let recentMovesPerHour = recentDenom > 0 ? Double(recentMoves) / recentDenom * 3600 : 0
-        let recentGamesPerHour = recentDenom > 0 ? Double(recentGames) / recentDenom * 3600 : 0
-
-        let sAvgMove = ratesValid && moves > 0
-        ? String(format: "%.2f ms", lifetimeAvgMoveMs)
-        : dash
-        let sAvgGame = ratesValid && games > 0
-        ? String(format: "%.1f ms", lifetimeAvgGameMs)
-        : dash
-        let sMovesHr = ratesValid
-        ? Int(lifetimeMovesPerHour.rounded()).formatted(.number.grouping(.automatic))
-        : dash
-        let sGamesHr = ratesValid
-        ? Int(lifetimeGamesPerHour.rounded()).formatted(.number.grouping(.automatic))
-        : dash
-
-        let sAvgMoveR = ratesValid && recentGames > 0
-        ? String(format: "%.2f ms", recentAvgMoveMs)
-        : dash
-        let sAvgGameR = ratesValid && recentGames > 0
-        ? String(format: "%.1f ms", recentAvgGameMs)
-        : dash
-        let sMovesHrR = ratesValid && recentGames > 0
-        ? Int(recentMovesPerHour.rounded()).formatted(.number.grouping(.automatic))
-        : dash
-        let sGamesHrR = ratesValid && recentGames > 0
-        ? Int(recentGamesPerHour.rounded()).formatted(.number.grouping(.automatic))
-        : dash
-
-        // Column-aligned output. First rate column is right-padded
-        // to 12 chars so the 10-min column starts at a consistent
-        // offset regardless of first-column width; second column
-        // renders its value directly (no padding needed — it's the
-        // last thing on the line).
-        func rjust(_ value: String, _ width: Int) -> String {
-            guard value.count < width else { return value }
-            return String(repeating: " ", count: width - value.count) + value
-        }
-
-        lines.append("  Games:     \(rjust(sGames, 12))")
-        lines.append("  Moves:     \(rjust(sMoves, 12))")
-        lines.append("                             (last 10m)")
-        lines.append("  Avg move:  \(rjust(sAvgMove, 12))  \(rjust(sAvgMoveR, 12))")
-        lines.append("  Avg game:  \(rjust(sAvgGame, 12))  \(rjust(sAvgGameR, 12))")
-        lines.append("  Moves/hr:  \(rjust(sMovesHr, 12))  \(rjust(sMovesHrR, 12))")
-        lines.append("  Games/hr:  \(rjust(sGamesHr, 12))  \(rjust(sGamesHrR, 12))")
-        lines.append("")
-
-        // Results — per-outcome counters from the aggregate box,
-        // formatted exactly like the old GameWatcher rendering so
-        // the display layout is unchanged.
-        let totalCheckmates = session.whiteCheckmates + session.blackCheckmates
-        func pct(_ count: Int) -> String {
-            guard games > 0 else { return "" }
-            return String(format: "  (%.1f%%)", Double(count) / Double(games) * 100)
-        }
-
-        lines.append("Results")
-        lines.append("  Checkmate:      \(totalCheckmates)\(pct(totalCheckmates))")
-        lines.append("    White wins:     \(session.whiteCheckmates)\(pct(session.whiteCheckmates))")
-        lines.append("    Black wins:     \(session.blackCheckmates)\(pct(session.blackCheckmates))")
-        lines.append("  Stalemate:      \(session.stalemates)\(pct(session.stalemates))")
-        lines.append("  50-move draw:   \(session.fiftyMoveDraws)\(pct(session.fiftyMoveDraws))")
-        lines.append("  Threefold rep:  \(session.threefoldRepetitionDraws)\(pct(session.threefoldRepetitionDraws))")
-        lines.append("  Insufficient:   \(session.insufficientMaterialDraws)\(pct(session.insufficientMaterialDraws))")
-
         return (header: header, body: lines.joined(separator: "\n"))
     }
 
@@ -3423,26 +3318,13 @@ extension UpperContentView {
 
     fileprivate var trainingStatsColumnView: UpperTrainingStatsColumn {
         let column = trainingStatsText()
-        // Self-play section rendered below the policy stats. Always
-        // shown during Play-and-Train (regardless of board mode) so
-        // multi-worker sessions — where `SelfPlayStatsColumn` on the
-        // left is hidden by `isCandidateTestActive` — don't lose the
-        // Games/Moves/Avg-move/Results readout.
-        let selfPlay: (header: String, body: AttributedString)?
-        if realTraining, let stats = session.parallelStats {
-            let sp = playAndTrainStatsText(game: gameSnapshot, session: stats)
-            selfPlay = (sp.header, colorizedPanelBody(sp.body))
-        } else {
-            selfPlay = nil
-        }
         return UpperTrainingStatsColumn(
             header: column.header,
             bodyText: colorizedPanelBody(column.body),
             realTraining: realTraining,
             replayRatioSnapshot: replayRatioSnapshot,
             replayRatioTarget: trainingParams.replayRatioTarget,
-            replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust,
-            selfPlayStats: selfPlay
+            replayRatioAutoAdjust: trainingParams.replayRatioAutoAdjust
         )
     }
 

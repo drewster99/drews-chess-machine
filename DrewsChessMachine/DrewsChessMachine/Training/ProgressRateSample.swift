@@ -3,7 +3,7 @@ import Foundation
 /// One point on the Progress rate chart. Sampled once per second
 /// from the heartbeat during a Play and Train session; cleared at
 /// each new session. The `*MovesPerHour` fields are *rolling-window*
-/// rates — over the last 3 minutes leading up to `timestamp`, not
+/// rates — over the last 1 minute leading up to `timestamp`, not
 /// lifetime averages — so the chart shows how throughput changes
 /// over time rather than asymptoting to the session mean.
 ///
@@ -18,7 +18,7 @@ struct ProgressRateSample: Identifiable, Sendable, Codable, Equatable {
     /// the session and never reused.
     let id: Int
     /// Wall-clock instant this sample was taken. Used as the
-    /// reference point when locating the 3-minute-ago sample that
+    /// reference point when locating the 1-minute-ago sample that
     /// defines the lower edge of this point's rolling window.
     let timestamp: Date
     /// Seconds elapsed since `sessionStart`. Used as the X
@@ -27,17 +27,17 @@ struct ProgressRateSample: Identifiable, Sendable, Codable, Equatable {
     let elapsedSec: Double
     /// Cumulative self-play moves at `timestamp`. Stored per
     /// sample so the next tick can subtract from "the sample that
-    /// was 3 minutes ago" to get a windowed delta without needing
+    /// was 1 minute ago" to get a windowed delta without needing
     /// a parallel cumulative-counters buffer.
     let selfPlayCumulativeMoves: Int
     /// Cumulative training-positions at `timestamp` — training
     /// steps × batch size. Same reason to store per-sample as
     /// `selfPlayCumulativeMoves`.
     let trainingCumulativeMoves: Int
-    /// Rolling self-play moves/hr over the last 3 minutes. Before
-    /// the session has 3 minutes of data, the window covers
+    /// Rolling self-play moves/hr over the last 1 minute. Before
+    /// the session has 1 minute of data, the window covers
     /// "everything so far" and this degrades gracefully to the
-    /// lifetime rate; after 3 minutes it's strictly a 3-minute
+    /// lifetime rate; after 1 minute it's strictly a 1-minute
     /// trailing average.
     let selfPlayMovesPerHour: Double
     /// Rolling training moves/hr over the same window.

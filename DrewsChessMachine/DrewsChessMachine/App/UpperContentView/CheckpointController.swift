@@ -263,6 +263,16 @@ final class CheckpointController {
     /// `nil` until a save lands; shown in the status bar.
     var lastSavedAt: Date?
 
+    /// Wall-clock instant the current in-memory session was loaded from
+    /// disk. Set on a successful `loadSessionFrom`; cleared on any
+    /// subsequent successful save (the `Last saved:` timestamp is then
+    /// the more useful anchor) and on a fresh `Build Network`. The
+    /// status-bar label shows "Resumed <date>" instead of
+    /// "Last saved: Never" while this is set and `lastSavedAt` is nil
+    /// so the operator can tell a resumed-but-unsaved session apart
+    /// from a fresh-build-never-saved session.
+    var lastResumedAt: Date?
+
     /// Wall-clock at which the current session started — used to derive the
     /// elapsed-training counter for back-dating on resume.
     var currentSessionStart: Date?

@@ -695,6 +695,7 @@ extension SessionController {
                         )
                         self.periodicSaveController?.noteSuccessfulSave(at: Date())
                         self.checkpoint?.lastSavedAt = Date()
+                        self.checkpoint?.lastResumedAt = nil
                     case .failure(let error):
                         self.checkpoint?.setCheckpointStatus(
                             "Autosave failed (post-promotion): \(error.localizedDescription)",

@@ -259,6 +259,19 @@ struct SessionCheckpointState: Codable, Equatable {
     var insufficientMaterialDraws: Int?
     var totalGameWallMs: Double?
 
+    // Per-outcome emitted-game breakdown (added when the Results card
+    // gained an Overall vs Kept layout). All Optional for back-compat
+    // with sessions saved before these counters existed; loader falls
+    // back to the played-side counterparts (the draw-keep filter was
+    // either disabled or absent in those sessions, so emitted == played
+    // at every outcome category).
+    var emittedWhiteCheckmates: Int?
+    var emittedBlackCheckmates: Int?
+    var emittedStalemates: Int?
+    var emittedFiftyMoveDraws: Int?
+    var emittedThreefoldRepetitionDraws: Int?
+    var emittedInsufficientMaterialDraws: Int?
+
     // Build metadata captured at save time. Optional for back-compat
     // with older session.json files that lack these fields.
     var buildNumber: Int?

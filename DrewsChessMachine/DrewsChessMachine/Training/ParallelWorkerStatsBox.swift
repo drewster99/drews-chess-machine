@@ -9,18 +9,17 @@ import os
 /// are monotonic for the life of the Play and Train session; wall-
 /// clock rate is computed against `sessionStart`.
 final class ParallelWorkerStatsBox: @unchecked Sendable {
-    /// Rolling-window length in seconds for the "recent" rate column
+    /// Rolling-window length in seconds for the "recent" rate columns
     /// shown next to the lifetime rates in the Session panel. Fixed at
-    /// 10 minutes so short-term throughput shifts (e.g. after an arena
-    /// pause, or when training/self-play contention changes) become
-    /// visible without having to watch the lifetime number drift.
-    static let recentWindow: TimeInterval = 600
+    /// 1 minute so the displayed rate reacts quickly to throughput
+    /// shifts (e.g. after an arena pause, or when training/self-play
+    /// contention changes) without lagging behind by minutes.
+    static let recentWindow: TimeInterval = 60
 
     /// One completed game, stored in the rolling window. Drops out of
     /// the window once its `timestamp` is more than `recentWindow`
-    /// seconds behind `Date()`. Storage is O(games in the last 10
-    /// minutes); at typical self-play rates this is a few thousand
-    /// records max.
+    /// seconds behind `Date()`. Storage is O(games in the last minute);
+    /// at typical self-play rates this is a few hundred records max.
     private struct GameRecord {
         let timestamp: Date
         let moves: Int
@@ -51,11 +50,24 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// this is the EFFECTIVE production-side position count (which is
     /// what `[STATS]` rates and the replay-ratio controller target).
     private var _emittedPositions: Int = 0
+    /// Per-outcome lifetime tallies of games that survived the draw-keep
+    /// filter and were flushed into the replay buffer. Decisive emitted
+    /// counters (`_emittedWhiteCheckmates`, `_emittedBlackCheckmates`)
+    /// always equal their played-side counterparts because decisives
+    /// bypass the filter; only the four draw-type emitted counters can
+    /// fall below their played-side equivalents.
+    private var _emittedWhiteCheckmates: Int = 0
+    private var _emittedBlackCheckmates: Int = 0
+    private var _emittedStalemates: Int = 0
+    private var _emittedFiftyMoveDraws: Int = 0
+    private var _emittedThreefoldRepetitionDraws: Int = 0
+    private var _emittedInsufficientMaterialDraws: Int = 0
     private var _recentGames: [GameRecord] = []
     private var _recentGamesHead: Int = 0
     private var _recentGamesRunningMoves: Int = 0
     private var _recentGamesRunningWallMs: Double = 0.0
-    /// Rolling 10-minute window of emitted games. Each entry is one
+    /// Rolling-window storage of emitted games (window length =
+    /// `recentWindow`, currently 1 minute). Each entry is one
     /// game that was kept (passed the draw-keep filter) — its
     /// timestamp drives the rolling-rate display for
     /// "spRateEm" / "spGamesEmHr" in `[STATS]`. We don't share storage
@@ -70,10 +82,10 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     private var _recentEmittedGamesRunningPositions: Int = 0
     /// Fixed-capacity ring of recent game lengths (plies), used to
     /// compute p50/p95 in `Snapshot`. Sized for a few hundred games
-    /// — plenty for a meaningful percentile on the 10-minute
-    /// cadence without carrying the rolling-window memory back to
-    /// a per-game scan. Lengths-only (no timestamps) because
-    /// percentile semantics don't age the samples out by time.
+    /// — plenty for a meaningful percentile without carrying the
+    /// rolling-window memory back to a per-game scan. Lengths-only
+    /// (no timestamps) because percentile semantics don't age the
+    /// samples out by time.
     private var _recentGameLengths: [Int] = []
     private var _recentGameLengthsHead: Int = 0
     private static let gameLengthRingCapacity: Int = 512
@@ -111,7 +123,13 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         insufficientMaterialDraws: Int,
         trainingSteps: Int,
         emittedGames: Int? = nil,
-        emittedPositions: Int? = nil
+        emittedPositions: Int? = nil,
+        emittedWhiteCheckmates: Int? = nil,
+        emittedBlackCheckmates: Int? = nil,
+        emittedStalemates: Int? = nil,
+        emittedFiftyMoveDraws: Int? = nil,
+        emittedThreefoldRepetitionDraws: Int? = nil,
+        emittedInsufficientMaterialDraws: Int? = nil
     ) {
         self._sessionStart = sessionStart
         self._totalGames = totalGames
@@ -126,6 +144,16 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         self._trainingSteps = trainingSteps
         self._emittedGames = emittedGames ?? totalGames
         self._emittedPositions = emittedPositions ?? totalMoves
+        // Sessions saved before per-outcome emitted counters existed
+        // had emitted == played at all outcome levels (the filter was
+        // either disabled or absent), so default the missing values to
+        // the played-side counterparts.
+        self._emittedWhiteCheckmates = emittedWhiteCheckmates ?? whiteCheckmates
+        self._emittedBlackCheckmates = emittedBlackCheckmates ?? blackCheckmates
+        self._emittedStalemates = emittedStalemates ?? stalemates
+        self._emittedFiftyMoveDraws = emittedFiftyMoveDraws ?? fiftyMoveDraws
+        self._emittedThreefoldRepetitionDraws = emittedThreefoldRepetitionDraws ?? threefoldRepetitionDraws
+        self._emittedInsufficientMaterialDraws = emittedInsufficientMaterialDraws ?? insufficientMaterialDraws
     }
 
     /// Advance `sessionStart` to `Date()`. Called once from inside
@@ -159,6 +187,12 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             self._insufficientMaterialDraws = 0
             self._emittedGames = 0
             self._emittedPositions = 0
+            self._emittedWhiteCheckmates = 0
+            self._emittedBlackCheckmates = 0
+            self._emittedStalemates = 0
+            self._emittedFiftyMoveDraws = 0
+            self._emittedThreefoldRepetitionDraws = 0
+            self._emittedInsufficientMaterialDraws = 0
             self._recentGames.removeAll()
             self._recentGamesHead = 0
             self._recentGamesRunningMoves = 0
@@ -174,7 +208,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// Record one completed self-play game. Called from every worker
     /// at game-end with the game's total moves, wall-clock duration,
     /// and final result. Bumps lifetime totals, the per-outcome
-    /// counters, and the rolling 10-minute window. Thread-safe via
+    /// counters, and the rolling-window aggregates. Thread-safe via
     /// the box's lock. `Date()` is captured at the call site — the
     /// game-end timestamp feeds the rolling-window rate stats, so
     /// it must reflect when the game actually finished rather than
@@ -231,12 +265,31 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// after the per-game keep/drop filter decided "keep." The driver
     /// always calls this *in addition* to `recordCompletedGame`
     /// (which counts every completed game regardless of filter), so
-    /// `emittedGames <= totalGames`.
-    func recordEmittedGame(positions: Int) {
+    /// `emittedGames <= totalGames`. The `result` argument increments
+    /// the per-outcome emitted counter that mirrors the played-side
+    /// counter; the difference between played and emitted at each
+    /// outcome category is what the draw-keep filter actually dropped.
+    func recordEmittedGame(positions: Int, result: GameResult) {
         let now = Date()
         lock.withLock {
             self._emittedGames += 1
             self._emittedPositions += positions
+            switch result {
+            case .checkmate(let winner):
+                if winner == .white {
+                    self._emittedWhiteCheckmates += 1
+                } else {
+                    self._emittedBlackCheckmates += 1
+                }
+            case .stalemate:
+                self._emittedStalemates += 1
+            case .drawByFiftyMoveRule:
+                self._emittedFiftyMoveDraws += 1
+            case .drawByInsufficientMaterial:
+                self._emittedInsufficientMaterialDraws += 1
+            case .drawByThreefoldRepetition:
+                self._emittedThreefoldRepetitionDraws += 1
+            }
             self._recentEmittedGames.append(
                 EmittedGameRecord(timestamp: now, positions: positions)
             )
@@ -311,21 +364,32 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         let fiftyMoveDraws: Int
         let threefoldRepetitionDraws: Int
         let insufficientMaterialDraws: Int
+        /// Per-outcome lifetime tallies of games that survived the
+        /// draw-keep filter. Decisive emitted counters always equal
+        /// their played-side counterparts; only the four draw types
+        /// can fall below.
+        let emittedWhiteCheckmates: Int
+        let emittedBlackCheckmates: Int
+        let emittedStalemates: Int
+        let emittedFiftyMoveDraws: Int
+        let emittedThreefoldRepetitionDraws: Int
+        let emittedInsufficientMaterialDraws: Int
         let trainingSteps: Int
         let sessionStart: Date
-        // Rolling 10-minute window aggregates
+        // Rolling-window aggregates (window length = `recentWindow`).
         let recentGames: Int
         let recentMoves: Int
         let recentGameWallMs: Double
-        /// Rolling 10-minute window aggregates for emitted games — the
-        /// kept subset of `recentGames`. Pair with `recentWindowSeconds`
+        /// Rolling-window aggregates for emitted games — the kept
+        /// subset of `recentGames`. Pair with `recentWindowSeconds`
         /// to derive emitted-games/hour and emitted-positions/sec.
         let recentEmittedGames: Int
         let recentEmittedPositions: Int
         /// Effective denominator for rolling rate calculations, in
         /// seconds: `min(recentWindow, now - oldest-entry-timestamp)`.
-        /// Starts at 0 and grows to `recentWindow` over the first 10
-        /// minutes of a session. `0` means the window holds no games.
+        /// Starts at 0 and grows to `recentWindow` over the first
+        /// `recentWindow` seconds of a session. `0` means the window
+        /// holds no games.
         let recentWindowSeconds: Double
         /// Percentiles of recent game lengths (plies) from the
         /// fixed-capacity length ring. `nil` while the ring is empty.
@@ -406,6 +470,12 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 fiftyMoveDraws: _fiftyMoveDraws,
                 threefoldRepetitionDraws: _threefoldRepetitionDraws,
                 insufficientMaterialDraws: _insufficientMaterialDraws,
+                emittedWhiteCheckmates: _emittedWhiteCheckmates,
+                emittedBlackCheckmates: _emittedBlackCheckmates,
+                emittedStalemates: _emittedStalemates,
+                emittedFiftyMoveDraws: _emittedFiftyMoveDraws,
+                emittedThreefoldRepetitionDraws: _emittedThreefoldRepetitionDraws,
+                emittedInsufficientMaterialDraws: _emittedInsufficientMaterialDraws,
                 trainingSteps: _trainingSteps,
                 sessionStart: _sessionStart,
                 recentGames: _recentGames.count - _recentGamesHead,

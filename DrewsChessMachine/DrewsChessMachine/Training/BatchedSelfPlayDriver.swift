@@ -336,7 +336,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 let blackPushed = black.flushRecordedGameToReplayBuffer(result: result)
                 let emittedPositions = whitePushed + blackPushed
                 if emittedPositions > 0 {
-                    statsBox.recordEmittedGame(positions: emittedPositions)
+                    statsBox.recordEmittedGame(positions: emittedPositions, result: result)
                     replayRatioController?.recordSelfPlayEmittedGame(positions: emittedPositions)
                 }
             }

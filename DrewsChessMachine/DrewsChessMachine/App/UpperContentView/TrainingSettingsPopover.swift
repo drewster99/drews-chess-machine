@@ -968,10 +968,9 @@ private struct SelfPlayTab: View {
 
     /// Live "played vs emitted" readout under the Draw keep fraction
     /// field. Two columns ("Played" / "Emitted") × two rows
-    /// (plies/hour, W/D/L breakdown). The 10-minute rolling window
-    /// drives the plies-per-hour numbers (matches `[STATS]`'s
-    /// `prod=`/`spRate=` cadence so the user can compare in-popover
-    /// vs in-log). Outcome shares come straight from the lifetime
+    /// (plies/hour, W/D/L breakdown). The 1-minute rolling window
+    /// (`ParallelWorkerStatsBox.recentWindow`) drives the plies-per-
+    /// hour numbers. Outcome shares come straight from the lifetime
     /// totals — decisive games are always kept by the keep-fraction
     /// filter, so emitted W/L equal played W/L and the only
     /// difference between the two columns is the drawn-game count
@@ -981,9 +980,9 @@ private struct SelfPlayTab: View {
         let s = parallelStats
         let dash = "—"
         let hasStats = (s?.selfPlayGames ?? 0) > 0
-        // Rolling rates (plies / hour) over the box's 10-minute
-        // window. Stays at "—" while `recentWindowSeconds` is 0
-        // (first <10 min of a session).
+        // Rolling rates (plies / hour) over the box's `recentWindow`
+        // (1-minute) window. Stays at "—" while `recentWindowSeconds`
+        // is 0 (first ~minute of a session before the window fills).
         let recentWindow = s?.recentWindowSeconds ?? 0
         let playedRate: Double = hasStats && recentWindow > 0
             ? Double(s?.recentMoves ?? 0) / recentWindow * 3600
@@ -1004,21 +1003,23 @@ private struct SelfPlayTab: View {
 
         VStack(alignment: .leading, spacing: 2) {
             Text("Live snapshot")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.top, 6)
                 .padding(.bottom, 2)
             HStack(spacing: 8) {
                 Text("")
-                    .frame(width: 160, alignment: .trailing)
+                    .frame(width: 140, alignment: .trailing)
                 Text("Played")
-                    .frame(width: 140, alignment: .leading)
+                    .frame(width: 165, alignment: .leading)
                 Text("Emitted")
-                    .frame(width: 140, alignment: .leading)
+                    .frame(width: 165, alignment: .leading)
                 Spacer()
             }
+            .font(.caption2)
             .foregroundStyle(.secondary)
             twoColRow(
-                label: "plies / hour (10-min):",
+                label: "plies / hour (1m):",
                 playedValue: hasStats && recentWindow > 0
                     ? Self.numberString(Int(playedRate.rounded()))
                     : dash,
@@ -1029,9 +1030,7 @@ private struct SelfPlayTab: View {
             // Game-total counts. The Played vs Emitted gap is exactly
             // what the keep-fraction filter has dropped — the
             // headline number for "is my filter doing what I want."
-            // The W/D/L breakdown lives one row down as percentages
-            // to keep this cell narrow enough to read at the standard
-            // 140-pt column width.
+            // The W/D/L breakdown lives one row down as percentages.
             twoColRow(
                 label: "games:",
                 playedValue: hasStats ? Self.numberString(playedTotal) : dash,
@@ -1047,13 +1046,14 @@ private struct SelfPlayTab: View {
                     : dash
             )
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
     }
 
     /// One right-aligned label + two left-aligned value cells, same
     /// shape as the Replay tab's `twoColRow` helper but with
-    /// "Played" / "Emitted" columns.
+    /// "Played" / "Emitted" columns. Typography matches the
+    /// `SelfPlayStatsCard` / `ResultsCard` and the upper status bar's
+    /// `StatusBarCell` (caption2-secondary labels + callout-monospaced-
+    /// semibold values).
     @ViewBuilder
     private func twoColRow(
         label: String,
@@ -1062,15 +1062,19 @@ private struct SelfPlayTab: View {
     ) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .frame(width: 160, alignment: .trailing)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 140, alignment: .trailing)
             Text(playedValue)
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(.callout, design: .monospaced).weight(.semibold))
+                .monospacedDigit()
                 .lineLimit(1)
-                .frame(width: 140, alignment: .leading)
+                .frame(width: 165, alignment: .leading)
             Text(emittedValue)
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(.callout, design: .monospaced).weight(.semibold))
+                .monospacedDigit()
                 .lineLimit(1)
-                .frame(width: 140, alignment: .leading)
+                .frame(width: 165, alignment: .leading)
             Spacer()
         }
     }
@@ -1458,10 +1462,10 @@ private struct ReplayTab: View {
     ///   sign skew within decisive).
     @ViewBuilder
     private var replayCompositionReadout: some View {
-        // Always render the same 11-row tree (one title + one header
-        // strip + nine value rows) regardless of whether the inputs are
-        // yet populated — empty cells collapse to "—". Keeps the SwiftUI
-        // view tree shape stable across the nil-to-populated transition.
+        // Always render the same row tree regardless of whether the
+        // inputs are yet populated — empty cells collapse to "—".
+        // Keeps the SwiftUI view tree shape stable across the nil-to-
+        // populated transition.
         let c = bufferComposition
         let sr = lastSamplingResult
         let dash = "—"
@@ -1485,23 +1489,17 @@ private struct ReplayTab: View {
         // taken (no K cap, no D cap, no length tilt active) — no point
         // showing constraint context in that case.
         let constraintsActive = sr?.wasConstrainedPath ?? false
-        let cap = sr?.constraints.maxPerGame ?? Int.max
-        let achievedMaxG = sr?.achievedMaxPerGame ?? 0
-        // Cap is "violated" only when constraints are active AND the
-        // achieved per-game max strictly exceeds the requested cap.
-        // (The constrained-path sampler should never let this happen
-        // after the K-aware stratum-sizing fix; if this turns red, it's
-        // a regression to investigate.)
-        let maxPerGameViolatesCap = constraintsActive && achievedMaxG > cap
 
-        // Draw-share gap: surface "achieved% / req%" whenever the
-        // constraint is active and the gap exceeds the same slop the
-        // sampler uses to set `wasDegraded`. Colored red on overshoot
-        // (the buffer composition + K cap forced more draws into the
-        // batch than the operator asked for) or undershoot (not enough
-        // resident draws to support the cap).
-        let requestedDrawPct = sr?.requestedDrawPercent ?? 0
-        let achievedDrawPct = sr?.achievedDrawPercent ?? 0
+        // Draw-share gap: paint the merged W/D/L value cell red
+        // whenever the constraint is active and the achieved-vs-
+        // requested gap exceeds the same slop the sampler uses to set
+        // `wasDegraded`. Red signals overshoot (buffer composition +
+        // K cap forced more draws into the batch than the operator
+        // asked for) or undershoot (not enough resident draws to
+        // support the cap). The configured cap stays visible in the
+        // "Max draws % per batch:" field above, so we don't duplicate
+        // it inline (would push the row over the popover's 540 pt
+        // width budget).
         let drawCountSlop = max(1, (sr?.batchSize ?? 0) / 100)
         let drawCapDegraded = constraintsActive
             && abs((sr?.achievedDrawCount ?? 0) - (sr?.requestedDrawCount ?? 0)) > drawCountSlop
@@ -1515,8 +1513,23 @@ private struct ReplayTab: View {
         // there's a regression.
         let budgetHit = sr?.attemptBudgetHit ?? false
 
+        // Pre-compute the per-letter percent triples for the merged
+        // "avg W/D/L" row. Buffer = position-weighted resident shares
+        // (winFraction/drawFraction/lossFraction). Batch = achieved
+        // per-letter shares — the per-batch draw cap context is
+        // surfaced via the red value color when achieved drifts off
+        // requested (see `drawCapDegraded` above). Pre-computed via the
+        // private helpers `Self.formatBufferWdl(_:)` and
+        // `Self.formatBatchWdl(_:)` so the expressions inside this
+        // `@ViewBuilder` body remain single expressions (an
+        // `if`/`else`-driven `let` here would be mis-parsed as a
+        // `View` by ViewBuilder and fail to compile).
+        let bufWdlText = Self.formatBufferWdl(c, dash: dash)
+        let batchWdlText = Self.formatBatchWdl(sr, dash: dash)
+
         VStack(alignment: .leading, spacing: 2) {
             Text("Composition")
+                .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 2)
             // Header strip: two column titles aligned with the value
@@ -1524,20 +1537,28 @@ private struct ReplayTab: View {
             // titles sit directly above their data.
             HStack(spacing: 8) {
                 Text("")
-                    .frame(width: 160, alignment: .trailing)
+                    .frame(width: 140, alignment: .trailing)
                 Text("Buffer")
-                    .frame(width: 140, alignment: .leading)
+                    .frame(width: 150, alignment: .leading)
                 Text("Last batch")
-                    .frame(width: 140, alignment: .leading)
+                    .frame(width: 180, alignment: .leading)
                 Spacer()
             }
+            .font(.caption2)
             .foregroundStyle(.secondary)
+            // First row: storage size context. Buffer = current resident
+            // position count (the W/D/L percentages below are share-of-
+            // these). Batch = the trainer's batch size (positions
+            // sampled per SGD step).
+            twoColRow(
+                label: "buf / batch:",
+                bufferValue: bufHas ? numberString(c?.storedCount ?? 0) : dash,
+                batchValue: batchHas ? numberString(sr?.batchSize ?? 0) : dash
+            )
             // Both columns are counts of distinct games — the row label
             // is renamed accordingly so the right-hand value can't be
             // misread as a fill ratio ("X of Y" looked like a partial
-            // fill). The batch's distinct-games / total-positions
-            // relationship is already visible one row down as
-            // "samples / game (avg)".
+            // fill).
             twoColRow(
                 label: "distinct games:",
                 bufferValue: bufHas
@@ -1547,27 +1568,34 @@ private struct ReplayTab: View {
                     ? numberString(sr?.distinctGamesInBatch ?? 0)
                     : dash
             )
-            // Surface the count of resident decisive (W/L) games. This
-            // is the K-aware decisive-stratum ceiling input — if this
-            // number is much smaller than K · (resident games), the K
-            // cap is the binding constraint and the realized batch will
-            // be more draw-heavy than the user's `Max Draws Per Batch`
-            // setting can express. Last-batch column is dashed: the
-            // SamplingResult exposes per-game-max but not a decisive-
-            // game subcount, and that's fine — the comparison the
-            // operator needs is "buffer side vs my settings".
+            // Resident decisive (W/L) game count, plus the matching
+            // achieved-decisive count for the last batch (= achieved W
+            // + achieved L). The buffer side is the K-aware decisive-
+            // stratum ceiling input — if much smaller than K · (resident
+            // games), the K cap is the binding constraint and the
+            // realized batch will be more draw-heavy than the user's
+            // `Max Draws Per Batch` setting can express.
             twoColRow(
                 label: "decisive games:",
                 bufferValue: bufHas
                     ? numberString(c?.residentDecisiveGameCount ?? 0)
                     : dash,
-                batchValue: dash
+                batchValue: batchHas
+                    ? numberString(batchDecisive)
+                    : dash
             )
+            // Buffer game-mean (each resident game contributes once);
+            // no batch analog (the batch is sampled positions, not
+            // games).
             twoColRow(
                 label: "avg game length:",
                 bufferValue: c.map { String(format: "%.0f plies", $0.meanGameLengthPerGame) } ?? dash,
                 batchValue: dash
             )
+            // Position-weighted mean: for the buffer this is E[L²]/E[L]
+            // (the expected length of the game a randomly-drawn
+            // position came from); for the batch it's the mean over
+            // emitted positions of the contributing game's length.
             twoColRow(
                 label: "avg sampled game length:",
                 bufferValue: c.map { String(format: "%.0f plies", $0.meanGameLengthPerSampledPosition) } ?? dash,
@@ -1575,61 +1603,41 @@ private struct ReplayTab: View {
                     ? String(format: "%.0f plies", sr?.achievedMeanGameLength ?? 0)
                     : dash
             )
+            // For the batch only: positions / distinctGames, i.e. how
+            // many plies (on average) each contributing game donated.
+            // For the buffer the equivalent is "avg game length" two
+            // rows up, so this row's Buffer cell is dashed rather than
+            // duplicated.
             twoColRow(
-                label: "samples / game (avg):",
+                label: "avg plies / game:",
                 bufferValue: dash,
                 batchValue: batchHas
                     ? String(format: "%.2f", sr?.achievedMeanSamplesPerGame ?? 0)
                     : dash
             )
-            // Show "X / K=N" when the K cap is active so the operator
-            // can see at a glance whether the cap is the binding
-            // constraint. Red when X > N — that's the cap getting
-            // broken, which post-fix should be impossible on the
-            // constrained path and is a regression signal.
+            // Single merged W/D/L row — replaces the prior W: / D: / L:
+            // triple. Format mirrors the Self Play tab's "W / D / L %"
+            // readout. Batch cell appends "(D req N%)" when the draw cap
+            // is active; cell turns red when the achieved-vs-requested
+            // gap exceeds the sampler's slop.
             twoColRow(
-                label: "samples / game (max):",
-                bufferValue: dash,
-                batchValue: batchHas
-                    ? (constraintsActive
-                        ? "\(numberString(achievedMaxG)) / K=\(numberString(cap))"
-                        : numberString(achievedMaxG))
-                    : dash,
-                batchValueColor: maxPerGameViolatesCap ? .red : nil
-            )
-            twoColRow(
-                label: "W:",
-                bufferValue: c.map { String(format: "%.1f%%", $0.winFraction * 100) } ?? dash,
-                batchValue: batchHas ? String(format: "%.1f%%", sr?.achievedWinPercent ?? 0) : dash
-            )
-            // Show "achieved% / req%" whenever the D cap is active so
-            // the operator sees how the realized draw share compares
-            // against `Max Draws Per Batch`. Red on either overshoot
-            // (buffer too draw-heavy / K cap forced the deficit into
-            // draws) or undershoot (not enough draws in the buffer).
-            twoColRow(
-                label: "D:",
-                bufferValue: c.map { String(format: "%.1f%%", $0.drawFraction * 100) } ?? dash,
-                batchValue: batchHas
-                    ? (constraintsActive
-                        ? String(format: "%.1f%% / req %.0f%%", achievedDrawPct, requestedDrawPct)
-                        : String(format: "%.1f%%", achievedDrawPct))
-                    : dash,
+                label: "avg W / D / L:",
+                bufferValue: bufWdlText,
+                batchValue: batchWdlText,
                 batchValueColor: drawCapDegraded ? .red : nil
             )
+            // Within-decisive split: of the W+L positions, how many were
+            // wins vs losses. Healthy ≈ 50/50; orange when outside
+            // [45, 55] as a sign-assignment smell. Label carries the
+            // W/L distinction so values render plain.
             twoColRow(
-                label: "L:",
-                bufferValue: c.map { String(format: "%.1f%%", $0.lossFraction * 100) } ?? dash,
-                batchValue: batchHas ? String(format: "%.1f%%", sr?.achievedLossPercent ?? 0) : dash
-            )
-            twoColRow(
-                label: "decisive split:",
+                label: "decisive split W / L:",
                 bufferValue: bufHas
-                    ? String(format: "+z %.0f%% / −z %.0f%%", bufPlusZ, bufMinusZ)
+                    ? String(format: "%.0f%% / %.0f%%", bufPlusZ, bufMinusZ)
                     : dash,
                 bufferValueColor: bufSkewed ? .orange : nil,
                 batchValue: batchHas
-                    ? String(format: "+z %.0f%% / −z %.0f%%", batchPlusZ, batchMinusZ)
+                    ? String(format: "%.0f%% / %.0f%%", batchPlusZ, batchMinusZ)
                     : dash,
                 batchValueColor: batchSkewed ? .orange : nil
             )
@@ -1655,20 +1663,18 @@ private struct ReplayTab: View {
             .accessibilityHidden(!budgetHit)
             .accessibilityLabel("Sampler attempt budget hit, all sampling caps dropped this batch")
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
         .padding(.top, 4)
     }
 
     /// One right-aligned label + two left-aligned value cells. Label
-    /// column width matches the rest of the popover (`PopoverRow` uses
-    /// 160). Each value column is a fixed 140pt so the "Buffer" /
-    /// "Last batch" header titles line up directly above the data.
-    /// `*ValueColor` is applied unconditionally — nil resolves to
-    /// `.primary` so values read full-contrast while the parent VStack's
-    /// `.foregroundStyle(.secondary)` cascade keeps labels and headers
-    /// light. The view tree never branches on the color (matches the
-    /// project's view-stability rule).
+    /// column rendered in `.caption2 .secondary` to match the section
+    /// title and column headers; values rendered in
+    /// `.system(.callout, design: .monospaced).weight(.semibold)`
+    /// to match the Self Play / Results card values + the upper
+    /// status bar's `StatusBarCell`. `*ValueColor` is applied
+    /// unconditionally — nil resolves to `.primary` so values read
+    /// full-contrast. The view tree never branches on the color
+    /// (matches the project's view-stability rule).
     @ViewBuilder
     private func twoColRow(
         label: String,
@@ -1679,19 +1685,55 @@ private struct ReplayTab: View {
     ) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .frame(width: 160, alignment: .trailing)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(width: 140, alignment: .trailing)
             Text(bufferValue)
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(.callout, design: .monospaced).weight(.semibold))
+                .monospacedDigit()
                 .foregroundStyle(bufferValueColor ?? Color.primary)
                 .lineLimit(1)
-                .frame(width: 140, alignment: .leading)
+                .frame(width: 150, alignment: .leading)
             Text(batchValue)
-                .font(.system(.caption, design: .monospaced))
+                .font(.system(.callout, design: .monospaced).weight(.semibold))
+                .monospacedDigit()
                 .foregroundStyle(batchValueColor ?? Color.primary)
                 .lineLimit(1)
-                .frame(width: 140, alignment: .leading)
+                .frame(width: 180, alignment: .leading)
             Spacer()
         }
+    }
+
+    /// Buffer-side W / D / L triple. Position-weighted resident
+    /// shares; renders as `dash` when no positions are stored yet.
+    private static func formatBufferWdl(
+        _ c: ReplayBuffer.CompositionSnapshot?,
+        dash: String
+    ) -> String {
+        guard let c, c.storedCount > 0 else { return dash }
+        return String(
+            format: "%.1f%% / %.1f%% / %.1f%%",
+            c.winFraction * 100, c.drawFraction * 100, c.lossFraction * 100
+        )
+    }
+
+    /// Last-batch W / D / L triple. Achieved per-letter shares of the
+    /// emitted batch. The per-batch draw-cap context (configured value,
+    /// achieved-vs-requested gap) is conveyed via the red value color
+    /// when the constraint is active and degraded — see
+    /// `drawCapDegraded` in `replayCompositionReadout`. The configured
+    /// cap itself is always visible in the "Max draws % per batch:"
+    /// field above, so an inline annotation would duplicate it and
+    /// blow out the popover's fixed 540 pt width.
+    private static func formatBatchWdl(
+        _ sr: ReplayBuffer.SamplingResult?,
+        dash: String
+    ) -> String {
+        guard let sr, sr.batchSize > 0 else { return dash }
+        return String(
+            format: "%.1f%% / %.1f%% / %.1f%%",
+            sr.achievedWinPercent, sr.achievedDrawPercent, sr.achievedLossPercent
+        )
     }
 
     /// Format an Int with thousands separators ("2,722" not "2722").

@@ -803,6 +803,7 @@ final class SessionController {
                       -> 8 res+SE blocks -> policy(4864) + value(1)
                     """
                 checkpoint?.lastSavedAt = nil
+                checkpoint?.lastResumedAt = nil
             case .failure(let error):
                 network = nil
                 runner = nil

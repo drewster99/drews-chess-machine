@@ -6,15 +6,10 @@ import SwiftUI
 /// only when one of its declared inputs changes, instead of every
 /// time the parent view re-renders.
 ///
-/// Below the policy/optimizer stats block, this view also renders
-/// the self-play stats section (Games / Moves / Avg-move / Results)
-/// whenever a non-nil `selfPlayStats` is supplied. The left-hand
-/// `SelfPlayStatsColumn` is hidden when `isCandidateTestActive` is
-/// true (forced on for `selfPlayWorkers > 1`), so without this
-/// in-column duplicate the self-play counters disappear from the
-/// UI for every typical multi-worker run. Showing them here as a
-/// trailing section keeps them always visible and parses naturally
-/// with the metric-colorizer.
+/// The Self Play counts / averages / rates / Results blocks that
+/// used to render below the policy/optimizer stats moved to the
+/// dedicated `SelfPlayStatsCard` and `ResultsCard` SwiftUI views
+/// in the new card column between the chess board and this column.
 struct UpperTrainingStatsColumn: View {
     let header: String
     let bodyText: AttributedString
@@ -22,10 +17,6 @@ struct UpperTrainingStatsColumn: View {
     let replayRatioSnapshot: ReplayRatioController.RatioSnapshot?
     let replayRatioTarget: Double
     let replayRatioAutoAdjust: Bool
-    /// Optional secondary section appended below the policy stats —
-    /// the same `(header, body)` pair `SelfPlayStatsColumn` would
-    /// render on the left. `nil` outside a Play-and-Train session.
-    let selfPlayStats: (header: String, body: AttributedString)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -66,11 +57,6 @@ struct UpperTrainingStatsColumn: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-            }
-            if let selfPlayStats {
-                Text("")
-                Text(selfPlayStats.header)
-                Text(selfPlayStats.body)
             }
         }
         .frame(minWidth: 260, alignment: .topLeading)
