@@ -5,13 +5,22 @@ import UniformTypeIdentifiers
 
 /// Which opponent the user has chosen for a human-vs-network game.
 enum HumanPlayOpponentChoice: Sendable, Hashable {
-    /// Play the live champion (`session.network`) directly.
-    case champion
+    /// Snapshot the current champion's (`session.network`) weights into
+    /// a dedicated inference network and play against that snapshot.
+    /// Frozen at game start; an arena promotion mid-game won't disturb
+    /// the in-progress game.
+    case championSnapshot
     /// Snapshot the trainer's current SGD weights into a dedicated
-    /// inference network and play against that snapshot. Captured at
+    /// inference network and play against that snapshot. Frozen at
     /// game start; subsequent training steps don't disturb the
     /// in-progress game.
-    case trainer
+    case trainerSnapshot
+    /// Play against a persistent inference-mode mirror that re-overlays
+    /// the trainer's *current* weights before every AI move. The human
+    /// watches the trainer evolve game-by-game. The mirror lives for
+    /// the controller's lifetime — lazy-built on first use, reused
+    /// across games and resets.
+    case liveTrainer
     /// Play against weights loaded from a `.dcmmodel` file on disk —
     /// either a freestanding model under `Models/` or one of the two
     /// `.dcmmodel` files inside a `.dcmsession` directory.
@@ -38,7 +47,7 @@ final class PlayController {
 
     /// Last opponent choice the user picked in the setup popover.
     /// Persisted across opens within a single launch.
-    var opponentChoice: HumanPlayOpponentChoice = .champion
+    var opponentChoice: HumanPlayOpponentChoice = .championSnapshot
 
     /// Color the human plays as. Default white so the human moves
     /// first — least surprising on a brand-new session.
@@ -84,13 +93,36 @@ final class PlayController {
     /// promotion and submits the resulting `ChessMove`.
     var pendingPromotion: PendingPromotion?
 
-    /// Snapshot of the network the AI side is playing against. Held
-    /// for the duration of the game; released on stop. Built fresh
-    /// every game (even for `.champion`, where it's just an alias for
-    /// `session.network`, the snapshot is the alias) so the game
-    /// task always has a stable reference even if the live champion
-    /// is later replaced.
-    private var opponentNetwork: ChessMPSNetwork?
+    /// `MoveEvaluationSource` the AI side plays through. Held for the
+    /// duration of the game; released on stop. For the three snapshot
+    /// paths (`.championSnapshot` / `.trainerSnapshot` / `.loadedFile`)
+    /// this is a `DirectMoveEvaluationSource` wrapping a freshly-built
+    /// inference network that the source owns; for `.liveTrainer` it's
+    /// a `LiveTrainerMoveEvaluationSource` that overlays trainer
+    /// weights onto `liveTrainerMirrorNetwork` before every AI move.
+    private var opponentSource: MoveEvaluationSource?
+
+    /// Persistent inference-mode mirror used by the `.liveTrainer`
+    /// path. Lazy-built on the first `.liveTrainer` materialize and
+    /// reused for the controller's lifetime — building a fresh
+    /// `ChessMPSNetwork` is ~150 ms, and the per-move re-overlay path
+    /// only needs the graph (the weights get replaced anyway).
+    private var liveTrainerMirrorNetwork: ChessMPSNetwork?
+
+    /// Remembered between `start(...)` and the next `stop(...)` so
+    /// `reset(...)` can relaunch a fresh game with the same opponent
+    /// choice and side without re-asking the user.
+    private var lastOpponentChoice: HumanPlayOpponentChoice?
+    private var lastHumanColor: PieceColor?
+
+    /// Monotonically incremented by `launchGame(...)`. The launched
+    /// game task captures the value at creation time and checks it
+    /// inside its `MainActor.run` cleanup block — if the controller's
+    /// generation has moved on (the user pressed Reset and a fresh
+    /// game is running), the stale cleanup becomes a no-op so it
+    /// doesn't clobber the newer game's `isPlayingHuman` / watcher /
+    /// `gameTask` state.
+    private var gameGeneration: UInt = 0
 
     /// The active `HumanChessPlayer` instance for this game. Holds
     /// the suspended continuation while it's the user's turn.
@@ -217,14 +249,20 @@ final class PlayController {
         gameWatcher.resetCurrentGame()
         gameWatcher.markPlaying(true)
         isPlayingHuman = true
+        lastOpponentChoice = opponent
+        lastHumanColor = humanColor
+        // Bump now (before the launchGame from any prior game's
+        // already-queued cleanup `MainActor.run` runs) so the stale
+        // cleanup finds a mismatched generation and bails.
+        gameGeneration &+= 1
 
         materializeTask = Task { [weak self] in
-            let result = await Self.materializeOpponentNetwork(
+            guard let self else { return }
+            let result = await self.materializeOpponentSource(
                 choice: opponent,
                 session: session,
                 loadedFileURL: chosenURL
             )
-            guard let self else { return }
             // Note: we deliberately do NOT clear `self.materializeTask`
             // here. After a Start→Stop→Start sequence the field may
             // already hold the *next* task, and a stale clear would
@@ -247,16 +285,63 @@ final class PlayController {
                 self.isSetupVisible = true
                 gameWatcher.markPlaying(false)
                 self.isPlayingHuman = false
+                self.lastOpponentChoice = nil
+                self.lastHumanColor = nil
                 return
-            case .success(let network):
-                self.opponentNetwork = network
+            case .success(let source):
+                // Wrap the AI side in a 2-second pre-move delay so the
+                // human has time to register their own move before the
+                // reply lands. The wrapper preserves cancellation: a
+                // Stop / Reset cancels the game Task, which propagates
+                // out of the wrapper's `Task.sleep` as a
+                // `CancellationError` and unwinds the game loop
+                // cleanly.
+                let delayed = DelayedMoveEvaluationSource(
+                    wrapping: source,
+                    delay: .seconds(2)
+                )
+                self.opponentSource = delayed
                 self.launchGame(
-                    network: network,
+                    source: delayed,
                     humanIsWhite: humanIsWhite,
+                    gameWatcher: gameWatcher
+                )
+                // The window controller observes this controller's
+                // `@Observable` state plus polls the gameWatcher
+                // snapshot on its own timer. Opening it AFTER
+                // `launchGame` (rather than in `start(...)`) means the
+                // window only appears if the opponent network actually
+                // materialized — a failure puts the popover back up
+                // with the error rather than orphaning an empty
+                // window.
+                HumanPlayWindowLauncher.openOrFocus(
+                    controller: self,
+                    session: session,
                     gameWatcher: gameWatcher
                 )
             }
         }
+    }
+
+    /// User pressed Reset / on-board Reset. Tear down the current game
+    /// and immediately relaunch a fresh game against the same opponent
+    /// type and side. Re-running through `start(...)` means snapshot
+    /// opponents (`.championSnapshot` / `.trainerSnapshot` /
+    /// `.loadedFile`) re-snapshot weights automatically and the
+    /// `.liveTrainer` mirror is reused.
+    func reset(session: SessionController, gameWatcher: GameWatcher) {
+        guard isPlayingHuman else { return }
+        guard let choice = lastOpponentChoice, let color = lastHumanColor else { return }
+        SessionLogger.shared.log("[BUTTON] Chess > Reset Game")
+        // Capture the saved values before `stop` clears them, then
+        // restore onto the bound popover state so `start` reads the
+        // same choice + color it just had.
+        let savedChoice = choice
+        let savedColor = color
+        stop(gameWatcher: gameWatcher)
+        opponentChoice = savedChoice
+        humanColor = savedColor
+        start(session: session, gameWatcher: gameWatcher)
     }
 
     /// User pressed Stop / Resign. Cancels the game task, which
@@ -281,7 +366,12 @@ final class PlayController {
         gameTask?.cancel()
         gameTask = nil
         humanPlayer = nil
-        opponentNetwork = nil
+        opponentSource = nil
+        lastOpponentChoice = nil
+        lastHumanColor = nil
+        // Note: `liveTrainerMirrorNetwork` is intentionally NOT cleared.
+        // It persists for the controller's lifetime so subsequent
+        // `.liveTrainer` games skip the ~150 ms graph build.
         pendingLegalMoves = []
         selectedFromSquare = nil
         pendingPromotion = nil
@@ -291,7 +381,7 @@ final class PlayController {
     }
 
     private func launchGame(
-        network: ChessMPSNetwork,
+        source: MoveEvaluationSource,
         humanIsWhite: Bool,
         gameWatcher: GameWatcher
     ) {
@@ -319,18 +409,20 @@ final class PlayController {
         )
         humanPlayer = human
 
-        isPlayingHuman = true
-        gameWatcher.markPlaying(true)
+        // Capture the current generation (bumped by `start(...)`) so
+        // the cleanup block can detect "a newer game has taken over"
+        // and skip its cleanup (otherwise a Reset between cancel and
+        // cleanup would have the stale cleanup clobber the new game's
+        // state — see `gameGeneration`'s doc).
+        let myGeneration = gameGeneration
 
-        // The MPSChessPlayer's per-game scratch isn't `Sendable`, so it
-        // (and the `DirectMoveEvaluationSource` that wraps the
-        // inference network) is constructed inside the Task closure
-        // and never crosses an isolation boundary. The captured
-        // sendable inputs — `network`, `human`, `gameWatcher`,
-        // `aiLabel`, `humanIsWhite` — produce the AI side and the
-        // (white, black) pair entirely within the task.
-        gameTask = Task { [weak self, network, human, gameWatcher, aiLabel, humanIsWhite] in
-            let source = DirectMoveEvaluationSource(network: network)
+        // MPSChessPlayer's per-game scratch isn't `Sendable`, so the AI
+        // player is constructed inside the Task closure and never
+        // crosses an isolation boundary. The captured Sendable inputs —
+        // `source`, `human`, `gameWatcher`, `aiLabel`, `humanIsWhite`,
+        // `myGeneration` — produce the AI side and the (white, black)
+        // pair entirely within the task.
+        gameTask = Task { [weak self, source, human, gameWatcher, aiLabel, humanIsWhite, myGeneration] in
             let ai = MPSChessPlayer(name: aiLabel, source: source)
             let machine = ChessMachine()
             machine.delegate = gameWatcher
@@ -358,15 +450,30 @@ final class PlayController {
                 )
             }
             await MainActor.run {
+                guard let self else {
+                    // Controller is gone — best-effort wind-down of
+                    // the watcher (still strongly retained by this
+                    // closure) so the rest of the app's "is a game
+                    // running" gates clear.
+                    gameWatcher.markPlaying(false)
+                    return
+                }
+                guard self.gameGeneration == myGeneration else {
+                    // A newer game (via Reset) has taken over. Leave
+                    // `isPlayingHuman`, `gameTask`, the watcher, etc.
+                    // alone so the new game's `start(...)` state wins.
+                    return
+                }
                 gameWatcher.markPlaying(false)
-                guard let self else { return }
                 self.isPlayingHuman = false
                 self.pendingLegalMoves = []
                 self.selectedFromSquare = nil
                 self.pendingPromotion = nil
                 self.humanPlayer = nil
-                self.opponentNetwork = nil
+                self.opponentSource = nil
                 self.gameTask = nil
+                self.lastOpponentChoice = nil
+                self.lastHumanColor = nil
             }
         }
     }
@@ -470,31 +577,63 @@ final class PlayController {
         // `onTurnEnd` clears the rest of the per-turn state.
     }
 
-    // MARK: - Opponent network materialization
+    // MARK: - Opponent source materialization
 
-    private nonisolated static func materializeOpponentNetwork(
+    /// Build the `MoveEvaluationSource` the AI side will play through.
+    /// Snapshot cases export the relevant weights and overlay them
+    /// onto a freshly-built inference network; `.liveTrainer` lazy-
+    /// builds (or reuses) the persistent mirror and returns a
+    /// per-move-overlaying source.
+    ///
+    /// Runs on the main actor since `PlayController` is `@MainActor`;
+    /// the long-running MPSGraph build is delegated to
+    /// `Task.detached` inside `buildInferenceNetwork(...)` so the main
+    /// actor is yielded for the duration of the build.
+    private func materializeOpponentSource(
         choice: HumanPlayOpponentChoice,
         session: SessionController,
         loadedFileURL: URL?
-    ) async -> Result<ChessMPSNetwork, Error> {
+    ) async -> Result<MoveEvaluationSource, Error> {
         switch choice {
-        case .champion:
-            // The champion network is the live inference net; play
-            // games go straight against it (same arrangement as the
-            // existing Debug > Play Game).
-            if let net = await session.network {
-                return .success(net)
+        case .championSnapshot:
+            guard let champion = session.network else {
+                return .failure(PlayControllerError.noChampionAvailable)
             }
-            return .failure(PlayControllerError.noChampionAvailable)
-
-        case .trainer:
             do {
-                guard let trainer = await session.trainer else {
+                let weights = try await champion.exportWeights()
+                let net = try await Self.buildInferenceNetwork(loading: weights)
+                return .success(DirectMoveEvaluationSource(network: net))
+            } catch {
+                return .failure(error)
+            }
+
+        case .trainerSnapshot:
+            guard let trainer = session.trainer else {
+                return .failure(PlayControllerError.noTrainerAvailable)
+            }
+            do {
+                let weights = try await trainer.network.exportWeights()
+                let net = try await Self.buildInferenceNetwork(loading: weights)
+                return .success(DirectMoveEvaluationSource(network: net))
+            } catch {
+                return .failure(error)
+            }
+
+        case .liveTrainer:
+            guard let trainer = session.trainer else {
+                return .failure(PlayControllerError.noTrainerAvailable)
+            }
+            do {
+                if liveTrainerMirrorNetwork == nil {
+                    liveTrainerMirrorNetwork = try await Self.buildBareInferenceNetwork()
+                }
+                guard let mirror = liveTrainerMirrorNetwork else {
                     return .failure(PlayControllerError.noTrainerAvailable)
                 }
-                let weights = try await trainer.network.exportWeights()
-                let net = try await buildInferenceNetwork(loading: weights)
-                return .success(net)
+                return .success(LiveTrainerMoveEvaluationSource(
+                    trainer: trainer,
+                    mirror: mirror
+                ))
             } catch {
                 return .failure(error)
             }
@@ -505,8 +644,8 @@ final class PlayController {
             }
             do {
                 let file = try CheckpointManager.loadModelFile(at: url)
-                let net = try await buildInferenceNetwork(loading: file.weights)
-                return .success(net)
+                let net = try await Self.buildInferenceNetwork(loading: file.weights)
+                return .success(DirectMoveEvaluationSource(network: net))
             } catch {
                 return .failure(error)
             }
@@ -527,10 +666,22 @@ final class PlayController {
         return net
     }
 
+    /// Build a `.randomWeights` `ChessMPSNetwork` *without* overlaying
+    /// weights. Used as the lazy initializer for the live-trainer
+    /// mirror — the mirror's initial weights are immaterial because
+    /// `LiveTrainerMoveEvaluationSource.evaluate` overwrites them on
+    /// every AI move via `loadWeights(...)`.
+    private nonisolated static func buildBareInferenceNetwork() async throws -> ChessMPSNetwork {
+        try await Task.detached(priority: .userInitiated) {
+            try ChessMPSNetwork(.randomWeights)
+        }.value
+    }
+
     private static func label(for choice: HumanPlayOpponentChoice) -> String {
         switch choice {
-        case .champion: return "champion"
-        case .trainer: return "trainer"
+        case .championSnapshot: return "champion-snapshot"
+        case .trainerSnapshot: return "trainer-snapshot"
+        case .liveTrainer: return "live-trainer"
         case .loadedFile: return "loaded-file"
         }
     }
@@ -558,8 +709,8 @@ enum PlayControllerError: LocalizedError {
 // MARK: - Setup popover view
 
 /// Configuration popover surfaced from Chess > Play…. Lets the user
-/// pick the opponent (current champion / current trainer / loaded
-/// file) and side, then hit Start to launch the game.
+/// pick the opponent (champion snapshot / trainer snapshot / live
+/// trainer / loaded file) and side, then hit Start to launch the game.
 struct PlaySetupPopover: View {
     @Bindable var controller: PlayController
     let championAvailable: Bool
@@ -575,11 +726,26 @@ struct PlaySetupPopover: View {
                 Text("Opponent")
                     .font(.subheadline.weight(.semibold))
                 Picker("Opponent", selection: $controller.opponentChoice) {
-                    Text("Current Champion").tag(HumanPlayOpponentChoice.champion)
-                        .help(championAvailable ? "" : "No champion network built yet")
-                    Text("Current Trainer").tag(HumanPlayOpponentChoice.trainer)
-                        .help(trainerAvailable ? "" : "No trainer built yet")
-                    Text("Load Saved Model…").tag(HumanPlayOpponentChoice.loadedFile)
+                    Text("Champion (snapshot)")
+                        .tag(HumanPlayOpponentChoice.championSnapshot)
+                        .help(championAvailable
+                            ? "Freeze the current champion's weights at game start."
+                            : "No champion network built yet"
+                        )
+                    Text("Trainer (snapshot)")
+                        .tag(HumanPlayOpponentChoice.trainerSnapshot)
+                        .help(trainerAvailable
+                            ? "Freeze the trainer's current weights at game start."
+                            : "No trainer built yet"
+                        )
+                    Text("Trainer (live)")
+                        .tag(HumanPlayOpponentChoice.liveTrainer)
+                        .help(trainerAvailable
+                            ? "Re-snapshot the trainer's weights before every AI move — watch training evolve game-by-game."
+                            : "No trainer built yet"
+                        )
+                    Text("Load Saved Model…")
+                        .tag(HumanPlayOpponentChoice.loadedFile)
                 }
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
@@ -635,9 +801,31 @@ struct PlaySetupPopover: View {
 
     private var isStartEnabled: Bool {
         switch controller.opponentChoice {
-        case .champion: return championAvailable
-        case .trainer: return trainerAvailable
+        case .championSnapshot: return championAvailable
+        case .trainerSnapshot: return trainerAvailable
+        case .liveTrainer: return trainerAvailable
         case .loadedFile: return controller.loadedFileURL != nil
         }
+    }
+}
+
+// MARK: - On-board human-play toolbar
+
+/// Small Reset / Stop row rendered below the chess board while a
+/// human game is in flight. Mirrors Chess menu's Reset Game / Stop
+/// Game items so the user doesn't have to leave the board to issue
+/// either command. The `controller` binding lets the toolbar fade in
+/// and out automatically as `isPlayingHuman` toggles.
+struct HumanPlayToolbar: View {
+    @Bindable var controller: PlayController
+    let onReset: () -> Void
+    let onStop: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button("Reset Game") { onReset() }
+            Button("Stop Game") { onStop() }
+        }
+        .controlSize(.small)
     }
 }

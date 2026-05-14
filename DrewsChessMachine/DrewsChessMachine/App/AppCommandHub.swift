@@ -149,4 +149,9 @@ final class AppCommandHub {
     /// Chess menu > Stop Game. Cancels an in-flight human game.
     /// Disabled when `humanGameInFlight == false`.
     var stopHumanGame: () -> Void = {}
+
+    /// Chess menu > Reset Game. Restarts the in-flight human game with
+    /// the same opponent type and side, re-snapshotting weights where
+    /// applicable. Disabled when `humanGameInFlight == false`.
+    var resetHumanGame: () -> Void = {}
 }

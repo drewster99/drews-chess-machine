@@ -422,19 +422,21 @@ struct DrewsChessMachineApp: App {
             // opponent (champion / trainer / a saved model file) and
             // which side they want in the setup popover that the
             // Play… item opens.
+            //
+            // Play is intentionally available concurrently with real
+            // training, arenas, sweeps, and the debug single-game
+            // path: the human game's AI side runs on a snapshotted
+            // inference network owned solely by the human game, so it
+            // doesn't compete with self-play workers, the arena
+            // candidate, or the live champion for graph state. The
+            // only gate is "another human game is already running in
+            // this window" — multi-window support for two-or-more
+            // simultaneous human games comes later.
             CommandMenu("Chess") {
                 Button("Play…") { commandHub.openHumanPlaySetup() }
-                    .disabled(
-                        commandHub.isBusy
-                        || commandHub.realTraining
-                        || commandHub.continuousPlay
-                        || commandHub.continuousTraining
-                        || commandHub.sweepRunning
-                        || commandHub.gameIsPlaying
-                        || commandHub.isArenaRunning
-                        || commandHub.checkpointSaveInFlight
-                        || commandHub.humanGameInFlight
-                    )
+                    .disabled(commandHub.humanGameInFlight)
+                Button("Reset Game") { commandHub.resetHumanGame() }
+                    .disabled(!commandHub.humanGameInFlight)
                 Button("Stop Game") { commandHub.stopHumanGame() }
                     .disabled(!commandHub.humanGameInFlight)
             }

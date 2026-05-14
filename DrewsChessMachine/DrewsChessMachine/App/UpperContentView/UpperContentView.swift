@@ -1295,34 +1295,19 @@ struct UpperContentView: View {
     @ViewBuilder
     private var boardAndTextRow: some View {
         // Human-vs-network play flips the board 180° when the user is
-        // black so their pieces sit at the bottom (standard chess
-        // convention). Done once here and applied to (a) the pieces
-        // array passed to the board, (b) the tap callback's visual→
-        // logical translation, and (c) the highlight / promotion-picker
-        // visual coordinates. Everywhere else in this file stays in
-        // logical (encoder-frame) coordinates.
-        let humanPlayActive = playController.isPlayingHuman
-            && !playController.pendingLegalMoves.isEmpty
+        // black so the user's pieces sit at the bottom (standard chess
+        // convention). Click-routing + highlight + promotion-picker
+        // visual coordinates all live in `HumanPlayWindow` now; the
+        // inline board only needs the flipped pieces array because it
+        // mirrors the game position (non-interactive) for at-a-glance
+        // visibility on the main window during a human game.
         let humanBoardFlipped = playController.isPlayingHuman
             && playController.humanColor == .black
         let boardPieces: [Piece?] = humanBoardFlipped
             ? Array(displayedPieces.reversed())
             : displayedPieces
-        let selectedFromVisual: Int? = playController.selectedFromSquare.map { sq in
-            humanBoardFlipped ? 63 - sq : sq
-        }
-        let legalTargetsVisual: Set<Int> = humanPlayActive
-            ? Self.legalTargetsVisual(
-                from: playController.selectedFromSquare,
-                pending: playController.pendingLegalMoves,
-                flipped: humanBoardFlipped
-            )
-            : []
-        let promotionVisualSquare: Int? = playController.pendingPromotion.map { p in
-            let logical = p.toRow * 8 + p.toCol
-            return humanBoardFlipped ? 63 - logical : logical
-        }
         HStack(alignment: .top, spacing: 24) {
+            VStack(spacing: 6) {
             BoardSideView(
                 playAndTrainBoardMode: $session.playAndTrainBoardMode,
                 sideToMoveBinding: sideToMoveBinding,
@@ -1353,22 +1338,25 @@ struct UpperContentView: View {
                     onHoverSquare: { sq in
                         hoveredBoardSquare = sq
                     },
-                    humanMoveActive: humanPlayActive,
-                    selectedFromSquare: selectedFromVisual,
-                    legalMoveTargets: legalTargetsVisual,
-                    pendingPromotion: playController.pendingPromotion,
-                    humanColor: playController.isPlayingHuman ? playController.humanColor : nil,
-                    promotionVisualSquare: promotionVisualSquare,
-                    onTapSquare: { visualSq in
-                        let logical = humanBoardFlipped ? 63 - visualSq : visualSq
-                        playController.tapSquare(logical, in: gameSnapshot.state.board)
-                    },
-                    onSelectPromotion: { type in
-                        playController.selectPromotion(type)
-                    },
-                    onCancelPromotion: {
-                        playController.cancelPromotion()
-                    }
+                    // The main window's inline board no longer accepts
+                    // human-play taps — human games render in their own
+                    // window (HumanPlayWindow) where the click routing,
+                    // highlights, promotion picker, and Reset / Stop
+                    // toolbar all live. The inline board still mirrors
+                    // the position (via gameWatcher.state.board) so the
+                    // user can glance at it during a human game without
+                    // switching windows. All human-play wiring is set
+                    // to no-op equivalents to keep the call site stable
+                    // (the project's SwiftUI view-stability rule).
+                    humanMoveActive: false,
+                    selectedFromSquare: nil,
+                    legalMoveTargets: [],
+                    pendingPromotion: nil,
+                    humanColor: nil,
+                    promotionVisualSquare: nil,
+                    onTapSquare: { _ in },
+                    onSelectPromotion: { _ in },
+                    onCancelPromotion: { }
                 )
             )
             .popover(isPresented: $playController.isSetupVisible, arrowEdge: .top) {
@@ -1380,6 +1368,17 @@ struct UpperContentView: View {
                         playController.start(session: session, gameWatcher: gameWatcher)
                     }
                 )
+            }
+
+            // The Reset / Stop toolbar now lives inside the human-
+            // play window (HumanPlayWindow). The inline placement
+            // below the mini board was confusing operator-side
+            // ("am I supposed to use that?"). Kept the view-tree
+            // slot as an opacity-0 / height-0 spacer so the
+            // surrounding VStack's shape doesn't change between
+            // builds.
+            Color.clear
+                .frame(height: 0)
             }
 
             // Hover-driven top-3 channels overlay. When the cursor is over
@@ -2095,6 +2094,9 @@ struct UpperContentView: View {
         commandHub.chartZoomEnableAuto = { session.chartZoomEnableAuto() }
         commandHub.openHumanPlaySetup = { playController.openSetupPopover() }
         commandHub.stopHumanGame = { playController.stop(gameWatcher: gameWatcher) }
+        commandHub.resetHumanGame = {
+            playController.reset(session: session, gameWatcher: gameWatcher)
+        }
     }
 
     /// Push the subset of view state that governs menu enable/disable

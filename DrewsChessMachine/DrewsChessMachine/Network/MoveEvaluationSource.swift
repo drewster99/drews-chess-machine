@@ -155,3 +155,86 @@ final class DirectMoveEvaluationSource: MoveEvaluationSource, @unchecked Sendabl
         return capturedValue
     }
 }
+
+/// Plays the human against the *live* training network: before every
+/// AI move, snapshots the trainer's current weights into a persistent
+/// inference-mode mirror network, then runs inference on that mirror.
+/// The human watches the trainer evolve game-by-game without sharing
+/// any MPSGraph state with the trainer's SGD path.
+///
+/// Why a per-move overlay instead of direct inference on the trainer
+/// network: the trainer runs SGD on its own `executionQueue` while
+/// holding the network in training-mode batch norm, which (a) makes
+/// concurrent inference race the weight tensors and (b) yields
+/// stochastic batch-of-1 BN stats. The inference-mode mirror sidesteps
+/// both problems — the mirror's frozen-stats BN is exactly what arena
+/// and load-from-file paths already use, and the trainer keeps
+/// training uninterrupted on its own network instance.
+///
+/// `@unchecked Sendable` because all stored references are
+/// `Sendable`-by-construction (`ChessMPSNetwork`,
+/// `DirectMoveEvaluationSource`) or `@unchecked Sendable`
+/// (`ChessTrainer`), and `evaluate` is single-threaded per game (the
+/// `ChessMachine` game loop serializes the two players within a
+/// game).
+final class LiveTrainerMoveEvaluationSource: MoveEvaluationSource, @unchecked Sendable {
+    private let trainer: ChessTrainer
+    private let mirror: ChessMPSNetwork
+    private let direct: DirectMoveEvaluationSource
+
+    init(trainer: ChessTrainer, mirror: ChessMPSNetwork) {
+        self.trainer = trainer
+        self.mirror = mirror
+        self.direct = DirectMoveEvaluationSource(network: mirror)
+    }
+
+    func evaluate(
+        encodedBoard: [Float],
+        intoPolicy: PolicyDestination
+    ) async throws -> Float {
+        let weights = try await trainer.network.exportWeights()
+        try await mirror.loadWeights(weights)
+        return try await direct.evaluate(
+            encodedBoard: encodedBoard,
+            intoPolicy: intoPolicy
+        )
+    }
+}
+
+/// Decorator that sleeps for a configured duration before delegating
+/// every `evaluate(...)` call to the wrapped source. Used on the AI
+/// side of human-vs-network games so the human has time to absorb
+/// their own move before the AI responds — without the delay the AI
+/// snap-fires its reply as soon as the human's continuation resumes,
+/// which feels jarring at the keyboard. The delay is per-call (every
+/// AI ply waits) rather than per-game so a long line of AI moves
+/// doesn't blow past the human's reading speed.
+///
+/// `Task.sleep(for:)` is cancellation-aware: a Stop Game / Reset Game
+/// click cancels the surrounding game `Task`, which surfaces a
+/// `CancellationError` out of the sleep so the AI doesn't continue
+/// thinking past a user-initiated cancel.
+///
+/// `@unchecked Sendable` because all stored references are
+/// `Sendable`-by-construction (the wrapped `MoveEvaluationSource` and
+/// the `Duration` value) and `evaluate` is single-threaded per game.
+final class DelayedMoveEvaluationSource: MoveEvaluationSource, @unchecked Sendable {
+    private let inner: MoveEvaluationSource
+    private let delay: Duration
+
+    init(wrapping inner: MoveEvaluationSource, delay: Duration) {
+        self.inner = inner
+        self.delay = delay
+    }
+
+    func evaluate(
+        encodedBoard: [Float],
+        intoPolicy: PolicyDestination
+    ) async throws -> Float {
+        try await Task.sleep(for: delay)
+        return try await inner.evaluate(
+            encodedBoard: encodedBoard,
+            intoPolicy: intoPolicy
+        )
+    }
+}
