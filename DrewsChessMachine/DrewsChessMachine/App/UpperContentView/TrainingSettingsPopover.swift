@@ -990,16 +990,28 @@ private struct SelfPlayTab: View {
         let emittedRate: Double = hasStats && recentWindow > 0
             ? Double(s?.recentEmittedPositions ?? 0) / recentWindow * 3600
             : 0
-        // Lifetime W/D/L counts. Played: total per-outcome counters
-        // from the watcher. Emitted: same W/L (decisive games always
-        // kept), drawn = emittedGames minus the decisive total.
-        let playedW = (s?.whiteCheckmates ?? 0)
-        let playedL = (s?.blackCheckmates ?? 0)
-        let playedDraws = (s?.stalemates ?? 0) + (s?.fiftyMoveDraws ?? 0)
-            + (s?.threefoldRepetitionDraws ?? 0) + (s?.insufficientMaterialDraws ?? 0)
+        // Lifetime totals for the "games:" row.
         let playedTotal = (s?.selfPlayGames ?? 0)
         let emittedTotal = (s?.emittedGames ?? 0)
-        let emittedDraws = max(0, emittedTotal - playedW - playedL)
+
+        // Rolling-window per-outcome counts for the W/D/L row. These
+        // are the only W/D/L numbers worth showing here: lifetime
+        // per-outcome counts are dominated by whatever happened
+        // before the operator last touched `selfPlayDrawKeepFraction`,
+        // so the Played vs Emitted columns look identical at any
+        // realistic display precision until the filter has been
+        // running long enough to move lifetime totals by ≥ 0.1%.
+        // The 1-minute rolling window matches the `plies / hour (1m)`
+        // row's denominator so the two rows describe the same
+        // recent slice of self-play.
+        let recentPlayedTotal = s?.recentGames ?? 0
+        let recentEmittedTotal = s?.recentEmittedGames ?? 0
+        let recentPlayedW = s?.recentWhiteCheckmates ?? 0
+        let recentPlayedL = s?.recentBlackCheckmates ?? 0
+        let recentPlayedD = s?.recentDraws ?? 0
+        let recentEmittedW = s?.recentEmittedWhiteCheckmates ?? 0
+        let recentEmittedL = s?.recentEmittedBlackCheckmates ?? 0
+        let recentEmittedD = s?.recentEmittedDraws ?? 0
 
         VStack(alignment: .leading, spacing: 2) {
             Text("Live snapshot")
@@ -1037,12 +1049,12 @@ private struct SelfPlayTab: View {
                 emittedValue: hasStats ? Self.numberString(emittedTotal) : dash
             )
             twoColRow(
-                label: "W / D / L %:",
-                playedValue: hasStats && playedTotal > 0
-                    ? Self.pctTriple(w: playedW, d: playedDraws, l: playedL, total: playedTotal)
+                label: "W / D / L % (1m):",
+                playedValue: hasStats && recentPlayedTotal > 0
+                    ? Self.pctTriple(w: recentPlayedW, d: recentPlayedD, l: recentPlayedL, total: recentPlayedTotal)
                     : dash,
-                emittedValue: hasStats && emittedTotal > 0
-                    ? Self.pctTriple(w: playedW, d: emittedDraws, l: playedL, total: emittedTotal)
+                emittedValue: hasStats && recentEmittedTotal > 0
+                    ? Self.pctTriple(w: recentEmittedW, d: recentEmittedD, l: recentEmittedL, total: recentEmittedTotal)
                     : dash
             )
         }
@@ -1551,7 +1563,7 @@ private struct ReplayTab: View {
             // these). Batch = the trainer's batch size (positions
             // sampled per SGD step).
             twoColRow(
-                label: "buf / batch:",
+                label: "plies:",
                 bufferValue: bufHas ? numberString(c?.storedCount ?? 0) : dash,
                 batchValue: batchHas ? numberString(sr?.batchSize ?? 0) : dash
             )
