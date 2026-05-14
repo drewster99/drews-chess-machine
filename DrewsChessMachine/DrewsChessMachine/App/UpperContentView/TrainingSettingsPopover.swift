@@ -274,6 +274,7 @@ struct TrainingSettingsPopover: View {
         }
         .padding(16)
         .frame(width: 540)
+        .background(.thickMaterial)
         .onAppear { model.seedFromParams() }
         .onDisappear {
             // macOS popovers dismiss on outside-click without ever
@@ -1602,15 +1603,15 @@ private struct ReplayTab: View {
             // to zero height + zero opacity when not active so it
             // leaves no visual trace. When active, padded slightly off
             // the data above so the warning has breathing room.
-            HStack(spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
                 Text("⚠")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.red)
                 Text("Attempt budget hit — sampler fell back to uniform; K, D and length-target caps all dropped this batch")
                     .font(.caption)
                     .foregroundStyle(.red)
-                    .lineLimit(2)
-                Spacer(minLength: 0)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.top, budgetHit ? 6 : 0)
             .frame(height: budgetHit ? nil : 0)
@@ -1627,9 +1628,11 @@ private struct ReplayTab: View {
     /// column width matches the rest of the popover (`PopoverRow` uses
     /// 160). Each value column is a fixed 140pt so the "Buffer" /
     /// "Last batch" header titles line up directly above the data.
-    /// `*ValueColor` is applied unconditionally — nil resolves to the
-    /// parent's inherited secondary style, so the view tree never
-    /// branches on it (matches the project's view-stability rule).
+    /// `*ValueColor` is applied unconditionally — nil resolves to
+    /// `.primary` so values read full-contrast while the parent VStack's
+    /// `.foregroundStyle(.secondary)` cascade keeps labels and headers
+    /// light. The view tree never branches on the color (matches the
+    /// project's view-stability rule).
     @ViewBuilder
     private func twoColRow(
         label: String,
@@ -1643,12 +1646,12 @@ private struct ReplayTab: View {
                 .frame(width: 160, alignment: .trailing)
             Text(bufferValue)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(bufferValueColor ?? Color.secondary)
+                .foregroundStyle(bufferValueColor ?? Color.primary)
                 .lineLimit(1)
                 .frame(width: 140, alignment: .leading)
             Text(batchValue)
                 .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(batchValueColor ?? Color.secondary)
+                .foregroundStyle(batchValueColor ?? Color.primary)
                 .lineLimit(1)
                 .frame(width: 140, alignment: .leading)
             Spacer()
