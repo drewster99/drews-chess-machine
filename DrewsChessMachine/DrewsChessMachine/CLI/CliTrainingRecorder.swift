@@ -458,6 +458,19 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// trained" counter in the top-level JSON when it's the
         /// last stats line at exit time.
         let positionsTrained: Int
+        /// Lifetime count of self-play games that survived the
+        /// per-game keep/drop filter (`selfPlayDrawKeepFraction`)
+        /// and were flushed into the replay buffer. `<= selfPlayGames`;
+        /// equal at default keepFraction of 1.0.
+        let emittedGames: Int
+        /// Lifetime count of plies emitted into the replay buffer
+        /// (both colours summed across kept games). `<=
+        /// positionsTrained` (raw produced).
+        let emittedPositions: Int
+        /// `selfPlayDrawKeepFraction` in effect at this stats tick.
+        /// 1.0 = keep every drawn game; < 1.0 = filter drawn games
+        /// stochastically.
+        let selfPlayDrawKeepFraction: Double
         let avgLen: Double
         let rollingAvgLen: Double
         let gameLenP50: Int?
@@ -530,7 +543,17 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let diversityAvgDivergencePly: Double
         let ratioTarget: Double
         let ratioCurrent: Double
+        /// Self-play EMITTED-positions rate (positions/sec) — the
+        /// rate the replay-ratio target is computed against. Equals
+        /// `ratioProducedRate` when `selfPlayDrawKeepFraction = 1.0`
+        /// (default), strictly less when filtering is active.
         let ratioProductionRate: Double
+        /// Self-play RAW-produced-positions rate (positions/sec) —
+        /// every ply that came off the GPU, kept or dropped. Equal
+        /// to `ratioProductionRate` at default keep-fraction;
+        /// surfaced separately so the observed keep-fraction can be
+        /// read off as `ratioProductionRate / ratioProducedRate`.
+        let ratioProducedRate: Double
         let ratioConsumptionRate: Double
         /// Self-play production rate expressed in moves/hour (3600 ×
         /// `ratioProductionRate`). Same rolling 60-s window as the
@@ -569,6 +592,9 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case steps
             case selfPlayGames = "self_play_games"
             case positionsTrained = "positions_trained"
+            case emittedGames = "emitted_games"
+            case emittedPositions = "emitted_positions"
+            case selfPlayDrawKeepFraction = "self_play_draw_keep_fraction"
             case avgLen = "avg_len"
             case rollingAvgLen = "rolling_avg_len"
             case gameLenP50 = "game_len_p50"
@@ -621,6 +647,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case ratioTarget = "ratio_target"
             case ratioCurrent = "ratio_current"
             case ratioProductionRate = "ratio_production_rate"
+            case ratioProducedRate = "ratio_produced_rate"
             case ratioConsumptionRate = "ratio_consumption_rate"
             case selfPlayMovesPerHour = "self_play_moves_per_hour"
             case trainingMovesPerHour = "training_moves_per_hour"

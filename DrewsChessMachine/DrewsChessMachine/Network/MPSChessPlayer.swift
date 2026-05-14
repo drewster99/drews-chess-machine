@@ -193,11 +193,15 @@ final class MPSChessPlayer: ChessPlayer {
     /// so N slot tasks coalesce their per-ply forward passes into one
     /// batched `graph.run`.
     private let source: MoveEvaluationSource
-    /// Optional replay buffer. When non-nil, this player pushes each finished
-    /// game's labeled positions into the buffer from `onGameEnded`. The
-    /// default-nil path is what Play Game and Play Continuous use — they
-    /// have no use for training data, and passing nil keeps their behavior
-    /// identical to before the buffer existed.
+    /// Optional replay buffer. When non-nil, this player CAN push each
+    /// finished game's labeled positions into the buffer, but the push is
+    /// NOT automatic on `onGameEnded` — the caller must explicitly invoke
+    /// `flushRecordedGameToReplayBuffer(result:)` after the game ends.
+    /// Self-play uses this two-step contract so the slot driver can
+    /// decide per-game whether to keep or drop the game (e.g. honour the
+    /// `selfPlayDrawKeepFraction` draw filter). The default-nil path is
+    /// what Play Game / Play Continuous / arena use — they pass nil and
+    /// never call flush, identical to pre-buffer behaviour.
     private let replayBuffer: ReplayBuffer?
     /// Temperature schedule applied per-ply in `sampleMove`. Defaults to
     /// `.uniform` (flat tau=1.0) so non-training callers keep their
@@ -523,7 +527,34 @@ final class MPSChessPlayer: ChessPlayer {
         return move
     }
 
+    /// Protocol entry point. No-op in MPSChessPlayer — the replay-buffer
+    /// flush is deferred to `flushRecordedGameToReplayBuffer(result:)`
+    /// so the self-play driver can apply the per-game keep/drop
+    /// decision (e.g. `selfPlayDrawKeepFraction`) AFTER it knows the
+    /// game's result but BEFORE the bulk append lands. The recorded
+    /// per-ply scratch survives this call; `onNewGame` clears it at
+    /// the start of the next game whether or not anyone flushed.
     func onGameEnded(_ result: GameResult, finalState: GameState) {
+        // Deliberately empty. See `flushRecordedGameToReplayBuffer`.
+    }
+
+    /// Bulk-flush every recorded ply from the just-finished game into
+    /// the shared replay buffer with the (player-relative) outcome
+    /// broadcast across every row. One lock acquisition on the buffer,
+    /// one `memcpy`-style copy per field — no per-position round-trips.
+    ///
+    /// Returns the number of plies pushed (0 if `replayBuffer` is nil
+    /// or this player recorded no plies this game — neither is a bug,
+    /// just nothing to do).
+    ///
+    /// Safe to call only between `onGameEnded` and the next
+    /// `onNewGame` — the per-game scratch is preserved across the gap,
+    /// and `onNewGame` zeroes `gamePliesRecorded`. Calling twice in a
+    /// row would double-push.
+    @discardableResult
+    func flushRecordedGameToReplayBuffer(result: GameResult) -> Int {
+        guard let replayBuffer, gamePliesRecorded > 0 else { return 0 }
+
         let myOutcome: Float
         switch result {
         case .checkmate(let winner):
@@ -535,13 +566,8 @@ final class MPSChessPlayer: ChessPlayer {
             myOutcome = 0.0
         }
 
-        guard let replayBuffer, gamePliesRecorded > 0 else { return }
-
-        // Bulk-flush every recorded ply into the shared replay buffer
-        // with the now-known outcome broadcast across every row. One
-        // lock acquisition, one `memcpy`-style copy per field — no
-        // per-position round-trips.
-        let gameLength = UInt16(min(gamePliesRecorded, Int(UInt16.max)))
+        let pliesPushed = gamePliesRecorded
+        let gameLength = UInt16(min(pliesPushed, Int(UInt16.max)))
         gamePolicyIndices.withUnsafeBufferPointer { movesBuf in
             gamePlyIndices.withUnsafeBufferPointer { pliesBuf in
                 gameSamplingTaus.withUnsafeBufferPointer { tausBuf in
@@ -565,13 +591,14 @@ final class MPSChessPlayer: ChessPlayer {
                                 workerId: workerId,
                                 intraWorkerGameIndex: intraWorkerGameIndex,
                                 outcome: myOutcome,
-                                count: gamePliesRecorded
+                                count: pliesPushed
                             )
                         }
                     }
                 }
             }
         }
+        return pliesPushed
     }
 
     /// Grow `gameBoardScratchPtr` to hold at least `newCapacity` plies,

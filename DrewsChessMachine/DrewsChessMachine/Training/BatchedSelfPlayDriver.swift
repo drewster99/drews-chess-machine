@@ -279,7 +279,10 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
 
             // Aggregate game stats — every slot contributes identically.
             // Move count = plies recorded by both players, read before
-            // the next `beginNewGame` resets them.
+            // the next `beginNewGame` resets them. These are the
+            // "games played" counters — they include every completed
+            // game regardless of whether it ends up in the replay
+            // buffer.
             let positions = white.recordedPliesCount + black.recordedPliesCount
             statsBox.recordCompletedGame(
                 moves: positions,
@@ -295,6 +298,52 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             // batcher's per-barrier-tick hook — much finer
             // granularity and uncontaminated by applied sleeps.
             replayRatioController?.recordSelfPlayGameLength(positions)
+
+            // Per-game keep/drop decision for the draw-keep filter.
+            // Read the live `selfPlayDrawKeepFraction` from the main
+            // actor once per game (per slot); this is the live UI
+            // knob and is updated by the heartbeat path on parameter
+            // changes. Hop is sub-millisecond and only fires at the
+            // few-per-second cadence one slot is finishing a game at.
+            let isDraw: Bool
+            switch result {
+            case .checkmate:
+                isDraw = false
+            case .stalemate,
+                 .drawByFiftyMoveRule,
+                 .drawByInsufficientMaterial,
+                 .drawByThreefoldRepetition:
+                isDraw = true
+            }
+            let drawKeepFraction: Double
+                = await MainActor.run { TrainingParameters.shared.selfPlayDrawKeepFraction }
+            let kept: Bool
+            if isDraw && drawKeepFraction < 1.0 {
+                // Uniform draw on the system RNG. Decisive games are
+                // always kept; only draws are filtered.
+                kept = Double.random(in: 0..<1) < drawKeepFraction
+            } else {
+                kept = true
+            }
+
+            if kept {
+                // Bulk-flush both players' recorded plies into the
+                // replay buffer. The pushed counts sum to `positions`
+                // (each player records their own perspective), so
+                // both the stats box and the controller see the same
+                // emitted-position total.
+                let whitePushed = white.flushRecordedGameToReplayBuffer(result: result)
+                let blackPushed = black.flushRecordedGameToReplayBuffer(result: result)
+                let emittedPositions = whitePushed + blackPushed
+                if emittedPositions > 0 {
+                    statsBox.recordEmittedGame(positions: emittedPositions)
+                    replayRatioController?.recordSelfPlayEmittedGame(positions: emittedPositions)
+                }
+            }
+            // If !kept: leave the recorded scratch alone — the next
+            // `onNewGame` at the top of this loop zeroes
+            // `gamePliesRecorded` and the data is dropped. No-op on
+            // the replay buffer; no emitted-game counter increment.
 
             // Replay-ratio self-play throttle. Applied after a game
             // has fully flushed (recordCompletedGame + recordGame) and

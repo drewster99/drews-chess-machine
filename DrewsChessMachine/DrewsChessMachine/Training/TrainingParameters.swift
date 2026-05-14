@@ -325,6 +325,16 @@ public enum SelfPlayTargetTau: TrainingParameterKey {}
 public enum SelfPlayTauDecayPerPly: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Self-Play Draw Keep Fraction",
+    description: "Fraction of self-play games ending in a draw that are pushed into the replay buffer at game end. 1.0 = keep every drawn game (legacy behavior, no filtering); 0.0 = discard every drawn game (only decisive games train). Decisive (checkmate) games are always kept regardless of this knob. The replay-ratio controller targets the EMITTED positions/sec rate, so dropping draws automatically slows training to keep the cons/prod ratio at target.",
+    default: 1.0,
+    range: 0.0...1.0,
+    category: "Self-Play Sampling",
+    liveTunable: true
+)
+public enum SelfPlayDrawKeepFraction: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Arena Start Tau",
     description: "Initial sampling temperature for arena games. Tighter than self-play to improve W/L/D signal.",
     default: 2.0,
@@ -602,6 +612,7 @@ public extension TrainingParametersSnapshot {
     var selfPlayStartTau: Double { value(for: SelfPlayStartTau.self) }
     var selfPlayTargetTau: Double { value(for: SelfPlayTargetTau.self) }
     var selfPlayTauDecayPerPly: Double { value(for: SelfPlayTauDecayPerPly.self) }
+    var selfPlayDrawKeepFraction: Double { value(for: SelfPlayDrawKeepFraction.self) }
     var arenaStartTau: Double { value(for: ArenaStartTau.self) }
     var arenaTargetTau: Double { value(for: ArenaTargetTau.self) }
     var arenaTauDecayPerPly: Double { value(for: ArenaTauDecayPerPly.self) }
@@ -652,6 +663,7 @@ public final class TrainingParameters {
     public var selfPlayStartTau: Double { didSet { Self.persist(SelfPlayStartTau.self, value: selfPlayStartTau) } }
     public var selfPlayTargetTau: Double { didSet { Self.persist(SelfPlayTargetTau.self, value: selfPlayTargetTau) } }
     public var selfPlayTauDecayPerPly: Double { didSet { Self.persist(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly) } }
+    public var selfPlayDrawKeepFraction: Double { didSet { Self.persist(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction) } }
     public var arenaStartTau: Double { didSet { Self.persist(ArenaStartTau.self, value: arenaStartTau) } }
     public var arenaTargetTau: Double { didSet { Self.persist(ArenaTargetTau.self, value: arenaTargetTau) } }
     public var arenaTauDecayPerPly: Double { didSet { Self.persist(ArenaTauDecayPerPly.self, value: arenaTauDecayPerPly) } }
@@ -695,6 +707,7 @@ public final class TrainingParameters {
         self.selfPlayStartTau = Self.read(SelfPlayStartTau.self)
         self.selfPlayTargetTau = Self.read(SelfPlayTargetTau.self)
         self.selfPlayTauDecayPerPly = Self.read(SelfPlayTauDecayPerPly.self)
+        self.selfPlayDrawKeepFraction = Self.read(SelfPlayDrawKeepFraction.self)
         self.arenaStartTau = Self.read(ArenaStartTau.self)
         self.arenaTargetTau = Self.read(ArenaTargetTau.self)
         self.arenaTauDecayPerPly = Self.read(ArenaTauDecayPerPly.self)
@@ -744,6 +757,7 @@ public final class TrainingParameters {
         v[SelfPlayStartTau.id] = SelfPlayStartTau.encode(selfPlayStartTau)
         v[SelfPlayTargetTau.id] = SelfPlayTargetTau.encode(selfPlayTargetTau)
         v[SelfPlayTauDecayPerPly.id] = SelfPlayTauDecayPerPly.encode(selfPlayTauDecayPerPly)
+        v[SelfPlayDrawKeepFraction.id] = SelfPlayDrawKeepFraction.encode(selfPlayDrawKeepFraction)
         v[ArenaStartTau.id] = ArenaStartTau.encode(arenaStartTau)
         v[ArenaTargetTau.id] = ArenaTargetTau.encode(arenaTargetTau)
         v[ArenaTauDecayPerPly.id] = ArenaTauDecayPerPly.encode(arenaTauDecayPerPly)
@@ -815,6 +829,8 @@ public final class TrainingParameters {
             try SelfPlayTargetTau.definition.validate(raw); selfPlayTargetTau = try SelfPlayTargetTau.decode(raw)
         case SelfPlayTauDecayPerPly.id:
             try SelfPlayTauDecayPerPly.definition.validate(raw); selfPlayTauDecayPerPly = try SelfPlayTauDecayPerPly.decode(raw)
+        case SelfPlayDrawKeepFraction.id:
+            try SelfPlayDrawKeepFraction.definition.validate(raw); selfPlayDrawKeepFraction = try SelfPlayDrawKeepFraction.decode(raw)
         case ArenaStartTau.id:
             try ArenaStartTau.definition.validate(raw); arenaStartTau = try ArenaStartTau.decode(raw)
         case ArenaTargetTau.id:
@@ -947,6 +963,7 @@ public final class TrainingParameters {
         SelfPlayStartTau.self,
         SelfPlayTargetTau.self,
         SelfPlayTauDecayPerPly.self,
+        SelfPlayDrawKeepFraction.self,
         ArenaStartTau.self,
         ArenaTargetTau.self,
         ArenaTauDecayPerPly.self,

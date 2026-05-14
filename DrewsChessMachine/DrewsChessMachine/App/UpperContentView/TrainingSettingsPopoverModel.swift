@@ -74,11 +74,13 @@ final class TrainingSettingsPopoverModel {
     var selfPlayStartTauText = "" { didSet { selfPlayStartTauError = false } }
     var selfPlayDecayPerPlyText = "" { didSet { selfPlayDecayPerPlyError = false } }
     var selfPlayFloorTauText = "" { didSet { selfPlayFloorTauError = false } }
+    var selfPlayDrawKeepFractionText = "" { didSet { selfPlayDrawKeepFractionError = false } }
 
     private(set) var selfPlayWorkersError = false
     private(set) var selfPlayStartTauError = false
     private(set) var selfPlayDecayPerPlyError = false
     private(set) var selfPlayFloorTauError = false
+    private(set) var selfPlayDrawKeepFractionError = false
 
     // MARK: - Replay tab
 
@@ -113,6 +115,10 @@ final class TrainingSettingsPopoverModel {
     private var originalMaxPliesFromAnyOneGame: Int = 10
     private var originalTargetSampledGameLengthPlies: Int = 0
     private var originalMaxDrawPercentPerBatch: Int = 100
+
+    // MARK: - Cancel stash (for the live-propagated self-play draw-keep field)
+
+    private var originalSelfPlayDrawKeepFraction: Double = 1.0
 
     // MARK: - Injected dependencies
 
@@ -176,6 +182,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayStartTauText = String(format: "%.2f", p.selfPlayStartTau)
         selfPlayDecayPerPlyText = String(format: "%.3f", p.selfPlayTauDecayPerPly)
         selfPlayFloorTauText = String(format: "%.2f", p.selfPlayTargetTau)
+        selfPlayDrawKeepFractionText = String(format: "%.2f", p.selfPlayDrawKeepFraction)
         // --- Replay tab ---
         replayBufferCapacityText = String(p.replayBufferCapacity)
         replayBufferMinPositionsText = String(p.replayBufferMinPositionsBeforeTraining)
@@ -203,6 +210,7 @@ final class TrainingSettingsPopoverModel {
         originalMaxPliesFromAnyOneGame = p.maxPliesFromAnyOneGame
         originalTargetSampledGameLengthPlies = p.targetSampledGameLengthPlies
         originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
+        originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
         // Reset every error flag — a fresh open should never carry red overlays
         // from a previously-cancelled bad input.
         lrError = false
@@ -221,6 +229,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayStartTauError = false
         selfPlayDecayPerPlyError = false
         selfPlayFloorTauError = false
+        selfPlayDrawKeepFractionError = false
         replayBufferCapacityError = false
         replayBufferMinPositionsError = false
         replayRatioTargetError = false
@@ -270,6 +279,9 @@ final class TrainingSettingsPopoverModel {
         }
         if p.maxDrawPercentPerBatch != originalMaxDrawPercentPerBatch {
             p.maxDrawPercentPerBatch = originalMaxDrawPercentPerBatch
+        }
+        if abs(p.selfPlayDrawKeepFraction - originalSelfPlayDrawKeepFraction) > Double.ulpOfOne {
+            p.selfPlayDrawKeepFraction = originalSelfPlayDrawKeepFraction
         }
         isPresented = false
     }
@@ -366,6 +378,22 @@ final class TrainingSettingsPopoverModel {
         let p = TrainingParameters.shared
         if p.maxDrawPercentPerBatch != snapped {
             p.maxDrawPercentPerBatch = snapped
+        }
+    }
+
+    /// Live-propagate the self-play draw-keep-fraction edit straight
+    /// to `trainingParams.selfPlayDrawKeepFraction`. The slot driver
+    /// reads `TrainingParameters.shared.selfPlayDrawKeepFraction`
+    /// at the end of every self-play game, so a mid-session edit
+    /// takes effect on the next completed game on every worker slot
+    /// without further plumbing. Snapped to the parameter's
+    /// `[0.0, 1.0]` range; non-finite inputs are ignored.
+    func applyLiveSelfPlayDrawKeepFraction(_ newValue: Double) {
+        guard newValue.isFinite else { return }
+        let snapped = max(0.0, min(1.0, newValue))
+        let p = TrainingParameters.shared
+        if abs(p.selfPlayDrawKeepFraction - snapped) > Double.ulpOfOne {
+            p.selfPlayDrawKeepFraction = snapped
         }
     }
 
@@ -633,6 +661,21 @@ final class TrainingSettingsPopoverModel {
             }
         } else {
             selfPlayFloorTauError = true
+            anyError = true
+        }
+        // Self-Play Draw Keep Fraction — Double in [0.0, 1.0].
+        // Live-propagated to `TrainingParameters.shared` during the
+        // edit via `applyLiveSelfPlayDrawKeepFraction`, so save() only
+        // needs to validate the current edit text for the red-overlay
+        // display; the new committed value is captured by the next
+        // `seedFromParams()` call into `originalSelfPlayDrawKeepFraction`
+        // so a subsequent Cancel after Save reverts to "what Save
+        // committed," not the original pre-edit value.
+        if let v = Double(selfPlayDrawKeepFractionText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 1.0, v.isFinite {
+            selfPlayDrawKeepFractionError = false
+        } else {
+            selfPlayDrawKeepFractionError = true
             anyError = true
         }
         // Push the freshly-edited self-play schedule into the live

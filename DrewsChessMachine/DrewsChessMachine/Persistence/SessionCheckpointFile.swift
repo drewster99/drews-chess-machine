@@ -234,6 +234,21 @@ struct SessionCheckpointState: Codable, Equatable {
     var maxPliesFromAnyOneGame: Int?
     var targetSampledGameLengthPlies: Int?
     var maxDrawPercentPerBatch: Int?
+    /// Fraction of drawn self-play games kept in the replay buffer
+    /// at game end (the rest are dropped). 1.0 = legacy behaviour
+    /// (keep everything). Optional for back-compat with sessions
+    /// saved before the draw-keep filter existed; absent → loader
+    /// falls through to `TrainingParameters.shared.selfPlayDrawKeepFraction`
+    /// (which is 1.0 by default).
+    var selfPlayDrawKeepFraction: Double?
+    /// Lifetime self-play games that were emitted into the replay
+    /// buffer (i.e. survived the draw-keep filter). `<= selfPlayGames`;
+    /// equal at default keep-fraction. Optional for back-compat.
+    var emittedGames: Int?
+    /// Lifetime plies emitted into the replay buffer across the
+    /// session. `<= selfPlayMoves`; equal at default keep-fraction.
+    /// Optional for back-compat.
+    var emittedPositions: Int?
 
     // Game-result breakdown (added v1.1 — Optional for compat)
     var whiteCheckmates: Int?

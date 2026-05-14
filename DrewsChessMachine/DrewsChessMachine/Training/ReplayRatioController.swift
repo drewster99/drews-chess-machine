@@ -1,8 +1,8 @@
 import Foundation
 import os
 
-/// Event-driven replay-ratio controller. Three recording hooks —
-/// two that drive control, one that feeds metadata:
+/// Event-driven replay-ratio controller. Four recording hooks —
+/// three that drive control, one that feeds metadata:
 ///
 ///   • `recordSelfPlayBarrierTick(positionsProduced:currentDelaySettingMs:workerCount:)`
 ///     — fires every batched-evaluator barrier tick on the self-play
@@ -18,7 +18,22 @@ import os
 ///     delay. First call: stamp only, no measurement. Ticks fire at
 ///     hundreds-to-thousands per second (every ply across all N
 ///     slots), giving the controller much finer measurement
-///     granularity than the old once-per-game cadence.
+///     granularity than the old once-per-game cadence. This event
+///     drives the RAW-produced-position counters; emitted positions
+///     come from `recordSelfPlayEmittedGame` (see below).
+///
+///   • `recordSelfPlayEmittedGame(positions:)` — fires once per
+///     completed self-play game that the driver decided to KEEP
+///     (i.e. survived the per-game `selfPlayDrawKeepFraction`
+///     filter). Increments the cumulative emitted-position counter
+///     and feeds the rolling-window emitted-rate sample buffer.
+///     This is the rate the controller targets: the closed-form
+///     formula divides `_selfPlayMsPerMove` by the smoothed
+///     emitted-fraction so the trainer slows proportionally when
+///     draws are being filtered, keeping `cons / emittedProd` at
+///     `targetRatio`. With `selfPlayDrawKeepFraction = 1.0`
+///     (default), emittedFraction = 1.0 and behaviour matches
+///     the pre-filter design exactly.
 ///
 ///   • `recordTrainingBatchAndGetDelay(currentDelaySettingMs:)` —
 ///     fires after each SGD step. Same contract as the self-play
@@ -198,13 +213,23 @@ final class ReplayRatioController: @unchecked Sendable {
     ///
     /// Subsampling keeps the buffer bounded at ~240 entries instead
     /// of the ~162k we'd accumulate sampling every barrier tick.
+    ///
+    /// We track TWO self-play position counters: the raw produced
+    /// count (every ply that came off the GPU, fed by
+    /// `recordSelfPlayBarrierTick`) and the emitted count (plies
+    /// that survived the per-game keep/drop filter, fed by
+    /// `recordSelfPlayEmittedGame`). The replay-ratio target applies
+    /// to the EMITTED rate; the raw count is surfaced separately for
+    /// telemetry / debugging only.
     private let rateWindowSec: Double = 60.0
     private let rateSampleIntervalSec: Double = 0.25
-    private var _totalSelfPlayPositions: Int = 0
+    private var _totalSelfPlayPositionsProduced: Int = 0
+    private var _totalSelfPlayPositionsEmitted: Int = 0
     private var _totalTrainingPositions: Int = 0
     private struct RateSample {
         let at: Date
-        let selfPlayTotal: Int
+        let selfPlayProducedTotal: Int
+        let selfPlayEmittedTotal: Int
         let trainingTotal: Int
     }
     private var _rateSamples: [RateSample] = []
@@ -292,8 +317,12 @@ final class ReplayRatioController: @unchecked Sendable {
                 let perTickOverheadMs =
                     currentDelaySettingMs * Double(positionsProduced) / g
                 let effectiveElapsedMs = elapsedMs - perTickOverheadMs
+                // Raw per-produced-ply ms. The closed-form formula
+                // wants per-EMITTED-ply ms (so the trainer slows when
+                // draws are being filtered out of the buffer) — apply
+                // the emittedFraction correction in `recomputeDelays`.
                 _selfPlayMsPerMove = effectiveElapsedMs / Double(positionsProduced)
-                _totalSelfPlayPositions += positionsProduced
+                _totalSelfPlayPositionsProduced += positionsProduced
                 maybeAppendRateSample(now: Date())
             }
             _lastSelfPlayTickAt = now
@@ -311,6 +340,25 @@ final class ReplayRatioController: @unchecked Sendable {
     func recordSelfPlayGameLength(_ plies: Int) {
         lock.withLock {
             _lastSelfPlayPositionsPerGame = max(1, plies)
+            recomputeDelays()
+        }
+    }
+
+    /// Called once per completed self-play game that the driver
+    /// flushed into the replay buffer (i.e. survived the per-game
+    /// keep/drop filter). Drives the cumulative emitted-positions
+    /// counter and the rolling 60-s emitted-rate display, which is
+    /// what `[STATS]`'s `prod=` value reports and what the replay-
+    /// ratio target gets compared against. Dropped games don't fire
+    /// this hook — the implicit emitted-fraction signal is therefore
+    /// observed end-to-end, not configured, so dynamic things
+    /// (worker-count changes affecting draw rate, weight evolution
+    /// affecting draw rate) get tracked correctly.
+    func recordSelfPlayEmittedGame(positions: Int) {
+        guard positions > 0 else { return }
+        lock.withLock {
+            _totalSelfPlayPositionsEmitted += positions
+            maybeAppendRateSample(now: Date())
             recomputeDelays()
         }
     }
@@ -366,6 +414,13 @@ final class ReplayRatioController: @unchecked Sendable {
         //   signed = (selfPlayMsPerMove / targetRatio − trainingMsPerMove)
         //            × trainingBatchSize
         //
+        // `sp` is measured as ms / produced-ply; the replay-ratio
+        // target applies to EMITTED-ply throughput. Scale up by
+        // `1 / emittedFraction` to get ms / emitted-ply. With default
+        // `selfPlayDrawKeepFraction = 1.0` this is a no-op; with
+        // filtering active the trainer slows proportionally so the
+        // consumed/emitted ratio stays at `targetRatio`.
+        //
         // Store ONLY the raw signed value. Branching into training-
         // side vs self-play-side delays happens AFTER the SMA in the
         // `smoothed*` helpers so the mutual-exclusivity invariant
@@ -373,8 +428,10 @@ final class ReplayRatioController: @unchecked Sendable {
         // sign transitions. Averaging the two branched values
         // separately would mix zeros from one branch with nonzeros
         // from the other and produce both sides sleeping simultaneously.
+        let emittedFraction = smoothedEmittedFraction()
+        let spEmittedMsPerMove = sp / emittedFraction
         let signedPerTrainingBatchMs =
-            (sp / _targetRatio - tr) * Double(trainingBatchSize)
+            (spEmittedMsPerMove / _targetRatio - tr) * Double(trainingBatchSize)
         _rawSignedDelayMs = signedPerTrainingBatchMs
 
         let now = Date()
@@ -423,7 +480,8 @@ final class ReplayRatioController: @unchecked Sendable {
         }
         _rateSamples.append(RateSample(
             at: now,
-            selfPlayTotal: _totalSelfPlayPositions,
+            selfPlayProducedTotal: _totalSelfPlayPositionsProduced,
+            selfPlayEmittedTotal: _totalSelfPlayPositionsEmitted,
             trainingTotal: _totalTrainingPositions
         ))
         _lastRateSampleAt = now
@@ -444,22 +502,56 @@ final class ReplayRatioController: @unchecked Sendable {
 
     /// Rolling production and consumption rates (positions/sec),
     /// averaged over up to `rateWindowSec` of real samples. Returns
-    /// `(0, 0)` if we haven't accumulated at least one second of
+    /// all-zero if we haven't accumulated at least one second of
     /// span in the window yet — short spans produce unstable rates.
-    private func rollingRates() -> (production: Double, consumption: Double) {
+    ///
+    /// `produced` is the raw GPU-side ply rate (every ply that came
+    /// off the network, kept or dropped). `emitted` is the rate of
+    /// plies that actually landed in the replay buffer. The
+    /// replay-ratio target compares `consumption / emitted`.
+    private func rollingRates() -> (produced: Double, emitted: Double, consumption: Double) {
         pruneRateSamples(now: Date())
         guard _rateSamplesHead < _rateSamples.count,
               let newest = _rateSamples.last else {
-            return (0, 0)
+            return (0, 0, 0)
         }
         let oldest = _rateSamples[_rateSamplesHead]
         let dt = newest.at.timeIntervalSince(oldest.at)
         guard dt >= 1.0 else {
-            return (0, 0)
+            return (0, 0, 0)
         }
-        let prod = Double(newest.selfPlayTotal - oldest.selfPlayTotal) / dt
+        let prod = Double(newest.selfPlayProducedTotal - oldest.selfPlayProducedTotal) / dt
+        let emit = Double(newest.selfPlayEmittedTotal - oldest.selfPlayEmittedTotal) / dt
         let cons = Double(newest.trainingTotal - oldest.trainingTotal) / dt
-        return (prod, cons)
+        return (prod, emit, cons)
+    }
+
+    /// Smoothed emitted-fraction over the rolling rate window:
+    /// `recent_emitted / recent_produced`. Clamped to (0, 1].
+    /// Defaults to 1.0 when:
+    ///   • no rate samples have accumulated yet, or
+    ///   • the window contains no produced positions, or
+    ///   • the window contains no emitted positions (would push the
+    ///     correction factor toward infinity and oscillate the
+    ///     controller — at startup we want stability, not extreme
+    ///     correction).
+    /// Caller must hold `lock`. Used by `recomputeDelays` to convert
+    /// `_selfPlayMsPerMove` (per-PRODUCED-ply) into per-EMITTED-ply
+    /// before plugging into the closed-form delay formula.
+    private func smoothedEmittedFraction() -> Double {
+        pruneRateSamples(now: Date())
+        guard _rateSamplesHead < _rateSamples.count,
+              let newest = _rateSamples.last else {
+            return 1.0
+        }
+        let oldest = _rateSamples[_rateSamplesHead]
+        let producedDelta = Double(newest.selfPlayProducedTotal - oldest.selfPlayProducedTotal)
+        let emittedDelta = Double(newest.selfPlayEmittedTotal - oldest.selfPlayEmittedTotal)
+        guard producedDelta > 0, emittedDelta > 0 else {
+            return 1.0
+        }
+        let raw = emittedDelta / producedDelta
+        return min(1.0, max(0.0001, raw))
     }
 
     /// SMA of the last `historyWindowSec` seconds of raw signed delay.
@@ -515,11 +607,18 @@ final class ReplayRatioController: @unchecked Sendable {
     private func smoothedSelfPlayPerGameDelayMs() -> Int {
         let signed = smoothedSignedDelayMs()
         guard signed < 0 else { return 0 }
+        // `gapPerMoveMs` is the emitted-ply ms/move we need to add.
+        // The per-game sleep slows raw production; convert from
+        // per-emitted-ply to per-produced-ply via `/ emittedFraction`
+        // so the actual emitted slowdown matches the target.
+        // When emittedFraction = 1.0 (default), this is a no-op.
+        let emittedFraction = smoothedEmittedFraction()
         let gapPerMoveMs = _targetRatio * (-signed) / Double(trainingBatchSize)
         let perGameSleepMs =
             gapPerMoveMs
             * Double(_lastSelfPlayWorkerCount)
             * Double(_lastSelfPlayPositionsPerGame)
+            / emittedFraction
         let clamped = min(Double(maxSelfPlayDelayMs), max(0, perGameSleepMs))
         return Int(clamped)
     }
@@ -527,13 +626,25 @@ final class ReplayRatioController: @unchecked Sendable {
     // MARK: - UI snapshot
 
     struct RatioSnapshot: Sendable {
-        /// Aggregate self-play production rate in positions/sec.
-        /// Zero before the first self-play event.
+        /// Aggregate self-play EMITTED-positions rate in positions/sec
+        /// — i.e. plies that survived the per-game keep/drop filter
+        /// and were flushed into the replay buffer. Zero before the
+        /// first emitted-game event. This is the rate the replay-
+        /// ratio controller targets; `currentRatio = consumptionRate
+        /// / productionRate`.
         let productionRate: Double
+        /// Aggregate self-play RAW-produced rate in positions/sec
+        /// (every ply that came off the GPU, kept or dropped). Equal
+        /// to `productionRate` when `selfPlayDrawKeepFraction = 1.0`
+        /// (default — nothing is being filtered). Surfaced separately
+        /// so the operator can read off the effective keep-fraction
+        /// as `productionRate / producedRate`.
+        let producedRate: Double
         /// Aggregate training consumption rate in positions/sec.
         /// Zero before the first training event.
         let consumptionRate: Double
-        /// `consumptionRate / productionRate`, or 0 if production is 0.
+        /// `consumptionRate / productionRate` (emitted), or 0 if
+        /// emitted production is 0.
         let currentRatio: Double
         let targetRatio: Double
         let autoAdjust: Bool
@@ -591,8 +702,14 @@ final class ReplayRatioController: @unchecked Sendable {
             // position counters, not from the instantaneous per-event
             // ms/move (those stay available separately in the snapshot
             // for Diag-row debug display).
-            let (prodRate, consRate) = rollingRates()
-            let ratio = prodRate > 0 ? consRate / prodRate : 0
+            //
+            // `prodRate` (telemetry) is the raw GPU output. `emitRate`
+            // is what's actually landing in the replay buffer — that's
+            // the rate the controller targets, so it's reported as
+            // `productionRate` in the snapshot. The ratio = cons /
+            // emitted.
+            let (producedRateValue, emittedRate, consRate) = rollingRates()
+            let ratio = emittedRate > 0 ? consRate / emittedRate : 0
             // Applied delays are the 20s SMA — the same values the
             // training worker and self-play slots actually use. The
             // UI should never show a different number from what is
@@ -600,7 +717,8 @@ final class ReplayRatioController: @unchecked Sendable {
             let trSmoothed = smoothedTrainingStepDelayMs()
             let spSmoothed = smoothedSelfPlayPerGameDelayMs()
             return RatioSnapshot(
-                productionRate: prodRate,
+                productionRate: emittedRate,
+                producedRate: producedRateValue,
                 consumptionRate: consRate,
                 currentRatio: ratio,
                 targetRatio: _targetRatio,

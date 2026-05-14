@@ -280,6 +280,16 @@ extension SessionController {
                         "[RESUME-PARAM] max_draw_percent_per_batch: saved=nil applied=\(TrainingParameters.shared.maxDrawPercentPerBatch) (defaulted)"
                     )
                 }
+                if let v = rs.selfPlayDrawKeepFraction {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] self_play_draw_keep_fraction: \(TrainingParameters.shared.selfPlayDrawKeepFraction) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.selfPlayDrawKeepFraction = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] self_play_draw_keep_fraction: saved=nil applied=\(TrainingParameters.shared.selfPlayDrawKeepFraction) (defaulted)"
+                    )
+                }
                 // LR warmup length and sqrt-batch LR scaling are now
                 // part of the session schema (Optional, for back-compat
                 // with older `.dcmsession` files that pre-date the
@@ -543,7 +553,9 @@ extension SessionController {
                 fiftyMoveDraws: rs.fiftyMoveDraws ?? 0,
                 threefoldRepetitionDraws: rs.threefoldRepetitionDraws ?? 0,
                 insufficientMaterialDraws: rs.insufficientMaterialDraws ?? 0,
-                trainingSteps: rs.trainingSteps
+                trainingSteps: rs.trainingSteps,
+                emittedGames: rs.emittedGames,
+                emittedPositions: rs.emittedPositions
             )
             if let workerCount = resumeState?.selfPlayWorkerCount {
                 TrainingParameters.shared.selfPlayWorkers = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, workerCount))
@@ -1368,7 +1380,7 @@ extension SessionController {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -1386,7 +1398,8 @@ extension SessionController {
                                 trainer.completedTrainSteps,
                                 TrainingParameters.shared.arenaAutoIntervalSec,
                                 TrainingParameters.shared.arenaPromoteThreshold,
-                                TrainingParameters.shared.arenaGamesPerTournament
+                                TrainingParameters.shared.arenaGamesPerTournament,
+                                TrainingParameters.shared.selfPlayDrawKeepFraction
                             )
                         }
                         let policyStr: String
@@ -1492,16 +1505,20 @@ extension SessionController {
                         // a pure unit conversion, exposed here so the
                         // [STATS] line and result.json carry the rate in
                         // the unit a human asks for ("how many moves per
-                        // hour are we training on?").
+                        // hour are we training on?"). `prod` is the
+                        // EMITTED rate (post-draw-filter, the rate the
+                        // replay-ratio target compares against);
+                        // `prodRaw` is the raw GPU rate. At default
+                        // `selfPlayDrawKeepFraction = 1.0` they match.
                         let spMovesPerHour = ratioSnap.productionRate * 3600.0
                         let trainMovesPerHour = ratioSnap.consumptionRate * 3600.0
-                        let ratioStr = String(format: "target=%.2f cur=%.2f prod=%.1f cons=%.1f spRate=%.0f/hr trainRate=%.0f/hr auto=%@ delay=%dms spDelay=%dms spMs=%@ trMs=%@ workers=%d",
+                        let ratioStr = String(format: "target=%.2f cur=%.2f prod=%.1f prodRaw=%.1f cons=%.1f spRate=%.0f/hr trainRate=%.0f/hr auto=%@ delay=%dms spDelay=%dms spMs=%@ trMs=%@ workers=%d drawKeep=%.2f",
                                               ratioSnap.targetRatio, ratioSnap.currentRatio,
-                                              ratioSnap.productionRate, ratioSnap.consumptionRate,
+                                              ratioSnap.productionRate, ratioSnap.producedRate, ratioSnap.consumptionRate,
                                               spMovesPerHour, trainMovesPerHour,
                                               ratioSnap.autoAdjust ? "on" : "off",
                                               ratioSnap.computedDelayMs, ratioSnap.computedSelfPlayDelayMs,
-                                              spMsStr, trMsStr, ratioSnap.workerCount)
+                                              spMsStr, trMsStr, ratioSnap.workerCount, drawKeepFrac)
                         let outcomeStr = String(format: "wMate=%d bMate=%d stale=%d 50mv=%d 3fold=%d insuf=%d",
                                                 parallelSnap.whiteCheckmates, parallelSnap.blackCheckmates,
                                                 parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
@@ -1710,7 +1727,7 @@ extension SessionController {
                         // inputs).
                         let shapesStr = "feedCache=\(trainer.feedCacheCount)"
 
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // CLI `--output` capture: one StatsLine per
@@ -1724,6 +1741,9 @@ extension SessionController {
                                 steps: trainingSnap.stats.steps,
                                 selfPlayGames: parallelSnap.selfPlayGames,
                                 positionsTrained: parallelSnap.selfPlayPositions,
+                                emittedGames: parallelSnap.emittedGames,
+                                emittedPositions: parallelSnap.emittedPositions,
+                                selfPlayDrawKeepFraction: drawKeepFrac,
                                 avgLen: lifetimeAvgLen,
                                 rollingAvgLen: rollingAvgLen,
                                 gameLenP50: parallelSnap.gameLenP50,
@@ -1802,6 +1822,7 @@ extension SessionController {
                                 ratioTarget: ratioSnap.targetRatio,
                                 ratioCurrent: ratioSnap.currentRatio,
                                 ratioProductionRate: ratioSnap.productionRate,
+                                ratioProducedRate: ratioSnap.producedRate,
                                 ratioConsumptionRate: ratioSnap.consumptionRate,
                                 selfPlayMovesPerHour: spMovesPerHour,
                                 trainingMovesPerHour: trainMovesPerHour,

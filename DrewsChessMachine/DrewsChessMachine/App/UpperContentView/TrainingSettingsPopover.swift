@@ -111,6 +111,7 @@ struct TrainingSettingsPopover: View {
             || model.selfPlayStartTauError
             || model.selfPlayDecayPerPlyError
             || model.selfPlayFloorTauError
+            || model.selfPlayDrawKeepFractionError
     }
 
     private var replayHasError: Bool {
@@ -207,10 +208,13 @@ struct TrainingSettingsPopover: View {
                     selfPlayStartTauText: $model.selfPlayStartTauText,
                     selfPlayDecayPerPlyText: $model.selfPlayDecayPerPlyText,
                     selfPlayFloorTauText: $model.selfPlayFloorTauText,
+                    selfPlayDrawKeepFractionText: $model.selfPlayDrawKeepFractionText,
                     selfPlayWorkersError: model.selfPlayWorkersError,
                     selfPlayStartTauError: model.selfPlayStartTauError,
                     selfPlayDecayPerPlyError: model.selfPlayDecayPerPlyError,
-                    selfPlayFloorTauError: model.selfPlayFloorTauError
+                    selfPlayFloorTauError: model.selfPlayFloorTauError,
+                    selfPlayDrawKeepFractionError: model.selfPlayDrawKeepFractionError,
+                    onLiveSelfPlayDrawKeepFractionChange: { model.applyLiveSelfPlayDrawKeepFraction($0) }
                 )
             case .replay:
                 ReplayTab(
@@ -692,11 +696,22 @@ private struct SelfPlayTab: View {
     @Binding var selfPlayStartTauText: String
     @Binding var selfPlayDecayPerPlyText: String
     @Binding var selfPlayFloorTauText: String
+    @Binding var selfPlayDrawKeepFractionText: String
 
     let selfPlayWorkersError: Bool
     let selfPlayStartTauError: Bool
     let selfPlayDecayPerPlyError: Bool
     let selfPlayFloorTauError: Bool
+    let selfPlayDrawKeepFractionError: Bool
+
+    /// Live-propagate handler. Fires on every edit-text change that
+    /// parses to a valid `[0, 1]` Double — writes through to
+    /// `TrainingParameters.shared.selfPlayDrawKeepFraction`
+    /// immediately so the running slot driver picks up the new
+    /// value at the next game-end. Cancel on the popover reverts
+    /// via the model's stash; Save updates the stash to the
+    /// committed value so a subsequent Cancel is a no-op.
+    let onLiveSelfPlayDrawKeepFractionChange: (Double) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -780,7 +795,53 @@ private struct SelfPlayTab: View {
                     .padding(.top, 4)
                 }
             }
+
+            Divider()
+
+            // Per-game draw-keep filter. Live-propagated via
+            // `onLiveSelfPlayDrawKeepFractionChange` so that mid-
+            // edit changes affect the next completed game on every
+            // worker slot without waiting for Save; Cancel reverts
+            // through the model's `originalSelfPlayDrawKeepFraction`
+            // stash captured at popover open.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Emitted games")
+                    .font(.subheadline.weight(.semibold))
+                PopoverRow(
+                    label: "Draw keep fraction:",
+                    text: $selfPlayDrawKeepFractionText,
+                    error: selfPlayDrawKeepFractionError,
+                    placeholder: "1.00",
+                    hint: drawKeepHint
+                ) {
+                    EmptyView()
+                }
+                .onChange(of: selfPlayDrawKeepFractionText) { _, newValue in
+                    if let v = Double(newValue.trimmingCharacters(in: .whitespaces)),
+                       v >= 0.0, v <= 1.0, v.isFinite {
+                        onLiveSelfPlayDrawKeepFractionChange(v)
+                    }
+                }
+            }
         }
+    }
+
+    /// Plain-English explanation of the current keep-fraction value,
+    /// shown next to the text field so the operator can read the
+    /// effect of an edit without having to reason about the math.
+    private var drawKeepHint: String {
+        guard let v = Double(selfPlayDrawKeepFractionText.trimmingCharacters(in: .whitespaces)),
+              v.isFinite, v >= 0.0, v <= 1.0 else {
+            return "0.0–1.0"
+        }
+        if v >= 0.999 {
+            return "keep every drawn game"
+        }
+        if v <= 0.001 {
+            return "drop every drawn game (decisive only)"
+        }
+        let pctDrop = Int(((1.0 - v) * 100).rounded())
+        return "drop ~\(pctDrop)% of drawn games"
     }
 
     /// Heuristic predicate for the soft tau warning. Fires when either
