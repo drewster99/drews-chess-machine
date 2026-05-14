@@ -477,4 +477,183 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
             materialCounts: ma, zs: z
         )
     }
+
+    // MARK: - K-aware stratum sizing (regression for the budget-hit bug)
+
+    /// Tracks the new `residentDecisiveGameCount` field that backs the
+    /// K-aware stratum ceiling — verifies it counts only games whose
+    /// outcome is decisive, mirrors the resident-set lifecycle through
+    /// FIFO eviction, and survives the persistence round-trip.
+    func testResidentDecisiveGameCountTracking() throws {
+        // 6 drawn games + 4 decisive games — decisive count should be 4
+        // regardless of insertion order. Sizes are mixed to also exercise
+        // the per-position incrementing path during restore (one slot at
+        // a time, count=1, so the "is this a new resident game?" branch
+        // fires exactly once per game on rebuild).
+        let buf = ReplayBuffer(capacity: 10_000)
+        var gi: UInt32 = 0
+        for _ in 0..<3 { appendGame(to: buf, length: 40, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
+        for _ in 0..<2 { appendGame(to: buf, length: 30, outcome: 1, workerId: 0, gameIndex: gi); gi += 1 }
+        for _ in 0..<3 { appendGame(to: buf, length: 40, outcome: 0, workerId: 0, gameIndex: gi); gi += 1 }
+        for _ in 0..<2 { appendGame(to: buf, length: 30, outcome: -1, workerId: 0, gameIndex: gi); gi += 1 }
+
+        let snap1 = buf.compositionSnapshot()
+        XCTAssertEqual(snap1.distinctResidentGames, 10)
+        XCTAssertEqual(snap1.residentDecisiveGameCount, 4)
+
+        // Persistence round-trip: rebuilt from the per-slot loop in
+        // `restore`, which exercises the per-position increment path.
+        try buf.write(to: tempFile)
+        let restored = ReplayBuffer(capacity: 10_000)
+        try restored.restore(from: tempFile)
+        let snap2 = restored.compositionSnapshot()
+        XCTAssertEqual(snap2, snap1, "decisive-game count must round-trip")
+        XCTAssertEqual(snap2.residentDecisiveGameCount, 4)
+
+        // FIFO eviction: fill past capacity and confirm the decisive
+        // count tracks resident-set turnover correctly.
+        let small = ReplayBuffer(capacity: 240)
+        var gi2: UInt32 = 100
+        // Slot ranges (capacity=240, ring starts at slot 0):
+        //   gi=100 (draw 40):    slots 0-39
+        //   gi=101 (draw 40):    slots 40-79
+        //   gi=102 (draw 40):    slots 80-119
+        //   gi=103 (decisive 30): slots 120-149
+        //   gi=104 (decisive 30): slots 150-179
+        //   gi=105 (draw 60):    slots 180-239   — buffer now full, writeIndex wraps to 0
+        for _ in 0..<3 { appendGame(to: small, length: 40, outcome: 0, workerId: 0, gameIndex: gi2); gi2 += 1 }
+        for _ in 0..<2 { appendGame(to: small, length: 30, outcome: 1, workerId: 0, gameIndex: gi2); gi2 += 1 }
+        XCTAssertEqual(small.compositionSnapshot().residentDecisiveGameCount, 2)
+        appendGame(to: small, length: 60, outcome: 0, workerId: 0, gameIndex: gi2); gi2 += 1
+        XCTAssertEqual(small.count, 240)
+        XCTAssertEqual(small.compositionSnapshot().residentDecisiveGameCount, 2)
+
+        // Add a 120-ply drawn game — wraps to slot 0 and evicts slots
+        // 0-119, which is exactly the first three drawn games. The two
+        // decisive games (gi=103, gi=104) survive untouched.
+        appendGame(to: small, length: 120, outcome: 0, workerId: 0, gameIndex: gi2); gi2 += 1
+        let snap3 = small.compositionSnapshot()
+        XCTAssertEqual(snap3.distinctResidentGames, 4,
+            "after eviction expect gi=103, 104, 105, 106 resident (got distinct=\(snap3.distinctResidentGames))")
+        XCTAssertEqual(snap3.residentDecisiveGameCount, 2,
+            "decisive games (gi=103, 104) untouched by this eviction")
+
+        // Add a 60-ply drawn game — evicts slots 120-179, which is
+        // both decisive games end-to-end. Decisive count must drop to 0.
+        appendGame(to: small, length: 60, outcome: 0, workerId: 0, gameIndex: gi2); gi2 += 1
+        let snap4 = small.compositionSnapshot()
+        XCTAssertEqual(snap4.residentDecisiveGameCount, 0,
+            "decisive count must drop to zero once both decisive games have been fully evicted")
+        XCTAssertEqual(snap4.distinctResidentGames, 3,
+            "after second eviction expect gi=105, 106, 107 resident")
+    }
+
+    /// Direct regression for the bug analysed under
+    /// "max_draw_percent_per_batch=65 but achieved ~87%". Reproduces
+    /// the production regime in miniature: a draw-dominated buffer
+    /// where the requested decisive stratum exceeds K · resident
+    /// decisive game count. Before the fix the rejection loop
+    /// exhausted `attemptBudget` filling the decisive stratum, then the
+    /// uniform-fill fallback ignored the K cap AND the draw cap AND
+    /// the length tilt. After the fix:
+    ///   - `attemptBudgetHit` is false (the stratum sizing knew the
+    ///     decisive ceiling up front);
+    ///   - `achievedMaxPerGame ≤ K` (the K cap is honoured in every
+    ///     emitted slot, not silently dropped);
+    ///   - `wasDegraded` is true because the K-aware reflow pushed the
+    ///     achieved draw count above the requested draw count — the
+    ///     `[SAMPLER]` log fires so the operator sees the buffer can't
+    ///     support the cap *given the K constraint*.
+    func testKAwareStratumSizingPreventsBudgetHitAndPreservesCapInDrawSkewedBuffer() {
+        // Buffer: 10 decisive × 50-ply + 200 draw × 80-ply.
+        // 500 decisive positions, 16,000 draw positions ⇒ 97.0% draws.
+        // With K=2: decisiveReachable = 2·10 = 20 (well below 500);
+        //          drawReachable     = 2·200 = 400 (well below 16,000).
+        let buf = ReplayBuffer(capacity: 50_000)
+        var gi: UInt32 = 0
+        for k in 0..<10 {
+            appendGame(to: buf, length: 50, outcome: k % 2 == 0 ? 1 : -1, workerId: 0, gameIndex: gi)
+            gi += 1
+        }
+        for _ in 0..<200 {
+            appendGame(to: buf, length: 80, outcome: 0, workerId: 1, gameIndex: gi)
+            gi += 1
+        }
+        XCTAssertEqual(buf.count, 500 + 200 * 80)
+        XCTAssertEqual(buf.compositionSnapshot().residentDecisiveGameCount, 10)
+
+        // batch=200: requestedDecisive = 70 (> reachable=20); strata
+        // jointly reach 20 + 400 = 420 ≥ 200, so no under-fill. The
+        // K-aware reflow pushes 50 slots from decisive into draws,
+        // landing at bDec=20, bDraw=180.
+        let batchSize = 200
+        buf.setSamplingConstraints(constraints(maxPerGame: 2, maxDrawPercent: 65, targetLen: 0))
+        let b = drawBatch(buf, count: batchSize)
+        XCTAssertTrue(b.ok)
+        let sr = buf.lastSamplingResult()
+
+        // Core regression assertions: the bug's signature is a true
+        // budget hit + K-cap violation. Both must be absent.
+        XCTAssertFalse(sr.attemptBudgetHit,
+            "K-aware sizing must avoid the attempt-budget fallback in this regime")
+        XCTAssertLessThanOrEqual(sr.achievedMaxPerGame, 2,
+            "K=2 cap must hold for every emitted position; got maxG=\(sr.achievedMaxPerGame)")
+        var perGame: [UInt32: Int] = [:]
+        for g in b.gameIds { perGame[g, default: 0] += 1 }
+        for (g, n) in perGame {
+            XCTAssertLessThanOrEqual(n, 2,
+                "K=2 cap violated for game \(g): \(n) positions")
+        }
+
+        // Achievement counters land at the K-aware ceiling for decisive
+        // and absorb the deficit into draws. Allow a small slack for
+        // the standard 1-position rounding within the sampler.
+        XCTAssertEqual((sr.achievedWinCount + sr.achievedLossCount), 20,
+            "decisive stratum should hit exactly K · residentDecisiveGameCount = 20")
+        XCTAssertEqual(sr.achievedDrawCount, 180,
+            "draw stratum should absorb the decisive deficit and land at 180")
+        XCTAssertEqual((sr.achievedWinCount + sr.achievedLossCount) + sr.achievedDrawCount, batchSize)
+
+        // Degraded flag fires (achieved draws > requested draws) so the
+        // trainer surfaces a [SAMPLER] line — the operator must still
+        // see the cap couldn't be honoured under the K constraint.
+        XCTAssertTrue(sr.wasDegraded,
+            "wasDegraded must fire so [SAMPLER] surfaces the cap mismatch")
+        XCTAssertGreaterThan(sr.achievedDrawCount, sr.requestedDrawCount)
+        XCTAssertEqual(sr.requestedDrawCount, Int((0.65 * Double(batchSize)).rounded()))
+    }
+
+    /// Symmetric coverage for the rare draw-scarce case: a decisive-
+    /// dominated buffer where the K cap is the binding ceiling on the
+    /// *draw* stratum. Confirms the K-aware reflow is bidirectional.
+    func testKAwareStratumSizingHandlesDecisiveSkewedBuffer() {
+        // Buffer: 100 decisive × 80-ply + 5 draw × 40-ply.
+        // 8000 decisive positions, 200 draw positions ⇒ ~2.4% draws.
+        // With K=2: drawReachable = 2·5 = 10; decisiveReachable = 2·100 = 200.
+        let buf = ReplayBuffer(capacity: 50_000)
+        var gi: UInt32 = 0
+        for k in 0..<100 {
+            appendGame(to: buf, length: 80, outcome: k % 2 == 0 ? 1 : -1, workerId: 0, gameIndex: gi)
+            gi += 1
+        }
+        for _ in 0..<5 {
+            appendGame(to: buf, length: 40, outcome: 0, workerId: 1, gameIndex: gi)
+            gi += 1
+        }
+        let batchSize = 128
+        // Request 70% draws (89 positions) — far above the reachable
+        // draw ceiling of 10. Decisive stratum absorbs the deficit.
+        buf.setSamplingConstraints(constraints(maxPerGame: 2, maxDrawPercent: 70, targetLen: 0))
+        let b = drawBatch(buf, count: batchSize)
+        XCTAssertTrue(b.ok)
+        let sr = buf.lastSamplingResult()
+
+        XCTAssertFalse(sr.attemptBudgetHit)
+        XCTAssertLessThanOrEqual(sr.achievedMaxPerGame, 2)
+        XCTAssertEqual(sr.achievedDrawCount, 10,
+            "draw stratum should hit exactly K · residentDrawGameCount = 10")
+        XCTAssertEqual((sr.achievedWinCount + sr.achievedLossCount), batchSize - 10)
+        XCTAssertTrue(sr.wasDegraded)
+        XCTAssertLessThan(sr.achievedDrawCount, sr.requestedDrawCount)
+    }
 }

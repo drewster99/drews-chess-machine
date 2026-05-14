@@ -132,6 +132,13 @@ final class ReplayBuffer: @unchecked Sendable {
     /// harmless (a slightly low distinct-game count, two games treated as
     /// one for the per-game-cap), not worth tracking a session epoch for.
     private var residentGames: [UInt32: Int] = [:]
+    /// Count of resident games whose outcome is decisive (win or loss).
+    /// Maintained in lock-step with `residentGames` so the constrained
+    /// sampler can size strata against the K-cap-reachable decisive
+    /// position pool (`maxPerGame · residentDecisiveGameCount`) without
+    /// rescanning the dict every call. Invariant:
+    /// `residentDecisiveGameCount ≤ residentGames.count`.
+    private var residentDecisiveGameCount: Int = 0
     /// `gameLength → resident position count at that length`. Drives the
     /// length-tilt β root-find in `sample(...)` without re-walking the
     /// ring each call.
@@ -485,6 +492,14 @@ final class ReplayBuffer: @unchecked Sendable {
     public struct CompositionSnapshot: Sendable, Equatable {
         public let storedCount: Int
         public let distinctResidentGames: Int
+        /// Subset of `distinctResidentGames` whose outcome is decisive
+        /// (win or loss). The constrained sampler uses this to compute
+        /// the K-cap-reachable decisive position pool — without it, a
+        /// stratum requesting more decisive positions than K · this
+        /// could supply would spin the rejection loop until the attempt
+        /// budget hit, then silently drop all constraints in the
+        /// fallback uniform-fill.
+        public let residentDecisiveGameCount: Int
         /// Estimated resident game/segment count derived from the length
         /// histogram as Σ residentPositionsAtLength / gameLength. Unlike
         /// `distinctResidentGames`, this is not fooled by reused
@@ -526,6 +541,7 @@ final class ReplayBuffer: @unchecked Sendable {
             return CompositionSnapshot(
                 storedCount: storedCount,
                 distinctResidentGames: residentGames.count,
+                residentDecisiveGameCount: residentDecisiveGameCount,
                 gameWeightedResidentGameCount: estimatedGameCount,
                 winPositions: winPositions,
                 drawPositions: drawPositions,
@@ -720,7 +736,15 @@ final class ReplayBuffer: @unchecked Sendable {
         else if isLoss { lossPositions += count }
         else { drawPositions += count }
         sumGameLengthOverResidentPositions += Int(gameLength) * count
+        // Track decisive-game count transitions: bump only when this
+        // packedId crosses from "no resident positions" to "≥1 resident
+        // position" *and* the game is decisive. The reverse transition
+        // is handled in `decrementCompositionAggregatesForSlot`.
+        let wasResident = residentGames[packedId] != nil
         residentGames[packedId, default: 0] += count
+        if !wasResident && (isWin || isLoss) {
+            residentDecisiveGameCount += 1
+        }
         residentLengthHistogram[gameLength, default: 0] += count
     }
 
@@ -730,6 +754,7 @@ final class ReplayBuffer: @unchecked Sendable {
     @inline(__always)
     private func decrementCompositionAggregatesForSlot(_ slot: Int) {
         let outcome = outcomeStorage[slot]
+        let isDecisive = (outcome > 0.5) || (outcome < -0.5)
         if outcome > 0.5 { winPositions = winPositions > 0 ? winPositions - 1 : 0 }
         else if outcome < -0.5 { lossPositions = lossPositions > 0 ? lossPositions - 1 : 0 }
         else { drawPositions = drawPositions > 0 ? drawPositions - 1 : 0 }
@@ -738,7 +763,16 @@ final class ReplayBuffer: @unchecked Sendable {
         if sumGameLengthOverResidentPositions < 0 { sumGameLengthOverResidentPositions = 0 }
         let gid = workerGameIdStorage[slot]
         if let c = residentGames[gid] {
-            if c <= 1 { residentGames.removeValue(forKey: gid) } else { residentGames[gid] = c - 1 }
+            if c <= 1 {
+                residentGames.removeValue(forKey: gid)
+                // Last resident position for this game just left the ring.
+                // Mirrors the symmetric bump in incrementCompositionAggregates.
+                if isDecisive && residentDecisiveGameCount > 0 {
+                    residentDecisiveGameCount -= 1
+                }
+            } else {
+                residentGames[gid] = c - 1
+            }
         }
         if let c = residentLengthHistogram[len] {
             if c <= 1 { residentLengthHistogram.removeValue(forKey: len) } else { residentLengthHistogram[len] = c - 1 }
@@ -752,6 +786,7 @@ final class ReplayBuffer: @unchecked Sendable {
         lossPositions = 0
         sumGameLengthOverResidentPositions = 0
         residentGames.removeAll(keepingCapacity: true)
+        residentDecisiveGameCount = 0
         residentLengthHistogram.removeAll(keepingCapacity: true)
     }
 
@@ -890,29 +925,62 @@ final class ReplayBuffer: @unchecked Sendable {
             // ---- Constrained sampling ----
             let drawCount = drawPositions
             let decisiveCount = held - drawCount
+            let cap = max(constraints.maxPerGame, 1)
+
+            // K-aware stratum ceilings. Under `maxPerGame = K`, the batch
+            // can pull at most `K · <resident decisive game count>`
+            // decisive positions (and symmetrically for draws). Whichever
+            // is lower — the position pool or the K·games product — is
+            // the true ceiling for that stratum. Folding both into the
+            // sizing math BEFORE the rejection loop means a stratum we
+            // couldn't fill never gets attempted. Without this, an
+            // oversized decisive stratum (e.g. requesting more decisive
+            // positions than `cap · residentDecisiveGameCount` can
+            // supply) spun the rejection loop until the attempt budget
+            // hit, at which point the fallback uniform-fill below
+            // dropped *all* constraints (the K cap, the draw cap, the
+            // length tilt) silently. That was a bug, not a feature —
+            // the fix is to clamp here so the loop never enters the
+            // pathological regime.
+            //
+            // Subtraction in `residentDrawGameCount` is safe:
+            // `residentDecisiveGameCount` is maintained in lock-step with
+            // `residentGames`, so the invariant
+            // `residentDecisiveGameCount ≤ residentGames.count` holds.
+            let residentDrawGameCount = residentGames.count - residentDecisiveGameCount
+            let decisiveReachable = min(decisiveCount, cap * residentDecisiveGameCount)
+            let drawReachable = min(drawCount, cap * residentDrawGameCount)
 
             // Stratum sizes. `maxDrawPercent` is a ceiling — if the buffer
-            // holds fewer drawn positions than it allows, just take fewer
-            // (the slack goes to decisive positions). Conversely, if there
-            // aren't enough decisive positions to fill the decisive
-            // stratum, the slack goes back to draws (the cap under-shoots).
+            // holds fewer reachable drawn positions than it allows, just
+            // take fewer (the slack goes to decisive). Conversely, if the
+            // reachable decisive pool is short, the slack flows back to
+            // draws (the cap under-shoots).
             //
             // `requestedDrawCount` is the pre-clamp value (what the cap
-            // would have produced if both strata had unlimited resident
+            // would have produced if both strata had unlimited reachable
             // positions); the trainer compares it against `bDraw` after
             // clamping to decide whether to emit a `[SAMPLER]` line.
             let pct = min(max(constraints.maxDrawPercent, 0), 100)
             let requestedDrawCount = Int((Double(pct) / 100.0 * Double(sampleCount)).rounded())
-            var bDraw = min(requestedDrawCount, drawCount)
+            var bDraw = min(requestedDrawCount, drawReachable)
             var bDec = sampleCount - bDraw
-            if bDec > decisiveCount {
-                let deficit = bDec - decisiveCount
-                bDec = decisiveCount
-                bDraw = min(bDraw + deficit, drawCount)
+            if bDec > decisiveReachable {
+                let deficit = bDec - decisiveReachable
+                bDec = decisiveReachable
+                bDraw = min(bDraw + deficit, drawReachable)
             }
-            // bDraw + bDec == sampleCount holds here: held >= sampleCount and
-            // drawCount + decisiveCount == held, so the two strata can always
-            // jointly cover sampleCount.
+            // `bDraw + bDec == sampleCount` whenever at least one stratum
+            // has slack to absorb the other's deficit — the common case
+            // even under heavy buffer skew, because the abundant stratum
+            // has plenty of reachable slack. The jointly-pathological
+            // case (both reachable ceilings clamp, with too few resident
+            // games on both sides to fill the requested batch under K)
+            // leaves `bDraw + bDec < sampleCount`; the post-loop under-
+            // fill guard further down catches that and the fallback
+            // fills the remainder uniformly. Under-fill of the strata
+            // in that case is unavoidable — there literally isn't
+            // enough material under the requested K cap.
 
             // Length-tilt β over the resident length histogram (0 ⇒ no tilt).
             // The solver also reports whether the request is infeasible
@@ -940,7 +1008,8 @@ final class ReplayBuffer: @unchecked Sendable {
             let effectiveTarget: Int = tiltSolve.infeasible ? tiltSolve.shortestResidentLength : target
 
             // Per-game tally for the K cap, scoped to this batch.
-            let cap = max(constraints.maxPerGame, 1)
+            // `cap` was computed above for the K-aware stratum sizing;
+            // reused here as the enforcement threshold inside the loop.
             var perGameCount: [UInt32: Int] = [:]
             perGameCount.reserveCapacity(min(sampleCount, residentGames.count) + 1)
 
@@ -1015,6 +1084,35 @@ final class ReplayBuffer: @unchecked Sendable {
                     filled += 1
                 }
                 if attemptBudgetHit { break }
+            }
+            // Under-fill guard. After the K-aware pre-clamp at the top
+            // of this block, `bDec + bDraw == sampleCount` whenever at
+            // least one stratum has slack to absorb the other's
+            // deficit (the common case). The jointly-pathological
+            // combo — *both* reachable ceilings clamping at once —
+            // leaves `bDec + bDraw < sampleCount`, the strata fill
+            // cleanly to their (small) quotas, and emitted ends up
+            // below sampleCount. The function's contract is to fill
+            // the caller's dst buffers in full; we cannot return with
+            // uninitialised slots. Drop the K cap on the spillover
+            // (same semantics as the budget-exhaustion fallback inside
+            // the rejection loop) and mark `attemptBudgetHit = true`
+            // so the [SAMPLER] log and the popover banner both fire —
+            // the operator must see that the caps couldn't be honoured
+            // for the full batch. Unreachable at production buffer
+            // sizes; reached only in stress tests and pathological
+            // hand-tuned configurations (e.g. very low K with very few
+            // resident games and a large batch).
+            if emitted < sampleCount {
+                attemptBudgetHit = true
+                while emitted < sampleCount {
+                    let srcIndex = Int.random(in: 0..<held)
+                    emit(emitted, srcIndex)
+                    tallyOutcome(srcIndex)
+                    achievedSumGameLength += Int(gameLengthStorage[srcIndex])
+                    perGameCount[workerGameIdStorage[srcIndex], default: 0] += 1
+                    emitted += 1
+                }
             }
             for (_, c) in perGameCount where c > achievedMaxPerGame { achievedMaxPerGame = c }
             _lastSamplingResult = SamplingResult(

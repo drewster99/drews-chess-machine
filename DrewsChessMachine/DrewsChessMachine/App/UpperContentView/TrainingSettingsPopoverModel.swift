@@ -104,6 +104,12 @@ final class TrainingSettingsPopoverModel {
     private var originalReplayTrainingStepDelayMs: Int = 0
     private var originalReplayRatioAutoAdjust: Bool = true
 
+    // MARK: - Cancel stash (for the live-propagated sampling-constraint fields)
+
+    private var originalMaxPliesFromAnyOneGame: Int = 10
+    private var originalTargetSampledGameLengthPlies: Int = 0
+    private var originalMaxDrawPercentPerBatch: Int = 100
+
     // MARK: - Injected dependencies
 
     private let selfPlayDelayMaxMs: Int
@@ -185,6 +191,14 @@ final class TrainingSettingsPopoverModel {
         originalReplaySelfPlayDelayMs = p.selfPlayDelayMs
         originalReplayTrainingStepDelayMs = p.trainingStepDelayMs
         originalReplayRatioAutoAdjust = p.replayRatioAutoAdjust
+        // Same stash-for-revert pattern for the three sampling-constraint
+        // fields. The buffer's `Composition` readout updates live with the
+        // current values so the operator can watch a stepper change and see
+        // the realized batch composition shift in real time; if they Cancel
+        // (or click outside the popover) we revert to these snapshots.
+        originalMaxPliesFromAnyOneGame = p.maxPliesFromAnyOneGame
+        originalTargetSampledGameLengthPlies = p.targetSampledGameLengthPlies
+        originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
         // Reset every error flag — a fresh open should never carry red overlays
         // from a previously-cancelled bad input.
         lrError = false
@@ -239,6 +253,18 @@ final class TrainingSettingsPopoverModel {
         }
         if p.replayRatioAutoAdjust != originalReplayRatioAutoAdjust {
             p.replayRatioAutoAdjust = originalReplayRatioAutoAdjust
+        }
+        // Sampling-constraint fields: same revert pattern. The heartbeat
+        // pushes the restored value into `ReplayBuffer.setSamplingConstraints`
+        // on its next tick, so no direct buffer call is needed here.
+        if p.maxPliesFromAnyOneGame != originalMaxPliesFromAnyOneGame {
+            p.maxPliesFromAnyOneGame = originalMaxPliesFromAnyOneGame
+        }
+        if p.targetSampledGameLengthPlies != originalTargetSampledGameLengthPlies {
+            p.targetSampledGameLengthPlies = originalTargetSampledGameLengthPlies
+        }
+        if p.maxDrawPercentPerBatch != originalMaxDrawPercentPerBatch {
+            p.maxDrawPercentPerBatch = originalMaxDrawPercentPerBatch
         }
         isPresented = false
     }
@@ -300,6 +326,41 @@ final class TrainingSettingsPopoverModel {
                     self.replayTrainingStepDelayText = String(q.trainingStepDelayMs)
                 }
             }
+        }
+    }
+
+    /// Live-propagate the max-plies-per-game edit to
+    /// `trainingParams.maxPliesFromAnyOneGame`. The heartbeat re-reads
+    /// every sampling-constraint param into `ReplayBuffer.setSamplingConstraints`
+    /// on its next tick, so this single write is sufficient — the
+    /// next training batch picks up the new K cap and the popover's
+    /// Composition readout reflects the change on the heartbeat after.
+    /// Snapped to the parameter's `[1, 400]` range.
+    func applyLiveMaxPliesFromAnyOneGame(_ newValue: Int) {
+        let snapped = max(1, min(400, newValue))
+        let p = TrainingParameters.shared
+        if p.maxPliesFromAnyOneGame != snapped {
+            p.maxPliesFromAnyOneGame = snapped
+        }
+    }
+
+    /// Live-propagate the target-sampled-game-length edit. Snapped to
+    /// the parameter's `[0, 10_000]` range; 0 disables the length tilt.
+    func applyLiveTargetSampledGameLengthPlies(_ newValue: Int) {
+        let snapped = max(0, min(10_000, newValue))
+        let p = TrainingParameters.shared
+        if p.targetSampledGameLengthPlies != snapped {
+            p.targetSampledGameLengthPlies = snapped
+        }
+    }
+
+    /// Live-propagate the max-draw-percent-per-batch edit. Snapped to
+    /// the parameter's `[0, 100]` range; 100 disables the draw cap.
+    func applyLiveMaxDrawPercentPerBatch(_ newValue: Int) {
+        let snapped = max(0, min(100, newValue))
+        let p = TrainingParameters.shared
+        if p.maxDrawPercentPerBatch != snapped {
+            p.maxDrawPercentPerBatch = snapped
         }
     }
 
@@ -604,15 +665,16 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
 
-        // Replay-sampling constraints — all Int, live-tunable (the buffer
-        // re-reads them via the heartbeat's `setSamplingConstraints` push).
+        // Replay-sampling constraints — Int, live-propagated during edits
+        // via `applyLiveMaxPliesFromAnyOneGame` / `applyLiveTargetSampledGameLengthPlies`
+        // / `applyLiveMaxDrawPercentPerBatch` so the buffer's Composition
+        // readout updates in real time. Save validates the current edit
+        // text against each parameter's range for the red-overlay display;
+        // the [PARAM] log line fires below if the committed value differs
+        // from the pre-edit stash (mirrors the four replay-ratio fields).
         if let n = Int(maxPliesFromAnyOneGameText.trimmingCharacters(in: .whitespaces)),
            n >= 1, n <= 400 {
             maxPliesFromAnyOneGameError = false
-            if n != p.maxPliesFromAnyOneGame {
-                SessionLogger.shared.log("[PARAM] maxPliesFromAnyOneGame: \(p.maxPliesFromAnyOneGame) -> \(n)")
-                p.maxPliesFromAnyOneGame = n
-            }
         } else {
             maxPliesFromAnyOneGameError = true
             anyError = true
@@ -620,10 +682,6 @@ final class TrainingSettingsPopoverModel {
         if let n = Int(targetSampledGameLengthPliesText.trimmingCharacters(in: .whitespaces)),
            n >= 0, n <= 10_000 {
             targetSampledGameLengthPliesError = false
-            if n != p.targetSampledGameLengthPlies {
-                SessionLogger.shared.log("[PARAM] targetSampledGameLengthPlies: \(p.targetSampledGameLengthPlies) -> \(n)")
-                p.targetSampledGameLengthPlies = n
-            }
         } else {
             targetSampledGameLengthPliesError = true
             anyError = true
@@ -631,10 +689,6 @@ final class TrainingSettingsPopoverModel {
         if let n = Int(maxDrawPercentPerBatchText.trimmingCharacters(in: .whitespaces)),
            n >= 0, n <= 100 {
             maxDrawPercentPerBatchError = false
-            if n != p.maxDrawPercentPerBatch {
-                SessionLogger.shared.log("[PARAM] maxDrawPercentPerBatch: \(p.maxDrawPercentPerBatch) -> \(n)")
-                p.maxDrawPercentPerBatch = n
-            }
         } else {
             maxDrawPercentPerBatchError = true
             anyError = true
@@ -691,13 +745,33 @@ final class TrainingSettingsPopoverModel {
                     "[PARAM] replayRatioAutoAdjust: \(originalReplayRatioAutoAdjust) -> \(p.replayRatioAutoAdjust)"
                 )
             }
+            // Same commit-time logging for the three live-propagated
+            // sampling-constraint fields.
+            if p.maxPliesFromAnyOneGame != originalMaxPliesFromAnyOneGame {
+                SessionLogger.shared.log(
+                    "[PARAM] maxPliesFromAnyOneGame: \(originalMaxPliesFromAnyOneGame) -> \(p.maxPliesFromAnyOneGame)"
+                )
+            }
+            if p.targetSampledGameLengthPlies != originalTargetSampledGameLengthPlies {
+                SessionLogger.shared.log(
+                    "[PARAM] targetSampledGameLengthPlies: \(originalTargetSampledGameLengthPlies) -> \(p.targetSampledGameLengthPlies)"
+                )
+            }
+            if p.maxDrawPercentPerBatch != originalMaxDrawPercentPerBatch {
+                SessionLogger.shared.log(
+                    "[PARAM] maxDrawPercentPerBatch: \(originalMaxDrawPercentPerBatch) -> \(p.maxDrawPercentPerBatch)"
+                )
+            }
             // On successful save the stash that backs Cancel becomes the new
             // pre-edit baseline — closing the popover with Save commits the
-            // live ratio writes.
+            // live writes.
             originalReplayRatioTarget = p.replayRatioTarget
             originalReplaySelfPlayDelayMs = p.selfPlayDelayMs
             originalReplayTrainingStepDelayMs = p.trainingStepDelayMs
             originalReplayRatioAutoAdjust = p.replayRatioAutoAdjust
+            originalMaxPliesFromAnyOneGame = p.maxPliesFromAnyOneGame
+            originalTargetSampledGameLengthPlies = p.targetSampledGameLengthPlies
+            originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
             isPresented = false
         }
     }

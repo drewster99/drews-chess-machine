@@ -240,7 +240,10 @@ struct TrainingSettingsPopover: View {
                     onLiveReplayRatioTargetChange: { model.applyLiveReplayRatioTarget($0) },
                     onLiveSelfPlayDelayChange: { model.applyLiveSelfPlayDelay($0) },
                     onLiveTrainingStepDelayChange: { model.applyLiveTrainingStepDelay($0) },
-                    onLiveReplayRatioAutoAdjustChange: { model.applyLiveReplayRatioAutoAdjust($0) }
+                    onLiveReplayRatioAutoAdjustChange: { model.applyLiveReplayRatioAutoAdjust($0) },
+                    onLiveMaxPliesFromAnyOneGameChange: { model.applyLiveMaxPliesFromAnyOneGame($0) },
+                    onLiveTargetSampledGameLengthPliesChange: { model.applyLiveTargetSampledGameLengthPlies($0) },
+                    onLiveMaxDrawPercentPerBatchChange: { model.applyLiveMaxDrawPercentPerBatch($0) }
                 )
             }
 
@@ -849,6 +852,9 @@ private struct ReplayTab: View {
     let onLiveSelfPlayDelayChange: (Int) -> Void
     let onLiveTrainingStepDelayChange: (Int) -> Void
     let onLiveReplayRatioAutoAdjustChange: (Bool) -> Void
+    let onLiveMaxPliesFromAnyOneGameChange: (Int) -> Void
+    let onLiveTargetSampledGameLengthPliesChange: (Int) -> Void
+    let onLiveMaxDrawPercentPerBatchChange: (Int) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1021,22 +1027,38 @@ private struct ReplayTab: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Replay sampling")
                     .font(.subheadline.weight(.semibold))
+                // Three sampling-constraint fields are live-propagated:
+                // each stepper write *and* each direct text edit
+                // (covered by the trailing `.onChange(of:)` handlers)
+                // flows through `onLive…Change`, which writes to
+                // `TrainingParameters.shared` immediately so the
+                // `Composition` readout below can refresh on the next
+                // heartbeat. Cancel / outside-click reverts to the
+                // snapshot taken at popover open (see
+                // `TrainingSettingsPopoverModel.cancel`).
                 PopoverRow(
-                    label: "Max plies from any 1 game:",
+                    label: "Max plies per game:",
                     text: $maxPliesFromAnyOneGameText,
                     error: maxPliesFromAnyOneGameError,
                     placeholder: "10",
-                    hint: "plies from 1 game"
+                    hint: "plies from any 1 game"
                 ) {
                     Stepper(
                         "",
-                        value: PopoverBindings.intBinding(
+                        value: liveIntBinding(
                             text: $maxPliesFromAnyOneGameText,
-                            fallback: 10
+                            fallback: 10,
+                            onChange: onLiveMaxPliesFromAnyOneGameChange
                         ),
                         in: 1...400,
                         step: 1
                     )
+                }
+                .onChange(of: maxPliesFromAnyOneGameText) { _, newValue in
+                    if let v = Int(newValue.trimmingCharacters(in: .whitespaces)),
+                       v >= 1, v <= 400 {
+                        onLiveMaxPliesFromAnyOneGameChange(v)
+                    }
                 }
                 PopoverRow(
                     label: "Target avg game plies:",
@@ -1047,13 +1069,20 @@ private struct ReplayTab: View {
                 ) {
                     Stepper(
                         "",
-                        value: PopoverBindings.intBinding(
+                        value: liveIntBinding(
                             text: $targetSampledGameLengthPliesText,
-                            fallback: 0
+                            fallback: 0,
+                            onChange: onLiveTargetSampledGameLengthPliesChange
                         ),
                         in: 0...10_000,
                         step: 10
                     )
+                }
+                .onChange(of: targetSampledGameLengthPliesText) { _, newValue in
+                    if let v = Int(newValue.trimmingCharacters(in: .whitespaces)),
+                       v >= 0, v <= 10_000 {
+                        onLiveTargetSampledGameLengthPliesChange(v)
+                    }
                 }
                 PopoverRow(
                     label: "Max draws % per batch:",
@@ -1064,13 +1093,20 @@ private struct ReplayTab: View {
                 ) {
                     Stepper(
                         "",
-                        value: PopoverBindings.intBinding(
+                        value: liveIntBinding(
                             text: $maxDrawPercentPerBatchText,
-                            fallback: 100
+                            fallback: 100,
+                            onChange: onLiveMaxDrawPercentPerBatchChange
                         ),
                         in: 0...100,
                         step: 5
                     )
+                }
+                .onChange(of: maxDrawPercentPerBatchText) { _, newValue in
+                    if let v = Int(newValue.trimmingCharacters(in: .whitespaces)),
+                       v >= 0, v <= 100 {
+                        onLiveMaxDrawPercentPerBatchChange(v)
+                    }
                 }
                 replayCompositionReadout
             }
@@ -1130,6 +1166,41 @@ private struct ReplayTab: View {
         let batchMinusZ = batchDecisive > 0 ? Double(sr?.achievedLossCount ?? 0) / Double(batchDecisive) * 100 : 0.0
         let batchSkewed = batchDecisive > 0 && (batchPlusZ < 45 || batchPlusZ > 55)
 
+        // --- Constraint-vs-achievement indicators ---
+        // `wasConstrainedPath == false` means the no-op fast path was
+        // taken (no K cap, no D cap, no length tilt active) — no point
+        // showing constraint context in that case.
+        let constraintsActive = sr?.wasConstrainedPath ?? false
+        let cap = sr?.constraints.maxPerGame ?? Int.max
+        let achievedMaxG = sr?.achievedMaxPerGame ?? 0
+        // Cap is "violated" only when constraints are active AND the
+        // achieved per-game max strictly exceeds the requested cap.
+        // (The constrained-path sampler should never let this happen
+        // after the K-aware stratum-sizing fix; if this turns red, it's
+        // a regression to investigate.)
+        let maxPerGameViolatesCap = constraintsActive && achievedMaxG > cap
+
+        // Draw-share gap: surface "achieved% / req%" whenever the
+        // constraint is active and the gap exceeds the same slop the
+        // sampler uses to set `wasDegraded`. Colored red on overshoot
+        // (the buffer composition + K cap forced more draws into the
+        // batch than the operator asked for) or undershoot (not enough
+        // resident draws to support the cap).
+        let requestedDrawPct = sr?.requestedDrawPercent ?? 0
+        let achievedDrawPct = sr?.achievedDrawPercent ?? 0
+        let drawCountSlop = max(1, (sr?.batchSize ?? 0) / 100)
+        let drawCapDegraded = constraintsActive
+            && abs((sr?.achievedDrawCount ?? 0) - (sr?.requestedDrawCount ?? 0)) > drawCountSlop
+
+        // Attempt-budget hit: the loop fell through to the
+        // unconstrained uniform fill — all three caps were silently
+        // dropped for the remainder of the batch. After the K-aware
+        // sizing fix this should essentially never fire; if it does,
+        // either the buffer is in a jointly-pathological state (very
+        // small K with too few resident games on both sides) or
+        // there's a regression.
+        let budgetHit = sr?.attemptBudgetHit ?? false
+
         VStack(alignment: .leading, spacing: 2) {
             Text("Composition")
                 .foregroundStyle(.secondary)
@@ -1147,14 +1218,36 @@ private struct ReplayTab: View {
                 Spacer()
             }
             .foregroundStyle(.secondary)
+            // Both columns are counts of distinct games — the row label
+            // is renamed accordingly so the right-hand value can't be
+            // misread as a fill ratio ("X of Y" looked like a partial
+            // fill). The batch's distinct-games / total-positions
+            // relationship is already visible one row down as
+            // "samples / game (avg)".
             twoColRow(
-                label: "games:",
+                label: "distinct games:",
                 bufferValue: bufHas
                     ? numberString(Int((c?.gameWeightedResidentGameCount ?? 0).rounded()))
                     : dash,
                 batchValue: batchHas
-                    ? "\(numberString(sr?.distinctGamesInBatch ?? 0)) of \(numberString(sr?.batchSize ?? 0))"
+                    ? numberString(sr?.distinctGamesInBatch ?? 0)
                     : dash
+            )
+            // Surface the count of resident decisive (W/L) games. This
+            // is the K-aware decisive-stratum ceiling input — if this
+            // number is much smaller than K · (resident games), the K
+            // cap is the binding constraint and the realized batch will
+            // be more draw-heavy than the user's `Max Draws Per Batch`
+            // setting can express. Last-batch column is dashed: the
+            // SamplingResult exposes per-game-max but not a decisive-
+            // game subcount, and that's fine — the comparison the
+            // operator needs is "buffer side vs my settings".
+            twoColRow(
+                label: "decisive games:",
+                bufferValue: bufHas
+                    ? numberString(c?.residentDecisiveGameCount ?? 0)
+                    : dash,
+                batchValue: dash
             )
             twoColRow(
                 label: "avg game length:",
@@ -1175,22 +1268,40 @@ private struct ReplayTab: View {
                     ? String(format: "%.2f", sr?.achievedMeanSamplesPerGame ?? 0)
                     : dash
             )
+            // Show "X / K=N" when the K cap is active so the operator
+            // can see at a glance whether the cap is the binding
+            // constraint. Red when X > N — that's the cap getting
+            // broken, which post-fix should be impossible on the
+            // constrained path and is a regression signal.
             twoColRow(
                 label: "samples / game (max):",
                 bufferValue: dash,
                 batchValue: batchHas
-                    ? numberString(sr?.achievedMaxPerGame ?? 0)
-                    : dash
+                    ? (constraintsActive
+                        ? "\(numberString(achievedMaxG)) / K=\(numberString(cap))"
+                        : numberString(achievedMaxG))
+                    : dash,
+                batchValueColor: maxPerGameViolatesCap ? .red : nil
             )
             twoColRow(
                 label: "W:",
                 bufferValue: c.map { String(format: "%.1f%%", $0.winFraction * 100) } ?? dash,
                 batchValue: batchHas ? String(format: "%.1f%%", sr?.achievedWinPercent ?? 0) : dash
             )
+            // Show "achieved% / req%" whenever the D cap is active so
+            // the operator sees how the realized draw share compares
+            // against `Max Draws Per Batch`. Red on either overshoot
+            // (buffer too draw-heavy / K cap forced the deficit into
+            // draws) or undershoot (not enough draws in the buffer).
             twoColRow(
                 label: "D:",
                 bufferValue: c.map { String(format: "%.1f%%", $0.drawFraction * 100) } ?? dash,
-                batchValue: batchHas ? String(format: "%.1f%%", sr?.achievedDrawPercent ?? 0) : dash
+                batchValue: batchHas
+                    ? (constraintsActive
+                        ? String(format: "%.1f%% / req %.0f%%", achievedDrawPct, requestedDrawPct)
+                        : String(format: "%.1f%%", achievedDrawPct))
+                    : dash,
+                batchValueColor: drawCapDegraded ? .red : nil
             )
             twoColRow(
                 label: "L:",
@@ -1208,6 +1319,27 @@ private struct ReplayTab: View {
                     : dash,
                 batchValueColor: batchSkewed ? .orange : nil
             )
+            // Attempt-budget-hit banner. Always rendered (view-type
+            // stable per the SwiftUI rules — the Text node is the same
+            // identity whether the banner is visible or not), collapsed
+            // to zero height + zero opacity when not active so it
+            // leaves no visual trace. When active, padded slightly off
+            // the data above so the warning has breathing room.
+            HStack(spacing: 6) {
+                Text("⚠")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                Text("Attempt budget hit — sampler fell back to uniform; K, D and length-target caps all dropped this batch")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, budgetHit ? 6 : 0)
+            .frame(height: budgetHit ? nil : 0)
+            .opacity(budgetHit ? 1 : 0)
+            .accessibilityHidden(!budgetHit)
+            .accessibilityLabel("Sampler attempt budget hit, all sampling caps dropped this batch")
         }
         .font(.caption)
         .foregroundStyle(.secondary)
