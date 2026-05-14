@@ -1640,8 +1640,8 @@ extension SessionController {
                         // batch is the [BATCH-STATS] line). lenG = game-weighted
                         // mean game length, lenP = position-weighted (= E[L²]/E[L]).
                         let compStr = String(
-                            format: "games=%d lenG=%.1f lenP=%.1f W=%.3f D=%.3f L=%.3f",
-                            bufComp.distinctResidentGames,
+                            format: "games=%.0f lenG=%.1f lenP=%.1f W=%.3f D=%.3f L=%.3f",
+                            bufComp.gameWeightedResidentGameCount,
                             bufComp.meanGameLengthPerGame,
                             bufComp.meanGameLengthPerSampledPosition,
                             bufComp.winFraction, bufComp.drawFraction, bufComp.lossFraction

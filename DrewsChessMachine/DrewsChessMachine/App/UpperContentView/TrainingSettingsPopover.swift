@@ -1085,7 +1085,9 @@ private struct ReplayTab: View {
     /// stays uniform.
     ///
     /// Buffer-side facts (left column):
-    /// - "games": distinct resident games (whole-game count).
+    /// - "games": estimated resident game count from the length histogram
+    ///   (worker game IDs can collide after resume, so the exact distinct
+    ///   ID count is only used internally for the per-batch cap).
     /// - "avg game length": simple per-game mean (each resident game
     ///   contributes once). No batch analog.
     /// - "avg sampled game length": position-weighted mean
@@ -1148,7 +1150,7 @@ private struct ReplayTab: View {
             twoColRow(
                 label: "games:",
                 bufferValue: bufHas
-                    ? numberString(c?.distinctResidentGames ?? 0)
+                    ? numberString(Int((c?.gameWeightedResidentGameCount ?? 0).rounded()))
                     : dash,
                 batchValue: batchHas
                     ? "\(numberString(sr?.distinctGamesInBatch ?? 0)) of \(numberString(sr?.batchSize ?? 0))"

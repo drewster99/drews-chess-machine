@@ -484,17 +484,26 @@ final class ReplayBuffer: @unchecked Sendable {
     public struct CompositionSnapshot: Sendable, Equatable {
         public let storedCount: Int
         public let distinctResidentGames: Int
+        /// Estimated resident game/segment count derived from the length
+        /// histogram as Σ residentPositionsAtLength / gameLength. Unlike
+        /// `distinctResidentGames`, this is not fooled by reused
+        /// workerGameIds after session resume. It can be fractional only
+        /// for the oldest FIFO-front game if that game is partially
+        /// truncated in the ring.
+        public let gameWeightedResidentGameCount: Double
         public let winPositions: Int
         public let drawPositions: Int
         public let lossPositions: Int
         public let sumGameLengthOverResidentPositions: Int
 
-        /// Game-weighted mean game length: resident positions per resident
-        /// game. ≈ true mean self-play game length, modulo front-truncation
-        /// of games straddling the FIFO write head (the un-truncated value
-        /// is `avgLen` on the `[STATS]` line).
+        /// Game-weighted mean game length: simple mean over resident games,
+        /// estimated from the resident length histogram as
+        /// `storedCount / Σ(count_at_length / length)`. For complete games
+        /// this exactly equals `sum(gameLengths) / count(games)`; the only
+        /// approximation is a possible fractional contribution from the
+        /// oldest FIFO-front game if the ring cuts through that game.
         public var meanGameLengthPerGame: Double {
-            distinctResidentGames > 0 ? Double(storedCount) / Double(distinctResidentGames) : 0
+            gameWeightedResidentGameCount > 0 ? Double(storedCount) / gameWeightedResidentGameCount : 0
         }
         /// Position-weighted mean game length: E[L | sample a position] =
         /// E[L²]/E[L]. ≥ the game-weighted mean whenever lengths vary; the
@@ -509,9 +518,14 @@ final class ReplayBuffer: @unchecked Sendable {
 
     func compositionSnapshot() -> CompositionSnapshot {
         lock.withLock {
-            CompositionSnapshot(
+            var estimatedGameCount = 0.0
+            for (length, positionCount) in residentLengthHistogram where length > 0 {
+                estimatedGameCount += Double(positionCount) / Double(length)
+            }
+            return CompositionSnapshot(
                 storedCount: storedCount,
                 distinctResidentGames: residentGames.count,
+                gameWeightedResidentGameCount: estimatedGameCount,
                 winPositions: winPositions,
                 drawPositions: drawPositions,
                 lossPositions: lossPositions,
