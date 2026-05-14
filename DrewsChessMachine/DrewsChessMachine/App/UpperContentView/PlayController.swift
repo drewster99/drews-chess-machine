@@ -101,6 +101,14 @@ final class PlayController {
     /// `ChessMachine` alive for the duration of the game.
     private var gameTask: Task<Void, Never>?
 
+    /// `Task` running the up-front opponent-network materialization
+    /// (the part that snapshots trainer weights or loads a `.dcmmodel`
+    /// from disk and builds a fresh `ChessMPSNetwork`). Held so
+    /// `stop()` can cancel a Play that the user changed their mind
+    /// about before the game task ever started. `nil` once the
+    /// materialization resolves (either way).
+    private var materializeTask: Task<Void, Never>?
+
     // MARK: - Promotion picker
 
     struct PendingPromotion: Equatable {
@@ -210,13 +218,29 @@ final class PlayController {
         gameWatcher.markPlaying(true)
         isPlayingHuman = true
 
-        Task { [weak self] in
-            guard let self else { return }
+        materializeTask = Task { [weak self] in
             let result = await Self.materializeOpponentNetwork(
                 choice: opponent,
                 session: session,
                 loadedFileURL: chosenURL
             )
+            guard let self else { return }
+            // Note: we deliberately do NOT clear `self.materializeTask`
+            // here. After a Start→Stop→Start sequence the field may
+            // already hold the *next* task, and a stale clear would
+            // strand it (a subsequent Stop wouldn't see it to cancel).
+            // `start()` and `stop()` are the only writers; a stale
+            // post-completion reference is a tiny leak that the next
+            // `start()` overwrites.
+            //
+            // The user may have hit Stop while the materialize was in
+            // flight. `stop()` clears `isPlayingHuman` (and cancels
+            // this task), so if either is true here we've already
+            // been cancelled and must not flip the gates back on or
+            // launch the game.
+            if Task.isCancelled || !self.isPlayingHuman {
+                return
+            }
             switch result {
             case .failure(let error):
                 self.setupErrorText = "Could not start game: \(error.localizedDescription)"
@@ -238,18 +262,32 @@ final class PlayController {
     /// User pressed Stop / Resign. Cancels the game task, which
     /// surfaces `CancellationError` through the suspended human
     /// continuation; the `ChessMachine` loop then unwinds cleanly.
-    func stop() {
+    ///
+    /// `gameWatcher` is rolled back here in the materialize-was-still-
+    /// in-flight branch (no `gameTask` to run its own cleanup); when a
+    /// game task is alive its catch block handles the rollback and
+    /// the duplicate call is a harmless no-op.
+    func stop(gameWatcher: GameWatcher) {
         guard isPlayingHuman else { return }
         SessionLogger.shared.log("[BUTTON] Chess > Stop human game")
+        // Drop `isPlayingHuman` first so the materialize-task success
+        // branch (if it's racing this) sees the cancelled state and
+        // bails out before flipping the play gates back on.
+        isPlayingHuman = false
+        let materializeWasPending = (materializeTask != nil && gameTask == nil)
+        materializeTask?.cancel()
+        materializeTask = nil
         humanPlayer?.cancelPendingChoice()
         gameTask?.cancel()
         gameTask = nil
         humanPlayer = nil
         opponentNetwork = nil
-        isPlayingHuman = false
         pendingLegalMoves = []
         selectedFromSquare = nil
         pendingPromotion = nil
+        if materializeWasPending {
+            gameWatcher.markPlaying(false)
+        }
     }
 
     private func launchGame(

@@ -7,6 +7,6 @@ import Foundation
 /// re-eval when the histogram hasn't changed).
 struct DiversityHistogramBar: Identifiable, Sendable, Equatable {
     let id: Int          // bucket index (stable across updates)
-    let label: String    // bucket label like "0-2", "41+"
+    let label: String    // bucket label from GameDiversityTracker.histogramLabels
     let count: Int
 }

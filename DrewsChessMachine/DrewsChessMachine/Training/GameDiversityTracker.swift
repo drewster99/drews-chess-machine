@@ -172,8 +172,10 @@ final class GameDiversityTracker: @unchecked Sendable {
             for i in 0..<stored {
                 let ply = maxPrefix[i]
                 divergenceSum += ply
-                // Linear scan over bounds — 5 compares, fastest for this
-                // tiny count. Matches `bucketIndex(for:)` semantics.
+                // Linear scan over bounds — a handful of compares,
+                // fastest for this tiny count. The lowest bound the
+                // ply does not exceed wins; if none match, the final
+                // overflow bucket catches it.
                 var bucket = bounds.count  // overflow bucket by default
                 for (idx, upper) in bounds.enumerated() where ply <= upper {
                     bucket = idx

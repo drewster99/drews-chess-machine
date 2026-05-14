@@ -50,10 +50,6 @@ struct LiveBoardWithNavigationView: View {
     /// `selectedFromSquare`. Drawn as translucent dots. Empty
     /// outside human play or when no from-piece is selected.
     var legalMoveTargets: Set<Int> = []
-    /// (from, to) of the most recent move applied — drawn as a
-    /// faded highlight on both squares so the user can see what
-    /// just happened. `nil` at game start.
-    var humanLastMove: (from: Int, to: Int)?
     /// Non-nil while the human has chosen a (from, to) pair that
     /// requires picking a promotion piece — overlays a four-button
     /// picker centered on the board.
@@ -160,17 +156,16 @@ struct LiveBoardWithNavigationView: View {
                     }
                 }
                 .overlay {
-                    // Human-play highlights: most-recent move, the
-                    // selected from-square, and a translucent dot on
-                    // every legal target. Drawn into a single
-                    // `Canvas` overlay so the rendering doesn't fight
-                    // the board's primary `Canvas` for z-order, and
-                    // so all four passes (last-from, last-to, ring,
-                    // dots) share one geometry pass.
+                    // Human-play highlights: the selected from-square
+                    // (yellow ring) and a translucent dot on every
+                    // legal target. Drawn into a single `Canvas`
+                    // overlay so the rendering doesn't fight the
+                    // board's primary `Canvas` for z-order, and so
+                    // both passes (ring + dots) share one geometry
+                    // pass.
                     if humanMoveActive
                         || selectedFromSquare != nil
-                        || !legalMoveTargets.isEmpty
-                        || humanLastMove != nil {
+                        || !legalMoveTargets.isEmpty {
                         Canvas { ctx, size in
                             let boardSize = min(size.width, size.height)
                             let cellSize = boardSize / 8
@@ -178,8 +173,7 @@ struct LiveBoardWithNavigationView: View {
                                 ctx: &ctx,
                                 cellSize: cellSize,
                                 selectedFromSquare: selectedFromSquare,
-                                legalMoveTargets: legalMoveTargets,
-                                humanLastMove: humanLastMove
+                                legalMoveTargets: legalMoveTargets
                             )
                         }
                         .allowsHitTesting(false)
@@ -302,22 +296,8 @@ struct LiveBoardWithNavigationView: View {
         ctx: inout GraphicsContext,
         cellSize: CGFloat,
         selectedFromSquare: Int?,
-        legalMoveTargets: Set<Int>,
-        humanLastMove: (from: Int, to: Int)?
+        legalMoveTargets: Set<Int>
     ) {
-        if let last = humanLastMove {
-            for sq in [last.from, last.to] {
-                let row = sq / 8
-                let col = sq % 8
-                let rect = CGRect(
-                    x: CGFloat(col) * cellSize,
-                    y: CGFloat(row) * cellSize,
-                    width: cellSize,
-                    height: cellSize
-                )
-                ctx.fill(Path(rect), with: .color(.yellow.opacity(0.22)))
-            }
-        }
         if let sel = selectedFromSquare {
             let row = sel / 8
             let col = sel % 8

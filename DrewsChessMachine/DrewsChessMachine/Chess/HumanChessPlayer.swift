@@ -39,7 +39,22 @@ final class HumanChessPlayer: ChessPlayer, @unchecked Sendable {
         let continuation: CheckedContinuation<ChessMove, Error>
         let legalMoves: [ChessMove]
     }
-    private let lock = OSAllocatedUnfairLock<Pending?>(initialState: nil)
+
+    /// Lock-protected state for the current turn. `cancelled` is set
+    /// by `cancelPendingChoice()` and lets the continuation-install
+    /// closure detect a cancel that arrived BEFORE the continuation
+    /// was stored — without it, the install would happen against a
+    /// `nil` slot, `cancelPendingChoice` would no-op, and the just-
+    /// installed continuation would never resume (and on scope exit
+    /// `withCheckedThrowingContinuation` would assert). The flag is
+    /// reset at the start of every `onChooseNextMove` turn.
+    private struct State {
+        var pending: Pending?
+        var cancelled: Bool
+    }
+    private let lock = OSAllocatedUnfairLock<State>(
+        initialState: State(pending: nil, cancelled: false)
+    )
 
     init(
         name: String,
@@ -68,6 +83,13 @@ final class HumanChessPlayer: ChessPlayer, @unchecked Sendable {
         // installing a continuation the UI may never resume.
         try Task.checkCancellation()
 
+        // Fresh turn: clear any stale cancel flag from a prior turn
+        // (the previous turn always consumed its continuation, so
+        // `pending` is necessarily nil here).
+        lock.withLock { state in
+            state.cancelled = false
+        }
+
         let movesForUI = legalMoves
         await MainActor.run { onTurnBegin(movesForUI) }
 
@@ -75,13 +97,25 @@ final class HumanChessPlayer: ChessPlayer, @unchecked Sendable {
             let move = try await withTaskCancellationHandler(
                 operation: {
                     try await withCheckedThrowingContinuation { cont in
-                        // The UI may try to submit a move BEFORE we get
-                        // here — that path stores the continuation and
-                        // expects `submit` to consume it. We are the only
-                        // installer of a continuation, and the lock
-                        // serializes us against `submit` / `cancel`.
-                        lock.withLock { slot in
-                            slot = Pending(continuation: cont, legalMoves: legalMoves)
+                        // Install the continuation under the lock. If
+                        // a cancel already raced ahead of us (parent
+                        // task cancelled between `Task.checkCancellation`
+                        // above and this line — `cancelPendingChoice`
+                        // would have set `cancelled` against an empty
+                        // slot), resume-throwing immediately instead
+                        // of parking a continuation nothing will wake.
+                        let resumeWithCancel = lock.withLock { state -> Bool in
+                            if state.cancelled {
+                                return true
+                            }
+                            state.pending = Pending(
+                                continuation: cont,
+                                legalMoves: legalMoves
+                            )
+                            return false
+                        }
+                        if resumeWithCancel {
+                            cont.resume(throwing: CancellationError())
                         }
                     }
                 },
@@ -109,30 +143,38 @@ final class HumanChessPlayer: ChessPlayer, @unchecked Sendable {
     /// the game loop will advance.
     @discardableResult
     func submit(_ move: ChessMove) -> Bool {
-        let resumed: Bool = lock.withLock { slot in
-            guard let pending = slot else { return false }
+        let resumed: Bool = lock.withLock { state in
+            guard let pending = state.pending else { return false }
             guard pending.legalMoves.contains(move) else { return false }
-            slot = nil
+            state.pending = nil
             pending.continuation.resume(returning: move)
             return true
         }
         return resumed
     }
 
-    /// Resume the suspended `onChooseNextMove` with `CancellationError`.
-    /// Idempotent: if no choice is pending, does nothing.
+    /// Resume the suspended `onChooseNextMove` with `CancellationError`,
+    /// or — if no continuation has been installed yet — latch a
+    /// `cancelled` flag that the install closure will consult when it
+    /// runs. Idempotent.
     func cancelPendingChoice() {
-        lock.withLock { slot in
-            guard let pending = slot else { return }
-            slot = nil
-            pending.continuation.resume(throwing: CancellationError())
+        lock.withLock { state in
+            if let pending = state.pending {
+                state.pending = nil
+                state.cancelled = true
+                pending.continuation.resume(throwing: CancellationError())
+                return
+            }
+            // No continuation yet — record the cancel so the next
+            // install bails out immediately.
+            state.cancelled = true
         }
     }
 
-    /// Snapshot the currently-pending legal-move list (or nil if no turn is
-    /// active). Used by tests and by UI sanity checks; the UI's primary
-    /// path is `onTurnBegin` / `onTurnEnd`, not polling.
+    /// Snapshot the currently-pending legal-move list (or nil if no turn
+    /// is active). Used by UI sanity checks; the UI's primary path is
+    /// `onTurnBegin` / `onTurnEnd`, not polling.
     func pendingLegalMovesSnapshot() -> [ChessMove]? {
-        lock.withLock { $0?.legalMoves }
+        lock.withLock { $0.pending?.legalMoves }
     }
 }

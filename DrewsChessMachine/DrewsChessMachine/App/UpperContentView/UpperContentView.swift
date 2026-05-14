@@ -1356,7 +1356,6 @@ struct UpperContentView: View {
                     humanMoveActive: humanPlayActive,
                     selectedFromSquare: selectedFromVisual,
                     legalMoveTargets: legalTargetsVisual,
-                    humanLastMove: nil,
                     pendingPromotion: playController.pendingPromotion,
                     humanColor: playController.isPlayingHuman ? playController.humanColor : nil,
                     promotionVisualSquare: promotionVisualSquare,
@@ -2095,7 +2094,7 @@ struct UpperContentView: View {
         commandHub.chartZoomOut = { session.chartZoomOut() }
         commandHub.chartZoomEnableAuto = { session.chartZoomEnableAuto() }
         commandHub.openHumanPlaySetup = { playController.openSetupPopover() }
-        commandHub.stopHumanGame = { playController.stop() }
+        commandHub.stopHumanGame = { playController.stop(gameWatcher: gameWatcher) }
     }
 
     /// Push the subset of view state that governs menu enable/disable
