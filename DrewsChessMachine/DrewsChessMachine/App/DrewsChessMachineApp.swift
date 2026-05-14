@@ -418,6 +418,27 @@ struct DrewsChessMachineApp: App {
                     .disabled(!commandHub.realTraining || commandHub.isArenaRunning)
             }
 
+            // Chess menu — human-vs-network play. The user picks the
+            // opponent (champion / trainer / a saved model file) and
+            // which side they want in the setup popover that the
+            // Play… item opens.
+            CommandMenu("Chess") {
+                Button("Play…") { commandHub.openHumanPlaySetup() }
+                    .disabled(
+                        commandHub.isBusy
+                        || commandHub.realTraining
+                        || commandHub.continuousPlay
+                        || commandHub.continuousTraining
+                        || commandHub.sweepRunning
+                        || commandHub.gameIsPlaying
+                        || commandHub.isArenaRunning
+                        || commandHub.checkpointSaveInFlight
+                        || commandHub.humanGameInFlight
+                    )
+                Button("Stop Game") { commandHub.stopHumanGame() }
+                    .disabled(!commandHub.humanGameInFlight)
+            }
+
             CommandMenu("Debug") {
                 Button("Run Forward Pass") { commandHub.runForwardPass() }
                     .keyboardShortcut(.return, modifiers: [])

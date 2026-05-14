@@ -113,6 +113,13 @@ struct UpperContentView: View {
     /// onto it in later Stage 4 slices.
     @State private var session: SessionController = SessionController()
 
+    /// Drives the Chess menu's "Play…" popover and the human-vs-network
+    /// game it kicks off. Held here so its `@Observable` state (e.g.
+    /// `isPlayingHuman`, `pendingLegalMoves`, `selectedFromSquare`)
+    /// participates in SwiftUI invalidation alongside the rest of the
+    /// view's bound state.
+    @State private var playController = PlayController()
+
     // Network — these forward to `session` so the ~150 existing `network` /
     // `runner` / `networkStatus` / `isBuilding` references keep working
     // unchanged while the source of truth lives on `SessionController`. They
@@ -1287,6 +1294,34 @@ struct UpperContentView: View {
     /// main text panel on the right.
     @ViewBuilder
     private var boardAndTextRow: some View {
+        // Human-vs-network play flips the board 180° when the user is
+        // black so their pieces sit at the bottom (standard chess
+        // convention). Done once here and applied to (a) the pieces
+        // array passed to the board, (b) the tap callback's visual→
+        // logical translation, and (c) the highlight / promotion-picker
+        // visual coordinates. Everywhere else in this file stays in
+        // logical (encoder-frame) coordinates.
+        let humanPlayActive = playController.isPlayingHuman
+            && !playController.pendingLegalMoves.isEmpty
+        let humanBoardFlipped = playController.isPlayingHuman
+            && playController.humanColor == .black
+        let boardPieces: [Piece?] = humanBoardFlipped
+            ? Array(displayedPieces.reversed())
+            : displayedPieces
+        let selectedFromVisual: Int? = playController.selectedFromSquare.map { sq in
+            humanBoardFlipped ? 63 - sq : sq
+        }
+        let legalTargetsVisual: Set<Int> = humanPlayActive
+            ? Self.legalTargetsVisual(
+                from: playController.selectedFromSquare,
+                pending: playController.pendingLegalMoves,
+                flipped: humanBoardFlipped
+            )
+            : []
+        let promotionVisualSquare: Int? = playController.pendingPromotion.map { p in
+            let logical = p.toRow * 8 + p.toCol
+            return humanBoardFlipped ? 63 - logical : logical
+        }
         HStack(alignment: .top, spacing: 24) {
             BoardSideView(
                 playAndTrainBoardMode: $session.playAndTrainBoardMode,
@@ -1300,7 +1335,7 @@ struct UpperContentView: View {
                 isCandidateTestActive: isCandidateTestActive,
                 overlayLabel: overlayLabel,
                 board: LiveBoardWithNavigationView(
-                    pieces: displayedPieces,
+                    pieces: boardPieces,
                     overlay: currentOverlay,
                     selectedOverlay: selectedOverlay,
                     inferenceResultPresent: inferenceResult != nil,
@@ -1317,9 +1352,36 @@ struct UpperContentView: View {
                     },
                     onHoverSquare: { sq in
                         hoveredBoardSquare = sq
+                    },
+                    humanMoveActive: humanPlayActive,
+                    selectedFromSquare: selectedFromVisual,
+                    legalMoveTargets: legalTargetsVisual,
+                    humanLastMove: nil,
+                    pendingPromotion: playController.pendingPromotion,
+                    humanColor: playController.isPlayingHuman ? playController.humanColor : nil,
+                    promotionVisualSquare: promotionVisualSquare,
+                    onTapSquare: { visualSq in
+                        let logical = humanBoardFlipped ? 63 - visualSq : visualSq
+                        playController.tapSquare(logical, in: gameSnapshot.state.board)
+                    },
+                    onSelectPromotion: { type in
+                        playController.selectPromotion(type)
+                    },
+                    onCancelPromotion: {
+                        playController.cancelPromotion()
                     }
                 )
             )
+            .popover(isPresented: $playController.isSetupVisible, arrowEdge: .top) {
+                PlaySetupPopover(
+                    controller: playController,
+                    championAvailable: networkReady,
+                    trainerAvailable: session.trainer != nil,
+                    onStart: {
+                        playController.start(session: session, gameWatcher: gameWatcher)
+                    }
+                )
+            }
 
             // Hover-driven top-3 channels overlay. When the cursor is over
             // a square AND we have an inference result with raw logits,
@@ -2032,6 +2094,8 @@ struct UpperContentView: View {
         commandHub.chartZoomIn = { session.chartZoomIn() }
         commandHub.chartZoomOut = { session.chartZoomOut() }
         commandHub.chartZoomEnableAuto = { session.chartZoomEnableAuto() }
+        commandHub.openHumanPlaySetup = { playController.openSetupPopover() }
+        commandHub.stopHumanGame = { playController.stop() }
     }
 
     /// Push the subset of view state that governs menu enable/disable
@@ -2059,6 +2123,7 @@ struct UpperContentView: View {
         commandHub.chartZoomInAvailable = realTraining && session.canZoomChartIn
         commandHub.chartZoomOutAvailable = realTraining && session.canZoomChartOut
         commandHub.chartZoomAutoAvailable = realTraining && !chartCoordinator.chartZoomAuto
+        commandHub.humanGameInFlight = playController.isPlayingHuman
     }
 
     /// True iff any operation is currently running that conflicts
@@ -2206,6 +2271,26 @@ struct UpperContentView: View {
             halfmoveClock: editableState.halfmoveClock
         )
         requestForwardPassReeval()
+    }
+
+    /// Visual squares (0..<64) where the user could move *to* from
+    /// `from` (logical), given the current `pending` legal-move list.
+    /// When `flipped`, applies the 180° board flip so the result is
+    /// already in visual coordinates suitable for board highlighting.
+    private static func legalTargetsVisual(
+        from: Int?,
+        pending: [ChessMove],
+        flipped: Bool
+    ) -> Set<Int> {
+        guard let from else { return [] }
+        let fromRow = from / 8
+        let fromCol = from % 8
+        var out: Set<Int> = []
+        for move in pending where move.fromRow == fromRow && move.fromCol == fromCol {
+            let logical = move.toRow * 8 + move.toCol
+            out.insert(flipped ? 63 - logical : logical)
+        }
+        return out
     }
 
     /// Convert a point in the board-overlay's local coordinate space into
@@ -2853,12 +2938,12 @@ struct UpperContentView: View {
             let compStr: String
             if let c = bufferComposition, c.storedCount > 0 {
                 compStr = String(
-                    format: "len/game=%5.0f  len/pos=%5.0f  W/D/L=%2.0f%%/%2.0f%%/%2.0f%%",
+                    format: "game-mean=%5.0f  position-mean=%5.0f  W/D/L=%2.0f%%/%2.0f%%/%2.0f%%",
                     c.meanGameLengthPerGame, c.meanGameLengthPerSampledPosition,
                     c.winFraction * 100, c.drawFraction * 100, c.lossFraction * 100
                 )
             } else {
-                compStr = "len/game=\(dash)  len/pos=\(dash)  W/D/L=\(dash)"
+                compStr = "game-mean=\(dash)  position-mean=\(dash)  W/D/L=\(dash)"
             }
             lines.append("  Composition: \(compStr)")
             let policyStr: String

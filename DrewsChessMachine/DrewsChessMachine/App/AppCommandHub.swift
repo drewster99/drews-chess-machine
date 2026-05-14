@@ -64,6 +64,12 @@ final class AppCommandHub {
     var chartZoomOutAvailable: Bool = false
     var chartZoomAutoAvailable: Bool = false
 
+    /// `true` while a human-vs-network game (Chess > Play…) is in
+    /// flight. Drives the Chess menu's enable/disable state and
+    /// blocks the destructive File / Train items from running
+    /// concurrently with the user's game.
+    var humanGameInFlight: Bool = false
+
     // MARK: - Action closures
 
     var buildNetwork: () -> Void = {}
@@ -134,4 +140,13 @@ final class AppCommandHub {
     var chartZoomIn: () -> Void = {}
     var chartZoomOut: () -> Void = {}
     var chartZoomEnableAuto: () -> Void = {}
+
+    /// Chess menu > Play…. Opens the human-vs-network setup popover
+    /// (opponent + side picker). The actual game starts when the
+    /// user clicks Start inside the popover.
+    var openHumanPlaySetup: () -> Void = {}
+
+    /// Chess menu > Stop Game. Cancels an in-flight human game.
+    /// Disabled when `humanGameInFlight == false`.
+    var stopHumanGame: () -> Void = {}
 }
