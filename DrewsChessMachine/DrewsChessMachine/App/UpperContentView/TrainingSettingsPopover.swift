@@ -179,6 +179,15 @@ struct TrainingSettingsPopover: View {
             // helpers can live close to the fields they drive. The
             // sub-views keep their existing `@Binding` interface; the
             // bindings are projected off `model` here.
+            //
+            // Wrapped in a `ScrollView` because the Replay tab can
+            // get long (replay-ratio control + composition readout +
+            // sampling section), and on smaller screens the
+            // Cancel / Save row at the bottom would otherwise fall
+            // off the visible region. The outer `.frame(maxHeight:)`
+            // below caps the popover so the ScrollView has a known
+            // bounded vertical region to scroll within.
+            ScrollView(.vertical, showsIndicators: true) {
             switch selectedTab {
             case .optimizer:
                 OptimizerTab(
@@ -257,6 +266,7 @@ struct TrainingSettingsPopover: View {
                     onLiveMaxDrawPercentPerBatchChange: { model.applyLiveMaxDrawPercentPerBatch($0) }
                 )
             }
+            }
 
             HStack {
                 Spacer()
@@ -274,6 +284,15 @@ struct TrainingSettingsPopover: View {
         }
         .padding(16)
         .frame(width: 540)
+        // Hard ceiling on the popover height. Pairs with the
+        // `ScrollView` around the tab-content `switch` above so a
+        // tall tab (Replay tab grows the most via the composition
+        // readout) keeps the Cancel / Save row visible on small
+        // screens. 700pt fits on a 1024×768 macOS minimum after
+        // accounting for the menu bar and dock; on larger screens
+        // the popover stops growing past 700pt and the tab content
+        // scrolls instead.
+        .frame(maxHeight: 700)
         .background(.thickMaterial)
         .onAppear { model.seedFromParams() }
         .onDisappear {
