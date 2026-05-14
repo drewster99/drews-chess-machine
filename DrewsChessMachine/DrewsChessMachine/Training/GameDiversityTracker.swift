@@ -22,15 +22,18 @@ final class GameDiversityTracker: @unchecked Sendable {
     /// it does not exceed. The last bucket catches everything above
     /// the highest bound.
     ///
-    /// Chosen to make the "policy collapse" tail (bucket 5) visually
-    /// pop even at low counts: the first four buckets cover the range
-    /// where diverse self-play sits in steady state (0–20 plies) and
-    /// the last two highlight the pathological deep-share regime.
-    static let histogramBounds: [Int] = [2, 5, 10, 20, 40]
+    /// The first six buckets isolate plies 0 through 5 one-per-bucket
+    /// so the healthy steady-state region (where most self-play games
+    /// should diverge) reads at fine resolution; subsequent buckets
+    /// widen to track the policy-collapse tail (6-7, 8-10, 11-20,
+    /// 21-40, 41+).
+    static let histogramBounds: [Int] = [0, 1, 2, 3, 4, 5, 7, 10, 20, 40]
     /// Human-readable labels for each histogram bucket, aligned with
     /// `histogramBounds` plus a trailing "41+" overflow bucket. Used
     /// by the UI to render axis labels on the diversity chart.
-    static let histogramLabels: [String] = ["0-2", "3-5", "6-10", "11-20", "21-40", "41+"]
+    static let histogramLabels: [String] = [
+        "0", "1", "2", "3", "4", "5", "6-7", "8-10", "11-20", "21-40", "41+"
+    ]
     /// Number of buckets in the divergence histogram.
     static var histogramBucketCount: Int { histogramBounds.count + 1 }
 

@@ -7,8 +7,24 @@ struct DiversityHistogramChart: View {
 
     @State private var hoveredHistogramBarID: Int?
 
+    // Eleven-step green→red gradient aligned with
+    // `GameDiversityTracker.histogramLabels`. Buckets 0–5 (one ply
+    // each) cover the healthy steady-state region and step through
+    // greens / yellow-greens / yellow. Buckets 6–10 (the widening
+    // tail) progress through orange and red into very dark red so
+    // a deep policy-share regime visually pops.
     private static let bucketColors: [Color] = [
-        .green, .mint, .yellow, .orange, .red, Color(red: 0.6, green: 0, blue: 0)
+        Color(hue: 0.33, saturation: 0.85, brightness: 0.80),  // 0
+        Color(hue: 0.28, saturation: 0.85, brightness: 0.82),  // 1
+        Color(hue: 0.23, saturation: 0.85, brightness: 0.85),  // 2
+        Color(hue: 0.18, saturation: 0.85, brightness: 0.88),  // 3
+        Color(hue: 0.14, saturation: 0.90, brightness: 0.92),  // 4
+        Color(hue: 0.11, saturation: 0.95, brightness: 0.94),  // 5
+        Color(hue: 0.08, saturation: 0.95, brightness: 0.90),  // 6-7
+        Color(hue: 0.05, saturation: 1.00, brightness: 0.85),  // 8-10
+        Color(hue: 0.02, saturation: 1.00, brightness: 0.78),  // 11-20
+        Color(hue: 0.00, saturation: 1.00, brightness: 0.65),  // 21-40
+        Color(red: 0.40, green: 0, blue: 0)                    // 41+
     ]
 
     var body: some View {
