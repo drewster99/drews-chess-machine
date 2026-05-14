@@ -3464,7 +3464,8 @@ extension UpperContentView {
                 replayRatioComputedSelfPlayDelayMs: replayRatioSnapshot?.computedSelfPlayDelayMs,
                 bytesPerPosition: ReplayBuffer.bytesPerPosition,
                 bufferComposition: session.bufferComposition,
-                lastSamplingResult: session.lastSamplingResult
+                lastSamplingResult: session.lastSamplingResult,
+                parallelStats: session.parallelStats
             )
         }
     }

@@ -810,9 +810,22 @@ final class TrainingSettingsPopoverModel {
                     "[PARAM] maxDrawPercentPerBatch: \(originalMaxDrawPercentPerBatch) -> \(p.maxDrawPercentPerBatch)"
                 )
             }
+            if abs(p.selfPlayDrawKeepFraction - originalSelfPlayDrawKeepFraction) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(
+                        format: "[PARAM] selfPlayDrawKeepFraction: %.2f -> %.2f",
+                        originalSelfPlayDrawKeepFraction,
+                        p.selfPlayDrawKeepFraction
+                    )
+                )
+            }
             // On successful save the stash that backs Cancel becomes the new
             // pre-edit baseline — closing the popover with Save commits the
-            // live writes.
+            // live writes. Missing this line for `selfPlayDrawKeepFraction`
+            // was the bug behind the reported "edit saved 0.50 then reopened
+            // and it's 1.00" symptom: the popover dismissed via Save →
+            // onDisappear → cancel() saw a stash that still held the
+            // pre-edit value and reverted the just-committed change.
             originalReplayRatioTarget = p.replayRatioTarget
             originalReplaySelfPlayDelayMs = p.selfPlayDelayMs
             originalReplayTrainingStepDelayMs = p.trainingStepDelayMs
@@ -820,6 +833,7 @@ final class TrainingSettingsPopoverModel {
             originalMaxPliesFromAnyOneGame = p.maxPliesFromAnyOneGame
             originalTargetSampledGameLengthPlies = p.targetSampledGameLengthPlies
             originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
+            originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
             isPresented = false
         }
     }

@@ -78,6 +78,12 @@ struct TrainingSettingsPopover: View {
     /// mirrors `replayBuffer.lastSamplingResult()` into it.
     let lastSamplingResult: ReplayBuffer.SamplingResult?
 
+    /// Live parallel-worker stats snapshot. Drives the Self Play tab's
+    /// "Emitted games" readout (played vs emitted plies-per-hour, played
+    /// vs emitted W/L/D shares). `nil` before the first heartbeat tick
+    /// in the current Play-and-Train session.
+    let parallelStats: ParallelWorkerStatsBox.Snapshot?
+
     // MARK: - Tab selection
 
     /// Local tab selection. Resets to `.optimizer` each time the
@@ -214,7 +220,8 @@ struct TrainingSettingsPopover: View {
                     selfPlayDecayPerPlyError: model.selfPlayDecayPerPlyError,
                     selfPlayFloorTauError: model.selfPlayFloorTauError,
                     selfPlayDrawKeepFractionError: model.selfPlayDrawKeepFractionError,
-                    onLiveSelfPlayDrawKeepFractionChange: { model.applyLiveSelfPlayDrawKeepFraction($0) }
+                    onLiveSelfPlayDrawKeepFractionChange: { model.applyLiveSelfPlayDrawKeepFraction($0) },
+                    parallelStats: parallelStats
                 )
             case .replay:
                 ReplayTab(
@@ -713,6 +720,13 @@ private struct SelfPlayTab: View {
     /// committed value so a subsequent Cancel is a no-op.
     let onLiveSelfPlayDrawKeepFractionChange: (Double) -> Void
 
+    /// Live snapshot of the parallel-worker stats box; drives the
+    /// "Emitted games" readout's W/L/D + plies-per-hour rows. `nil`
+    /// before the first heartbeat tick (e.g. popover opened during
+    /// app-launch before Play-and-Train has started). The Self Play
+    /// tab tolerates `nil` by rendering dashes in the readout cells.
+    let parallelStats: ParallelWorkerStatsBox.Snapshot?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
@@ -749,7 +763,16 @@ private struct SelfPlayTab: View {
                     placeholder: "1.00",
                     hint: nil
                 ) {
-                    EmptyView()
+                    Stepper(
+                        "",
+                        value: PopoverBindings.doubleBinding(
+                            text: $selfPlayStartTauText,
+                            fallback: 1.0,
+                            format: "%.2f"
+                        ),
+                        in: 0.05...5.0,
+                        step: 0.05
+                    )
                 }
                 PopoverRow(
                     label: "Decay:",
@@ -758,7 +781,22 @@ private struct SelfPlayTab: View {
                     placeholder: "0.030",
                     hint: "per ply"
                 ) {
-                    EmptyView()
+                    // Finer step than the other τ fields — at the
+                    // 0.0–1.0 range, 0.05/ply would decay a starting τ
+                    // of 1.0 to floor in 20 plies and miss anything in
+                    // between. 0.005 lets the user dial in the slow
+                    // decay (~0.007 is the current working value)
+                    // without round-tripping through the text field.
+                    Stepper(
+                        "",
+                        value: PopoverBindings.doubleBinding(
+                            text: $selfPlayDecayPerPlyText,
+                            fallback: 0.03,
+                            format: "%.3f"
+                        ),
+                        in: 0.0...1.0,
+                        step: 0.005
+                    )
                 }
                 PopoverRow(
                     label: "Floor:",
@@ -767,7 +805,16 @@ private struct SelfPlayTab: View {
                     placeholder: "0.40",
                     hint: tauReachedAtHint
                 ) {
-                    EmptyView()
+                    Stepper(
+                        "",
+                        value: PopoverBindings.doubleBinding(
+                            text: $selfPlayFloorTauText,
+                            fallback: 0.40,
+                            format: "%.2f"
+                        ),
+                        in: 0.05...5.0,
+                        step: 0.05
+                    )
                 }
                 // Soft advisory: the popover validates start/floor in
                 // [0.01, 5.0] but values that pass validation can
@@ -814,7 +861,23 @@ private struct SelfPlayTab: View {
                     placeholder: "1.00",
                     hint: drawKeepHint
                 ) {
-                    EmptyView()
+                    // Live-propagated stepper: each click flows through
+                    // `onLiveSelfPlayDrawKeepFractionChange` (sibling
+                    // wires direct text edits via the `.onChange(of:)`
+                    // handler below), so the slot driver picks up the
+                    // new keep-fraction on the next completed game
+                    // without waiting for Save.
+                    Stepper(
+                        "",
+                        value: liveDoubleBinding(
+                            text: $selfPlayDrawKeepFractionText,
+                            fallback: 1.0,
+                            format: "%.2f",
+                            onChange: onLiveSelfPlayDrawKeepFractionChange
+                        ),
+                        in: 0.0...1.0,
+                        step: 0.05
+                    )
                 }
                 .onChange(of: selfPlayDrawKeepFractionText) { _, newValue in
                     if let v = Double(newValue.trimmingCharacters(in: .whitespaces)),
@@ -822,6 +885,7 @@ private struct SelfPlayTab: View {
                         onLiveSelfPlayDrawKeepFractionChange(v)
                     }
                 }
+                liveEmittedGamesReadout
             }
         }
     }
@@ -877,6 +941,158 @@ private struct SelfPlayTab: View {
         guard floor < start else { return "(reached at ply 0)" }
         let plies = Int(((start - floor) / decay).rounded(.up))
         return "(reached at ply \(plies))"
+    }
+
+    /// Live "played vs emitted" readout under the Draw keep fraction
+    /// field. Two columns ("Played" / "Emitted") × two rows
+    /// (plies/hour, W/D/L breakdown). The 10-minute rolling window
+    /// drives the plies-per-hour numbers (matches `[STATS]`'s
+    /// `prod=`/`spRate=` cadence so the user can compare in-popover
+    /// vs in-log). Outcome shares come straight from the lifetime
+    /// totals — decisive games are always kept by the keep-fraction
+    /// filter, so emitted W/L equal played W/L and the only
+    /// difference between the two columns is the drawn-game count
+    /// (`emittedGames - W - L`).
+    @ViewBuilder
+    private var liveEmittedGamesReadout: some View {
+        let s = parallelStats
+        let dash = "—"
+        let hasStats = (s?.selfPlayGames ?? 0) > 0
+        // Rolling rates (plies / hour) over the box's 10-minute
+        // window. Stays at "—" while `recentWindowSeconds` is 0
+        // (first <10 min of a session).
+        let recentWindow = s?.recentWindowSeconds ?? 0
+        let playedRate: Double = hasStats && recentWindow > 0
+            ? Double(s?.recentMoves ?? 0) / recentWindow * 3600
+            : 0
+        let emittedRate: Double = hasStats && recentWindow > 0
+            ? Double(s?.recentEmittedPositions ?? 0) / recentWindow * 3600
+            : 0
+        // Lifetime W/D/L counts. Played: total per-outcome counters
+        // from the watcher. Emitted: same W/L (decisive games always
+        // kept), drawn = emittedGames minus the decisive total.
+        let playedW = (s?.whiteCheckmates ?? 0)
+        let playedL = (s?.blackCheckmates ?? 0)
+        let playedDraws = (s?.stalemates ?? 0) + (s?.fiftyMoveDraws ?? 0)
+            + (s?.threefoldRepetitionDraws ?? 0) + (s?.insufficientMaterialDraws ?? 0)
+        let playedTotal = (s?.selfPlayGames ?? 0)
+        let emittedTotal = (s?.emittedGames ?? 0)
+        let emittedDraws = max(0, emittedTotal - playedW - playedL)
+
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Live snapshot")
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
+                .padding(.bottom, 2)
+            HStack(spacing: 8) {
+                Text("")
+                    .frame(width: 160, alignment: .trailing)
+                Text("Played")
+                    .frame(width: 140, alignment: .leading)
+                Text("Emitted")
+                    .frame(width: 140, alignment: .leading)
+                Spacer()
+            }
+            .foregroundStyle(.secondary)
+            twoColRow(
+                label: "plies / hour (10-min):",
+                playedValue: hasStats && recentWindow > 0
+                    ? Self.numberString(Int(playedRate.rounded()))
+                    : dash,
+                emittedValue: hasStats && recentWindow > 0
+                    ? Self.numberString(Int(emittedRate.rounded()))
+                    : dash
+            )
+            twoColRow(
+                label: "games (W / D / L):",
+                playedValue: hasStats
+                    ? "\(Self.numberString(playedW)) / \(Self.numberString(playedDraws)) / \(Self.numberString(playedL))"
+                    : dash,
+                emittedValue: hasStats
+                    ? "\(Self.numberString(playedW)) / \(Self.numberString(emittedDraws)) / \(Self.numberString(playedL))"
+                    : dash
+            )
+            twoColRow(
+                label: "W / D / L %:",
+                playedValue: hasStats && playedTotal > 0
+                    ? Self.pctTriple(w: playedW, d: playedDraws, l: playedL, total: playedTotal)
+                    : dash,
+                emittedValue: hasStats && emittedTotal > 0
+                    ? Self.pctTriple(w: playedW, d: emittedDraws, l: playedL, total: emittedTotal)
+                    : dash
+            )
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+
+    /// One right-aligned label + two left-aligned value cells, same
+    /// shape as the Replay tab's `twoColRow` helper but with
+    /// "Played" / "Emitted" columns.
+    @ViewBuilder
+    private func twoColRow(
+        label: String,
+        playedValue: String,
+        emittedValue: String
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .frame(width: 160, alignment: .trailing)
+            Text(playedValue)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(1)
+                .frame(width: 140, alignment: .leading)
+            Text(emittedValue)
+                .font(.system(.caption, design: .monospaced))
+                .lineLimit(1)
+                .frame(width: 140, alignment: .leading)
+            Spacer()
+        }
+    }
+
+    private static func numberString(_ n: Int) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        return f.string(from: NSNumber(value: n)) ?? String(n)
+    }
+
+    /// Format a W/D/L triple as "ww.w% / dd.d% / ll.l%" given the
+    /// counts and a total. Returns the formatted string; caller is
+    /// responsible for the `hasStats` guard.
+    private static func pctTriple(w: Int, d: Int, l: Int, total: Int) -> String {
+        guard total > 0 else { return "—" }
+        let den = Double(total)
+        let wp = Double(w) / den * 100
+        let dp = Double(d) / den * 100
+        let lp = Double(l) / den * 100
+        return String(format: "%.1f%% / %.1f%% / %.1f%%", wp, dp, lp)
+    }
+
+    /// Stepper-binding for the live-update Draw keep fraction field.
+    /// Mirrors the helper in `ReplayTab` — kept tab-local rather than
+    /// shared on `PopoverBindings` because the two tabs each carry
+    /// their own private set of helpers and a project-wide refactor
+    /// of those isn't in scope here. Routes the post-step value
+    /// through `onChange` so the parent's `applyLive…` writes through
+    /// to `TrainingParameters.shared` immediately; direct text edits
+    /// hit the same `onChange` via the surrounding
+    /// `.onChange(of: textBinding)` modifier at the call site.
+    private func liveDoubleBinding(
+        text: Binding<String>,
+        fallback: Double,
+        format: String,
+        onChange: @escaping (Double) -> Void
+    ) -> Binding<Double> {
+        Binding<Double>(
+            get: {
+                let trimmed = text.wrappedValue.trimmingCharacters(in: .whitespaces)
+                return Double(trimmed) ?? fallback
+            },
+            set: { newValue in
+                text.wrappedValue = String(format: format, newValue)
+                onChange(newValue)
+            }
+        )
     }
 }
 
