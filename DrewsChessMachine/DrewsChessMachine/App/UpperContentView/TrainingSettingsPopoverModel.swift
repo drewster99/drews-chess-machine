@@ -15,15 +15,19 @@ import SwiftUI
 /// `pushSelfPlaySchedule` closure), and dismisses the popover only if every
 /// field parsed.
 ///
-/// **Live-propagation exception for the replay-ratio fields.** The three
-/// replay-ratio control fields (`selfPlayDelayMs`, `trainingStepDelayMs`,
-/// `replayRatioAutoAdjust`) plus `replayRatioTarget` write through to
-/// `TrainingParameters.shared` *immediately on change* via the `applyLive…`
-/// methods rather than waiting for Save, so the user can watch the live ratio
-/// display respond. On Cancel (or outside-click dismiss) those four are
-/// reverted from the stash captured in `seedFromParams()`, matching the
-/// "edit → cancel discards" mental model even though the live writes already
-/// landed.
+/// **Live-propagation exception for selected Replay-tab fields.** Seven
+/// fields write through to `TrainingParameters.shared` *immediately on
+/// change* via the `applyLive…` methods rather than waiting for Save, so
+/// the user can watch the live ratio display and the live sampling-
+/// composition readout respond. On Cancel (or outside-click dismiss) all
+/// seven are reverted from the stash captured in `seedFromParams()`,
+/// matching the "edit → cancel discards" mental model even though the
+/// live writes already landed:
+///
+///   - Replay-ratio control: `replayRatioTarget`, `selfPlayDelayMs`,
+///     `trainingStepDelayMs`, `replayRatioAutoAdjust`.
+///   - Sampling constraints: `maxPliesFromAnyOneGame`,
+///     `targetSampledGameLengthPlies`, `maxDrawPercentPerBatch`.
 ///
 /// The live `trainer` / `ReplayRatioController` and the self-play-schedule push
 /// are reached through injected closures so this model carries no dependency on
@@ -227,14 +231,15 @@ final class TrainingSettingsPopoverModel {
         maxDrawPercentPerBatchError = false
     }
 
-    /// Restore the four live-propagated replay-ratio control fields from the
-    /// stash captured in `seedFromParams()`, then dismiss. Matches the
-    /// user-facing "Cancel discards changes" pattern even though the underlying
-    /// `trainingParams` writes already happened during the edit session. No
-    /// `[PARAM]` log on revert (the live-update writes were not logged either —
-    /// see `save()` for the commit-time logging). Idempotent: `save()` updates
-    /// the stash before closing, so a Save → onDisappear sequence finds nothing
-    /// to revert.
+    /// Restore the seven live-propagated Replay-tab fields (four replay-ratio
+    /// control + three sampling constraints) from the stash captured in
+    /// `seedFromParams()`, then dismiss. Matches the user-facing "Cancel
+    /// discards changes" pattern even though the underlying `trainingParams`
+    /// writes already happened during the edit session. No `[PARAM]` log on
+    /// revert (the live-update writes were not logged either — see `save()`
+    /// for the commit-time logging). Idempotent: `save()` updates the stash
+    /// before closing, so a Save → onDisappear sequence finds nothing to
+    /// revert.
     func cancel() {
         let p = TrainingParameters.shared
         if abs(p.replayRatioTarget - originalReplayRatioTarget) > Double.ulpOfOne {
@@ -721,8 +726,8 @@ final class TrainingSettingsPopoverModel {
         }
 
         if !anyError {
-            // Commit-time [PARAM] log lines for the four live-propagated
-            // replay-ratio fields. The live writes during the edit session are
+            // Commit-time [PARAM] log lines for the seven live-propagated
+            // Replay-tab fields. The live writes during the edit session are
             // intentionally silent (a log per keystroke would be noise); this
             // is the single authoritative log line per Save.
             if abs(p.replayRatioTarget - originalReplayRatioTarget) > Double.ulpOfOne {
