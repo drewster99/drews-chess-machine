@@ -1580,17 +1580,19 @@ private struct ReplayTab: View {
                     ? numberString(sr?.distinctGamesInBatch ?? 0)
                     : dash
             )
-            // Resident decisive (W/L) game count, plus the matching
-            // achieved-decisive count for the last batch (= achieved W
-            // + achieved L). The buffer side is the K-aware decisive-
-            // stratum ceiling input — if much smaller than K · (resident
-            // games), the K cap is the binding constraint and the
-            // realized batch will be more draw-heavy than the user's
-            // `Max Draws Per Batch` setting can express.
+            // Decisive *plies* (W + L positions) on both sides — the
+            // batch column is the per-position outcome histogram (W +
+            // L counts), so the buffer column matches by reading the
+            // resident `winPositions + lossPositions` rather than the
+            // distinct decisive *game* count. Position-units on both
+            // sides keeps the comparison honest (a 4096-ply batch can
+            // legitimately draw thousands of decisive positions from
+            // a few hundred decisive games at K plies per game; the
+            // ratio is meaningless without matching units).
             twoColRow(
-                label: "decisive games:",
+                label: "decisive plies:",
                 bufferValue: bufHas
-                    ? numberString(c?.residentDecisiveGameCount ?? 0)
+                    ? numberString((c?.winPositions ?? 0) + (c?.lossPositions ?? 0))
                     : dash,
                 batchValue: batchHas
                     ? numberString(batchDecisive)
