@@ -21,6 +21,16 @@ import SwiftUI
 struct EmitWindowStatsCard: View {
     let snapshot: ParallelWorkerStatsBox.Snapshot?
 
+    /// Per-bucket-row hover state. Stable across re-renders because
+    /// the card is the SwiftUI identity boundary; @State persists for
+    /// the life of this view's identity. Set to a unique
+    /// "<section>.<bucket>" key (e.g. "ply.open" or "material.late")
+    /// when the cursor enters the corresponding bucket label, nil
+    /// otherwise. Drives the opacity of the tooltip overlay so the
+    /// view tree stays stable (no `if`-gated visible content per the
+    /// project's view-stability rule).
+    @State private var hoveredBucketID: String?
+
     private static let dash = "—"
     private static let labelWidth: CGFloat = 90
     /// Width of the "plies (X.X%)" cell — sized for "1,234,567
@@ -29,6 +39,28 @@ struct EmitWindowStatsCard: View {
     /// Width of each W% / D% / L% within-bucket cell.
     private static let breakdownCellWidth: CGFloat = 56
     private static let cellSpacing: CGFloat = 6
+
+    // MARK: - Bucket range tooltips
+    //
+    // Cutoffs match `PhaseHistogram.plyBucket` / `materialBucket`,
+    // which themselves match `ReplayBuffer.computeBatchStats`'s
+    // per-batch phase histograms. Keep these in sync if any cutoff
+    // ever moves.
+
+    private static let plyTooltips: [String: String] = [
+        "open":  "ply 0–20",
+        "early": "ply 21–60",
+        "mid":   "ply 61–150",
+        "late":  "ply 151–300",
+        "end":   "ply 301+",
+    ]
+    private static let materialTooltips: [String: String] = [
+        "open":  "≥14 non-pawn pieces",
+        "early": "12–13 non-pawn pieces",
+        "mid":   "8–11 non-pawn pieces",
+        "late":  "4–7 non-pawn pieces",
+        "end":   "≤3 non-pawn pieces",
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -39,12 +71,16 @@ struct EmitWindowStatsCard: View {
             totalPliesSection
             phaseSection(
                 title: "By ply phase",
+                sectionID: "ply",
+                tooltips: Self.plyTooltips,
                 w: snapshot?.emitWindowPhaseByPlyW ?? .zero,
                 d: snapshot?.emitWindowPhaseByPlyD ?? .zero,
                 l: snapshot?.emitWindowPhaseByPlyL ?? .zero
             )
             phaseSection(
                 title: "By material phase",
+                sectionID: "material",
+                tooltips: Self.materialTooltips,
                 w: snapshot?.emitWindowPhaseByMaterialW ?? .zero,
                 d: snapshot?.emitWindowPhaseByMaterialD ?? .zero,
                 l: snapshot?.emitWindowPhaseByMaterialL ?? .zero
@@ -96,6 +132,8 @@ struct EmitWindowStatsCard: View {
     @ViewBuilder
     private func phaseSection(
         title: String,
+        sectionID: String,
+        tooltips: [String: String],
         w: PhaseHistogram,
         d: PhaseHistogram,
         l: PhaseHistogram
@@ -125,16 +163,18 @@ struct EmitWindowStatsCard: View {
             .font(.caption2)
             .foregroundStyle(.secondary)
 
-            phaseRow(label: "open",  bucket: \.open,  w: w, d: d, l: l, totalAll: totalAll)
-            phaseRow(label: "early", bucket: \.early, w: w, d: d, l: l, totalAll: totalAll)
-            phaseRow(label: "mid",   bucket: \.mid,   w: w, d: d, l: l, totalAll: totalAll)
-            phaseRow(label: "late",  bucket: \.late,  w: w, d: d, l: l, totalAll: totalAll)
-            phaseRow(label: "end",   bucket: \.end,   w: w, d: d, l: l, totalAll: totalAll)
+            phaseRow(sectionID: sectionID, tooltip: tooltips["open"]  ?? "", label: "open",  bucket: \.open,  w: w, d: d, l: l, totalAll: totalAll)
+            phaseRow(sectionID: sectionID, tooltip: tooltips["early"] ?? "", label: "early", bucket: \.early, w: w, d: d, l: l, totalAll: totalAll)
+            phaseRow(sectionID: sectionID, tooltip: tooltips["mid"]   ?? "", label: "mid",   bucket: \.mid,   w: w, d: d, l: l, totalAll: totalAll)
+            phaseRow(sectionID: sectionID, tooltip: tooltips["late"]  ?? "", label: "late",  bucket: \.late,  w: w, d: d, l: l, totalAll: totalAll)
+            phaseRow(sectionID: sectionID, tooltip: tooltips["end"]   ?? "", label: "end",   bucket: \.end,   w: w, d: d, l: l, totalAll: totalAll)
         }
     }
 
     @ViewBuilder
     private func phaseRow(
+        sectionID: String,
+        tooltip: String,
         label: String,
         bucket: KeyPath<PhaseHistogram, Int>,
         w: PhaseHistogram,
@@ -146,12 +186,44 @@ struct EmitWindowStatsCard: View {
         let dB = d[keyPath: bucket]
         let lB = l[keyPath: bucket]
         let bucketTotal = wB + dB + lB
+        let rowID = "\(sectionID).\(label)"
+        let isHovering = hoveredBucketID == rowID
 
         HStack(spacing: Self.cellSpacing) {
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .frame(width: Self.labelWidth, alignment: .trailing)
+                // Zero-delay hover tooltip showing the bucket's
+                // numeric range. Anchored to the trailing edge of
+                // the label and offset further right so the popup
+                // floats next to (but not over) the data cells.
+                // Always rendered for view-stability; opacity 0
+                // when not hovering (the project's pattern for
+                // conditional UI inside an animated container).
+                // `.allowsHitTesting(false)` keeps the popup from
+                // re-triggering hover events on itself.
+                .overlay(alignment: .trailing) {
+                    Text(tooltip)
+                        .font(.caption2)
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(.regularMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .shadow(radius: 2)
+                        .fixedSize()
+                        .opacity(isHovering ? 1 : 0)
+                        .offset(x: 4, y: -22)
+                        .allowsHitTesting(false)
+                }
+                .onHover { inside in
+                    if inside {
+                        hoveredBucketID = rowID
+                    } else if hoveredBucketID == rowID {
+                        hoveredBucketID = nil
+                    }
+                }
             Text(pliesAndPct(bucketTotal, of: totalAll))
                 .font(.system(.callout, design: .monospaced))
                 .monospacedDigit()
