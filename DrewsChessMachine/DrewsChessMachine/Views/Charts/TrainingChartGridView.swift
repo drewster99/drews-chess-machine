@@ -98,7 +98,7 @@ struct TrainingChartGridView: View {
         //   Row 3: pLoss split, gNorm, ||v|| (velocity L2 norm),
         //          longest move prefix histogram, arena activity
         //   Row 4 (value head): W/D/L probabilities, vLoss, vMean,
-        //          vAbs, (empty)
+        //          vAbs, arena win % trend
         LazyVGrid(columns: Self.columns, spacing: 1) {
             // Row 1
             LegalMassChart(
@@ -247,7 +247,17 @@ struct TrainingChartGridView: View {
                 scrollX: $scrollX,
                 context: context
             )
-            // 5th cell of the value-head row intentionally left empty.
+            // Arena win % trend — one point per completed arena, line
+            // connecting them. Companion to the row-3 ArenaActivityChart
+            // (same data source); ActivityChart shows arenas as
+            // duration bands, this chart shows the score trajectory.
+            ArenaWinChart(
+                events: arenaEvents,
+                promoteThreshold: promoteThreshold,
+                hoveredSec: $hoveredSec,
+                scrollX: $scrollX,
+                context: context
+            )
         }
         .background(Color(nsColor: .separatorColor))
     }
