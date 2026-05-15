@@ -1417,20 +1417,23 @@ struct UpperContentView: View {
                     isCandidateTestActive: isCandidateTestActive,
                     inferenceResultText: inferenceResult?.textOutput,
                     trainingError: trainingError,
-                    selfPlayColumn: {
-                        // View > Show Emit Window Stats toggle: when on,
-                        // the EmitWindowStatsCard sits at the top of
-                        // column 2 above the existing Forward Pass /
-                        // Value Head text. Default off so the column's
-                        // baseline shape is unchanged for users who
-                        // don't need the panel.
-                        VStack(alignment: .leading, spacing: 8) {
-                            if showEmitWindowStats {
-                                EmitWindowStatsCard(snapshot: session.parallelStats)
-                            }
-                            selfPlayStatsColumn
+                    topColumn2: {
+                        // View > Show Emit Window Stats toggle: when
+                        // on, the EmitWindowStatsCard sits at the top
+                        // of column 2 above whatever mode-body the
+                        // panel renders below it (self-play stats /
+                        // candidate-test text / nothing in N>1 multi-
+                        // worker training without a candidate probe).
+                        // Wired as `topColumn2` rather than wrapping
+                        // `selfPlayColumn` because in multi-worker
+                        // training `isCandidateTestActive` is forced
+                        // on and `selfPlayColumn` is never invoked —
+                        // the panel needs to render regardless.
+                        if showEmitWindowStats {
+                            EmitWindowStatsCard(snapshot: session.parallelStats)
                         }
                     },
+                    selfPlayColumn: { selfPlayStatsColumn },
                     trainingColumn: { trainingStatsColumnView }
                 )
             }
