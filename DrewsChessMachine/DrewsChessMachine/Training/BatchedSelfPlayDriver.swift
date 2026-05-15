@@ -332,12 +332,17 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // (each player records their own perspective), so
                 // both the stats box and the controller see the same
                 // emitted-position total.
-                let whitePushed = white.flushRecordedGameToReplayBuffer(result: result)
-                let blackPushed = black.flushRecordedGameToReplayBuffer(result: result)
-                let emittedPositions = whitePushed + blackPushed
-                if emittedPositions > 0 {
-                    statsBox.recordEmittedGame(positions: emittedPositions, result: result)
-                    replayRatioController?.recordSelfPlayEmittedGame(positions: emittedPositions)
+                let whiteFlush = white.flushRecordedGameToReplayBuffer(result: result)
+                let blackFlush = black.flushRecordedGameToReplayBuffer(result: result)
+                // Combine both players' contributions into one
+                // game-level summary: total positions + summed phase
+                // histograms. White and black each contribute their
+                // own perspective's plies, so the sum is the full
+                // game's emit footprint.
+                let combined = whiteFlush + blackFlush
+                if combined.positions > 0 {
+                    statsBox.recordEmittedGame(result: result, flushed: combined)
+                    replayRatioController?.recordSelfPlayEmittedGame(positions: combined.positions)
                 }
             }
             // If !kept: leave the recorded scratch alone — the next

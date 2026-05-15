@@ -1,6 +1,89 @@
 import Foundation
 import os
 
+// MARK: - Phase histograms (shared between flush + box)
+
+/// 5-bucket histogram used for both ply-phase and material-phase
+/// position counts. Bucket cutoffs match `ReplayBuffer.computeBatchStats`
+/// — open/early/mid/late/end — so emit-window stats line up
+/// semantically with per-batch stats. Tuple-backed (no heap) and
+/// `Sendable` so the per-game record can move freely between actors.
+public struct PhaseHistogram: Sendable, Equatable {
+    public var open: Int
+    public var early: Int
+    public var mid: Int
+    public var late: Int
+    public var end: Int
+
+    public static let zero = PhaseHistogram(open: 0, early: 0, mid: 0, late: 0, end: 0)
+
+    public var total: Int { open + early + mid + late + end }
+
+    public static func + (a: Self, b: Self) -> Self {
+        PhaseHistogram(
+            open: a.open + b.open,
+            early: a.early + b.early,
+            mid: a.mid + b.mid,
+            late: a.late + b.late,
+            end: a.end + b.end
+        )
+    }
+
+    public static func += (a: inout Self, b: Self) {
+        a.open += b.open
+        a.early += b.early
+        a.mid += b.mid
+        a.late += b.late
+        a.end += b.end
+    }
+
+    /// Bucket a game-relative ply index using the same cutoffs as
+    /// `ReplayBuffer.computeBatchStats`'s per-batch phase_by_ply.
+    /// 0 = open (≤20), 1 = early (21–60), 2 = mid (61–150),
+    /// 3 = late (151–300), 4 = end (301+).
+    public static func plyBucket(ply: Int) -> Int {
+        if ply <= 20 { return 0 }
+        if ply <= 60 { return 1 }
+        if ply <= 150 { return 2 }
+        if ply <= 300 { return 3 }
+        return 4
+    }
+
+    /// Bucket a non-pawn piece count using the same cutoffs as
+    /// `ReplayBuffer.computeBatchStats`'s per-batch phase_by_material.
+    /// 0 = open (≥14), 1 = early (12–13), 2 = mid (8–11),
+    /// 3 = late (4–7), 4 = end (≤3).
+    public static func materialBucket(materialCount: Int) -> Int {
+        if materialCount >= 14 { return 0 }
+        if materialCount >= 12 { return 1 }
+        if materialCount >= 8 { return 2 }
+        if materialCount >= 4 { return 3 }
+        return 4
+    }
+}
+
+/// Per-game flush summary — what one player's flushed game contributed
+/// to the replay buffer. Returned by `MPSChessPlayer.flushRecordedGameToReplayBuffer`
+/// and combined across white + black in `BatchedSelfPlayDriver` before
+/// being handed to `ParallelWorkerStatsBox.recordEmittedGame`.
+public struct FlushedGameStats: Sendable {
+    public let positions: Int
+    public let phaseByPly: PhaseHistogram
+    public let phaseByMaterial: PhaseHistogram
+
+    public static let empty = FlushedGameStats(
+        positions: 0, phaseByPly: .zero, phaseByMaterial: .zero
+    )
+
+    public static func + (a: Self, b: Self) -> Self {
+        FlushedGameStats(
+            positions: a.positions + b.positions,
+            phaseByPly: a.phaseByPly + b.phaseByPly,
+            phaseByMaterial: a.phaseByMaterial + b.phaseByMaterial
+        )
+    }
+}
+
 /// Lock-protected rolling counters for the parallel self-play and
 /// training workers. Each worker increments its own counters after
 /// finishing one unit of work (one game for self-play, one SGD step
@@ -85,6 +168,14 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         let timestamp: Date
         let positions: Int
         let result: GameResult
+        /// Per-game ply-phase histogram (open/early/mid/late/end
+        /// position counts). Sums to `positions`. Aggregated across
+        /// the rolling window in `snapshot()` for the View > Emit
+        /// Window panel.
+        let phaseByPly: PhaseHistogram
+        /// Per-game material-phase histogram. Same shape as
+        /// `phaseByPly` but bucketed by non-pawn piece count.
+        let phaseByMaterial: PhaseHistogram
     }
     private var _recentEmittedGames: [EmittedGameRecord] = []
     private var _recentEmittedGamesHead: Int = 0
@@ -278,11 +369,14 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// the per-outcome emitted counter that mirrors the played-side
     /// counter; the difference between played and emitted at each
     /// outcome category is what the draw-keep filter actually dropped.
-    func recordEmittedGame(positions: Int, result: GameResult) {
+    /// `flushed` carries the combined-from-both-players phase
+    /// histograms — the rolling-window record stores them so
+    /// `snapshot()` can aggregate the View > Emit Window panel.
+    func recordEmittedGame(result: GameResult, flushed: FlushedGameStats) {
         let now = Date()
         lock.withLock {
             self._emittedGames += 1
-            self._emittedPositions += positions
+            self._emittedPositions += flushed.positions
             switch result {
             case .checkmate(let winner):
                 if winner == .white {
@@ -300,9 +394,15 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 self._emittedThreefoldRepetitionDraws += 1
             }
             self._recentEmittedGames.append(
-                EmittedGameRecord(timestamp: now, positions: positions, result: result)
+                EmittedGameRecord(
+                    timestamp: now,
+                    positions: flushed.positions,
+                    result: result,
+                    phaseByPly: flushed.phaseByPly,
+                    phaseByMaterial: flushed.phaseByMaterial
+                )
             )
-            self._recentEmittedGamesRunningPositions += positions
+            self._recentEmittedGamesRunningPositions += flushed.positions
             self.pruneRecentEmittedLocked(now: now)
         }
     }
@@ -415,6 +515,17 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         let recentEmittedWhiteCheckmates: Int
         let recentEmittedBlackCheckmates: Int
         let recentEmittedDraws: Int
+
+        /// Aggregated emit-window phase histograms — one slot per
+        /// (ply-phase or material-phase) bucket × outcome (W/D/L).
+        /// Sum of position counts across all kept games in the
+        /// rolling window. Drives the View > Emit Window panel.
+        let emitWindowPhaseByPlyW: PhaseHistogram
+        let emitWindowPhaseByPlyD: PhaseHistogram
+        let emitWindowPhaseByPlyL: PhaseHistogram
+        let emitWindowPhaseByMaterialW: PhaseHistogram
+        let emitWindowPhaseByMaterialD: PhaseHistogram
+        let emitWindowPhaseByMaterialL: PhaseHistogram
         /// Effective denominator for rolling rate calculations, in
         /// seconds: `min(recentWindow, now - oldest-entry-timestamp)`.
         /// Starts at 0 and grows to `recentWindow` over the first
@@ -499,13 +610,39 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             var recEmW = 0
             var recEmL = 0
             var recEmD = 0
+            // Per-outcome × per-bucket aggregates for the View > Emit
+            // Window panel. Each emitted game contributes its full
+            // phase histogram into the bucket matching its outcome
+            // (W = white checkmate, L = black checkmate, D = any of
+            // the four draw types). `total` of `winPly + drawPly +
+            // lossPly` equals the rolling-window emitted-positions
+            // total; same for material. Iteration cost is the same
+            // walk we're already doing for the per-outcome counts —
+            // no second pass.
+            var winPly = PhaseHistogram.zero
+            var drawPly = PhaseHistogram.zero
+            var lossPly = PhaseHistogram.zero
+            var winMat = PhaseHistogram.zero
+            var drawMat = PhaseHistogram.zero
+            var lossMat = PhaseHistogram.zero
             for i in _recentEmittedGamesHead..<_recentEmittedGames.count {
-                switch _recentEmittedGames[i].result {
+                let rec = _recentEmittedGames[i]
+                switch rec.result {
                 case .checkmate(let winner):
-                    if winner == .white { recEmW += 1 } else { recEmL += 1 }
+                    if winner == .white {
+                        recEmW += 1
+                        winPly += rec.phaseByPly
+                        winMat += rec.phaseByMaterial
+                    } else {
+                        recEmL += 1
+                        lossPly += rec.phaseByPly
+                        lossMat += rec.phaseByMaterial
+                    }
                 case .stalemate, .drawByFiftyMoveRule,
                      .drawByInsufficientMaterial, .drawByThreefoldRepetition:
                     recEmD += 1
+                    drawPly += rec.phaseByPly
+                    drawMat += rec.phaseByMaterial
                 }
             }
 
@@ -551,6 +688,12 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 recentEmittedWhiteCheckmates: recEmW,
                 recentEmittedBlackCheckmates: recEmL,
                 recentEmittedDraws: recEmD,
+                emitWindowPhaseByPlyW: winPly,
+                emitWindowPhaseByPlyD: drawPly,
+                emitWindowPhaseByPlyL: lossPly,
+                emitWindowPhaseByMaterialW: winMat,
+                emitWindowPhaseByMaterialD: drawMat,
+                emitWindowPhaseByMaterialL: lossMat,
                 recentWindowSeconds: recentWindowSec,
                 gameLenP50: p50,
                 gameLenP95: p95

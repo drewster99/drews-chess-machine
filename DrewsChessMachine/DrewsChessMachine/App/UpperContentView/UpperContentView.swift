@@ -157,6 +157,7 @@ struct UpperContentView: View {
     /// whatever inference result is currently driving the on-board
     /// Top Moves overlay (Forward Pass / Candidate Test).
     @AppStorage("showPolicyChannelsPanel") private var showPolicyChannelsPanel: Bool = false
+    @AppStorage("showEmitWindowStats") private var showEmitWindowStats: Bool = false
 
     /// Square (0..<64, row*8+col) the cursor is currently hovering
     /// on the main chess board. Drives the top-3-channels-at-this-
@@ -1416,7 +1417,20 @@ struct UpperContentView: View {
                     isCandidateTestActive: isCandidateTestActive,
                     inferenceResultText: inferenceResult?.textOutput,
                     trainingError: trainingError,
-                    selfPlayColumn: { selfPlayStatsColumn },
+                    selfPlayColumn: {
+                        // View > Show Emit Window Stats toggle: when on,
+                        // the EmitWindowStatsCard sits at the top of
+                        // column 2 above the existing Forward Pass /
+                        // Value Head text. Default off so the column's
+                        // baseline shape is unchanged for users who
+                        // don't need the panel.
+                        VStack(alignment: .leading, spacing: 8) {
+                            if showEmitWindowStats {
+                                EmitWindowStatsCard(snapshot: session.parallelStats)
+                            }
+                            selfPlayStatsColumn
+                        }
+                    },
                     trainingColumn: { trainingStatsColumnView }
                 )
             }

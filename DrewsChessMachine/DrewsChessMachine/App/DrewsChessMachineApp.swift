@@ -22,6 +22,7 @@ struct DrewsChessMachineApp: App {
     /// vertical space without stopping data capture.
     @AppStorage("showTrainingGraphs") private var showTrainingGraphs: Bool = true
     @AppStorage("showPolicyChannelsPanel") private var showPolicyChannelsPanel: Bool = false
+    @AppStorage("showEmitWindowStats") private var showEmitWindowStats: Bool = false
 
     /// View > Collect Chart Data preference. Persisted across launches
     /// via UserDefaults. When `false`, every chart-collection entry
@@ -366,6 +367,7 @@ struct DrewsChessMachineApp: App {
                 Toggle("Show Training Graphs", isOn: $showTrainingGraphs)
                 Toggle("Collect Chart Data", isOn: $chartCollectionEnabled)
                 Toggle("Show Policy Channels Panel", isOn: $showPolicyChannelsPanel)
+                Toggle("Show Emit Window Stats", isOn: $showEmitWindowStats)
                 Divider()
                 Button("Zoom In Charts") { commandHub.chartZoomIn() }
                     .keyboardShortcut("=", modifiers: .command)

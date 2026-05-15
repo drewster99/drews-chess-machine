@@ -552,8 +552,8 @@ final class MPSChessPlayer: ChessPlayer {
     /// and `onNewGame` zeroes `gamePliesRecorded`. Calling twice in a
     /// row would double-push.
     @discardableResult
-    func flushRecordedGameToReplayBuffer(result: GameResult) -> Int {
-        guard let replayBuffer, gamePliesRecorded > 0 else { return 0 }
+    func flushRecordedGameToReplayBuffer(result: GameResult) -> FlushedGameStats {
+        guard let replayBuffer, gamePliesRecorded > 0 else { return .empty }
 
         let myOutcome: Float
         switch result {
@@ -568,6 +568,34 @@ final class MPSChessPlayer: ChessPlayer {
 
         let pliesPushed = gamePliesRecorded
         let gameLength = UInt16(min(pliesPushed, Int(UInt16.max)))
+
+        // Per-game phase histograms (5 buckets each: open/early/mid/
+        // late/end) computed by walking the recorded plies once.
+        // Bucket cutoffs match `ReplayBuffer.computeBatchStats` so
+        // the View > Emit Window aggregates use the same phase
+        // semantics as the per-batch stats lines. Cost is one tight
+        // loop over `pliesPushed` integers — negligible relative to
+        // the buffer-copy below.
+        var phaseByPly = PhaseHistogram.zero
+        var phaseByMaterial = PhaseHistogram.zero
+        for i in 0..<pliesPushed {
+            let plyBucket = PhaseHistogram.plyBucket(ply: Int(gamePlyIndices[i]))
+            let matBucket = PhaseHistogram.materialBucket(materialCount: Int(gameMaterialCounts[i]))
+            switch plyBucket {
+            case 0: phaseByPly.open += 1
+            case 1: phaseByPly.early += 1
+            case 2: phaseByPly.mid += 1
+            case 3: phaseByPly.late += 1
+            default: phaseByPly.end += 1
+            }
+            switch matBucket {
+            case 0: phaseByMaterial.open += 1
+            case 1: phaseByMaterial.early += 1
+            case 2: phaseByMaterial.mid += 1
+            case 3: phaseByMaterial.late += 1
+            default: phaseByMaterial.end += 1
+            }
+        }
         gamePolicyIndices.withUnsafeBufferPointer { movesBuf in
             gamePlyIndices.withUnsafeBufferPointer { pliesBuf in
                 gameSamplingTaus.withUnsafeBufferPointer { tausBuf in
@@ -598,7 +626,11 @@ final class MPSChessPlayer: ChessPlayer {
                 }
             }
         }
-        return pliesPushed
+        return FlushedGameStats(
+            positions: pliesPushed,
+            phaseByPly: phaseByPly,
+            phaseByMaterial: phaseByMaterial
+        )
     }
 
     /// Grow `gameBoardScratchPtr` to hold at least `newCapacity` plies,

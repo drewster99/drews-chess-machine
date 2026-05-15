@@ -1631,14 +1631,29 @@ private struct ReplayTab: View {
             )
             // Single merged W/D/L row — replaces the prior W: / D: / L:
             // triple. Format mirrors the Self Play tab's "W / D / L %"
-            // readout. Batch cell appends "(D req N%)" when the draw cap
-            // is active; cell turns red when the achieved-vs-requested
-            // gap exceeds the sampler's slop.
+            // readout. Buffer side is *position-weighted* (each ply
+            // counts once); the row below reports the *game-weighted*
+            // draw share for direct comparison against the Self Play
+            // tab's per-game W/D/L. Batch cell turns red when the
+            // achieved-vs-requested gap exceeds the sampler's slop.
             twoColRow(
                 label: "avg W / D / L:",
                 bufferValue: bufWdlText,
                 batchValue: batchWdlText,
                 batchValueColor: drawCapDegraded ? .red : nil
+            )
+            // Game-weighted draw share for the buffer — distinct
+            // resident draw games / distinct resident games. Higher
+            // when draws are short relative to decisives, lower when
+            // they're long. Pairs with the position-weighted row
+            // above so the reader can see the bias in one glance:
+            // typically draws are *longer* than decisives, so the
+            // position-weighted D% above is HIGHER than this row's
+            // game-weighted D%.
+            twoColRow(
+                label: "draws (games):",
+                bufferValue: bufferGameWeightedDrawText(c, dash: dash),
+                batchValue: dash
             )
             // Within-decisive split: of the W+L positions, how many were
             // wins vs losses. Healthy ≈ 50/50; orange when outside
@@ -1716,6 +1731,26 @@ private struct ReplayTab: View {
                 .frame(width: 180, alignment: .leading)
             Spacer()
         }
+    }
+
+    /// Game-weighted buffer draw share — `(distinctResidentGames -
+    /// residentDecisiveGameCount) / distinctResidentGames` rendered
+    /// as a percentage. Companion to the position-weighted W/D/L
+    /// row: when draws are longer than decisives (the typical case),
+    /// the position-weighted D% is higher than this game-weighted
+    /// D%. Both numerator and denominator come from the same gameID-
+    /// tracked counter (`distinctResidentGames`) rather than the
+    /// histogram-derived estimate, so the percentage is internally
+    /// consistent even on a resumed session where the two counters
+    /// can drift.
+    private func bufferGameWeightedDrawText(
+        _ c: ReplayBuffer.CompositionSnapshot?,
+        dash: String
+    ) -> String {
+        guard let c, c.distinctResidentGames > 0 else { return dash }
+        let drawGames = c.distinctResidentGames - c.residentDecisiveGameCount
+        let pct = Double(max(0, drawGames)) / Double(c.distinctResidentGames) * 100
+        return String(format: "%.1f%%", pct)
     }
 
     /// Buffer-side W / D / L triple. Position-weighted resident
