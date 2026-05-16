@@ -125,9 +125,14 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         s.isPlaying = playing
     }
 
-    // MARK: - Delegate (called on ChessMachine.delegateQueue, never main)
+    // MARK: - Direct ingestion (no ChessMachine delegate indirection)
 
-    func chessMachine(_ machine: ChessMachine, didApplyMove move: ChessMove, newState: GameState) {
+    /// Tick-driver entry point for move events. The driver doesn't own
+    /// a `ChessMachine` (it talks to `ChessGameEngine` directly), so it
+    /// can't go through the delegate protocol. This method has the
+    /// same body as the `chessMachine(_:didApplyMove:newState:)`
+    /// delegate hook below — the delegate method calls this one.
+    func onMoveApplied(move: ChessMove, newState: GameState) {
         lock.withLock { s in
             s.state = newState
             s.moveCount += 1
@@ -136,27 +141,35 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         changes.send()
     }
 
-    func chessMachine(
-        _ machine: ChessMachine,
-        gameEndedWith result: GameResult,
+    /// Tick-driver entry point for game-end events. Same body as
+    /// `chessMachine(_:gameEndedWith:finalState:stats:)`. The driver
+    /// constructs `GameStats` from its own per-game timing
+    /// (`gameStartedAt` on `ActiveGame` for `totalGameTimeMs`;
+    /// per-side think time is not separately tracked under the
+    /// lockstep tick model, so the driver passes the full game time
+    /// in `totalGameTimeMs` and zeros the per-side think fields).
+    func onGameEnded(result: GameResult, finalState: GameState, stats: GameStats) {
+        Self.applyGameEndedLocked(self, result: result, finalState: finalState, stats: stats)
+    }
+
+    private static func applyGameEndedLocked(
+        _ watcher: GameWatcher,
+        result: GameResult,
         finalState: GameState,
         stats: GameStats
     ) {
         let now = CFAbsoluteTimeGetCurrent()
-        lock.withLock { s in
+        watcher.lock.withLock { s in
             s.result = result
             s.state = finalState
             s.lastGameStats = stats
-            Self.setPlayingLocked(&s, playing: false, now: now)
+            setPlayingLocked(&s, playing: false, now: now)
 
             s.totalGames += 1
             s.totalMoves += stats.totalMoves
             s.totalGameTimeMs += stats.totalGameTimeMs
             s.totalWhiteThinkMs += stats.whiteThinkingTimeMs
             s.totalBlackThinkMs += stats.blackThinkingTimeMs
-            // Move counting handed off to totalMoves; zero the per-game counter
-            // atomically so display helpers using `totalMoves + moveCount` don't
-            // double-count between gameEnded and the next resetCurrentGame call.
             s.moveCount = 0
 
             switch result {
@@ -176,7 +189,22 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
                 s.threefoldRepetitionDraws += 1
             }
         }
-        changes.send()
+        watcher.changes.send()
+    }
+
+    // MARK: - Delegate (called on ChessMachine.delegateQueue, never main)
+
+    func chessMachine(_ machine: ChessMachine, didApplyMove move: ChessMove, newState: GameState) {
+        onMoveApplied(move: move, newState: newState)
+    }
+
+    func chessMachine(
+        _ machine: ChessMachine,
+        gameEndedWith result: GameResult,
+        finalState: GameState,
+        stats: GameStats
+    ) {
+        onGameEnded(result: result, finalState: finalState, stats: stats)
     }
 
     func chessMachine(_ machine: ChessMachine, playerErrored player: any ChessPlayer, error: any Error) {

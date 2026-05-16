@@ -1101,35 +1101,63 @@ extension SessionController {
             // delay into every average for the life of the 
             pStatsBox.markWorkersStarted()
 
-            // Build the shared self-play batcher and driver. All slots
-            // play against one `ChessMPSNetwork` (the champion, via
-            // `network`) through a `BatchedMoveEvaluationSource` actor
-            // that coalesces N per-ply forward passes into one batched
-            // `graph.run`. The driver owns the slot lifecycle: it
-            // spawns up to `countBox.count` child tasks, responds to
-            // Stepper-driven count changes, and pauses the whole
-            // self-play subsystem through the shared `selfPlayGate`
-            // when arena requests it (replacing the previous
-            // per-worker gate array).
-            let selfPlayBatcher = BatchedMoveEvaluationSource(network: network)
-            // Wire the ratio controller into the batcher so every
-            // barrier fire reports an aggregate (positions, elapsed)
-            // measurement. `setReplayRatioController` is actor-
-            // isolated, so it's dispatched via a `Task`.
-            Task { [ratioController] in
-                await selfPlayBatcher.setReplayRatioController(ratioController)
+            // Build the self-play driver. Two implementations coexist
+            // behind the `selfPlayUseTickDriver` flag:
+            //
+            // - Legacy (`false`, default): `BatchedSelfPlayDriver` runs
+            //   one unstructured `Task` per concurrent game against a
+            //   shared `BatchedMoveEvaluationSource` actor barrier.
+            //   K=4000+ slot Tasks each park in the actor every ply.
+            //
+            // - New (`true`): `TickSelfPlayDriver` runs a single driver
+            //   `Task` that advances K games in lockstep — one ply per
+            //   "tick" — with parallel encode + parallel sample across
+            //   P worker tasks (P = active processor count). No actor
+            //   barrier, no per-slot Tasks, no `expectedSlotCount`
+            //   dance. Per-game state is ~1.2 MB vs ~7.5 MB in the
+            //   legacy path.
+            //
+            // Both expose `func run() async` through `SelfPlayDriverProtocol`
+            // so the surrounding `withTaskGroup.addTask` is identical.
+            let useTickDriver = await MainActor.run {
+                TrainingParameters.shared.selfPlayUseTickDriver
             }
-            let selfPlayDriver = BatchedSelfPlayDriver(
-                batcher: selfPlayBatcher,
-                buffer: buffer,
-                statsBox: pStatsBox,
-                diversityTracker: spDiversityTracker,
-                countBox: countBox,
-                pauseGate: selfPlayGate,
-                gameWatcher: gameWatcher,
-                scheduleBox: scheduleBox,
-                replayRatioController: ratioController
-            )
+            let selfPlayDriver: SelfPlayDriverProtocol
+            if useTickDriver {
+                SessionLogger.shared.log("[APP] self-play driver: TickSelfPlayDriver")
+                selfPlayDriver = TickSelfPlayDriver(
+                    network: network,
+                    buffer: buffer,
+                    statsBox: pStatsBox,
+                    diversityTracker: spDiversityTracker,
+                    countBox: countBox,
+                    pauseGate: selfPlayGate,
+                    gameWatcher: gameWatcher,
+                    scheduleBox: scheduleBox,
+                    replayRatioController: ratioController
+                )
+            } else {
+                SessionLogger.shared.log("[APP] self-play driver: BatchedSelfPlayDriver (legacy)")
+                let selfPlayBatcher = BatchedMoveEvaluationSource(network: network)
+                // Wire the ratio controller into the batcher so every
+                // barrier fire reports an aggregate (positions, elapsed)
+                // measurement. `setReplayRatioController` is actor-
+                // isolated, so it's dispatched via a `Task`.
+                Task { [ratioController] in
+                    await selfPlayBatcher.setReplayRatioController(ratioController)
+                }
+                selfPlayDriver = BatchedSelfPlayDriver(
+                    batcher: selfPlayBatcher,
+                    buffer: buffer,
+                    statsBox: pStatsBox,
+                    diversityTracker: spDiversityTracker,
+                    countBox: countBox,
+                    pauseGate: selfPlayGate,
+                    gameWatcher: gameWatcher,
+                    scheduleBox: scheduleBox,
+                    replayRatioController: ratioController
+                )
+            }
 
             // Pin the probe inference network into a local the child
             // tasks can capture. It's a @State on this view, so
