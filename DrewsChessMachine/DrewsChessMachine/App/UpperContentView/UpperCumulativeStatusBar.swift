@@ -24,6 +24,7 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
     let runs: String
     let arenas: String
     let promotions: String
+    let lastPromoteCell: StatusBarCell
     let scoreCell: StatusBarCell
     @ViewBuilder let rightChips: () -> RightChips
 
@@ -43,6 +44,7 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
                 StatusBarCell(label: "Runs", value: runs)
                 StatusBarCell(label: "Arenas", value: arenas)
                 StatusBarCell(label: "Promotions", value: promotions)
+                lastPromoteCell
                 scoreCell
             },
             rightChips: rightChips

@@ -2677,6 +2677,7 @@ struct UpperContentView: View {
             runs: "\(checkpoint.cumulativeRunCount)",
             arenas: "\(tournamentHistory.count)",
             promotions: "\(tournamentHistory.lazy.filter { $0.promoted }.count)",
+            lastPromoteCell: lastPromoteStatusBarCell,
             scoreCell: scoreStatusBarCell,
             // Right-side chips. Built each parent render. The
             // popovers' bindings / error flags / callbacks remain
@@ -2735,6 +2736,34 @@ struct UpperContentView: View {
             return ArenaEloStats.formatEloWithCI(r.eloSummary)
         }
         return String(format: "%.1f%%", r.score * 100)
+    }
+
+    /// Shared formatter for the "Last promote" status-bar cell. Drops
+    /// the year (the bar is read in real time, so the wall-clock that
+    /// matters is month/day + time-of-day) and uses the same 12-hour
+    /// `h:mm a` convention as `ArenaHistoryView`.
+    private static let lastPromoteDateFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d, h:mm a"
+        return f
+    }()
+
+    /// "Last promote" cell — wall-clock of the most recent arena that
+    /// promoted, irrespective of how many newer non-promoting arenas
+    /// have run since. Dimmed em-dash when no promotion has happened
+    /// yet, matching the Score cell's empty-state convention.
+    private var lastPromoteStatusBarCell: StatusBarCell {
+        let lastPromotion = tournamentHistory.last(where: { $0.promoted })
+        let value: String
+        let color: Color
+        if let finishedAt = lastPromotion?.finishedAt {
+            value = Self.lastPromoteDateFmt.string(from: finishedAt)
+            color = .primary
+        } else {
+            value = "—"
+            color = .secondary
+        }
+        return StatusBarCell(label: "Last promote", value: value, valueColor: color)
     }
 
     /// The Score / Elo cell for the status bar. Broken out of the
