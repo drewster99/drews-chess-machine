@@ -23,8 +23,10 @@ struct EmitWindowStatsCard: View {
 
     private static let dash = "—"
     /// Wide enough to fit the longest bucket label with its range
-    /// suffix in caption2 — e.g. "late (151–300)" or "early (12–13)".
-    private static let labelWidth: CGFloat = 120
+    /// prefix in caption2 — e.g. "(151–300) late" or "(12–13) early".
+    /// Includes headroom so glyph-substitution (≤ ≥ –) can't push the
+    /// label past the frame edge and nudge the next column.
+    private static let labelWidth: CGFloat = 150
     /// Width of the "plies (X.X%)" cell — sized for "1,234,567
     /// (100.0%)" worst case.
     private static let pliesCellWidth: CGFloat = 130
@@ -41,18 +43,18 @@ struct EmitWindowStatsCard: View {
     // any cutoff ever moves.
 
     private static let plyLabels: [String: String] = [
-        "open":  "open (0–20)",
-        "early": "early (21–60)",
-        "mid":   "mid (61–150)",
-        "late":  "late (151–300)",
-        "end":   "end (301+)",
+        "open":  "(0–20) open",
+        "early": "(21–60) early",
+        "mid":   "(61–150) mid",
+        "late":  "(151–300) late",
+        "end":   "(301+) end",
     ]
     private static let materialLabels: [String: String] = [
-        "open":  "open (≥14)",
-        "early": "early (12–13)",
-        "mid":   "mid (8–11)",
-        "late":  "late (4–7)",
-        "end":   "end (≤3)",
+        "open":  "(≥14) open",
+        "early": "(12–13) early",
+        "mid":   "(8–11) mid",
+        "late":  "(4–7) late",
+        "end":   "(≤3) end",
     ]
 
     var body: some View {
