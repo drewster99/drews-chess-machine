@@ -690,200 +690,22 @@ final class MPSChessPlayer: ChessPlayer {
         legalMoves: [ChessMove],
         currentPlayer: PieceColor
     ) -> ChessMove {
-        let n = legalMoves.count
-        // Captured here for the random-ish check below. Done early so
-        // the closure can reference the value without re-reading `n`
-        // after the scratch is overwritten.
-        let uniformProb = 1 / Float(n)
-        let randomishCutoff = 1.5 * uniformProb
-        precondition(
-            n <= sampleScratch.count,
-            "MPSChessPlayer.sampleMove: legalMoves.count (\(n)) exceeds scratch capacity \(sampleScratch.count)"
-        )
-
-        // Temperature for this ply from the two-phase schedule. Applied
-        // as `logit * (1 / tau)` during the gather below — identical to
-        // `logit / tau` but cheaper, and the reciprocal is computed once.
-        // Multiplying by 1 is exact in IEEE 754, so `.uniform` (tau=1.0)
-        // with no Dirichlet noise reproduces the prior sampling behavior
-        // bit-for-bit.
-        let invTau = 1 / schedule.tau(forPly: gamePliesRecorded)
-
-        // Decide once whether Dirichlet noise applies on this ply so
-        // the inner loops avoid re-checking. Single-legal-move
-        // positions skip the mix because there's nothing to redistribute.
-        let activeNoise: DirichletNoiseConfig?
-        if let cfg = schedule.dirichletNoise,
-           gamePliesRecorded < cfg.plyLimit,
-           n > 1 {
-            activeNoise = cfg
-        } else {
-            activeNoise = nil
-        }
-
-        return sampleScratch.withUnsafeMutableBufferPointer { scratch in
-            guard let base = scratch.baseAddress else {
-                preconditionFailure("MPSChessPlayer.sampleMove: sampleScratch baseAddress is nil")
-            }
-
-            // Gather temperature-scaled logits for legal moves only.
-            for i in 0..<n {
-                scratch[i] = logits[PolicyEncoding.policyIndex(legalMoves[i], currentPlayer: currentPlayer)] * invTau
-            }
-
-            // Numerically stable softmax via Accelerate: subtract max,
-            // exp, normalize into proper probabilities (sum to 1) so any
-            // subsequent Dirichlet mix preserves normalization. Each
-            // stage is a single vectorized pass over scratch[0..<n].
-            let length = vDSP_Length(n)
-            var maxLogit: Float = 0
-            vDSP_maxv(base, 1, &maxLogit, length)
-            var negMax = -maxLogit
-            vDSP_vsadd(base, 1, &negMax, base, 1, length)
-            var expCount = Int32(n)
-            vvexpf(base, base, &expCount)
-            var sum: Float = 0
-            vDSP_sve(base, 1, &sum, length)
-            // exp() is strictly positive, so sum is strictly positive
-            // whenever legalMoves is non-empty.
-            var invSum = 1 / sum
-            vDSP_vsmul(base, 1, &invSum, base, 1, length)
-            var maxProb: Float = 0
-            vDSP_maxv(base, 1, &maxProb, length)
-
-            // Record whether the post-temperature softmax over legal
-            // moves is essentially uniform — i.e. the sampler was
-            // picking at random, not acting on a network opinion. We
-            // measure *before* Dirichlet noise because noise is a
-            // deliberate exploration mix, not a policy-collapse signal.
-            // With n == 1 the max prob is 1.0 and this always fails,
-            // which is what we want: a forced move isn't random.
-            if n > 1 && maxProb < randomishCutoff {
-                gameRandomishMoveCount += 1
-            }
-
-            if let noise = activeNoise {
-                Self.mixDirichletNoise(
-                    into: scratch,
-                    legalCount: n,
-                    config: noise,
-                    etaScratch: &dirichletScratch
+        let result = sampleScratch.withUnsafeMutableBufferPointer { probs in
+            dirichletScratch.withUnsafeMutableBufferPointer { eta in
+                MoveSampler.sampleMove(
+                    logits: logits,
+                    legalMoves: legalMoves,
+                    currentPlayer: currentPlayer,
+                    ply: gamePliesRecorded,
+                    schedule: schedule,
+                    probsScratch: probs,
+                    etaScratch: eta
                 )
             }
-
-            // Inverse-CDF sampling from probabilities in scratch[0..<n].
-            let r = Float.random(in: 0..<1)
-            var cumulative: Float = 0
-            for i in 0..<n {
-                cumulative += scratch[i]
-                if r < cumulative {
-                    return legalMoves[i]
-                }
-            }
-
-            // Floating-point rounding can leave the cumulative just shy
-            // of 1.0; the last legal move catches that.
-            return legalMoves[n - 1]
         }
-    }
-
-    // MARK: - Dirichlet Noise
-
-    /// Sample `η ~ Dir(α)` over `legalCount` entries (symmetric
-    /// Dirichlet, all components share `config.alpha`) and mix into
-    /// `probs` in place: `probs[i] = (1-ε) · probs[i] + ε · η[i]`.
-    ///
-    /// `probs` must already be a normalized probability vector — the
-    /// mixture preserves normalization only when both inputs sum to 1.
-    /// `etaScratch` is the caller's `dirichletScratch` storage; passed
-    /// as `inout` so this static helper can use it without the player's
-    /// instance pointer leaking into the closure.
-    private static func mixDirichletNoise(
-        into probs: UnsafeMutableBufferPointer<Float>,
-        legalCount n: Int,
-        config: DirichletNoiseConfig,
-        etaScratch: inout [Float]
-    ) {
-        precondition(n <= etaScratch.count,
-            "Dirichlet scratch (\(etaScratch.count)) too small for \(n) moves")
-        etaScratch.withUnsafeMutableBufferPointer { eta in
-            // Symmetric Dir(α) is `n` iid Gamma(α, 1) samples normalized
-            // by their sum. With α < 1 the gamma samples are heavily
-            // right-skewed and most of the noise mass concentrates on a
-            // small random subset of moves — exactly the "spiky" noise
-            // shape AlphaZero relies on.
-            var gammaSum: Float = 0
-            for i in 0..<n {
-                let g = sampleGamma(alpha: config.alpha)
-                eta[i] = g
-                gammaSum += g
-            }
-            // Each gamma draw is strictly positive, so the sum is too;
-            // no zero-sum guard needed. Normalize and mix.
-            let invSum = 1 / gammaSum
-            let oneMinusEps = 1 - config.epsilon
-            let eps = config.epsilon
-            for i in 0..<n {
-                probs[i] = oneMinusEps * probs[i] + eps * (eta[i] * invSum)
-            }
+        if result.randomish {
+            gameRandomishMoveCount += 1
         }
-    }
-
-    /// Marsaglia–Tsang Gamma(α, 1) sampler. Supports any `α > 0`. For
-    /// `α >= 1` runs the direct algorithm; for `α < 1` uses the boost
-    /// trick: draw `G ~ Gamma(α+1, 1)` and return `G * U^(1/α)` where
-    /// `U ~ Uniform(0, 1)`.
-    @inline(__always)
-    private static func sampleGamma(alpha: Float) -> Float {
-        if alpha < 1 {
-            let g = sampleGammaAtLeastOne(alpha: alpha + 1)
-            // U must be strictly positive so U^(1/α) is finite.
-            let u = max(Float.random(in: 0..<1), .leastNormalMagnitude)
-            return g * powf(u, 1 / alpha)
-        }
-        return sampleGammaAtLeastOne(alpha: alpha)
-    }
-
-    /// Direct Marsaglia–Tsang (2000) algorithm for `α >= 1`. Average
-    /// rejection rate is well below 5 % across α in [1, 10], so the
-    /// inner `while true` typically exits on its first iteration.
-    private static func sampleGammaAtLeastOne(alpha: Float) -> Float {
-        let d: Float = alpha - 1.0 / 3.0
-        let c: Float = 1 / sqrtf(9 * d)
-        while true {
-            // Inner reject loop guarantees `v > 0` so `v^3` and
-            // `log(v)` are finite below.
-            var x: Float = 0
-            var v: Float = 0
-            repeat {
-                x = sampleStandardNormal()
-                v = 1 + c * x
-            } while v <= 0
-            v = v * v * v
-            let u = Float.random(in: 0..<1)
-            // Squeeze test (cheap acceptance): handles ~98 % of draws
-            // without touching log.
-            let xx = x * x
-            if u < 1 - 0.0331 * xx * xx {
-                return d * v
-            }
-            // Full acceptance test. `u` here is uniform in (0, 1); on
-            // the rare `u == 0` draw `log(0) = -inf` would force a
-            // reject, which is the correct behavior — bias-free.
-            if logf(u) < 0.5 * xx + d * (1 - v + logf(v)) {
-                return d * v
-            }
-        }
-    }
-
-    /// Standard normal sample via Box–Muller. Discards one of the two
-    /// iid draws per call; we run this ~30 times per ply per player so
-    /// the wasted draw is negligible. `u1` is clamped away from zero so
-    /// `log(u1)` is finite.
-    @inline(__always)
-    private static func sampleStandardNormal() -> Float {
-        let u1 = max(Float.random(in: 0..<1), .leastNormalMagnitude)
-        let u2 = Float.random(in: 0..<1)
-        return sqrtf(-2 * logf(u1)) * cosf(2 * .pi * u2)
+        return result.move
     }
 }
