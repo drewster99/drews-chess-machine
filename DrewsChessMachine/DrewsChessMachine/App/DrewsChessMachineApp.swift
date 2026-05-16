@@ -304,6 +304,7 @@ struct DrewsChessMachineApp: App {
             CommandGroup(after: .newItem) {
                 Divider()
                 Button("Save Session") { commandHub.saveSession() }
+                    .keyboardShortcut("s", modifiers: .command)
                     .disabled(
                         !commandHub.realTraining
                         || commandHub.isArenaRunning
