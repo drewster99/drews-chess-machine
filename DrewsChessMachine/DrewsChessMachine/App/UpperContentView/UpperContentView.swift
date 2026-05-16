@@ -1389,18 +1389,26 @@ struct UpperContentView: View {
 
             // Self Play + Results card column. Sits between the chess
             // board (left) and the existing left/right text columns
-            // (the `MainTextPanel` below). Always rendered — the cards
-            // gracefully show "—" placeholders when no Play-and-Train
-            // session has produced stats yet, so the layout doesn't
-            // reflow on session start. Bound to the live
-            // `parallelStats` snapshot so SwiftUI re-renders the card
-            // body whenever the heartbeat ticks.
-            VStack(alignment: .leading, spacing: 8) {
-                SelfPlayStatsCard(
-                    snapshot: session.parallelStats,
-                    modelID: network?.identifier?.description ?? "—"
-                )
-                ResultsCard(snapshot: session.parallelStats)
+            // (the `MainTextPanel` below). Always rendered during
+            // training — the cards gracefully show "—" placeholders
+            // when no Play-and-Train session has produced stats yet,
+            // so the layout doesn't reflow on session start. Bound to
+            // the live `parallelStats` snapshot so SwiftUI re-renders
+            // the card body whenever the heartbeat ticks.
+            //
+            // Hidden during a batch-size sweep: the sweep doesn't
+            // produce per-game stats, so the cards would just sit
+            // there with all "—" cells. Reclaiming that horizontal
+            // space lets the sweep's output column (rightmost) and
+            // the chessboard breathe.
+            if !sweepRunning {
+                VStack(alignment: .leading, spacing: 8) {
+                    SelfPlayStatsCard(
+                        snapshot: session.parallelStats,
+                        modelID: network?.identifier?.description ?? "—"
+                    )
+                    ResultsCard(snapshot: session.parallelStats)
+                }
             }
 
             // Hover-driven top-3 channels overlay. When the cursor is over
@@ -1440,7 +1448,12 @@ struct UpperContentView: View {
                         // training `isCandidateTestActive` is forced
                         // on and `selfPlayColumn` is never invoked —
                         // the panel needs to render regardless.
-                        if showEmitWindowStats {
+                        //
+                        // Suppressed during a batch-size sweep for
+                        // the same reason as the Self Play + Results
+                        // column above — no game stats are being
+                        // produced, the card would just hold "—".
+                        if showEmitWindowStats && !sweepRunning {
                             EmitWindowStatsCard(snapshot: session.parallelStats)
                         }
                     },
