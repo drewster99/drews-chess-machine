@@ -32,16 +32,22 @@ struct ChartTileHeader: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .underline(true, pattern: .dot)
             }
             .buttonStyle(.plain)
             .help("Click for description")
             .popover(isPresented: $showingTitleHelp, arrowEdge: .top) {
+                // `.fixedSize(horizontal: false, vertical: true)` is
+                // load-bearing — without it the popover container
+                // sizes to the Text's natural single-line intrinsic
+                // width and then truncates with an ellipsis. Pin
+                // horizontal to the proposed 320 and let vertical
+                // grow to whatever the wrapped block needs.
                 Text(titleHelp)
                     .font(.caption)
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 320, alignment: .leading)
                     .padding(10)
-                    .frame(maxWidth: 320, alignment: .leading)
             }
         } else {
             Text(title)

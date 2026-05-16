@@ -148,16 +148,23 @@ public struct FastLineChart: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .underline(true, pattern: .dot)
             }
             .buttonStyle(.plain)
             .help("Click for description")
             .popover(isPresented: $showingTitleHelp, arrowEdge: .top) {
+                // `.fixedSize(horizontal: false, vertical: true)` is
+                // load-bearing: without it the popover container takes
+                // the Text's *unconstrained* natural single-line
+                // intrinsic width and then truncates with an ellipsis
+                // when the popover's host clamps the result. Pinning
+                // horizontal to the proposed width (320) and letting
+                // vertical grow gives a wrapped multi-line block.
                 Text(titleHelp)
                     .font(.caption)
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 320, alignment: .leading)
                     .padding(10)
-                    .frame(maxWidth: 320, alignment: .leading)
             }
         } else {
             Text(title)
