@@ -40,8 +40,8 @@ final class HumanPlayWindowController: NSWindowController, NSWindowDelegate {
         )
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.setContentSize(NSSize(width: 720, height: 800))
-        window.minSize = NSSize(width: 480, height: 560)
+        window.setContentSize(NSSize(width: 720, height: 860))
+        window.minSize = NSSize(width: 520, height: 660)
         window.title = "Chess — Human vs Network"
         // `isReleasedWhenClosed = false` lets the controller manage
         // the window's lifetime via the registry rather than handing
@@ -129,28 +129,28 @@ enum HumanPlayWindowLauncher {
 
 // MARK: - SwiftUI content
 
-/// SwiftUI content for the human-play window. Renders the game
-/// board, a toolbar with Reset / Stop / Resign-or-game-over status,
-/// and the same promotion picker overlay used by the inline board in
-/// the main window.
+/// SwiftUI content for the human-play window. Three stacked regions:
+///   - top banner: big game-over message (with the specific draw
+///     reason or the winning side), or a CHECK call-out while a
+///     game is in progress and the side-to-move's king is attacked,
+///     or a smaller "Your move / Network thinking…" status.
+///   - middle: the human-play board (own dedicated view —
+///     `HumanPlayBoardView` — for animated pieces, last-move and
+///     in-check highlights).
+///   - bottom: an info row (ply count, material totals + advantage,
+///     last move in algebraic notation) and the toolbar (Reset /
+///     Stop, build stamp).
 ///
 /// State sources:
 ///   - `playController` (`@Bindable`): reactive — selected from-
 ///     square, legal-target highlights, pending promotion, the
 ///     `isPlayingHuman` flag.
-///   - `gameWatcher` (polled): the live board, side-to-move, move
-///     count, and end-of-game `GameResult`. Polled on a 100 ms timer
-///     because the watcher fires its mutations from a non-SwiftUI
-///     dispatch queue and is intentionally not `@Observable` (the
-///     project's UI decouples redraw from game-loop rate).
-///
-/// Animation: the board's `pieces` array is the animation key for a
-/// short `.easeInOut` transition, so every move (AI's 2-second-
-/// delayed reply OR the human's own move after submission) cross-
-/// fades the affected squares. A piece truly "sliding" between
-/// squares would need `matchedGeometryEffect` per piece identity
-/// (not done here to keep the change small); the cross-fade is enough
-/// to register "something moved on the board".
+///   - `gameWatcher` (polled): live board, side-to-move, move count,
+///     last applied move, end-of-game `GameResult`, and last game's
+///     stats. Polled on a 100 ms timer because the watcher fires its
+///     mutations from a non-SwiftUI dispatch queue and is
+///     intentionally not `@Observable` (the project's UI decouples
+///     redraw from game-loop rate).
 fileprivate struct HumanPlayWindowView: View {
     @Bindable var playController: PlayController
     let session: SessionController
@@ -158,47 +158,71 @@ fileprivate struct HumanPlayWindowView: View {
 
     /// Mirrored snapshot of the watcher. Refreshed by the
     /// `Combine`-driven polling subscription wired in via
-    /// `.onReceive(pollTimer)` below; SwiftUI redraws when this
-    /// value's `state.board` or other observed fields change. Seeded
-    /// from the watcher in `.onAppear` so the window doesn't flash
-    /// the default starting position before the first publisher tick
-    /// lands.
+    /// `.onReceive(pollTimer)` below. Seeded from the watcher in
+    /// `.onAppear` so the window doesn't flash the default starting
+    /// position before the first publisher tick lands.
     @State private var snapshot: GameWatcher.Snapshot = .init()
 
-    /// 10 Hz polling timer for the watcher snapshot. SwiftUI manages
-    /// the subscription lifecycle through `.onReceive` — the
-    /// publisher is created with the view struct and torn down when
-    /// the view disappears. Matches the `snapshotTimer` pattern used
-    /// in `UpperContentView` (and avoids the `@State<Timer?>`
-    /// Sendable headache that the manual `Timer.scheduledTimer` path
-    /// would land us in under Swift 6 strict concurrency).
+    /// 10 Hz polling timer for the watcher snapshot. Matches the
+    /// `snapshotTimer` pattern used in `UpperContentView`.
     private let pollTimer = Timer.publish(
         every: 0.1, on: .main, in: .common
     ).autoconnect()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            statusRow
+        VStack(spacing: 12) {
+            bannerRow
             boardView
+            statusRow
             toolbarRow
         }
         .padding(16)
-        .frame(minWidth: 480, minHeight: 560)
+        .frame(minWidth: 520, minHeight: 660)
         .onAppear { snapshot = gameWatcher.snapshot() }
         .onReceive(pollTimer) { _ in refreshSnapshot() }
     }
 
-    // MARK: status row
+    // MARK: - Top banner
 
-    private var statusRow: some View {
-        HStack(spacing: 8) {
+    /// Centered top banner with two stacked lines: a big primary
+    /// line (game result / CHECK / status) and a small subtitle
+    /// line (who the human is playing as). The big line's content
+    /// changes but its minimum height is fixed so the board doesn't
+    /// jump up/down as the message changes.
+    private var bannerRow: some View {
+        VStack(spacing: 2) {
+            bannerPrimaryText
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 40)
             Text(humanLabel)
-                .font(.headline)
-            Spacer()
-            Text(statusText)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .monospacedDigit()
+        }
+    }
+
+    @ViewBuilder
+    private var bannerPrimaryText: some View {
+        if let result = snapshot.result {
+            Text(gameOverText(result))
+                .font(.title.weight(.bold))
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+        } else if computeInCheckColor() != nil {
+            Text("CHECK")
+                .font(.title.weight(.bold))
+                .foregroundStyle(.red)
+        } else if !playController.isPlayingHuman {
+            Text("Waiting…")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+        } else if !playController.pendingLegalMoves.isEmpty {
+            Text("Your move")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+        } else {
+            Text("Network thinking…")
+                .font(.title3)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -206,39 +230,42 @@ fileprivate struct HumanPlayWindowView: View {
         playController.humanColor == .white ? "You play White" : "You play Black"
     }
 
-    private var statusText: String {
-        if let result = snapshot.result {
-            return "Game over — \(describe(result))"
-        }
-        if !playController.isPlayingHuman {
-            return "Waiting…"
-        }
-        if !playController.pendingLegalMoves.isEmpty {
-            return "Your move (move \(snapshot.moveCount + 1))"
-        }
-        return "Network thinking… (move \(snapshot.moveCount + 1))"
-    }
-
-    private func describe(_ r: GameResult) -> String {
+    /// Full game-over banner text. Includes the specific draw
+    /// reason ("Draw by 50-move rule", "Draw by threefold
+    /// repetition", etc.) so the user knows *why* the game ended.
+    private func gameOverText(_ r: GameResult) -> String {
         switch r {
         case .checkmate(let winner):
-            return winner == .white ? "White wins" : "Black wins"
+            return winner == .white ? "White wins by checkmate" : "Black wins by checkmate"
         case .stalemate:
-            return "Draw (stalemate)"
+            return "Draw by stalemate"
         case .drawByFiftyMoveRule:
-            return "Draw (50-move rule)"
+            return "Draw by 50-move rule"
         case .drawByInsufficientMaterial:
-            return "Draw (insufficient material)"
+            return "Draw by insufficient material"
         case .drawByThreefoldRepetition:
-            return "Draw (threefold repetition)"
+            return "Draw by threefold repetition"
         }
     }
 
-    // MARK: board
+    /// Color of the side that's currently in check, or nil if
+    /// neither side is. After `didApplyMove`, `state.currentPlayer`
+    /// is the side that just received the move — the one whose
+    /// king might be in check. The game-over case is excluded
+    /// because checkmate already produces a definitive banner.
+    private func computeInCheckColor() -> PieceColor? {
+        guard snapshot.result == nil else { return nil }
+        let p = snapshot.state.currentPlayer
+        return MoveGenerator.isInCheck(snapshot.state, color: p) ? p : nil
+    }
+
+    // MARK: - Board
 
     /// The board, oriented so the human's pieces sit at the bottom.
-    /// Click routing translates visual → logical (the encoder frame)
-    /// before reaching `PlayController.tapSquare`.
+    /// All square indices passed into `HumanPlayBoardView` are in
+    /// visual coordinates (already 180°-flipped for a black-playing
+    /// human); the tap callback inverts the flip back to logical
+    /// before handing the square to `PlayController.tapSquare`.
     private var boardView: some View {
         let humanColor = playController.humanColor
         let humanBoardFlipped = (humanColor == .black)
@@ -261,31 +288,26 @@ fileprivate struct HumanPlayWindowView: View {
             let logical = p.toRow * 8 + p.toCol
             return humanBoardFlipped ? 63 - logical : logical
         }
-        // Disambiguate via a typed local because the call site has
-        // many parameters and Swift's overload resolution occasionally
-        // mis-parses bare `.none` as `Optional.none` (= nil) against
-        // the non-Optional enum case. Belt + suspenders.
-        let noneOverlay: ChessBoardView.Overlay = .none
-        return LiveBoardWithNavigationView(
+        let lastMove = snapshot.lastMove
+        let lastFromVisual: Int? = lastMove.map { mv in
+            let logical = mv.fromRow * 8 + mv.fromCol
+            return humanBoardFlipped ? 63 - logical : logical
+        }
+        let lastToVisual: Int? = lastMove.map { mv in
+            let logical = mv.toRow * 8 + mv.toCol
+            return humanBoardFlipped ? 63 - logical : logical
+        }
+        let checkVisual: Int? = inCheckKingVisualSquare(flipped: humanBoardFlipped)
+        return HumanPlayBoardView(
             pieces: pieces,
-            overlay: noneOverlay,
-            selectedOverlay: -1,
-            inferenceResultPresent: false,
-            forwardPassEditable: false,
-            realTraining: false,
-            isCandidateTestActive: false,
-            workerCount: 1,
-            onNavigate: { _ in },
-            onApplyFreePlacementDrag: { _, _ in },
-            squareIndex: { point, size in
-                Self.squareIndex(at: point, boardSize: size)
-            },
-            onHoverSquare: { _ in },
-            humanMoveActive: humanPlayActive,
             selectedFromSquare: selectedVisual,
             legalMoveTargets: legalTargetsVisual,
-            pendingPromotion: playController.pendingPromotion,
+            lastMoveDestinationSquare: lastToVisual,
+            lastMoveSourceSquare: lastFromVisual,
+            checkSquare: checkVisual,
+            humanMoveActive: humanPlayActive,
             humanColor: playController.isPlayingHuman ? humanColor : nil,
+            pendingPromotion: playController.pendingPromotion,
             promotionVisualSquare: promotionVisualSquare,
             onTapSquare: { visualSq in
                 let logical = humanBoardFlipped ? 63 - visualSq : visualSq
@@ -298,26 +320,118 @@ fileprivate struct HumanPlayWindowView: View {
                 playController.cancelPromotion()
             }
         )
-        // Animate the cross-fade between consecutive positions. Key
-        // on the encoder-frame board so a Reset (which replaces the
-        // whole array) animates too. Duration kept short so a human
-        // move feels immediate while the AI's response (already
-        // 2 seconds delayed) cross-fades cleanly into the new
-        // position.
-        .animation(.easeInOut(duration: 0.35), value: snapshot.state.board)
-        .aspectRatio(1, contentMode: .fit)
     }
 
-    // MARK: toolbar
+    /// Visual square (0..<64) of the king belonging to the side in
+    /// check, or nil if neither side is in check. Used to drive the
+    /// red board fill in `HumanPlayBoardView`.
+    private func inCheckKingVisualSquare(flipped: Bool) -> Int? {
+        guard let color = computeInCheckColor() else { return nil }
+        for i in 0..<64 {
+            if let p = snapshot.state.board[i], p.type == .king, p.color == color {
+                return flipped ? 63 - i : i
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Status row (ply / material / last move)
+
+    private var statusRow: some View {
+        HStack(alignment: .center, spacing: 18) {
+            statusBlock(title: "Ply", value: plyText)
+            Divider().frame(height: 32)
+            materialBlock
+            Divider().frame(height: 32)
+            statusBlock(title: "Last move", value: lastMoveText)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func statusBlock(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.body.monospacedDigit())
+        }
+    }
+
+    private var materialBlock: some View {
+        let (white, black) = materialCounts(snapshot.state.board)
+        let advantage = white - black
+        let advText: String
+        if advantage > 0 {
+            advText = "W +\(advantage)"
+        } else if advantage < 0 {
+            advText = "B +\(abs(advantage))"
+        } else {
+            advText = "even"
+        }
+        return VStack(alignment: .leading, spacing: 2) {
+            Text("Material")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text("W \(white)   B \(black)")
+                    .font(.body.monospacedDigit())
+                Text("(\(advText))")
+                    .font(.body.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// Ply count to display. Mid-game: `moveCount` (the live ply
+    /// counter). Post-game: `lastGameStats.totalMoves` (the final
+    /// ply count, because `GameWatcher` zeros `moveCount` at game
+    /// end so the session-cumulative `totalMoves + moveCount` math
+    /// elsewhere doesn't double-count).
+    private var plyText: String {
+        if snapshot.result != nil, let stats = snapshot.lastGameStats {
+            return "\(stats.totalMoves)"
+        }
+        return "\(snapshot.moveCount)"
+    }
+
+    private var lastMoveText: String {
+        snapshot.lastMove?.notation ?? "—"
+    }
+
+    /// Standard piece-value sums (P=1, N=3, B=3, R=5, Q=9). King is
+    /// not counted — there is always exactly one king per side and
+    /// including it would only inflate both totals by the same
+    /// constant, flattening the displayed advantage.
+    private func materialCounts(_ board: [Piece?]) -> (white: Int, black: Int) {
+        var w = 0
+        var b = 0
+        for square in board {
+            guard let p = square else { continue }
+            let v: Int
+            switch p.type {
+            case .pawn:   v = 1
+            case .knight: v = 3
+            case .bishop: v = 3
+            case .rook:   v = 5
+            case .queen:  v = 9
+            case .king:   v = 0
+            }
+            if p.color == .white { w += v } else { b += v }
+        }
+        return (w, b)
+    }
+
+    // MARK: - Toolbar
 
     private var toolbarRow: some View {
         HStack(spacing: 12) {
             // Reset only re-launches an in-flight game's opponent
             // settings (`PlayController.reset` stops + starts using
-            // `lastOpponentChoice` / `lastHumanColor`, both of which
-            // are cleared at game-end cleanup). Mirror the Chess menu's
-            // gate: enabled only while a human game is actually
-            // running — post-game the user re-opens Chess > Play….
+            // `lastOpponentChoice` / `lastHumanColor`, both cleared
+            // at game-end cleanup). Mirror the Chess menu's gate:
+            // enabled only while a game is actually running.
             Button("Reset Game") {
                 playController.reset(session: session, gameWatcher: gameWatcher)
             }
@@ -333,21 +447,13 @@ fileprivate struct HumanPlayWindowView: View {
         }
     }
 
-    // MARK: polling
+    // MARK: - Polling
 
     /// Pull the latest snapshot from the watcher and mirror it to
-    /// `@State` if any user-visible field changed. Fired by the
-    /// `.onReceive(pollTimer)` subscription in `body`. `GameState` and
+    /// `@State` if any user-visible field changed. `GameState` and
     /// `GameResult` aren't `Equatable` (only `Sendable`), so the
     /// snapshot can't be compared wholesale — dedup on the fields
-    /// that actually drive the visible UI: the board array
-    /// (`Piece` is `Hashable`, so `[Piece?]` is `Equatable`), the
-    /// move count, the play flag, and a simple "result-nil-or-not"
-    /// signal. A missed update (e.g. a draw-by-50-move reason
-    /// changing without the move count moving) is impossible — the
-    /// move count changes monotonically across any game-state
-    /// change, and the `result-nil-or-not` flip catches the
-    /// game-end transition.
+    /// that actually drive the visible UI.
     private func refreshSnapshot() {
         let s = gameWatcher.snapshot()
         let resultChanged: Bool = {
@@ -360,17 +466,16 @@ fileprivate struct HumanPlayWindowView: View {
         if s.state.board != snapshot.state.board
             || s.moveCount != snapshot.moveCount
             || s.isPlaying != snapshot.isPlaying
+            || s.lastMove != snapshot.lastMove
             || resultChanged
         {
             snapshot = s
         }
     }
 
-    // MARK: helpers (mirrors of UpperContentView's private statics —
-    // inlined here so this file doesn't have to widen those helpers'
-    // access for one call site each)
+    // MARK: - Helpers
 
-    /// Project `pending` legal moves into visual coordinates given the
+    /// Project legal moves into visual coordinates given the
     /// selected from-square and whether the board is rendered 180°
     /// rotated (human plays black).
     static func legalTargetsVisual(
@@ -387,19 +492,5 @@ fileprivate struct HumanPlayWindowView: View {
             out.insert(flipped ? 63 - logical : logical)
         }
         return out
-    }
-
-    /// Convert a point in the board-overlay's local coordinate space
-    /// to a 0–63 square index, or nil if outside the board.
-    static func squareIndex(at point: CGPoint, boardSize: CGFloat) -> Int? {
-        guard boardSize > 0 else { return nil }
-        guard point.x >= 0, point.y >= 0, point.x < boardSize, point.y < boardSize else {
-            return nil
-        }
-        let squareSize = boardSize / 8
-        let col = Int(point.x / squareSize)
-        let row = Int(point.y / squareSize)
-        guard (0..<8).contains(col), (0..<8).contains(row) else { return nil }
-        return row * 8 + col
     }
 }

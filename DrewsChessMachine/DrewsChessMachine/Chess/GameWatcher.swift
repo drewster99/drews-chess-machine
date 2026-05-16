@@ -24,6 +24,14 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         var isPlaying = false
         var lastGameStats: GameStats?
 
+        /// The most recent move applied to the current game, or nil
+        /// before the first move (and after `resetCurrentGame`). Read
+        /// by the human-play window to highlight the destination
+        /// square and to display the move in algebraic notation;
+        /// preserved across the game-end transition so the post-game
+        /// status row can still show the final move.
+        var lastMove: ChessMove?
+
         var totalGames = 0
         var totalMoves = 0
         var totalGameTimeMs: Double = 0
@@ -71,6 +79,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
             s.state = .starting
             s.result = nil
             s.moveCount = 0
+            s.lastMove = nil
             // Keep lastGameStats — show previous game until the next one ends
         }
     }
@@ -109,6 +118,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         lock.withLock { s in
             s.state = newState
             s.moveCount += 1
+            s.lastMove = move
         }
     }
 
