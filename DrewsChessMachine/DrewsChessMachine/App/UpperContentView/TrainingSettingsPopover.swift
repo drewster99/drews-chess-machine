@@ -287,16 +287,16 @@ struct TrainingSettingsPopover: View {
             }
         }
         .padding(16)
-        .frame(width: 560)
+        .frame(width: 700)
         // Hard ceiling on the popover height. Pairs with the
         // `ScrollView` around the tab-content `switch` above so a
         // tall tab (Replay tab grows the most via the composition
         // readout) keeps the Cancel / Save row visible on small
-        // screens. 700pt fits on a 1024×768 macOS minimum after
-        // accounting for the menu bar and dock; on larger screens
-        // the popover stops growing past 700pt and the tab content
-        // scrolls instead.
-        .frame(maxHeight: 700)
+        // screens. Fits on a 1024×768 macOS minimum after accounting
+        // for the menu bar and dock; on larger screens the popover
+        // stops growing past this ceiling and the tab content scrolls
+        // instead.
+        .frame(maxHeight: 805)
         .background(.thickMaterial)
         .onAppear { model.seedFromParams() }
         .onDisappear {
@@ -1651,9 +1651,9 @@ private struct ReplayTab: View {
                 Text("")
                     .frame(width: 140, alignment: .trailing)
                 Text("Buffer")
-                    .frame(width: 150, alignment: .leading)
+                    .frame(width: 200, alignment: .leading)
                 Text("Last batch")
-                    .frame(width: 180, alignment: .leading)
+                    .frame(width: 200, alignment: .leading)
                 Spacer()
             }
             .font(.caption2)
@@ -1822,13 +1822,13 @@ private struct ReplayTab: View {
                 .monospacedDigit()
                 .foregroundStyle(bufferValueColor ?? Color.primary)
                 .lineLimit(1)
-                .frame(width: 150, alignment: .leading)
+                .frame(width: 200, alignment: .leading)
             Text(batchValue)
                 .font(.system(.callout, design: .monospaced).weight(.semibold))
                 .monospacedDigit()
                 .foregroundStyle(batchValueColor ?? Color.primary)
                 .lineLimit(1)
-                .frame(width: 180, alignment: .leading)
+                .frame(width: 200, alignment: .leading)
             Spacer()
         }
     }
