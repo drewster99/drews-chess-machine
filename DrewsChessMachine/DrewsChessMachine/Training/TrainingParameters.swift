@@ -335,6 +335,16 @@ public enum SelfPlayTauDecayPerPly: TrainingParameterKey {}
 public enum SelfPlayDrawKeepFraction: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Max Plies Per Game",
+    description: "Self-play games are auto-terminated when they reach this many plies. Acts as a safety net against games that fail to terminate via the 50-move rule or 3-fold repetition. Terminated games are NOT emitted — they're counted as 'dropped' in the Played stats and never reach the replay buffer. Default 1000 is effectively disabled; lower it deliberately. Applies to self-play only — arena games are not affected.",
+    default: 1000,
+    range: 25...1000,
+    category: "Self-Play Sampling",
+    liveTunable: true
+)
+public enum MaxPliesPerGame: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Arena Start Tau",
     description: "Initial sampling temperature for arena games. Tighter than self-play to improve W/L/D signal.",
     default: 2.0,
@@ -613,6 +623,7 @@ public extension TrainingParametersSnapshot {
     var selfPlayTargetTau: Double { value(for: SelfPlayTargetTau.self) }
     var selfPlayTauDecayPerPly: Double { value(for: SelfPlayTauDecayPerPly.self) }
     var selfPlayDrawKeepFraction: Double { value(for: SelfPlayDrawKeepFraction.self) }
+    var maxPliesPerGame: Int { value(for: MaxPliesPerGame.self) }
     var arenaStartTau: Double { value(for: ArenaStartTau.self) }
     var arenaTargetTau: Double { value(for: ArenaTargetTau.self) }
     var arenaTauDecayPerPly: Double { value(for: ArenaTauDecayPerPly.self) }
@@ -664,6 +675,7 @@ public final class TrainingParameters {
     public var selfPlayTargetTau: Double { didSet { Self.persist(SelfPlayTargetTau.self, value: selfPlayTargetTau) } }
     public var selfPlayTauDecayPerPly: Double { didSet { Self.persist(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly) } }
     public var selfPlayDrawKeepFraction: Double { didSet { Self.persist(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction) } }
+    public var maxPliesPerGame: Int { didSet { Self.persist(MaxPliesPerGame.self, value: maxPliesPerGame) } }
     public var arenaStartTau: Double { didSet { Self.persist(ArenaStartTau.self, value: arenaStartTau) } }
     public var arenaTargetTau: Double { didSet { Self.persist(ArenaTargetTau.self, value: arenaTargetTau) } }
     public var arenaTauDecayPerPly: Double { didSet { Self.persist(ArenaTauDecayPerPly.self, value: arenaTauDecayPerPly) } }
@@ -708,6 +720,7 @@ public final class TrainingParameters {
         self.selfPlayTargetTau = Self.read(SelfPlayTargetTau.self)
         self.selfPlayTauDecayPerPly = Self.read(SelfPlayTauDecayPerPly.self)
         self.selfPlayDrawKeepFraction = Self.read(SelfPlayDrawKeepFraction.self)
+        self.maxPliesPerGame = Self.read(MaxPliesPerGame.self)
         self.arenaStartTau = Self.read(ArenaStartTau.self)
         self.arenaTargetTau = Self.read(ArenaTargetTau.self)
         self.arenaTauDecayPerPly = Self.read(ArenaTauDecayPerPly.self)
@@ -758,6 +771,7 @@ public final class TrainingParameters {
         v[SelfPlayTargetTau.id] = SelfPlayTargetTau.encode(selfPlayTargetTau)
         v[SelfPlayTauDecayPerPly.id] = SelfPlayTauDecayPerPly.encode(selfPlayTauDecayPerPly)
         v[SelfPlayDrawKeepFraction.id] = SelfPlayDrawKeepFraction.encode(selfPlayDrawKeepFraction)
+        v[MaxPliesPerGame.id] = MaxPliesPerGame.encode(maxPliesPerGame)
         v[ArenaStartTau.id] = ArenaStartTau.encode(arenaStartTau)
         v[ArenaTargetTau.id] = ArenaTargetTau.encode(arenaTargetTau)
         v[ArenaTauDecayPerPly.id] = ArenaTauDecayPerPly.encode(arenaTauDecayPerPly)
@@ -831,6 +845,8 @@ public final class TrainingParameters {
             try SelfPlayTauDecayPerPly.definition.validate(raw); selfPlayTauDecayPerPly = try SelfPlayTauDecayPerPly.decode(raw)
         case SelfPlayDrawKeepFraction.id:
             try SelfPlayDrawKeepFraction.definition.validate(raw); selfPlayDrawKeepFraction = try SelfPlayDrawKeepFraction.decode(raw)
+        case MaxPliesPerGame.id:
+            try MaxPliesPerGame.definition.validate(raw); maxPliesPerGame = try MaxPliesPerGame.decode(raw)
         case ArenaStartTau.id:
             try ArenaStartTau.definition.validate(raw); arenaStartTau = try ArenaStartTau.decode(raw)
         case ArenaTargetTau.id:
@@ -964,6 +980,7 @@ public final class TrainingParameters {
         SelfPlayTargetTau.self,
         SelfPlayTauDecayPerPly.self,
         SelfPlayDrawKeepFraction.self,
+        MaxPliesPerGame.self,
         ArenaStartTau.self,
         ArenaTargetTau.self,
         ArenaTauDecayPerPly.self,

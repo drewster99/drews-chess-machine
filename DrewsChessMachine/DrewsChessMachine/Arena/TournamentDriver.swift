@@ -263,9 +263,19 @@ final class TournamentDriver {
 
                     let result: GameResult
                     do {
-                        result = try await machine.beginNewGame(
+                        // Arena games never request a max-plies cap, so
+                        // `RawGameResult.terminatedEarly` is unreachable
+                        // here — preconditionFailure if a future change
+                        // ever wires one in without updating this call site.
+                        let raw = try await machine.beginNewGame(
                             white: white, black: black
                         )
+                        switch raw {
+                        case .terminatedNormally(let r):
+                            result = r
+                        case .terminatedEarly:
+                            preconditionFailure("Arena game terminated early — arena should not pass maxPlies")
+                        }
                     } catch is CancellationError {
                         return nil
                     } catch {

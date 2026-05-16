@@ -471,6 +471,15 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// 1.0 = keep every drawn game; < 1.0 = filter drawn games
         /// stochastically.
         let selfPlayDrawKeepFraction: Double
+        /// `maxPliesPerGame` in effect at this stats tick. Self-play
+        /// games hitting this cap are dropped (never emitted) and
+        /// counted in `maxPliesDropped` rather than W/D/L.
+        let maxPliesPerGame: Int
+        /// Lifetime count of self-play games that hit the
+        /// `maxPliesPerGame` cap and were dropped. Included in
+        /// `selfPlayGames` and `positionsTrained` (the games WERE
+        /// played) but never in per-outcome W/D/L counts.
+        let maxPliesDropped: Int
         let avgLen: Double
         let rollingAvgLen: Double
         let gameLenP50: Int?
@@ -595,6 +604,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case emittedGames = "emitted_games"
             case emittedPositions = "emitted_positions"
             case selfPlayDrawKeepFraction = "self_play_draw_keep_fraction"
+            case maxPliesPerGame = "max_plies_per_game"
+            case maxPliesDropped = "max_plies_dropped"
             case avgLen = "avg_len"
             case rollingAvgLen = "rolling_avg_len"
             case gameLenP50 = "game_len_p50"

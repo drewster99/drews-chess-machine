@@ -105,14 +105,22 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// at typical self-play rates this is a few hundred records max.
     /// `result` is held so `snapshot()` can tally per-outcome counts
     /// over the rolling window for the popover Live snapshot's
-    /// recent-window W/D/L breakdown — without it the W/D/L display
-    /// could only show lifetime totals, which dominate any short
-    /// recent change to the draw-keep filter.
+    /// recent-window W/D/L/Drop breakdown — without it the per-outcome
+    /// display could only show lifetime totals, which dominate any
+    /// short recent change to the draw-keep filter or the max-plies
+    /// cap.
+    ///
+    /// `result` is a `RawGameResult` rather than a `GameResult` so
+    /// max-plies-dropped games can share this ring with natural-
+    /// termination games — the rolling moves/plies accumulators
+    /// then already include them without parallel bookkeeping.
+    /// `snapshot()` switches on the case to tally either the natural
+    /// per-outcome counter or the dropped counter.
     private struct GameRecord {
         let timestamp: Date
         let moves: Int
         let durationMs: Double
-        let result: GameResult
+        let result: RawGameResult
     }
 
     private let lock = OSAllocatedUnfairLock()
@@ -125,6 +133,12 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     private var _fiftyMoveDraws: Int = 0
     private var _threefoldRepetitionDraws: Int = 0
     private var _insufficientMaterialDraws: Int = 0
+    /// Lifetime count of self-play games that hit the configured
+    /// `maxPliesPerGame` cap before terminating naturally and were
+    /// dropped (never emitted to the replay buffer). Increments
+    /// alongside `_totalGames` and `_totalMoves` — the game WAS
+    /// played, just discarded after the fact.
+    private var _maxPliesDropped: Int = 0
     private var _trainingSteps: Int = 0
     /// Games that survived the per-game keep/drop filter in the
     /// self-play driver (i.e. `selfPlayDrawKeepFraction`) and got
@@ -221,6 +235,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         fiftyMoveDraws: Int,
         threefoldRepetitionDraws: Int,
         insufficientMaterialDraws: Int,
+        maxPliesDropped: Int? = nil,
         trainingSteps: Int,
         emittedGames: Int? = nil,
         emittedPositions: Int? = nil,
@@ -241,6 +256,9 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         self._fiftyMoveDraws = fiftyMoveDraws
         self._threefoldRepetitionDraws = threefoldRepetitionDraws
         self._insufficientMaterialDraws = insufficientMaterialDraws
+        // Sessions saved before the max-plies feature had no dropped
+        // games (the cap didn't exist), so absent values default to 0.
+        self._maxPliesDropped = maxPliesDropped ?? 0
         self._trainingSteps = trainingSteps
         self._emittedGames = emittedGames ?? totalGames
         self._emittedPositions = emittedPositions ?? totalMoves
@@ -285,6 +303,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             self._fiftyMoveDraws = 0
             self._threefoldRepetitionDraws = 0
             self._insufficientMaterialDraws = 0
+            self._maxPliesDropped = 0
             self._emittedGames = 0
             self._emittedPositions = 0
             self._emittedWhiteCheckmates = 0
@@ -337,7 +356,12 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 self._threefoldRepetitionDraws += 1
             }
 
-            self._recentGames.append(GameRecord(timestamp: now, moves: moves, durationMs: durationMs, result: result))
+            self._recentGames.append(GameRecord(
+                timestamp: now,
+                moves: moves,
+                durationMs: durationMs,
+                result: .terminatedNormally(result)
+            ))
             self._recentGamesRunningMoves += moves
             self._recentGamesRunningWallMs += durationMs
             self.pruneRecentLocked(now: now)
@@ -345,6 +369,45 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             // Percentile ring. Pre-sized lazily; FIFO overwrite once
             // full. `moves` is plies (not half-moves pairs), matching
             // every other game-length counter the app exposes.
+            if self._recentGameLengths.count < Self.gameLengthRingCapacity {
+                self._recentGameLengths.append(moves)
+            } else {
+                self._recentGameLengths[self._recentGameLengthsHead] = moves
+                self._recentGameLengthsHead = (self._recentGameLengthsHead + 1) % Self.gameLengthRingCapacity
+            }
+        }
+    }
+
+    /// Record one self-play game that hit the configured `maxPliesPerGame`
+    /// cap and was dropped before reaching the replay buffer. Bumps
+    /// `_totalGames`, `_totalMoves`, `_totalGameWallMs`, and the
+    /// dedicated `_maxPliesDropped` lifetime counter — the game WAS
+    /// played, so it counts toward generation stats and the rolling
+    /// plies/hour rate, but it never contributes to per-outcome W/D/L
+    /// tallies (it's its own "dropped" category). The rolling-window
+    /// entry uses `RawGameResult.terminatedEarly` so `snapshot()` can
+    /// tally `recentMaxPliesDropped` alongside the W/D/L counts.
+    func recordDroppedGame(moves: Int, durationMs: Double) {
+        let now = Date()
+        lock.withLock {
+            self._totalGames += 1
+            self._totalMoves += moves
+            self._totalGameWallMs += durationMs
+            self._maxPliesDropped += 1
+
+            self._recentGames.append(GameRecord(
+                timestamp: now,
+                moves: moves,
+                durationMs: durationMs,
+                result: .terminatedEarly
+            ))
+            self._recentGamesRunningMoves += moves
+            self._recentGamesRunningWallMs += durationMs
+            self.pruneRecentLocked(now: now)
+
+            // Percentile ring — dropped games still contribute their
+            // length so the p50/p95 reflect everything the workers
+            // produced, not just the kept subset.
             if self._recentGameLengths.count < Self.gameLengthRingCapacity {
                 self._recentGameLengths.append(moves)
             } else {
@@ -473,6 +536,11 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         let fiftyMoveDraws: Int
         let threefoldRepetitionDraws: Int
         let insufficientMaterialDraws: Int
+        /// Lifetime count of games dropped for hitting the `maxPliesPerGame`
+        /// cap. These ARE included in `selfPlayGames` and `selfPlayPositions`
+        /// (they were played) but are NOT in any per-outcome counter
+        /// (they're their own "dropped" category, never in W/D/L).
+        let maxPliesDropped: Int
         /// Per-outcome lifetime tallies of games that survived the
         /// draw-keep filter. Decisive emitted counters always equal
         /// their played-side counterparts; only the four draw types
@@ -506,6 +574,11 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         let recentWhiteCheckmates: Int
         let recentBlackCheckmates: Int
         let recentDraws: Int
+        /// Rolling-window count of self-play games that hit the
+        /// `maxPliesPerGame` cap and were dropped. Sums with the W/D/L
+        /// counts above to equal `recentGames`. Drives the "Drop %"
+        /// column of the popover Live snapshot's Played row.
+        let recentMaxPliesDropped: Int
         /// Same per-outcome breakdown over the rolling window for the
         /// *emitted* side (games that survived the keep filter).
         /// `recentEmittedWhiteCheckmates` and `recentEmittedBlackCheckmates`
@@ -598,13 +671,18 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
             var recW = 0
             var recL = 0
             var recD = 0
+            var recDropped = 0
             for i in _recentGamesHead..<_recentGames.count {
                 switch _recentGames[i].result {
-                case .checkmate(let winner):
+                case .terminatedNormally(.checkmate(let winner)):
                     if winner == .white { recW += 1 } else { recL += 1 }
-                case .stalemate, .drawByFiftyMoveRule,
-                     .drawByInsufficientMaterial, .drawByThreefoldRepetition:
+                case .terminatedNormally(.stalemate),
+                     .terminatedNormally(.drawByFiftyMoveRule),
+                     .terminatedNormally(.drawByInsufficientMaterial),
+                     .terminatedNormally(.drawByThreefoldRepetition):
                     recD += 1
+                case .terminatedEarly:
+                    recDropped += 1
                 }
             }
             var recEmW = 0
@@ -669,6 +747,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 fiftyMoveDraws: _fiftyMoveDraws,
                 threefoldRepetitionDraws: _threefoldRepetitionDraws,
                 insufficientMaterialDraws: _insufficientMaterialDraws,
+                maxPliesDropped: _maxPliesDropped,
                 emittedWhiteCheckmates: _emittedWhiteCheckmates,
                 emittedBlackCheckmates: _emittedBlackCheckmates,
                 emittedStalemates: _emittedStalemates,
@@ -685,6 +764,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
                 recentWhiteCheckmates: recW,
                 recentBlackCheckmates: recL,
                 recentDraws: recD,
+                recentMaxPliesDropped: recDropped,
                 recentEmittedWhiteCheckmates: recEmW,
                 recentEmittedBlackCheckmates: recEmL,
                 recentEmittedDraws: recEmD,

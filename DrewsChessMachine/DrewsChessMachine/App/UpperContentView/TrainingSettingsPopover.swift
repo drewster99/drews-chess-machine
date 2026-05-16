@@ -118,6 +118,7 @@ struct TrainingSettingsPopover: View {
             || model.selfPlayDecayPerPlyError
             || model.selfPlayFloorTauError
             || model.selfPlayDrawKeepFractionError
+            || model.maxPliesPerGameError
     }
 
     private var replayHasError: Bool {
@@ -224,12 +225,15 @@ struct TrainingSettingsPopover: View {
                     selfPlayDecayPerPlyText: $model.selfPlayDecayPerPlyText,
                     selfPlayFloorTauText: $model.selfPlayFloorTauText,
                     selfPlayDrawKeepFractionText: $model.selfPlayDrawKeepFractionText,
+                    maxPliesPerGameText: $model.maxPliesPerGameText,
                     selfPlayWorkersError: model.selfPlayWorkersError,
                     selfPlayStartTauError: model.selfPlayStartTauError,
                     selfPlayDecayPerPlyError: model.selfPlayDecayPerPlyError,
                     selfPlayFloorTauError: model.selfPlayFloorTauError,
                     selfPlayDrawKeepFractionError: model.selfPlayDrawKeepFractionError,
+                    maxPliesPerGameError: model.maxPliesPerGameError,
                     onLiveSelfPlayDrawKeepFractionChange: { model.applyLiveSelfPlayDrawKeepFraction($0) },
+                    onLiveMaxPliesPerGameChange: { model.applyLiveMaxPliesPerGame($0) },
                     parallelStats: parallelStats
                 )
             case .replay:
@@ -724,12 +728,14 @@ private struct SelfPlayTab: View {
     @Binding var selfPlayDecayPerPlyText: String
     @Binding var selfPlayFloorTauText: String
     @Binding var selfPlayDrawKeepFractionText: String
+    @Binding var maxPliesPerGameText: String
 
     let selfPlayWorkersError: Bool
     let selfPlayStartTauError: Bool
     let selfPlayDecayPerPlyError: Bool
     let selfPlayFloorTauError: Bool
     let selfPlayDrawKeepFractionError: Bool
+    let maxPliesPerGameError: Bool
 
     /// Live-propagate handler. Fires on every edit-text change that
     /// parses to a valid `[0, 1]` Double — writes through to
@@ -739,6 +745,13 @@ private struct SelfPlayTab: View {
     /// via the model's stash; Save updates the stash to the
     /// committed value so a subsequent Cancel is a no-op.
     let onLiveSelfPlayDrawKeepFractionChange: (Double) -> Void
+
+    /// Live-propagate handler for max-plies. Each edit flows
+    /// through to `TrainingParameters.shared.maxPliesPerGame`; the
+    /// next self-play game started by any worker slot reads the
+    /// new value at game start. Cancel reverts via the model's
+    /// stash; Save updates the stash.
+    let onLiveMaxPliesPerGameChange: (Int) -> Void
 
     /// Live snapshot of the parallel-worker stats box; drives the
     /// "Emitted games" readout's W/L/D + plies-per-hour rows. `nil`
@@ -874,6 +887,38 @@ private struct SelfPlayTab: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Emitted games")
                     .font(.subheadline.weight(.semibold))
+                // Max plies per game — hard ceiling on self-play game
+                // length. Games hitting this cap are dropped (not
+                // emitted) and counted as "Drop" in the Played row of
+                // the Live snapshot below. Live-propagated to
+                // `TrainingParameters.shared.maxPliesPerGame`; each
+                // slot reads it at the start of its next game.
+                PopoverRow(
+                    label: "Max plies per game:",
+                    text: $maxPliesPerGameText,
+                    error: maxPliesPerGameError,
+                    placeholder: "1000",
+                    hint: maxPliesHint
+                ) {
+                    Stepper(
+                        "",
+                        value: liveIntBinding(
+                            text: $maxPliesPerGameText,
+                            fallback: 1000,
+                            onChange: onLiveMaxPliesPerGameChange
+                        ),
+                        in: 25...1000,
+                        step: 25
+                    )
+                }
+                .onChange(of: maxPliesPerGameText) { _, newValue in
+                    let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                    if trimmed.isEmpty {
+                        onLiveMaxPliesPerGameChange(1000)
+                    } else if let n = Int(trimmed), n >= 25, n <= 1000 {
+                        onLiveMaxPliesPerGameChange(n)
+                    }
+                }
                 PopoverRow(
                     label: "Draw keep fraction:",
                     text: $selfPlayDrawKeepFractionText,
@@ -911,6 +956,43 @@ private struct SelfPlayTab: View {
                 liveEmittedGamesReadout
             }
         }
+    }
+
+    /// Plain-English hint for the current max-plies-per-game cap.
+    /// At 1000 the cap is effectively disabled (no legitimate
+    /// chess game reaches 1000 plies — the 50-move rule and 3-fold
+    /// repetition end any sane game well before that). Lower values
+    /// say "drop games hitting this many plies."
+    private var maxPliesHint: String {
+        guard let n = Int(maxPliesPerGameText.trimmingCharacters(in: .whitespaces)),
+              n >= 25, n <= 1000 else {
+            return "25–1000"
+        }
+        if n >= 1000 {
+            return "effectively disabled"
+        }
+        return "drop games at \(n) plies"
+    }
+
+    /// Stepper binding that writes its new Int through `onChange`
+    /// (in addition to updating the text field). Mirrors the
+    /// `liveDoubleBinding` helper used by the keep-fraction stepper —
+    /// each click of the stepper arrow flows through to
+    /// `TrainingParameters.shared.maxPliesPerGame` immediately.
+    private func liveIntBinding(
+        text: Binding<String>,
+        fallback: Int,
+        onChange: @escaping (Int) -> Void
+    ) -> Binding<Int> {
+        Binding<Int>(
+            get: {
+                Int(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? fallback
+            },
+            set: { newValue in
+                text.wrappedValue = String(newValue)
+                onChange(newValue)
+            }
+        )
     }
 
     /// Plain-English explanation of the current keep-fraction value,
@@ -1009,6 +1091,10 @@ private struct SelfPlayTab: View {
         let recentPlayedW = s?.recentWhiteCheckmates ?? 0
         let recentPlayedL = s?.recentBlackCheckmates ?? 0
         let recentPlayedD = s?.recentDraws ?? 0
+        // Dropped count only meaningful on the Played side — dropped
+        // games never reach the emit stage, so the Emitted column
+        // stays a 3-way W/D/L %. Played row sums W/D/L/Drop to 100%.
+        let recentPlayedDrop = s?.recentMaxPliesDropped ?? 0
         let recentEmittedW = s?.recentEmittedWhiteCheckmates ?? 0
         let recentEmittedL = s?.recentEmittedBlackCheckmates ?? 0
         let recentEmittedD = s?.recentEmittedDraws ?? 0
@@ -1049,9 +1135,15 @@ private struct SelfPlayTab: View {
                 emittedValue: hasStats ? Self.numberString(emittedTotal) : dash
             )
             twoColRow(
-                label: "W / D / L % (1m):",
+                label: "W/D/L/Drop % (1m):",
                 playedValue: hasStats && recentPlayedTotal > 0
-                    ? Self.pctTriple(w: recentPlayedW, d: recentPlayedD, l: recentPlayedL, total: recentPlayedTotal)
+                    ? Self.pctQuad(
+                        w: recentPlayedW,
+                        d: recentPlayedD,
+                        l: recentPlayedL,
+                        drop: recentPlayedDrop,
+                        total: recentPlayedTotal
+                    )
                     : dash,
                 emittedValue: hasStats && recentEmittedTotal > 0
                     ? Self.pctTriple(w: recentEmittedW, d: recentEmittedD, l: recentEmittedL, total: recentEmittedTotal)
@@ -1107,6 +1199,22 @@ private struct SelfPlayTab: View {
         let dp = Double(d) / den * 100
         let lp = Double(l) / den * 100
         return String(format: "%.1f%% / %.1f%% / %.1f%%", wp, dp, lp)
+    }
+
+    /// Format a W/D/L/Drop quadruple as
+    /// `"ww.w% / dd.d% / ll.l% / drop.d%"` over the given total.
+    /// `total` must include the dropped count so the four percentages
+    /// sum to 100. Used by the Played column of the Live snapshot;
+    /// the Emitted column stays a three-way `pctTriple` since dropped
+    /// games never reach emit.
+    private static func pctQuad(w: Int, d: Int, l: Int, drop: Int, total: Int) -> String {
+        guard total > 0 else { return "—" }
+        let den = Double(total)
+        let wp = Double(w) / den * 100
+        let dp = Double(d) / den * 100
+        let lp = Double(l) / den * 100
+        let dropP = Double(drop) / den * 100
+        return String(format: "%.1f%% / %.1f%% / %.1f%% / %.1f%%", wp, dp, lp, dropP)
     }
 
     /// Stepper-binding for the live-update Draw keep fraction field.

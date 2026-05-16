@@ -75,12 +75,14 @@ final class TrainingSettingsPopoverModel {
     var selfPlayDecayPerPlyText = "" { didSet { selfPlayDecayPerPlyError = false } }
     var selfPlayFloorTauText = "" { didSet { selfPlayFloorTauError = false } }
     var selfPlayDrawKeepFractionText = "" { didSet { selfPlayDrawKeepFractionError = false } }
+    var maxPliesPerGameText = "" { didSet { maxPliesPerGameError = false } }
 
     private(set) var selfPlayWorkersError = false
     private(set) var selfPlayStartTauError = false
     private(set) var selfPlayDecayPerPlyError = false
     private(set) var selfPlayFloorTauError = false
     private(set) var selfPlayDrawKeepFractionError = false
+    private(set) var maxPliesPerGameError = false
 
     // MARK: - Replay tab
 
@@ -119,6 +121,7 @@ final class TrainingSettingsPopoverModel {
     // MARK: - Cancel stash (for the live-propagated self-play draw-keep field)
 
     private var originalSelfPlayDrawKeepFraction: Double = 1.0
+    private var originalMaxPliesPerGame: Int = 1000
 
     // MARK: - Injected dependencies
 
@@ -183,6 +186,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayDecayPerPlyText = String(format: "%.3f", p.selfPlayTauDecayPerPly)
         selfPlayFloorTauText = String(format: "%.2f", p.selfPlayTargetTau)
         selfPlayDrawKeepFractionText = String(format: "%.2f", p.selfPlayDrawKeepFraction)
+        maxPliesPerGameText = String(p.maxPliesPerGame)
         // --- Replay tab ---
         replayBufferCapacityText = String(p.replayBufferCapacity)
         replayBufferMinPositionsText = String(p.replayBufferMinPositionsBeforeTraining)
@@ -211,6 +215,7 @@ final class TrainingSettingsPopoverModel {
         originalTargetSampledGameLengthPlies = p.targetSampledGameLengthPlies
         originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
         originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
+        originalMaxPliesPerGame = p.maxPliesPerGame
         // Reset every error flag — a fresh open should never carry red overlays
         // from a previously-cancelled bad input.
         lrError = false
@@ -230,6 +235,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayDecayPerPlyError = false
         selfPlayFloorTauError = false
         selfPlayDrawKeepFractionError = false
+        maxPliesPerGameError = false
         replayBufferCapacityError = false
         replayBufferMinPositionsError = false
         replayRatioTargetError = false
@@ -282,6 +288,9 @@ final class TrainingSettingsPopoverModel {
         }
         if abs(p.selfPlayDrawKeepFraction - originalSelfPlayDrawKeepFraction) > Double.ulpOfOne {
             p.selfPlayDrawKeepFraction = originalSelfPlayDrawKeepFraction
+        }
+        if p.maxPliesPerGame != originalMaxPliesPerGame {
+            p.maxPliesPerGame = originalMaxPliesPerGame
         }
         isPresented = false
     }
@@ -394,6 +403,19 @@ final class TrainingSettingsPopoverModel {
         let p = TrainingParameters.shared
         if abs(p.selfPlayDrawKeepFraction - snapped) > Double.ulpOfOne {
             p.selfPlayDrawKeepFraction = snapped
+        }
+    }
+
+    /// Live-propagate the max-plies-per-game edit. The self-play
+    /// driver reads `TrainingParameters.shared.maxPliesPerGame` at the
+    /// start of every game, so a mid-session edit takes effect on the
+    /// next game spawned by each worker slot. Snapped to the
+    /// parameter's `[25, 1000]` range; non-positive inputs are ignored.
+    func applyLiveMaxPliesPerGame(_ newValue: Int) {
+        let snapped = max(25, min(1000, newValue))
+        let p = TrainingParameters.shared
+        if p.maxPliesPerGame != snapped {
+            p.maxPliesPerGame = snapped
         }
     }
 
@@ -686,6 +708,20 @@ final class TrainingSettingsPopoverModel {
             selfPlayDrawKeepFractionError = true
             anyError = true
         }
+        // Max plies per game — Int in [25, 1000]. Same live-propagated
+        // pattern as draw-keep fraction: the slot driver reads
+        // `TrainingParameters.shared.maxPliesPerGame` at the start of
+        // each game, so save() just validates the current text and
+        // logs a [PARAM] line if the committed value changed.
+        let maxPliesPerGameTrimmed = maxPliesPerGameText.trimmingCharacters(in: .whitespaces)
+        if maxPliesPerGameTrimmed.isEmpty {
+            maxPliesPerGameError = false
+        } else if let n = Int(maxPliesPerGameTrimmed), n >= 25, n <= 1000 {
+            maxPliesPerGameError = false
+        } else {
+            maxPliesPerGameError = true
+            anyError = true
+        }
         // Push the freshly-edited self-play schedule into the live
         // `samplingScheduleBox` so the next self-play game on each worker slot
         // picks up the new τ curve. Safe to call unconditionally — the box's
@@ -840,6 +876,11 @@ final class TrainingSettingsPopoverModel {
                     )
                 )
             }
+            if p.maxPliesPerGame != originalMaxPliesPerGame {
+                SessionLogger.shared.log(
+                    "[PARAM] maxPliesPerGame: \(originalMaxPliesPerGame) -> \(p.maxPliesPerGame)"
+                )
+            }
             // On successful save the stash that backs Cancel becomes the new
             // pre-edit baseline — closing the popover with Save commits the
             // live writes. Missing this line for `selfPlayDrawKeepFraction`
@@ -855,6 +896,7 @@ final class TrainingSettingsPopoverModel {
             originalTargetSampledGameLengthPlies = p.targetSampledGameLengthPlies
             originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
             originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
+            originalMaxPliesPerGame = p.maxPliesPerGame
             isPresented = false
         }
     }

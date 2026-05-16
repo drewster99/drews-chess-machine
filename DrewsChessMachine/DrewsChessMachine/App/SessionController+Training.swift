@@ -290,6 +290,16 @@ extension SessionController {
                         "[RESUME-PARAM] self_play_draw_keep_fraction: saved=nil applied=\(TrainingParameters.shared.selfPlayDrawKeepFraction) (defaulted)"
                     )
                 }
+                if let v = rs.maxPliesPerGame {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_plies_per_game: \(TrainingParameters.shared.maxPliesPerGame) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.maxPliesPerGame = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_plies_per_game: saved=nil applied=\(TrainingParameters.shared.maxPliesPerGame) (defaulted)"
+                    )
+                }
                 // LR warmup length and sqrt-batch LR scaling are now
                 // part of the session schema (Optional, for back-compat
                 // with older `.dcmsession` files that pre-date the
@@ -553,6 +563,7 @@ extension SessionController {
                 fiftyMoveDraws: rs.fiftyMoveDraws ?? 0,
                 threefoldRepetitionDraws: rs.threefoldRepetitionDraws ?? 0,
                 insufficientMaterialDraws: rs.insufficientMaterialDraws ?? 0,
+                maxPliesDropped: rs.maxPliesDropped,
                 trainingSteps: rs.trainingSteps,
                 emittedGames: rs.emittedGames,
                 emittedPositions: rs.emittedPositions,
@@ -1386,7 +1397,7 @@ extension SessionController {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -1405,7 +1416,8 @@ extension SessionController {
                                 TrainingParameters.shared.arenaAutoIntervalSec,
                                 TrainingParameters.shared.arenaPromoteThreshold,
                                 TrainingParameters.shared.arenaGamesPerTournament,
-                                TrainingParameters.shared.selfPlayDrawKeepFraction
+                                TrainingParameters.shared.selfPlayDrawKeepFraction,
+                                TrainingParameters.shared.maxPliesPerGame
                             )
                         }
                         let policyStr: String
@@ -1751,6 +1763,8 @@ extension SessionController {
                                 emittedGames: parallelSnap.emittedGames,
                                 emittedPositions: parallelSnap.emittedPositions,
                                 selfPlayDrawKeepFraction: drawKeepFrac,
+                                maxPliesPerGame: maxPliesCap,
+                                maxPliesDropped: parallelSnap.maxPliesDropped,
                                 avgLen: lifetimeAvgLen,
                                 rollingAvgLen: rollingAvgLen,
                                 gameLenP50: parallelSnap.gameLenP50,

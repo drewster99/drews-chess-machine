@@ -10,6 +10,28 @@ enum GameResult: Sendable {
     case drawByThreefoldRepetition
 }
 
+/// Raw game result returned from `ChessMachine.beginNewGame` — wraps an
+/// ordinary `GameResult` for games that ended via the chess rules and
+/// adds the `terminatedEarly` case for self-play games that hit the
+/// configured `maxPliesPerGame` cap before terminating naturally.
+///
+/// Lives only at the boundary between `ChessMachine` and the immediate
+/// caller (the self-play driver and the arena driver). The self-play
+/// driver consumes `.terminatedEarly` directly (drops the game entirely:
+/// no emit, no replay-buffer flush, no per-outcome stats increment —
+/// just a `recordDroppedGame` call) and unwraps `.terminatedNormally`
+/// into a plain `GameResult` for everything downstream. Arena passes
+/// `maxPlies: nil`, so its result is always `.terminatedNormally`.
+enum RawGameResult: Sendable {
+    /// Self-play game stopped because `moveHistory.count` reached the
+    /// configured max-plies cap before the chess engine declared a
+    /// natural termination. Carries no payload — the game is discarded.
+    case terminatedEarly
+    /// Game ended via the chess rules (checkmate / stalemate / one of
+    /// the four draw types). Payload is the rule that fired.
+    case terminatedNormally(GameResult)
+}
+
 // MARK: - Position Key (for repetition detection)
 
 /// A hashable identifier for a chess position. Two positions match for the

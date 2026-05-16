@@ -241,6 +241,12 @@ struct SessionCheckpointState: Codable, Equatable {
     /// falls through to `TrainingParameters.shared.selfPlayDrawKeepFraction`
     /// (which is 1.0 by default).
     var selfPlayDrawKeepFraction: Double?
+    /// Hard cap on self-play game length (plies) before the game is
+    /// dropped without emit. Optional for back-compat with sessions
+    /// saved before the cap existed; absent → loader falls through
+    /// to `TrainingParameters.shared.maxPliesPerGame` (default 1000,
+    /// effectively disabled).
+    var maxPliesPerGame: Int?
     /// Lifetime self-play games that were emitted into the replay
     /// buffer (i.e. survived the draw-keep filter). `<= selfPlayGames`;
     /// equal at default keep-fraction. Optional for back-compat.
@@ -257,6 +263,10 @@ struct SessionCheckpointState: Codable, Equatable {
     var fiftyMoveDraws: Int?
     var threefoldRepetitionDraws: Int?
     var insufficientMaterialDraws: Int?
+    /// Lifetime count of self-play games dropped for hitting the
+    /// `maxPliesPerGame` cap. Optional for back-compat — absent in
+    /// sessions saved before the cap existed; treated as 0 on load.
+    var maxPliesDropped: Int?
     var totalGameWallMs: Double?
 
     // Per-outcome emitted-game breakdown (added when the Results card
