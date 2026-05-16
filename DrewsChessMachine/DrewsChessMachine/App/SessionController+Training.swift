@@ -300,6 +300,16 @@ extension SessionController {
                         "[RESUME-PARAM] self_play_max_plies_per_game: saved=nil applied=\(TrainingParameters.shared.selfPlayMaxPliesPerGame) (defaulted)"
                     )
                 }
+                if let v = rs.selfPlayUseTickDriver {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] self_play_use_tick_driver: \(TrainingParameters.shared.selfPlayUseTickDriver) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.selfPlayUseTickDriver = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] self_play_use_tick_driver: saved=nil applied=\(TrainingParameters.shared.selfPlayUseTickDriver) (defaulted)"
+                    )
+                }
                 // LR warmup length and sqrt-batch LR scaling are now
                 // part of the session schema (Optional, for back-compat
                 // with older `.dcmsession` files that pre-date the

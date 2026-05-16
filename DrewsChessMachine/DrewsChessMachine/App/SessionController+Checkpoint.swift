@@ -681,6 +681,7 @@ extension SessionController {
             maxDrawPercentPerBatch: params.maxDrawPercentPerBatch,
             selfPlayDrawKeepFraction: params.selfPlayDrawKeepFraction,
             maxPliesPerGame: params.selfPlayMaxPliesPerGame,
+            selfPlayUseTickDriver: params.selfPlayUseTickDriver,
             emittedGames: snap?.emittedGames,
             emittedPositions: snap?.emittedPositions,
             whiteCheckmates: snap?.whiteCheckmates,
