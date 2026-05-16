@@ -43,10 +43,10 @@ struct ChartTileHeader: View {
                 // horizontal to the proposed 320 and let vertical
                 // grow to whatever the wrapped block needs.
                 Text(titleHelp)
-                    .font(.caption)
+                    .font(.body)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(width: 320, alignment: .leading)
+                    .frame(width: 360, alignment: .leading)
                     .padding(10)
             }
         } else {

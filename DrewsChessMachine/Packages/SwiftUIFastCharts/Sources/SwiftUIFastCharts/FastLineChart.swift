@@ -160,10 +160,10 @@ public struct FastLineChart: View {
                 // horizontal to the proposed width (320) and letting
                 // vertical grow gives a wrapped multi-line block.
                 Text(titleHelp)
-                    .font(.caption)
+                    .font(.body)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-                    .frame(width: 320, alignment: .leading)
+                    .frame(width: 360, alignment: .leading)
                     .padding(10)
             }
         } else {
