@@ -19,12 +19,32 @@ struct ArenaActivityChart: View {
         return max(start, lastTrainingElapsedSec ?? start)
     }
 
+    /// Single source of truth for the visible window — used both for
+    /// `chartXScale` and for the hover overlay's manual screen→data
+    /// mapping. If these two drift, the hover crosshair lands on a
+    /// different time than what the chart is showing.
+    private var visibleXDomain: ClosedRange<Double> {
+        let lo = max(0, scrollX)
+        let hi = lo + max(0.001, context.visibleDomainSec)
+        return lo...hi
+    }
+
+    /// Hovered arena ID. Snaps to the arena whose band midpoint is
+    /// closest to the cursor when no band contains the cursor — arena
+    /// durations (~20s) are tiny relative to the visible window
+    /// (~1h), so strict interval-containment left the hover dead in
+    /// ~95% of cursor positions.
     private var hoverArenaID: Int? {
-        guard let t = hoveredSec else { return nil }
+        guard let t = hoveredSec, !events.isEmpty else { return nil }
         for e in events where t >= e.startElapsedSec && t <= e.endElapsedSec {
             return e.id
         }
-        return nil
+        let nearest = events.min(by: {
+            let m0 = ($0.startElapsedSec + $0.endElapsedSec) * 0.5
+            let m1 = ($1.startElapsedSec + $1.endElapsedSec) * 0.5
+            return abs(m0 - t) < abs(m1 - t)
+        })
+        return nearest?.id
     }
 
     /// "M:SS" from a duration in seconds.
@@ -105,11 +125,9 @@ struct ArenaActivityChart: View {
             // Visible-window-only X domain — matches the migrated
             // tiles, so the layout doesn't jump every time a new
             // training sample bumps `lastElapsed` upward.
-            .chartXScale(domain:
-                max(0, scrollX)...(max(0, scrollX) + max(0.001, context.visibleDomainSec))
-            )
+            .chartXScale(domain: visibleXDomain)
             .chartOverlay { proxy in
-                ChartHoverOverlay(proxy: proxy, hoveredSec: $hoveredSec)
+                ChartHoverOverlay(proxy: proxy, xDomain: visibleXDomain, hoveredSec: $hoveredSec)
             }
             .overlay {
                 if isEmpty {

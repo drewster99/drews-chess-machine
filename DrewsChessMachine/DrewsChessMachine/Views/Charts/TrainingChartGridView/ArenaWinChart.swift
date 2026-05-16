@@ -22,11 +22,19 @@ struct ArenaWinChart: View {
     @Binding var scrollX: Double
     let context: TrainingChartGridView.Context
 
-    /// Hovered arena — the one whose duration band contains the
-    /// crosshair time (or `nil` if the hover is between arenas).
+    /// Hovered arena. Snaps to the arena whose `endElapsedSec` (where
+    /// each point/line node is plotted) is closest to the cursor's
+    /// data X. The earlier interval-containment rule
+    /// (`t ∈ [start, end]`) only matched a few percent of cursor
+    /// positions, because arena durations (~20s) are tiny relative to
+    /// the visible window (~1h), so the header collapsed to "show the
+    /// last arena" as a fallback almost everywhere.
     private var hoverArena: ArenaChartEvent? {
-        guard let t = hoveredSec else { return nil }
-        return events.first { t >= $0.startElapsedSec && t <= $0.endElapsedSec }
+        guard let t = hoveredSec, !events.isEmpty else { return nil }
+        if let inInterval = events.first(where: { t >= $0.startElapsedSec && t <= $0.endElapsedSec }) {
+            return inInterval
+        }
+        return events.min(by: { abs($0.endElapsedSec - t) < abs($1.endElapsedSec - t) })
     }
 
     private var headerText: String {
