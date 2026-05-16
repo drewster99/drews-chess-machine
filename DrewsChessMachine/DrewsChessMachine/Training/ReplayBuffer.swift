@@ -90,6 +90,13 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Next write slot in the ring.
     private var writeIndex: Int = 0
 
+    /// Scratch dict reused by the fast-path `sample(...)` (no-op
+    /// constraints branch) to track per-game position counts within
+    /// each batch. Cleared with `removeAll(keepingCapacity: true)` on
+    /// each call rather than allocating a fresh `[UInt32: Int]` per
+    /// sample. Touched only under `lock`.
+    private var fastPerGameScratch: [UInt32: Int] = [:]
+
     // MARK: - Global hash bookkeeping (observability)
 
     /// How many ring slots currently hold each unique `state_hash`,
@@ -892,8 +899,9 @@ final class ReplayBuffer: @unchecked Sendable {
             if constraints.isNoOp(forBatchSize: sampleCount) {
                 var fastWin = 0, fastDraw = 0, fastLoss = 0
                 var fastSumLen = 0
-                var fastPerGame: [UInt32: Int] = [:]
-                fastPerGame.reserveCapacity(min(sampleCount, residentGames.count) + 1)
+                // Reuse the buffer-owned dict scratch across calls.
+                fastPerGameScratch.removeAll(keepingCapacity: true)
+                fastPerGameScratch.reserveCapacity(min(sampleCount, residentGames.count) + 1)
                 for i in 0..<sampleCount {
                     let srcIndex = Int.random(in: 0..<held)
                     emit(i, srcIndex)
@@ -902,10 +910,10 @@ final class ReplayBuffer: @unchecked Sendable {
                     else if z < 0 { fastLoss += 1 }
                     else { fastDraw += 1 }
                     fastSumLen += Int(gameLengthStorage[srcIndex])
-                    fastPerGame[workerGameIdStorage[srcIndex], default: 0] += 1
+                    fastPerGameScratch[workerGameIdStorage[srcIndex], default: 0] += 1
                 }
                 var fastMaxPerGame = 0
-                for (_, c) in fastPerGame where c > fastMaxPerGame { fastMaxPerGame = c }
+                for (_, c) in fastPerGameScratch where c > fastMaxPerGame { fastMaxPerGame = c }
                 _lastSamplingResult = SamplingResult(
                     didSample: true, wasConstrainedPath: false,
                     constraints: constraints, batchSize: sampleCount,
@@ -914,7 +922,7 @@ final class ReplayBuffer: @unchecked Sendable {
                     achievedDrawCount: fastDraw,
                     achievedLossCount: fastLoss,
                     achievedMaxPerGame: fastMaxPerGame,
-                    distinctGamesInBatch: fastPerGame.count,
+                    distinctGamesInBatch: fastPerGameScratch.count,
                     achievedSumGameLength: fastSumLen,
                     lengthTargetInfeasible: false, shortestResidentLength: 0,
                     attemptBudgetHit: false

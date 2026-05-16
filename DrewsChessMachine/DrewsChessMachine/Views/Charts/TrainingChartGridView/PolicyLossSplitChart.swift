@@ -125,3 +125,12 @@ struct PolicyLossSplitChart: View {
         )
     }
 }
+
+extension PolicyLossSplitChart: Equatable {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.bucketWidthSec == rhs.bucketWidthSec
+            && lhs.xDomain == rhs.xDomain
+            && lhs.group === rhs.group
+            && lhs.buckets == rhs.buckets
+    }
+}

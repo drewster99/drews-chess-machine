@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import os
 
@@ -57,6 +58,15 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
 
     private let lock = OSAllocatedUnfairLock<Snapshot>(initialState: Snapshot())
 
+    /// Fires `()` after every successful mutation of the internal
+    /// `Snapshot`. UI consumers (e.g. `HumanPlayWindow`) subscribe via
+    /// `.throttle(...)` to receive bounded-rate change events without
+    /// polling — the watcher itself stays non-`@Observable` so the
+    /// ChessMachine delegate queue never pays SwiftUI invalidation
+    /// cost; the throttle on the subscriber side decouples UI redraw
+    /// frequency from game-loop rate.
+    let changes = PassthroughSubject<Void, Never>()
+
     func snapshot() -> Snapshot {
         lock.withLock { $0 }
     }
@@ -82,10 +92,12 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
             s.lastMove = nil
             // Keep lastGameStats — show previous game until the next one ends
         }
+        changes.send()
     }
 
     func resetAll() {
         lock.withLock { $0 = Snapshot() }
+        changes.send()
     }
 
     func markPlaying(_ playing: Bool) {
@@ -93,6 +105,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         lock.withLock { s in
             Self.setPlayingLocked(&s, playing: playing, now: now)
         }
+        changes.send()
     }
 
     /// Toggle isPlaying and update the active-play stopwatch. Caller
@@ -120,6 +133,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
             s.moveCount += 1
             s.lastMove = move
         }
+        changes.send()
     }
 
     func chessMachine(
@@ -162,6 +176,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
                 s.threefoldRepetitionDraws += 1
             }
         }
+        changes.send()
     }
 
     func chessMachine(_ machine: ChessMachine, playerErrored player: any ChessPlayer, error: any Error) {
@@ -169,6 +184,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         lock.withLock { s in
             Self.setPlayingLocked(&s, playing: false, now: now)
         }
+        changes.send()
     }
 }
 

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 /// Standalone window that hosts a human-vs-network game. Created by
@@ -145,29 +146,27 @@ enum HumanPlayWindowLauncher {
 ///   - `playController` (`@Bindable`): reactive — selected from-
 ///     square, legal-target highlights, pending promotion, the
 ///     `isPlayingHuman` flag.
-///   - `gameWatcher` (polled): live board, side-to-move, move count,
-///     last applied move, end-of-game `GameResult`, and last game's
-///     stats. Polled on a 100 ms timer because the watcher fires its
-///     mutations from a non-SwiftUI dispatch queue and is
-///     intentionally not `@Observable` (the project's UI decouples
-///     redraw from game-loop rate).
+///   - `gameWatcher` (change-driven): live board, side-to-move,
+///     move count, last applied move, end-of-game `GameResult`, and
+///     last game's stats. Subscribed via `gameWatcher.changes` (a
+///     Combine `PassthroughSubject` the watcher fires after every
+///     internal mutation), throttled to at most 10 Hz on the main
+///     run-loop. The throttle preserves the original decoupling
+///     between game-loop rate and SwiftUI redraw rate while
+///     eliminating the prior 100 ms polling timer's wasted ticks
+///     when nothing has changed.
 fileprivate struct HumanPlayWindowView: View {
     @Bindable var playController: PlayController
     let session: SessionController
     let gameWatcher: GameWatcher
 
-    /// Mirrored snapshot of the watcher. Refreshed by the
-    /// `Combine`-driven polling subscription wired in via
-    /// `.onReceive(pollTimer)` below. Seeded from the watcher in
-    /// `.onAppear` so the window doesn't flash the default starting
-    /// position before the first publisher tick lands.
+    /// Mirrored snapshot of the watcher. Refreshed on each emission
+    /// of `gameWatcher.changes` (a Combine `PassthroughSubject` the
+    /// watcher fires after every internal mutation), throttled to
+    /// at most 10 Hz on the main run-loop. Seeded from the watcher
+    /// in `.onAppear` so the window doesn't flash the default
+    /// starting position before the first publisher tick lands.
     @State private var snapshot: GameWatcher.Snapshot = .init()
-
-    /// 10 Hz polling timer for the watcher snapshot. Matches the
-    /// `snapshotTimer` pattern used in `UpperContentView`.
-    private let pollTimer = Timer.publish(
-        every: 0.1, on: .main, in: .common
-    ).autoconnect()
 
     var body: some View {
         VStack(spacing: 12) {
@@ -179,7 +178,10 @@ fileprivate struct HumanPlayWindowView: View {
         .padding(16)
         .frame(minWidth: 520, minHeight: 660)
         .onAppear { snapshot = gameWatcher.snapshot() }
-        .onReceive(pollTimer) { _ in refreshSnapshot() }
+        .onReceive(
+            gameWatcher.changes
+                .throttle(for: 0.1, scheduler: RunLoop.main, latest: true)
+        ) { _ in refreshSnapshot() }
     }
 
     // MARK: - Top banner

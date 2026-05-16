@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 
 // MARK: - Dirichlet Exploration Noise
@@ -721,32 +722,34 @@ final class MPSChessPlayer: ChessPlayer {
         }
 
         return sampleScratch.withUnsafeMutableBufferPointer { scratch in
+            guard let base = scratch.baseAddress else {
+                preconditionFailure("MPSChessPlayer.sampleMove: sampleScratch baseAddress is nil")
+            }
+
             // Gather temperature-scaled logits for legal moves only.
             for i in 0..<n {
                 scratch[i] = logits[PolicyEncoding.policyIndex(legalMoves[i], currentPlayer: currentPlayer)] * invTau
             }
 
-            // Numerically stable softmax: subtract max, exp, normalize
-            // into proper probabilities (sum to 1) so any subsequent
-            // Dirichlet mix preserves normalization.
-            var maxLogit = scratch[0]
-            for i in 1..<n where scratch[i] > maxLogit {
-                maxLogit = scratch[i]
-            }
+            // Numerically stable softmax via Accelerate: subtract max,
+            // exp, normalize into proper probabilities (sum to 1) so any
+            // subsequent Dirichlet mix preserves normalization. Each
+            // stage is a single vectorized pass over scratch[0..<n].
+            let length = vDSP_Length(n)
+            var maxLogit: Float = 0
+            vDSP_maxv(base, 1, &maxLogit, length)
+            var negMax = -maxLogit
+            vDSP_vsadd(base, 1, &negMax, base, 1, length)
+            var expCount = Int32(n)
+            vvexpf(base, base, &expCount)
             var sum: Float = 0
-            for i in 0..<n {
-                let e = expf(scratch[i] - maxLogit)
-                scratch[i] = e
-                sum += e
-            }
+            vDSP_sve(base, 1, &sum, length)
             // exp() is strictly positive, so sum is strictly positive
             // whenever legalMoves is non-empty.
-            let invSum = 1 / sum
+            var invSum = 1 / sum
+            vDSP_vsmul(base, 1, &invSum, base, 1, length)
             var maxProb: Float = 0
-            for i in 0..<n {
-                scratch[i] *= invSum
-                if scratch[i] > maxProb { maxProb = scratch[i] }
-            }
+            vDSP_maxv(base, 1, &maxProb, length)
 
             // Record whether the post-temperature softmax over legal
             // moves is essentially uniform — i.e. the sampler was

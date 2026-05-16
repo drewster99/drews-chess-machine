@@ -1,3 +1,4 @@
+import Accelerate
 import SwiftUI
 
 /// `SessionController`'s engine-diagnostics battery — split out of
@@ -232,15 +233,40 @@ extension SessionController {
                 return
             }
 
-            // Per-position summary stats.
-            let mean1 = policy1.reduce(Float(0), +) / Float(policy1.count)
-            let mean2 = policy2.reduce(Float(0), +) / Float(policy2.count)
-            var var1: Float = 0
-            var var2: Float = 0
-            for v in policy1 { var1 += (v - mean1) * (v - mean1) }
-            for v in policy2 { var2 += (v - mean2) * (v - mean2) }
-            let std1 = (var1 / Float(policy1.count)).squareRoot()
-            let std2 = (var2 / Float(policy2.count)).squareRoot()
+            // Per-position summary stats — mean via vDSP_meanv,
+            // variance via vDSP_measqv (mean of squares) after
+            // subtracting mean with vDSP_vsadd.
+            var mean1: Float = 0
+            var mean2: Float = 0
+            var meanSq1: Float = 0
+            var meanSq2: Float = 0
+            policy1.withUnsafeBufferPointer { buf in
+                guard let base = buf.baseAddress else { return }
+                let n = vDSP_Length(buf.count)
+                vDSP_meanv(base, 1, &mean1, n)
+                var negMean = -mean1
+                // Use a separate temporary so we don't mutate policy1.
+                var centered = [Float](repeating: 0, count: buf.count)
+                centered.withUnsafeMutableBufferPointer { cBuf in
+                    guard let cBase = cBuf.baseAddress else { return }
+                    vDSP_vsadd(base, 1, &negMean, cBase, 1, n)
+                    vDSP_measqv(cBase, 1, &meanSq1, n)
+                }
+            }
+            policy2.withUnsafeBufferPointer { buf in
+                guard let base = buf.baseAddress else { return }
+                let n = vDSP_Length(buf.count)
+                vDSP_meanv(base, 1, &mean2, n)
+                var negMean = -mean2
+                var centered = [Float](repeating: 0, count: buf.count)
+                centered.withUnsafeMutableBufferPointer { cBuf in
+                    guard let cBase = cBuf.baseAddress else { return }
+                    vDSP_vsadd(base, 1, &negMean, cBase, 1, n)
+                    vDSP_measqv(cBase, 1, &meanSq2, n)
+                }
+            }
+            let std1 = meanSq1.squareRoot()
+            let std2 = meanSq2.squareRoot()
 
             // L1 distance + max single-cell |Δ| + per-cell average.
             var l1: Double = 0

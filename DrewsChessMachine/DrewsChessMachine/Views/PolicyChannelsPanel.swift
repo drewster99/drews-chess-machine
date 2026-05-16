@@ -1,3 +1,4 @@
+import Accelerate
 import SwiftUI
 
 /// Inline panel that decomposes the network's 4864 policy logits
@@ -233,11 +234,37 @@ struct PolicyChannelsPanel: View {
     private func thresholded(_ values: [Float]) -> [Float] {
         guard redThreshold > 0 else { return values }
         let t = Float(redThreshold)
+        let n = values.count
         if t >= 1 {
+            // Per-channel max-only mode: keep cells at the channel
+            // peak (input == 1.0) at full brightness, zero everything
+            // else. Branchless via vDSP_vthr (clamp below 1.0 → 1.0)
+            // followed by vDSP_vsadd(-1.0) (shift down to 0/positive)
+            // — but the simpler vectorized form is to multiply by an
+            // equality-comparison mask, which Accelerate doesn't
+            // provide directly. So we keep the closure form for this
+            // rare degenerate path; it only matters when the user
+            // pins the slider to exactly 1.0.
             return values.map { $0 >= 1 ? 1 : 0 }
         }
         let invSpan: Float = 1 / (1 - t)
-        return values.map { $0 >= t ? ($0 - t) * invSpan : 0 }
+        var out = [Float](repeating: 0, count: n)
+        values.withUnsafeBufferPointer { src in
+            out.withUnsafeMutableBufferPointer { dst in
+                guard let s = src.baseAddress, let d = dst.baseAddress else { return }
+                let length = vDSP_Length(n)
+                var negT = -t
+                var lo: Float = 0
+                var inv = invSpan
+                // out = max(values - t, 0) * invSpan, three vector
+                // passes replace the per-element branch + multiply in
+                // the prior `.map` form.
+                vDSP_vsadd(s, 1, &negT, d, 1, length)
+                vDSP_vthr(d, 1, &lo, d, 1, length)
+                vDSP_vsmul(d, 1, &inv, d, 1, length)
+            }
+        }
+        return out
     }
 
     // MARK: - Channel computation

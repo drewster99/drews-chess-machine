@@ -88,3 +88,13 @@ struct LegalMassChart: View {
         )
     }
 }
+
+extension LegalMassChart: Equatable {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.bucketWidthSec == rhs.bucketWidthSec
+            && lhs.allTimeMax == rhs.allTimeMax
+            && lhs.xDomain == rhs.xDomain
+            && lhs.group === rhs.group
+            && lhs.buckets == rhs.buckets
+    }
+}

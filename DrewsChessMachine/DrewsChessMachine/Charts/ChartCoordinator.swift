@@ -46,18 +46,29 @@ final class ChartCoordinator {
     /// Two-way bound to `chartScrollPosition(x:)` inside the chart
     /// grid; auto-follow updates it after each sample append.
     var scrollX: Double = 0
+    /// Shared-state object passed into every `FastLineChart` that
+    /// participates in the chart grid's synchronized crosshair. Owns
+    /// the single source of truth for the chart-grid's hover
+    /// position (`hoveredX`); `hoveredSec` below is a computed
+    /// pass-through so unmigrated Arena/Diversity tiles writing
+    /// through it land on the same Observable storage. This
+    /// collapses what used to be two `@Observable` properties +
+    /// a bidirectional `.onChange` mirror in `TrainingChartGridView`
+    /// into one — every hover update now fans out a single
+    /// observation invalidation.
+    let fastChartGroup: FastChartGroup = FastChartGroup()
+
     /// Hovered elapsed-second across every chart that participates
     /// in the synchronized crosshair; `nil` when no chart in the
-    /// grid is currently under the cursor.
-    var hoveredSec: Double?
-
-    /// Shared-state object passed into every `FastLineChart` that
-    /// participates in the chart grid's synchronized crosshair. Its
-    /// `hoveredX` is mirrored to `hoveredSec` by `TrainingChartGridView`
-    /// so the still-on-Swift-Charts tiles (Arena activity, Arena win
-    /// trend, Diversity histogram) keep their crosshair in step with
-    /// the migrated tiles.
-    let fastChartGroup: FastChartGroup = FastChartGroup()
+    /// grid is currently under the cursor. Read/written by the
+    /// still-on-Swift-Charts tiles (Arena activity, Arena win
+    /// trend, Diversity histogram) and by `ChartZoomControlRow`'s
+    /// hover-readout. Backed by `fastChartGroup.hoveredX` so the
+    /// migrated and unmigrated tiles share one Observable.
+    var hoveredSec: Double? {
+        get { fastChartGroup.hoveredX }
+        set { fastChartGroup.hoveredX = newValue }
+    }
     /// Active zoom-stop index into `ChartZoom.stops`.
     var chartZoomIdx: Int = ChartZoom.defaultIndex
     /// `true` when the chart-zoom is auto-snapping to the data span.
@@ -313,6 +324,17 @@ final class ChartCoordinator {
         let shouldFollow = abs(newValue - latestScrollX) < 1.0
         if followLatest != shouldFollow {
             followLatest = shouldFollow
+        }
+        // Skip the recompute when the new `scrollX` lands at (or near)
+        // the auto-follow target: per-heartbeat-tick this is the
+        // common case — `appendProgressRate` bumped `scrollX` and
+        // `appendTrainingChart` will recompute on the same tick.
+        // User-gesture scrolls (`shouldFollow == false`) still
+        // recompute here so the chart slides under the cursor without
+        // waiting for the next sample append. This eliminates one of
+        // the two per-tick decimation passes the old code did.
+        if shouldFollow {
+            return
         }
         recomputeDecimatedFrame()
     }

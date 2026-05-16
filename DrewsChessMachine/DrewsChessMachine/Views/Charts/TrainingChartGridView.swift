@@ -81,24 +81,28 @@ struct TrainingChartGridView: View {
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             EntropyChart(
                 buckets: frame.trainingBuckets,
                 group: fastChartGroup,
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             SmallProgressRateChart(
                 buckets: frame.progressRateBuckets,
                 group: fastChartGroup,
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             CpuGpuChart(
                 buckets: frame.trainingBuckets,
                 group: fastChartGroup,
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             MemoryChart(
                 buckets: frame.trainingBuckets,
                 totalGB: appMemoryTotalGB ?? gpuMemoryTotalGB,
@@ -106,6 +110,7 @@ struct TrainingChartGridView: View {
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             // Row 2
             PolicyLossChart(
                 buckets: frame.trainingBuckets,
@@ -113,12 +118,14 @@ struct TrainingChartGridView: View {
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             NonNegChart(
                 buckets: frame.trainingBuckets,
                 group: fastChartGroup,
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             ReplayRatioChart(
                 buckets: frame.trainingBuckets,
                 target: replayRatioTarget,
@@ -126,6 +133,7 @@ struct TrainingChartGridView: View {
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             MiniLineChart(
                 title: "pwNorm (policy head weight L2 norm)",
                 buckets: frame.trainingBuckets,
@@ -146,6 +154,7 @@ struct TrainingChartGridView: View {
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             // Row 3
             PolicyLossSplitChart(
                 buckets: frame.trainingBuckets,
@@ -153,6 +162,7 @@ struct TrainingChartGridView: View {
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             MiniLineChart(
                 title: "gNorm (gradient L2 norm)",
                 buckets: frame.trainingBuckets,
@@ -203,6 +213,7 @@ struct TrainingChartGridView: View {
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             MiniLineChart(
                 title: "vLoss (W/D/L categorical CE)",
                 buckets: frame.trainingBuckets,
@@ -259,17 +270,13 @@ struct TrainingChartGridView: View {
             )
         }
         .background(Color(nsColor: .separatorColor))
-        // Bridge hover state between the legacy hoveredSec used by
-        // the unmigrated Arena/Diversity tiles and fastChartGroup.hoveredX
-        // used by the migrated tiles. Equality-guard inside @Observable
-        // means a re-set to the same value publishes no change, so
-        // the two `.onChange` handlers don't form a feedback loop.
-        .onChange(of: fastChartGroup.hoveredX) { _, new in
-            if hoveredSec != new { hoveredSec = new }
-        }
-        .onChange(of: hoveredSec) { _, new in
-            if fastChartGroup.hoveredX != new { fastChartGroup.hoveredX = new }
-        }
+        // No hover bridge: `chartCoordinator.hoveredSec` is now a
+        // computed pass-through onto `fastChartGroup.hoveredX`, so
+        // unmigrated Arena/Diversity tiles writing through the
+        // `$hoveredSec` binding and migrated FastLineChart tiles
+        // writing to `fastChartGroup.hoveredX` land on the same
+        // Observable storage. Every hover invalidation now fans
+        // out from a single source.
     }
 
     // MARK: - Public statics (consumed by ContentView's big chart)

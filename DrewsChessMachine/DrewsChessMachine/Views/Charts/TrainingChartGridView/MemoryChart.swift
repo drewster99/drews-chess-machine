@@ -132,3 +132,13 @@ struct MemoryChart: View {
         )
     }
 }
+
+extension MemoryChart: Equatable {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.bucketWidthSec == rhs.bucketWidthSec
+            && lhs.totalGB == rhs.totalGB
+            && lhs.xDomain == rhs.xDomain
+            && lhs.group === rhs.group
+            && lhs.buckets == rhs.buckets
+    }
+}

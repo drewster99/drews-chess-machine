@@ -124,3 +124,12 @@ struct SmallProgressRateChart: View {
         return AttributedString("-- moves/hour")
     }
 }
+
+extension SmallProgressRateChart: Equatable {
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.bucketWidthSec == rhs.bucketWidthSec
+            && lhs.xDomain == rhs.xDomain
+            && lhs.group === rhs.group
+            && lhs.buckets == rhs.buckets
+    }
+}

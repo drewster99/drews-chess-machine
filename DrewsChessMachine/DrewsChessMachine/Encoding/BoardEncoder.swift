@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 
 // MARK: - Chess Types
@@ -485,9 +486,7 @@ enum BoardEncoder {
         plane: Int,
         value: Float = 1.0
     ) {
-        let start = plane * 64
-        for i in start..<(start + 64) {
-            base[i] = value
-        }
+        var v = value
+        vDSP_vfill(&v, base.advanced(by: plane * 64), 1, 64)
     }
 }
