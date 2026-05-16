@@ -43,10 +43,6 @@ struct HumanPlayBoardView: View {
     /// the slide animation finishes and even after the network has
     /// played its reply. `nil` before any move in the current game.
     let lastMoveDestinationSquare: Int?
-    /// Source square of the most recent move (visual frame). Drawn
-    /// as a slightly fainter green fill so the eye can trace the
-    /// move at a glance. `nil` before any move.
-    let lastMoveSourceSquare: Int?
     /// Square of the king currently in check (visual frame). Drawn
     /// as a red fill underneath the king sprite. `nil` when neither
     /// side is in check (or when the game has ended).
@@ -95,7 +91,6 @@ struct HumanPlayBoardView: View {
                     Self.drawSquares(
                         ctx: &ctx,
                         cellSize: cellSize,
-                        lastMoveFrom: lastMoveSourceSquare,
                         lastMoveTo: lastMoveDestinationSquare,
                         checkSquare: checkSquare
                     )
@@ -200,7 +195,6 @@ struct HumanPlayBoardView: View {
     private static func drawSquares(
         ctx: inout GraphicsContext,
         cellSize: CGFloat,
-        lastMoveFrom: Int?,
         lastMoveTo: Int?,
         checkSquare: Int?
     ) {
@@ -219,18 +213,7 @@ struct HumanPlayBoardView: View {
                 )
             }
         }
-        // Last-move source — fainter so destination dominates.
-        if let from = lastMoveFrom {
-            let row = from / 8, col = from % 8
-            let rect = CGRect(
-                x: CGFloat(col) * cellSize,
-                y: CGFloat(row) * cellSize,
-                width: cellSize,
-                height: cellSize
-            )
-            ctx.fill(Path(rect), with: .color(Color.green.opacity(0.28)))
-        }
-        // Last-move destination.
+        // Last-move destination — translucent green fill on the cell.
         if let to = lastMoveTo {
             let row = to / 8, col = to % 8
             let rect = CGRect(

@@ -288,12 +288,7 @@ fileprivate struct HumanPlayWindowView: View {
             let logical = p.toRow * 8 + p.toCol
             return humanBoardFlipped ? 63 - logical : logical
         }
-        let lastMove = snapshot.lastMove
-        let lastFromVisual: Int? = lastMove.map { mv in
-            let logical = mv.fromRow * 8 + mv.fromCol
-            return humanBoardFlipped ? 63 - logical : logical
-        }
-        let lastToVisual: Int? = lastMove.map { mv in
+        let lastToVisual: Int? = snapshot.lastMove.map { mv in
             let logical = mv.toRow * 8 + mv.toCol
             return humanBoardFlipped ? 63 - logical : logical
         }
@@ -303,7 +298,6 @@ fileprivate struct HumanPlayWindowView: View {
             selectedFromSquare: selectedVisual,
             legalMoveTargets: legalTargetsVisual,
             lastMoveDestinationSquare: lastToVisual,
-            lastMoveSourceSquare: lastFromVisual,
             checkSquare: checkVisual,
             humanMoveActive: humanPlayActive,
             humanColor: playController.isPlayingHuman ? humanColor : nil,
