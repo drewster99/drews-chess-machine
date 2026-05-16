@@ -52,7 +52,8 @@ struct LowerContentView: View {
                 legalMassMaxAllTime: chartCoordinator.legalMassMaxAllTime,
                 visibleDomainSec: ChartZoom.stops[chartCoordinator.chartZoomIdx],
                 scrollX: $chartCoordinator.scrollX,
-                hoveredSec: $chartCoordinator.hoveredSec
+                hoveredSec: $chartCoordinator.hoveredSec,
+                fastChartGroup: chartCoordinator.fastChartGroup
             )
         }
         .onChange(of: chartCoordinator.scrollX) { _, newValue in

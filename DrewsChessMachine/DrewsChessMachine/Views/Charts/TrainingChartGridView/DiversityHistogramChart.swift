@@ -40,7 +40,16 @@ struct DiversityHistogramChart: View {
             headerText = "--"
         }
         return VStack(alignment: .leading, spacing: 1) {
-            ChartTileHeader(title: "Longest move prefix", value: headerText)
+            ChartTileHeader(
+                title: "Longest move prefix",
+                value: headerText,
+                titleHelp: AttributedString("""
+                    Histogram of how far paired self-play games stay identical before diverging, \
+                    measured in plies. Buckets to the left (low ply count) are healthy — workers \
+                    are taking different opening moves. Mass moving rightward means games are \
+                    starting to look alike, an early signal of self-play diversity collapse.
+                    """)
+            )
             Chart(bars) { bar in
                 BarMark(
                     x: .value("Bucket", bar.label),

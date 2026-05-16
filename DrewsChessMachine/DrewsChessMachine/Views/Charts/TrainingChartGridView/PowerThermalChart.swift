@@ -1,116 +1,107 @@
-import Charts
 import SwiftUI
+import SwiftUIFastCharts
 
-/// Power / thermal step-trace chart (categorical).
+/// Power / thermal step-trace chart (categorical). Low-power is the
+/// 0/1 binary at the bottom; thermal-state is the 2-5 ladder
+/// (nominal/fair/serious/critical, mapped from `ThermalState.rawValue + 2`)
+/// above it.
 struct PowerThermalChart: View {
     let buckets: [TrainingBucket]
-    @Binding var hoveredSec: Double?
-    @Binding var scrollX: Double
-    let context: TrainingChartGridView.Context
+    let group: FastChartGroup
+    let xDomain: ClosedRange<Double>
+    let bucketWidthSec: Double
 
     var body: some View {
-        let readout = hoverReadout()
-        let headerText = headerText(for: readout)
-        return VStack(alignment: .leading, spacing: 1) {
-            ChartTileHeader(title: "Power / thermal", value: headerText)
-            Chart {
-                ForEach(buckets) { b in
-                    LineMark(
-                        x: .value("Time", b.elapsedSec),
-                        y: .value(
-                            "Power",
-                            b.lowPowerMode.map { $0 ? 1.0 : 0.0 } ?? .nan
+        FastLineChart(
+            title: "Power / thermal",
+            titleHelp: AttributedString("""
+                Two step traces: low-power mode (gray, 0 = off / 1 = on, at the bottom) and macOS \
+                thermal state (orange, nominal = 2 / fair = 3 / serious = 4 / critical = 5). The \
+                thermal state escalating means the system is starting to throttle — expect a \
+                training rate dip on the Progress rate tile.
+                """),
+            group: group,
+            xDomain: xDomain,
+            yDomain: 0...5.5,
+            series: [
+                FastChartSeries(
+                    id: "Low power",
+                    color: .gray,
+                    lineWidth: 1.5,
+                    interpolation: .stepEnd,
+                    data: .buckets(buckets.enumerated().map { (i, b) in
+                        FastChartBucket(
+                            id: i,
+                            x: b.elapsedSec,
+                            yMin: b.lowPowerMode.map { $0 ? 1.0 : 0.0 } ?? .nan,
+                            yMax: b.lowPowerMode.map { $0 ? 1.0 : 0.0 } ?? .nan
                         )
-                    )
-                    .foregroundStyle(by: .value("Series", "Low power"))
-                    .interpolationMethod(.stepEnd)
-                }
-                ForEach(buckets) { b in
-                    LineMark(
-                        x: .value("Time", b.elapsedSec),
-                        y: .value(
-                            "Thermal",
-                            b.thermalState.map { Self.thermalY($0) } ?? .nan
+                    })
+                ),
+                FastChartSeries(
+                    id: "Thermal",
+                    color: .orange,
+                    lineWidth: 1.5,
+                    interpolation: .stepEnd,
+                    data: .buckets(buckets.enumerated().map { (i, b) in
+                        let y = b.thermalState.map { Double($0.rawValue) + 2 } ?? .nan
+                        return FastChartBucket(
+                            id: i,
+                            x: b.elapsedSec,
+                            yMin: y,
+                            yMax: y
                         )
-                    )
-                    .foregroundStyle(by: .value("Series", "Thermal"))
-                    .interpolationMethod(.stepEnd)
-                }
-                if let t = hoveredSec {
-                    RuleMark(x: .value("Time", t))
-                        .foregroundStyle(Color.gray.opacity(0.5))
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                }
-            }
-            .chartForegroundStyleScale([
-                "Low power": Color.gray,
-                "Thermal": Color.orange
-            ])
-            .chartLegend(.hidden)
-            .chartYScale(domain: 0...5.5)
-            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 3)) { _ in AxisGridLine() } }
-            .chartYAxis {
-                AxisMarks(position: .leading, values: [0, 1, 2, 3, 4, 5]) { _ in
-                    AxisGridLine()
-                }
-            }
-            .chartXScale(domain: context.timeSeriesXDomain)
-            .chartScrollableAxes(.horizontal)
-            .chartXVisibleDomain(length: context.visibleDomainSec)
-            .chartScrollPosition(x: $scrollX)
-            .chartOverlay { proxy in
-                ChartHoverOverlay(proxy: proxy, hoveredSec: $hoveredSec)
-            }
-        }
+                    })
+                )
+            ],
+            yTickValues: [0, 1, 2, 3, 4, 5],
+            yLabelFormatter: { String(format: "%.0f", $0) },
+            legend: .off,
+            headerValue: { ctx in headerString(at: ctx.hoveredX) }
+        )
         .frame(height: 75)
         .chartCard()
     }
 
-    private enum Readout {
-        case notHovering
-        case hoveringNoData(time: Double)
-        case hoveringWithData(time: Double, lowPower: Bool, thermal: ProcessInfo.ThermalState)
-    }
-
-    private func hoverReadout() -> Readout {
-        guard let t = hoveredSec else { return .notHovering }
-        let tolerance = Swift.max(
-            TrainingChartGridView.hoverMatchToleranceSec,
-            context.bucketWidthSec * 1.5
-        )
-        guard let bucket = TrainingChartGridView.nearestTrainingBucket(
-            at: t, in: buckets, tolerance: tolerance
-        ) else {
-            return .hoveringNoData(time: t)
-        }
-        guard let lp = bucket.lowPowerMode, let ts = bucket.thermalState else {
-            return .hoveringNoData(time: t)
-        }
-        return .hoveringWithData(time: bucket.elapsedSec, lowPower: lp, thermal: ts)
-    }
-
-    private func headerText(for readout: Readout) -> String {
-        switch readout {
-        case .notHovering:
-            if let latest = buckets.last {
-                let powerStr = (latest.lowPowerMode ?? false) ? "on" : "off"
-                let thermStr: String
-                if let ts = latest.thermalState {
-                    thermStr = Self.thermalStateName(ts)
-                } else {
-                    thermStr = "--"
-                }
-                return "lowpwr=\(powerStr)  thermal=\(thermStr)"
+    private func headerString(at hoveredX: Double?) -> AttributedString {
+        let lp: Bool?
+        let ts: ProcessInfo.ThermalState?
+        let isHovering = hoveredX != nil
+        if let t = hoveredX {
+            if let b = nearest(at: t) {
+                lp = b.lowPowerMode
+                ts = b.thermalState
             } else {
-                return "--"
+                lp = nil
+                ts = nil
             }
-        case .hoveringNoData:
-            return "— no data"
-        case .hoveringWithData(_, let lp, let ts):
-            let powerStr = lp ? "on" : "off"
-            let thermStr = Self.thermalStateName(ts)
-            return "lowpwr=\(powerStr)  thermal=\(thermStr)"
+        } else if let b = buckets.last {
+            lp = b.lowPowerMode
+            ts = b.thermalState
+        } else {
+            lp = nil
+            ts = nil
         }
+        if isHovering && lp == nil && ts == nil {
+            return AttributedString("— no data")
+        }
+        if lp == nil && ts == nil {
+            return AttributedString("--")
+        }
+        let powerStr = (lp ?? false) ? "on" : "off"
+        let thermStr = ts.map(Self.thermalStateName) ?? "--"
+        return AttributedString("lowpwr=\(powerStr)  thermal=\(thermStr)")
+    }
+
+    private func nearest(at t: Double) -> TrainingBucket? {
+        TrainingChartGridView.nearestTrainingBucket(
+            at: t,
+            in: buckets,
+            tolerance: Swift.max(
+                TrainingChartGridView.hoverMatchToleranceSec,
+                bucketWidthSec * 1.5
+            )
+        )
     }
 
     private static func thermalStateName(_ state: ProcessInfo.ThermalState) -> String {
@@ -121,9 +112,5 @@ struct PowerThermalChart: View {
         case .critical: return "critical"
         @unknown default: return "unknown"
         }
-    }
-
-    private static func thermalY(_ state: ProcessInfo.ThermalState) -> Double {
-        Double(state.rawValue) + 2
     }
 }

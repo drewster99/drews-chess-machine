@@ -1,65 +1,84 @@
-import Charts
 import SwiftUI
+import SwiftUIFastCharts
 
 /// Replay ratio tile — line + dashed reference at the user target.
 struct ReplayRatioChart: View {
     let buckets: [TrainingBucket]
     let target: Double
-    @Binding var hoveredSec: Double?
-    @Binding var scrollX: Double
-    let context: TrainingChartGridView.Context
+    let group: FastChartGroup
+    let xDomain: ClosedRange<Double>
+    let bucketWidthSec: Double
 
     var body: some View {
-        let readout = TrainingChartGridView.hoverReadoutTraining(
-            hoveredSec: hoveredSec,
-            buckets: buckets,
-            accessor: { $0.replayRatio },
-            bucketWidthSec: context.bucketWidthSec
+        let yMax = yMaxObserved()
+        return FastLineChart(
+            title: "Replay ratio",
+            titleHelp: AttributedString("""
+                Ratio of training positions consumed to self-play positions produced, computed \
+                continuously by the ReplayRatioController. Dashed red line is the configured target; \
+                when auto-adjust is on, the controller nudges the training step delay to keep the \
+                trace near that target.
+                """),
+            group: group,
+            xDomain: xDomain,
+            yDomain: 0...yMax,
+            series: [
+                FastChartSeries(
+                    id: "Replay ratio",
+                    color: .green,
+                    lineWidth: 1.5,
+                    data: .buckets(buckets.enumerated().map { (i, b) in
+                        FastChartBucket(
+                            id: i,
+                            x: b.elapsedSec,
+                            yMin: b.replayRatio?.min ?? .nan,
+                            yMax: b.replayRatio?.max ?? .nan
+                        )
+                    })
+                )
+            ],
+            referenceLines: [
+                FastChartReferenceLine(
+                    id: "target",
+                    y: target,
+                    label: String(format: "target %.2f", target),
+                    color: Color.red.opacity(0.6),
+                    lineWidth: 1,
+                    dashed: true
+                )
+            ],
+            headerValue: { ctx in headerString(at: ctx.hoveredX) }
         )
-        let headerText: String
-        switch readout {
-        case .notHovering:
-            if let v = buckets.last?.replayRatio?.max {
-                headerText = String(format: "%.2f (target %.2f)", v, target)
-            } else {
-                headerText = String(format: "-- (target %.2f)", target)
-            }
-        case .hoveringNoData:
-            headerText = "— no data"
-        case .hoveringWithData(_, let v):
-            headerText = String(format: "%.2f (target %.2f)", v, target)
-        }
-        return VStack(alignment: .leading, spacing: 1) {
-            ChartTileHeader(title: "Replay ratio", value: headerText)
-            Chart {
-                RuleMark(y: .value("Target", target))
-                    .foregroundStyle(Color.red.opacity(0.6))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                ForEach(buckets) { b in
-                    LineMark(
-                        x: .value("Time", b.elapsedSec),
-                        y: .value("Replay ratio", b.replayRatio?.max ?? .nan)
-                    )
-                    .foregroundStyle(.green)
-                }
-                if let t = hoveredSec {
-                    RuleMark(x: .value("Time", t))
-                        .foregroundStyle(Color.gray.opacity(0.5))
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                }
-                if case .hoveringWithData(let t, let v) = readout {
-                    PointMark(x: .value("Time", t), y: .value("Replay ratio", v))
-                        .foregroundStyle(.green)
-                        .symbolSize(40)
-                }
-            }
-            .modifier(StandardTimeSeriesChartModifiers(
-                context: context,
-                scrollX: $scrollX,
-                hoveredSec: $hoveredSec
-            ))
-        }
         .frame(height: 75)
         .chartCard()
+    }
+
+    private func yMaxObserved() -> Double {
+        let observed = buckets.compactMap { $0.replayRatio?.max }.max() ?? 0
+        return Swift.max(observed * 1.1, target * 1.1, 0.1)
+    }
+
+    private func headerString(at hoveredX: Double?) -> AttributedString {
+        if let t = hoveredX {
+            if let v = nearest(at: t)?.replayRatio?.max {
+                return AttributedString(String(format: "%.2f (target %.2f)", v, target))
+            }
+            return AttributedString("— no data")
+        }
+        if let v = buckets.last?.replayRatio?.max {
+            return AttributedString(String(format: "%.2f (target %.2f)", v, target))
+        }
+        return AttributedString(String(format: "-- (target %.2f)", target))
+    }
+
+    private func nearest(at t: Double) -> TrainingBucket? {
+        TrainingChartGridView.nearestTrainingBucket(
+            at: t,
+            in: buckets,
+            tolerance: Swift.max(
+                TrainingChartGridView.hoverMatchToleranceSec,
+                bucketWidthSec * 1.5
+            )
+        )
     }
 }

@@ -42,7 +42,16 @@ struct ArenaWinChart: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            ChartTileHeader(title: "Arena win %", value: headerText)
+            ChartTileHeader(
+                title: "Arena win %",
+                value: headerText,
+                titleHelp: AttributedString("""
+                    Candidate score from each arena tournament — fraction of games won, with draws \
+                    counting 0.5 — plotted as a connected trend. Dashed orange line is the \
+                    promotion threshold; dots are green when the arena promoted, gray when it \
+                    was kept. Companion to the Arena activity tile.
+                    """)
+            )
             Chart {
                 // Connecting line — shows the score trajectory across
                 // arenas. Drawn first so the per-point colored markers
@@ -65,7 +74,11 @@ struct ArenaWinChart: View {
                         y: .value("Score", e.score)
                     )
                     .foregroundStyle(e.promoted ? Color.green : Color.gray)
-                    .symbolSize(hoverArena?.id == e.id ? 80 : 30)
+                    // Small dots so 100+ arenas don't visually
+                    // merge into a continuous band at wide zoom;
+                    // hover state still bumps the dot up to a
+                    // readable size.
+                    .symbolSize(hoverArena?.id == e.id ? 60 : 10)
                 }
                 // Promotion threshold reference line — dashed orange
                 // so the reader can see at a glance how often the

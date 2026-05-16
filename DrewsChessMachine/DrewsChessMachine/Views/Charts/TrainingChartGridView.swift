@@ -1,5 +1,6 @@
 import Charts
 import SwiftUI
+import SwiftUIFastCharts
 
 /// Grid of compact training-metric charts. All charts share a
 /// synchronized horizontal scroll position and a single hover
@@ -11,63 +12,30 @@ import SwiftUI
 /// constructed from `frame.trainingBuckets` (or
 /// `frame.progressRateBuckets`) plus the static configuration the
 /// chart needs. The hover position is owned by the parent
-/// (`LowerContentView`) so it can drive both the grid and the
-/// large progress-rate chart in one shared selection state.
+/// (`LowerContentView`) — the migrated tiles drive it through
+/// `fastChartGroup.hoveredX`; the unmigrated Arena and Diversity
+/// tiles still write to `hoveredSec` via SwiftUI Charts'
+/// `chartOverlay`. The grid bridges the two so the crosshair
+/// stays in sync.
 struct TrainingChartGridView: View {
     let frame: DecimatedChartFrame
-    /// Current divergence-ply histogram bars (one per bucket) from
-    /// the self-play diversity tracker. `nil` or empty while Play-
-    /// and-Train isn't running or before the first game finishes.
     let diversityHistogram: [DiversityHistogramBar]
-    /// Completed arena tournaments for this session, in order. Each
-    /// carries its elapsed start/end time plus score + promotion
-    /// flag so the arena activity chart can show duration bands
-    /// colored by outcome.
     let arenaEvents: [ArenaChartEvent]
-    /// Elapsed-second mark when the currently-in-progress arena
-    /// began, or `nil` if no arena is running. When non-nil, the
-    /// arena activity chart renders a live band in a distinctive
-    /// blue tint from this start up to the latest chart sample so
-    /// an arena is visible ON the chart the whole time it runs,
-    /// not just after it ends.
     let activeArenaStartElapsed: Double?
-    /// Promotion threshold used by the arena chart's horizontal
-    /// reference line. Matches `ContentView.tournamentPromoteThreshold`;
-    /// pulled through as a parameter so the grid stays decoupled
-    /// from ContentView's compile unit.
     let promoteThreshold: Double
-    /// Target replay ratio (consumption / production). Drawn as a
-    /// dashed horizontal reference line on the Replay ratio tile so
-    /// the reader can see how far the auto-adjust controller is
-    /// missing at a glance.
     let replayRatioTarget: Double
-    /// Current gradient-clip global L2 cap. Drawn as a dashed
-    /// horizontal reference line on the gNorm tile so the reader can
-    /// see at a glance whether the optimizer is being clipped — when
-    /// the gNorm trace sits above this line, every weight's gradient
-    /// is being scaled by `clipMax/gNorm`. Sourced from
-    /// `TrainingParameters.shared.gradClipMaxNorm`; updates next
-    /// re-render after the user changes it via the popover.
     let gradClipMaxNorm: Double
-    /// Unified-memory total in GB, used by the combined memory tile
-    /// to render the `App X · GPU Y / Total GB (pct%)` header. The
-    /// `app` and `gpu` totals are both derived from
-    /// `ProcessInfo.physicalMemory` (unified memory), so either one
-    /// is sufficient — both are accepted only because the upstream
-    /// plumbing predates the chart consolidation.
     let appMemoryTotalGB: Double?
     let gpuMemoryTotalGB: Double?
-    /// Session-wide running max of rolling legal-mass. Drives the
-    /// tiered Y-axis on the legal-mass tile (top = 0.5 / 0.75 / 1.0
-    /// based on the highest value seen all session, not just in the
-    /// visible window). Sourced from `ChartCoordinator`.
     let legalMassMaxAllTime: Double
     let visibleDomainSec: Double
     @Binding var scrollX: Double
-    /// Shared hover selection across every time-series chart. Set
-    /// by each chart's `chartOverlay` and read back by the others
-    /// to draw a synchronized crosshair.
     @Binding var hoveredSec: Double?
+    /// Shared hover state for the new path-based chart tiles. The
+    /// grid's `.onChange` blocks below mirror this to/from
+    /// `hoveredSec` so the still-on-Swift-Charts Arena and Diversity
+    /// tiles share the crosshair sync.
+    let fastChartGroup: FastChartGroup
 
     /// Derived shared context handed to every chart subview.
     private var context: Context {
@@ -84,74 +52,79 @@ struct TrainingChartGridView: View {
         )
     }
 
+    /// Visible-X domain in elapsed seconds, computed once per
+    /// render — `[scrollX, scrollX + visibleDomainSec]`. Handed to
+    /// every migrated `FastLineChart` tile. The path builder uses
+    /// this as the rendered slice; widening the visible window or
+    /// auto-following the latest sample re-renders every tile by
+    /// changing this value.
+    private var migratedXDomain: ClosedRange<Double> {
+        let lo = max(0, scrollX)
+        let hi = lo + max(0.001, visibleDomainSec)
+        return lo...hi
+    }
+
     private static let columns = Array(
         repeating: GridItem(.flexible(), spacing: 1),
         count: 5
     )
 
     var body: some View {
-        // 5 columns × 4 rows, filled row-major:
-        //   Row 1: legal-mass, policy entropy, progress rate (small),
-        //          CPU %, RAM (App + GPU on shared axes)
-        //   Row 2: pLoss, non-negligible policy count, replay
-        //          ratio, pwNorm, power / thermal
-        //   Row 3: pLoss split, gNorm, ||v|| (velocity L2 norm),
-        //          longest move prefix histogram, arena activity
-        //   Row 4 (value head): W/D/L probabilities, vLoss, vMean,
-        //          vAbs, arena win % trend
-        LazyVGrid(columns: Self.columns, spacing: 1) {
+        let xDomain = migratedXDomain
+        let bucketWidthSec = context.bucketWidthSec
+        return LazyVGrid(columns: Self.columns, spacing: 1) {
             // Row 1
             LegalMassChart(
                 buckets: frame.trainingBuckets,
                 allTimeMax: legalMassMaxAllTime,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             EntropyChart(
                 buckets: frame.trainingBuckets,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             SmallProgressRateChart(
                 buckets: frame.progressRateBuckets,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             CpuGpuChart(
                 buckets: frame.trainingBuckets,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             MemoryChart(
                 buckets: frame.trainingBuckets,
                 totalGB: appMemoryTotalGB ?? gpuMemoryTotalGB,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             // Row 2
             PolicyLossChart(
                 buckets: frame.trainingBuckets,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             NonNegChart(
                 buckets: frame.trainingBuckets,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             ReplayRatioChart(
                 buckets: frame.trainingBuckets,
                 target: replayRatioTarget,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             MiniLineChart(
                 title: "pwNorm (policy head weight L2 norm)",
@@ -159,22 +132,26 @@ struct TrainingChartGridView: View {
                 rangeAccessor: { $0.policyHeadWeightNorm },
                 unit: "",
                 color: .indigo,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
+                titleHelp: AttributedString("""
+                    L2 norm of the policy head's weights. Steady growth tracks learning; a sudden \
+                    collapse can indicate the head is being driven toward a degenerate solution.
+                    """)
             )
             PowerThermalChart(
                 buckets: frame.trainingBuckets,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             // Row 3
             PolicyLossSplitChart(
                 buckets: frame.trainingBuckets,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             MiniLineChart(
                 title: "gNorm (gradient L2 norm)",
@@ -182,11 +159,17 @@ struct TrainingChartGridView: View {
                 rangeAccessor: { $0.gradNorm },
                 unit: "",
                 color: .pink,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context,
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
                 referenceLine: gradClipMaxNorm,
-                referenceLineLabel: String(format: "clip %.0f", gradClipMaxNorm)
+                referenceLineLabel: String(format: "clip %.0f", gradClipMaxNorm),
+                titleHelp: AttributedString("""
+                    Pre-clip global L2 norm of the gradient across all trainable parameters. Reported \
+                    every step. Dashed red line is the gradient-clip ceiling — values above mean the \
+                    optimizer is rescaling the step by clip / gNorm. Frequent clipping right after a \
+                    promotion is common while the trainer absorbs the weight swap.
+                    """)
             )
             MiniLineChart(
                 title: "||v|| (velocity L2 norm)",
@@ -194,9 +177,14 @@ struct TrainingChartGridView: View {
                 rangeAccessor: { $0.velocityNorm },
                 unit: "",
                 color: .purple,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
+                titleHelp: AttributedString("""
+                    L2 norm of the optimizer's velocity (momentum buffer) across all parameters. \
+                    Slow drift or steady growth is normal; sudden drops or unbounded growth can \
+                    indicate trainer instability.
+                    """)
             )
             DiversityHistogramChart(bars: diversityHistogram)
             ArenaActivityChart(
@@ -211,9 +199,9 @@ struct TrainingChartGridView: View {
             // Row 4 — value head (post-WDL switch)
             WDLProbabilityChart(
                 buckets: frame.trainingBuckets,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec
             )
             MiniLineChart(
                 title: "vLoss (W/D/L categorical CE)",
@@ -221,9 +209,14 @@ struct TrainingChartGridView: View {
                 rangeAccessor: { $0.valueLoss },
                 unit: "",
                 color: .cyan,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
+                titleHelp: AttributedString("""
+                    Categorical cross-entropy of the value head's W/D/L softmax against the game's \
+                    one-hot result. Range is roughly [0, ln 3 ≈ 1.10]; values below ln 3 mean the \
+                    head is doing better than uniform.
+                    """)
             )
             MiniLineChart(
                 title: "vMean (p_win − p_loss)",
@@ -231,11 +224,16 @@ struct TrainingChartGridView: View {
                 rangeAccessor: { $0.valueMean },
                 unit: "",
                 color: .teal,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context,
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
                 referenceLine: 0,
-                referenceLineColor: Color.gray.opacity(0.4)
+                referenceLineColor: Color.gray.opacity(0.4),
+                titleHelp: AttributedString("""
+                    Batch mean of the derived value scalar v = p_win − p_loss, in [-1, +1]. \
+                    Negative means the head leans "losing" on average across the batch; zero is \
+                    the neutral expectation.
+                    """)
             )
             MiniLineChart(
                 title: "vAbs |p_win − p_loss|",
@@ -243,14 +241,15 @@ struct TrainingChartGridView: View {
                 rangeAccessor: { $0.valueAbsMean },
                 unit: "",
                 color: .mint,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
+                group: fastChartGroup,
+                xDomain: xDomain,
+                bucketWidthSec: bucketWidthSec,
+                titleHelp: AttributedString("""
+                    Batch mean of |p_win − p_loss|. Higher = more confident value-head predictions \
+                    on average; very low means "everything looks like a draw" — a classic \
+                    value-head collapse symptom.
+                    """)
             )
-            // Arena win % trend — one point per completed arena, line
-            // connecting them. Companion to the row-3 ArenaActivityChart
-            // (same data source); ActivityChart shows arenas as
-            // duration bands, this chart shows the score trajectory.
             ArenaWinChart(
                 events: arenaEvents,
                 promoteThreshold: promoteThreshold,
@@ -260,6 +259,17 @@ struct TrainingChartGridView: View {
             )
         }
         .background(Color(nsColor: .separatorColor))
+        // Bridge hover state between the legacy hoveredSec used by
+        // the unmigrated Arena/Diversity tiles and fastChartGroup.hoveredX
+        // used by the migrated tiles. Equality-guard inside @Observable
+        // means a re-set to the same value publishes no change, so
+        // the two `.onChange` handlers don't form a feedback loop.
+        .onChange(of: fastChartGroup.hoveredX) { _, new in
+            if hoveredSec != new { hoveredSec = new }
+        }
+        .onChange(of: hoveredSec) { _, new in
+            if fastChartGroup.hoveredX != new { fastChartGroup.hoveredX = new }
+        }
     }
 
     // MARK: - Public statics (consumed by ContentView's big chart)

@@ -1333,6 +1333,17 @@ struct UpperContentView: View {
                     onHoverSquare: { sq in
                         hoveredBoardSquare = sq
                     },
+                    // Reset action wired to the button under the board.
+                    // Drops the forward-pass demo's editable position
+                    // back to the standard starting position and
+                    // requests a fresh forward pass (routes correctly
+                    // for both pure forward-pass and Candidate-test
+                    // modes via `requestForwardPassReeval`).
+                    onResetBoard: {
+                        editableState = .starting
+                        inferenceResult = nil
+                        requestForwardPassReeval()
+                    },
                     // The main window's inline board no longer accepts
                     // human-play taps — human games render in their own
                     // window (HumanPlayWindow) where the click routing,

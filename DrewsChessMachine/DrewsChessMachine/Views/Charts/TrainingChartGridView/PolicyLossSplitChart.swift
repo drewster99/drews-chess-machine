@@ -1,111 +1,127 @@
-import Charts
 import SwiftUI
+import SwiftUIFastCharts
 
-/// Upper-left tile (replaces the legacy "Loss (pLoss + vLoss)"
-/// total-loss sparkgraph). Plots two outcome-partitioned series:
-/// the policy loss restricted to win-outcome batch positions
-/// (`pLossWin`) and to loss-outcome positions (`pLossLoss`).
-/// The total-loss curve is ambiguous because outcome-weighted CE
-/// flips sign with z; splitting by outcome makes both lines
-/// individually interpretable.
+/// Two outcome-partitioned policy-loss series — `pLossWin` (green)
+/// and `pLossLoss` (red). Includes a faint dashed 0-line so the
+/// sign of each curve is readable at a glance.
 struct PolicyLossSplitChart: View {
     let buckets: [TrainingBucket]
-    @Binding var hoveredSec: Double?
-    @Binding var scrollX: Double
-    let context: TrainingChartGridView.Context
-
-    // Per-series hover readouts — when the cursor moves, read the
-    // bucket that corresponds to the hovered time rather than the
-    // most-recent bucket. Without this the crosshair RuleMark moves
-    // but the header value sits stuck at the last sample.
-    private var winReadout: TrainingChartGridView.HoverReadout {
-        TrainingChartGridView.hoverReadoutTraining(
-            hoveredSec: hoveredSec,
-            buckets: buckets,
-            accessor: { $0.policyLossWin },
-            bucketWidthSec: context.bucketWidthSec
-        )
-    }
-    private var lossReadout: TrainingChartGridView.HoverReadout {
-        TrainingChartGridView.hoverReadoutTraining(
-            hoveredSec: hoveredSec,
-            buckets: buckets,
-            accessor: { $0.policyLossLoss },
-            bucketWidthSec: context.bucketWidthSec
-        )
-    }
-
-    private var headerText: String {
-        let winStr = TrainingChartGridView.readoutValueString(
-            winReadout, lastBucketValue: buckets.last?.policyLossWin?.max, format: "%+.4f"
-        )
-        let lossStr = TrainingChartGridView.readoutValueString(
-            lossReadout, lastBucketValue: buckets.last?.policyLossLoss?.max, format: "%+.4f"
-        )
-        if winStr == "--" && lossStr == "--" {
-            switch winReadout {
-            case .hoveringNoData, .hoveringWithData:
-                return "— no data"
-            case .notHovering:
-                return "--"
-            }
-        }
-        return "win \(winStr) / loss \(lossStr)"
-    }
+    let group: FastChartGroup
+    let xDomain: ClosedRange<Double>
+    let bucketWidthSec: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            ChartTileHeader(title: "pLoss split (W vs L)", value: headerText)
-            Chart {
-                chartContent
-            }
-            .chartForegroundStyleScale([
-                "pLossWin": Color.green,
-                "pLossLoss": Color.red
-            ])
-            .modifier(StandardTimeSeriesChartModifiers(
-                context: context,
-                scrollX: $scrollX,
-                hoveredSec: $hoveredSec
-            ))
-        }
+        let yRange = observedYRange()
+        return FastLineChart(
+            title: "pLoss split (W vs L)",
+            titleHelp: AttributedString("""
+                Policy loss restricted to batch positions whose game ended in a win (pLossWin, green) \
+                versus a loss (pLossLoss, red), from the current player's perspective. Outcome-weighted \
+                CE flips sign with the game's z, so the total-loss curve is hard to read; splitting by \
+                outcome makes each side individually interpretable.
+                """),
+            group: group,
+            xDomain: xDomain,
+            yDomain: yRange,
+            series: [
+                FastChartSeries(
+                    id: "pLossWin",
+                    color: .green,
+                    lineWidth: 1.5,
+                    data: .buckets(buckets.enumerated().map { (i, b) in
+                        FastChartBucket(
+                            id: i,
+                            x: b.elapsedSec,
+                            yMin: b.policyLossWin?.min ?? .nan,
+                            yMax: b.policyLossWin?.max ?? .nan
+                        )
+                    })
+                ),
+                FastChartSeries(
+                    id: "pLossLoss",
+                    color: .red,
+                    lineWidth: 1.5,
+                    data: .buckets(buckets.enumerated().map { (i, b) in
+                        FastChartBucket(
+                            id: i,
+                            x: b.elapsedSec,
+                            yMin: b.policyLossLoss?.min ?? .nan,
+                            yMax: b.policyLossLoss?.max ?? .nan
+                        )
+                    })
+                )
+            ],
+            referenceLines: [
+                FastChartReferenceLine(
+                    id: "zero",
+                    y: 0,
+                    label: nil,
+                    color: Color.gray.opacity(0.4),
+                    lineWidth: 0.5,
+                    dashed: true
+                )
+            ],
+            legend: .off,
+            headerValue: { ctx in headerString(at: ctx.hoveredX) }
+        )
         .frame(height: 75)
         .chartCard()
     }
 
-    @ChartContentBuilder
-    private var chartContent: some ChartContent {
-        ForEach(buckets) { b in
-            LineMark(
-                x: .value("Time", b.elapsedSec),
-                y: .value("pLoss", b.policyLossWin?.max ?? .nan)
+    private func observedYRange() -> ClosedRange<Double> {
+        let allMax = buckets.compactMap { $0.policyLossWin?.max }
+            + buckets.compactMap { $0.policyLossLoss?.max }
+        let allMin = buckets.compactMap { $0.policyLossWin?.min }
+            + buckets.compactMap { $0.policyLossLoss?.min }
+        let lo = Swift.min(allMin.min() ?? -0.5, 0) - 0.05
+        let hi = Swift.max(allMax.max() ?? 0.5, 0) + 0.05
+        if lo == hi { return (lo - 0.5)...(hi + 0.5) }
+        return lo...hi
+    }
+
+    private func headerString(at hoveredX: Double?) -> AttributedString {
+        let winV: Double?
+        let lossV: Double?
+        let isHovering = hoveredX != nil
+        if let t = hoveredX {
+            if let b = nearest(at: t) {
+                winV = b.policyLossWin?.max
+                lossV = b.policyLossLoss?.max
+            } else {
+                winV = nil
+                lossV = nil
+            }
+        } else {
+            winV = buckets.last?.policyLossWin?.max
+            lossV = buckets.last?.policyLossLoss?.max
+        }
+        if isHovering && winV == nil && lossV == nil {
+            return AttributedString("— no data")
+        }
+        if winV == nil && lossV == nil {
+            return AttributedString("--")
+        }
+        let winStr = winV.map { String(format: "%+.4f", $0) } ?? "--"
+        let lossStr = lossV.map { String(format: "%+.4f", $0) } ?? "--"
+        var out = AttributedString("win ")
+        var winPart = AttributedString(winStr)
+        winPart.foregroundColor = .green
+        out.append(winPart)
+        out.append(AttributedString(" / loss "))
+        var lossPart = AttributedString(lossStr)
+        lossPart.foregroundColor = .red
+        out.append(lossPart)
+        return out
+    }
+
+    private func nearest(at t: Double) -> TrainingBucket? {
+        TrainingChartGridView.nearestTrainingBucket(
+            at: t,
+            in: buckets,
+            tolerance: Swift.max(
+                TrainingChartGridView.hoverMatchToleranceSec,
+                bucketWidthSec * 1.5
             )
-            .foregroundStyle(by: .value("Series", "pLossWin"))
-        }
-        ForEach(buckets) { b in
-            LineMark(
-                x: .value("Time", b.elapsedSec),
-                y: .value("pLoss", b.policyLossLoss?.max ?? .nan)
-            )
-            .foregroundStyle(by: .value("Series", "pLossLoss"))
-        }
-        RuleMark(y: .value("Zero", 0.0))
-            .foregroundStyle(Color.gray.opacity(0.4))
-            .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
-        if let t = hoveredSec {
-            RuleMark(x: .value("Time", t))
-                .foregroundStyle(Color.gray.opacity(0.5))
-                .lineStyle(StrokeStyle(lineWidth: 1))
-        }
-        if case .hoveringWithData(let t, let v) = winReadout {
-            PointMark(x: .value("Time", t), y: .value("pLoss", v))
-                .foregroundStyle(Color.green)
-                .symbolSize(40)
-        }
-        if case .hoveringWithData(let t, let v) = lossReadout {
-            PointMark(x: .value("Time", t), y: .value("pLoss", v))
-                .foregroundStyle(Color.red)
-                .symbolSize(40)
-        }
+        )
     }
 }

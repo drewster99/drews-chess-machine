@@ -1,100 +1,130 @@
-import Charts
 import SwiftUI
+import SwiftUIFastCharts
 
-/// Generic single-series mini chart used by CPU%, GPU%, and gNorm.
+/// Generic single-series mini chart used for pwNorm, gNorm, ||v||,
+/// and the value-head row metrics. Optional dashed horizontal
+/// reference line + label.
 struct MiniLineChart: View {
     let title: String
     let buckets: [TrainingBucket]
     let rangeAccessor: (TrainingBucket) -> ChartBucketRange?
     let unit: String
     let color: Color
-    @Binding var hoveredSec: Double?
-    @Binding var scrollX: Double
-    let context: TrainingChartGridView.Context
+    let group: FastChartGroup
+    let xDomain: ClosedRange<Double>
+    let bucketWidthSec: Double
     var wholeNumber: Bool = false
-    /// Optional dashed horizontal reference line (e.g. the
-    /// `gradClipMaxNorm` cap on the gNorm tile). Rendered as a
-    /// `RuleMark(y:)` with `referenceLineColor`. The header value
-    /// continues to reflect the data series, not the reference.
+    /// Optional dashed horizontal reference line value (e.g. the
+    /// `gradClipMaxNorm` cap on the gNorm tile).
     var referenceLine: Double? = nil
-    /// Short label rendered at the right end of the reference line
+    /// Short label rendered at the right edge of the reference line
     /// (e.g. `"clip 10"`). Ignored when `referenceLine` is nil.
     var referenceLineLabel: String? = nil
-    /// Color for the reference line. Defaults to a subdued red so
-    /// "your data is at / above this threshold" reads visually.
+    /// Color for the reference line. Defaults to a subdued red.
     var referenceLineColor: Color = Color.red.opacity(0.55)
+    /// Brief description shown in a popover when the user clicks the
+    /// chart's title. Varies per call site — pwNorm / gNorm / ||v|| /
+    /// vLoss / vMean / vAbs each pass their own description through.
+    var titleHelp: AttributedString? = nil
 
     var body: some View {
-        let readout = TrainingChartGridView.hoverReadoutTraining(
-            hoveredSec: hoveredSec,
-            buckets: buckets,
-            accessor: rangeAccessor,
-            bucketWidthSec: context.bucketWidthSec
+        let yRange = observedYRange()
+        return FastLineChart(
+            title: title,
+            titleHelp: titleHelp,
+            group: group,
+            xDomain: xDomain,
+            yDomain: yRange,
+            series: [
+                FastChartSeries(
+                    id: title,
+                    color: color,
+                    lineWidth: 1.5,
+                    data: .buckets(buckets.enumerated().map { (i, b) in
+                        let r = rangeAccessor(b)
+                        return FastChartBucket(
+                            id: i,
+                            x: b.elapsedSec,
+                            yMin: r?.min ?? .nan,
+                            yMax: r?.max ?? .nan
+                        )
+                    })
+                )
+            ],
+            referenceLines: referenceLine.map { ref in
+                [FastChartReferenceLine(
+                    id: "ref",
+                    y: ref,
+                    label: referenceLineLabel,
+                    color: referenceLineColor,
+                    lineWidth: 1,
+                    dashed: true
+                )]
+            } ?? [],
+            headerValue: { ctx in headerString(at: ctx.hoveredX) }
         )
-        let unitSuffix = unit.isEmpty ? "" : " \(unit)"
-        let headerText: String
-        switch readout {
-        case .notHovering:
-            if let v = buckets.last.flatMap({ rangeAccessor($0)?.max }) {
-                let valueStr = wholeNumber ? String(Int(v)) : TrainingChartGridView.compactLabel(v)
-                headerText = "\(valueStr)\(unitSuffix)"
-            } else {
-                headerText = "--"
-            }
-        case .hoveringNoData:
-            headerText = "— no data"
-        case .hoveringWithData(_, let v):
-            let valueStr = wholeNumber ? String(Int(v)) : TrainingChartGridView.compactLabel(v)
-            headerText = "\(valueStr)\(unitSuffix)"
-        }
-        return VStack(alignment: .leading, spacing: 1) {
-            ChartTileHeader(title: title, value: headerText)
-            Chart {
-                ForEach(buckets) { b in
-                    LineMark(
-                        x: .value("Time", b.elapsedSec),
-                        y: .value(title, rangeAccessor(b)?.max ?? .nan)
-                    )
-                    .foregroundStyle(color)
-                }
-                // Optional dashed horizontal reference line (e.g.
-                // gradClipMaxNorm on the gNorm tile). Drawn beneath
-                // the hover crosshair so the crosshair stays the
-                // visual focus when you're inspecting a sample.
-                if let ref = referenceLine {
-                    RuleMark(y: .value("ref", ref))
-                        .foregroundStyle(referenceLineColor)
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .annotation(
-                            position: .topTrailing,
-                            alignment: .topTrailing,
-                            spacing: 1
-                        ) {
-                            if let label = referenceLineLabel {
-                                Text(label)
-                                    .font(.caption2)
-                                    .foregroundStyle(referenceLineColor)
-                            }
-                        }
-                }
-                if let t = hoveredSec {
-                    RuleMark(x: .value("Time", t))
-                        .foregroundStyle(Color.gray.opacity(0.5))
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                }
-                if case .hoveringWithData(let t, let v) = readout {
-                    PointMark(x: .value("Time", t), y: .value(title, v))
-                        .foregroundStyle(color)
-                        .symbolSize(40)
-                }
-            }
-            .modifier(StandardTimeSeriesChartModifiers(
-                context: context,
-                scrollX: $scrollX,
-                hoveredSec: $hoveredSec
-            ))
-        }
         .frame(height: 75)
         .chartCard()
+    }
+
+    private func observedYRange() -> ClosedRange<Double> {
+        let maxes = buckets.compactMap { rangeAccessor($0)?.max }
+        let mins = buckets.compactMap { rangeAccessor($0)?.min }
+        let observedMin = mins.min() ?? 0
+        let observedMax = maxes.max() ?? 1
+        var lo = observedMin
+        var hi = observedMax
+        // Reference line, when present, pulls the range out to
+        // include it (e.g. gNorm's clip ceiling, vMean's 0-line).
+        if let ref = referenceLine {
+            lo = Swift.min(lo, ref)
+            hi = Swift.max(hi, ref)
+        }
+        let span = hi - lo
+        if span <= 0 {
+            return (lo - 0.5)...(hi + 0.5)
+        }
+        // Sign-aware padding: pin the floor at 0 for non-negative
+        // series (vAbs, vLoss, gNorm, pwNorm, ||v||) so the axis
+        // doesn't render a band of meaningless negative ticks below
+        // the data. Mirror image for purely non-positive series.
+        // Series that genuinely cross 0 pad on both sides.
+        if lo >= 0 {
+            return 0...(hi * 1.1)
+        } else if hi <= 0 {
+            return (lo * 1.1)...0
+        } else {
+            let pad = span * 0.05
+            return (lo - pad)...(hi + pad)
+        }
+    }
+
+    private func headerString(at hoveredX: Double?) -> AttributedString {
+        let unitSuffix = unit.isEmpty ? "" : " \(unit)"
+        if let t = hoveredX {
+            if let v = nearest(at: t).flatMap({ rangeAccessor($0)?.max }) {
+                let valueStr = wholeNumber ? String(Int(v))
+                    : FastChartFormatters.compact(v)
+                return AttributedString("\(valueStr)\(unitSuffix)")
+            }
+            return AttributedString("— no data")
+        }
+        if let v = buckets.last.flatMap({ rangeAccessor($0)?.max }) {
+            let valueStr = wholeNumber ? String(Int(v))
+                : FastChartFormatters.compact(v)
+            return AttributedString("\(valueStr)\(unitSuffix)")
+        }
+        return AttributedString("--")
+    }
+
+    private func nearest(at t: Double) -> TrainingBucket? {
+        TrainingChartGridView.nearestTrainingBucket(
+            at: t,
+            in: buckets,
+            tolerance: Swift.max(
+                TrainingChartGridView.hoverMatchToleranceSec,
+                bucketWidthSec * 1.5
+            )
+        )
     }
 }

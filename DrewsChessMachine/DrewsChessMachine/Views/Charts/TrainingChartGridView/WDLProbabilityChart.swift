@@ -1,140 +1,130 @@
-import Charts
 import SwiftUI
+import SwiftUIFastCharts
 
 /// Value-head row tile: the W/D/L softmax batch means (`pW` green,
-/// `pD` gray, `pL` red), which sum to ≈ 1 and live on `[0, 1]`.
-///
-/// This is the direct readout of the value head's behaviour after
-/// the WDL switch. A fresh head starts at `pD ≈ 0.75` (the
-/// `[0, ln 6, 0]` bias init) with `pW ≈ pL ≈ 0.125`; healthy
-/// training pulls `pD` *down* toward the buffer's true draw rate as
-/// the head learns to call decisive games, with `pW`/`pL` rising and
-/// staying roughly symmetric. The failure mode the WDL representation
-/// was adopted to escape is `pD → 1` (`pW ≈ pL ≈ 0` — "everything is
-/// a draw") — `TrainingAlarmController` raises on it; this tile is
-/// where you watch it coming.
+/// `pD` gray, `pL` red), summing to ≈ 1 and clamped to `[0, 1]`.
+/// 0.75 dashed reference marks the draw-bias init — `pD` trending
+/// up to and staying there is the regression-toward-collapse signal.
 struct WDLProbabilityChart: View {
     let buckets: [TrainingBucket]
-    @Binding var hoveredSec: Double?
-    @Binding var scrollX: Double
-    let context: TrainingChartGridView.Context
-
-    private var wReadout: TrainingChartGridView.HoverReadout {
-        TrainingChartGridView.hoverReadoutTraining(
-            hoveredSec: hoveredSec,
-            buckets: buckets,
-            accessor: { $0.valueProbWin },
-            bucketWidthSec: context.bucketWidthSec
-        )
-    }
-    private var dReadout: TrainingChartGridView.HoverReadout {
-        TrainingChartGridView.hoverReadoutTraining(
-            hoveredSec: hoveredSec,
-            buckets: buckets,
-            accessor: { $0.valueProbDraw },
-            bucketWidthSec: context.bucketWidthSec
-        )
-    }
-    private var lReadout: TrainingChartGridView.HoverReadout {
-        TrainingChartGridView.hoverReadoutTraining(
-            hoveredSec: hoveredSec,
-            buckets: buckets,
-            accessor: { $0.valueProbLoss },
-            bucketWidthSec: context.bucketWidthSec
-        )
-    }
-
-    private var headerText: String {
-        let wStr = TrainingChartGridView.readoutValueString(
-            wReadout, lastBucketValue: buckets.last?.valueProbWin?.max, format: "%.3f"
-        )
-        let dStr = TrainingChartGridView.readoutValueString(
-            dReadout, lastBucketValue: buckets.last?.valueProbDraw?.max, format: "%.3f"
-        )
-        let lStr = TrainingChartGridView.readoutValueString(
-            lReadout, lastBucketValue: buckets.last?.valueProbLoss?.max, format: "%.3f"
-        )
-        if wStr == "--" && dStr == "--" && lStr == "--" {
-            switch dReadout {
-            case .hoveringNoData, .hoveringWithData:
-                return "— no data"
-            case .notHovering:
-                return "--"
-            }
-        }
-        return "W \(wStr) / D \(dStr) / L \(lStr)"
-    }
+    let group: FastChartGroup
+    let xDomain: ClosedRange<Double>
+    let bucketWidthSec: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            ChartTileHeader(title: "value W/D/L probabilities", value: headerText)
-            Chart {
-                chartContent
-            }
-            .chartYScale(domain: 0...1)
-            .chartForegroundStyleScale([
-                "pW": Color.green,
-                "pD": Color.gray,
-                "pL": Color.red
-            ])
-            .modifier(StandardTimeSeriesChartModifiers(
-                context: context,
-                scrollX: $scrollX,
-                hoveredSec: $hoveredSec
-            ))
-        }
+        FastLineChart(
+            title: "value W/D/L probabilities",
+            titleHelp: AttributedString("""
+                Batch-mean of the value head's three-way softmax probabilities — pW (win, green), \
+                pD (draw, gray), pL (loss, red). At init, the head's [0, ln 6, 0] bias produces \
+                pD ≈ 0.75 with pW = pL ≈ 0.125 (the dashed reference line). Healthy training pulls \
+                pD down toward the buffer's true draw rate while pW and pL rise and stay roughly \
+                symmetric. pD → 1 is the regression-toward-collapse signal the WDL head was adopted \
+                to avoid.
+                """),
+            group: group,
+            xDomain: xDomain,
+            yDomain: 0...1,
+            series: [
+                FastChartSeries(
+                    id: "pW",
+                    color: .green,
+                    lineWidth: 1.5,
+                    data: .buckets(buckets.enumerated().map { (i, b) in
+                        FastChartBucket(
+                            id: i,
+                            x: b.elapsedSec,
+                            yMin: b.valueProbWin?.min ?? .nan,
+                            yMax: b.valueProbWin?.max ?? .nan
+                        )
+                    })
+                ),
+                FastChartSeries(
+                    id: "pD",
+                    color: .gray,
+                    lineWidth: 1.5,
+                    data: .buckets(buckets.enumerated().map { (i, b) in
+                        FastChartBucket(
+                            id: i,
+                            x: b.elapsedSec,
+                            yMin: b.valueProbDraw?.min ?? .nan,
+                            yMax: b.valueProbDraw?.max ?? .nan
+                        )
+                    })
+                ),
+                FastChartSeries(
+                    id: "pL",
+                    color: .red,
+                    lineWidth: 1.5,
+                    data: .buckets(buckets.enumerated().map { (i, b) in
+                        FastChartBucket(
+                            id: i,
+                            x: b.elapsedSec,
+                            yMin: b.valueProbLoss?.min ?? .nan,
+                            yMax: b.valueProbLoss?.max ?? .nan
+                        )
+                    })
+                )
+            ],
+            referenceLines: [
+                FastChartReferenceLine(
+                    id: "init",
+                    y: 0.75,
+                    label: nil,
+                    color: Color.gray.opacity(0.4),
+                    lineWidth: 0.5,
+                    dashed: true
+                )
+            ],
+            legend: .off,
+            headerValue: { ctx in headerString(at: ctx.hoveredX) }
+        )
         .frame(height: 75)
         .chartCard()
     }
 
-    @ChartContentBuilder
-    private var chartContent: some ChartContent {
-        ForEach(buckets) { b in
-            LineMark(
-                x: .value("Time", b.elapsedSec),
-                y: .value("p", b.valueProbWin?.max ?? .nan)
+    private func headerString(at hoveredX: Double?) -> AttributedString {
+        let w: Double?, d: Double?, l: Double?
+        let isHovering = hoveredX != nil
+        if let t = hoveredX {
+            if let b = nearest(at: t) {
+                w = b.valueProbWin?.max
+                d = b.valueProbDraw?.max
+                l = b.valueProbLoss?.max
+            } else {
+                w = nil; d = nil; l = nil
+            }
+        } else {
+            w = buckets.last?.valueProbWin?.max
+            d = buckets.last?.valueProbDraw?.max
+            l = buckets.last?.valueProbLoss?.max
+        }
+        if isHovering && w == nil && d == nil && l == nil {
+            return AttributedString("— no data")
+        }
+        if w == nil && d == nil && l == nil {
+            return AttributedString("--")
+        }
+        let wStr = w.map { String(format: "%.3f", $0) } ?? "--"
+        let dStr = d.map { String(format: "%.3f", $0) } ?? "--"
+        let lStr = l.map { String(format: "%.3f", $0) } ?? "--"
+        var out = AttributedString("W ")
+        var wPart = AttributedString(wStr); wPart.foregroundColor = .green; out.append(wPart)
+        out.append(AttributedString(" / D "))
+        var dPart = AttributedString(dStr); dPart.foregroundColor = .gray; out.append(dPart)
+        out.append(AttributedString(" / L "))
+        var lPart = AttributedString(lStr); lPart.foregroundColor = .red; out.append(lPart)
+        return out
+    }
+
+    private func nearest(at t: Double) -> TrainingBucket? {
+        TrainingChartGridView.nearestTrainingBucket(
+            at: t,
+            in: buckets,
+            tolerance: Swift.max(
+                TrainingChartGridView.hoverMatchToleranceSec,
+                bucketWidthSec * 1.5
             )
-            .foregroundStyle(by: .value("Series", "pW"))
-        }
-        ForEach(buckets) { b in
-            LineMark(
-                x: .value("Time", b.elapsedSec),
-                y: .value("p", b.valueProbDraw?.max ?? .nan)
-            )
-            .foregroundStyle(by: .value("Series", "pD"))
-        }
-        ForEach(buckets) { b in
-            LineMark(
-                x: .value("Time", b.elapsedSec),
-                y: .value("p", b.valueProbLoss?.max ?? .nan)
-            )
-            .foregroundStyle(by: .value("Series", "pL"))
-        }
-        // 0.75 reference: the W/D/L head's draw-bias init. A
-        // pD trace sitting persistently above this is the
-        // regression-toward-collapse signal.
-        RuleMark(y: .value("init pD", 0.75))
-            .foregroundStyle(Color.gray.opacity(0.4))
-            .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
-        if let t = hoveredSec {
-            RuleMark(x: .value("Time", t))
-                .foregroundStyle(Color.gray.opacity(0.5))
-                .lineStyle(StrokeStyle(lineWidth: 1))
-        }
-        if case .hoveringWithData(let t, let v) = wReadout {
-            PointMark(x: .value("Time", t), y: .value("p", v))
-                .foregroundStyle(Color.green)
-                .symbolSize(40)
-        }
-        if case .hoveringWithData(let t, let v) = dReadout {
-            PointMark(x: .value("Time", t), y: .value("p", v))
-                .foregroundStyle(Color.gray)
-                .symbolSize(40)
-        }
-        if case .hoveringWithData(let t, let v) = lReadout {
-            PointMark(x: .value("Time", t), y: .value("p", v))
-                .foregroundStyle(Color.red)
-                .symbolSize(40)
-        }
+        )
     }
 }

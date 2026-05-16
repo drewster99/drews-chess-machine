@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import SwiftUIFastCharts
 
 /// Shared chart state and decimation pipeline used by both
 /// `UpperContentView` (which appends samples from the heartbeat) and
@@ -49,6 +50,14 @@ final class ChartCoordinator {
     /// in the synchronized crosshair; `nil` when no chart in the
     /// grid is currently under the cursor.
     var hoveredSec: Double?
+
+    /// Shared-state object passed into every `FastLineChart` that
+    /// participates in the chart grid's synchronized crosshair. Its
+    /// `hoveredX` is mirrored to `hoveredSec` by `TrainingChartGridView`
+    /// so the still-on-Swift-Charts tiles (Arena activity, Arena win
+    /// trend, Diversity histogram) keep their crosshair in step with
+    /// the migrated tiles.
+    let fastChartGroup: FastChartGroup = FastChartGroup()
     /// Active zoom-stop index into `ChartZoom.stops`.
     var chartZoomIdx: Int = ChartZoom.defaultIndex
     /// `true` when the chart-zoom is auto-snapping to the data span.

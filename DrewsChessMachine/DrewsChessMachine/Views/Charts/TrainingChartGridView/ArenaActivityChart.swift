@@ -74,7 +74,17 @@ struct ArenaActivityChart: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            ChartTileHeader(title: "Arena activity", value: headerText)
+            ChartTileHeader(
+                title: "Arena activity",
+                value: headerText,
+                titleHelp: AttributedString("""
+                    Duration bands — one per arena tournament — across the same X axis as the rest \
+                    of the chart grid, so you can see exactly when training paused for arena play. \
+                    Band color is green when the candidate promoted, gray when the champion was \
+                    kept; band height is the candidate's score. Dashed orange line is the \
+                    promotion threshold; a blue tint marks the in-progress arena.
+                    """)
+            )
             Chart {
                 chartContent
             }
@@ -92,10 +102,12 @@ struct ArenaActivityChart: View {
                     }
                 }
             }
-            .chartXScale(domain: context.timeSeriesXDomain)
-            .chartScrollableAxes(.horizontal)
-            .chartXVisibleDomain(length: context.visibleDomainSec)
-            .chartScrollPosition(x: $scrollX)
+            // Visible-window-only X domain — matches the migrated
+            // tiles, so the layout doesn't jump every time a new
+            // training sample bumps `lastElapsed` upward.
+            .chartXScale(domain:
+                max(0, scrollX)...(max(0, scrollX) + max(0.001, context.visibleDomainSec))
+            )
             .chartOverlay { proxy in
                 ChartHoverOverlay(proxy: proxy, hoveredSec: $hoveredSec)
             }

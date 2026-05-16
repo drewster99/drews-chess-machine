@@ -36,6 +36,15 @@ struct LiveBoardWithNavigationView: View {
     /// inference result.
     let onHoverSquare: (Int?) -> Void
 
+    /// Reset action wired to the central button between the
+    /// navigation chevrons. When non-nil, the Reset button is
+    /// rendered and pressing it invokes this closure (typically
+    /// "reset the editable forward-pass board to the starting
+    /// position"). When nil, the Reset button is hidden — used by
+    /// HumanPlayWindow where the standalone Reset/Stop toolbar
+    /// already owns that affordance.
+    var onResetBoard: (() -> Void)? = nil
+
     // MARK: - Human-vs-network play (all optional)
 
     /// True while a human-vs-network game is awaiting the user's
@@ -75,23 +84,7 @@ struct LiveBoardWithNavigationView: View {
     var onCancelPromotion: () -> Void = { }
 
     var body: some View {
-        HStack(spacing: 8) {
-            // Left chevron is enabled whenever we can step toward a
-            // lower-index mode. -1 (plain board) is the floor and is
-            // always reachable — independent of inferenceResult and
-            // showForwardPassUI — so we only gate left when we're
-            // already at the floor.
-            let leftDisabled = selectedOverlay <= -1
-            Button(
-                action: { onNavigate(-1) },
-                label: {
-                    Image(systemName: "chevron.left").font(.title3).frame(width: 24)
-                }
-            )
-            .buttonStyle(.plain)
-            .disabled(leftDisabled)
-            .opacity(leftDisabled ? 0.2 : 0.6)
-
+        VStack(spacing: 4) {
             ChessBoardView(pieces: pieces, overlay: overlay)
                 .overlay {
                     // Transparent hit layer that converts drag
@@ -216,20 +209,56 @@ struct LiveBoardWithNavigationView: View {
                     }
                 }
 
+            // Navigation row under the board. Chevrons left-and-right
+            // walk the overlay mode; an optional Reset button between
+            // them resets the editable forward-pass board to the
+            // starting position. Chevrons were previously flanking the
+            // board to its left and right; moving them underneath
+            // gives the board more horizontal room without the side
+            // gutters and lets us slot the Reset action between them.
+            let leftDisabled = selectedOverlay <= -1
             // Right chevron walks up through Top Moves / channels. Both
             // of those require an inferenceResult to render meaningful
             // content, so right is disabled either when we are at the
             // ceiling or when there is no inference data to step into.
             let rightDisabled = !inferenceResultPresent || selectedOverlay >= ChessNetwork.inputPlanes
-            Button(
-                action: { onNavigate(1) },
-                label: {
-                    Image(systemName: "chevron.right").font(.title3).frame(width: 24)
+            HStack(spacing: 12) {
+                Spacer(minLength: 0)
+                Button(
+                    action: { onNavigate(-1) },
+                    label: {
+                        Image(systemName: "chevron.left").font(.title3).frame(width: 24)
+                    }
+                )
+                .buttonStyle(.plain)
+                .disabled(leftDisabled)
+                .opacity(leftDisabled ? 0.2 : 0.6)
+
+                if let onResetBoard {
+                    Button(
+                        action: onResetBoard,
+                        label: {
+                            Image(systemName: "arrow.counterclockwise")
+                                .font(.title3)
+                                .frame(width: 24)
+                        }
+                    )
+                    .buttonStyle(.plain)
+                    .opacity(0.6)
+                    .help("Reset to starting position")
                 }
-            )
-            .buttonStyle(.plain)
-            .disabled(rightDisabled)
-            .opacity(rightDisabled ? 0.2 : 0.6)
+
+                Button(
+                    action: { onNavigate(1) },
+                    label: {
+                        Image(systemName: "chevron.right").font(.title3).frame(width: 24)
+                    }
+                )
+                .buttonStyle(.plain)
+                .disabled(rightDisabled)
+                .opacity(rightDisabled ? 0.2 : 0.6)
+                Spacer(minLength: 0)
+            }
         }
     }
 

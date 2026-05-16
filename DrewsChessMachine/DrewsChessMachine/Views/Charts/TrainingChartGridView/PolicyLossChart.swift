@@ -1,72 +1,95 @@
-import Charts
 import SwiftUI
+import SwiftUIFastCharts
 
 /// Single-series tile for the outcome-weighted policy cross-entropy
-/// (`pLoss`). Was "pLoss + vLoss" on a shared Y axis until the WDL
-/// switch made the two unsharable: post-2026-05-12 `vLoss` is
-/// categorical-CE-scale (~[0, ln 3 ≈ 1.10], shrinking toward ~0.5),
-/// while `pLoss` is outcome-weighted CE that is unbounded on both
-/// sides and routinely negative — crushing one against the other on
-/// one axis. `vLoss` now lives on its own tile in the value-head
-/// row; the win/loss-partitioned policy loss is on `PolicyLossSplitChart`.
+/// (`pLoss`). `pLoss` is unbounded on both sides and routinely
+/// negative — chart includes a faint dashed 0-line so the sign is
+/// readable.
 struct PolicyLossChart: View {
     let buckets: [TrainingBucket]
-    @Binding var hoveredSec: Double?
-    @Binding var scrollX: Double
-    let context: TrainingChartGridView.Context
+    let group: FastChartGroup
+    let xDomain: ClosedRange<Double>
+    let bucketWidthSec: Double
 
     var body: some View {
-        // Per-series hover readout — when the cursor moves, read the
-        // bucket that corresponds to the hovered time rather than the
-        // most-recent bucket. Without this the crosshair RuleMark
-        // moves but the header value sits stuck at the last sample.
-        let readout = TrainingChartGridView.hoverReadoutTraining(
-            hoveredSec: hoveredSec,
-            buckets: buckets,
-            accessor: { $0.policyLoss },
-            bucketWidthSec: context.bucketWidthSec
+        let (yMin, yMax) = observedYRange()
+        return FastLineChart(
+            title: "pLoss (outcome-weighted CE)",
+            titleHelp: AttributedString("""
+                Outcome-weighted policy cross-entropy. Each batch position's CE is signed by the \
+                game's outcome from the current player's perspective (+1 win, -1 loss, 0 draw), so \
+                the loss is unbounded on both sides and routinely negative when winning predictions \
+                dominate the batch. Always read alongside policy entropy — pLoss alone doesn't say \
+                whether the head is concentrating or diffusing.
+                """),
+            group: group,
+            xDomain: xDomain,
+            yDomain: yMin...yMax,
+            series: [
+                FastChartSeries(
+                    id: "pLoss",
+                    color: .orange,
+                    lineWidth: 1.5,
+                    data: .buckets(buckets.enumerated().map { (i, b) in
+                        FastChartBucket(
+                            id: i,
+                            x: b.elapsedSec,
+                            yMin: b.policyLoss?.min ?? .nan,
+                            yMax: b.policyLoss?.max ?? .nan
+                        )
+                    })
+                )
+            ],
+            referenceLines: [
+                FastChartReferenceLine(
+                    id: "zero",
+                    y: 0,
+                    label: nil,
+                    color: Color.gray.opacity(0.4),
+                    lineWidth: 0.5,
+                    dashed: true
+                )
+            ],
+            headerValue: { ctx in headerString(at: ctx.hoveredX) }
         )
-        let headerText: String
-        switch readout {
-        case .notHovering:
-            headerText = (buckets.last?.policyLoss?.max)
-                .map { String(format: "%+.4f", $0) } ?? "--"
-        case .hoveringNoData:
-            headerText = "— no data"
-        case .hoveringWithData(_, let v):
-            headerText = String(format: "%+.4f", v)
-        }
-        return VStack(alignment: .leading, spacing: 1) {
-            ChartTileHeader(title: "pLoss (outcome-weighted CE)", value: headerText)
-            Chart {
-                ForEach(buckets) { b in
-                    LineMark(
-                        x: .value("Time", b.elapsedSec),
-                        y: .value("pLoss", b.policyLoss?.max ?? .nan)
-                    )
-                    .foregroundStyle(Color.orange)
-                }
-                RuleMark(y: .value("Zero", 0.0))
-                    .foregroundStyle(Color.gray.opacity(0.4))
-                    .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
-                if let t = hoveredSec {
-                    RuleMark(x: .value("Time", t))
-                        .foregroundStyle(Color.gray.opacity(0.5))
-                        .lineStyle(StrokeStyle(lineWidth: 1))
-                }
-                if case .hoveringWithData(let t, let v) = readout {
-                    PointMark(x: .value("Time", t), y: .value("pLoss", v))
-                        .foregroundStyle(Color.orange)
-                        .symbolSize(40)
-                }
-            }
-            .modifier(StandardTimeSeriesChartModifiers(
-                context: context,
-                scrollX: $scrollX,
-                hoveredSec: $hoveredSec
-            ))
-        }
         .frame(height: 75)
         .chartCard()
+    }
+
+    private func observedYRange() -> (Double, Double) {
+        let values = buckets.compactMap { $0.policyLoss?.max }
+        let mins = buckets.compactMap { $0.policyLoss?.min }
+        let lo = (mins.min() ?? -0.5)
+        let hi = (values.max() ?? 0.5)
+        // Always include 0 in the visible range so the dashed
+        // reference line stays on-chart.
+        let yMin = Swift.min(lo, 0) - 0.05
+        let yMax = Swift.max(hi, 0) + 0.05
+        if yMin == yMax { return (yMin - 0.5, yMax + 0.5) }
+        return (yMin, yMax)
+    }
+
+    private func headerString(at hoveredX: Double?) -> AttributedString {
+        if let t = hoveredX {
+            if let v = nearest(at: t)?.policyLoss?.max {
+                return AttributedString(String(format: "%+.4f", v))
+            }
+            return AttributedString("— no data")
+        }
+        if let v = buckets.last?.policyLoss?.max {
+            return AttributedString(String(format: "%+.4f", v))
+        }
+        return AttributedString("--")
+    }
+
+    private func nearest(at t: Double) -> TrainingBucket? {
+        TrainingChartGridView.nearestTrainingBucket(
+            at: t,
+            in: buckets,
+            tolerance: Swift.max(
+                TrainingChartGridView.hoverMatchToleranceSec,
+                bucketWidthSec * 1.5
+            )
+        )
     }
 }
