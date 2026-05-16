@@ -4828,14 +4828,14 @@ final class ChessTrainer: @unchecked Sendable {
         let device = network.metalDevice
         let workingSetCap = device.recommendedMaxWorkingSetSize
         let bufferCap = UInt64(device.maxBufferLength)
-        // Skip threshold: 75% of the smaller of the two caps. The "lesser"
+        // Skip threshold: 80% of the smaller of the two caps. The "lesser"
         // bit is deliberately conservative — on this hardware
         // maxBufferLength is well under recommendedMaxWorkingSetSize, so
         // capping the *total* estimate against the smaller of the two
         // gives a safety margin even though the comparison mixes
         // different things (total vs. single-buffer). Better to skip a
         // borderline batch than to take down the machine.
-        let safetyFraction = 0.75
+        let safetyFraction = 0.80
         let estimateThreshold = UInt64(Double(min(workingSetCap, bufferCap)) * safetyFraction)
         // Once we cross either threshold, every larger batch size will too —
         // latch this so we stop trying instead of crashing the machine.
