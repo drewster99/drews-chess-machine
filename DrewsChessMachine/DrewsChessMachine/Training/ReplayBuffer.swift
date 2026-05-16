@@ -1359,8 +1359,8 @@ final class ReplayBuffer: @unchecked Sendable {
         // Phase by ply. Buckets sized so each holds a meaningful
         // share of typical self-play batches. Inclusive on upper
         // bound:
-        //   open: ≤ 20    early: 21–60    mid: 61–150
-        //   late: 151–300    end: 301+
+        //   open: ≤ 15    early: 16–35    mid: 36–75
+        //   late: 76–125    end: 126+
         var phaseByPly: [String: Int] = [
             "open": 0, "early": 0, "mid": 0, "late": 0, "end": 0,
         ]
@@ -1384,10 +1384,10 @@ final class ReplayBuffer: @unchecked Sendable {
         for i in 0..<batchSize {
             let ply = Int(plies[i])
             let phasePlyLabel: String
-            if ply <= 20 { phasePlyLabel = "open" }
-            else if ply <= 60 { phasePlyLabel = "early" }
-            else if ply <= 150 { phasePlyLabel = "mid" }
-            else if ply <= 300 { phasePlyLabel = "late" }
+            if ply <= 15 { phasePlyLabel = "open" }
+            else if ply <= 35 { phasePlyLabel = "early" }
+            else if ply <= 75 { phasePlyLabel = "mid" }
+            else if ply <= 125 { phasePlyLabel = "late" }
             else { phasePlyLabel = "end" }
             phaseByPly[phasePlyLabel, default: 0] += 1
 

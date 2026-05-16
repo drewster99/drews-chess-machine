@@ -442,7 +442,7 @@ struct UpperContentView: View {
     /// cache footprint (one `[N, inputPlanes, 8, 8]` float32 MPSNDArray
     /// per distinct N, so ~5.1 KB per slot) plus the per-batch
     /// `graph.run` latency. Must be ≥ `initialSelfPlayWorkerCount`.
-    nonisolated static let absoluteMaxSelfPlayWorkers: Int = 64
+    nonisolated static let absoluteMaxSelfPlayWorkers: Int = 1024
     /// Current active self-play worker count for the running
     /// session. The Stepper writes through `workerCountBinding`
     /// which updates this value and `workerCountBox` atomically;

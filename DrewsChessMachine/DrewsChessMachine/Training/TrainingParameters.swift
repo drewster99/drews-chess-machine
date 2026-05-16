@@ -397,7 +397,7 @@ public enum ReplayRatioAutoAdjust: TrainingParameterKey {}
     name: "Self-Play Workers",
     description: "Parallel self-play game count. More = faster replay-buffer fill but more GPU contention.",
     default: 24,
-    range: 1...256,
+    range: 1...1024,
     category: "Training Window",
     liveTunable: true
 )

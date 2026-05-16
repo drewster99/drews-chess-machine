@@ -6,8 +6,8 @@ import SwiftUI
 /// 1. **Total plies** — W / D / L position counts + share of all
 ///    emitted plies in the window.
 /// 2. **By ply phase** — the same 5-bucket cutoffs the per-batch
-///    `phase_by_ply` histogram uses (open ≤20, early 21–60,
-///    mid 61–150, late 151–300, end 301+). Per bucket: position
+///    `phase_by_ply` histogram uses (open ≤15, early 16–35,
+///    mid 36–75, late 76–125, end 126+). Per bucket: position
 ///    count, share-of-window-plies, and the within-bucket W/D/L
 ///    composition.
 /// 3. **By material phase** — same 5-bucket structure but bucketed
@@ -23,7 +23,7 @@ struct EmitWindowStatsCard: View {
 
     private static let dash = "—"
     /// Wide enough to fit the longest bucket label with its range
-    /// prefix in caption2 — e.g. "(151–300) late" or "(12–13) early".
+    /// prefix in caption2 — e.g. "(76–125) late" or "(12–13) early".
     /// Includes headroom so glyph-substitution (≤ ≥ –) can't push the
     /// label past the frame edge and nudge the next column.
     private static let labelWidth: CGFloat = 150
@@ -43,11 +43,11 @@ struct EmitWindowStatsCard: View {
     // any cutoff ever moves.
 
     private static let plyLabels: [String: String] = [
-        "open":  "(0–20) open",
-        "early": "(21–60) early",
-        "mid":   "(61–150) mid",
-        "late":  "(151–300) late",
-        "end":   "(301+) end",
+        "open":  "(0–15) open",
+        "early": "(16–35) early",
+        "mid":   "(36–75) mid",
+        "late":  "(76–125) late",
+        "end":   "(126+) end",
     ]
     private static let materialLabels: [String: String] = [
         "open":  "(≥14) open",
