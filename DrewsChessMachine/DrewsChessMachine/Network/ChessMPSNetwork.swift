@@ -239,6 +239,28 @@ final class ChessMPSNetwork: @unchecked Sendable {
         try await network.evaluateBatched(batchBoards: batchBoards, count: count, consume: consume)
     }
 
+    /// Pointer-flavored sibling of the `[Float]` overload above. The
+    /// tick-driver self-play path holds its batched-input scratch as
+    /// an `UnsafeMutablePointer<Float>` field and calls this method
+    /// directly per tick, avoiding the per-fire `[Float]` allocation
+    /// the `[Float]` overload's `withUnsafeBufferPointer` round-trip
+    /// would otherwise require. See
+    /// `ChessNetwork.evaluateBatched(batchBoardsPointer:floatCount:count:consume:)`
+    /// for the lifetime contract and Sendable handling.
+    func evaluateBatched(
+        batchBoardsPointer: UnsafePointer<Float>,
+        floatCount: Int,
+        count: Int,
+        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+    ) async throws {
+        try await network.evaluateBatched(
+            batchBoardsPointer: batchBoardsPointer,
+            floatCount: floatCount,
+            count: count,
+            consume: consume
+        )
+    }
+
     func exportWeights() async throws -> [[Float]] {
         try await network.exportWeights()
     }

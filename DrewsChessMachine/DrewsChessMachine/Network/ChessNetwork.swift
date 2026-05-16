@@ -83,6 +83,20 @@ enum BNMode {
 /// Marked `@unchecked Sendable` because MPSGraph/Metal state is not
 /// Sendable, but all public entry points serialize access through the
 /// instance's private execution queue.
+
+/// Sendable carrier for an externally-owned batched-input pointer.
+/// `UnsafePointer<Float>` is not Sendable; this carrier crosses the
+/// `enqueue` closure boundary so the pointer-flavored
+/// `evaluateBatched(batchBoardsPointer:floatCount:count:consume:)`
+/// can hand the buffer to the network's execution-queue work block
+/// without boxing into a `[Float]`. Caller's lifetime responsibility:
+/// the buffer must outlive the await (the awaiting task is suspended,
+/// so any field-stored pointer on the caller stays alive).
+struct BatchBoardSource: @unchecked Sendable {
+    let pointer: UnsafePointer<Float>
+    let floatCount: Int
+}
+
 final class ChessNetwork: @unchecked Sendable {
 
     // MARK: Configuration
@@ -707,6 +721,41 @@ final class ChessNetwork: @unchecked Sendable {
     ) async throws {
         try await enqueue {
             try self.internalEvaluate(batchBoards: batchBoards, count: count, consume: consume)
+        }
+    }
+
+    /// Pointer-flavored batched evaluate. The caller owns
+    /// `batchBoardsPointer` and is responsible for keeping the
+    /// underlying buffer alive across the `await` (typically by
+    /// holding it as an instance field of the caller's driver). This
+    /// avoids the per-fire `[Float](repeating: …)` allocation the
+    /// `[Float]`-flavored overload's `withUnsafeBufferPointer` would
+    /// require if the caller had to convert pointer → Array.
+    ///
+    /// Sendable handling: `UnsafePointer<Float>` is not Sendable, so
+    /// the pointer + count are wrapped in `BatchBoardSource` (an
+    /// `@unchecked Sendable` carrier) to cross the `enqueue` closure
+    /// boundary. The caller's lifetime contract above keeps the
+    /// pointer valid for the entire `await`.
+    ///
+    /// - Parameters:
+    ///   - batchBoardsPointer: base pointer to a contiguous run of
+    ///     `floatCount = count * inputPlanes * 8 * 8` floats.
+    ///   - floatCount: total element count addressed by the pointer.
+    ///                 Must equal `count * inputPlanes * 8 * 8`;
+    ///                 enforced inside `internalEvaluate`.
+    ///   - count: number of positions in the batch; must be >= 1.
+    ///   - consume: identical contract to the `[Float]` overload.
+    func evaluateBatched(
+        batchBoardsPointer: UnsafePointer<Float>,
+        floatCount: Int,
+        count: Int,
+        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+    ) async throws {
+        let source = BatchBoardSource(pointer: batchBoardsPointer, floatCount: floatCount)
+        try await enqueue {
+            let buf = UnsafeBufferPointer<Float>(start: source.pointer, count: source.floatCount)
+            try self.internalEvaluate(batchBoards: buf, count: count, consume: consume)
         }
     }
 
