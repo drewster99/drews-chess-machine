@@ -602,6 +602,17 @@ struct UpperContentView: View {
     private var sweepResults: [SweepRow] {
         get { session.sweepResults } nonmutating set { session.sweepResults = newValue }
     }
+
+    /// True while the sweep output panel is on screen — either the
+    /// sweep is actively running, or it has finished and its rows
+    /// are still visible waiting for the user to switch modes
+    /// (which fires `clearTrainingDisplay()` and zeroes
+    /// `sweepResults`). Drives the suppression of the middle data
+    /// cards (Self Play / Results / EmitWindow) so the results
+    /// table doesn't snap away the instant the sweep completes.
+    private var sweepPanelVisible: Bool {
+        sweepRunning || !sweepResults.isEmpty
+    }
     private var sweepProgress: SweepProgress? {
         get { session.sweepProgress } nonmutating set { session.sweepProgress = newValue }
     }
@@ -1396,12 +1407,18 @@ struct UpperContentView: View {
             // the live `parallelStats` snapshot so SwiftUI re-renders
             // the card body whenever the heartbeat ticks.
             //
-            // Hidden during a batch-size sweep: the sweep doesn't
-            // produce per-game stats, so the cards would just sit
-            // there with all "—" cells. Reclaiming that horizontal
-            // space lets the sweep's output column (rightmost) and
-            // the chessboard breathe.
-            if !sweepRunning {
+            // Hidden while the sweep output panel is on screen
+            // (`sweepPanelVisible` = running OR has completed rows
+            // still showing). A batch-size sweep doesn't produce
+            // per-game stats, so these cards would just sit there
+            // with all "—" cells while reclaiming that horizontal
+            // space lets the sweep output and the chessboard
+            // breathe. Stays hidden after the sweep finishes so the
+            // operator can examine the table without the layout
+            // snapping back the instant the sweep completes; the
+            // cards return when the user starts another mode
+            // (which fires `clearTrainingDisplay()`).
+            if !sweepPanelVisible {
                 VStack(alignment: .leading, spacing: 8) {
                     SelfPlayStatsCard(
                         snapshot: session.parallelStats,
@@ -1449,11 +1466,13 @@ struct UpperContentView: View {
                         // on and `selfPlayColumn` is never invoked —
                         // the panel needs to render regardless.
                         //
-                        // Suppressed during a batch-size sweep for
-                        // the same reason as the Self Play + Results
-                        // column above — no game stats are being
-                        // produced, the card would just hold "—".
-                        if showEmitWindowStats && !sweepRunning {
+                        // Suppressed while the sweep output panel is
+                        // on screen for the same reason as the Self
+                        // Play + Results column above. Stays hidden
+                        // after the sweep finishes so the operator
+                        // can review the table without the layout
+                        // reflowing the moment the sweep ends.
+                        if showEmitWindowStats && !sweepPanelVisible {
                             EmitWindowStatsCard(snapshot: session.parallelStats)
                         }
                     },
