@@ -1557,11 +1557,7 @@ struct UpperContentView: View {
                     session.handleLoadModelPickResult(result)
                 }
             )
-            .fileDialogDefaultDirectory(
-                checkpoint.showingLoadModelImporter
-                ? CheckpointPaths.modelsDir
-                : CheckpointPaths.sessionsDir
-            )
+            .fileDialogDefaultDirectory(CheckpointPaths.modelsDir)
 
         Color.clear
             .fileImporter(
@@ -1572,6 +1568,7 @@ struct UpperContentView: View {
                     session.handleLoadSessionPickResult(result)
                 }
             )
+            .fileDialogDefaultDirectory(CheckpointPaths.sessionsDir)
 
         Color.clear
             .fileImporter(
