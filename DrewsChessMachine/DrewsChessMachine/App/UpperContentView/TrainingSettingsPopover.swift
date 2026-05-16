@@ -1107,7 +1107,7 @@ private struct SelfPlayTab: View {
                 .padding(.bottom, 2)
             HStack(spacing: 8) {
                 Text("")
-                    .frame(width: 140, alignment: .trailing)
+                    .frame(width: 200, alignment: .trailing)
                 Text("Played")
                     .frame(width: 165, alignment: .leading)
                 Text("Emitted")
@@ -1134,16 +1134,23 @@ private struct SelfPlayTab: View {
                 playedValue: hasStats ? Self.numberString(playedTotal) : dash,
                 emittedValue: hasStats ? Self.numberString(emittedTotal) : dash
             )
+            // Dropped-for-max-plies on its own line so the W/D/L row
+            // below can keep its three-way layout. The four percentages
+            // across these two rows still sum to 100 — both rows use
+            // `recentPlayedTotal` (played including dropped) as the
+            // denominator. The Emitted column is "—" on the dropped
+            // line because dropped games never reach the emit stage.
             twoColRow(
-                label: "W/D/L/Drop % (1m):",
+                label: "dropped for max plies % (1m):",
                 playedValue: hasStats && recentPlayedTotal > 0
-                    ? Self.pctQuad(
-                        w: recentPlayedW,
-                        d: recentPlayedD,
-                        l: recentPlayedL,
-                        drop: recentPlayedDrop,
-                        total: recentPlayedTotal
-                    )
+                    ? String(format: "%.1f%%", Double(recentPlayedDrop) / Double(recentPlayedTotal) * 100)
+                    : dash,
+                emittedValue: dash
+            )
+            twoColRow(
+                label: "W / D / L % (1m):",
+                playedValue: hasStats && recentPlayedTotal > 0
+                    ? Self.pctTriple(w: recentPlayedW, d: recentPlayedD, l: recentPlayedL, total: recentPlayedTotal)
                     : dash,
                 emittedValue: hasStats && recentEmittedTotal > 0
                     ? Self.pctTriple(w: recentEmittedW, d: recentEmittedD, l: recentEmittedL, total: recentEmittedTotal)
@@ -1168,7 +1175,7 @@ private struct SelfPlayTab: View {
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .frame(width: 140, alignment: .trailing)
+                .frame(width: 200, alignment: .trailing)
             Text(playedValue)
                 .font(.system(.callout, design: .monospaced).weight(.semibold))
                 .monospacedDigit()
@@ -1201,21 +1208,6 @@ private struct SelfPlayTab: View {
         return String(format: "%.1f%% / %.1f%% / %.1f%%", wp, dp, lp)
     }
 
-    /// Format a W/D/L/Drop quadruple as
-    /// `"ww.w% / dd.d% / ll.l% / drop.d%"` over the given total.
-    /// `total` must include the dropped count so the four percentages
-    /// sum to 100. Used by the Played column of the Live snapshot;
-    /// the Emitted column stays a three-way `pctTriple` since dropped
-    /// games never reach emit.
-    private static func pctQuad(w: Int, d: Int, l: Int, drop: Int, total: Int) -> String {
-        guard total > 0 else { return "—" }
-        let den = Double(total)
-        let wp = Double(w) / den * 100
-        let dp = Double(d) / den * 100
-        let lp = Double(l) / den * 100
-        let dropP = Double(drop) / den * 100
-        return String(format: "%.1f%% / %.1f%% / %.1f%% / %.1f%%", wp, dp, lp, dropP)
-    }
 
     /// Stepper-binding for the live-update Draw keep fraction field.
     /// Mirrors the helper in `ReplayTab` — kept tab-local rather than
