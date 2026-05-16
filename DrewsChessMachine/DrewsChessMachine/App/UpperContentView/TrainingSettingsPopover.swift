@@ -287,7 +287,7 @@ struct TrainingSettingsPopover: View {
             }
         }
         .padding(16)
-        .frame(width: 540)
+        .frame(width: 560)
         // Hard ceiling on the popover height. Pairs with the
         // `ScrollView` around the tab-content `switch` above so a
         // tall tab (Replay tab grows the most via the composition
@@ -1107,7 +1107,7 @@ private struct SelfPlayTab: View {
                 .padding(.bottom, 2)
             HStack(spacing: 8) {
                 Text("")
-                    .frame(width: 200, alignment: .trailing)
+                    .frame(width: 140, alignment: .trailing)
                 Text("Played")
                     .frame(width: 165, alignment: .leading)
                 Text("Emitted")
@@ -1141,14 +1141,14 @@ private struct SelfPlayTab: View {
             // denominator. The Emitted column is "—" on the dropped
             // line because dropped games never reach the emit stage.
             twoColRow(
-                label: "dropped for max plies % (1m):",
+                label: "dropped - max plies (1m):",
                 playedValue: hasStats && recentPlayedTotal > 0
                     ? String(format: "%.1f%%", Double(recentPlayedDrop) / Double(recentPlayedTotal) * 100)
                     : dash,
                 emittedValue: dash
             )
             twoColRow(
-                label: "W / D / L % (1m):",
+                label: "W / D / L (1m):",
                 playedValue: hasStats && recentPlayedTotal > 0
                     ? Self.pctTriple(w: recentPlayedW, d: recentPlayedD, l: recentPlayedL, total: recentPlayedTotal)
                     : dash,
@@ -1175,7 +1175,7 @@ private struct SelfPlayTab: View {
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .frame(width: 200, alignment: .trailing)
+                .frame(width: 140, alignment: .trailing)
             Text(playedValue)
                 .font(.system(.callout, design: .monospaced).weight(.semibold))
                 .monospacedDigit()
