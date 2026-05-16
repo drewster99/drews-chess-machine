@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Right-hand column of the main panel: Game-run / Candidate-test
-/// picker (only when `realTraining` AND `selfPlayWorkers <= 1`),
+/// picker (only when `realTraining` AND `selfPlayConcurrency <= 1`),
 /// the inline overlay-label / side-to-move / probe-target row, and
 /// the live board itself. Each element of the inline row is
 /// independently conditional, so the row collapses to just what is

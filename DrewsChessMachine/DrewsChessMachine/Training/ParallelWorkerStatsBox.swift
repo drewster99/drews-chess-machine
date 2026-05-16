@@ -134,7 +134,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
     private var _threefoldRepetitionDraws: Int = 0
     private var _insufficientMaterialDraws: Int = 0
     /// Lifetime count of self-play games that hit the configured
-    /// `maxPliesPerGame` cap before terminating naturally and were
+    /// `selfPlayMaxPliesPerGame` cap before terminating naturally and were
     /// dropped (never emitted to the replay buffer). Increments
     /// alongside `_totalGames` and `_totalMoves` — the game WAS
     /// played, just discarded after the fact.
@@ -378,7 +378,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         }
     }
 
-    /// Record one self-play game that hit the configured `maxPliesPerGame`
+    /// Record one self-play game that hit the configured `selfPlayMaxPliesPerGame`
     /// cap and was dropped before reaching the replay buffer. Bumps
     /// `_totalGames`, `_totalMoves`, `_totalGameWallMs`, and the
     /// dedicated `_maxPliesDropped` lifetime counter — the game WAS
@@ -536,7 +536,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         let fiftyMoveDraws: Int
         let threefoldRepetitionDraws: Int
         let insufficientMaterialDraws: Int
-        /// Lifetime count of games dropped for hitting the `maxPliesPerGame`
+        /// Lifetime count of games dropped for hitting the `selfPlayMaxPliesPerGame`
         /// cap. These ARE included in `selfPlayGames` and `selfPlayPositions`
         /// (they were played) but are NOT in any per-outcome counter
         /// (they're their own "dropped" category, never in W/D/L).
@@ -575,7 +575,7 @@ final class ParallelWorkerStatsBox: @unchecked Sendable {
         let recentBlackCheckmates: Int
         let recentDraws: Int
         /// Rolling-window count of self-play games that hit the
-        /// `maxPliesPerGame` cap and were dropped. Sums with the W/D/L
+        /// `selfPlayMaxPliesPerGame` cap and were dropped. Sums with the W/D/L
         /// counts above to equal `recentGames`. Drives the "Drop %"
         /// column of the popover Live snapshot's Played row.
         let recentMaxPliesDropped: Int

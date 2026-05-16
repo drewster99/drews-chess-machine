@@ -5,7 +5,7 @@ import Foundation
 /// concurrent self-play worker tasks (which poll it between games).
 /// Workers above the current count idle in their pause loop until
 /// either the count grows enough to include them or the session
-/// stops. Decoupling the box from `trainingParams.selfPlayWorkers` is
+/// stops. Decoupling the box from `trainingParams.selfPlayConcurrency` is
 /// what lets the value cross the actor boundary without forcing
 /// every worker to hop back to the main actor on each game.
 ///

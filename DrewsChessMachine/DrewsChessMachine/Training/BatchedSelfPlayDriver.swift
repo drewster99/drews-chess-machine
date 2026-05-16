@@ -260,7 +260,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             // at game START so an in-flight game keeps its original
             // cap even if the UI knob changes mid-game.
             let maxPliesCap: Int = await MainActor.run {
-                TrainingParameters.shared.maxPliesPerGame
+                TrainingParameters.shared.selfPlayMaxPliesPerGame
             }
 
             let gameStart = CFAbsoluteTimeGetCurrent()

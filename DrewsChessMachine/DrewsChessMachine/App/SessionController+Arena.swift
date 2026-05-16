@@ -759,7 +759,7 @@ extension SessionController {
             arStartTau: ar.startTau,
             arFloorTau: ar.floorTau,
             arDecayPerPly: ar.decayPerPly,
-            workerCount: TrainingParameters.shared.selfPlayWorkers,
+            workerCount: TrainingParameters.shared.selfPlayConcurrency,
             buildNumber: BuildInfo.buildNumber
         )
         let diversityCtx = ArenaLogFormatter.Diversity(
@@ -835,7 +835,7 @@ extension SessionController {
                 learningRate: Double(trainer.learningRate),
                 promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
                 batchSize: TrainingParameters.shared.trainingBatchSize,
-                workerCount: TrainingParameters.shared.selfPlayWorkers,
+                workerCount: TrainingParameters.shared.selfPlayConcurrency,
                 spStartTau: Double(sp.startTau),
                 spFloorTau: Double(sp.floorTau),
                 spDecayPerPly: Double(sp.decayPerPly),

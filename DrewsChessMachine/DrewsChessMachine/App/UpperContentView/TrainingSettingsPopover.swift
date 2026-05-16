@@ -113,12 +113,12 @@ struct TrainingSettingsPopover: View {
     }
 
     private var selfPlayHasError: Bool {
-        model.selfPlayWorkersError
+        model.selfPlayConcurrencyError
             || model.selfPlayStartTauError
             || model.selfPlayDecayPerPlyError
             || model.selfPlayFloorTauError
             || model.selfPlayDrawKeepFractionError
-            || model.maxPliesPerGameError
+            || model.selfPlayMaxPliesPerGameError
     }
 
     private var replayHasError: Bool {
@@ -220,18 +220,18 @@ struct TrainingSettingsPopover: View {
                 )
             case .selfPlay:
                 SelfPlayTab(
-                    selfPlayWorkersText: $model.selfPlayWorkersText,
+                    selfPlayConcurrencyText: $model.selfPlayConcurrencyText,
                     selfPlayStartTauText: $model.selfPlayStartTauText,
                     selfPlayDecayPerPlyText: $model.selfPlayDecayPerPlyText,
                     selfPlayFloorTauText: $model.selfPlayFloorTauText,
                     selfPlayDrawKeepFractionText: $model.selfPlayDrawKeepFractionText,
-                    maxPliesPerGameText: $model.maxPliesPerGameText,
-                    selfPlayWorkersError: model.selfPlayWorkersError,
+                    selfPlayMaxPliesPerGameText: $model.selfPlayMaxPliesPerGameText,
+                    selfPlayConcurrencyError: model.selfPlayConcurrencyError,
                     selfPlayStartTauError: model.selfPlayStartTauError,
                     selfPlayDecayPerPlyError: model.selfPlayDecayPerPlyError,
                     selfPlayFloorTauError: model.selfPlayFloorTauError,
                     selfPlayDrawKeepFractionError: model.selfPlayDrawKeepFractionError,
-                    maxPliesPerGameError: model.maxPliesPerGameError,
+                    selfPlayMaxPliesPerGameError: model.selfPlayMaxPliesPerGameError,
                     onLiveSelfPlayDrawKeepFractionChange: { model.applyLiveSelfPlayDrawKeepFraction($0) },
                     onLiveMaxPliesPerGameChange: { model.applyLiveMaxPliesPerGame($0) },
                     parallelStats: parallelStats
@@ -723,19 +723,19 @@ private struct OptimizerTab: View {
 // MARK: - Self Play tab
 
 private struct SelfPlayTab: View {
-    @Binding var selfPlayWorkersText: String
+    @Binding var selfPlayConcurrencyText: String
     @Binding var selfPlayStartTauText: String
     @Binding var selfPlayDecayPerPlyText: String
     @Binding var selfPlayFloorTauText: String
     @Binding var selfPlayDrawKeepFractionText: String
-    @Binding var maxPliesPerGameText: String
+    @Binding var selfPlayMaxPliesPerGameText: String
 
-    let selfPlayWorkersError: Bool
+    let selfPlayConcurrencyError: Bool
     let selfPlayStartTauError: Bool
     let selfPlayDecayPerPlyError: Bool
     let selfPlayFloorTauError: Bool
     let selfPlayDrawKeepFractionError: Bool
-    let maxPliesPerGameError: Bool
+    let selfPlayMaxPliesPerGameError: Bool
 
     /// Live-propagate handler. Fires on every edit-text change that
     /// parses to a valid `[0, 1]` Double — writes through to
@@ -747,7 +747,7 @@ private struct SelfPlayTab: View {
     let onLiveSelfPlayDrawKeepFractionChange: (Double) -> Void
 
     /// Live-propagate handler for max-plies. Each edit flows
-    /// through to `TrainingParameters.shared.maxPliesPerGame`; the
+    /// through to `TrainingParameters.shared.selfPlayMaxPliesPerGame`; the
     /// next self-play game started by any worker slot reads the
     /// new value at game start. Cancel reverts via the model's
     /// stash; Save updates the stash.
@@ -767,13 +767,13 @@ private struct SelfPlayTab: View {
                     .font(.subheadline.weight(.semibold))
                 PopoverRow(
                     label: "Concurrency:",
-                    text: $selfPlayWorkersText,
-                    error: selfPlayWorkersError,
+                    text: $selfPlayConcurrencyText,
+                    error: selfPlayConcurrencyError,
                     placeholder: "8"
                 ) {
                     Stepper(
                         "",
-                        value: PopoverBindings.intBinding(text: $selfPlayWorkersText, fallback: 8),
+                        value: PopoverBindings.intBinding(text: $selfPlayConcurrencyText, fallback: 8),
                         in: 1...256,
                         step: 1
                     )
@@ -891,19 +891,19 @@ private struct SelfPlayTab: View {
                 // length. Games hitting this cap are dropped (not
                 // emitted) and counted as "Drop" in the Played row of
                 // the Live snapshot below. Live-propagated to
-                // `TrainingParameters.shared.maxPliesPerGame`; each
+                // `TrainingParameters.shared.selfPlayMaxPliesPerGame`; each
                 // slot reads it at the start of its next game.
                 PopoverRow(
                     label: "Max plies per game:",
-                    text: $maxPliesPerGameText,
-                    error: maxPliesPerGameError,
+                    text: $selfPlayMaxPliesPerGameText,
+                    error: selfPlayMaxPliesPerGameError,
                     placeholder: "1000",
                     hint: maxPliesHint
                 ) {
                     Stepper(
                         "",
                         value: liveIntBinding(
-                            text: $maxPliesPerGameText,
+                            text: $selfPlayMaxPliesPerGameText,
                             fallback: 1000,
                             onChange: onLiveMaxPliesPerGameChange
                         ),
@@ -911,7 +911,7 @@ private struct SelfPlayTab: View {
                         step: 25
                     )
                 }
-                .onChange(of: maxPliesPerGameText) { _, newValue in
+                .onChange(of: selfPlayMaxPliesPerGameText) { _, newValue in
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
                         onLiveMaxPliesPerGameChange(1000)
@@ -945,6 +945,7 @@ private struct SelfPlayTab: View {
                     )
                 }
                 .onChange(of: selfPlayDrawKeepFractionText) { _, newValue in
+                    drawKeepHint = Self.makeDrawKeepHint(from: newValue)
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
                         onLiveSelfPlayDrawKeepFractionChange(1.0)
@@ -956,6 +957,12 @@ private struct SelfPlayTab: View {
                 liveEmittedGamesReadout
             }
         }
+        .onAppear {
+            // Seed the cached hint from whatever text the model
+            // currently holds. Subsequent edits update it via the
+            // `.onChange(of: selfPlayDrawKeepFractionText)` above.
+            drawKeepHint = Self.makeDrawKeepHint(from: selfPlayDrawKeepFractionText)
+        }
     }
 
     /// Plain-English hint for the current max-plies-per-game cap.
@@ -964,7 +971,7 @@ private struct SelfPlayTab: View {
     /// repetition end any sane game well before that). Lower values
     /// say "drop games hitting this many plies."
     private var maxPliesHint: String {
-        guard let n = Int(maxPliesPerGameText.trimmingCharacters(in: .whitespaces)),
+        guard let n = Int(selfPlayMaxPliesPerGameText.trimmingCharacters(in: .whitespaces)),
               n >= 25, n <= 1000 else {
             return "25–1000"
         }
@@ -978,7 +985,7 @@ private struct SelfPlayTab: View {
     /// (in addition to updating the text field). Mirrors the
     /// `liveDoubleBinding` helper used by the keep-fraction stepper —
     /// each click of the stepper arrow flows through to
-    /// `TrainingParameters.shared.maxPliesPerGame` immediately.
+    /// `TrainingParameters.shared.selfPlayMaxPliesPerGame` immediately.
     private func liveIntBinding(
         text: Binding<String>,
         fallback: Int,
@@ -998,8 +1005,18 @@ private struct SelfPlayTab: View {
     /// Plain-English explanation of the current keep-fraction value,
     /// shown next to the text field so the operator can read the
     /// effect of an edit without having to reason about the math.
-    private var drawKeepHint: String {
-        guard let v = Double(selfPlayDrawKeepFractionText.trimmingCharacters(in: .whitespaces)),
+    /// Stored as `@State` rather than a computed-on-every-body
+    /// getter: kept in sync with `selfPlayDrawKeepFractionText` via
+    /// the body's `.onAppear` + `.onChange(of:)` hooks so SwiftUI
+    /// only re-parses on actual text edits, not on every body
+    /// re-evaluation triggered by sibling state changes.
+    @State private var drawKeepHint: String = "0.0–1.0"
+
+    /// Pure helper that derives the plain-English hint from the
+    /// raw text. Called from `.onAppear` (initial state) and
+    /// `.onChange(of: selfPlayDrawKeepFractionText)` (live edits).
+    private static func makeDrawKeepHint(from text: String) -> String {
+        guard let v = Double(text.trimmingCharacters(in: .whitespaces)),
               v.isFinite, v >= 0.0, v <= 1.0 else {
             return "0.0–1.0"
         }

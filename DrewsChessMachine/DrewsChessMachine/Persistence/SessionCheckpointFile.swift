@@ -244,8 +244,9 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Hard cap on self-play game length (plies) before the game is
     /// dropped without emit. Optional for back-compat with sessions
     /// saved before the cap existed; absent → loader falls through
-    /// to `TrainingParameters.shared.maxPliesPerGame` (default 1000,
-    /// effectively disabled).
+    /// to `TrainingParameters.shared.selfPlayMaxPliesPerGame`. The
+    /// on-disk JSON key is still `maxPliesPerGame` — keeping the
+    /// struct field name preserves loadability of pre-rename sessions.
     var maxPliesPerGame: Int?
     /// Lifetime self-play games that were emitted into the replay
     /// buffer (i.e. survived the draw-keep filter). `<= selfPlayGames`;
@@ -264,7 +265,7 @@ struct SessionCheckpointState: Codable, Equatable {
     var threefoldRepetitionDraws: Int?
     var insufficientMaterialDraws: Int?
     /// Lifetime count of self-play games dropped for hitting the
-    /// `maxPliesPerGame` cap. Optional for back-compat — absent in
+    /// `selfPlayMaxPliesPerGame` cap. Optional for back-compat — absent in
     /// sessions saved before the cap existed; treated as 0 on load.
     var maxPliesDropped: Int?
     var totalGameWallMs: Double?

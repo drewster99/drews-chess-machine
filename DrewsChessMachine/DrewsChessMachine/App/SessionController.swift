@@ -572,7 +572,7 @@ final class SessionController {
     /// useful left-side output).
     var isCandidateTestActive: Bool {
         guard realTraining else { return false }
-        if TrainingParameters.shared.selfPlayWorkers > 1 { return true }
+        if TrainingParameters.shared.selfPlayConcurrency > 1 { return true }
         return playAndTrainBoardMode == .candidateTest
     }
 

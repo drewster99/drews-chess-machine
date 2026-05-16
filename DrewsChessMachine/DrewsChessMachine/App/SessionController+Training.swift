@@ -44,11 +44,11 @@ extension SessionController {
         )
         // Snap the live N into the [1, absoluteMaxSelfPlayWorkers] range
         // before doing anything else. The Stepper enforces this
-        // for user input but `TrainingParameters.shared.selfPlayWorkers` is centrally managed
+        // for user input but `TrainingParameters.shared.selfPlayConcurrency` is centrally managed
         // so the value could in principle be edited elsewhere.
-        let initialWorkerCount = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, TrainingParameters.shared.selfPlayWorkers))
-        if initialWorkerCount != TrainingParameters.shared.selfPlayWorkers {
-            TrainingParameters.shared.selfPlayWorkers = initialWorkerCount
+        let initialWorkerCount = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, TrainingParameters.shared.selfPlayConcurrency))
+        if initialWorkerCount != TrainingParameters.shared.selfPlayConcurrency {
+            TrainingParameters.shared.selfPlayConcurrency = initialWorkerCount
         }
         guard let trainer = ensureTrainer(), let network else { return }
         let gameWatcher = gameWatcherProvider()
@@ -292,12 +292,12 @@ extension SessionController {
                 }
                 if let v = rs.maxPliesPerGame {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] max_plies_per_game: \(TrainingParameters.shared.maxPliesPerGame) -> \(v) (from session)"
+                        "[RESUME-PARAM] self_play_max_plies_per_game: \(TrainingParameters.shared.selfPlayMaxPliesPerGame) -> \(v) (from session)"
                     )
-                    TrainingParameters.shared.maxPliesPerGame = v
+                    TrainingParameters.shared.selfPlayMaxPliesPerGame = v
                 } else {
                     SessionLogger.shared.log(
-                        "[RESUME-PARAM] max_plies_per_game: saved=nil applied=\(TrainingParameters.shared.maxPliesPerGame) (defaulted)"
+                        "[RESUME-PARAM] self_play_max_plies_per_game: saved=nil applied=\(TrainingParameters.shared.selfPlayMaxPliesPerGame) (defaulted)"
                     )
                 }
                 // LR warmup length and sqrt-batch LR scaling are now
@@ -458,7 +458,7 @@ extension SessionController {
         // multi-worker sessions so the user gets a usable left-side
         // panel out of the gate; single-worker sessions keep the
         // historical Game-run default.
-        playAndTrainBoardMode = TrainingParameters.shared.selfPlayWorkers > 1 ? .candidateTest : .gameRun
+        playAndTrainBoardMode = TrainingParameters.shared.selfPlayConcurrency > 1 ? .candidateTest : .gameRun
         probeNetworkTarget = .candidate
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
@@ -575,7 +575,7 @@ extension SessionController {
                 emittedInsufficientMaterialDraws: rs.emittedInsufficientMaterialDraws
             )
             if let workerCount = resumeState?.selfPlayWorkerCount {
-                TrainingParameters.shared.selfPlayWorkers = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, workerCount))
+                TrainingParameters.shared.selfPlayConcurrency = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, workerCount))
             }
             if let delay = rs.stepDelayMs {
                 TrainingParameters.shared.trainingStepDelayMs = delay
@@ -632,7 +632,7 @@ extension SessionController {
         // Shared current-N holder. Workers poll this to decide
         // whether to play another game or sit in their idle wait.
         // The Stepper writes through it (and to `@State
-        // TrainingParameters.shared.selfPlayWorkers simultaneously). Exposed via
+        // TrainingParameters.shared.selfPlayConcurrency simultaneously). Exposed via
         // so the UI can disable the buttons when the box is gone
         // (between sessions).
         let countBox = WorkerCountBox(initial: initialWorkerCount)
@@ -1417,7 +1417,7 @@ extension SessionController {
                                 TrainingParameters.shared.arenaPromoteThreshold,
                                 TrainingParameters.shared.arenaGamesPerTournament,
                                 TrainingParameters.shared.selfPlayDrawKeepFraction,
-                                TrainingParameters.shared.maxPliesPerGame
+                                TrainingParameters.shared.selfPlayMaxPliesPerGame
                             )
                         }
                         let policyStr: String
@@ -1763,7 +1763,7 @@ extension SessionController {
                                 emittedGames: parallelSnap.emittedGames,
                                 emittedPositions: parallelSnap.emittedPositions,
                                 selfPlayDrawKeepFraction: drawKeepFrac,
-                                maxPliesPerGame: maxPliesCap,
+                                selfPlayMaxPliesPerGame: maxPliesCap,
                                 maxPliesDropped: parallelSnap.maxPliesDropped,
                                 avgLen: lifetimeAvgLen,
                                 rollingAvgLen: rollingAvgLen,

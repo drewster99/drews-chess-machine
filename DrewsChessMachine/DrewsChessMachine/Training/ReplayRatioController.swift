@@ -723,11 +723,18 @@ final class ReplayRatioController: @unchecked Sendable {
                 currentRatio: ratio,
                 targetRatio: _targetRatio,
                 autoAdjust: _autoAdjust,
-                computedDelayMs: trSmoothed,
-                // Gate the external sp delay on auto-adjust so the UI
-                // matches what self-play workers actually see from
-                // `computedSelfPlayDelayMs`. Internal state is kept so
-                // re-enabling auto resumes from the last equilibrium.
+                // Mirror what the trainer actually sleeps in
+                // `recordTrainingBatchAndGetDelay`: SMA when auto is on,
+                // the user-pinned manual value when auto is off. Without
+                // this gate the field shows the last raw signed value
+                // (frozen after the 20 s SMA window ages out) while the
+                // trainer is in fact sleeping `_manualDelayMs` — the
+                // observable contradiction the user hit in the gold
+                // standard run when `[STATS] delay=39ms` despite the
+                // popover stepper being at 0.
+                computedDelayMs: _autoAdjust ? trSmoothed : _manualDelayMs,
+                // Same gate as the training side; internal state is kept
+                // so re-enabling auto resumes from the last equilibrium.
                 computedSelfPlayDelayMs: _autoAdjust ? spSmoothed : _manualSelfPlayDelayMs,
                 selfPlayMsPerMove: _selfPlayMsPerMove,
                 trainingMsPerMove: _trainingMsPerMove,

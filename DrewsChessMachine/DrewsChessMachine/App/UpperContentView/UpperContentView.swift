@@ -428,7 +428,7 @@ struct UpperContentView: View {
     nonisolated static let replayBufferCapacity = 1_000_000
     /// Default number of active self-play workers when a new
     /// Play and Train session starts. The Stepper and
-    /// `trainingParams.selfPlayWorkers` (formerly `@State`) defaults to this
+    /// `trainingParams.selfPlayConcurrency` (formerly `@State`) defaults to this
     /// value — it's the *initial* setting, **not** an upper
     /// bound. The user can raise or lower the live count at any
     /// time via the Stepper, and changes take effect at each
@@ -451,7 +451,7 @@ struct UpperContentView: View {
     /// wait state. Persisted to UserDefaults via `@AppStorage` so
     /// the user's last chosen concurrency level survives app
     /// restart. Bounded at runtime by `absoluteMaxSelfPlayWorkers`.
-    // selfPlayWorkerCount migrated to `trainingParams.selfPlayWorkers`.
+    // selfPlayWorkerCount migrated to `trainingParams.selfPlayConcurrency`.
     /// Upper bound on the adjustable training-step delay. 500 ms
     /// already turns a ~60 steps/s training worker into roughly
     /// 2 steps/s, which is as slow as anyone reasonably wants to
@@ -478,10 +478,10 @@ struct UpperContentView: View {
     // the training worker reads the live delay from
     // `replayRatioController.recordTrainingBatchAndGetDelay(...)` each
     // step, so no separate lock-protected mirror is needed.
-    /// Shared lock-protected mirror of `trainingParams.selfPlayWorkers` the
+    /// Shared lock-protected mirror of `trainingParams.selfPlayConcurrency` the
     /// self-play worker tasks read between games. Moved to SessionController in
     /// Stage 4d — forwarding proxy. (The Stepper updates
-    /// `trainingParams.selfPlayWorkers` AND this box atomically via the
+    /// `trainingParams.selfPlayConcurrency` AND this box atomically via the
     /// binding side-effect; workers poll the box at the top of each iteration.
     /// Allocated at session start, cleared on session end.)
     private var workerCountBox: WorkerCountBox? {
@@ -1062,7 +1062,19 @@ struct UpperContentView: View {
         // Steppers/Toggles inside the body.
         @Bindable var trainingParams = self.trainingParams
         return VStack(alignment: .leading, spacing: 8) {
-            titleBar
+            // Extracted to TitleBarView + `.equatable()` so re-renders
+            // driven by other body deps (trainingStats, gameSnapshot,
+            // alarm.active) skip rebuilding the title-bar subtree when
+            // none of its own inputs changed.
+            TitleBarView(
+                network: network,
+                networkIdentifier: network?.identifier,
+                networkStatus: networkStatus,
+                hasSavedCheckpoint: checkpoint.lastSavedAt != nil,
+                lastSavedDisplayString: lastSavedDisplayString,
+                showingInfoPopover: $showingInfoPopover
+            )
+            .equatable()
             if let alarm = trainingAlarm.active {
                 TrainingAlarmBanner(
                     alarm: alarm,
@@ -1166,47 +1178,9 @@ struct UpperContentView: View {
     // a single 200-line `body` blew past the `-warn-long-function-bodies`
     // budget; the slices each stay well under it.
 
-    /// Title bar: build/git summary + info popover on the left, self-play
-    /// network ID / status / last-saved indicator on the right.
-    @ViewBuilder
-    private var titleBar: some View {
-        HStack(spacing: 8) {
-            Text(BuildInfo.summary)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Button(action: { showingInfoPopover.toggle() }) {
-                Image(systemName: "info.circle")
-                    .font(.title3)
-            }
-            .buttonStyle(.plain)
-            .popover(isPresented: $showingInfoPopover) {
-                AboutPopoverContent(network: network)
-            }
-            Spacer()
-            // Right-side ID + network status — bumped from .caption to
-            // .callout so they're readable at glance distance. Contrast
-            // (.secondary) was already fine; only the size changes.
-            if let net = network {
-                Text("Self play ID: \(net.identifier?.description ?? "–")")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            Text(networkStatus.isEmpty ? "" : networkStatus.components(separatedBy: "\n").first ?? "")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            HStack(spacing: 4) {
-                if checkpoint.lastSavedAt != nil {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                }
-                Text(lastSavedDisplayString)
-                    .font(.callout)
-                    .foregroundStyle(checkpoint.lastSavedAt == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.green))
-                    .lineLimit(1)
-            }
-        }
-    }
+    // `titleBar` lives in its own file as `TitleBarView` (an Equatable
+    // SwiftUI struct), so re-renders of `body` driven by other tracked
+    // deps don't force the title bar to recompute its body.
 
     /// Whether the busy/status row has anything to show — a
     /// non-`realTraining` busy state, an in-flight tournament, or a
@@ -1319,7 +1293,7 @@ struct UpperContentView: View {
                 sideToMoveBinding: sideToMoveBinding,
                 probeNetworkTarget: $session.probeNetworkTarget,
                 realTraining: realTraining,
-                workerCount: trainingParams.selfPlayWorkers,
+                workerCount: trainingParams.selfPlayConcurrency,
                 inferenceResultPresent: inferenceResult != nil,
                 showForwardPassUI: showForwardPassUI,
                 forwardPassEditable: forwardPassEditable,
@@ -1333,7 +1307,7 @@ struct UpperContentView: View {
                     forwardPassEditable: forwardPassEditable,
                     realTraining: realTraining,
                     isCandidateTestActive: isCandidateTestActive,
-                    workerCount: trainingParams.selfPlayWorkers,
+                    workerCount: trainingParams.selfPlayConcurrency,
                     onNavigate: { navigateOverlay($0) },
                     onApplyFreePlacementDrag: { from, to in
                         applyFreePlacementDrag(from: from, to: to)
@@ -1989,12 +1963,12 @@ struct UpperContentView: View {
         // Pre-process the value map: apply UI-specific clamps that the
         // macro's range alone can't express (e.g. snapping
         // training_step_delay_ms onto the Stepper's ladder, or
-        // narrowing self_play_workers to a per-build absolute cap that
+        // narrowing self_play_concurrency to a per-build absolute cap that
         // is tighter than the macro's permissive 1...256).
         var values = cfg.trainingParameters
-        if case .int(let v) = values[SelfPlayWorkers.id] {
+        if case .int(let v) = values[SelfPlayConcurrency.id] {
             let clamped = max(1, min(Self.absoluteMaxSelfPlayWorkers, v))
-            values[SelfPlayWorkers.id] = .int(clamped)
+            values[SelfPlayConcurrency.id] = .int(clamped)
         }
         if case .int(let v) = values[TrainingStepDelayMs.id] {
             let clamped = max(0, min(Self.stepDelayMaxMs, v))
@@ -3286,7 +3260,7 @@ struct UpperContentView: View {
     /// Play and Train self-play stats text. Built from the aggregate
     /// `ParallelWorkerStatsBox` snapshot so all N workers contribute
     /// identically, plus the live `GameWatcher` snapshot used only
-    /// when `trainingParams.selfPlayWorkers == 1` to render the current-
+    /// when `trainingParams.selfPlayConcurrency == 1` to render the current-
     /// game Status line. Session rates and the per-outcome Results
     /// breakdown moved to the `SelfPlayStatsCard` and `ResultsCard`
     /// SwiftUI views in the new card column between the chess board
@@ -3314,7 +3288,7 @@ struct UpperContentView: View {
         // because the Status line still wants the GameWatcher
         // snapshot for the to-move readout.
         _ = session
-        if trainingParams.selfPlayWorkers == 1 {
+        if trainingParams.selfPlayConcurrency == 1 {
             let status: String
             if game.isPlaying {
                 let turn = game.state.currentPlayer == .white ? "White" : "Black"

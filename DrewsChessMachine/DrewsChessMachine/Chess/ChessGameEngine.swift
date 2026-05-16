@@ -13,7 +13,7 @@ enum GameResult: Sendable {
 /// Raw game result returned from `ChessMachine.beginNewGame` — wraps an
 /// ordinary `GameResult` for games that ended via the chess rules and
 /// adds the `terminatedEarly` case for self-play games that hit the
-/// configured `maxPliesPerGame` cap before terminating naturally.
+/// configured `selfPlayMaxPliesPerGame` cap before terminating naturally.
 ///
 /// Lives only at the boundary between `ChessMachine` and the immediate
 /// caller (the self-play driver and the arena driver). The self-play
