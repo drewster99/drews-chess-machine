@@ -37,8 +37,10 @@ public struct PhaseHistogram: Sendable, Equatable {
         a.end += b.end
     }
 
-    /// Bucket a game-relative ply index using the same cutoffs as
-    /// `ReplayBuffer.computeBatchStats`'s per-batch phase_by_ply.
+    /// Bucket a **game-total** ply index (0-indexed half-move count
+    /// from the start of the game — same scale across both sides)
+    /// using the same cutoffs as `ReplayBuffer.computeBatchStats`'s
+    /// per-batch phase_by_ply.
     /// 0 = open (≤15), 1 = early (16–35), 2 = mid (36–75),
     /// 3 = late (76–125), 4 = end (126+).
     public static func plyBucket(ply: Int) -> Int {

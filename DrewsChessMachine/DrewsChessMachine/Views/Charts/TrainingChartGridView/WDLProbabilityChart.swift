@@ -26,10 +26,18 @@ struct WDLProbabilityChart: View {
             xDomain: xDomain,
             yDomain: 0...1,
             series: [
+                // pW thicker, pL thinner so the two stay visually
+                // distinguishable when they overlap (which is the
+                // common case: the [0, ln 6, 0] init makes pW ≈ pL ≈
+                // 0.125, and the symmetric pull during healthy
+                // training keeps them close). The fat green line
+                // shows a halo above and below the thin red center
+                // line whenever they coincide. pD gray stays at the
+                // default 1.5 since it rarely overlaps the other two.
                 FastChartSeries(
                     id: "pW",
                     color: .green,
-                    lineWidth: 1.5,
+                    lineWidth: 2.5,
                     data: .buckets(buckets.enumerated().map { (i, b) in
                         FastChartBucket(
                             id: i,
@@ -55,7 +63,7 @@ struct WDLProbabilityChart: View {
                 FastChartSeries(
                     id: "pL",
                     color: .red,
-                    lineWidth: 1.5,
+                    lineWidth: 1.0,
                     data: .buckets(buckets.enumerated().map { (i, b) in
                         FastChartBucket(
                             id: i,

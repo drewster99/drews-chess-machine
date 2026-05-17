@@ -35,16 +35,20 @@ struct DirichletNoiseConfig: Sendable {
     /// 0.10–0.25 is a reasonable starting range.
     let epsilon: Float
 
-    /// Maximum per-player ply (0-indexed) at which noise is mixed in.
-    /// At ply >= `plyLimit` the network's policy is sampled
-    /// unmodified. Limits noise to the opening, which is where
-    /// replay-buffer coverage matters most and where the network's
-    /// own argmax tends to repeat.
+    /// Maximum **game-total** ply (0-indexed half-move count from the
+    /// start of the game) at which noise is mixed in. At a game-total
+    /// ply >= `plyLimit` the network's policy is sampled unmodified.
+    /// Limits noise to the opening, which is where replay-buffer
+    /// coverage matters most and where the network's own argmax tends
+    /// to repeat. (Both sides count plies in the same single
+    /// game-total sequence — there's no per-side notion of "ply" in
+    /// this engine; "ply" always means a half-move within the game.)
     let plyLimit: Int
 
     /// AlphaZero baseline for chess (α=0.3, ε=0.25), gated to the
-    /// first 30 plies per player. Apply to self-play only — arena
-    /// games should sample without exploration noise.
+    /// first 30 game-total plies (i.e. the opening 15 white + 15
+    /// black half-moves). Apply to self-play only — arena games
+    /// should sample without exploration noise.
     static let alphaZero = DirichletNoiseConfig(
         alpha: 0.3,
         epsilon: 0.25,
@@ -56,9 +60,13 @@ struct DirichletNoiseConfig: Sendable {
 
 /// Linear-decay temperature schedule applied by `MPSChessPlayer.sampleMove`.
 ///
-/// Temperature starts at `startTau` on ply 0 and decreases by
-/// `decayPerPly` each ply (per-player), bottoming out at `floorTau`.
-/// The formula is: `tau(ply) = max(floorTau, startTau - decayPerPly * ply)`.
+/// Temperature starts at `startTau` on **game-total** ply 0 (the
+/// starting position) and decreases by `decayPerPly` each game-total
+/// ply (half-move from either side), bottoming out at `floorTau`.
+/// The formula is: `tau(ply) = max(floorTau, startTau - decayPerPly * ply)`,
+/// where `ply` is the position's game-total half-move count (0 for
+/// the starting position, 1 after white's first move, 2 after black's
+/// reply, etc.).
 ///
 /// Temperature scales the legal-move logits as `logit / tau` before
 /// the softmax, so:
@@ -72,9 +80,11 @@ struct DirichletNoiseConfig: Sendable {
 /// by zero and is not a valid argmax shortcut. See
 /// `sampling-parameters.md` for the design rationale behind each preset.
 struct SamplingSchedule: Sendable {
-    /// Temperature on the player's first move (ply 0). Must be > 0.
+    /// Temperature on the starting position (game-total ply 0). Must
+    /// be > 0.
     let startTau: Float
-    /// Temperature reduction per ply (per-player). Must be >= 0.
+    /// Temperature reduction per game-total ply (i.e. each half-move
+    /// advances the schedule). Must be >= 0.
     let decayPerPly: Float
     /// Minimum temperature — the decay floor. Must be > 0.
     let floorTau: Float
@@ -100,14 +110,15 @@ struct SamplingSchedule: Sendable {
     }
 
     /// Self-play data-generation schedule: starts at tau=2.0, decays
-    /// by 0.03 per ply, flooring at 0.4 (reached at ply ~53 per
-    /// player). Higher starting temperature than the prior 1.0 to
-    /// flatten the policy more aggressively in the opening, broaden
-    /// replay-buffer coverage of off-trunk lines, and pull more
-    /// decisive games out of an early-bootstrap policy that
+    /// by 0.03 per game-total ply, flooring at 0.4 (reached at
+    /// game-total ply ~54, i.e. ~27 half-moves into the game from
+    /// either side). Higher starting temperature than the prior 1.0
+    /// to flatten the policy more aggressively in the opening,
+    /// broaden replay-buffer coverage of off-trunk lines, and pull
+    /// more decisive games out of an early-bootstrap policy that
     /// otherwise concentrates on shuffle moves. Combined with the
     /// AlphaZero-default Dirichlet noise mixed into the opening 30
-    /// plies per player.
+    /// game-total plies (the first 15 white + 15 black half-moves).
     static let selfPlay = SamplingSchedule(
         startTau: 2.0,
         decayPerPly: 0.03,
@@ -116,13 +127,14 @@ struct SamplingSchedule: Sendable {
     )
 
     /// Arena-evaluation schedule: starts at tau=2.0, decays by 0.04
-    /// per ply, flooring at 0.2 (reached at ply 45). Higher starting
-    /// temperature than the prior 0.7 to expose more candidate-vs-
-    /// champion divergence in the opening (helps surface the small
-    /// signal that survives the dominant-draw regime). The faster
-    /// decay and lower floor still ensure the middlegame onward
-    /// reflects decisive play rather than sampling noise. No
-    /// Dirichlet noise — arena games measure actual strength.
+    /// per game-total ply, flooring at 0.2 (reached at game-total
+    /// ply 45). Higher starting temperature than the prior 0.7 to
+    /// expose more candidate-vs-champion divergence in the opening
+    /// (helps surface the small signal that survives the dominant-
+    /// draw regime). The faster decay and lower floor still ensure
+    /// the middlegame onward reflects decisive play rather than
+    /// sampling noise. No Dirichlet noise — arena games measure
+    /// actual strength.
     static let arena = SamplingSchedule(
         startTau: 2.0,
         decayPerPly: 0.04,
@@ -138,15 +150,17 @@ struct SamplingSchedule: Sendable {
         floorTau: 1.0
     )
 
-    /// The ply (per-player) at which tau reaches the floor. Returns
+    /// The game-total ply at which tau reaches the floor. Returns
     /// `Int.max` when `decayPerPly` is zero (no decay).
     var pliesUntilFloor: Int {
         guard decayPerPly > 0 else { return Int.max }
         return Int(ceilf((startTau - floorTau) / decayPerPly))
     }
 
-    /// Temperature to apply on the `ply`-th move (0-indexed) this
-    /// player makes in the current game.
+    /// Temperature to apply at the given game-total ply (0-indexed
+    /// half-move count from the start of the game — 0 for the
+    /// starting position, 1 after white's first move, 2 after
+    /// black's reply, etc.).
     @inline(__always)
     func tau(forPly ply: Int) -> Float {
         max(floorTau, startTau - decayPerPly * Float(ply))
@@ -262,19 +276,21 @@ final class MPSChessPlayer: ChessPlayer {
     /// Per-recorded-ply observability metadata — flushed alongside
     /// `gamePolicyIndices` into the replay buffer at game end. Sized in
     /// lock-step with the move-index array.
-    /// - `gamePlyIndices[i]`: the player-local ply index for record `i`.
-    ///   Note: in self-play with both players writing into the same
-    ///   buffer, each player's first record is ply 0, second is ply 1,
-    ///   etc. The replay buffer's `plyIndex` field thus measures
-    ///   "ply within this player's perspective" rather than the
-    ///   absolute game ply. Game length (`gamePlyCountAtFlush`) is the
-    ///   total recorded plies for this player at flush time.
+    /// - `gamePlyIndices[i]`: the **game-total** ply index for record
+    ///   `i` — 0-indexed half-move count from the start of the game.
+    ///   White's recorded positions land on even plies (0, 2, 4, …),
+    ///   black's on odd plies (1, 3, 5, …). The two players' records
+    ///   interleave on the same scale when merged into the replay
+    ///   buffer, so phase-histogram bucketing (≤15 open, 16–35 early,
+    ///   36–75 mid, 76–125 late, 126+ end) reflects each position's
+    ///   actual location within the game.
     private var gamePlyIndices: [UInt16]
 
     /// Per-recorded-ply sampling temperature (tau) actually applied
-    /// when picking the move. Computed via
-    /// `schedule.tau(forPly: gamePliesRecorded)` at the moment of
-    /// move selection.
+    /// when picking the move. Computed via `schedule.tau(forPly:)` at
+    /// the moment of move selection — argument is the position's
+    /// game-total ply count, derived from `gamePliesRecorded` and
+    /// `isWhite` at the call site.
     private var gameSamplingTaus: [Float]
 
     /// Per-recorded-ply 64-bit hash of the encoded board tensor at
@@ -484,7 +500,16 @@ final class MPSChessPlayer: ChessPlayer {
         // matches exactly what the network sees. Cheap (~5 µs at
         // `BoardEncoder.tensorLength` floats with stdlib SipHash).
         let stateHash = ReplayBuffer.hashBoard(rowBase, count: boardFloats)
-        let plyTau = schedule.tau(forPly: gamePliesRecorded)
+        // Game-total ply count for THIS position (0-indexed half-move
+        // count from the start of the game). `gamePliesRecorded` is
+        // this player's own move count (per-side); the position
+        // about-to-be-recorded is at game-total ply
+        // `2 * gamePliesRecorded` if we're white (we move on even
+        // half-moves 0, 2, 4, …) or `2 * gamePliesRecorded + 1` if
+        // black (odd half-moves 1, 3, 5, …). All downstream
+        // schedule/Dirichlet/bucketing code consumes game-total ply.
+        let gameTotalPly = 2 * gamePliesRecorded + (isWhite ? 0 : 1)
+        let plyTau = schedule.tau(forPly: gameTotalPly)
         // Non-pawn piece count for the by-material phase bucket.
         // Iterates the 64-element [Piece?] array and counts squares
         // occupied by anything other than a pawn. Explicit `if let`
@@ -516,10 +541,15 @@ final class MPSChessPlayer: ChessPlayer {
         )
 
         gamePolicyIndices.append(Int32(PolicyEncoding.policyIndex(move, currentPlayer: gameState.currentPlayer)))
-        // UInt16 caps at 65535 — chess games are at most ~6000 plies in
-        // pathological cases (50-move/3-fold limits), so the cap is
-        // fine; saturate just in case.
-        gamePlyIndices.append(UInt16(min(gamePliesRecorded, Int(UInt16.max))))
+        // Stored ply is the **game-total** half-move count of this
+        // position (0-indexed from the start of the game), so
+        // downstream histogram bucketing in `PhaseHistogram.plyBucket`
+        // and `ReplayBuffer.computeBatchStats` (cutoffs ≤15 / 16–35 /
+        // 36–75 / 76–125 / 126+) matches the chess-convention "ply N"
+        // reading of the label. UInt16 caps at 65535 — chess games
+        // are at most ~6000 plies in pathological cases (50-move /
+        // 3-fold limits), so the cap is fine; saturate just in case.
+        gamePlyIndices.append(UInt16(min(gameTotalPly, Int(UInt16.max))))
         gameSamplingTaus.append(plyTau)
         gameStateHashes.append(stateHash)
         gameMaterialCounts.append(materialCount)
@@ -696,7 +726,12 @@ final class MPSChessPlayer: ChessPlayer {
                     logits: logits,
                     legalMoves: legalMoves,
                     currentPlayer: currentPlayer,
-                    ply: gamePliesRecorded,
+                    // Game-total ply count for the position currently
+                    // under consideration (0-indexed half-move count
+                    // from game start). Same conversion as in
+                    // `onChooseNextMove` above — see that comment for
+                    // the derivation.
+                    ply: 2 * gamePliesRecorded + (isWhite ? 0 : 1),
                     schedule: schedule,
                     probsScratch: probs,
                     etaScratch: eta

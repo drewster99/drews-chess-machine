@@ -115,9 +115,13 @@ final class ActiveGame: @unchecked Sendable {
     private var whitePolicyIndices: UnsafeMutablePointer<Int32>
     private var blackPolicyIndices: UnsafeMutablePointer<Int32>
 
-    /// Per-ply game-relative ply index (0,1,2,... within THIS side's
-    /// move sequence). Saturates at UInt16.max — chess games can't
-    /// reach that under any realistic cap.
+    /// Per-recorded-ply **game-total** ply index — the position's
+    /// 0-indexed half-move count from the start of the game. White's
+    /// recorded positions land on even plies (0, 2, 4, …), black's
+    /// on odd plies (1, 3, 5, …). Saturates at UInt16.max — chess
+    /// games can't reach that under any realistic cap. Phase-histogram
+    /// bucketing in `PhaseHistogram.plyBucket` consumes this value
+    /// directly (cutoffs ≤15 / 16–35 / 36–75 / 76–125 / 126+).
     private var whitePlyIndices: UnsafeMutablePointer<UInt16>
     private var blackPlyIndices: UnsafeMutablePointer<UInt16>
 
@@ -276,7 +280,9 @@ final class ActiveGame: @unchecked Sendable {
             dst.update(from: encodedBoardSrc, count: bf)
             let stateHash = ReplayBuffer.hashBoard(dst, count: bf)
             whitePolicyIndices[whitePliesRecorded] = Int32(policyIndex)
-            whitePlyIndices[whitePliesRecorded] = UInt16(min(whitePliesRecorded, Int(UInt16.max)))
+            // Game-total ply for white's i-th recorded position is
+            // 2*i: white moves on even half-moves (0, 2, 4, …).
+            whitePlyIndices[whitePliesRecorded] = UInt16(min(2 * whitePliesRecorded, Int(UInt16.max)))
             whiteSamplingTaus[whitePliesRecorded] = samplingTau
             whiteStateHashes[whitePliesRecorded] = stateHash
             whiteMaterialCounts[whitePliesRecorded] = materialCount
@@ -290,7 +296,9 @@ final class ActiveGame: @unchecked Sendable {
             dst.update(from: encodedBoardSrc, count: bf)
             let stateHash = ReplayBuffer.hashBoard(dst, count: bf)
             blackPolicyIndices[blackPliesRecorded] = Int32(policyIndex)
-            blackPlyIndices[blackPliesRecorded] = UInt16(min(blackPliesRecorded, Int(UInt16.max)))
+            // Game-total ply for black's i-th recorded position is
+            // 2*i + 1: black moves on odd half-moves (1, 3, 5, …).
+            blackPlyIndices[blackPliesRecorded] = UInt16(min(2 * blackPliesRecorded + 1, Int(UInt16.max)))
             blackSamplingTaus[blackPliesRecorded] = samplingTau
             blackStateHashes[blackPliesRecorded] = stateHash
             blackMaterialCounts[blackPliesRecorded] = materialCount

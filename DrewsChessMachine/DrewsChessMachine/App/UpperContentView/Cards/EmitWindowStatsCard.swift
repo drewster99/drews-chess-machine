@@ -26,7 +26,7 @@ struct EmitWindowStatsCard: View {
     /// prefix in caption2 — e.g. "(76–125) late" or "(12–13) early".
     /// Includes headroom so glyph-substitution (≤ ≥ –) can't push the
     /// label past the frame edge and nudge the next column.
-    private static let labelWidth: CGFloat = 150
+    private static let labelWidth: CGFloat = 75
     /// Width of the "plies (X.X%)" cell — sized for "1,234,567
     /// (100.0%)" worst case.
     private static let pliesCellWidth: CGFloat = 130

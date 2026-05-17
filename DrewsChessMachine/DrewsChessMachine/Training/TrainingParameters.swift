@@ -296,7 +296,7 @@ public enum DrawPenalty: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Self-Play Start Tau",
-    description: "Initial sampling temperature for self-play games. Decays toward target over self_play_tau_decay_per_ply per move.",
+    description: "Initial sampling temperature for self-play games at game-total ply 0 (the starting position). Decays toward target by self_play_tau_decay_per_ply each game-total ply (i.e. each half-move from either side advances the schedule).",
     default: 1.0,
     range: 0.05...5.0,
     category: "Self-Play Sampling",
@@ -316,7 +316,7 @@ public enum SelfPlayTargetTau: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Self-Play Tau Decay Per Ply",
-    description: "Per-ply decay rate moving start_tau toward target_tau during a self-play game.",
+    description: "Decay applied to tau on every game-total ply (each half-move from either side), moving start_tau toward target_tau during a self-play game. tau(ply) = max(target_tau, start_tau − decay·ply).",
     default: 0.007,
     range: 0.0...1.0,
     category: "Self-Play Sampling",
@@ -375,7 +375,7 @@ public enum ArenaTargetTau: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Arena Tau Decay Per Ply",
-    description: "Per-ply decay rate moving arena start_tau toward target_tau.",
+    description: "Decay applied to tau on every game-total ply (each half-move from either side), moving arena start_tau toward target_tau.",
     default: 0.02,
     range: 0.0...1.0,
     category: "Arena",
