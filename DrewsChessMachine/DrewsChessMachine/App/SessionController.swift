@@ -29,10 +29,11 @@ final class SessionController {
 
     // MARK: - Champion network + build state
 
-    /// The live champion network. Self-play workers evaluate against this via
-    /// the shared `BatchedMoveEvaluationSource`; Play Game / Run Forward Pass
-    /// use it directly; the arena snapshots it into `arenaChampionNetwork`.
-    /// `nil` until Build Network (or a load) populates it.
+    /// The live champion network. `BatchedSelfPlayDriver` evaluates K
+    /// active self-play games against this network per tick; Play Game /
+    /// Run Forward Pass use it directly; the arena snapshots it into
+    /// `arenaChampionNetwork`. `nil` until Build Network (or a load)
+    /// populates it.
     var network: ChessMPSNetwork?
 
     /// `ChessRunner` wrapping `network`. Rebuilt whenever `network` is.

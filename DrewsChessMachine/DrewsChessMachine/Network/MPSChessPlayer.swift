@@ -174,17 +174,15 @@ struct SamplingSchedule: Sendable {
 /// Encodes the board from the current player's perspective, runs inference,
 /// masks illegal moves, renormalizes, and samples from the policy distribution.
 ///
-/// Used by arena (two instances per game, sourced from per-network
-/// `BatchedMoveEvaluationSource` actors) and by Play Game / Human-vs-
-/// Network (one AI player against a `HumanChessPlayer`, sourced from
-/// `DirectMoveEvaluationSource`). Self-play no longer uses this class
-/// — the `BatchedSelfPlayDriver` tick model drives sampling directly
-/// via `MoveSampler` without going through a per-game player object.
+/// Used by Play Game / Human-vs-Network (one AI player against a
+/// `HumanChessPlayer`, sourced from `DirectMoveEvaluationSource`).
+/// Self-play and arena no longer use this class — `BatchedSelfPlayDriver`
+/// and `TickTournamentDriver` both drive sampling directly via
+/// `MoveSampler` without going through a per-game player object.
 ///
-/// A player instance can be reused across many games (arena reuses
-/// across an arena's run; Play Game allocates one per game). Access
-/// is single-threaded within the game task; no locking is needed on
-/// the player's internal state.
+/// A player instance lives for one game (Play Game allocates one per
+/// game; Human-vs-Network the same). Access is single-threaded within
+/// the game task; no locking is needed on the player's internal state.
 final class MPSChessPlayer: ChessPlayer {
     /// Number of floats in one encoded board position. Kept in sync
     /// with `BoardEncoder.tensorLength`.
@@ -197,11 +195,12 @@ final class MPSChessPlayer: ChessPlayer {
 
     let identifier: String
     let name: String
-    /// Source of (policy, value) predictions. Goes through
-    /// `DirectMoveEvaluationSource` (sync single-board inference) for
-    /// Play Game / Play Continuous / Human-vs-Network, or through
-    /// `BatchedMoveEvaluationSource` (barrier batcher, per-network)
-    /// for arena tournaments.
+    /// Source of (policy, value) predictions. Always a
+    /// `DirectMoveEvaluationSource` (or its `DelayedMoveEvaluationSource`
+    /// / `LiveTrainerMoveEvaluationSource` wrappers) in the current
+    /// codebase — single-position synchronous inference. The only
+    /// remaining consumers are Play Game, Play Continuous, and
+    /// Human-vs-Network, all of which play one game at a time.
     private let source: MoveEvaluationSource
     /// Temperature schedule applied per-ply in `sampleMove`. Defaults to
     /// `.uniform` (flat tau=1.0) so non-training callers keep their
@@ -253,15 +252,14 @@ final class MPSChessPlayer: ChessPlayer {
     /// branch on every player init.
     private var dirichletScratch: [Float]
 
-    /// Create a player backed by a `MoveEvaluationSource`.
-    ///
-    /// For arena, pass a `BatchedMoveEvaluationSource` (per-network)
-    /// so multiple concurrent arena games coalesce their per-ply
-    /// forward passes into batched `graph.run` calls. For Play Game /
-    /// Human-vs-Network, pass a `DirectMoveEvaluationSource` wrapping
-    /// a `ChessMPSNetwork`. Pass a `schedule` other than `.uniform`
-    /// to apply a two-phase sampling temperature — see
-    /// `SamplingSchedule` and `sampling-parameters.md`.
+    /// Create a player backed by a `MoveEvaluationSource`. For Play
+    /// Game / Human-vs-Network the source is a `DirectMoveEvaluationSource`
+    /// wrapping a `ChessMPSNetwork` (possibly wrapped in
+    /// `DelayedMoveEvaluationSource` for a per-move think-time, or
+    /// `LiveTrainerMoveEvaluationSource` to play against the live
+    /// trainer). Pass a `schedule` other than `.uniform` to apply a
+    /// two-phase sampling temperature — see `SamplingSchedule` and
+    /// `sampling-parameters.md`.
     init(
         name: String,
         source: MoveEvaluationSource,

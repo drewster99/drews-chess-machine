@@ -2,8 +2,7 @@ import Foundation
 
 /// `@unchecked Sendable` wrapper around an
 /// `UnsafeMutableBufferPointer<Float>` so the destination buffer can
-/// cross actor boundaries (`MPSChessPlayer` → `BatchedMoveEvaluationSource`)
-/// and be captured into `@Sendable` consume closures dispatched onto
+/// be captured into the `@Sendable` consume closures dispatched onto
 /// `ChessNetwork.executionQueue`. The Swift stdlib does not expose a
 /// blanket `Sendable` conformance for `UnsafeMutableBufferPointer`
 /// because mutating from multiple threads is generally unsafe.
@@ -46,27 +45,32 @@ struct PolicyDestination: @unchecked Sendable {
 
 /// Source of (policy, value) predictions for a single encoded board.
 ///
-/// `MPSChessPlayer` used to own a `ChessMPSNetwork` directly and call
-/// `network.evaluate(board:)` inline on every move. That hard-wired the
-/// player to exactly one single-position forward pass per ply, with no
-/// room for the self-play batcher to coalesce N games' submissions into
-/// one batched `graph.run`. This protocol breaks that coupling:
+/// Used by `MPSChessPlayer` (Play Game / Human-vs-Network) to issue
+/// per-move forward passes without owning a `ChessMPSNetwork`
+/// directly. Concrete sources:
 ///
-/// - `DirectMoveEvaluationSource` wraps a `ChessMPSNetwork` and delegates
-///   to `network.evaluate(board:consume:)` per request. Used by arena
-///   (sequential single-game tournaments) and the Play Game screen —
-///   their per-move latency is fine on the single-position path.
-/// - `BatchedMoveEvaluationSource` is the self-play barrier batcher: N
-///   slot tasks park at their per-ply `evaluate` call; the N-th
-///   submission fires one batched `graph.run`; all N resume after their
-///   policy bytes have been written into their per-slot destinations.
+/// - `DirectMoveEvaluationSource` wraps a `ChessMPSNetwork` and
+///   delegates to `network.evaluate(board:consume:)` per request.
+///   Single-position synchronous inference on the network's
+///   `executionQueue`.
+/// - `DelayedMoveEvaluationSource` adds an artificial per-move sleep
+///   (Play Game's "think-time" slider) around a wrapped source.
+/// - `LiveTrainerMoveEvaluationSource` overlays the live trainer's
+///   current weights onto a per-call inference scratch so Play Game
+///   can be played against the in-progress trainee.
+///
+/// Self-play and arena no longer use this abstraction — they run
+/// through `BatchedSelfPlayDriver` and `TickTournamentDriver`
+/// respectively, which call `network.evaluateBatched(...)` directly
+/// for K games per tick. The protocol survives because Play Game /
+/// Human play still want a one-position-at-a-time inference call
+/// shape; batching there would only add latency.
 ///
 /// `encodedBoard` is `BoardEncoder.tensorLength` floats
 /// (= `ChessNetwork.inputPlanes` × 8 × 8 in NCHW layout) produced by
-/// `BoardEncoder.encode`, wrapped in a plain `[Float]` so the value
-/// can cross the actor boundary into `BatchedMoveEvaluationSource`
-/// (raw `UnsafeBufferPointer` is not `Sendable`). `MPSChessPlayer`
-/// takes one `Array(...)` copy at the call site.
+/// `BoardEncoder.encode`, wrapped in a plain `[Float]` for `Sendable`
+/// crossings. `MPSChessPlayer` takes one `Array(...)` copy at the
+/// call site.
 ///
 /// Caller-owned destination contract: every `evaluate` call writes
 /// exactly `ChessNetwork.policySize` floats into `intoPolicy` (provided
@@ -92,11 +96,12 @@ protocol MoveEvaluationSource: AnyObject, Sendable {
 
 /// Passes every request straight through to a single `ChessMPSNetwork`
 /// on the calling thread. No queueing, no batching. Suitable for paths
-/// that already serialize their own calls into the network — arena
-/// tournaments and the Play Game screen both play one game at a time,
-/// and `ChessMachine.runGameLoop` serializes the two players within a
-/// game. Self-play no longer uses this path; it routes through
-/// `BatchedMoveEvaluationSource`.
+/// that already serialize their own calls into the network — Play
+/// Game / Human-vs-Network both play one game at a time, and
+/// `ChessMachine.runGameLoop` serializes the two players within a
+/// game. Self-play and arena both bypass `MoveEvaluationSource`
+/// entirely and call `network.evaluateBatched(...)` from their tick
+/// drivers (`BatchedSelfPlayDriver`, `TickTournamentDriver`).
 ///
 /// The underlying `ChessMPSNetwork`'s policy readback is non-reentrant.
 /// We hand it a closure that copies the policy bytes directly from the

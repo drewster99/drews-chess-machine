@@ -4,9 +4,9 @@ import Foundation
 /// AlphaZero-style score in `[0, 1]`, an Elo differential, and a 95%
 /// confidence interval on both. The candidate-perspective convention
 /// is used throughout — wins/losses/draws are tallied from the point
-/// of view of whoever "playerA" is in the `TournamentDriver`, which
-/// at the arena call site is always the candidate / trainer network
-/// being evaluated against the champion.
+/// of view of whoever "playerA" is in `TickTournamentDriver`'s
+/// `TournamentStats`, which at the arena call site is always the
+/// candidate / trainer network being evaluated against the champion.
 ///
 /// Conventions:
 ///   - `score` = `(W + 0.5·D) / N` in `[0, 1]`. 0.5 = even.
