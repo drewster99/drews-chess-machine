@@ -73,19 +73,35 @@ struct ArenaWinChart: View {
                     .interpolationMethod(.linear)
                 }
                 // Per-arena point markers — green for promoted, gray
-                // for kept. Larger when this arena is the hovered one
-                // so the visual lookup matches the chart-grid's shared
+                // for kept. Drawn in two passes so promoted dots paint
+                // AFTER kept dots: at wide zoom-out levels where 100+
+                // arenas cluster around the threshold line, gray dots
+                // would otherwise occlude rare green ones and the
+                // promotion events would visually disappear. With this
+                // split the green ones always sit on top in any
+                // overlapping pixel.
+                //
+                // Larger when this arena is the hovered one so the
+                // visual lookup matches the chart-grid's shared
                 // crosshair selection.
-                ForEach(events) { e in
+                ForEach(events.filter { !$0.promoted }) { e in
                     PointMark(
                         x: .value("Time", e.endElapsedSec),
                         y: .value("Score", e.score)
                     )
-                    .foregroundStyle(e.promoted ? Color.green : Color.gray)
+                    .foregroundStyle(Color.gray)
                     // Small dots so 100+ arenas don't visually
                     // merge into a continuous band at wide zoom;
                     // hover state still bumps the dot up to a
                     // readable size.
+                    .symbolSize(hoverArena?.id == e.id ? 60 : 10)
+                }
+                ForEach(events.filter { $0.promoted }) { e in
+                    PointMark(
+                        x: .value("Time", e.endElapsedSec),
+                        y: .value("Score", e.score)
+                    )
+                    .foregroundStyle(Color.green)
                     .symbolSize(hoverArena?.id == e.id ? 60 : 10)
                 }
                 // Promotion threshold reference line — dashed orange

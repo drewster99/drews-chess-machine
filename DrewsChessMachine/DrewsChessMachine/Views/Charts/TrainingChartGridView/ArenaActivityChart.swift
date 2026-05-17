@@ -83,13 +83,27 @@ struct ArenaActivityChart: View {
         events.isEmpty && activeArenaStartElapsed == nil
     }
 
-    /// Score-bar fill color for a completed arena (brighter when hovered).
+    /// Full-height fill color for a completed arena, encoding the
+    /// verdict categorically:
+    ///   - promoted:        bright green
+    ///   - kept, score≥0.5: medium gray (candidate competitive but
+    ///                      didn't clear the promotion threshold)
+    ///   - kept, score<0.5: muted red (candidate actively lost ground
+    ///                      vs the champion — surfaces regressions
+    ///                      that would otherwise blend into "kept")
+    /// Brighter when hovered. Bars fill the full Y range (0..1) so
+    /// every arena is at least one pixel tall even at full-history
+    /// zoom-out, and color does the work of conveying the verdict
+    /// (score-vs-time lives on the companion `ArenaWinChart`).
     private func barColor(for e: ArenaChartEvent, hoveredID: Int?) -> Color {
         let hovered = hoveredID == e.id
         if e.promoted {
             return Color.green.opacity(hovered ? 1.0 : 0.7)
         }
-        return Color.gray.opacity(hovered ? 1.0 : 0.5)
+        if e.score < 0.5 {
+            return Color.red.opacity(hovered ? 0.8 : 0.5)
+        }
+        return Color.gray.opacity(hovered ? 0.9 : 0.45)
     }
 
     var body: some View {
@@ -98,11 +112,12 @@ struct ArenaActivityChart: View {
                 title: "Arena activity",
                 value: headerText,
                 titleHelp: AttributedString("""
-                    Duration bands — one per arena tournament — across the same X axis as the rest \
-                    of the chart grid, so you can see exactly when training paused for arena play. \
-                    Band color is green when the candidate promoted, gray when the champion was \
-                    kept; band height is the candidate's score. Dashed orange line is the \
-                    promotion threshold; a blue tint marks the in-progress arena.
+                    Full-height duration bands — one per arena tournament — across the same X axis \
+                    as the rest of the chart grid, so you can see exactly when training paused for \
+                    arena play. Color encodes the verdict: green = candidate promoted; gray = kept \
+                    (score ≥ 0.5, candidate competitive); red = kept but candidate lost ground \
+                    (score < 0.5). A blue tint marks the in-progress arena. Score-vs-time trend \
+                    is on the companion 'Arena win %' tile.
                     """)
             )
             Chart {
@@ -153,21 +168,25 @@ struct ArenaActivityChart: View {
     @ChartContentBuilder
     private var chartContent: some ChartContent {
         let hoveredID = hoverArenaID
-        ForEach(events) { e in
+        // Full-height verdict bars. Drawn in two passes so promotions
+        // (green) paint AFTER every other arena and always sit on top
+        // if any visual overlap occurs (rare — arenas are disjoint in
+        // time — but cheap insurance against future stacking changes).
+        ForEach(events.filter { !$0.promoted }) { e in
             RectangleMark(
                 xStart: .value("Start", e.startElapsedSec),
                 xEnd: .value("End", e.endElapsedSec),
                 yStart: .value("Floor", 0.0),
                 yEnd: .value("Top", 1.0)
             )
-            .foregroundStyle(Color.secondary.opacity(hoveredID == e.id ? 0.25 : 0.12))
+            .foregroundStyle(barColor(for: e, hoveredID: hoveredID))
         }
-        ForEach(events) { e in
+        ForEach(events.filter { $0.promoted }) { e in
             RectangleMark(
                 xStart: .value("Start", e.startElapsedSec),
                 xEnd: .value("End", e.endElapsedSec),
                 yStart: .value("Floor", 0.0),
-                yEnd: .value("Score", e.score)
+                yEnd: .value("Top", 1.0)
             )
             .foregroundStyle(barColor(for: e, hoveredID: hoveredID))
         }
@@ -180,9 +199,6 @@ struct ArenaActivityChart: View {
             )
             .foregroundStyle(Color.blue.opacity(0.35))
         }
-        RuleMark(y: .value("Threshold", promoteThreshold))
-            .foregroundStyle(Color.orange.opacity(0.6))
-            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
         if let t = hoveredSec {
             RuleMark(x: .value("Time", t))
                 .foregroundStyle(Color.gray.opacity(0.5))
