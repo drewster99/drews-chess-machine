@@ -227,8 +227,8 @@ extension SessionController {
         //
         // Cancellation: the detached tournament task is wrapped in
         // `withTaskCancellationHandler` so clicking Stop flips a
-        // `CancelBox` that `TournamentDriver.run` checks between
-        // games. The worst-case delay from Stop to actually breaking
+        // `CancelBox` that `TickTournamentDriver.run` checks between
+        // ticks. The worst-case delay from Stop to actually breaking
         // out is one in-flight arena game (~400 ms).
         let cancelBox = CancelBox()
         let arenaDiversity = GameDiversityTracker(windowSize: totalGames)
@@ -237,33 +237,14 @@ extension SessionController {
         // if the user edits the fields mid-tournament.
         let arenaScheduleSnapshot = samplingScheduleBox?.arena ?? buildArenaSchedule()
 
-        // --- Concurrent arena: build per-network batchers ---
-        //
-        // K parallel arena games share two `BatchedMoveEvaluationSource`
-        // batchers, one per network. Each game alternates candidate ↔
-        // champion moves, so at any instant ~K/2 are pending on each
-        // side; a strict count-only barrier (the self-play model) would
-        // never fire either batcher in steady state. The coalescing-
-        // window timer (`maxBatchWaitMs`) makes the barrier fire on
-        // whichever happens first — count met OR window expired —
-        // which captures the early-game synchronized phase as a full
-        // K-batch and the desynchronized steady state as ~K/2 partial
-        // batches.
-        //
-        // Live count tracking: `expectedSlotCount` starts at `liveK`
-        // (clamped to game count) and stays there while replacements
-        // keep the pool full. The `onSlotRetired` callback below
-        // fires only when a slot leaves the pool (no replacement
-        // spawned) — i.e. exactly when each of the final K games
-        // finishes — so each batcher's `expectedSlotCount` decrements
-        // 1:1 with live game count during the tail. Decrementing on
-        // every completion (the prior approach) drove the count to
-        // 0 partway through the tournament and forced the rest of
-        // the run through drain mode = single-position batches.
+        // K parallel arena games run as one tick driver — `TickTournamentDriver`
+        // pumps the K active games in lockstep with two batched
+        // `evaluateBatched` calls per tick (one per network, candidate /
+        // champion). K starts at `liveK = min(arenaConcurrency, totalGames)`
+        // and shrinks as games finish without replacement during the
+        // tail — no per-batcher slot bookkeeping, no coalescing window,
+        // no actor.
         let liveK = max(1, min(TrainingParameters.shared.arenaConcurrency, totalGames))
-        let useTickDriver = await MainActor.run {
-            TrainingParameters.shared.arenaUseTickDriver
-        }
 
         // Update the live progress box with the chosen concurrency so
         // the arena's busy-label suffix can render "(×K concurrent)"
@@ -287,174 +268,53 @@ extension SessionController {
         let recordsBox = TournamentRecordsBox()
         let stats: TournamentStats
 
-        if useTickDriver {
-            // === Tick-based arena driver ===
-            // No `BatchedMoveEvaluationSource` actors — the tick
-            // driver ticks K games in lockstep against the two
-            // networks directly. No `setExpectedSlotCount` / batcher
-            // slot decrement; K shrinks naturally as games finish.
-            // Per-batcher telemetry isn't applicable; the standard
-            // `[ARENA]` summary lines emitted by the caller still
-            // cover W/L/D/score/duration.
-            SessionLogger.shared.log("[APP] arena driver: TickTournamentDriver")
-            do {
-                stats = try await withTaskCancellationHandler {
-                    try await Task.detached(priority: .userInitiated) {
-                        [tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot, liveK, recordsBox] in
-                        let driver = TickTournamentDriver()
-                        return try await driver.run(
-                            candidateNetwork: candidateInference,
-                            championNetwork: arenaChampion,
-                            arenaSchedule: arenaScheduleSnapshot,
-                            games: totalGames,
-                            concurrency: liveK,
-                            diversityTracker: arenaDiversity,
-                            isCancelled: { cancelBox.isCancelled || overrideBox.isActive },
-                            onGameCompleted: { gameIndex, aWins, bWins, draws in
-                                tBox.update(TournamentProgress(
-                                    currentGame: gameIndex,
-                                    totalGames: totalGames,
-                                    candidateWins: aWins,
-                                    championWins: bWins,
-                                    draws: draws,
-                                    startTime: startTime,
-                                    concurrency: liveK
-                                ))
-                            },
-                            onGameRecorded: { record in
-                                recordsBox.append(record)
-                            }
-                        )
-                    }.value
-                } onCancel: {
-                    cancelBox.cancel()
-                }
-            } catch {
-                trainingBox?.recordError("Arena tournament failed: \(error.localizedDescription)")
-                cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
-                return
+        // Tick-based arena driver — ticks K games in lockstep against
+        // the candidate and champion networks directly, two batched
+        // `evaluateBatched` calls per tick (one per network). K
+        // shrinks naturally as games finish without replacement. No
+        // actor batcher, no per-game Swift tasks, no
+        // `setExpectedSlotCount` coordination.
+        do {
+            stats = try await withTaskCancellationHandler {
+                try await Task.detached(priority: .userInitiated) {
+                    [tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot, liveK, recordsBox] in
+                    let driver = TickTournamentDriver()
+                    return try await driver.run(
+                        candidateNetwork: candidateInference,
+                        championNetwork: arenaChampion,
+                        arenaSchedule: arenaScheduleSnapshot,
+                        games: totalGames,
+                        concurrency: liveK,
+                        diversityTracker: arenaDiversity,
+                        // Driver checks this between ticks. Either a
+                        // task-cancel (session Stop) or a user Abort /
+                        // Promote click breaks the loop early; the
+                        // caller below disambiguates the two via the
+                        // override box's `consume()`.
+                        isCancelled: { cancelBox.isCancelled || overrideBox.isActive },
+                        onGameCompleted: { gameIndex, aWins, bWins, draws in
+                            tBox.update(TournamentProgress(
+                                currentGame: gameIndex,
+                                totalGames: totalGames,
+                                candidateWins: aWins,
+                                championWins: bWins,
+                                draws: draws,
+                                startTime: startTime,
+                                concurrency: liveK
+                            ))
+                        },
+                        onGameRecorded: { record in
+                            recordsBox.append(record)
+                        }
+                    )
+                }.value
+            } onCancel: {
+                cancelBox.cancel()
             }
-        } else {
-            // === Legacy task-per-game arena driver ===
-            // Joint GPU-busy-wall accumulator shared across both batchers.
-            // Each fire reports start/end around its `network.evaluate`
-            // await; the timer accumulates wall time during which AT
-            // LEAST ONE side was on the GPU. Read once at the end of
-            // arena to emit a single `[ARENA] timing joint` line that's
-            // directly comparable to arena wall.
-            let arenaGpuTimer = ArenaGpuTimer()
-            let candidateBatcher = BatchedMoveEvaluationSource(
-                network: candidateInference,
-                maxBatchWaitMs: Self.arenaBatchWaitMs,
-                name: "candidate",
-                logBatchTimings: true,
-                gpuTimer: arenaGpuTimer
-            )
-            let championBatcher = BatchedMoveEvaluationSource(
-                network: arenaChampion,
-                maxBatchWaitMs: Self.arenaBatchWaitMs,
-                name: "champion",
-                logBatchTimings: true,
-                gpuTimer: arenaGpuTimer
-            )
-            await candidateBatcher.setExpectedSlotCount(liveK)
-            await championBatcher.setExpectedSlotCount(liveK)
-            SessionLogger.shared.log("[APP] arena driver: TournamentDriver (legacy)")
-            do {
-                stats = try await withTaskCancellationHandler {
-                    try await Task.detached(priority: .userInitiated) {
-                        [candidateBatcher, championBatcher, tBox, cancelBox, overrideBox, arenaDiversity, arenaScheduleSnapshot, liveK, recordsBox] in
-                        let driver = TournamentDriver()
-                        return try await driver.run(
-                            playerA: {
-                                MPSChessPlayer(
-                                    name: "Candidate",
-                                    source: candidateBatcher,
-                                    schedule: arenaScheduleSnapshot
-                                )
-                            },
-                            playerB: {
-                                MPSChessPlayer(
-                                    name: "Champion",
-                                    source: championBatcher,
-                                    schedule: arenaScheduleSnapshot
-                                )
-                            },
-                            games: totalGames,
-                            concurrency: liveK,
-                            diversityTracker: arenaDiversity,
-                            // The driver checks this between games. Either a
-                            // task-cancel (session Stop) or a user Abort /
-                            // Promote click breaks the game loop early; the
-                            // caller below disambiguates the two via the
-                            // override box's `consume()`.
-                            isCancelled: { cancelBox.isCancelled || overrideBox.isActive },
-                            onGameCompleted: { gameIndex, aWins, bWins, draws in
-                                tBox.update(TournamentProgress(
-                                    currentGame: gameIndex,
-                                    totalGames: totalGames,
-                                    candidateWins: aWins,
-                                    championWins: bWins,
-                                    draws: draws,
-                                    startTime: startTime,
-                                    concurrency: liveK
-                                ))
-                            },
-                            onSlotRetired: {
-                                // Fires only when a slot leaves the
-                                // live pool (no replacement spawned).
-                                // Decrementing on every completion would
-                                // peg the count at 0 mid-tournament and
-                                // collapse all remaining batches to size 1.
-                                await candidateBatcher.decrementExpectedSlotCount()
-                                await championBatcher.decrementExpectedSlotCount()
-                            },
-                            onGameRecorded: { record in
-                                recordsBox.append(record)
-                            }
-                        )
-                    }.value
-                } onCancel: {
-                    cancelBox.cancel()
-                }
-            } catch {
-                // Error path. Drain both batchers so any parked
-                // continuations resume, then emit whatever telemetry we
-                // can over the partial records captured before the throw.
-                await candidateBatcher.setExpectedSlotCount(0)
-                await championBatcher.setExpectedSlotCount(0)
-                await ArenaTelemetryFormatter.emitPostRunTelemetry(
-                    candidateBatcher: candidateBatcher,
-                    championBatcher: championBatcher,
-                    gpuTimer: arenaGpuTimer,
-                    recordsBox: recordsBox,
-                    wasCancelled: cancelBox.isCancelled || overrideBox.isActive,
-                    context: "after error",
-                    arenaStartTime: startTime,
-                    trainingBox: trainingBox
-                )
-                trainingBox?.recordError("Arena tournament failed: \(error.localizedDescription)")
-                cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
-                return
-            }
-
-            // Drain the batchers explicitly. Drain mode fires any
-            // straggler pendings immediately so no continuation is left
-            // parked, even on cancellation paths where the driver may
-            // have stopped harvesting before all in-flight slots returned.
-            await candidateBatcher.setExpectedSlotCount(0)
-            await championBatcher.setExpectedSlotCount(0)
-
-            await ArenaTelemetryFormatter.emitPostRunTelemetry(
-                candidateBatcher: candidateBatcher,
-                championBatcher: championBatcher,
-                gpuTimer: arenaGpuTimer,
-                recordsBox: recordsBox,
-                wasCancelled: cancelBox.isCancelled || overrideBox.isActive,
-                context: nil,
-                arenaStartTime: startTime,
-                trainingBox: trainingBox
-            )
+        } catch {
+            trainingBox?.recordError("Arena tournament failed: \(error.localizedDescription)")
+            cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
+            return
         }
 
         // --- Score and promotion ---

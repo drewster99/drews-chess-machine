@@ -563,14 +563,6 @@ public enum LegalMassCollapseNoImprovementProbes: TrainingParameterKey {}
 )
 public enum ArenaConcurrency: TrainingParameterKey {}
 
-@TrainingParameter(
-    name: "Arena Use Tick Driver",
-    description: "When true, arena uses the tick-based tournament driver (one CPU task pumping K active games in lockstep, two batched evaluateBatched calls per tick — one per network), matching how self-play has worked since the Phase 6 rework. When false, arena uses the legacy task-per-game TournamentDriver with two `BatchedMoveEvaluationSource` actor batchers. Takes effect on the next arena (the per-arena driver is built fresh each time, so the change is picked up immediately without needing to restart Play-and-Train). Not live-tunable mid-arena — the running arena finishes on whichever driver it started with.",
-    default: false,
-    category: "Arena",
-    liveTunable: false
-)
-public enum ArenaUseTickDriver: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Batch Stats Interval",
@@ -655,7 +647,6 @@ public extension TrainingParametersSnapshot {
     var legalMassCollapseGraceSeconds: Double { value(for: LegalMassCollapseGraceSeconds.self) }
     var legalMassCollapseNoImprovementProbes: Int { value(for: LegalMassCollapseNoImprovementProbes.self) }
     var arenaConcurrency: Int { value(for: ArenaConcurrency.self) }
-    var arenaUseTickDriver: Bool { value(for: ArenaUseTickDriver.self) }
     var batchStatsInterval: Int { value(for: BatchStatsInterval.self) }
 }
 
@@ -708,7 +699,6 @@ public final class TrainingParameters {
     public var legalMassCollapseGraceSeconds: Double { didSet { Self.persist(LegalMassCollapseGraceSeconds.self, value: legalMassCollapseGraceSeconds) } }
     public var legalMassCollapseNoImprovementProbes: Int { didSet { Self.persist(LegalMassCollapseNoImprovementProbes.self, value: legalMassCollapseNoImprovementProbes) } }
     public var arenaConcurrency: Int { didSet { Self.persist(ArenaConcurrency.self, value: arenaConcurrency) } }
-    public var arenaUseTickDriver: Bool { didSet { Self.persist(ArenaUseTickDriver.self, value: arenaUseTickDriver) } }
     public var batchStatsInterval: Int { didSet { Self.persist(BatchStatsInterval.self, value: batchStatsInterval) } }
 
     private init() {
@@ -754,7 +744,6 @@ public final class TrainingParameters {
         self.legalMassCollapseGraceSeconds = Self.read(LegalMassCollapseGraceSeconds.self)
         self.legalMassCollapseNoImprovementProbes = Self.read(LegalMassCollapseNoImprovementProbes.self)
         self.arenaConcurrency = Self.read(ArenaConcurrency.self)
-        self.arenaUseTickDriver = Self.read(ArenaUseTickDriver.self)
         self.batchStatsInterval = Self.read(BatchStatsInterval.self)
     }
 
@@ -806,7 +795,6 @@ public final class TrainingParameters {
         v[LegalMassCollapseGraceSeconds.id] = LegalMassCollapseGraceSeconds.encode(legalMassCollapseGraceSeconds)
         v[LegalMassCollapseNoImprovementProbes.id] = LegalMassCollapseNoImprovementProbes.encode(legalMassCollapseNoImprovementProbes)
         v[ArenaConcurrency.id] = ArenaConcurrency.encode(arenaConcurrency)
-        v[ArenaUseTickDriver.id] = ArenaUseTickDriver.encode(arenaUseTickDriver)
         v[BatchStatsInterval.id] = BatchStatsInterval.encode(batchStatsInterval)
         return v
     }
@@ -904,8 +892,6 @@ public final class TrainingParameters {
             try LegalMassCollapseNoImprovementProbes.definition.validate(raw); legalMassCollapseNoImprovementProbes = try LegalMassCollapseNoImprovementProbes.decode(raw)
         case ArenaConcurrency.id:
             try ArenaConcurrency.definition.validate(raw); arenaConcurrency = try ArenaConcurrency.decode(raw)
-        case ArenaUseTickDriver.id:
-            try ArenaUseTickDriver.definition.validate(raw); arenaUseTickDriver = try ArenaUseTickDriver.decode(raw)
         case BatchStatsInterval.id:
             try BatchStatsInterval.definition.validate(raw); batchStatsInterval = try BatchStatsInterval.decode(raw)
         default:
@@ -1018,7 +1004,6 @@ public final class TrainingParameters {
         LegalMassCollapseGraceSeconds.self,
         LegalMassCollapseNoImprovementProbes.self,
         ArenaConcurrency.self,
-        ArenaUseTickDriver.self,
         BatchStatsInterval.self
     ]
 
