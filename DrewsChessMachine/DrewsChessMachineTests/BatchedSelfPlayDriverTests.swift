@@ -1,7 +1,7 @@
 import XCTest
 @testable import DrewsChessMachine
 
-/// Integration smoke test for `TickSelfPlayDriver`. Spins up the
+/// Integration smoke test for `BatchedSelfPlayDriver`. Spins up the
 /// driver with a real `ChessMPSNetwork` and a small K, lets it run
 /// briefly, and asserts the end-to-end wiring works: ticks happen,
 /// games complete, positions land in the replay buffer, and the
@@ -21,13 +21,13 @@ import XCTest
 /// time + a few seconds of self-play). Long-form distributional /
 /// throughput regression checks belong in the manual smoke validation
 /// (Phase 6b), not in XCTest.
-final class TickSelfPlayDriverTests: XCTestCase {
+final class BatchedSelfPlayDriverTests: XCTestCase {
 
     private static var sharedNetwork: ChessMPSNetwork = {
         do {
             return try ChessMPSNetwork(.randomWeights)
         } catch {
-            fatalError("TickSelfPlayDriverTests: ChessMPSNetwork(.randomWeights) failed: \(error)")
+            fatalError("BatchedSelfPlayDriverTests: ChessMPSNetwork(.randomWeights) failed: \(error)")
         }
     }()
 
@@ -35,13 +35,13 @@ final class TickSelfPlayDriverTests: XCTestCase {
     private func makeDriver(
         initialK: Int,
         buffer: ReplayBuffer
-    ) -> (driver: TickSelfPlayDriver, countBox: WorkerCountBox, pauseGate: WorkerPauseGate) {
+    ) -> (driver: BatchedSelfPlayDriver, countBox: WorkerCountBox, pauseGate: WorkerPauseGate) {
         let countBox = WorkerCountBox(initial: initialK)
         let pauseGate = WorkerPauseGate()
         let scheduleBox = SamplingScheduleBox(selfPlay: .uniform, arena: .uniform)
         let statsBox = ParallelWorkerStatsBox()
         let diversityTracker = GameDiversityTracker()
-        let driver = TickSelfPlayDriver(
+        let driver = BatchedSelfPlayDriver(
             network: Self.sharedNetwork,
             buffer: buffer,
             statsBox: statsBox,
@@ -58,7 +58,7 @@ final class TickSelfPlayDriverTests: XCTestCase {
     /// Drive the loop for `seconds` then cancel and await exit. The
     /// driver self-cancels on `Task.isCancelled` between ticks, so
     /// cancel + a brief `await` is the clean shutdown.
-    private func runDriver(_ driver: TickSelfPlayDriver, forSeconds seconds: Double) async {
+    private func runDriver(_ driver: BatchedSelfPlayDriver, forSeconds seconds: Double) async {
         let task = Task(priority: .high) {
             await driver.run()
         }
