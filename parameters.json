@@ -33,7 +33,6 @@
   "self_play_start_tau" : 1,
   "self_play_target_tau" : 0.5,
   "self_play_tau_decay_per_ply" : 0.0070000002160668373,
-  "self_play_use_tick_driver" : true,
   "sqrt_batch_scaling_lr" : true,
   "target_sampled_game_length_plies" : 175,
   "training_batch_size" : 4096,

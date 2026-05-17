@@ -76,13 +76,6 @@ final class TrainingSettingsPopoverModel {
     var selfPlayFloorTauText = "" { didSet { selfPlayFloorTauError = false } }
     var selfPlayDrawKeepFractionText = "" { didSet { selfPlayDrawKeepFractionError = false } }
     var selfPlayMaxPliesPerGameText = "" { didSet { selfPlayMaxPliesPerGameError = false } }
-    /// Whether self-play uses the new tick-based driver (one CPU task
-    /// pumping a vector of game-state structs) or the legacy
-    /// task-per-game `BatchedSelfPlayDriver`. Bool toggle (no text/
-    /// validation path). NOT live-tunable: writes through to
-    /// `TrainingParameters.shared` on Save, takes effect at the next
-    /// Play-and-Train start.
-    var selfPlayUseTickDriver: Bool = false
 
     private(set) var selfPlayConcurrencyError = false
     private(set) var selfPlayStartTauError = false
@@ -194,7 +187,6 @@ final class TrainingSettingsPopoverModel {
         selfPlayFloorTauText = String(format: "%.2f", p.selfPlayTargetTau)
         selfPlayDrawKeepFractionText = String(format: "%.2f", p.selfPlayDrawKeepFraction)
         selfPlayMaxPliesPerGameText = String(p.selfPlayMaxPliesPerGame)
-        selfPlayUseTickDriver = p.selfPlayUseTickDriver
         // --- Replay tab ---
         replayBufferCapacityText = String(p.replayBufferCapacity)
         replayBufferMinPositionsText = String(p.replayBufferMinPositionsBeforeTraining)
@@ -729,17 +721,6 @@ final class TrainingSettingsPopoverModel {
         } else {
             selfPlayMaxPliesPerGameError = true
             anyError = true
-        }
-        // Self-play driver topology toggle. NOT live-tunable — the
-        // tick driver vs. legacy task-per-game driver is selected
-        // once when Play-and-Train starts (see
-        // `SessionController+Training.swift`). Save writes through to
-        // `TrainingParameters.shared`; the next start picks it up.
-        if selfPlayUseTickDriver != p.selfPlayUseTickDriver {
-            SessionLogger.shared.log(
-                "[PARAM] selfPlayUseTickDriver: \(p.selfPlayUseTickDriver) -> \(selfPlayUseTickDriver)"
-            )
-            p.selfPlayUseTickDriver = selfPlayUseTickDriver
         }
         // Push the freshly-edited self-play schedule into the live
         // `samplingScheduleBox` so the next self-play game on each worker slot

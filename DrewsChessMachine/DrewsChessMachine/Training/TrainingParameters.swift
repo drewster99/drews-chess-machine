@@ -345,15 +345,6 @@ public enum SelfPlayDrawKeepFraction: TrainingParameterKey {}
 public enum SelfPlayMaxPliesPerGame: TrainingParameterKey {}
 
 @TrainingParameter(
-    name: "Self-Play Use Tick Driver",
-    description: "When true, self-play uses the tick-based driver (one CPU task pumping a vector of game-state structs, parallel encode + parallel sample across cores) instead of one async Task per concurrent game with an actor barrier batcher. The tick driver eliminates the per-game `MPSChessPlayer` board-history scratch (currently ~7.5 MB per slot) so high worker counts (4096+) become memory-affordable. Takes effect on the next Play-and-Train start; not live-tunable.",
-    default: false,
-    category: "Self-Play Sampling",
-    liveTunable: false
-)
-public enum SelfPlayUseTickDriver: TrainingParameterKey {}
-
-@TrainingParameter(
     name: "Arena Start Tau",
     description: "Initial sampling temperature for arena games. Tighter than self-play to improve W/L/D signal.",
     default: 0.6,
@@ -633,7 +624,6 @@ public extension TrainingParametersSnapshot {
     var selfPlayTauDecayPerPly: Double { value(for: SelfPlayTauDecayPerPly.self) }
     var selfPlayDrawKeepFraction: Double { value(for: SelfPlayDrawKeepFraction.self) }
     var selfPlayMaxPliesPerGame: Int { value(for: SelfPlayMaxPliesPerGame.self) }
-    var selfPlayUseTickDriver: Bool { value(for: SelfPlayUseTickDriver.self) }
     var arenaStartTau: Double { value(for: ArenaStartTau.self) }
     var arenaTargetTau: Double { value(for: ArenaTargetTau.self) }
     var arenaTauDecayPerPly: Double { value(for: ArenaTauDecayPerPly.self) }
@@ -686,7 +676,6 @@ public final class TrainingParameters {
     public var selfPlayTauDecayPerPly: Double { didSet { Self.persist(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly) } }
     public var selfPlayDrawKeepFraction: Double { didSet { Self.persist(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction) } }
     public var selfPlayMaxPliesPerGame: Int { didSet { Self.persist(SelfPlayMaxPliesPerGame.self, value: selfPlayMaxPliesPerGame) } }
-    public var selfPlayUseTickDriver: Bool { didSet { Self.persist(SelfPlayUseTickDriver.self, value: selfPlayUseTickDriver) } }
     public var arenaStartTau: Double { didSet { Self.persist(ArenaStartTau.self, value: arenaStartTau) } }
     public var arenaTargetTau: Double { didSet { Self.persist(ArenaTargetTau.self, value: arenaTargetTau) } }
     public var arenaTauDecayPerPly: Double { didSet { Self.persist(ArenaTauDecayPerPly.self, value: arenaTauDecayPerPly) } }
@@ -732,7 +721,6 @@ public final class TrainingParameters {
         self.selfPlayTauDecayPerPly = Self.read(SelfPlayTauDecayPerPly.self)
         self.selfPlayDrawKeepFraction = Self.read(SelfPlayDrawKeepFraction.self)
         self.selfPlayMaxPliesPerGame = Self.read(SelfPlayMaxPliesPerGame.self)
-        self.selfPlayUseTickDriver = Self.read(SelfPlayUseTickDriver.self)
         self.arenaStartTau = Self.read(ArenaStartTau.self)
         self.arenaTargetTau = Self.read(ArenaTargetTau.self)
         self.arenaTauDecayPerPly = Self.read(ArenaTauDecayPerPly.self)
@@ -784,7 +772,6 @@ public final class TrainingParameters {
         v[SelfPlayTauDecayPerPly.id] = SelfPlayTauDecayPerPly.encode(selfPlayTauDecayPerPly)
         v[SelfPlayDrawKeepFraction.id] = SelfPlayDrawKeepFraction.encode(selfPlayDrawKeepFraction)
         v[SelfPlayMaxPliesPerGame.id] = SelfPlayMaxPliesPerGame.encode(selfPlayMaxPliesPerGame)
-        v[SelfPlayUseTickDriver.id] = SelfPlayUseTickDriver.encode(selfPlayUseTickDriver)
         v[ArenaStartTau.id] = ArenaStartTau.encode(arenaStartTau)
         v[ArenaTargetTau.id] = ArenaTargetTau.encode(arenaTargetTau)
         v[ArenaTauDecayPerPly.id] = ArenaTauDecayPerPly.encode(arenaTauDecayPerPly)
@@ -860,8 +847,6 @@ public final class TrainingParameters {
             try SelfPlayDrawKeepFraction.definition.validate(raw); selfPlayDrawKeepFraction = try SelfPlayDrawKeepFraction.decode(raw)
         case SelfPlayMaxPliesPerGame.id:
             try SelfPlayMaxPliesPerGame.definition.validate(raw); selfPlayMaxPliesPerGame = try SelfPlayMaxPliesPerGame.decode(raw)
-        case SelfPlayUseTickDriver.id:
-            try SelfPlayUseTickDriver.definition.validate(raw); selfPlayUseTickDriver = try SelfPlayUseTickDriver.decode(raw)
         case ArenaStartTau.id:
             try ArenaStartTau.definition.validate(raw); arenaStartTau = try ArenaStartTau.decode(raw)
         case ArenaTargetTau.id:
@@ -996,7 +981,6 @@ public final class TrainingParameters {
         SelfPlayTauDecayPerPly.self,
         SelfPlayDrawKeepFraction.self,
         SelfPlayMaxPliesPerGame.self,
-        SelfPlayUseTickDriver.self,
         ArenaStartTau.self,
         ArenaTargetTau.self,
         ArenaTauDecayPerPly.self,

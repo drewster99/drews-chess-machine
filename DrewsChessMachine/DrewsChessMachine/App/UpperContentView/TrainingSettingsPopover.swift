@@ -226,7 +226,6 @@ struct TrainingSettingsPopover: View {
                     selfPlayFloorTauText: $model.selfPlayFloorTauText,
                     selfPlayDrawKeepFractionText: $model.selfPlayDrawKeepFractionText,
                     selfPlayMaxPliesPerGameText: $model.selfPlayMaxPliesPerGameText,
-                    selfPlayUseTickDriver: $model.selfPlayUseTickDriver,
                     selfPlayConcurrencyError: model.selfPlayConcurrencyError,
                     selfPlayStartTauError: model.selfPlayStartTauError,
                     selfPlayDecayPerPlyError: model.selfPlayDecayPerPlyError,
@@ -288,7 +287,7 @@ struct TrainingSettingsPopover: View {
             }
         }
         .padding(16)
-        .frame(width: 700)
+        .frame(width: 616)
         // Hard ceiling on the popover height. Pairs with the
         // `ScrollView` around the tab-content `switch` above so a
         // tall tab (Replay tab grows the most via the composition
@@ -730,7 +729,6 @@ private struct SelfPlayTab: View {
     @Binding var selfPlayFloorTauText: String
     @Binding var selfPlayDrawKeepFractionText: String
     @Binding var selfPlayMaxPliesPerGameText: String
-    @Binding var selfPlayUseTickDriver: Bool
 
     let selfPlayConcurrencyError: Bool
     let selfPlayStartTauError: Bool
@@ -779,14 +777,6 @@ private struct SelfPlayTab: View {
                         in: 1...256,
                         step: 1
                     )
-                }
-                HStack(spacing: 8) {
-                    Text("Driver:")
-                        .frame(width: 160, alignment: .trailing)
-                    Toggle("Tick driver (single-task; takes effect on next Play and Train start)",
-                           isOn: $selfPlayUseTickDriver)
-                        .toggleStyle(.checkbox)
-                    Spacer()
                 }
             }
 

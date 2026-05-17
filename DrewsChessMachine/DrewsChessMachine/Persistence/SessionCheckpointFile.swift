@@ -248,14 +248,6 @@ struct SessionCheckpointState: Codable, Equatable {
     /// on-disk JSON key is still `maxPliesPerGame` — keeping the
     /// struct field name preserves loadability of pre-rename sessions.
     var maxPliesPerGame: Int?
-    /// Whether self-play uses the tick-based driver (true) or the
-    /// legacy task-per-game driver (false). Captured at save time and
-    /// applied at resume so a long-running session keeps the same
-    /// driver topology across save/load boundaries. Optional for
-    /// back-compat with sessions saved before the tick driver
-    /// existed; absent → loader falls through to
-    /// `TrainingParameters.shared.selfPlayUseTickDriver`.
-    var selfPlayUseTickDriver: Bool?
     /// Lifetime self-play games that were emitted into the replay
     /// buffer (i.e. survived the draw-keep filter). `<= selfPlayGames`;
     /// equal at default keep-fraction. Optional for back-compat.

@@ -1,72 +1,135 @@
 import Foundation
 import os
 
-// MARK: - Batched Self-Play Driver
+// MARK: - Batched Self-Play Driver (tick-based)
 
-/// Drives N concurrent `ChessMachine` self-play games against one shared
-/// `BatchedMoveEvaluationSource` (the barrier batcher).
+/// Single-task self-play driver that advances K concurrent games in
+/// lockstep, one ply per "tick".
 ///
-/// Each slot is an unstructured `Task` that loops forever: allocate a
-/// fresh `ChessMachine`, run one game to termination against white/black
-/// `MPSChessPlayer`s pointed at the shared batcher, record stats +
-/// diversity, repeat. Every per-ply `evaluate` call on every slot parks
-/// in the batcher; when the N-th submission arrives the batcher fires a
-/// single `network.evaluateBatched(batchBoards:count:consume:)` and the
-/// closure-based consume writes each slot's policy bytes into its
-/// caller-owned scratch and resumes the slot's continuation with the
-/// scalar value. Batch size is exactly N every time.
+/// **Topology.** One Swift task runs the outer loop. Each tick, the
+/// driver encodes K active games' board positions into a shared
+/// per-tick scratch (parallel across P CPU workers), issues a single
+/// batched `network.evaluateBatched(...)` call, samples + applies one
+/// move per game (parallel across P), and runs a serial game-end
+/// pass that flushes completed games to the replay buffer and resets
+/// the slot. Per-game state lives on an `ActiveGame` (~1.2 MB at the
+/// typical `maxPliesPerGame=150` cap). No actor barrier, no per-game
+/// Tasks, no `expectedSlotCount` coordination dance.
 ///
-/// The outer `run()` loop reconciles slot count to `countBox.count` (the
-/// Stepper-driven live worker count) and handles arena pause requests
-/// via `pauseGate`:
+/// **History.** Replaced an earlier "one unstructured `Task` per
+/// concurrent game + `BatchedMoveEvaluationSource` actor barrier"
+/// design that pre-allocated ~7.5 MB of `MPSChessPlayer.gameBoardScratchPtr`
+/// per slot (≈30 GB at K=4096) and required a delicate ordering
+/// protocol around `setExpectedSlotCount` on every Stepper-driven
+/// grow/shrink. The tick model collapses both costs.
 ///
-/// - Grow: bump `batcher.setExpectedSlotCount(newN)` *before* spawning
-///   a new slot Task so its first submission is counted.
-/// - Shrink: cancel the last `K` slot Tasks (each exits at its next
-///   game boundary, because `ChessMachine.runGameLoop` doesn't check
-///   `Task.isCancelled` mid-game), await their exits, then bump
-///   `setExpectedSlotCount(newN)` down. During the in-flight window
-///   the remaining live slots keep firing the barrier at the old
-///   count — slot exit happens only after the last game's final move.
-/// - Pause (arena): cancel every slot, await exits, set expected count
-///   to 0, `markWaiting()` on the gate, spin-wait until `resume()`.
-///   On resume, respawn to the current target count.
+/// **The tick loop.** One iteration of `runOneTick`:
 ///
-/// Slot-task bodies mirror today's worker body in `ContentView`
-/// (`realTrainingTask` / `withTaskGroup`), just with the
-/// `MoveEvaluationSource` in place of per-worker networks and without
-/// per-worker pause gates.
+/// 1. Parallel-encode the current position of each of K games into
+///    the driver-owned `tickScratch` buffer, distributed across P
+///    worker tasks via `withTaskGroup`. P defaults to
+///    `ProcessInfo.processInfo.activeProcessorCount`.
+/// 2. Issue one batched `network.evaluateBatched(...)` call. The
+///    consume closure memcpy's the full K-position policy slice into
+///    the driver's `policyResultScratch` and the K value scalars into
+///    `valueResultScratch`, then returns. (Doing the sample inside
+///    `consume` would serialize the K samples on the network's
+///    executionQueue; copying out and resuming the driver task lets
+///    the next step parallelize.)
+/// 3. Parallel sample + apply: P worker tasks each handle a strided
+///    slice of K games. For each game: call
+///    `MoveSampler.sampleMove(...)` on its policy slice (with its
+///    own slice of `samplerProbsScratch` / `samplerEtaScratch`),
+///    record the ply on the `ActiveGame`, apply the move via
+///    `engine.applyMoveAndAdvance(_:)`. K samples done concurrently.
+/// 4. Game-end pass: serial walk over `games[0..<K]`. For each
+///    game that terminated (engine.result != nil) or hit max-plies:
+///    record stats, apply draw-keep filter, flush to the replay
+///    buffer, reset the slot with a freshly-read
+///    `TrainingParameters.shared.maxPliesPerGame` cap and the
+///    current `scheduleBox.selfPlay`.
+/// 5. Optional replay-ratio throttle (proportional to how many
+///    games finished this tick — preserves the integrated rate of
+///    the legacy per-game sleep).
+/// 6. Inform the controller of the tick: `recordSelfPlayBarrierTick(...)`.
+///
+/// **Live-display path.** When K == 1, after sampling each move the
+/// driver also calls `gameWatcher?.onMoveApplied(...)` and at game-end
+/// `gameWatcher?.onGameEnded(...)` — same shape the legacy delegate
+/// path emitted, just without the `ChessMachine` indirection. K > 1
+/// suppresses these calls (matches the legacy driver's
+/// `liveDisplay = countBox.count == 1` check).
+///
+/// **Live K change.** `games.count` is the live worker count. Grow:
+/// `append` new `ActiveGame`s (and grow scratch if K exceeds the
+/// current capacity). Shrink: `removeLast` the tail games (in-flight
+/// partial plies are dropped — matches the legacy driver's
+/// cancellation-mid-game behavior). No `expectedSlotCount` to
+/// coordinate, no Task cancellations, no deadlock window.
+///
+/// **Arena pause.** Polled at top of every loop iteration. On request:
+/// drop all in-flight games (no flush), `pauseGate.markWaiting()`,
+/// spin until `!pauseGate.isRequestedToPause`, `pauseGate.markRunning()`.
+/// Mirrors the legacy driver's pause semantics exactly.
+///
+/// **Self-play vs arena.** This phase ships only the self-play wiring:
+/// all `ActiveGame`s get both their `whiteNetwork` and `blackNetwork`
+/// set to the same champion `network`. The arena port (Phase 7) will
+/// pass different networks per side, and `runOneTick` will partition
+/// the K games into sub-batches keyed by `game.currentNetwork` and
+/// fire one `evaluateBatched` call per unique network. For now there's
+/// exactly one unique network so the partitioning collapses to a
+/// single batched call covering all K positions.
 final class BatchedSelfPlayDriver: @unchecked Sendable {
+
     // MARK: - Dependencies
 
-    let batcher: BatchedMoveEvaluationSource
+    let network: ChessMPSNetwork
     let buffer: ReplayBuffer
     let statsBox: ParallelWorkerStatsBox
     let diversityTracker: GameDiversityTracker
     let countBox: WorkerCountBox
     let pauseGate: WorkerPauseGate
     let gameWatcher: GameWatcher?
-    /// Live self-play schedule source. Read at each new-game boundary
-    /// inside `slotLoop` so UI edits take effect on the next game a
-    /// slot starts, without killing the long-lived slot task.
     let scheduleBox: SamplingScheduleBox
-    /// Optional source of the self-play per-game sleep. When the
-    /// replay-ratio auto-adjuster decides training is the bottleneck
-    /// (GPU overhead exceeds the target cycle even at zero training
-    /// delay), it flips the sign of its signed delay state and asks
-    /// self-play to slow down instead. The slot loop reads
-    /// `controller.computedSelfPlayDelayMs` at the bottom of each
-    /// game and sleeps for that many ms before starting the next
-    /// game. `nil` (and zero) mean no extra delay — preserves the
-    /// original "as fast as the batcher allows" behavior.
     let replayRatioController: ReplayRatioController?
-    private let liveSlots = LiveSlotSet()
-    private var nextSlotID: Int = 0
+
+    // MARK: - Private state (driver-task-owned, no lock needed)
+
+    private var games: [ActiveGame] = []
+    private var nextWorkerId: UInt16 = 0
+
+    /// Pre-allocated per-tick board-encoding scratch. Sized to
+    /// `tickScratchCapK × BoardEncoder.tensorLength` floats. Grows on
+    /// the first tick that needs more capacity; never shrinks within
+    /// a session (avoid thrash on Stepper toggles).
+    private var tickScratch: UnsafeMutablePointer<Float>?
+    private var tickScratchCapK: Int = 0
+
+    /// Per-tick policy readback: `tickScratchCapK × ChessNetwork.policySize`
+    /// floats. The network's consume closure memcpy's into here so the
+    /// subsequent parallel-sample pass can read without crossing the
+    /// network's executionQueue. Same growth policy as `tickScratch`.
+    private var policyResultScratch: UnsafeMutablePointer<Float>?
+
+    /// Per-tick value readback: `tickScratchCapK` floats. Currently
+    /// unused by the sampler (the W/D/L value head's scalar is for the
+    /// trainer's policy-gradient baseline, computed off the replay
+    /// buffer — not consumed at sample time). Sized symmetrically so a
+    /// future use can lift directly out of it without re-plumbing.
+    private var valueResultScratch: UnsafeMutablePointer<Float>?
+
+    /// Per-tick sampler scratches (one slice per game per pass).
+    /// Sized `tickScratchCapK × MoveSampler.scratchCapacity` floats
+    /// each. Game `i`'s sample uses bytes `i*256..<(i+1)*256` —
+    /// distinct per game so parallel sampling has no aliasing.
+    private var samplerProbsScratch: UnsafeMutablePointer<Float>?
+    private var samplerEtaScratch: UnsafeMutablePointer<Float>?
 
     // MARK: - Init
 
     init(
-        batcher: BatchedMoveEvaluationSource,
+        network: ChessMPSNetwork,
         buffer: ReplayBuffer,
         statsBox: ParallelWorkerStatsBox,
         diversityTracker: GameDiversityTracker,
@@ -76,7 +139,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         scheduleBox: SamplingScheduleBox,
         replayRatioController: ReplayRatioController? = nil
     ) {
-        self.batcher = batcher
+        self.network = network
         self.buffer = buffer
         self.statsBox = statsBox
         self.diversityTracker = diversityTracker
@@ -87,363 +150,472 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         self.replayRatioController = replayRatioController
     }
 
+    deinit {
+        let boardFloats = BoardEncoder.tensorLength
+        if let p = tickScratch {
+            p.deinitialize(count: tickScratchCapK * boardFloats); p.deallocate()
+        }
+        if let p = policyResultScratch {
+            p.deinitialize(count: tickScratchCapK * ChessNetwork.policySize); p.deallocate()
+        }
+        if let p = valueResultScratch {
+            p.deinitialize(count: tickScratchCapK); p.deallocate()
+        }
+        if let p = samplerProbsScratch {
+            p.deinitialize(count: tickScratchCapK * MoveSampler.scratchCapacity); p.deallocate()
+        }
+        if let p = samplerEtaScratch {
+            p.deinitialize(count: tickScratchCapK * MoveSampler.scratchCapacity); p.deallocate()
+        }
+    }
+
     // MARK: - Driver Loop
 
     func run() async {
-        var slots: [(id: Int, task: Task<Void, Never>)] = []
+        let P = max(1, ProcessInfo.processInfo.activeProcessorCount)
+        SessionLogger.shared.log("[SP-TICK] driver starting, P=\(P)")
 
         while !Task.isCancelled {
-            slots.removeAll { !liveSlots.contains($0.id) }
-
-            // Arena pause: stop all slots, park at the gate.
+            // 1. Arena pause check.
             if pauseGate.isRequestedToPause {
-                await stopAll(slots: &slots)
+                // Drop in-flight games (no flush — matches legacy
+                // behavior on arena pause). The next iteration after
+                // resume will re-create games to match countBox.count.
+                games.removeAll(keepingCapacity: true)
                 pauseGate.markWaiting()
                 while pauseGate.isRequestedToPause && !Task.isCancelled {
-                    // `try?` is intentional: `Task.sleep` only throws on
-                    // cancellation, and the next iteration of this loop
-                    // immediately re-checks `Task.isCancelled` and exits
-                    // cleanly. No error can be silently swallowed because
-                    // `CancellationError` is the only thing thrown.
                     try? await Task.sleep(for: .milliseconds(5))
                 }
                 pauseGate.markRunning()
-                if Task.isCancelled { break }
-                // Fall through; the next iteration will reconcile slot count.
                 continue
             }
 
-            // Reconcile slot count to the live target.
-            let target = countBox.count
-            if slots.count < target {
-                // Grow: expand barrier count first, then spawn. The new
-                // slot's first submission is counted toward the new
-                // barrier threshold on arrival.
-                await batcher.setExpectedSlotCount(target)
-                while slots.count < target {
-                    let slotID = nextSlotID
-                    nextSlotID += 1
-                    liveSlots.insert(slotID)
-                    // Strong self capture: the driver is owned by the
-                    // parent `withTaskGroup`'s closure for the
-                    // duration of this child task, so it will not be
-                    // deallocated under the slot. Bind through a
-                    // local so the capture is unambiguously strong.
-                    let driverSelf: BatchedSelfPlayDriver = self
-                    let slot = Task(priority: .high) {
-                        await driverSelf.slotLoop(id: slotID)
-                    }
-                    slots.append((id: slotID, task: slot))
+            // 2. Reconcile K to the live target.
+            let targetK = countBox.count
+            if games.count < targetK {
+                let priorCount = games.count
+                ensureScratchCapacity(targetK)
+                let cap = await MainActor.run { TrainingParameters.shared.selfPlayMaxPliesPerGame }
+                let liveSchedule = scheduleBox.selfPlay
+                while games.count < targetK {
+                    let g = ActiveGame(
+                        workerId: nextWorkerId,
+                        whiteNetwork: network,
+                        blackNetwork: network,
+                        capPlies: cap,
+                        schedule: liveSchedule
+                    )
+                    nextWorkerId &+= 1
+                    g.resetForNewGame(maxPliesCap: cap, schedule: liveSchedule)
+                    games.append(g)
                 }
-            } else if slots.count > target {
-                // Shrink: lower the barrier threshold FIRST. If we
-                // cancelled slots and then waited, the first cancelled
-                // slot to exit its game would remove a barrier
-                // contributor while `expectedSlotCount` was still the
-                // old count — the remaining slots would then stall
-                // forever waiting for a submission that never comes.
-                // Lowering the threshold first means each subsequent
-                // submission during the shrink transition fires its
-                // own small batch immediately (batch size 1..=target
-                // depending on actor mailbox timing), which is fine —
-                // we trade a little GPU efficiency for liveness.
-                await batcher.setExpectedSlotCount(target)
-                let toRemove = slots.count - target
-                var cancelled: [Task<Void, Never>] = []
-                cancelled.reserveCapacity(toRemove)
-                for _ in 0..<toRemove {
-                    let last = slots.removeLast()
-                    last.task.cancel()
-                    cancelled.append(last.task)
+                // Live-display: when the grow landed us at exactly K==1,
+                // start the watcher's play-time stopwatch. Subsequent
+                // games (per-slot reset) re-arm this in handleGameEnds.
+                // Without this the very first game on a fresh K=0→1
+                // transition would never tick the stopwatch.
+                if priorCount != 1 && games.count == 1 {
+                    gameWatcher?.resetCurrentGame()
+                    gameWatcher?.markPlaying(true)
                 }
-                for t in cancelled { _ = await t.value }
+            } else if games.count > targetK {
+                games.removeLast(games.count - targetK)
             }
 
-            // Idle tick when there's nothing to do. If target is 0 the
-            // session is essentially paused; poll at 50 ms so a Stepper
-            // bump to 1+ picks up promptly. Otherwise steady-state slots
-            // are running and the driver just needs to re-check pause /
-            // count on the next tick.
-            let sleepMs = slots.isEmpty ? 50 : 100
-            // `try?` is intentional: only `CancellationError` is throwable
-            // here, and the next `while !Task.isCancelled` check at the top
-            // of the loop handles cancellation explicitly.
-            try? await Task.sleep(for: .milliseconds(sleepMs))
+            // 3. Idle when target is zero.
+            if games.isEmpty {
+                try? await Task.sleep(for: .milliseconds(50))
+                continue
+            }
+
+            // 4. The tick.
+            await runOneTick(P: P)
         }
 
-        // Session cancelled — cancel every slot, wait for them to finish
-        // their current games, and drain the barrier.
-        await stopAll(slots: &slots)
+        SessionLogger.shared.log("[SP-TICK] driver exiting")
+        games.removeAll(keepingCapacity: true)
     }
 
-    private func stopAll(slots: inout [(id: Int, task: Task<Void, Never>)]) async {
-        let snapshot = slots
-        slots.removeAll()
-        // Drop the barrier threshold to 0 (drain mode) BEFORE waiting
-        // on the cancelled slot tasks. Otherwise the first cancelled
-        // slot to finish its current game and exit would stop
-        // contributing submissions at the old threshold, and the
-        // remaining slots would stall at the barrier — their games
-        // frozen mid-ply because the batcher can never reach the old
-        // count again. Drain mode lets each in-flight submission fire
-        // as its own micro-batch, so every slot's current game runs
-        // to completion and the slot can exit cleanly.
-        await batcher.setExpectedSlotCount(0)
-        for s in snapshot { s.task.cancel() }
-        for s in snapshot { _ = await s.task.value }
+    // MARK: - Per-tick body
+
+    private func runOneTick(P: Int) async {
+        let K = games.count
+        let boardFloats = BoardEncoder.tensorLength
+        guard let scratch = tickScratch,
+              let policyOut = policyResultScratch,
+              let valueOut = valueResultScratch,
+              let probsBase = samplerProbsScratch,
+              let etaBase = samplerEtaScratch
+        else {
+            // `ensureScratchCapacity` runs whenever games.count grows,
+            // so this can only fire if K became > 0 without a grow
+            // pass — defensive: skip the tick.
+            return
+        }
+
+        // (a) Parallel encode. Each strided-slice task writes K_local
+        //     boards into its slice of `scratch`. Pointers and
+        //     `[ActiveGame]` are wrapped/snapshotted into Sendable
+        //     locals so the closure captures Sendable-only state and
+        //     the compiler doesn't have to reason about `self`.
+        let scratchCarrier = MutablePointerCarrier(pointer: scratch)
+        let gameRefs = games
+        await withTaskGroup(of: Void.self) { group in
+            for p in 0..<P {
+                group.addTask {
+                    var i = p
+                    while i < K {
+                        let g = gameRefs[i]
+                        let dst = scratchCarrier.pointer + i * boardFloats
+                        BoardEncoder.encode(
+                            g.engine.state,
+                            into: UnsafeMutableBufferPointer(start: dst, count: boardFloats)
+                        )
+                        i += P
+                    }
+                }
+            }
+        }
+
+        // (b) One batched GPU forward. consume copies the full K-position
+        //     policy + values into our scratch and returns. The pointer
+        //     targets are wrapped in `MutablePointerCarrier` (an
+        //     `@unchecked Sendable` shim, mirroring `PolicyDestination`)
+        //     so they can cross into the `@Sendable` consume closure
+        //     without the compiler refusing to capture
+        //     `UnsafeMutablePointer<Float>` directly.
+        let floatCount = K * boardFloats
+        let policyTarget = MutablePointerCarrier(pointer: policyOut)
+        let valueTarget = MutablePointerCarrier(pointer: valueOut)
+        let policySize = ChessNetwork.policySize
+        do {
+            try await network.evaluateBatched(
+                batchBoardsPointer: UnsafePointer(scratch),
+                floatCount: floatCount,
+                count: K
+            ) { policyBuf, valueBuf in
+                guard let pBase = policyBuf.baseAddress, let vBase = valueBuf.baseAddress else {
+                    return
+                }
+                policyTarget.pointer.update(from: pBase, count: K * policySize)
+                valueTarget.pointer.update(from: vBase, count: K)
+            }
+        } catch {
+            SessionLogger.shared.log("[SP-TICK] network error: \(error); skipping tick")
+            return
+        }
+
+        // (c) Parallel sample + apply. Per game `i`:
+        //       - slice policyOut at [i*policySize ..< (i+1)*policySize]
+        //       - call MoveSampler.sampleMove with that game's slice
+        //         of probs/eta scratches
+        //       - capture the side-to-move BEFORE applying so recordPly
+        //         attributes the ply to the correct color
+        //       - apply the move on the engine
+        //       - if K == 1, capture the move to emit to GameWatcher
+        //         after this pass (single-game live display path)
+        //     Sampling state mutations (game.recordPly, game.engine
+        //     advance, game.randomishCount) are confined to slot `i`
+        //     across all tasks — no aliasing between tasks because the
+        //     stride is `P` and each slot's `ActiveGame` is touched by
+        //     exactly one task.
+        let policyCarrier = MutablePointerCarrier(pointer: policyOut)
+        let probsCarrier = MutablePointerCarrier(pointer: probsBase)
+        let etaCarrier = MutablePointerCarrier(pointer: etaBase)
+        // scratchCarrier already declared above (encode pass) — reuse.
+        await withTaskGroup(of: Void.self) { group in
+            for p in 0..<P {
+                group.addTask {
+                    var i = p
+                    while i < K {
+                        let g = gameRefs[i]
+                        // The game may already be in a terminal state
+                        // if a previous tick ended it; the game-end
+                        // pass clears them but processes them on the
+                        // SAME tick (after this one). Skip to avoid
+                        // applyMoveAndAdvance throwing gameAlreadyOver.
+                        if g.engine.result != nil {
+                            i += P
+                            continue
+                        }
+                        let legalMoves = g.engine.currentLegalMoves
+                        if legalMoves.isEmpty {
+                            i += P
+                            continue
+                        }
+                        let sideToMove = g.engine.state.currentPlayer
+                        let policySliceStart = policyCarrier.pointer.advanced(by: i * policySize)
+                        let policySliceBuf = UnsafeBufferPointer<Float>(
+                            start: policySliceStart, count: policySize
+                        )
+                        let probsSliceStart = probsCarrier.pointer.advanced(by: i * MoveSampler.scratchCapacity)
+                        let probsSliceBuf = UnsafeMutableBufferPointer<Float>(
+                            start: probsSliceStart, count: MoveSampler.scratchCapacity
+                        )
+                        let etaSliceStart = etaCarrier.pointer.advanced(by: i * MoveSampler.scratchCapacity)
+                        let etaSliceBuf = UnsafeMutableBufferPointer<Float>(
+                            start: etaSliceStart, count: MoveSampler.scratchCapacity
+                        )
+
+                        // Game-total ply for the position currently
+                        // under consideration. At this point neither
+                        // side has yet recorded the about-to-be-played
+                        // ply, so `g.totalPliesPlayed` equals the
+                        // 0-indexed half-move count of THIS position
+                        // (0 for the starting position, 1 after white's
+                        // first move, etc.). Feeds the tau schedule
+                        // and the Dirichlet noise ply limit — both
+                        // expressed in game-total ply terms.
+                        let gameTotalPly = g.totalPliesPlayed
+
+                        let result = MoveSampler.sampleMove(
+                            logits: policySliceBuf,
+                            legalMoves: legalMoves,
+                            currentPlayer: sideToMove,
+                            ply: gameTotalPly,
+                            schedule: g.schedule,
+                            probsScratch: probsSliceBuf,
+                            etaScratch: etaSliceBuf
+                        )
+
+                        // Non-pawn piece count for the material-phase
+                        // bucket — same per-ply calculation MPSChessPlayer
+                        // does today.
+                        var matCount: Int = 0
+                        for sq in g.engine.state.board {
+                            if let piece = sq, piece.type != .pawn {
+                                matCount += 1
+                            }
+                        }
+                        let materialCount = UInt8(min(matCount, Int(UInt8.max)))
+
+                        let plyTau = g.schedule.tau(forPly: gameTotalPly)
+                        g.recordPly(
+                            side: sideToMove,
+                            encodedBoardSrc: UnsafePointer(scratchCarrier.pointer + i * boardFloats),
+                            policyIndex: result.policyIndex,
+                            samplingTau: plyTau,
+                            materialCount: materialCount
+                        )
+                        if result.randomish {
+                            g.randomishCount += 1
+                        }
+
+                        do {
+                            try g.engine.applyMoveAndAdvance(result.move)
+                        } catch {
+                            // Should not fire: result.move came from
+                            // engine.currentLegalMoves above. Log
+                            // defensively in case a future refactor
+                            // breaks the invariant.
+                            SessionLogger.shared.log(
+                                "[SP-TICK] applyMoveAndAdvance threw on slot \(i): \(error)"
+                            )
+                        }
+                        i += P
+                    }
+                }
+            }
+        }
+
+        // (c.5) Live-display emit: when K == 1 the single game's just-
+        //       applied move + new state goes to the watcher. We do
+        //       this here (post-apply) rather than inside the parallel
+        //       loop because GameWatcher takes its own lock and we
+        //       want to keep the parallel pass lock-free.
+        if K == 1, let g = games.first, let lastMove = g.engine.moveHistory.last {
+            gameWatcher?.onMoveApplied(move: lastMove, newState: g.engine.state)
+        }
+
+        // (d) Game-end pass.
+        let finishedThisTick = await handleGameEnds()
+
+        // (e) Replay-ratio throttle (proportional scaling — see class doc).
+        if let delayMs = replayRatioController?.computedSelfPlayDelayMs,
+           delayMs > 0,
+           finishedThisTick > 0,
+           K > 0 {
+            // Per-tick analog of the legacy per-game sleep. In steady
+            // state with avg-length games, `finishedThisTick / K ≈
+            // K · tickRate / (K · ticksPerGame) ≈ 1 / ticksPerGame`,
+            // so the integrated delay matches the legacy
+            // delayMs-per-game cadence. Min 1 ms so a single finished
+            // game still yields control briefly.
+            let scaled = max(1, Int(Double(delayMs) * Double(finishedThisTick) / Double(K)))
+            try? await Task.sleep(for: .milliseconds(scaled))
+        }
+
+        // (f) Tell the controller about this tick.
+        replayRatioController?.recordSelfPlayBarrierTick(
+            positionsProduced: K,
+            currentDelaySettingMs: Double(replayRatioController?.computedSelfPlayDelayMs ?? 0),
+            workerCount: K
+        )
     }
 
-    // MARK: - Slot Body
+    // MARK: - Game-end pass
 
-    private func slotLoop(id: Int) async {
-        defer { liveSlots.remove(id) }
-        // Reusable players per slot — `ChessMachine.beginNewGame` calls
-        // `onNewGame` on each before starting, resetting per-game scratch
-        // without reallocating the board / policy / value buffers. The
-        // `schedule` is refreshed at the top of each game from
-        // `scheduleBox` so UI edits to tau start / floor / decay take
-        // effect on the next game a slot starts, without re-allocating
-        // the per-player scratch.
-        let white = MPSChessPlayer(
-            name: "White",
-            source: batcher,
-            replayBuffer: buffer,
-            schedule: scheduleBox.selfPlay
-        )
-        let black = MPSChessPlayer(
-            name: "Black",
-            source: batcher,
-            replayBuffer: buffer,
-            schedule: scheduleBox.selfPlay
-        )
-        // Stamp the slot id onto each player so per-position
-        // observability metadata can attribute samples back to which
-        // self-play slot produced them. `nextSlotID` increments
-        // monotonically across arena respawns / Stepper resizes —
-        // it never recycles cancelled IDs — so over a long session
-        // the value grows past any small fixed cap. We modulo into
-        // UInt16 so distinct currently-active slots never collide
-        // unless the counter wraps within ~65k respawns (1366
-        // arenas at typical 48-slot fleets ≈ 110 hours).
-        let stampedWorkerId = UInt16(id % (Int(UInt16.max) + 1))
-        white.workerId = stampedWorkerId
-        black.workerId = stampedWorkerId
+    /// Returns the number of games that completed (naturally OR via
+    /// max-plies drop) this tick. Driven by the replay-ratio throttle
+    /// scaling in `runOneTick`.
+    private func handleGameEnds() async -> Int {
+        let K = games.count
+        if K == 0 { return 0 }
 
-        while !Task.isCancelled {
-            // Refresh schedule between games so live UI edits propagate
-            // without having to restart the session. Safe here because
-            // the player is not yet inside a `beginNewGame` call.
-            let liveSchedule = scheduleBox.selfPlay
-            white.schedule = liveSchedule
-            black.schedule = liveSchedule
+        // Read main-actor params once per pass — same cadence as the
+        // legacy driver (which reads them per finished game). At the
+        // few-finished-games-per-tick rate this is unmeasurably cheap.
+        let drawKeepFraction: Double
+            = await MainActor.run { TrainingParameters.shared.selfPlayDrawKeepFraction }
+        let nextMaxPlies: Int
+            = await MainActor.run { TrainingParameters.shared.selfPlayMaxPliesPerGame }
 
-            // Live-display gating matches today's worker logic: when
-            // exactly one slot is active, that slot animates the board.
-            // Evaluated per game (not at spawn) so a Stepper toggle
-            // between 1 and >1 kicks in on the next game rather than
-            // being latched at spawn time.
-            let liveDisplay = countBox.count == 1
+        var finished = 0
+        for i in 0..<K {
+            let g = games[i]
+            let natural = g.engine.result
+            let droppedMaxPlies = (natural == nil) && (g.totalPliesPlayed >= g.maxPliesCap)
+            guard natural != nil || droppedMaxPlies else { continue }
+            finished += 1
 
-            if liveDisplay {
-                gameWatcher?.resetCurrentGame()
-                gameWatcher?.markPlaying(true)
-            }
+            let gameDurationMs = (CFAbsoluteTimeGetCurrent() - g.gameStartedAt) * 1000
+            let positions = g.totalPliesPlayed
 
-            let machine = ChessMachine()
-            if liveDisplay {
-                machine.delegate = gameWatcher
-            }
-
-            // Per-game read of the live max-plies cap. Sub-millisecond
-            // main-actor hop, fires once per slot per game-completion
-            // (same cadence as `selfPlayDrawKeepFraction` below). Read
-            // at game START so an in-flight game keeps its original
-            // cap even if the UI knob changes mid-game.
-            let maxPliesCap: Int = await MainActor.run {
-                TrainingParameters.shared.selfPlayMaxPliesPerGame
-            }
-
-            let gameStart = CFAbsoluteTimeGetCurrent()
-            let rawResult: RawGameResult
-            do {
-                rawResult = try await machine.beginNewGame(
-                    white: white, black: black, maxPlies: maxPliesCap
-                )
-            } catch is CancellationError {
-                // Slot task was cancelled (driver shrink, arena pause,
-                // session stop). `beginNewGame` threw before emitting
-                // `onGameEnded`, so `MPSChessPlayer`'s partial-game
-                // scratch was not flushed to the replay buffer — no
-                // fake-stalemate pollution. Skip stats recording for
-                // the incomplete game and exit the slot.
-                if liveDisplay {
-                    gameWatcher?.markPlaying(false)
-                }
-                break
-            } catch {
-                if liveDisplay {
-                    gameWatcher?.markPlaying(false)
-                }
-                break
-            }
-            let gameDurationMs = (CFAbsoluteTimeGetCurrent() - gameStart) * 1000
-
-            // Aggregate game stats — every slot contributes identically.
-            // Move count = plies recorded by both players, read before
-            // the next `beginNewGame` resets them. These are the
-            // "games played" counters — they include every completed
-            // game regardless of whether it ends up in the replay
-            // buffer (and regardless of whether the game was dropped
-            // for hitting the max-plies cap).
-            let positions = white.recordedPliesCount + black.recordedPliesCount
-
-            // Branch on the raw result to pick the stats path, but
-            // ALWAYS fall through to the slot-throttle sleep below —
-            // skipping the throttle on dropped games (an earlier
-            // version did, via an early `continue`) would let a slot
-            // that produces a streak of max-plies-dropped games spin
-            // unthrottled and break the replay-ratio controller's
-            // flow control.
-            //
-            // Max-plies-dropped path: stats bumped under the
-            // dedicated counter; recorded scratch on each player is
-            // left alone (no flush, no `recordEmittedGame`) and the
-            // next `onNewGame` zeroes it. Diversity + replay-ratio
-            // length still count the game — the plies WERE generated.
-            //
-            // Natural-termination path: existing `recordCompletedGame`
-            // + draw-keep filter + maybe-flush behavior.
-            switch rawResult {
-            case .terminatedEarly:
-                statsBox.recordDroppedGame(
-                    moves: positions,
-                    durationMs: gameDurationMs
-                )
-                diversityTracker.recordGame(moves: machine.moveHistory)
-                replayRatioController?.recordSelfPlayGameLength(positions)
-
-            case .terminatedNormally(let result):
+            if let result = natural {
                 statsBox.recordCompletedGame(
-                    moves: positions,
-                    durationMs: gameDurationMs,
-                    result: result
+                    moves: positions, durationMs: gameDurationMs, result: result
                 )
-                diversityTracker.recordGame(moves: machine.moveHistory)
-
-                // Metadata-only feed to the controller: every completed
-                // game refreshes `positionsPerGame` (used only to convert
-                // the sp-slowdown signed delay into a per-worker per-game
-                // sleep). The rate measurement ITSELF comes from the
-                // batcher's per-barrier-tick hook — much finer
-                // granularity and uncontaminated by applied sleeps.
+                diversityTracker.recordGame(moves: g.engine.moveHistory)
                 replayRatioController?.recordSelfPlayGameLength(positions)
 
-                // Per-game keep/drop decision for the draw-keep filter.
-                // Read the live `selfPlayDrawKeepFraction` from the main
-                // actor once per game (per slot); this is the live UI
-                // knob and is updated by the heartbeat path on parameter
-                // changes. Hop is sub-millisecond and only fires at the
-                // few-per-second cadence one slot is finishing a game at.
+                // Live-display final-game emit.
+                if K == 1 {
+                    let stats = GameStats(
+                        totalMoves: positions,
+                        whiteMoves: g.whitePliesRecorded,
+                        blackMoves: g.blackPliesRecorded,
+                        whiteThinkingTimeMs: 0,
+                        blackThinkingTimeMs: 0,
+                        totalGameTimeMs: gameDurationMs
+                    )
+                    gameWatcher?.onGameEnded(result: result, finalState: g.engine.state, stats: stats)
+                }
+
                 let isDraw: Bool
                 switch result {
-                case .checkmate:
-                    isDraw = false
+                case .checkmate: isDraw = false
                 case .stalemate,
                      .drawByFiftyMoveRule,
                      .drawByInsufficientMaterial,
                      .drawByThreefoldRepetition:
                     isDraw = true
                 }
-                let drawKeepFraction: Double
-                    = await MainActor.run { TrainingParameters.shared.selfPlayDrawKeepFraction }
                 let kept: Bool
                 if isDraw && drawKeepFraction < 1.0 {
-                    // Uniform draw on the system RNG. Decisive games are
-                    // always kept; only draws are filtered.
                     kept = Double.random(in: 0..<1) < drawKeepFraction
                 } else {
                     kept = true
                 }
-
                 if kept {
-                    // Bulk-flush both players' recorded plies into the
-                    // replay buffer. The pushed counts sum to `positions`
-                    // (each player records their own perspective), so
-                    // both the stats box and the controller see the same
-                    // emitted-position total.
-                    let whiteFlush = white.flushRecordedGameToReplayBuffer(result: result)
-                    let blackFlush = black.flushRecordedGameToReplayBuffer(result: result)
-                    // Combine both players' contributions into one
-                    // game-level summary: total positions + summed phase
-                    // histograms. White and black each contribute their
-                    // own perspective's plies, so the sum is the full
-                    // game's emit footprint.
-                    let combined = whiteFlush + blackFlush
-                    if combined.positions > 0 {
-                        statsBox.recordEmittedGame(result: result, flushed: combined)
-                        replayRatioController?.recordSelfPlayEmittedGame(positions: combined.positions)
+                    if let flushed = g.flush(buffer: buffer, result: result), flushed.positions > 0 {
+                        statsBox.recordEmittedGame(result: result, flushed: flushed)
+                        replayRatioController?.recordSelfPlayEmittedGame(positions: flushed.positions)
                     }
                 }
-                // If !kept: leave the recorded scratch alone — the next
-                // `onNewGame` at the top of this loop zeroes
-                // `gamePliesRecorded` and the data is dropped. No-op on
-                // the replay buffer; no emitted-game counter increment.
+                // If !kept: skip flush. The next resetForNewGame zeroes
+                // the per-side fill counters and the recorded scratch
+                // is dropped on the floor (matches legacy behavior).
+            } else {
+                // max-plies dropped: stats, diversity, length feed, but
+                // no flush and no emitted-game count.
+                statsBox.recordDroppedGame(
+                    moves: positions, durationMs: gameDurationMs
+                )
+                diversityTracker.recordGame(moves: g.engine.moveHistory)
+                replayRatioController?.recordSelfPlayGameLength(positions)
             }
 
-            // Replay-ratio self-play throttle. Applied after a game
-            // has fully flushed (recordCompletedGame + recordGame) and
-            // *before* the next `beginNewGame`, so no partial-game
-            // state ever sits suspended across the sleep.
-            //
-            // Coupling note: while this slot sleeps between games,
-            // it is not submitting to the batcher. The other N-1
-            // slots will continue hitting the batcher's barrier
-            // (which still expects N submissions because expected
-            // slot count is unchanged), so they park at the barrier
-            // until this slot resumes and makes its first submission
-            // of the next game. Net effect: one slot's between-game
-            // sleep becomes a brief all-N-slot pause at the barrier,
-            // amplifying the production-rate reduction. This is
-            // benign — the controller's feedback loop converges on
-            // whatever sleep value actually produces the target
-            // ratio, regardless of coupling — and it is not a
-            // deadlock risk: cancellation interrupts `Task.sleep`
-            // immediately, and arena-pause / session-stop both drop
-            // `expectedSlotCount` to 0 via `stopAll` before awaiting
-            // slot exits, which releases any parked barrier slots.
-            //
-            // A zero value (controller in the training-slowdown
-            // regime, or no controller supplied) skips the sleep
-            // entirely so this adds no overhead in the common case.
-            if let selfPlayDelayMs = replayRatioController?.computedSelfPlayDelayMs,
-               selfPlayDelayMs > 0 {
-                // `try?` is intentional: cancellation is the normal exit
-                // path for a stop/arena-pause. The enclosing `while
-                // !Task.isCancelled` outer loop picks up the cancellation
-                // on the next iteration; the only thing `Task.sleep`
-                // throws is `CancellationError`.
-                try? await Task.sleep(for: .milliseconds(selfPlayDelayMs))
+            // Reset slot for the next game using the latest schedule
+            // and the freshly-read cap. Schedule is read once per
+            // game-end (per slot) so live UI edits propagate at the
+            // same cadence as the legacy driver.
+            g.resetForNewGame(maxPliesCap: nextMaxPlies, schedule: scheduleBox.selfPlay)
+
+            // Reset live-display game-start marker for the K==1 path
+            // so the next game in the single watched slot is fresh.
+            if K == 1 {
+                gameWatcher?.resetCurrentGame()
+                gameWatcher?.markPlaying(true)
             }
         }
+        return finished
+    }
+
+    // MARK: - Scratch capacity
+
+    /// Grow all per-tick scratches if K exceeds the current capacity.
+    /// Doubling growth so amortized cost stays O(K) over a session;
+    /// never shrinks.
+    private func ensureScratchCapacity(_ K: Int) {
+        if K <= tickScratchCapK { return }
+        let newCap = max(K, tickScratchCapK * 2)
+        let boardFloats = BoardEncoder.tensorLength
+        let policySize = ChessNetwork.policySize
+        let scratchCap = MoveSampler.scratchCapacity
+
+        let newTickFloats = newCap * boardFloats
+        let newPolicyFloats = newCap * policySize
+        let newSamplerFloats = newCap * scratchCap
+
+        let newTick = UnsafeMutablePointer<Float>.allocate(capacity: newTickFloats)
+        newTick.initialize(repeating: 0, count: newTickFloats)
+        if let old = tickScratch {
+            old.deinitialize(count: tickScratchCapK * boardFloats); old.deallocate()
+        }
+        tickScratch = newTick
+
+        let newPolicy = UnsafeMutablePointer<Float>.allocate(capacity: newPolicyFloats)
+        newPolicy.initialize(repeating: 0, count: newPolicyFloats)
+        if let old = policyResultScratch {
+            old.deinitialize(count: tickScratchCapK * policySize); old.deallocate()
+        }
+        policyResultScratch = newPolicy
+
+        let newValue = UnsafeMutablePointer<Float>.allocate(capacity: newCap)
+        newValue.initialize(repeating: 0, count: newCap)
+        if let old = valueResultScratch {
+            old.deinitialize(count: tickScratchCapK); old.deallocate()
+        }
+        valueResultScratch = newValue
+
+        let newProbs = UnsafeMutablePointer<Float>.allocate(capacity: newSamplerFloats)
+        newProbs.initialize(repeating: 0, count: newSamplerFloats)
+        if let old = samplerProbsScratch {
+            old.deinitialize(count: tickScratchCapK * scratchCap); old.deallocate()
+        }
+        samplerProbsScratch = newProbs
+
+        let newEta = UnsafeMutablePointer<Float>.allocate(capacity: newSamplerFloats)
+        newEta.initialize(repeating: 0, count: newSamplerFloats)
+        if let old = samplerEtaScratch {
+            old.deinitialize(count: tickScratchCapK * scratchCap); old.deallocate()
+        }
+        samplerEtaScratch = newEta
+
+        tickScratchCapK = newCap
     }
 }
 
-private final class LiveSlotSet: @unchecked Sendable {
-    private let lock = OSAllocatedUnfairLock<Set<Int>>(initialState: [])
+// MARK: - Sendable carrier for the consume-closure pointer copy
 
-    func insert(_ id: Int) {
-        lock.withLock { state in
-            _ = state.insert(id)
-        }
-    }
-
-    func remove(_ id: Int) {
-        lock.withLock { state in
-            _ = state.remove(id)
-        }
-    }
-
-    func contains(_ id: Int) -> Bool {
-        lock.withLock { $0.contains(id) }
-    }
+/// `UnsafeMutablePointer<T>` is not Sendable but we need to copy bytes
+/// into driver-owned scratch from inside the `@Sendable` consume
+/// closure of `evaluateBatched`. This is the standard
+/// `PolicyDestination`-shaped escape hatch: the driver task owns the
+/// underlying buffer, the consume closure runs synchronously on the
+/// network's executionQueue and completes before the awaiting
+/// `evaluateBatched` call returns, so the pointer is valid for the
+/// closure's entire lifetime.
+private struct MutablePointerCarrier: @unchecked Sendable {
+    let pointer: UnsafeMutablePointer<Float>
 }
