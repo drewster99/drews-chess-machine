@@ -173,26 +173,22 @@ struct SamplingSchedule: Sendable {
 ///
 /// Encodes the board from the current player's perspective, runs inference,
 /// masks illegal moves, renormalizes, and samples from the policy distribution.
-/// Records every played position into a per-game flat scratch buffer so the
-/// self-play hot path allocates no per-move `[Float](tensorLength)` tensors; at
-/// game end the whole buffer is pushed into the shared `ReplayBuffer` in
-/// one bulk copy.
 ///
-/// A player instance is reused across many games within a self-play slot
-/// (or lives one game in arena / Play Game). `onNewGame` resets the
-/// per-game fill counts so the scratches behave as if fresh each game,
-/// without reallocating. Access is single-threaded within the game task;
-/// no locking is needed on the player's internal state.
+/// Used by arena (two instances per game, sourced from per-network
+/// `BatchedMoveEvaluationSource` actors) and by Play Game / Human-vs-
+/// Network (one AI player against a `HumanChessPlayer`, sourced from
+/// `DirectMoveEvaluationSource`). Self-play no longer uses this class
+/// — the `BatchedSelfPlayDriver` tick model drives sampling directly
+/// via `MoveSampler` without going through a per-game player object.
+///
+/// A player instance can be reused across many games (arena reuses
+/// across an arena's run; Play Game allocates one per game). Access
+/// is single-threaded within the game task; no locking is needed on
+/// the player's internal state.
 final class MPSChessPlayer: ChessPlayer {
     /// Number of floats in one encoded board position. Kept in sync
     /// with `BoardEncoder.tensorLength`.
     private static let boardFloats = BoardEncoder.tensorLength
-
-    /// Initial ply capacity of the per-game board scratch. 512 plies
-    /// covers essentially every realistic chess game; longer games
-    /// grow the scratch via `growGameBoardScratch(toPlyCapacity:)` so
-    /// the engine still works on extreme positions.
-    private static let startingPlyCapacity = 512
 
     /// Upper bound on the number of legal moves in any chess position.
     /// The mathematical maximum is around 218, so 256 leaves a safety
@@ -203,21 +199,10 @@ final class MPSChessPlayer: ChessPlayer {
     let name: String
     /// Source of (policy, value) predictions. Goes through
     /// `DirectMoveEvaluationSource` (sync single-board inference) for
-    /// arena / Play Game / Play Continuous, or through
-    /// `BatchedMoveEvaluationSource` (barrier batcher) for self-play,
-    /// so N slot tasks coalesce their per-ply forward passes into one
-    /// batched `graph.run`.
+    /// Play Game / Play Continuous / Human-vs-Network, or through
+    /// `BatchedMoveEvaluationSource` (barrier batcher, per-network)
+    /// for arena tournaments.
     private let source: MoveEvaluationSource
-    /// Optional replay buffer. When non-nil, this player CAN push each
-    /// finished game's labeled positions into the buffer, but the push is
-    /// NOT automatic on `onGameEnded` — the caller must explicitly invoke
-    /// `flushRecordedGameToReplayBuffer(result:)` after the game ends.
-    /// Self-play uses this two-step contract so the slot driver can
-    /// decide per-game whether to keep or drop the game (e.g. honour the
-    /// `selfPlayDrawKeepFraction` draw filter). The default-nil path is
-    /// what Play Game / Play Continuous / arena use — they pass nil and
-    /// never call flush, identical to pre-buffer behaviour.
-    private let replayBuffer: ReplayBuffer?
     /// Temperature schedule applied per-ply in `sampleMove`. Defaults to
     /// `.uniform` (flat tau=1.0) so non-training callers keep their
     /// pre-schedule behavior; self-play and arena pass their own presets.
@@ -232,121 +217,28 @@ final class MPSChessPlayer: ChessPlayer {
     var schedule: SamplingSchedule
     private var isWhite = true
 
-    // MARK: - Per-game recorded positions
+    // MARK: - Per-game state
 
-    /// Raw storage for every encoded position played this game, laid
-    /// out as `[ply, plane * 64 + row * 8 + col]` — i.e. ply `p`
-    /// occupies `gameBoardScratchPtr + p * boardFloats`. Grown via
-    /// `growGameBoardScratch` when a long game outruns the initial
-    /// capacity (rare). Owned via `UnsafeMutablePointer` so the
-    /// encoder and the network can share the same memory without
-    /// Swift array CoW.
-    private var gameBoardScratchPtr: UnsafeMutablePointer<Float>
-    /// Current allocated capacity of `gameBoardScratchPtr`, in plies
-    /// (not floats). `gameBoardScratchPtr` holds
-    /// `gameBoardScratchCapacity * boardFloats` floats.
-    private var gameBoardScratchCapacity: Int
-
-    /// Reusable destination scratch for the per-ply policy readback.
-    /// Manually allocated once at init and freed at deinit, mirroring
-    /// the `gameBoardScratchPtr` pattern. Sized to
-    /// `ChessNetwork.policySize` floats and passed (as
-    /// `UnsafeMutableBufferPointer`) to `source.evaluate` every ply,
-    /// satisfying the `MoveEvaluationSource` destination-buffer
-    /// contract. One ply runs at a time per player (white then black,
-    /// serialized by `ChessMachine.runGameLoop`), so this scratch is
-    /// never aliased by concurrent calls. Owned by raw pointer so the
-    /// network can write into it via `update(from:count:)` with no
-    /// Swift `Array` allocation per call.
+    /// Reusable destination for the per-ply policy readback. Manually
+    /// allocated once at init and freed at deinit; the
+    /// `MoveEvaluationSource` writes `ChessNetwork.policySize` floats
+    /// into it via `update(from:count:)` on every `source.evaluate`
+    /// call (no Swift `[Float]` allocation per call). One ply runs at
+    /// a time per player (white then black, serialized by
+    /// `ChessMachine.runGameLoop`), so this scratch is never aliased
+    /// by concurrent calls.
     private let policyScratchPtr: UnsafeMutablePointer<Float>
-    /// Element count of `policyScratchPtr` — captured once so the
-    /// `init` allocation and the `deinit` `deinitialize`/`deallocate`
+    /// Element count of `policyScratchPtr`. Captured once so the
+    /// `init` allocation and the `deinit` deinitialize/deallocate
     /// pair stay in sync, and the per-ply call site doesn't have to
-    /// reach into `ChessNetwork.policySize` (which would tie the call
-    /// site to the constant changing).
+    /// reach into `ChessNetwork.policySize` directly.
     private static let policyScratchCount = ChessNetwork.policySize
 
-    /// Policy-target indices for each recorded ply, computed via
-    /// `PolicyEncoding.policyIndex` in the network's encoder-frame
-    /// coordinate system (0..<policySize, currently 0..<4864). Pre-
-    /// reserved so growth is rare; grown automatically if the game
-    /// exceeds the initial capacity.
-    private var gamePolicyIndices: [Int32]
-
-    /// Per-recorded-ply observability metadata — flushed alongside
-    /// `gamePolicyIndices` into the replay buffer at game end. Sized in
-    /// lock-step with the move-index array.
-    /// - `gamePlyIndices[i]`: the **game-total** ply index for record
-    ///   `i` — 0-indexed half-move count from the start of the game.
-    ///   White's recorded positions land on even plies (0, 2, 4, …),
-    ///   black's on odd plies (1, 3, 5, …). The two players' records
-    ///   interleave on the same scale when merged into the replay
-    ///   buffer, so phase-histogram bucketing (≤15 open, 16–35 early,
-    ///   36–75 mid, 76–125 late, 126+ end) reflects each position's
-    ///   actual location within the game.
-    private var gamePlyIndices: [UInt16]
-
-    /// Per-recorded-ply sampling temperature (tau) actually applied
-    /// when picking the move. Computed via `schedule.tau(forPly:)` at
-    /// the moment of move selection — argument is the position's
-    /// game-total ply count, derived from `gamePliesRecorded` and
-    /// `isWhite` at the call site.
-    private var gameSamplingTaus: [Float]
-
-    /// Per-recorded-ply 64-bit hash of the encoded board tensor at
-    /// the time of move selection. Used by `ReplayBuffer` to track
-    /// duplicate-position counts across the buffer.
-    private var gameStateHashes: [UInt64]
-
-    /// Per-recorded-ply non-pawn piece count (0–30). Drives the
-    /// "phase by material" bucket of replay-buffer batch stats —
-    /// independent of, and complementary to, the ply-based phase
-    /// bucket. UInt8 is plenty (chess starts with 16 non-pawn).
-    private var gameMaterialCounts: [UInt8]
-
-    /// Stable identity for this player's owning self-play slot. Goes
-    /// into the replay buffer's per-position metadata so per-batch
-    /// stats can detect over-representation of any one slot. Not used
-    /// for training. Default 0 — non-self-play callers (Play Game,
-    /// arena) leave it at zero. UInt16 (rather than UInt8) so the
-    /// monotonically-increasing slot counter in
-    /// `BatchedSelfPlayDriver` doesn't pin everything to a single
-    /// id after a few arena-respawn cycles.
-    var workerId: UInt16 = 0
-
-    /// Intra-worker monotonically increasing game counter.
-    /// Incremented at the top of each `onNewGame` call. The (worker_id,
-    /// intraWorkerGameIndex) pair is broadcast across every position
-    /// of a single appended game.
-    private var intraWorkerGameIndex: UInt32 = 0
-
-    /// Number of plies this player has recorded in the current game.
-    /// Indexes both `gameBoardScratchPtr` (by `ply * boardFloats`) and
-    /// `gamePolicyIndices` (by `ply`).
+    /// Number of plies this player has chosen in the current game.
+    /// Used as the per-side ply count from which the game-total ply
+    /// index is derived for `MoveSampler`'s tau schedule + Dirichlet
+    /// gate (`2 * gamePliesRecorded + (isWhite ? 0 : 1)`).
     private var gamePliesRecorded: Int = 0
-
-    /// Number of plies recorded so far in the current game — read by
-    /// the Play and Train driver to report positions/sec stats.
-    var recordedPliesCount: Int { gamePliesRecorded }
-
-    /// Count of plies in the current game where the policy's legal-
-    /// move softmax was effectively UNIFORM — i.e., the network had
-    /// no meaningful opinion about which legal move to play, so the
-    /// sampler picked essentially at random. A "random-ish" ply is
-    /// defined as: max legal-move softmax probability is less than
-    /// 1.5× the uniform probability `1/n_legal`. Flags:
-    ///   - Collapsed policies (all mass on illegal cells → legal
-    ///     logits all ~0 → softmax = uniform over legal)
-    ///   - Freshly random-init networks (all legal logits similar
-    ///     magnitude → softmax is close to uniform)
-    /// A useful signal for "is the model actually choosing, or is
-    /// every move effectively random?"
-    private var gameRandomishMoveCount: Int = 0
-
-    /// Read-only: number of essentially-uniform ("random-ish") plies
-    /// this player has played in the current game so far. Drivers can
-    /// query this after the game ends to report the random-ish rate.
-    var recordedRandomishMoves: Int { gameRandomishMoveCount }
 
     /// Reusable softmax scratch used by `sampleMove`. Pre-sized to the
     /// max chess-position legal-move count so every per-ply sample runs
@@ -363,22 +255,16 @@ final class MPSChessPlayer: ChessPlayer {
 
     /// Create a player backed by a `MoveEvaluationSource`.
     ///
-    /// For self-play, all slot players share one
-    /// `BatchedMoveEvaluationSource` so N slot tasks' per-ply forward
-    /// passes are coalesced into one batched `graph.run`. For arena,
-    /// Play Game, and Play Continuous, pass a
-    /// `DirectMoveEvaluationSource` wrapping a `ChessMPSNetwork` — see
-    /// the `network:` convenience initializer below.
-    ///
-    /// Pass a `replayBuffer` to have this player contribute its labeled
-    /// positions to a shared training pool at game end; leave it nil for
-    /// normal (non-training) play. Pass a `schedule` other than `.uniform`
-    /// to apply a two-phase sampling temperature — see `SamplingSchedule`
-    /// and `sampling-parameters.md` for the rationale.
+    /// For arena, pass a `BatchedMoveEvaluationSource` (per-network)
+    /// so multiple concurrent arena games coalesce their per-ply
+    /// forward passes into batched `graph.run` calls. For Play Game /
+    /// Human-vs-Network, pass a `DirectMoveEvaluationSource` wrapping
+    /// a `ChessMPSNetwork`. Pass a `schedule` other than `.uniform`
+    /// to apply a two-phase sampling temperature — see
+    /// `SamplingSchedule` and `sampling-parameters.md`.
     init(
         name: String,
         source: MoveEvaluationSource,
-        replayBuffer: ReplayBuffer? = nil,
         schedule: SamplingSchedule = .uniform
     ) {
         precondition(
@@ -394,63 +280,23 @@ final class MPSChessPlayer: ChessPlayer {
         self.identifier = UUID().uuidString
         self.name = name
         self.source = source
-        self.replayBuffer = replayBuffer
         self.schedule = schedule
         self.sampleScratch = [Float](repeating: 0, count: Self.sampleScratchCapacity)
         self.dirichletScratch = [Float](repeating: 0, count: Self.sampleScratchCapacity)
 
-        let initialCapacity = Self.startingPlyCapacity
-        let initialFloats = initialCapacity * Self.boardFloats
-        let ptr = UnsafeMutablePointer<Float>.allocate(capacity: initialFloats)
-        ptr.initialize(repeating: 0, count: initialFloats)
-        self.gameBoardScratchPtr = ptr
-        self.gameBoardScratchCapacity = initialCapacity
-
         let pPtr = UnsafeMutablePointer<Float>.allocate(capacity: Self.policyScratchCount)
         pPtr.initialize(repeating: 0, count: Self.policyScratchCount)
         self.policyScratchPtr = pPtr
-
-        var indices: [Int32] = []
-        indices.reserveCapacity(initialCapacity)
-        self.gamePolicyIndices = indices
-
-        var plies: [UInt16] = []
-        plies.reserveCapacity(initialCapacity)
-        self.gamePlyIndices = plies
-
-        var taus: [Float] = []
-        taus.reserveCapacity(initialCapacity)
-        self.gameSamplingTaus = taus
-
-        var hashes: [UInt64] = []
-        hashes.reserveCapacity(initialCapacity)
-        self.gameStateHashes = hashes
-
-        var mats: [UInt8] = []
-        mats.reserveCapacity(initialCapacity)
-        self.gameMaterialCounts = mats
     }
 
     deinit {
-        gameBoardScratchPtr.deinitialize(count: gameBoardScratchCapacity * Self.boardFloats)
-        gameBoardScratchPtr.deallocate()
         policyScratchPtr.deinitialize(count: Self.policyScratchCount)
         policyScratchPtr.deallocate()
     }
 
     func onNewGame(_ isWhite: Bool) {
         self.isWhite = isWhite
-        // Keep all backing storage — only reset the fill counts. The
-        // per-ply write loop overwrites slot contents before reading
-        // them, so there's no need to zero the scratch between games.
-        gamePolicyIndices.removeAll(keepingCapacity: true)
-        gamePlyIndices.removeAll(keepingCapacity: true)
-        gameSamplingTaus.removeAll(keepingCapacity: true)
-        gameStateHashes.removeAll(keepingCapacity: true)
-        gameMaterialCounts.removeAll(keepingCapacity: true)
         gamePliesRecorded = 0
-        gameRandomishMoveCount = 0
-        intraWorkerGameIndex &+= 1
     }
 
     func onChooseNextMove(
@@ -462,74 +308,30 @@ final class MPSChessPlayer: ChessPlayer {
             throw ChessPlayerError.noLegalMoves
         }
 
-        // Grow the per-game scratch if this ply would overflow the
-        // currently-allocated ring. Amortized constant: doubling keeps
-        // the total allocations at log2(plies/starting) across a game.
-        if gamePliesRecorded >= gameBoardScratchCapacity {
-            growGameBoardScratch(toPlyCapacity: gameBoardScratchCapacity * 2)
+        // Encode the current position. One `[Float]` allocation per
+        // ply — the MoveEvaluationSource API takes `[Float]` (because
+        // crossing the batcher actor needs a Sendable value), so we
+        // can't hand it a raw pointer. At arena's ~40 plies/sec
+        // across K games this is microseconds of allocator pressure;
+        // not worth a per-instance scratch buffer.
+        var encoded = [Float](repeating: 0, count: Self.boardFloats)
+        encoded.withUnsafeMutableBufferPointer { buf in
+            BoardEncoder.encode(gameState, into: buf)
         }
 
-        let boardFloats = Self.boardFloats
-        let rowBase: UnsafeMutablePointer<Float> = gameBoardScratchPtr + gamePliesRecorded * boardFloats
-
-        // Encode the current position directly into this ply's slot
-        // in the scratch — zero allocation, no intermediate `[Float]`.
-        let rowMutable = UnsafeMutableBufferPointer<Float>(start: rowBase, count: boardFloats)
-        BoardEncoder.encode(gameState, into: rowMutable)
-
-        // Feed the encoded bytes through the evaluation source. We
-        // materialize `[Float]` from the per-ply scratch row because
-        // the evaluation source is potentially actor-isolated and
-        // raw `UnsafeBufferPointer` isn't `Sendable`. That copy is
-        // tensorLength floats per move; the batcher used to make an
-        // equivalent copy internally, so this just moves the copy
-        // one actor hop earlier — net allocations are unchanged.
-        //
-        // The source writes `policySize` raw policy logits directly
-        // into our per-player `policyScratchPtr` (handed in as
-        // `intoPolicy`); it also returns the scalar `v(position)` from
-        // the value head, but self-play no longer records that — the
-        // trainer recomputes the policy-gradient baseline from a fresh
-        // forward pass each step (the W/D/L value-head rewrite made the
-        // play-time-frozen baseline dead), so the return value is
-        // discarded here.
-        let rowConst = UnsafeBufferPointer<Float>(rowMutable)
-        let encoded = Array(rowConst)
-
-        // Hash the encoded position BEFORE evaluation so the hash key
-        // matches exactly what the network sees. Cheap (~5 µs at
-        // `BoardEncoder.tensorLength` floats with stdlib SipHash).
-        let stateHash = ReplayBuffer.hashBoard(rowBase, count: boardFloats)
-        // Game-total ply count for THIS position (0-indexed half-move
-        // count from the start of the game). `gamePliesRecorded` is
-        // this player's own move count (per-side); the position
-        // about-to-be-recorded is at game-total ply
-        // `2 * gamePliesRecorded` if we're white (we move on even
-        // half-moves 0, 2, 4, …) or `2 * gamePliesRecorded + 1` if
-        // black (odd half-moves 1, 3, 5, …). All downstream
-        // schedule/Dirichlet/bucketing code consumes game-total ply.
-        let gameTotalPly = 2 * gamePliesRecorded + (isWhite ? 0 : 1)
-        let plyTau = schedule.tau(forPly: gameTotalPly)
-        // Non-pawn piece count for the by-material phase bucket.
-        // Iterates the 64-element [Piece?] array and counts squares
-        // occupied by anything other than a pawn. Explicit `if let`
-        // (rather than for-where + force-unwrap) so the predicate
-        // is unambiguous and there's zero force-unwrap risk if a
-        // future GameState refactor changes the optionality model.
-        var matCount: Int = 0
-        for sq in gameState.board {
-            if let piece = sq, // only squares containing a piece
-                piece.type != .pawn {
-                matCount += 1
-            }
-        }
-        let materialCount = UInt8(min(matCount, Int(UInt8.max)))
-
+        // Run inference. The source writes `policySize` raw policy
+        // logits into `policyScratchPtr` via the `intoPolicy`
+        // destination; it also returns the value-head scalar, but
+        // arena / Play Game don't consume it (the trainer recomputes
+        // the policy-gradient baseline from a fresh forward pass each
+        // step — see the W/D/L value-head rewrite for context), so
+        // the return is discarded.
         let policyDest = PolicyDestination(UnsafeMutableBufferPointer(
             start: policyScratchPtr,
             count: Self.policyScratchCount
         ))
         _ = try await source.evaluate(encodedBoard: encoded, intoPolicy: policyDest)
+
         let policyView = UnsafeBufferPointer(
             start: policyScratchPtr,
             count: Self.policyScratchCount
@@ -539,154 +341,15 @@ final class MPSChessPlayer: ChessPlayer {
             legalMoves: legalMoves,
             currentPlayer: gameState.currentPlayer
         )
-
-        gamePolicyIndices.append(Int32(PolicyEncoding.policyIndex(move, currentPlayer: gameState.currentPlayer)))
-        // Stored ply is the **game-total** half-move count of this
-        // position (0-indexed from the start of the game), so
-        // downstream histogram bucketing in `PhaseHistogram.plyBucket`
-        // and `ReplayBuffer.computeBatchStats` (cutoffs ≤15 / 16–35 /
-        // 36–75 / 76–125 / 126+) matches the chess-convention "ply N"
-        // reading of the label. UInt16 caps at 65535 — chess games
-        // are at most ~6000 plies in pathological cases (50-move /
-        // 3-fold limits), so the cap is fine; saturate just in case.
-        gamePlyIndices.append(UInt16(min(gameTotalPly, Int(UInt16.max))))
-        gameSamplingTaus.append(plyTau)
-        gameStateHashes.append(stateHash)
-        gameMaterialCounts.append(materialCount)
         gamePliesRecorded += 1
-
         return move
     }
 
-    /// Protocol entry point. No-op in MPSChessPlayer — the replay-buffer
-    /// flush is deferred to `flushRecordedGameToReplayBuffer(result:)`
-    /// so the self-play driver can apply the per-game keep/drop
-    /// decision (e.g. `selfPlayDrawKeepFraction`) AFTER it knows the
-    /// game's result but BEFORE the bulk append lands. The recorded
-    /// per-ply scratch survives this call; `onNewGame` clears it at
-    /// the start of the next game whether or not anyone flushed.
+    /// Protocol entry point. No-op in MPSChessPlayer — Play Game /
+    /// Human play / arena don't ingest into the replay buffer (only
+    /// the tick driver does, and it doesn't use `MPSChessPlayer`).
     func onGameEnded(_ result: GameResult, finalState: GameState) {
-        // Deliberately empty. See `flushRecordedGameToReplayBuffer`.
-    }
-
-    /// Bulk-flush every recorded ply from the just-finished game into
-    /// the shared replay buffer with the (player-relative) outcome
-    /// broadcast across every row. One lock acquisition on the buffer,
-    /// one `memcpy`-style copy per field — no per-position round-trips.
-    ///
-    /// Returns the number of plies pushed (0 if `replayBuffer` is nil
-    /// or this player recorded no plies this game — neither is a bug,
-    /// just nothing to do).
-    ///
-    /// Safe to call only between `onGameEnded` and the next
-    /// `onNewGame` — the per-game scratch is preserved across the gap,
-    /// and `onNewGame` zeroes `gamePliesRecorded`. Calling twice in a
-    /// row would double-push.
-    @discardableResult
-    func flushRecordedGameToReplayBuffer(result: GameResult) -> FlushedGameStats {
-        guard let replayBuffer, gamePliesRecorded > 0 else { return .empty }
-
-        let myOutcome: Float
-        switch result {
-        case .checkmate(let winner):
-            myOutcome = (winner == .white) == isWhite ? 1.0 : -1.0
-        case .stalemate,
-             .drawByFiftyMoveRule,
-             .drawByInsufficientMaterial,
-             .drawByThreefoldRepetition:
-            myOutcome = 0.0
-        }
-
-        let pliesPushed = gamePliesRecorded
-        let gameLength = UInt16(min(pliesPushed, Int(UInt16.max)))
-
-        // Per-game phase histograms (5 buckets each: open/early/mid/
-        // late/end) computed by walking the recorded plies once.
-        // Bucket cutoffs match `ReplayBuffer.computeBatchStats` so
-        // the View > Emit Window aggregates use the same phase
-        // semantics as the per-batch stats lines. Cost is one tight
-        // loop over `pliesPushed` integers — negligible relative to
-        // the buffer-copy below.
-        var phaseByPly = PhaseHistogram.zero
-        var phaseByMaterial = PhaseHistogram.zero
-        for i in 0..<pliesPushed {
-            let plyBucket = PhaseHistogram.plyBucket(ply: Int(gamePlyIndices[i]))
-            let matBucket = PhaseHistogram.materialBucket(materialCount: Int(gameMaterialCounts[i]))
-            switch plyBucket {
-            case 0: phaseByPly.open += 1
-            case 1: phaseByPly.early += 1
-            case 2: phaseByPly.mid += 1
-            case 3: phaseByPly.late += 1
-            default: phaseByPly.end += 1
-            }
-            switch matBucket {
-            case 0: phaseByMaterial.open += 1
-            case 1: phaseByMaterial.early += 1
-            case 2: phaseByMaterial.mid += 1
-            case 3: phaseByMaterial.late += 1
-            default: phaseByMaterial.end += 1
-            }
-        }
-        gamePolicyIndices.withUnsafeBufferPointer { movesBuf in
-            gamePlyIndices.withUnsafeBufferPointer { pliesBuf in
-                gameSamplingTaus.withUnsafeBufferPointer { tausBuf in
-                    gameStateHashes.withUnsafeBufferPointer { hashesBuf in
-                        gameMaterialCounts.withUnsafeBufferPointer { matsBuf in
-                            guard
-                                let movesBase = movesBuf.baseAddress,
-                                let pliesBase = pliesBuf.baseAddress,
-                                let tausBase = tausBuf.baseAddress,
-                                let hashesBase = hashesBuf.baseAddress,
-                                let matsBase = matsBuf.baseAddress
-                            else { return }
-                            replayBuffer.append(
-                                boards: UnsafePointer(gameBoardScratchPtr),
-                                policyIndices: movesBase,
-                                plyIndices: pliesBase,
-                                samplingTaus: tausBase,
-                                stateHashes: hashesBase,
-                                materialCounts: matsBase,
-                                gameLength: gameLength,
-                                workerId: workerId,
-                                intraWorkerGameIndex: intraWorkerGameIndex,
-                                outcome: myOutcome,
-                                count: pliesPushed
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        return FlushedGameStats(
-            positions: pliesPushed,
-            phaseByPly: phaseByPly,
-            phaseByMaterial: phaseByMaterial
-        )
-    }
-
-    /// Grow `gameBoardScratchPtr` to hold at least `newCapacity` plies,
-    /// preserving the bytes already recorded for the current game. Only
-    /// called when a game exceeds the previously-allocated capacity —
-    /// does not run during normal-length games.
-    private func growGameBoardScratch(toPlyCapacity newCapacity: Int) {
-        precondition(newCapacity > gameBoardScratchCapacity,
-            "growGameBoardScratch must strictly increase capacity")
-
-        let oldFloats = gameBoardScratchCapacity * Self.boardFloats
-        let newFloats = newCapacity * Self.boardFloats
-
-        let newPtr = UnsafeMutablePointer<Float>.allocate(capacity: newFloats)
-        newPtr.initialize(repeating: 0, count: newFloats)
-        if gamePliesRecorded > 0 {
-            newPtr.update(
-                from: gameBoardScratchPtr,
-                count: gamePliesRecorded * Self.boardFloats
-            )
-        }
-        gameBoardScratchPtr.deinitialize(count: oldFloats)
-        gameBoardScratchPtr.deallocate()
-        gameBoardScratchPtr = newPtr
-        gameBoardScratchCapacity = newCapacity
+        // Deliberately empty.
     }
 
     // MARK: - Move Sampling
@@ -728,9 +391,15 @@ final class MPSChessPlayer: ChessPlayer {
                     currentPlayer: currentPlayer,
                     // Game-total ply count for the position currently
                     // under consideration (0-indexed half-move count
-                    // from game start). Same conversion as in
-                    // `onChooseNextMove` above — see that comment for
-                    // the derivation.
+                    // from game start). `gamePliesRecorded` is this
+                    // player's own per-side move count; white plays
+                    // even half-moves (0, 2, 4, …) and black plays
+                    // odd (1, 3, 5, …), so the position about to be
+                    // sampled is at game-total ply
+                    // `2 * gamePliesRecorded + (isWhite ? 0 : 1)`.
+                    // Drives both `schedule.tau(forPly:)` and the
+                    // Dirichlet ply-limit gate, both expressed in
+                    // game-total ply terms.
                     ply: 2 * gamePliesRecorded + (isWhite ? 0 : 1),
                     schedule: schedule,
                     probsScratch: probs,
@@ -738,9 +407,12 @@ final class MPSChessPlayer: ChessPlayer {
                 )
             }
         }
-        if result.randomish {
-            gameRandomishMoveCount += 1
-        }
+        // `result.randomish` is computed but no longer recorded — the
+        // legacy per-game randomish counter was only consumed by the
+        // self-play stats pipeline, and the tick driver tracks this
+        // directly on `ActiveGame`. Arena / Play Game don't surface
+        // a randomish rate.
+        _ = result.randomish
         return result.move
     }
 }
