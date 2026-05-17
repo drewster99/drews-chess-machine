@@ -120,16 +120,19 @@ final class TickTournamentDriver: @unchecked Sendable {
         // Initial slot fan-out. Each slot's ActiveGame is initialized
         // with the right (whiteNetwork, blackNetwork) assignment for
         // its gameIndex.
-        // Arena uses `maxPliesPerGame = 0` (uncapped) — legacy driver
-        // calls `machine.beginNewGame(white:black:)` without maxPlies
-        // and preconditions against `terminatedEarly`. ActiveGame's
-        // termination check is `totalPliesPlayed >= maxPliesCap`, so
-        // setting `maxPliesCap = Int.max` matches the legacy "no cap"
-        // semantic. capPlies sizes the per-side staging — for arena
-        // we just need somewhere to write the encoded boards during
-        // the tick; the staging isn't flushed anywhere (no replay
-        // buffer for arena), so a generous fixed cap is fine.
-        let arenaCapPlies = 512
+        //
+        // `arenaCapPlies` does double duty: (1) sizes the per-side
+        // staging scratches (whiteBoardScratch etc., capPlies/2 + 1
+        // plies each); (2) serves as the "max plies, otherwise treat
+        // as draw" cap. Realistic chess games end well under 300
+        // plies via 50-move-rule / 3-fold-repetition / normal
+        // termination, so 1024 is effectively "no cap" while keeping
+        // the arithmetic well clear of `Int.max` overflow in
+        // `ActiveGame.resetForNewGame`'s `(newCap + 1) / 2` step.
+        // Per-game staging at 1024 plies: ~3.95 MB per side, ~7.9 MB
+        // total per ActiveGame. At K=400 arena concurrency: ~3.2 GB
+        // peak. Acceptable.
+        let arenaCapPlies = 1024
         for i in 0..<initialK {
             let candIsWhite = (i % 2 == 0)
             let (wNet, bNet) = candIsWhite
@@ -142,9 +145,7 @@ final class TickTournamentDriver: @unchecked Sendable {
                 capPlies: arenaCapPlies,
                 schedule: arenaSchedule
             )
-            // No max-plies cap for arena (matches legacy
-            // `machine.beginNewGame(white:black:)` without maxPlies).
-            g.resetForNewGame(maxPliesCap: Int.max, schedule: arenaSchedule)
+            g.resetForNewGame(maxPliesCap: arenaCapPlies, schedule: arenaSchedule)
             games.append(g)
             gameIndices.append(i)
             aIsWhiteForSlot.append(candIsWhite)
@@ -176,12 +177,29 @@ final class TickTournamentDriver: @unchecked Sendable {
             // Game-end pass: serially walk slots; on completion,
             // either recycle the slot for the next gameIndex or
             // remove it from the active vector.
+            //
+            // Two completion paths:
+            //   - natural: `engine.result != nil` (checkmate / stalemate / etc.)
+            //   - max-plies-drop: `totalPliesPlayed >= maxPliesCap` and no
+            //     natural result. Treat as a draw by `.stalemate` (the
+            //     least-loaded synthetic outcome — most chess engines
+            //     score "ran too long without termination" as a draw).
+            //     Without this branch a stuck game would occupy its slot
+            //     forever, looping through ticks with no progress.
             var i = 0
             while i < games.count {
                 let g = games[i]
-                guard let result = g.engine.result else {
+                let naturalResult = g.engine.result
+                let hitMaxPlies = (naturalResult == nil)
+                    && (g.totalPliesPlayed >= g.maxPliesCap)
+                guard let result = naturalResult ?? (hitMaxPlies ? .stalemate : nil) else {
                     i += 1
                     continue
+                }
+                if hitMaxPlies {
+                    SessionLogger.shared.log(
+                        "[ARENA-TICK] slot \(i) gameIndex \(gameIndices[i]) hit max-plies cap \(g.maxPliesCap) — scoring as draw"
+                    )
                 }
 
                 let gameIndex = gameIndices[i]
@@ -241,7 +259,7 @@ final class TickTournamentDriver: @unchecked Sendable {
                         capPlies: arenaCapPlies,
                         schedule: arenaSchedule
                     )
-                    newG.resetForNewGame(maxPliesCap: Int.max, schedule: arenaSchedule)
+                    newG.resetForNewGame(maxPliesCap: arenaCapPlies, schedule: arenaSchedule)
                     games[i] = newG
                     gameIndices[i] = nextIdx
                     aIsWhiteForSlot[i] = candIsWhiteNext
