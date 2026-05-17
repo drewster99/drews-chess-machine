@@ -86,13 +86,6 @@ final class ActiveGame: @unchecked Sendable {
     /// publish `gameDurationMs` into `ParallelWorkerStatsBox`.
     private(set) var gameStartedAt: CFAbsoluteTime
 
-    /// Count of "random-ish" moves this game — plies where the
-    /// post-temperature, pre-Dirichlet softmax over legal moves was
-    /// essentially uniform. The driver increments this from
-    /// `MoveSampler.Result.randomish`. Surfaced through the existing
-    /// per-game statistics paths.
-    var randomishCount: Int = 0
-
     // MARK: - Per-game completed-ply staging (per-side)
 
     /// Current per-side allocated capacity (in plies). Equal to
@@ -235,7 +228,6 @@ final class ActiveGame: @unchecked Sendable {
         schedule = newSchedule
         maxPliesCap = newCap
         gameStartedAt = CFAbsoluteTimeGetCurrent()
-        randomishCount = 0
         whitePliesRecorded = 0
         blackPliesRecorded = 0
 

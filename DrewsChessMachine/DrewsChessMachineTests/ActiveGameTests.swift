@@ -142,8 +142,6 @@ final class ActiveGameTests: XCTestCase {
         XCTAssertEqual(g.whitePliesRecorded, 0)
         XCTAssertEqual(g.blackPliesRecorded, 0)
         XCTAssertEqual(g.totalPliesPlayed, 0)
-        // Randomish counter also cleared.
-        XCTAssertEqual(g.randomishCount, 0)
     }
 
     func test_reset_doesNotShrinkOnSmallerCap() {

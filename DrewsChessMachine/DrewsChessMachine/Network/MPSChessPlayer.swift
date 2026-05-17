@@ -407,12 +407,6 @@ final class MPSChessPlayer: ChessPlayer {
                 )
             }
         }
-        // `result.randomish` is computed but no longer recorded — the
-        // legacy per-game randomish counter was only consumed by the
-        // self-play stats pipeline, and the tick driver tracks this
-        // directly on `ActiveGame`. Arena / Play Game don't surface
-        // a randomish rate.
-        _ = result.randomish
         return result.move
     }
 }

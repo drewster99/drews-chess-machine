@@ -181,8 +181,10 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             if pauseGate.isRequestedToPause {
                 // Drop in-flight games (no flush — matches legacy
                 // behavior on arena pause). The next iteration after
-                // resume will re-create games to match countBox.count.
+                // resume will re-create games to match countBox.count
+                // and re-arm the watcher's stopwatch.
                 games.removeAll(keepingCapacity: true)
+                gameWatcher?.markPlaying(false)
                 pauseGate.markWaiting()
                 while pauseGate.isRequestedToPause && !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(5))
@@ -207,20 +209,35 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                         schedule: liveSchedule
                     )
                     nextWorkerId &+= 1
+                    // resetForNewGame bumps `intraWorkerGameIndex` from
+                    // 0 → 1 so the first game on a fresh slot stamps as
+                    // game #1 (the design — see `ActiveGame` docstring).
                     g.resetForNewGame(maxPliesCap: cap, schedule: liveSchedule)
                     games.append(g)
                 }
-                // Live-display: when the grow landed us at exactly K==1,
-                // start the watcher's play-time stopwatch. Subsequent
-                // games (per-slot reset) re-arm this in handleGameEnds.
-                // Without this the very first game on a fresh K=0→1
-                // transition would never tick the stopwatch.
-                if priorCount != 1 && games.count == 1 {
-                    gameWatcher?.resetCurrentGame()
+                // Live-display: the watcher's session-wide active-play
+                // stopwatch needs to be running whenever ANY game is in
+                // flight. Per-game `onMoveApplied` / `onGameEnded` emits
+                // are still gated on K==1 (see `runOneTick` / handleGameEnds)
+                // because rendering 1000+ boards per tick would saturate
+                // the UI, but the stopwatch is a single bool — start it
+                // any time we go from "no games" to "some games".
+                // `resetCurrentGame` only matters when K==1 (it clears
+                // the displayed board state), so still gate that one.
+                if priorCount == 0 {
+                    if games.count == 1 {
+                        gameWatcher?.resetCurrentGame()
+                    }
                     gameWatcher?.markPlaying(true)
                 }
             } else if games.count > targetK {
                 games.removeLast(games.count - targetK)
+                // Live-display: stop the watcher's stopwatch if the
+                // shrink emptied the game vector. Mirrors the grow
+                // path's `markPlaying(true)` on 0→N.
+                if games.isEmpty {
+                    gameWatcher?.markPlaying(false)
+                }
             }
 
             // 3. Idle when target is zero.
@@ -253,6 +270,13 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             // pass — defensive: skip the tick.
             return
         }
+
+        // For the K==1 live-display gate at step (c.5) — captured
+        // BEFORE the parallel sample/apply pass so we can prove a move
+        // was actually applied this tick (vs. the slot being skipped
+        // because it was already in a terminal state). moveHistory only
+        // grows; if it grew across the parallel pass, a move was played.
+        let priorMoveCountForLiveDisplay = (K == 1) ? (games.first?.engine.moveHistory.count ?? 0) : 0
 
         // (a) Parallel encode. Each strided-slice task writes K_local
         //     boards into its slice of `scratch`. Pointers and
@@ -316,7 +340,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         //       - if K == 1, capture the move to emit to GameWatcher
         //         after this pass (single-game live display path)
         //     Sampling state mutations (game.recordPly, game.engine
-        //     advance, game.randomishCount) are confined to slot `i`
+        //     advance) are confined to slot `i`
         //     across all tasks — no aliasing between tasks because the
         //     stride is `P` and each slot's `ActiveGame` is touched by
         //     exactly one task.
@@ -398,9 +422,6 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                             samplingTau: plyTau,
                             materialCount: materialCount
                         )
-                        if result.randomish {
-                            g.randomishCount += 1
-                        }
 
                         do {
                             try g.engine.applyMoveAndAdvance(result.move)
@@ -424,7 +445,16 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         //       this here (post-apply) rather than inside the parallel
         //       loop because GameWatcher takes its own lock and we
         //       want to keep the parallel pass lock-free.
-        if K == 1, let g = games.first, let lastMove = g.engine.moveHistory.last {
+        //       Gated on `moveHistory.count > prior` so a slot that
+        //       was skipped (because it was already in a terminal state
+        //       at the start of this tick) doesn't re-emit a stale
+        //       lastMove — `handleGameEnds` resets such slots at the
+        //       end of every tick, so this guards against future
+        //       changes that might delay reset across ticks.
+        if K == 1,
+           let g = games.first,
+           g.engine.moveHistory.count > priorMoveCountForLiveDisplay,
+           let lastMove = g.engine.moveHistory.last {
             gameWatcher?.onMoveApplied(move: lastMove, newState: g.engine.state)
         }
 

@@ -623,11 +623,12 @@ extension SessionController {
                 seedChartCoordinatorFromLoadedSession(chartURLs: chartURLs)
             }
         }
-        // Single self-play gate. All self-play workers now share one
-        // `BatchedMoveEvaluationSource` on the champion network, driven
-        // by `BatchedSelfPlayDriver`, so there is exactly one consumer
-        // for the arena coordinator to pause. The previous per-secondary
-        // gate array is gone along with the secondary networks.
+        // Single self-play gate. `BatchedSelfPlayDriver` is one driver
+        // task that ticks K active games against the champion network
+        // (one batched `evaluateBatched` per tick), so the arena
+        // coordinator pauses exactly one consumer here. The previous
+        // per-worker-Task gate array is gone along with the legacy
+        // task-per-game topology.
         let selfPlayGate = WorkerPauseGate()
         // Shared current-N holder. Workers poll this to decide
         // whether to play another game or sit in their idle wait.
