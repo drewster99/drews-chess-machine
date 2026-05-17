@@ -76,6 +76,13 @@ final class TrainingSettingsPopoverModel {
     var selfPlayFloorTauText = "" { didSet { selfPlayFloorTauError = false } }
     var selfPlayDrawKeepFractionText = "" { didSet { selfPlayDrawKeepFractionError = false } }
     var selfPlayMaxPliesPerGameText = "" { didSet { selfPlayMaxPliesPerGameError = false } }
+    /// Whether self-play uses the new tick-based driver (one CPU task
+    /// pumping a vector of game-state structs) or the legacy
+    /// task-per-game `BatchedSelfPlayDriver`. Bool toggle (no text/
+    /// validation path). NOT live-tunable: writes through to
+    /// `TrainingParameters.shared` on Save, takes effect at the next
+    /// Play-and-Train start.
+    var selfPlayUseTickDriver: Bool = false
 
     private(set) var selfPlayConcurrencyError = false
     private(set) var selfPlayStartTauError = false
@@ -121,7 +128,7 @@ final class TrainingSettingsPopoverModel {
     // MARK: - Cancel stash (for the live-propagated self-play draw-keep field)
 
     private var originalSelfPlayDrawKeepFraction: Double = 1.0
-    private var originalSelfPlayMaxPliesPerGame: Int = 1000
+    private var originalSelfPlayMaxPliesPerGame: Int = 150
 
     // MARK: - Injected dependencies
 
@@ -187,6 +194,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayFloorTauText = String(format: "%.2f", p.selfPlayTargetTau)
         selfPlayDrawKeepFractionText = String(format: "%.2f", p.selfPlayDrawKeepFraction)
         selfPlayMaxPliesPerGameText = String(p.selfPlayMaxPliesPerGame)
+        selfPlayUseTickDriver = p.selfPlayUseTickDriver
         // --- Replay tab ---
         replayBufferCapacityText = String(p.replayBufferCapacity)
         replayBufferMinPositionsText = String(p.replayBufferMinPositionsBeforeTraining)
@@ -410,9 +418,9 @@ final class TrainingSettingsPopoverModel {
     /// driver reads `TrainingParameters.shared.selfPlayMaxPliesPerGame` at the
     /// start of every game, so a mid-session edit takes effect on the
     /// next game spawned by each worker slot. Snapped to the
-    /// parameter's `[25, 1000]` range; non-positive inputs are ignored.
+    /// parameter's `[25, 500]` range; non-positive inputs are ignored.
     func applyLiveMaxPliesPerGame(_ newValue: Int) {
-        let snapped = max(25, min(1000, newValue))
+        let snapped = max(25, min(500, newValue))
         let p = TrainingParameters.shared
         if p.selfPlayMaxPliesPerGame != snapped {
             p.selfPlayMaxPliesPerGame = snapped
@@ -716,11 +724,22 @@ final class TrainingSettingsPopoverModel {
         let selfPlayMaxPliesPerGameTrimmed = selfPlayMaxPliesPerGameText.trimmingCharacters(in: .whitespaces)
         if selfPlayMaxPliesPerGameTrimmed.isEmpty {
             selfPlayMaxPliesPerGameError = false
-        } else if let n = Int(selfPlayMaxPliesPerGameTrimmed), n >= 25, n <= 1000 {
+        } else if let n = Int(selfPlayMaxPliesPerGameTrimmed), n >= 25, n <= 500 {
             selfPlayMaxPliesPerGameError = false
         } else {
             selfPlayMaxPliesPerGameError = true
             anyError = true
+        }
+        // Self-play driver topology toggle. NOT live-tunable — the
+        // tick driver vs. legacy task-per-game driver is selected
+        // once when Play-and-Train starts (see
+        // `SessionController+Training.swift`). Save writes through to
+        // `TrainingParameters.shared`; the next start picks it up.
+        if selfPlayUseTickDriver != p.selfPlayUseTickDriver {
+            SessionLogger.shared.log(
+                "[PARAM] selfPlayUseTickDriver: \(p.selfPlayUseTickDriver) -> \(selfPlayUseTickDriver)"
+            )
+            p.selfPlayUseTickDriver = selfPlayUseTickDriver
         }
         // Push the freshly-edited self-play schedule into the live
         // `samplingScheduleBox` so the next self-play game on each worker slot

@@ -226,6 +226,7 @@ struct TrainingSettingsPopover: View {
                     selfPlayFloorTauText: $model.selfPlayFloorTauText,
                     selfPlayDrawKeepFractionText: $model.selfPlayDrawKeepFractionText,
                     selfPlayMaxPliesPerGameText: $model.selfPlayMaxPliesPerGameText,
+                    selfPlayUseTickDriver: $model.selfPlayUseTickDriver,
                     selfPlayConcurrencyError: model.selfPlayConcurrencyError,
                     selfPlayStartTauError: model.selfPlayStartTauError,
                     selfPlayDecayPerPlyError: model.selfPlayDecayPerPlyError,
@@ -729,6 +730,7 @@ private struct SelfPlayTab: View {
     @Binding var selfPlayFloorTauText: String
     @Binding var selfPlayDrawKeepFractionText: String
     @Binding var selfPlayMaxPliesPerGameText: String
+    @Binding var selfPlayUseTickDriver: Bool
 
     let selfPlayConcurrencyError: Bool
     let selfPlayStartTauError: Bool
@@ -777,6 +779,14 @@ private struct SelfPlayTab: View {
                         in: 1...256,
                         step: 1
                     )
+                }
+                HStack(spacing: 8) {
+                    Text("Driver:")
+                        .frame(width: 160, alignment: .trailing)
+                    Toggle("Tick driver (single-task; takes effect on next Play and Train start)",
+                           isOn: $selfPlayUseTickDriver)
+                        .toggleStyle(.checkbox)
+                    Spacer()
                 }
             }
 
@@ -897,25 +907,25 @@ private struct SelfPlayTab: View {
                     label: "Max plies per game:",
                     text: $selfPlayMaxPliesPerGameText,
                     error: selfPlayMaxPliesPerGameError,
-                    placeholder: "1000",
+                    placeholder: "150",
                     hint: maxPliesHint
                 ) {
                     Stepper(
                         "",
                         value: liveIntBinding(
                             text: $selfPlayMaxPliesPerGameText,
-                            fallback: 1000,
+                            fallback: 150,
                             onChange: onLiveMaxPliesPerGameChange
                         ),
-                        in: 25...1000,
+                        in: 25...500,
                         step: 25
                     )
                 }
                 .onChange(of: selfPlayMaxPliesPerGameText) { _, newValue in
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
-                        onLiveMaxPliesPerGameChange(1000)
-                    } else if let n = Int(trimmed), n >= 25, n <= 1000 {
+                        onLiveMaxPliesPerGameChange(150)
+                    } else if let n = Int(trimmed), n >= 25, n <= 500 {
                         onLiveMaxPliesPerGameChange(n)
                     }
                 }
@@ -966,16 +976,17 @@ private struct SelfPlayTab: View {
     }
 
     /// Plain-English hint for the current max-plies-per-game cap.
-    /// At 1000 the cap is effectively disabled (no legitimate
-    /// chess game reaches 1000 plies — the 50-move rule and 3-fold
-    /// repetition end any sane game well before that). Lower values
-    /// say "drop games hitting this many plies."
+    /// Reads the value as a game-total ply count (half-moves from
+    /// both sides combined). At the 500 ceiling the cap is effectively
+    /// disabled for typical chess — a 500-ply game would be ~250
+    /// moves per side, far past the 50-move rule and 3-fold
+    /// repetition limits.
     private var maxPliesHint: String {
         guard let n = Int(selfPlayMaxPliesPerGameText.trimmingCharacters(in: .whitespaces)),
-              n >= 25, n <= 1000 else {
-            return "25–1000"
+              n >= 25, n <= 500 else {
+            return "25–500"
         }
-        if n >= 1000 {
+        if n >= 500 {
             return "effectively disabled"
         }
         return "drop games at \(n) plies"
