@@ -14,9 +14,9 @@ import Foundation
 /// black). Mirrors today's two-`MPSChessPlayer` model bit-for-bit, so
 /// the bulk `ReplayBuffer.append` calls at flush time stay one
 /// memcpy per side per field. Total per-game memory at `capPlies=150`
-/// (the typical value): ~1.2 MB — vs the current
-/// `2 × MPSChessPlayer.gameBoardScratchPtr × 512-ply capacity ≈ 7.5 MB`
-/// per slot.
+/// (the typical value): ~1.2 MB — vs ~7.5 MB per slot under the
+/// pre-rework `MPSChessPlayer`-based self-play path (two players ×
+/// 3.75 MB pre-allocated 512-ply board scratch).
 ///
 /// **Per-side cap math.** A game of up to `capPlies` total plies has at
 /// most `capPlies / 2 + capPlies % 2` plies from white and the rest

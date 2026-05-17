@@ -64,10 +64,10 @@ public struct PhaseHistogram: Sendable, Equatable {
     }
 }
 
-/// Per-game flush summary — what one player's flushed game contributed
-/// to the replay buffer. Returned by `MPSChessPlayer.flushRecordedGameToReplayBuffer`
-/// and combined across white + black in `BatchedSelfPlayDriver` before
-/// being handed to `ParallelWorkerStatsBox.recordEmittedGame`.
+/// Per-game flush summary — what one game's flushed plies contributed
+/// to the replay buffer. Returned per-side by `ActiveGame.flush(buffer:result:)`
+/// (white half + black half summed) and handed by `BatchedSelfPlayDriver`
+/// to `ParallelWorkerStatsBox.recordEmittedGame`.
 public struct FlushedGameStats: Sendable {
     public let positions: Int
     public let phaseByPly: PhaseHistogram

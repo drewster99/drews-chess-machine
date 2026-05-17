@@ -18,10 +18,11 @@ import os
 ///
 /// **History.** Replaced an earlier "one unstructured `Task` per
 /// concurrent game + `BatchedMoveEvaluationSource` actor barrier"
-/// design that pre-allocated ~7.5 MB of `MPSChessPlayer.gameBoardScratchPtr`
-/// per slot (≈30 GB at K=4096) and required a delicate ordering
-/// protocol around `setExpectedSlotCount` on every Stepper-driven
-/// grow/shrink. The tick model collapses both costs.
+/// design that pre-allocated ~7.5 MB of per-`MPSChessPlayer` board-
+/// history scratch per slot (≈30 GB at K=4096) and required a
+/// delicate ordering protocol around `setExpectedSlotCount` on
+/// every Stepper-driven grow/shrink. The tick model collapses both
+/// costs.
 ///
 /// **The tick loop.** One iteration of `runOneTick`:
 ///
