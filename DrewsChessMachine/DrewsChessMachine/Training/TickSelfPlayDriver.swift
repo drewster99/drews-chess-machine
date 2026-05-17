@@ -189,6 +189,7 @@ final class TickSelfPlayDriver: SelfPlayDriverProtocol, @unchecked Sendable {
             // 2. Reconcile K to the live target.
             let targetK = countBox.count
             if games.count < targetK {
+                let priorCount = games.count
                 ensureScratchCapacity(targetK)
                 let cap = await MainActor.run { TrainingParameters.shared.selfPlayMaxPliesPerGame }
                 let liveSchedule = scheduleBox.selfPlay
@@ -203,6 +204,15 @@ final class TickSelfPlayDriver: SelfPlayDriverProtocol, @unchecked Sendable {
                     nextWorkerId &+= 1
                     g.resetForNewGame(maxPliesCap: cap, schedule: liveSchedule)
                     games.append(g)
+                }
+                // Live-display: when the grow landed us at exactly K==1,
+                // start the watcher's play-time stopwatch. Subsequent
+                // games (per-slot reset) re-arm this in handleGameEnds.
+                // Without this the very first game on a fresh K=0→1
+                // transition would never tick the stopwatch.
+                if priorCount != 1 && games.count == 1 {
+                    gameWatcher?.resetCurrentGame()
+                    gameWatcher?.markPlaying(true)
                 }
             } else if games.count > targetK {
                 games.removeLast(games.count - targetK)
@@ -343,20 +353,22 @@ final class TickSelfPlayDriver: SelfPlayDriverProtocol, @unchecked Sendable {
                             start: etaSliceStart, count: MoveSampler.scratchCapacity
                         )
 
-                        // Per-side ply count for tau + Dirichlet ply
-                        // limit. Matches what MPSChessPlayer passes
-                        // today (per-player gamePliesRecorded).
-                        let sidePlyIndex: Int
-                        switch sideToMove {
-                        case .white: sidePlyIndex = g.whitePliesRecorded
-                        case .black: sidePlyIndex = g.blackPliesRecorded
-                        }
+                        // Game-total ply for the position currently
+                        // under consideration. At this point neither
+                        // side has yet recorded the about-to-be-played
+                        // ply, so `g.totalPliesPlayed` equals the
+                        // 0-indexed half-move count of THIS position
+                        // (0 for the starting position, 1 after white's
+                        // first move, etc.). Feeds the tau schedule
+                        // and the Dirichlet noise ply limit — both
+                        // expressed in game-total ply terms.
+                        let gameTotalPly = g.totalPliesPlayed
 
                         let result = MoveSampler.sampleMove(
                             logits: policySliceBuf,
                             legalMoves: legalMoves,
                             currentPlayer: sideToMove,
-                            ply: sidePlyIndex,
+                            ply: gameTotalPly,
                             schedule: g.schedule,
                             probsScratch: probsSliceBuf,
                             etaScratch: etaSliceBuf
@@ -373,7 +385,7 @@ final class TickSelfPlayDriver: SelfPlayDriverProtocol, @unchecked Sendable {
                         }
                         let materialCount = UInt8(min(matCount, Int(UInt8.max)))
 
-                        let plyTau = g.schedule.tau(forPly: sidePlyIndex)
+                        let plyTau = g.schedule.tau(forPly: gameTotalPly)
                         g.recordPly(
                             side: sideToMove,
                             encodedBoardSrc: UnsafePointer(scratchCarrier.pointer + i * boardFloats),

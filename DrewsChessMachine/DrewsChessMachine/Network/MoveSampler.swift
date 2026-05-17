@@ -54,6 +54,12 @@ enum MoveSampler {
         let randomish: Bool
     }
 
+    /// - parameter ply: Game-total ply count of the position being
+    ///   sampled (0-indexed half-move count from the start of the
+    ///   game). 0 for the starting position, 1 after white's first
+    ///   move, etc. Drives both `schedule.tau(forPly:)` and the
+    ///   `DirichletNoiseConfig.plyLimit` opening gate — both are
+    ///   expressed in game-total ply terms.
     static func sampleMove(
         logits: UnsafeBufferPointer<Float>,
         legalMoves: [ChessMove],
@@ -99,19 +105,16 @@ enum MoveSampler {
             preconditionFailure("MoveSampler.sampleMove: probsScratch baseAddress is nil")
         }
 
-        // Cache each legal move's policy index — both for the gather
-        // loop below AND for the Result we return (so the caller can
-        // record the chosen move's index without re-calling
-        // PolicyEncoding.policyIndex). 256-entry stack array dodges
-        // any heap allocation.
-        var policyIndices = [Int](repeating: 0, count: n)
-        for i in 0..<n {
-            policyIndices[i] = PolicyEncoding.policyIndex(legalMoves[i], currentPlayer: currentPlayer)
-        }
-
         // Gather temperature-scaled logits for legal moves only.
+        // `PolicyEncoding.policyIndex` is cheap (a switch on move type
+        // + small arithmetic) so we call it inline here instead of
+        // caching into a `[Int]` scratch — caching would heap-allocate
+        // a Swift Array per ply, and at K=4096 × ~50 ticks/sec this
+        // path runs 200k+ times per second. The chosen move's index
+        // is recomputed once after sampling (one extra call per ply,
+        // dwarfed by the gather loop's `n` calls).
         for i in 0..<n {
-            probsBase[i] = logits[policyIndices[i]] * invTau
+            probsBase[i] = logits[PolicyEncoding.policyIndex(legalMoves[i], currentPlayer: currentPlayer)] * invTau
         }
 
         // Numerically stable softmax via Accelerate: subtract max,
@@ -153,6 +156,9 @@ enum MoveSampler {
         }
 
         // Inverse-CDF sampling from probabilities in probsScratch[0..<n].
+        // On match: recompute the chosen move's policy index
+        // (one PolicyEncoding call vs. caching n of them up front —
+        // see the gather-loop comment above).
         let r = Float.random(in: 0..<1)
         var cumulative: Float = 0
         for i in 0..<n {
@@ -160,7 +166,7 @@ enum MoveSampler {
             if r < cumulative {
                 return Result(
                     move: legalMoves[i],
-                    policyIndex: policyIndices[i],
+                    policyIndex: PolicyEncoding.policyIndex(legalMoves[i], currentPlayer: currentPlayer),
                     randomish: randomish
                 )
             }
@@ -170,7 +176,7 @@ enum MoveSampler {
         // of 1.0; the last legal move catches that.
         return Result(
             move: legalMoves[n - 1],
-            policyIndex: policyIndices[n - 1],
+            policyIndex: PolicyEncoding.policyIndex(legalMoves[n - 1], currentPlayer: currentPlayer),
             randomish: randomish
         )
     }
