@@ -244,6 +244,11 @@ struct DrewsChessMachineApp: App {
         // stats — lands in a single `dcm_log_yyyymmdd-HHMMSS.txt`
         // file under the app's Library/Logs directory.
         SessionLogger.shared.start()
+        precondition(
+            TensorChannelNames.names.count == ChessNetwork.inputPlanes
+                && TensorChannelNames.shortNames.count == ChessNetwork.inputPlanes,
+            "TensorChannelNames is out of sync with ChessNetwork.inputPlanes (\(ChessNetwork.inputPlanes)) — names=\(TensorChannelNames.names.count), shortNames=\(TensorChannelNames.shortNames.count). Update Views/Board/TensorChannelNames.swift."
+        )
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
         let archHashHex = String(format: "0x%08x", ModelCheckpointFile.currentArchHash)
         let autoTrainMarker = autoTrainOnLaunch ? " autoTrain=on" : ""
