@@ -12,17 +12,17 @@ import os
 /// batched `network.evaluateBatched(...)` call, samples + applies one
 /// move per game (parallel across P), and runs a serial game-end
 /// pass that flushes completed games to the replay buffer and resets
-/// the slot. Per-game state lives on an `ActiveGame` (~1.2 MB at the
-/// typical `maxPliesPerGame=150` cap). No actor barrier, no per-game
-/// Tasks, no `expectedSlotCount` coordination dance.
+/// the slot. Per-game state lives on an `ActiveGame`. No actor
+/// barrier, no per-game Tasks, no `expectedSlotCount` coordination
+/// dance.
 ///
 /// **History.** Replaced an earlier "one unstructured `Task` per
 /// concurrent game + `BatchedMoveEvaluationSource` actor barrier"
-/// design that pre-allocated ~7.5 MB of per-`MPSChessPlayer` board-
-/// history scratch per slot (≈30 GB at K=4096) and required a
-/// delicate ordering protocol around `setExpectedSlotCount` on
-/// every Stepper-driven grow/shrink. The tick model collapses both
-/// costs.
+/// design that pre-allocated per-`MPSChessPlayer` board-history
+/// scratch per slot (sizes that grew prohibitive at high K) and
+/// required a delicate ordering protocol around
+/// `setExpectedSlotCount` on every Stepper-driven grow/shrink. The
+/// tick model collapses both costs.
 ///
 /// **The tick loop.** One iteration of `runOneTick`:
 ///
@@ -47,8 +47,8 @@ import os
 ///    game that terminated (engine.result != nil) or hit max-plies:
 ///    record stats, apply draw-keep filter, flush to the replay
 ///    buffer, reset the slot with a freshly-read
-///    `TrainingParameters.shared.maxPliesPerGame` cap and the
-///    current `scheduleBox.selfPlay`.
+///    `TrainingParameters.shared.selfPlayMaxPliesPerGame` cap and
+///    the current `scheduleBox.selfPlay`.
 /// 5. Optional replay-ratio throttle (proportional to how many
 ///    games finished this tick — preserves the integrated rate of
 ///    the legacy per-game sleep).
@@ -73,14 +73,13 @@ import os
 /// spin until `!pauseGate.isRequestedToPause`, `pauseGate.markRunning()`.
 /// Mirrors the legacy driver's pause semantics exactly.
 ///
-/// **Self-play vs arena.** This phase ships only the self-play wiring:
-/// all `ActiveGame`s get both their `whiteNetwork` and `blackNetwork`
-/// set to the same champion `network`. The arena port (Phase 7) will
-/// pass different networks per side, and `runOneTick` will partition
-/// the K games into sub-batches keyed by `game.currentNetwork` and
-/// fire one `evaluateBatched` call per unique network. For now there's
-/// exactly one unique network so the partitioning collapses to a
-/// single batched call covering all K positions.
+/// **Self-play vs arena.** This driver is self-play-only: all
+/// `ActiveGame`s get both their `whiteNetwork` and `blackNetwork`
+/// set to the same champion `network`, so the K-position batch
+/// collapses to a single `evaluateBatched` call per tick. The
+/// arena equivalent (`TickTournamentDriver`) carries different
+/// networks per side and partitions K games by current-side network
+/// into per-network sub-batches.
 final class BatchedSelfPlayDriver: @unchecked Sendable {
 
     // MARK: - Dependencies

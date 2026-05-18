@@ -13,10 +13,12 @@ import Foundation
 /// contiguous staging run (white plies 0,1,2,... then 1:1 mirror for
 /// black). Mirrors today's two-`MPSChessPlayer` model bit-for-bit, so
 /// the bulk `ReplayBuffer.append` calls at flush time stay one
-/// memcpy per side per field. Total per-game memory at `capPlies=150`
-/// (the typical value): ~1.2 MB — vs ~7.5 MB per slot under the
-/// pre-rework `MPSChessPlayer`-based self-play path (two players ×
-/// 3.75 MB pre-allocated 512-ply board scratch).
+/// memcpy per side per field. Per-game memory scales with `capPlies`
+/// (one position's encoded-board floats × `capPlies` × two fields
+/// for white plus the same for black, plus the per-ply scalar
+/// fields) — substantially below the pre-rework
+/// `MPSChessPlayer`-based self-play path which pre-allocated full
+/// fixed-length board-history scratch per player.
 ///
 /// **Per-side cap math.** A game of up to `capPlies` total plies has at
 /// most `capPlies / 2 + capPlies % 2` plies from white and the rest
@@ -242,8 +244,9 @@ final class ActiveGame: @unchecked Sendable {
     /// Record one ply into the side-appropriate staging slot. The
     /// caller (the tick driver) has already encoded the board into
     /// its tick scratch at `encodedBoardSrc`; this method copies that
-    /// 1920-float run into the next free slot of the side's
-    /// `*BoardScratch` and writes the per-ply metadata fields.
+    /// encoded-board run (`BoardEncoder.tensorLength` floats) into
+    /// the next free slot of the side's `*BoardScratch` and writes
+    /// the per-ply metadata fields.
     ///
     /// `side` is which color just played this ply — i.e. the side
     /// whose turn it WAS at the time of the move, NOT

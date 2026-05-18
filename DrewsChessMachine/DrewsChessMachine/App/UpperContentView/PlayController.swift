@@ -105,8 +105,9 @@ final class PlayController {
     /// Persistent inference-mode mirror used by the `.liveTrainer`
     /// path. Lazy-built on the first `.liveTrainer` materialize and
     /// reused for the controller's lifetime — building a fresh
-    /// `ChessMPSNetwork` is ~150 ms, and the per-move re-overlay path
-    /// only needs the graph (the weights get replaced anyway).
+    /// `ChessMPSNetwork` is non-trivial (graph compilation), and the
+    /// per-move re-overlay path only needs the graph (the weights
+    /// get replaced anyway).
     private var liveTrainerMirrorNetwork: ChessMPSNetwork?
 
     /// Remembered between `start(...)` and the next `stop(...)` so
@@ -406,7 +407,7 @@ final class PlayController {
         lastHumanColor = nil
         // Note: `liveTrainerMirrorNetwork` is intentionally NOT cleared.
         // It persists for the controller's lifetime so subsequent
-        // `.liveTrainer` games skip the ~150 ms graph build.
+        // `.liveTrainer` games skip the graph-build cost.
         pendingLegalMoves = []
         selectedFromSquare = nil
         pendingPromotion = nil

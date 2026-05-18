@@ -140,10 +140,11 @@ struct UpperContentView: View {
         get { session.isBuilding }
         nonmutating set { session.isBuilding = newValue }
     }
-    // Legacy `secondarySelfPlayNetworks` removed — all self-play
-    // workers now share the champion network (`network`) through a
-    // `BatchedMoveEvaluationSource` barrier batcher, so N per-worker
-    // inference networks are no longer needed.
+    // Self-play workers all share the champion network (`network`).
+    // The tick driver itself encodes the K board positions and
+    // issues one batched `network.evaluateBatched(...)` call per
+    // tick — no per-worker inference network, no per-game eval
+    // source.
     // The parallel-worker stats (parallelStats / parallelWorkerStatsBox), the
     // self-play diversity tracker (selfPlayDiversityTracker), and the arena
     // coordination boxes (arenaActiveFlag / arenaTriggerBox / arenaOverrideBox
@@ -259,20 +260,20 @@ struct UpperContentView: View {
     private var chartZoomStateVersion: Int {
         chartCoordinator.chartZoomIdx * 2 + (chartCoordinator.chartZoomAuto ? 1 : 0)
     }
-    /// Total number of games a single arena plays. 200 gives us enough
-    /// decisive games (~26 at the current ~13% decisive rate with
-    /// random networks) for the 0.55 score threshold to be meaningful.
-    /// Colors alternate every game, so candidate and champion each get
-    /// 100 games as white and 100 as black.
+    /// Total number of games a single arena plays. Sized for enough
+    /// decisive games at the typical decisive rate that the score
+    /// threshold is meaningful. Colors alternate every game, so
+    /// candidate and champion each play half as white and half as
+    /// black.
     nonisolated static let tournamentGames = 200
     /// Default number of arena games run concurrently per tournament.
-    /// Each game uses two shared `BatchedMoveEvaluationSource` batchers
-    /// (one per network) so the GPU sees K-position batches instead of
-    /// K serial single-position calls. 32 keeps the GPU well-saturated
-    /// without monopolizing it against the concurrent training worker
-    /// — the per-network barrier fires K=32 batches in the early game,
-    /// and the 5 ms coalescing window catches the desynchronized
-    /// steady-state at ~K/2. The value is user-overridable via the
+    /// The arena tick driver (`TickTournamentDriver`) partitions its K
+    /// active games by current-side network and fires one
+    /// `evaluateBatched` call per unique network (candidate / champion)
+    /// per tick, so the GPU sees batched-position calls instead of
+    /// serial single-position calls. K is chosen to keep the GPU
+    /// saturated without monopolizing it against the concurrent
+    /// training worker. User-overridable via the
     /// `trainingParams.arenaConcurrency` runtime setting (UI Stepper /
     /// session save+load / parameters.json key `arena_concurrency`).
     nonisolated static let arenaConcurrencyDefault = 200
@@ -280,11 +281,11 @@ struct UpperContentView: View {
     /// self-play `absoluteMaxSelfPlayWorkers` pattern: bounds the
     /// UI Stepper AND clamps values loaded from `parameters.json` /
     /// `session.json` so a stale or hand-edited file can't push K
-    /// past what the GPU can usefully batch in one fire. 256 is
-    /// well past the per-batch GPU throughput knee on Apple
-    /// Silicon for this network — raising it further wouldn't help
-    /// arena throughput because batches that large stall on memory
-    /// bandwidth before they finish.
+    /// past what the GPU can usefully batch in one fire. The
+    /// ceiling sits well past the per-batch GPU throughput knee on
+    /// Apple Silicon for this network — raising it further wouldn't
+    /// help arena throughput because batches that large stall on
+    /// memory bandwidth before they finish.
     nonisolated static let absoluteMaxArenaConcurrency: Int = 1024
     /// Coalescing-window upper bound (ms) for the arena's per-network
     /// batchers. The barrier fires on either count-met OR window-

@@ -122,16 +122,13 @@ final class TickTournamentDriver: @unchecked Sendable {
         // its gameIndex.
         //
         // `arenaCapPlies` does double duty: (1) sizes the per-side
-        // staging scratches (whiteBoardScratch etc., capPlies/2 + 1
-        // plies each); (2) serves as the "max plies, otherwise treat
-        // as draw" cap. Realistic chess games end well under 300
-        // plies via 50-move-rule / 3-fold-repetition / normal
-        // termination, so 1024 is effectively "no cap" while keeping
-        // the arithmetic well clear of `Int.max` overflow in
+        // staging scratches; (2) serves as the "max plies, otherwise
+        // treat as draw" cap. Realistic chess games end well within
+        // this bound via 50-move-rule / 3-fold-repetition / normal
+        // termination, so the value is chosen high enough to be
+        // effectively "no cap" while keeping the arithmetic well
+        // clear of `Int.max` overflow in
         // `ActiveGame.resetForNewGame`'s `(newCap + 1) / 2` step.
-        // Per-game staging at 1024 plies: ~3.95 MB per side, ~7.9 MB
-        // total per ActiveGame. At K=400 arena concurrency: ~3.2 GB
-        // peak. Acceptable.
         let arenaCapPlies = 1024
         for i in 0..<initialK {
             let candIsWhite = (i % 2 == 0)
