@@ -94,7 +94,7 @@ These need to be handled regardless of approach:
 
 3. **Replay buffer access ordering.** P1 holds the buffer lock; if P3(N) doesn't touch the buffer (it doesn't), P1(N+1) running concurrent with P3(N) is safe. Self-play appender contention with P1 is unchanged from today.
 
-4. **Cancellation on Stop / Arena pause / session end.** Pre-fetched work must be cancellable without corrupting `_completedTrainSteps`, accumulators, or the replay buffer. The pre-fetched Task should check for cancellation at safe points; trainStep should drop a pre-fetched future on cancel.
+4. **Cancellation on Stop / Arena pause / session end.** Pre-fetched work must be cancellable without corrupting `_completedTrainSteps`, accumulators, or the replay buffer. The pre-fetched Task should check for cancellation at safe points; trainStep should drop a pre-fetched future on cancel. **Note on replay-buffer-sample accounting**: a pre-fetched P1 that has already returned has *consumed* its `ReplayBuffer.sample(count:)` rows — the sampling-constraints state machine (per-game caps, draw-keep quota, per-hash bucket) has advanced. Cancellation discards those rows without re-queueing them. That's the right behavior at low cancellation frequency (Stop / arena boundary; not in steady state), but the spec should be explicit so a future implementer doesn't try to "undo" the sample on cancel.
 
 5. **Trainer-internal counter ordering.** Today `_completedTrainSteps` is incremented at the end of P3. Pre-fetched P1 reads it (for `isStatsStep` decisions). Two in-flight reads/writes need defined ordering — easiest is to decide isStatsStep at the moment the pre-fetch is *launched* (using the counter at that point) rather than re-reading later.
 

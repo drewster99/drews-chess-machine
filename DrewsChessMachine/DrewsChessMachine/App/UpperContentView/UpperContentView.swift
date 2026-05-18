@@ -1002,7 +1002,11 @@ struct UpperContentView: View {
     private var overlayLabel: String {
         if selectedOverlay < 0 { return "" }
         if selectedOverlay == 0 { return "Top Moves" }
-        return "Channel \(selectedOverlay - 1): \(TensorChannelNames.names[selectedOverlay - 1])"
+        let i = selectedOverlay - 1
+        guard i >= 0, i < TensorChannelNames.names.count else {
+            return "Channel \(i)"
+        }
+        return "Channel \(i): \(TensorChannelNames.names[i])"
     }
 
     /// "Last saved: 5/6/26 at 4:34 PM", "Resumed 5/6/26 at 4:34 PM",

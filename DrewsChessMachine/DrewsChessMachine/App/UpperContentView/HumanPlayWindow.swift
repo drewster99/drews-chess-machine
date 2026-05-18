@@ -186,6 +186,16 @@ fileprivate struct HumanPlayWindowView: View {
         }
         .padding(16)
         .frame(minWidth: 520, minHeight: 660)
+        // `.onReceive` is intentionally un-throttled: this window owns
+        // its own `GameWatcher` instance (one watcher per Human-vs-
+        // Network game), so emissions land at human-pacing rates
+        // rather than self-play / arena rates. `pacer.ingest` is
+        // cheap (a state-machine `switch`) and `gameWatcher.snapshot()`
+        // is a single locked read of a small struct — the original
+        // 10 Hz `.throttle` from the pre-pacer flow is no longer
+        // necessary at this volume. `.receive(on: DispatchQueue.main)`
+        // stays because `.onReceive` doesn't guarantee main-actor
+        // delivery on every Combine source.
         .onReceive(gameWatcher.changes.receive(on: DispatchQueue.main)) { _ in
             playController.pacer?.ingest(gameWatcher.snapshot())
         }

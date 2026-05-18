@@ -158,6 +158,13 @@ final class HumanPlayPacer {
     /// untouched — the window may still be visible after `stop()`
     /// (game over banner with the final position) and snapping the
     /// board back to the starting state on stop would be jarring.
+    ///
+    /// `pendingResult` is dropped on stop. A `.gameOver` snapshot that
+    /// arrived mid-animation but hadn't yet been promoted by the
+    /// animation-complete callback is silently discarded — `stop()` is
+    /// always followed by either a new `start(...)` (which would
+    /// overwrite the result anyway) or a window teardown (where
+    /// nobody cares).
     func stop() {
         aiDelayTask?.cancel()
         aiDelayTask = nil

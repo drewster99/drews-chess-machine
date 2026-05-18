@@ -71,19 +71,32 @@ def parse_buffer_unique(line: str):
     return float(m.group(1)) if m else None
 
 
+_NUM_OR_NAN = r"(?:nan|[+-]?\d+\.?\d*)"
+
+
+def _parse_float_or_nan(s: str) -> float:
+    # `float("nan")` returns NaN — matches what the trainer emits via
+    # `String(format: "%.2f", Double.nan)` ("nan") for windows that
+    # had no samples in the current period.
+    return float(s)
+
+
 def parse_legalcost(line: str):
     """[LEGAL-COST] step=N batch=B window=(...)  p1ms=(p50=.. p99=..) ...
        interStepMs=(p50=.. p99=..) gapMs=(p50=..)
+
+    Tolerates `nan` in any numeric field — the trainer emits it when
+    the corresponding window had no samples in the period.
     """
     fields = {}
     for key in ("p1ms", "p2ms", "p3ms", "interStepMs"):
-        m = re.search(rf"{key}=\(p50=([\d.]+) p99=([\d.]+)\)", line)
+        m = re.search(rf"{key}=\(p50=({_NUM_OR_NAN}) p99=({_NUM_OR_NAN})\)", line)
         if m:
-            fields[key + "_p50"] = float(m.group(1))
-            fields[key + "_p99"] = float(m.group(2))
-    m = re.search(r"gapMs=\(p50=([\d.+-]+)\)", line)
+            fields[key + "_p50"] = _parse_float_or_nan(m.group(1))
+            fields[key + "_p99"] = _parse_float_or_nan(m.group(2))
+    m = re.search(rf"gapMs=\(p50=({_NUM_OR_NAN})\)", line)
     if m:
-        fields["gapMs_p50"] = float(m.group(1))
+        fields["gapMs_p50"] = _parse_float_or_nan(m.group(1))
     return fields
 
 
