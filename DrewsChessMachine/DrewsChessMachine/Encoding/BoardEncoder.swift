@@ -447,8 +447,17 @@ enum BoardEncoder {
         // Plane 17: halfmove clock, normalized as min(clock,99)/99.
         // Round-trip to an integer clock for the reconstructed state.
         // The exact value only matters for 50-move-rule termination,
-        // not legality.
+        // not legality. The encode-side writes `min(clock,99)/99.0` from
+        // a non-negative Int, so under non-corrupt operation clockProbe
+        // is finite and in [0, 1]. An out-of-range or NaN probe means
+        // the underlying replay-buffer / Metal staging memory is
+        // corrupt — surface it at the boundary rather than silently
+        // clamping (and note `Int(Float.nan)` would otherwise trap).
         let clockProbe = buffer[17 * 64]
+        precondition(
+            clockProbe.isFinite && clockProbe >= 0 && clockProbe <= 1.0001,
+            "BoardEncoder.decodeSynthetic: plane-17 clock probe out of expected [0,1] range (got \(clockProbe)); replay-buffer or Metal staging memory is corrupt."
+        )
         let halfmoveClock = Int((clockProbe * 99).rounded())
 
         return GameState(

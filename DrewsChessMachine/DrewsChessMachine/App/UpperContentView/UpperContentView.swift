@@ -1111,25 +1111,6 @@ struct UpperContentView: View {
         .background { filePresentationHosts }
         .background(WindowAccessor(window: $contentWindow, onAttached: handleWindowAttached))
         .onAppear { handleBodyOnAppear() }
-        .sheet(isPresented: $autoResume.sheetShowing) {
-            if let pointer = autoResume.pointer {
-                AutoResumeSheetView(
-                    pointer: pointer,
-                    summary: autoResume.summary,
-                    countdownRemaining: autoResume.countdownRemaining,
-                    onDismiss: { autoResume.dismiss() },
-                    onResume: { autoResume.performResume() }
-                )
-            }
-        }
-        .sheet(isPresented: $showArenaHistorySheet) {
-            ArenaHistoryView(
-                history: tournamentHistory,
-                configuredGamesPerTournament: trainingParams.arenaGamesPerTournament,
-                promoteThreshold: trainingParams.arenaPromoteThreshold,
-                onClose: { showArenaHistorySheet = false }
-            )
-        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
             handleWindowWillClose(note: note)
         }
@@ -1139,22 +1120,6 @@ struct UpperContentView: View {
         // to be — `body` tolerates it directly now that the surrounding view
         // is far smaller, so the old `MenuHubSyncProbe` carrier is gone.
         .onChange(of: menuHubSignature) { syncMenuCommandHubState() }
-        .background(ControlSideEffectsProbe(
-            playAndTrainBoardMode: $session.playAndTrainBoardMode,
-            probeNetworkTarget: $session.probeNetworkTarget,
-            candidateProbeDirty: $session.candidateProbeDirty,
-            selectedOverlay: $selectedOverlay,
-            resyncLrWarmupText: trainingSettingsPopover.resyncLrWarmupText,
-            effectiveReplayRatioTarget: $session.effectiveReplayRatioTarget,
-            lastReplayRatioCompensatorAt: $session.lastReplayRatioCompensatorAt,
-            trainingParams: trainingParams,
-            workerCountBox: workerCountBox,
-            trainer: trainer,
-            replayRatioController: replayRatioController,
-            snapDelayToNearestValidRung: { delay in
-                Self.validDelayRungsMs.min(by: { abs($0 - delay) < abs($1 - delay) }) ?? delay
-            }
-        ))
         .onReceive(snapshotTimer) { _ in
             // Capture timestamp at dispatch so the tick body can
             // measure how long the main actor took to begin executing
@@ -1173,6 +1138,41 @@ struct UpperContentView: View {
             // `LowerContentView` as a sibling without observing any
             // of `UpperContentView`'s private @State.
             chartCoordinator.isActive = newValue
+        }
+        .background(ControlSideEffectsProbe(
+            playAndTrainBoardMode: $session.playAndTrainBoardMode,
+            probeNetworkTarget: $session.probeNetworkTarget,
+            candidateProbeDirty: $session.candidateProbeDirty,
+            selectedOverlay: $selectedOverlay,
+            resyncLrWarmupText: trainingSettingsPopover.resyncLrWarmupText,
+            effectiveReplayRatioTarget: $session.effectiveReplayRatioTarget,
+            lastReplayRatioCompensatorAt: $session.lastReplayRatioCompensatorAt,
+            trainingParams: trainingParams,
+            workerCountBox: workerCountBox,
+            trainer: trainer,
+            replayRatioController: replayRatioController,
+            snapDelayToNearestValidRung: { delay in
+                Self.validDelayRungsMs.min(by: { abs($0 - delay) < abs($1 - delay) }) ?? delay
+            }
+        ))
+        .sheet(isPresented: $autoResume.sheetShowing) {
+            if let pointer = autoResume.pointer {
+                AutoResumeSheetView(
+                    pointer: pointer,
+                    summary: autoResume.summary,
+                    countdownRemaining: autoResume.countdownRemaining,
+                    onDismiss: { autoResume.dismiss() },
+                    onResume: { autoResume.performResume() }
+                )
+            }
+        }
+        .sheet(isPresented: $showArenaHistorySheet) {
+            ArenaHistoryView(
+                history: tournamentHistory,
+                configuredGamesPerTournament: trainingParams.arenaGamesPerTournament,
+                promoteThreshold: trainingParams.arenaPromoteThreshold,
+                onClose: { showArenaHistorySheet = false }
+            )
         }
     }
 
@@ -2378,7 +2378,10 @@ struct UpperContentView: View {
             let black = MPSChessPlayer(name: "Black", source: source)
             do {
                 _ = try await machine.beginNewGame(white: white, black: black)
+            } catch is CancellationError {
+                gameWatcher.markPlaying(false)
             } catch {
+                SessionLogger.shared.log("[PLAY-ERR] beginNewGame threw: \(error)")
                 gameWatcher.markPlaying(false)
             }
         }
@@ -2405,7 +2408,11 @@ struct UpperContentView: View {
                 let black = MPSChessPlayer(name: "Black", source: source)
                 do {
                     _ = try await machine.beginNewGame(white: white, black: black)
+                } catch is CancellationError {
+                    gameWatcher.markPlaying(false)
+                    break
                 } catch {
+                    SessionLogger.shared.log("[PLAY-ERR] beginNewGame threw: \(error)")
                     gameWatcher.markPlaying(false)
                     break
                 }

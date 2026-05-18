@@ -7,11 +7,16 @@ import Foundation
 ///
 /// Call `SessionLogger.shared.start()` once at app launch, then
 /// `SessionLogger.shared.log(...)` from any thread or actor. Writes
-/// are serialized via a private serial dispatch queue and flushed to
-/// disk after each line so a crash mid-session still leaves a usable
-/// log. `log(...)` dispatches asynchronously — callers never block
-/// waiting for disk I/O, which keeps Swift-concurrency tasks free to
-/// keep making progress.
+/// are serialized via a private serial dispatch queue. Each write
+/// hits the OS file handle immediately, but the explicit `fsync` is
+/// coalesced — a write schedules an idle flush 0.5 s out, cancelling
+/// any prior pending flush, so bursts (per-step STATS, BATCH-STATS)
+/// collapse to one `synchronize()` at the tail of the burst. A
+/// normal app exit funnels through `shutdown()` for a final
+/// synchronous flush; only a hard kernel crash can lose the last
+/// 0.5 s of log tail. `log(...)` dispatches asynchronously —
+/// callers never block waiting for disk I/O, which keeps
+/// Swift-concurrency tasks free to keep making progress.
 ///
 /// Log files land in the user's Library/Logs directory under a
 /// `DrewsChessMachine` subfolder — in a sandboxed build that
@@ -26,6 +31,15 @@ final class SessionLogger: @unchecked Sendable {
     private var fileHandle: FileHandle?
     private var fileURL: URL?
     private var didLogStartupFailure = false
+
+    /// Idle-flush coalescer. Each successful write cancels the previous
+    /// pending flush and schedules a new one 0.5 s out. A burst of
+    /// writes (per-step STATS at 5–20 Hz, BATCH-STATS at ~1 Hz) therefore
+    /// produces at most one `synchronize()` per ~0.5 s of idle, instead
+    /// of one per line. On hard kernel-level crash we lose at most the
+    /// last 0.5 s of log tail; on a normal app exit `shutdown()` does a
+    /// final synchronous flush. Mutated only inside the serial queue.
+    private var pendingFlush: DispatchWorkItem?
 
     /// Local-time formatter for the filename stamp — the log file
     /// sits in the user's own Library/Logs folder, so local time is
@@ -111,7 +125,16 @@ final class SessionLogger: @unchecked Sendable {
             guard let fileHandle = self.fileHandle else { return }
             do {
                 try fileHandle.write(contentsOf: data)
-                try fileHandle.synchronize()
+                // Coalesce fsync: cancel any pending idle flush and
+                // schedule a fresh one 0.5 s out. Bursts collapse to a
+                // single sync at burst-tail; idle periods sync once.
+                self.pendingFlush?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    try? self.fileHandle?.synchronize()
+                }
+                self.pendingFlush = work
+                self.queue.asyncAfter(deadline: .now() + 0.5, execute: work)
             } catch {
                 // Swallow — a logger that can't write should never bring
                 // down the app. Print once to stderr so there's at least
@@ -131,5 +154,22 @@ final class SessionLogger: @unchecked Sendable {
     /// or for debugging from LLDB.
     var activeLogPath: String? {
         queue.sync { fileURL?.path }
+    }
+
+    /// Synchronously flush and close the log file. Called from
+    /// AppDelegate.applicationWillTerminate so a normal app exit
+    /// preserves the full tail that the idle-flush coalescer might
+    /// otherwise drop. `queue.sync` FIFOs behind any in-flight write,
+    /// so this never deadlocks. Not invoked on `_exit(2)` paths
+    /// (early-stop coordinator); tail loss on those paths is
+    /// consistent with the existing best-effort log posture.
+    func shutdown() {
+        queue.sync {
+            pendingFlush?.cancel()
+            pendingFlush = nil
+            try? fileHandle?.synchronize()
+            try? fileHandle?.close()
+            fileHandle = nil
+        }
     }
 }

@@ -374,7 +374,7 @@ final class TickTournamentDriver: @unchecked Sendable {
                 count: candCount
             ) { policyBuf, valueBuf in
                 guard let pBase = policyBuf.baseAddress, let vBase = valueBuf.baseAddress else {
-                    return
+                    preconditionFailure("ChessNetwork.evaluateBatched returned nil baseAddress; arena cannot continue without policy/value data")
                 }
                 policyTarget.pointer.update(from: pBase, count: candCount * policySize)
                 valueTarget.pointer.update(from: vBase, count: candCount)
@@ -390,7 +390,7 @@ final class TickTournamentDriver: @unchecked Sendable {
                 count: champCount
             ) { policyBuf, valueBuf in
                 guard let pBase = policyBuf.baseAddress, let vBase = valueBuf.baseAddress else {
-                    return
+                    preconditionFailure("ChessNetwork.evaluateBatched returned nil baseAddress; arena cannot continue without policy/value data")
                 }
                 policyTarget.pointer.update(from: pBase, count: champCount * policySize)
                 valueTarget.pointer.update(from: vBase, count: champCount)
