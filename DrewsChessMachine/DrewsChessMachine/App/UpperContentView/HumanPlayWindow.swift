@@ -10,16 +10,18 @@ import SwiftUI
 ///
 /// Owns no game state directly: the rendered board, side-to-move,
 /// legal-move highlights, and pending promotion all read from the
-/// shared `PlayController` (`@MainActor @Observable`) and the
-/// `GameWatcher` snapshot (polled on a 100 ms timer because
-/// `GameWatcher` is intentionally not `@Observable` — its mutations
-/// fire from the ChessMachine delegate queue at game-loop rate, and
-/// the project decouples UI redraw from that rate via polling). The
-/// window's lifecycle is owned by the controller + registry pattern
-/// used elsewhere in the project (see `LogAnalysisWindowController`):
-/// the registry holds the strong reference so the controller doesn't
-/// dealloc the moment SwiftUI lets go of the hosting view, and the
-/// controller unregisters in `windowWillClose`.
+/// shared `PlayController` (`@MainActor @Observable`) and from the
+/// per-game `HumanPlayPacer` (also `@MainActor @Observable`) that
+/// the controller owns. `GameWatcher.changes` events are handed
+/// directly to the pacer's `ingest(...)`; the pacer's state machine
+/// decides whether each watcher snapshot advances the displayed
+/// board, so the user sees per-ply animations in strict order even
+/// when the main actor is laggy. The window's lifecycle is owned by
+/// the controller + registry pattern used elsewhere in the project
+/// (see `LogAnalysisWindowController`): the registry holds the
+/// strong reference so the controller doesn't dealloc the moment
+/// SwiftUI lets go of the hosting view, and the controller
+/// unregisters in `windowWillClose`.
 @MainActor
 final class HumanPlayWindowController: NSWindowController, NSWindowDelegate {
     private let playController: PlayController
@@ -145,28 +147,35 @@ enum HumanPlayWindowLauncher {
 /// State sources:
 ///   - `playController` (`@Bindable`): reactive — selected from-
 ///     square, legal-target highlights, pending promotion, the
-///     `isPlayingHuman` flag.
-///   - `gameWatcher` (change-driven): live board, side-to-move,
-///     move count, last applied move, end-of-game `GameResult`, and
-///     last game's stats. Subscribed via `gameWatcher.changes` (a
-///     Combine `PassthroughSubject` the watcher fires after every
-///     internal mutation), throttled to at most 10 Hz on the main
-///     run-loop. The throttle preserves the original decoupling
-///     between game-loop rate and SwiftUI redraw rate while
-///     eliminating the prior 100 ms polling timer's wasted ticks
-///     when nothing has changed.
+///     `isPlayingHuman` flag, and the per-game `HumanPlayPacer`.
+///   - `playController.pacer.displayedSnapshot` (`@Observable`):
+///     the board / status snapshot the user is currently looking at.
+///     Distinct from `gameWatcher.snapshot()` — the watcher may have
+///     already absorbed the AI's reply before the pacer has
+///     permitted the user's move to finish animating, and the pacer
+///     suppresses those premature updates so the board stays
+///     in-order.
+///   - `gameWatcher.changes`: every emission is handed verbatim to
+///     `pacer.ingest(...)` (no `.throttle`); the pacer's state
+///     machine decides whether each snapshot actually advances the
+///     display.
 fileprivate struct HumanPlayWindowView: View {
     @Bindable var playController: PlayController
     let session: SessionController
     let gameWatcher: GameWatcher
 
-    /// Mirrored snapshot of the watcher. Refreshed on each emission
-    /// of `gameWatcher.changes` (a Combine `PassthroughSubject` the
-    /// watcher fires after every internal mutation), throttled to
-    /// at most 10 Hz on the main run-loop. Seeded from the watcher
-    /// in `.onAppear` so the window doesn't flash the default
-    /// starting position before the first publisher tick lands.
-    @State private var snapshot: GameWatcher.Snapshot = .init()
+    /// Empty snapshot used when no game is active and
+    /// `playController.pacer` is `nil` (e.g., the window briefly
+    /// outlives a `stop()`). The view's body uses `??` to fall back
+    /// to this so layout stays valid in that transient state.
+    private static let emptySnapshot = GameWatcher.Snapshot()
+
+    /// Convenience: the snapshot the board + banner + status row
+    /// render from. Sourced from the pacer rather than directly from
+    /// the watcher so the user sees moves in strict ply order.
+    private var snapshot: GameWatcher.Snapshot {
+        playController.pacer?.displayedSnapshot ?? Self.emptySnapshot
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -177,11 +186,9 @@ fileprivate struct HumanPlayWindowView: View {
         }
         .padding(16)
         .frame(minWidth: 520, minHeight: 660)
-        .onAppear { snapshot = gameWatcher.snapshot() }
-        .onReceive(
-            gameWatcher.changes
-                .throttle(for: 0.1, scheduler: RunLoop.main, latest: true)
-        ) { _ in refreshSnapshot() }
+        .onReceive(gameWatcher.changes.receive(on: DispatchQueue.main)) { _ in
+            playController.pacer?.ingest(gameWatcher.snapshot())
+        }
     }
 
     // MARK: - Top banner
@@ -314,6 +321,9 @@ fileprivate struct HumanPlayWindowView: View {
             },
             onCancelPromotion: {
                 playController.cancelPromotion()
+            },
+            onAnimationCompleted: {
+                playController.pacer?.onAnimationCompleted()
             }
         )
     }
@@ -440,32 +450,6 @@ fileprivate struct HumanPlayWindowView: View {
             Text("Build \(BuildInfo.buildNumber) · \(BuildInfo.gitHash)")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.tertiary)
-        }
-    }
-
-    // MARK: - Polling
-
-    /// Pull the latest snapshot from the watcher and mirror it to
-    /// `@State` if any user-visible field changed. `GameState` and
-    /// `GameResult` aren't `Equatable` (only `Sendable`), so the
-    /// snapshot can't be compared wholesale — dedup on the fields
-    /// that actually drive the visible UI.
-    private func refreshSnapshot() {
-        let s = gameWatcher.snapshot()
-        let resultChanged: Bool = {
-            switch (snapshot.result, s.result) {
-            case (nil, nil): return false
-            case (nil, _), (_, nil): return true
-            default: return false
-            }
-        }()
-        if s.state.board != snapshot.state.board
-            || s.moveCount != snapshot.moveCount
-            || s.isPlaying != snapshot.isPlaying
-            || s.lastMove != snapshot.lastMove
-            || resultChanged
-        {
-            snapshot = s
         }
     }
 

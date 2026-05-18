@@ -196,7 +196,7 @@ final class MPSChessPlayer: ChessPlayer {
     let identifier: String
     let name: String
     /// Source of (policy, value) predictions. Always a
-    /// `DirectMoveEvaluationSource` (or its `DelayedMoveEvaluationSource`
+    /// `DirectMoveEvaluationSource` (or its `UIGatedMoveEvaluationSource`
     /// / `LiveTrainerMoveEvaluationSource` wrappers) in the current
     /// codebase — single-position synchronous inference. The only
     /// remaining consumers are Play Game, Play Continuous, and
@@ -255,7 +255,8 @@ final class MPSChessPlayer: ChessPlayer {
     /// Create a player backed by a `MoveEvaluationSource`. For Play
     /// Game / Human-vs-Network the source is a `DirectMoveEvaluationSource`
     /// wrapping a `ChessMPSNetwork` (possibly wrapped in
-    /// `DelayedMoveEvaluationSource` for a per-move think-time, or
+    /// `UIGatedMoveEvaluationSource` so the AI's evaluation is sequenced
+    /// after the human's animation completes, or
     /// `LiveTrainerMoveEvaluationSource` to play against the live
     /// trainer). Pass a `schedule` other than `.uniform` to apply a
     /// two-phase sampling temperature — see `SamplingSchedule` and

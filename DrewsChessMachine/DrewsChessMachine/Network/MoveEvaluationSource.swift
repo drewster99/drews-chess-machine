@@ -53,8 +53,13 @@ struct PolicyDestination: @unchecked Sendable {
 ///   delegates to `network.evaluate(board:consume:)` per request.
 ///   Single-position synchronous inference on the network's
 ///   `executionQueue`.
-/// - `DelayedMoveEvaluationSource` adds an artificial per-move sleep
-///   (Play Game's "think-time" slider) around a wrapped source.
+/// - `UIGatedMoveEvaluationSource` parks `evaluate(...)` in
+///   `HumanPlayPacer.awaitAIPermission()` until the pacer's state
+///   machine signals that the human's move has been animated and the
+///   post-move breathing room has elapsed; used on the AI side of
+///   human-vs-network games so the AI's response is always sequenced
+///   *after* the user has seen their own move, even when the main
+///   actor is laggy.
 /// - `LiveTrainerMoveEvaluationSource` overlays the live trainer's
 ///   current weights onto a per-call inference scratch so Play Game
 ///   can be played against the in-progress trainee.
@@ -206,37 +211,48 @@ final class LiveTrainerMoveEvaluationSource: MoveEvaluationSource, @unchecked Se
     }
 }
 
-/// Decorator that sleeps for a configured duration before delegating
-/// every `evaluate(...)` call to the wrapped source. Used on the AI
-/// side of human-vs-network games so the human has time to absorb
-/// their own move before the AI responds — without the delay the AI
-/// snap-fires its reply as soon as the human's continuation resumes,
-/// which feels jarring at the keyboard. The delay is per-call (every
-/// AI ply waits) rather than per-game so a long line of AI moves
-/// doesn't blow past the human's reading speed.
+/// Decorator that gates every `evaluate(...)` on a `HumanPlayPacer`
+/// signal before delegating to the wrapped source. Used on the AI
+/// side of human-vs-network games so the AI's reply is sequenced
+/// strictly *after* the user has seen their own move animate and the
+/// post-move breathing-room delay has elapsed — even when the main
+/// actor is laggy and snapshots from `GameWatcher` get backed up.
 ///
-/// `Task.sleep(for:)` is cancellation-aware: a Stop Game / Reset Game
-/// click cancels the surrounding game `Task`, which surfaces a
-/// `CancellationError` out of the sleep so the AI doesn't continue
-/// thinking past a user-initiated cancel.
+/// Replaces the older `DelayedMoveEvaluationSource`, whose
+/// fixed-duration `Task.sleep` ran in parallel with the UI rendering
+/// of the human's move (the timer started the instant the game loop
+/// progressed past the human's submit) and could expire before the
+/// human's move had even rendered. `HumanPlayPacer` instead measures
+/// the breathing-room interval from when the UI signals the human's
+/// animation completed, so the AI cannot "snap" a reply while the
+/// human's piece is still mid-slide.
+///
+/// Cancellation: `awaitAIPermission()` is built on
+/// `withTaskCancellationHandler`, so a Stop Game / Reset Game click
+/// cancelling the surrounding game `Task` surfaces a
+/// `CancellationError` out of the await without leaving the parked
+/// continuation stranded.
 ///
 /// `@unchecked Sendable` because all stored references are
-/// `Sendable`-by-construction (the wrapped `MoveEvaluationSource` and
-/// the `Duration` value) and `evaluate` is single-threaded per game.
-final class DelayedMoveEvaluationSource: MoveEvaluationSource, @unchecked Sendable {
+/// `Sendable`-by-construction (the wrapped `MoveEvaluationSource`)
+/// or `@MainActor`-isolated (the pacer; only its `@MainActor`-
+/// isolated `awaitAIPermission()` is called here and the hop to the
+/// main actor is implicit in that call), and `evaluate` is
+/// single-threaded per game.
+final class UIGatedMoveEvaluationSource: MoveEvaluationSource, @unchecked Sendable {
     private let inner: MoveEvaluationSource
-    private let delay: Duration
+    private let pacer: HumanPlayPacer
 
-    init(wrapping inner: MoveEvaluationSource, delay: Duration) {
+    init(wrapping inner: MoveEvaluationSource, pacer: HumanPlayPacer) {
         self.inner = inner
-        self.delay = delay
+        self.pacer = pacer
     }
 
     func evaluate(
         encodedBoard: [Float],
         intoPolicy: PolicyDestination
     ) async throws -> Float {
-        try await Task.sleep(for: delay)
+        try await pacer.awaitAIPermission()
         return try await inner.evaluate(
             encodedBoard: encodedBoard,
             intoPolicy: intoPolicy

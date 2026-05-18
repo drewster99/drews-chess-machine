@@ -69,6 +69,15 @@ struct HumanPlayBoardView: View {
     let onSelectPromotion: (PieceType) -> Void
     /// Promotion picker dismissed without a choice.
     let onCancelPromotion: () -> Void
+    /// Fires from the `withAnimation(_:_:completion:)` completion block
+    /// after each `pieces` change has finished its slide. Wired into
+    /// `HumanPlayPacer.onAnimationCompleted()` so the pacer advances
+    /// `.humanAnimating → .aiDelay` (and the AI's gated evaluator
+    /// becomes eligible to think) only after the user has actually
+    /// seen their move complete. The implicit `.animation(value:)`
+    /// modifier doesn't expose completion, which is why we drive the
+    /// slide explicitly from `.onChange` instead.
+    let onAnimationCompleted: () -> Void
 
     private static let lightSquare = Color(red: 0.94, green: 0.85, blue: 0.71)
     private static let darkSquare = Color(red: 0.71, green: 0.53, blue: 0.39)
@@ -153,10 +162,23 @@ struct HumanPlayBoardView: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .onAppear {
+            // Initial render is not animated — there is no prior
+            // `tracked` state to interpolate from. Mirror the prior
+            // implementation by seeding `tracked` directly.
             tracked = Self.seedTracked(from: pieces)
         }
         .onChange(of: pieces) { _, newPieces in
-            tracked = Self.reconcile(old: tracked, newBoard: newPieces)
+            // Drive the slide explicitly so the completion handler
+            // fires and the pacer's per-ply state machine can advance.
+            // The duration must match what the human eye treats as a
+            // single "I just saw that move" glance — too fast and the
+            // slide is unreadable, too slow and the AI's reply feels
+            // laggy on top of the existing breathing-room delay.
+            withAnimation(.easeInOut(duration: 0.3)) {
+                tracked = Self.reconcile(old: tracked, newBoard: newPieces)
+            } completion: {
+                onAnimationCompleted()
+            }
         }
     }
 
@@ -180,13 +202,10 @@ struct HumanPlayBoardView: View {
                     .transition(.opacity)
             }
         }
-        // Drive position interpolation for ids that survive across
-        // updates, and fade for ids that appear / disappear. The
-        // duration is matched to a human's "I just saw that move"
-        // glance — too fast and the slide is unreadable, too slow and
-        // the AI's reply feels laggy on top of the existing 2-second
-        // delay.
-        .animation(.easeInOut(duration: 0.3), value: tracked)
+        // Animation is driven explicitly from `.onChange(of: pieces)`
+        // via `withAnimation(_:_:completion:)` so the pacer can be
+        // notified when each slide actually finishes; an implicit
+        // `.animation(value:)` here doesn't expose completion.
         .allowsHitTesting(false)
     }
 

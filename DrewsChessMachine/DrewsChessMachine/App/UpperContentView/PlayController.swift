@@ -141,6 +141,17 @@ final class PlayController {
     /// materialization resolves (either way).
     private var materializeTask: Task<Void, Never>?
 
+    /// State machine that paces the human-vs-network play loop —
+    /// owns the displayed board snapshot, the per-ply phase, and the
+    /// AI permission gate. Allocated per game in `start(...)`, torn
+    /// down in `stop(...)`. `HumanPlayWindowView` reads from it via
+    /// `@Bindable` (the controller is `@Observable`), and the AI's
+    /// `UIGatedMoveEvaluationSource` parks on its
+    /// `awaitAIPermission()` before every forward pass so the AI's
+    /// reply is always sequenced after the user has seen their own
+    /// move animate. `nil` between games.
+    private(set) var pacer: HumanPlayPacer?
+
     // MARK: - Promotion picker
 
     struct PendingPromotion: Equatable {
@@ -256,6 +267,16 @@ final class PlayController {
         // cleanup finds a mismatched generation and bails.
         gameGeneration &+= 1
 
+        // Stand up a fresh pacer for this game and seed it with the
+        // just-reset board snapshot so the human-play window has a
+        // consistent `displayedSnapshot` to render from the moment it
+        // opens. The pacer is also handed to the AI's gated source
+        // below so the AI side blocks on the pacer's `.aiThinking`
+        // transition for each ply.
+        let pacer = HumanPlayPacer()
+        pacer.start(humanColor: humanColor, initialSnapshot: gameWatcher.snapshot())
+        self.pacer = pacer
+
         materializeTask = Task { [weak self] in
             guard let self else { return }
             let result = await self.materializeOpponentSource(
@@ -289,20 +310,26 @@ final class PlayController {
                 self.lastHumanColor = nil
                 return
             case .success(let source):
-                // Wrap the AI side in a 2-second pre-move delay so the
-                // human has time to register their own move before the
-                // reply lands. The wrapper preserves cancellation: a
-                // Stop / Reset cancels the game Task, which propagates
-                // out of the wrapper's `Task.sleep` as a
-                // `CancellationError` and unwinds the game loop
-                // cleanly.
-                let delayed = DelayedMoveEvaluationSource(
+                // Gate the AI side on the pacer's `.aiThinking`
+                // transition so the AI's forward pass never runs in
+                // parallel with the UI rendering of the human's move.
+                // The pacer's `awaitAIPermission()` is
+                // cancellation-aware, so a Stop / Reset cancels the
+                // game Task and surfaces `CancellationError` cleanly.
+                guard let pacer = self.pacer else {
+                    // `start()` always sets `pacer` before the
+                    // materialize task runs, and only `stop()` clears
+                    // it. If `pacer` is nil here we've been cancelled —
+                    // bail without launching the game.
+                    return
+                }
+                let gated = UIGatedMoveEvaluationSource(
                     wrapping: source,
-                    delay: .seconds(2)
+                    pacer: pacer
                 )
-                self.opponentSource = delayed
+                self.opponentSource = gated
                 self.launchGame(
-                    source: delayed,
+                    source: gated,
                     humanIsWhite: humanIsWhite,
                     gameWatcher: gameWatcher
                 )
@@ -366,6 +393,14 @@ final class PlayController {
         gameTask?.cancel()
         gameTask = nil
         humanPlayer = nil
+        // Tear down the pacer *before* releasing the gated source so
+        // any parked `awaitAIPermission()` resumes with
+        // `CancellationError` and the game `Task`'s unwind path
+        // proceeds cleanly. The gated source holds a strong reference
+        // to the pacer; clearing `opponentSource` afterwards drops
+        // the last live reference.
+        pacer?.stop()
+        pacer = nil
         opponentSource = nil
         lastOpponentChoice = nil
         lastHumanColor = nil
@@ -470,6 +505,12 @@ final class PlayController {
                 self.selectedFromSquare = nil
                 self.pendingPromotion = nil
                 self.humanPlayer = nil
+                // The pacer is intentionally left alive after a
+                // natural game end so the window can keep rendering
+                // the final position + game-over banner from its
+                // `.gameOver` phase. `stop()` (Stop / Reset / window
+                // close while still playing) and the next `start()`
+                // are the only paths that tear it down.
                 self.opponentSource = nil
                 self.gameTask = nil
                 self.lastOpponentChoice = nil

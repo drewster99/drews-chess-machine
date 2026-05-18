@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Game Result
 
-enum GameResult: Sendable {
+enum GameResult: Sendable, Equatable {
     case checkmate(winner: PieceColor)
     case stalemate
     case drawByFiftyMoveRule
