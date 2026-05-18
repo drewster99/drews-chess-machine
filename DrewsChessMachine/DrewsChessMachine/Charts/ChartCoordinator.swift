@@ -248,6 +248,39 @@ final class ChartCoordinator {
     /// Generation token to prevent stale decimation frames from being published after a reset or rapid updates.
     private var decimationGeneration: Int = 0
 
+    // MARK: - Chart-perf telemetry
+    //
+    // Sliding-window accumulators flushed as one `[CHART-PERF]` line every
+    // `chartPerfWindow` recomputes — meant to surface main-actor cost
+    // trends across a long session without flooding the session log. The
+    // three timed regions of `recomputeDecimatedFrame` are:
+    //
+    //   - `copyMs`  — main-actor binary-search + visible-window slice copy
+    //                  at the head of `recomputeDecimatedFrame`. Scales
+    //                  with the visible-window sample count, which at the
+    //                  "All" zoom is the full ring length.
+    //   - `decMs`   — background O(N) decimation pass inside
+    //                  `ChartDecimator.decimate(...)`. Not on the main
+    //                  thread, but logged for context — a growing decMs
+    //                  with flat copyMs/diffMs would point at the
+    //                  decimator itself.
+    //   - `diffMs`  — main-actor `frame != self.decimatedFrame`
+    //                  `Equatable` comparison guarding the publish.
+    //                  Scales with the bucket count × per-bucket optional
+    //                  field count, capped by `maximumBucketCount`.
+    //
+    // `published=K/N` reports how often the new frame was actually
+    // distinct from the previously-published one across the window —
+    // a low ratio means most of the work funded zero SwiftUI updates.
+    private var chartPerfCopyMs: [Double] = []
+    private var chartPerfDecMs: [Double] = []
+    private var chartPerfDiffMs: [Double] = []
+    private var chartPerfTSamples: [Int] = []
+    private var chartPerfPSamples: [Int] = []
+    private var chartPerfBuckets: [Int] = []
+    private var chartPerfPublishedCount: Int = 0
+    private static let chartPerfWindow: Int = 30
+
     /// Recompute `decimatedFrame` from the current rings + visible
     /// window. Captures the visible sample slices on the main actor
     /// and offloads the heavy $O(N)$ decimation pass to a background
@@ -262,6 +295,11 @@ final class ChartCoordinator {
         let visibleStart = max(0, scrollX)
         let lower = max(0, visibleStart)
         let upper = lower + max(0.001, visibleLength)
+
+        // Time the binary-search + slice-copy block as a single
+        // "main-actor work proportional to the visible window" region.
+        // See the `chartPerfCopyMs` doc above for rationale.
+        let copyStart = CFAbsoluteTimeGetCurrent()
 
         // Locate the visible index range in each ring using binary search.
         // We use `upper.nextUp` so a sample exactly at the boundary is inclusive.
@@ -284,8 +322,13 @@ final class ChartCoordinator {
         let lastT = trainingRing.last?.elapsedSec
         let lastP = progressRateRing.last?.elapsedSec
 
+        let copyMs = (CFAbsoluteTimeGetCurrent() - copyStart) * 1000.0
+        let tSampleCount = tSamples.count
+        let pSampleCount = pSamples.count
+
         decimationTask = Task.detached { [weak self] in
             // Heavy O(N) work runs on a background global executor.
+            let decStart = CFAbsoluteTimeGetCurrent()
             let frame = ChartDecimator.decimate(
                 trainingSamples: tSamples,
                 progressRateSamples: pSamples,
@@ -296,18 +339,97 @@ final class ChartCoordinator {
                 trainingBucketBudget: ChartDecimator.maximumBucketCount,
                 progressRateBucketBudget: ChartDecimator.maximumBucketCount
             )
+            let decMs = (CFAbsoluteTimeGetCurrent() - decStart) * 1000.0
 
             // Switch back to the main actor to publish the result.
             if !Task.isCancelled {
                 await MainActor.run {
                     guard let self = self else { return }
                     guard self.decimationGeneration == generation else { return }
-                    if frame != self.decimatedFrame {
+                    let diffStart = CFAbsoluteTimeGetCurrent()
+                    let isDifferent = frame != self.decimatedFrame
+                    let diffMs = (CFAbsoluteTimeGetCurrent() - diffStart) * 1000.0
+                    if isDifferent {
                         self.decimatedFrame = frame
                     }
+                    self.recordChartPerf(
+                        copyMs: copyMs,
+                        decMs: decMs,
+                        diffMs: diffMs,
+                        tSamples: tSampleCount,
+                        pSamples: pSampleCount,
+                        buckets: frame.trainingBuckets.count,
+                        published: isDifferent
+                    )
                 }
             }
         }
+    }
+
+    /// Append one recompute's timings into the sliding window. When the
+    /// window fills, emit a single `[CHART-PERF]` line carrying P50/P99
+    /// of each timed region plus the publish-hit ratio and the sample /
+    /// bucket sizes that fed the pass, then reset.
+    private func recordChartPerf(
+        copyMs: Double,
+        decMs: Double,
+        diffMs: Double,
+        tSamples: Int,
+        pSamples: Int,
+        buckets: Int,
+        published: Bool
+    ) {
+        chartPerfCopyMs.append(copyMs)
+        chartPerfDecMs.append(decMs)
+        chartPerfDiffMs.append(diffMs)
+        chartPerfTSamples.append(tSamples)
+        chartPerfPSamples.append(pSamples)
+        chartPerfBuckets.append(buckets)
+        if published { chartPerfPublishedCount += 1 }
+
+        guard chartPerfCopyMs.count >= Self.chartPerfWindow else { return }
+
+        let n = chartPerfCopyMs.count
+        let line = "[CHART-PERF]"
+            + " n=\(n)"
+            + " published=\(chartPerfPublishedCount)/\(n)"
+            + String(format: " copyMs=(p50=%.2f p99=%.2f)",
+                Self.chartPerfP50(chartPerfCopyMs), Self.chartPerfP99(chartPerfCopyMs))
+            + String(format: " decMs=(p50=%.2f p99=%.2f)",
+                Self.chartPerfP50(chartPerfDecMs), Self.chartPerfP99(chartPerfDecMs))
+            + String(format: " diffMs=(p50=%.2f p99=%.2f)",
+                Self.chartPerfP50(chartPerfDiffMs), Self.chartPerfP99(chartPerfDiffMs))
+            + " tSamples=(p50=\(Self.chartPerfP50Int(chartPerfTSamples)) max=\(chartPerfTSamples.max() ?? 0))"
+            + " pSamples=(p50=\(Self.chartPerfP50Int(chartPerfPSamples)) max=\(chartPerfPSamples.max() ?? 0))"
+            + " buckets=(p50=\(Self.chartPerfP50Int(chartPerfBuckets)) max=\(chartPerfBuckets.max() ?? 0))"
+        SessionLogger.shared.log(line)
+
+        chartPerfCopyMs.removeAll(keepingCapacity: true)
+        chartPerfDecMs.removeAll(keepingCapacity: true)
+        chartPerfDiffMs.removeAll(keepingCapacity: true)
+        chartPerfTSamples.removeAll(keepingCapacity: true)
+        chartPerfPSamples.removeAll(keepingCapacity: true)
+        chartPerfBuckets.removeAll(keepingCapacity: true)
+        chartPerfPublishedCount = 0
+    }
+
+    private static func chartPerfP50(_ samples: [Double]) -> Double {
+        guard !samples.isEmpty else { return .nan }
+        let sorted = samples.sorted()
+        return sorted[sorted.count / 2]
+    }
+
+    private static func chartPerfP99(_ samples: [Double]) -> Double {
+        guard !samples.isEmpty else { return .nan }
+        let sorted = samples.sorted()
+        let idx = Int((0.99 * Double(sorted.count - 1)).rounded())
+        return sorted[max(0, min(sorted.count - 1, idx))]
+    }
+
+    private static func chartPerfP50Int(_ samples: [Int]) -> Int {
+        guard !samples.isEmpty else { return 0 }
+        let sorted = samples.sorted()
+        return sorted[sorted.count / 2]
     }
 
     // MARK: - Scroll handling

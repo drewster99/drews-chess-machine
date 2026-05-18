@@ -1456,6 +1456,17 @@ final class ChessTrainer: @unchecked Sendable {
     private var phase2WallTimesMs: [Double] = []
     private var phase3WallTimesMs: [Double] = []
     private var legalMaskLoopMsTimes: [Double] = []
+    /// Inter-step wall time: gap from the moment one training batch
+    /// completes (after phase 3) to the same moment of the next.
+    /// Captures everything `p1ms + p2ms + p3ms` doesn't — caller-side
+    /// dispatch latency, awaits between phases, replay-ratio-controller
+    /// throttle sleeps, any idle time before the next call lands. The
+    /// first step has no prior reference so its delta is skipped.
+    private var interStepWallTimesMs: [Double] = []
+    /// Wall-clock time at which the most recent training step completed
+    /// (end of phase 3). 0 means "no prior step yet" — used to skip
+    /// the first delta after session start.
+    private var lastTrainStepCompletedAt: CFAbsoluteTime = 0
 
     // Cached scratch for the synthetic-data sweep path
     // (`internalTrainStep(batchSize:)`). Reused across calls instead
@@ -3714,8 +3725,20 @@ final class ChessTrainer: @unchecked Sendable {
             self._completedTrainSteps.modify { $0 += 1 }
 
             // Accumulate phase timings for the current stats window.
+            let completionTime = CFAbsoluteTimeGetCurrent()
             self.phase2WallTimesMs.append(freshBaselineMs)
-            self.phase3WallTimesMs.append((CFAbsoluteTimeGetCurrent() - phase3Start) * 1000)
+            self.phase3WallTimesMs.append((completionTime - phase3Start) * 1000)
+            // Inter-step delta: wall time from the previous step's
+            // completion to this step's completion. Skips the first
+            // step (no prior reference) so the accumulator only holds
+            // genuine inter-step gaps. Window is reset alongside the
+            // phase timings on each isStatsStep emit below.
+            if self.lastTrainStepCompletedAt > 0 {
+                self.interStepWallTimesMs.append(
+                    (completionTime - self.lastTrainStepCompletedAt) * 1000
+                )
+            }
+            self.lastTrainStepCompletedAt = completionTime
 
             // On every isStatsStep, emit one [LEGAL-COST] line with
             // P50/P99 of each accumulator and clear them. Gates the
@@ -3725,6 +3748,7 @@ final class ChessTrainer: @unchecked Sendable {
                 let p2Count = self.phase2WallTimesMs.count
                 let p3Count = self.phase3WallTimesMs.count
                 let lmCount = self.legalMaskLoopMsTimes.count
+                let isCount = self.interStepWallTimesMs.count
                 let p1p50 = Self.percentile(self.phase1WallTimesMs, 0.50)
                 let p1p99 = Self.percentile(self.phase1WallTimesMs, 0.99)
                 let p2p50 = Self.percentile(self.phase2WallTimesMs, 0.50)
@@ -3733,10 +3757,22 @@ final class ChessTrainer: @unchecked Sendable {
                 let p3p99 = Self.percentile(self.phase3WallTimesMs, 0.99)
                 let lmp50 = Self.percentile(self.legalMaskLoopMsTimes, 0.50)
                 let lmp99 = Self.percentile(self.legalMaskLoopMsTimes, 0.99)
+                let isp50 = Self.percentile(self.interStepWallTimesMs, 0.50)
+                let isp99 = Self.percentile(self.interStepWallTimesMs, 0.99)
+                // Wall-time accounting: interStep is the end-to-end
+                // measurement (step completion → next step completion).
+                // `phaseSum = p1+p2+p3`. `gap = interStep − phaseSum`
+                // surfaces dispatch latency / await overhead / replay-
+                // ratio sleeps — i.e. everything we'd miss if we only
+                // summed the phases. Computed at P50 for the headline
+                // number; consumers can inspect the raw distributions
+                // above for tail behavior.
+                let phaseSumP50 = p1p50 + p2p50 + p3p50
+                let gapP50 = isp50.isFinite ? isp50 - phaseSumP50 : .nan
                 let line = "[LEGAL-COST]"
                     + " step=\(self._completedTrainSteps.value)"
                     + " batch=\(batchSize)"
-                    + " window=(p1=\(p1Count) p2=\(p2Count) p3=\(p3Count) lm=\(lmCount))"
+                    + " window=(p1=\(p1Count) p2=\(p2Count) p3=\(p3Count) lm=\(lmCount) is=\(isCount))"
                     + String(format: " p1ms=(p50=%.2f p99=%.2f)", p1p50, p1p99)
                     + String(format: " p2ms=(p50=%.2f p99=%.2f)", p2p50, p2p99)
                     + String(format: " p3ms=(p50=%.2f p99=%.2f)", p3p50, p3p99)
@@ -3744,11 +3780,14 @@ final class ChessTrainer: @unchecked Sendable {
                     + String(format: " legalMaskPerPosUs=(p50=%.1f p99=%.1f)",
                         (lmp50 / Double(batchSize)) * 1000.0,
                         (lmp99 / Double(batchSize)) * 1000.0)
+                    + String(format: " interStepMs=(p50=%.2f p99=%.2f)", isp50, isp99)
+                    + String(format: " gapMs=(p50=%.2f)", gapP50)
                 SessionLogger.shared.log(line)
                 self.phase1WallTimesMs.removeAll(keepingCapacity: true)
                 self.phase2WallTimesMs.removeAll(keepingCapacity: true)
                 self.phase3WallTimesMs.removeAll(keepingCapacity: true)
                 self.legalMaskLoopMsTimes.removeAll(keepingCapacity: true)
+                self.interStepWallTimesMs.removeAll(keepingCapacity: true)
             }
 
             return TrainStepTiming(
