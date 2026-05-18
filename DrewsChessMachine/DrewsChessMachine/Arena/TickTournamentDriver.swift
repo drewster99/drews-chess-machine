@@ -236,28 +236,18 @@ final class TickTournamentDriver: @unchecked Sendable {
                 if nextGameIndexToSpawn < totalGames {
                     let nextIdx = nextGameIndexToSpawn
                     let candIsWhiteNext = (nextIdx % 2 == 0)
-                    // Slot's (whiteNetwork, blackNetwork) pair is
-                    // immutable on ActiveGame (let-bound). Allocate
-                    // a fresh ActiveGame with the right pairing for
-                    // the next game and drop the old one. The old
-                    // ActiveGame's allocations are freed on its
-                    // dealloc — net allocation churn is one
-                    // ActiveGame per game (≈1.2 MB at capPlies=512;
-                    // not great, but matches the legacy `MPSChessPlayer`
-                    // churn pattern which also re-allocated per
-                    // game via the playerA/playerB factories).
+                    // Slot keeps its per-side scratches and per-ply
+                    // metadata allocations from the previous game.
+                    // Swap the (whiteNetwork, blackNetwork) pair
+                    // in-place, then reset per-game state. Avoids
+                    // allocating a fresh ActiveGame (and dropping
+                    // the old one) per recycled tournament game.
                     let (wNet, bNet) = candIsWhiteNext
                         ? (candidateNetwork, championNetwork)
                         : (championNetwork, candidateNetwork)
-                    let newG = ActiveGame(
-                        workerId: UInt16(truncatingIfNeeded: nextIdx),
-                        whiteNetwork: wNet,
-                        blackNetwork: bNet,
-                        capPlies: arenaCapPlies,
-                        schedule: arenaSchedule
-                    )
-                    newG.resetForNewGame(maxPliesCap: arenaCapPlies, schedule: arenaSchedule)
-                    games[i] = newG
+                    let g = games[i]
+                    g.replaceNetworkRefs(white: wNet, black: bNet)
+                    g.resetForNewGame(maxPliesCap: arenaCapPlies, schedule: arenaSchedule)
                     gameIndices[i] = nextIdx
                     aIsWhiteForSlot[i] = candIsWhiteNext
                     nextGameIndexToSpawn += 1

@@ -57,12 +57,18 @@ final class ActiveGame: @unchecked Sendable {
     /// `currentNetwork` (which reads white/black off this and
     /// `state.currentPlayer`) to partition K games into per-network
     /// sub-batches per tick.
-    let whiteNetwork: ChessMPSNetwork
+    ///
+    /// `var` so the arena's slot-recycle path (which alternates
+    /// candidate / champion across the white side per game) can swap
+    /// the pair on the same slot via `replaceNetworkRefs(white:black:)`
+    /// instead of allocating a fresh `ActiveGame` per game. Self-play
+    /// never touches it after init.
+    private(set) var whiteNetwork: ChessMPSNetwork
 
     /// Black-side network reference. See `whiteNetwork`. In self-play
     /// this points at the same instance as `whiteNetwork` — both
     /// sides play the same champion.
-    let blackNetwork: ChessMPSNetwork
+    private(set) var blackNetwork: ChessMPSNetwork
 
     // MARK: - Per-game live state
 
@@ -237,6 +243,24 @@ final class ActiveGame: @unchecked Sendable {
         if neededSideCap > perSideCap {
             growSideScratches(to: neededSideCap)
         }
+    }
+
+    /// Swap which networks play which side for this slot's next game.
+    /// Used by the arena's recycle path: when a slot finishes one game
+    /// and pulls the next pending tournament game off the queue, the
+    /// (candidate, champion) → (white, black) pairing typically flips,
+    /// and reusing the slot's existing scratch allocations is cheaper
+    /// than dropping the `ActiveGame` and allocating a fresh one for
+    /// the new pair. Self-play never calls this — both sides hold the
+    /// same champion reference for the slot's lifetime.
+    ///
+    /// Call **before** `resetForNewGame`. Does not touch any per-game
+    /// state (`engine`, `schedule`, `maxPliesCap`, `gameStartedAt`, or
+    /// the per-side fill counters); those are reset by
+    /// `resetForNewGame`.
+    func replaceNetworkRefs(white: ChessMPSNetwork, black: ChessMPSNetwork) {
+        self.whiteNetwork = white
+        self.blackNetwork = black
     }
 
     // MARK: - Per-ply recording

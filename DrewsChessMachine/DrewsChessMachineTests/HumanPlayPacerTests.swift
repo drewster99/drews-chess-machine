@@ -223,6 +223,47 @@ final class HumanPlayPacerTests: XCTestCase {
         _ = task
     }
 
+    func testTaskCancellationCancelsParkedAwaitAIPermission() async throws {
+        // Regression: the `withTaskCancellationHandler` branch of
+        // `awaitAIPermission` only fires when the calling Task is
+        // cancelled (NOT when the pacer is stopped — that path is
+        // already covered by `testStopCancelsParkedAwaitAIPermission`).
+        // The onCancel handler must hop back to the main actor and
+        // resume the parked continuation with `CancellationError`,
+        // without disturbing the pacer's own state.
+        let pacer = HumanPlayPacer(postHumanDelay: .seconds(10))
+        pacer.start(
+            humanColor: .white,
+            initialSnapshot: snapshot(moveCount: 0, lastMove: nil, sideToMove: .white)
+        )
+        pacer.ingest(snapshot(moveCount: 1, lastMove: humanWhiteMove(), sideToMove: .black))
+        pacer.onAnimationCompleted()
+        XCTAssertEqual(pacer.phase, .aiDelay)
+
+        let cancelled = expectation(description: "awaitAIPermission threw CancellationError via Task.cancel")
+        let task = Task {
+            do {
+                try await pacer.awaitAIPermission()
+                XCTFail("expected CancellationError")
+            } catch is CancellationError {
+                cancelled.fulfill()
+            } catch {
+                XCTFail("unexpected error: \(error)")
+            }
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(pacer.phase, .aiDelay, "pacer should still be parked while Task awaits")
+
+        task.cancel()
+
+        await fulfillment(of: [cancelled], timeout: 2.0)
+        XCTAssertEqual(
+            pacer.phase, .aiDelay,
+            "pacer's own state is untouched by Task cancellation — only the parked continuation was cancelled"
+        )
+    }
+
     // MARK: - AI move → animation → human turn
 
     func testAIMoveSnapshotInAIThinkingAdvancesToAIAnimating() async throws {
