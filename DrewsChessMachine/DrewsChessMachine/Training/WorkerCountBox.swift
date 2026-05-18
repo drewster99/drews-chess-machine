@@ -11,15 +11,19 @@ import Foundation
 ///
 /// Backed by a `SyncBox<Int>` (an `OSAllocatedUnfairLock`); reads
 /// and writes are sub-microsecond and never queue behind any other
-/// work. Lower bound clamped at 1 in the setter so a stuck stepper
-/// can never zero out self-play (the upper bound is enforced by the
-/// stepper and the spawn loop's `absoluteMaxSelfPlayWorkers`
-/// constant, not here).
+/// work. The setter's clamp-at-1 lower bound is a UX guard (a stuck
+/// Stepper or sloppy caller can never zero out self-play once
+/// running); the upper bound is enforced by the Stepper and the
+/// spawn loop's `absoluteMaxSelfPlayWorkers` constant, not here.
+///
+/// **Init accepts 0** so tests and cold-start states can begin with
+/// no active workers and grow into them; the setter still clamps to 1
+/// once the user-driven control flow takes over.
 final class WorkerCountBox: @unchecked Sendable {
     private let _count: SyncBox<Int>
 
     init(initial: Int) {
-        precondition(initial >= 1, "WorkerCountBox initial count must be >= 1")
+        precondition(initial >= 0, "WorkerCountBox initial count must be >= 0")
         _count = SyncBox<Int>(initial)
     }
 

@@ -956,8 +956,18 @@ final class ReplayBuffer: @unchecked Sendable {
             // `residentGames`, so the invariant
             // `residentDecisiveGameCount ≤ residentGames.count` holds.
             let residentDrawGameCount = residentGames.count - residentDecisiveGameCount
-            let decisiveReachable = min(decisiveCount, cap * residentDecisiveGameCount)
-            let drawReachable = min(drawCount, cap * residentDrawGameCount)
+            // Saturate on overflow: an effectively-unbounded `cap` (e.g.
+            // `Int.max` from the `.unconstrained` preset, which the
+            // tests use to exercise the draw-cap and length-tilt code
+            // paths in isolation) makes `cap * residentXGameCount`
+            // overflow. Semantically the K-cap is inactive there, so
+            // the stratum's reachable ceiling is just the position
+            // count — `min(positions, ∞) = positions`. Use
+            // `multipliedReportingOverflow` to detect and short-circuit.
+            let (decProduct, decOverflow) = cap.multipliedReportingOverflow(by: residentDecisiveGameCount)
+            let decisiveReachable = decOverflow ? decisiveCount : min(decisiveCount, decProduct)
+            let (drawProduct, drawOverflow) = cap.multipliedReportingOverflow(by: residentDrawGameCount)
+            let drawReachable = drawOverflow ? drawCount : min(drawCount, drawProduct)
 
             // Stratum sizes. `maxDrawPercent` is a ceiling — if the buffer
             // holds fewer reachable drawn positions than it allows, just
