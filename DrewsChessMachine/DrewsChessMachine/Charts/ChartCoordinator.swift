@@ -390,15 +390,19 @@ final class ChartCoordinator {
         guard chartPerfCopyMs.count >= Self.chartPerfWindow else { return }
 
         let n = chartPerfCopyMs.count
+        // Per-window stats: p50 and max. The window is intentionally
+        // small (a handful of recomputes per emit), so a nominal "p99"
+        // would collapse to the max anyway. Reporting `max` directly
+        // is honest about what the second column carries.
         let line = "[CHART-PERF]"
             + " n=\(n)"
             + " published=\(chartPerfPublishedCount)/\(n)"
-            + String(format: " copyMs=(p50=%.2f p99=%.2f)",
-                Self.chartPerfP50(chartPerfCopyMs), Self.chartPerfP99(chartPerfCopyMs))
-            + String(format: " decMs=(p50=%.2f p99=%.2f)",
-                Self.chartPerfP50(chartPerfDecMs), Self.chartPerfP99(chartPerfDecMs))
-            + String(format: " diffMs=(p50=%.2f p99=%.2f)",
-                Self.chartPerfP50(chartPerfDiffMs), Self.chartPerfP99(chartPerfDiffMs))
+            + String(format: " copyMs=(p50=%.2f max=%.2f)",
+                Self.chartPerfP50(chartPerfCopyMs), Self.chartPerfMax(chartPerfCopyMs))
+            + String(format: " decMs=(p50=%.2f max=%.2f)",
+                Self.chartPerfP50(chartPerfDecMs), Self.chartPerfMax(chartPerfDecMs))
+            + String(format: " diffMs=(p50=%.2f max=%.2f)",
+                Self.chartPerfP50(chartPerfDiffMs), Self.chartPerfMax(chartPerfDiffMs))
             + " tSamples=(p50=\(Self.chartPerfP50Int(chartPerfTSamples)) max=\(chartPerfTSamples.max() ?? 0))"
             + " pSamples=(p50=\(Self.chartPerfP50Int(chartPerfPSamples)) max=\(chartPerfPSamples.max() ?? 0))"
             + " buckets=(p50=\(Self.chartPerfP50Int(chartPerfBuckets)) max=\(chartPerfBuckets.max() ?? 0))"
@@ -419,11 +423,8 @@ final class ChartCoordinator {
         return sorted[sorted.count / 2]
     }
 
-    private static func chartPerfP99(_ samples: [Double]) -> Double {
-        guard !samples.isEmpty else { return .nan }
-        let sorted = samples.sorted()
-        let idx = Int((0.99 * Double(sorted.count - 1)).rounded())
-        return sorted[max(0, min(sorted.count - 1, idx))]
+    private static func chartPerfMax(_ samples: [Double]) -> Double {
+        samples.max() ?? .nan
     }
 
     private static func chartPerfP50Int(_ samples: [Int]) -> Int {

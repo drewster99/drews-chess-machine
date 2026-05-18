@@ -355,7 +355,17 @@ final class TickTournamentDriver: @unchecked Sendable {
         //     small sub-batches the GPU pays a per-call overhead;
         //     skip empty calls.
         let candCount = candIndices.count
-        if candCount > 0 {
+        let champCount = champIndices.count
+        // Candidate and champion forward passes are independent — two
+        // distinct `ChessMPSNetwork` instances with their own MPSGraph
+        // executables and `executionQueue`s. Submitting them
+        // concurrently lets the Apple Silicon scheduler interleave
+        // them on the GPU instead of forcing the second one to wait
+        // for the first to fully drain. The two `consume` closures
+        // write into disjoint scratch (cand / champ), so there's no
+        // shared state to race on.
+        @Sendable func runCandidate() async throws {
+            guard candCount > 0 else { return }
             let policyTarget = ArenaPointerCarrier(pointer: scratches.candPolicyScratch)
             let valueTarget = ArenaPointerCarrier(pointer: scratches.candValueScratch)
             try await candidateNetwork.evaluateBatched(
@@ -370,8 +380,8 @@ final class TickTournamentDriver: @unchecked Sendable {
                 valueTarget.pointer.update(from: vBase, count: candCount)
             }
         }
-        let champCount = champIndices.count
-        if champCount > 0 {
+        @Sendable func runChampion() async throws {
+            guard champCount > 0 else { return }
             let policyTarget = ArenaPointerCarrier(pointer: scratches.champPolicyScratch)
             let valueTarget = ArenaPointerCarrier(pointer: scratches.champValueScratch)
             try await championNetwork.evaluateBatched(
@@ -386,6 +396,10 @@ final class TickTournamentDriver: @unchecked Sendable {
                 valueTarget.pointer.update(from: vBase, count: champCount)
             }
         }
+        async let candDone: Void = runCandidate()
+        async let champDone: Void = runChampion()
+        try await candDone
+        try await champDone
 
         // (c) Parallel sample + apply. Per game i: pick its policy
         //     slice from the right per-network scratch (using
