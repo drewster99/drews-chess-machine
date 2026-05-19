@@ -469,13 +469,22 @@ extension SessionController {
             score: score,
             promoted: promoted
         ))
+        // Compute the post-arena breakdown aggregates (W/D/L by game
+        // length, candidate value scalar by absolute ply, candidate
+        // value scalar by game progress) from the harvested per-game
+        // records. These are diagnostic only — not persisted on
+        // `TournamentRecord`, just emitted in the `[ARENA]` log block.
+        let extendedSummary = ArenaSummaryAggregator.aggregate(
+            records: recordsBox.snapshot()
+        )
         logArenaResult(
             record: record,
             index: tournamentHistory.count,
             trainer: trainer,
             candidate: candidateInference,
             championSide: arenaChampion,
-            diversity: arenaDiversity.snapshot()
+            diversity: arenaDiversity.snapshot(),
+            extended: extendedSummary
         )
         cleanupArenaState(arenaFlag: arenaFlag, tBox: tBox)
 
@@ -649,7 +658,8 @@ extension SessionController {
         trainer: ChessTrainer,
         candidate: ChessMPSNetwork,
         championSide: ChessMPSNetwork,
-        diversity: GameDiversityTracker.Snapshot
+        diversity: GameDiversityTracker.Snapshot,
+        extended: ArenaExtendedSummary
     ) {
         let sp = samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()
         let ar = samplingScheduleBox?.arena ?? buildArenaSchedule()
@@ -685,7 +695,8 @@ extension SessionController {
             championID: championIDStr,
             trainerID: trainerIDStr,
             parameters: parameters,
-            diversity: diversityCtx
+            diversity: diversityCtx,
+            extended: extended
         )
         let kv = ArenaLogFormatter.formatKVLine(
             record: record,

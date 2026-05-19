@@ -122,9 +122,15 @@ final class TickTournamentDriver: @unchecked Sendable {
         var games: [ActiveGame] = []
         var gameIndices: [Int] = []      // current gameIndex per slot
         var aIsWhiteForSlot: [Bool] = [] // candidate-is-white flag per slot
+        // Per-slot accumulator of candidate value-head readbacks, one
+        // entry per candidate-to-move ply. Drained into the slot's
+        // `TournamentGameRecord` on game completion, then reset to
+        // empty for the recycled gameIndex (or dropped at retirement).
+        var perSlotCandidateValues: [[CandidateValueSample]] = []
         games.reserveCapacity(initialK)
         gameIndices.reserveCapacity(initialK)
         aIsWhiteForSlot.reserveCapacity(initialK)
+        perSlotCandidateValues.reserveCapacity(initialK)
 
         // Tally accumulators (driver-task-owned; no locking).
         var aWins = 0
@@ -168,6 +174,7 @@ final class TickTournamentDriver: @unchecked Sendable {
             games.append(g)
             gameIndices.append(i)
             aIsWhiteForSlot.append(candIsWhite)
+            perSlotCandidateValues.append([])
             nextGameIndexToSpawn += 1
         }
 
@@ -190,7 +197,8 @@ final class TickTournamentDriver: @unchecked Sendable {
                 scratches: scratches,
                 candIndices: &candIndices,
                 champIndices: &champIndices,
-                compactIdx: &compactIdx
+                compactIdx: &compactIdx,
+                perSlotCandidateValues: &perSlotCandidateValues
             )
 
             // Game-end pass: serially walk slots; on completion,
@@ -227,7 +235,8 @@ final class TickTournamentDriver: @unchecked Sendable {
                     gameIndex: gameIndex,
                     aIsWhite: aIsWhite,
                     result: result,
-                    moveHistory: g.engine.moveHistory
+                    moveHistory: g.engine.moveHistory,
+                    candidateValueSamples: perSlotCandidateValues[i]
                 )
 
                 completed += 1
@@ -272,6 +281,9 @@ final class TickTournamentDriver: @unchecked Sendable {
                     g.resetForNewGame(maxPliesCap: arenaCapPlies, schedule: arenaSchedule)
                     gameIndices[i] = nextIdx
                     aIsWhiteForSlot[i] = candIsWhiteNext
+                    // Clear the slot's candidate-value buffer for the
+                    // new game while keeping its backing capacity.
+                    perSlotCandidateValues[i].removeAll(keepingCapacity: true)
                     nextGameIndexToSpawn += 1
                     i += 1
                 } else {
@@ -279,6 +291,7 @@ final class TickTournamentDriver: @unchecked Sendable {
                     games.remove(at: i)
                     gameIndices.remove(at: i)
                     aIsWhiteForSlot.remove(at: i)
+                    perSlotCandidateValues.remove(at: i)
                     // Do NOT advance i — we just shifted the next
                     // slot into position i.
                 }
@@ -313,7 +326,8 @@ final class TickTournamentDriver: @unchecked Sendable {
         scratches: TickArenaScratches,
         candIndices: inout [Int],
         champIndices: inout [Int],
-        compactIdx: inout [Int]
+        compactIdx: inout [Int],
+        perSlotCandidateValues: inout [[CandidateValueSample]]
     ) async throws {
         let K = games.count
         let boardFloats = BoardEncoder.tensorLength
@@ -439,6 +453,29 @@ final class TickTournamentDriver: @unchecked Sendable {
         async let champDone: Void = runChampion()
         try await candDone
         try await champDone
+
+        // Snapshot the candidate value scalar for each candidate-to-move
+        // slot, before the sample+apply pass mutates engine state and
+        // increments `totalPliesPlayed`. The captured ply index is the
+        // ply about to be played — i.e., 0-indexed `totalPliesPlayed`
+        // pre-apply — and the value is `p_win - p_loss` from the
+        // candidate's perspective (side-to-move == candidate this ply).
+        // Drained per-game into the `TournamentGameRecord` for the
+        // post-arena strength-by-ply / strength-by-progress summaries.
+        for compact in 0..<candIndices.count {
+            let slotIdx = candIndices[compact]
+            let g = games[slotIdx]
+            // Skip slots whose engine has already produced a terminal
+            // result this tick — the encode pass still wrote a board
+            // for them (they were partitioned by side-to-move before
+            // any result check), but the value isn't a meaningful
+            // "trainer assessment of this game" sample.
+            if g.engine.result != nil { continue }
+            let v = scratches.candValueScratch[compact]
+            perSlotCandidateValues[slotIdx].append(
+                CandidateValueSample(ply: g.totalPliesPlayed, value: v)
+            )
+        }
 
         // (c) Parallel sample + apply. Per game i: pick its policy
         //     slice from the right per-network scratch (using

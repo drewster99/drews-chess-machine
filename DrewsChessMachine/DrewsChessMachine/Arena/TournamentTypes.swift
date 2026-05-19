@@ -65,14 +65,36 @@ struct TournamentStats: Sendable {
     }
 }
 
+/// One per-ply value-head readback captured during an arena game,
+/// always from the candidate (trainer-snapshot) network's perspective.
+/// Recorded only at plies where the candidate is to move — the value
+/// scalar is then the candidate's own assessment of its position
+/// (`p_win - p_loss ∈ [-1, +1]`, side-to-move = candidate).
+struct CandidateValueSample: Sendable {
+    /// 0-indexed absolute ply about to be played when this evaluation
+    /// fired. (`ply == 0` ⇒ the very first half-move of the game.)
+    let ply: Int
+    /// Candidate network's value-head scalar at that ply, in `[-1, +1]`.
+    /// Positive = candidate thinks it's winning.
+    let value: Float
+}
+
 /// One completed game's worth of data harvested by the tournament
 /// driver. Includes the captured `moveHistory` so the post-arena
-/// validity sweep can replay every game through a fresh engine.
+/// validity sweep can replay every game through a fresh engine, and
+/// the per-ply candidate value samples for the post-arena summary
+/// breakdowns (mean strength by absolute ply / by game progress).
 struct TournamentGameRecord: Sendable {
     let gameIndex: Int
     let aIsWhite: Bool
     let result: GameResult
     let moveHistory: [ChessMove]
+    /// One sample per candidate-to-move ply in this game. Roughly
+    /// half the length of `moveHistory` — exactly `ceil(N/2)` if the
+    /// candidate is white, `floor(N/2)` if it's black, where
+    /// `N = moveHistory.count`. Empty for legacy records and for
+    /// games that ended before the candidate ever moved.
+    let candidateValueSamples: [CandidateValueSample]
 }
 
 /// Outcome of a post-tournament validity sweep — replays every
