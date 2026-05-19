@@ -13,6 +13,7 @@ enum ChessTrainerError: LocalizedError {
     case nonFiniteLoss(total: Float, policy: Float, value: Float, gradNorm: Float)
     case trainerWeightCountMismatch(expected: String, got: Int)
     case velocityReadbackMissing(String)
+    case velocityLoadGraphFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -26,6 +27,8 @@ enum ChessTrainerError: LocalizedError {
             return "Trainer weight count mismatch: expected \(expected), got \(got)"
         case .velocityReadbackMissing(let name):
             return "Velocity tensor missing from graph.run results: \(name)"
+        case .velocityLoadGraphFailed(let name):
+            return "Velocity load graph.run returned empty/missing result for tensor: \(name)"
         }
     }
 }
@@ -4344,27 +4347,39 @@ final class ChessTrainer: @unchecked Sendable {
         }
         return try await withCheckedThrowingContinuation { continuation in
             executionQueue.async { [self] in
-                autoreleasepool {
-                    var feeds: [MPSGraphTensor: MPSGraphTensorData] = [
-                        network.inputPlaceholder: network.dummyInferenceInputTensorData
-                    ]
-                    feeds.reserveCapacity(velocityVariables.count + 1)
-                    for i in 0..<velocityVariables.count {
-                        ChessNetwork.writeFloats(weights[i], into: velocityLoadNDArrays[i])
-                        feeds[velocityLoadPlaceholders[i]] = velocityLoadTensorData[i]
+                do {
+                    try autoreleasepool {
+                        var feeds: [MPSGraphTensor: MPSGraphTensorData] = [
+                            network.inputPlaceholder: network.dummyInferenceInputTensorData
+                        ]
+                        feeds.reserveCapacity(velocityVariables.count + 1)
+                        for i in 0..<velocityVariables.count {
+                            ChessNetwork.writeFloats(weights[i], into: velocityLoadNDArrays[i])
+                            feeds[velocityLoadPlaceholders[i]] = velocityLoadTensorData[i]
+                        }
+                        // graph.run requires at least one target tensor.
+                        // Use the first velocity variable as a dummy read —
+                        // its post-assign value is whatever we just wrote,
+                        // which we discard. A missing entry in the result
+                        // dict is MPSGraph's CPU-side signal of a failed
+                        // GPU run; surface it as a thrown error so a
+                        // poisoned velocity load can't pass silently.
+                        let results = network.graph.run(
+                            with: network.commandQueue,
+                            feeds: feeds,
+                            targetTensors: [velocityVariables[0]],
+                            targetOperations: velocityLoadAssignOps
+                        )
+                        guard results[velocityVariables[0]] != nil else {
+                            throw ChessTrainerError.velocityLoadGraphFailed(
+                                velocityVariables[0].operation.name
+                            )
+                        }
                     }
-                    // graph.run requires at least one target tensor.
-                    // Use the first velocity variable as a dummy read —
-                    // its post-assign value is whatever we just wrote,
-                    // which we discard.
-                    _ = network.graph.run(
-                        with: network.commandQueue,
-                        feeds: feeds,
-                        targetTensors: [velocityVariables[0]],
-                        targetOperations: velocityLoadAssignOps
-                    )
+                    continuation.resume(returning: ())
+                } catch {
+                    continuation.resume(throwing: error)
                 }
-                continuation.resume(returning: ())
             }
         }
     }
