@@ -10,18 +10,19 @@ enum GameResult: Sendable, Equatable {
     case drawByThreefoldRepetition
 }
 
-/// Raw game result returned from `ChessMachine.beginNewGame` — wraps an
-/// ordinary `GameResult` for games that ended via the chess rules and
-/// adds the `terminatedEarly` case for self-play games that hit the
-/// configured `selfPlayMaxPliesPerGame` cap before terminating naturally.
+/// Raw game result used at game-result boundaries — wraps an ordinary
+/// `GameResult` for games that ended via the chess rules and adds the
+/// `terminatedEarly` case for self-play games that hit the configured
+/// `selfPlayMaxPliesPerGame` cap before terminating naturally.
 ///
-/// Lives only at the boundary between `ChessMachine` and the immediate
-/// caller (the self-play driver and the arena driver). The self-play
-/// driver consumes `.terminatedEarly` directly (drops the game entirely:
-/// no emit, no replay-buffer flush, no per-outcome stats increment —
-/// just a `recordDroppedGame` call) and unwraps `.terminatedNormally`
-/// into a plain `GameResult` for everything downstream. Arena passes
-/// `maxPlies: nil`, so its result is always `.terminatedNormally`.
+/// `ChessMachine.beginNewGame` only ever returns `.terminatedNormally`
+/// — the human-play paths it drives (PlayController, Play Game, Play
+/// Continuous) should run to a real chess termination. The
+/// `.terminatedEarly` case is produced by the self-play stats path
+/// (`ParallelWorkerStatsBox.recordDroppedGame`) for its rolling-window
+/// ring, so `snapshot()` can tally cap-dropped games alongside W/D/L
+/// counts. Self-play and arena themselves call `ChessGameEngine`
+/// directly, not `ChessMachine`.
 enum RawGameResult: Sendable {
     /// Self-play game stopped because `moveHistory.count` reached the
     /// configured max-plies cap before the chess engine declared a

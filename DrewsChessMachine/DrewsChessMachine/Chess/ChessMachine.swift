@@ -144,19 +144,20 @@ final class ChessMachine: @unchecked Sendable {
     /// Throws `ChessMachineError.alreadyPlaying` if a game is already
     /// in progress (same contract as before).
     ///
-    /// `maxPlies`, when non-nil, is a hard ceiling on the number of
-    /// plies before the loop short-circuits and returns
-    /// `.terminatedEarly`. Used by self-play to bound games that the
-    /// chess engine's natural termination rules (50-move, 3-fold,
-    /// checkmate, stalemate) failed to end. Arena, human play, and
-    /// the forward-pass demo pass `nil` (default) and always receive
-    /// `.terminatedNormally(...)`.
+    /// Returns `.terminatedNormally(...)` unconditionally — `ChessMachine`
+    /// only drives human-play (PlayController) and the Play Game /
+    /// Play Continuous buttons, all of which should run to a real
+    /// chess termination (checkmate, stalemate, or one of the four
+    /// draw rules). Self-play and arena use `ChessGameEngine` directly
+    /// and have their own cap handling; they do not call this entry
+    /// point. (`RawGameResult.terminatedEarly` is still produced
+    /// elsewhere — `ParallelWorkerStatsBox.recordDroppedGame` — for
+    /// its own stat-tracking ring.)
     @discardableResult
     func beginNewGame(
         white: any ChessPlayer,
         black: any ChessPlayer,
-        initialState: GameState = .starting,
-        maxPlies: Int? = nil
+        initialState: GameState = .starting
     ) async throws -> RawGameResult {
         if gameInProgress {
             throw ChessMachineError.alreadyPlaying
@@ -179,12 +180,12 @@ final class ChessMachine: @unchecked Sendable {
         white.onNewGame(true)
         black.onNewGame(false)
 
-        return try await runGameLoop(maxPlies: maxPlies)
+        return try await runGameLoop()
     }
 
     // MARK: - Game Loop
 
-    private func runGameLoop(maxPlies: Int?) async throws -> RawGameResult {
+    private func runGameLoop() async throws -> RawGameResult {
         guard let engine else {
             // `engine` is set unconditionally in `beginNewGame` at the
             // single call site that drives this method; reaching here
@@ -203,14 +204,6 @@ final class ChessMachine: @unchecked Sendable {
         var whiteMoveCount = 0
         var blackMoveCount = 0
         var lastMove: ChessMove?
-        /// Set when the loop bails because `engine.moveHistory.count`
-        /// hit the `maxPlies` cap before the engine declared a
-        /// natural termination. Drives the `.terminatedEarly` return
-        /// path below; the player/delegate path is unchanged and
-        /// sees this as a stalemate (the same `engine.result ??
-        /// .stalemate` fallback the prior code used for "engine left
-        /// result unset" cases).
-        var terminatedByMaxPlies = false
 
         // The engine owns `currentLegalMoves` — computed once at init
         // and refreshed inside `applyMoveAndAdvance` after each move —
@@ -271,18 +264,6 @@ final class ChessMachine: @unchecked Sendable {
                 let snapshotState = engine.state
                 let event = DelegateEvent.didApplyMove(move: move, newState: snapshotState)
                 emit(event)
-
-                // Max-plies guard. Check AFTER the move is applied so
-                // we end the game on the exact ply that hits the cap
-                // (rather than the ply after). Only trips when the
-                // engine has not already declared a natural result on
-                // this same move — natural termination takes priority.
-                if let cap = maxPlies,
-                   engine.result == nil,
-                   engine.moveHistory.count >= cap {
-                    terminatedByMaxPlies = true
-                    break
-                }
             } catch is CancellationError {
                 // Propagate cancellation through runGameLoop so the
                 // caller sees `CancellationError` and skips the
@@ -305,23 +286,22 @@ final class ChessMachine: @unchecked Sendable {
             totalGameTimeMs: totalGameMs
         )
 
-        // For the player + delegate path, max-plies-terminated games
-        // are reported as a stalemate — the same fallback the prior
-        // code used whenever `engine.result` was unset at end-of-loop.
-        // The self-play driver consumes the `.terminatedEarly` return
-        // value separately and drops the game (recorded plies on the
-        // player's per-game scratch never get flushed, and the next
-        // `onNewGame` zeroes them).
-        let finalResult = engine.result ?? .stalemate
+        // The loop only exits when `engine.result != nil` (or via
+        // throw — handled inside the loop body), so `engine.result`
+        // is always non-nil here. The old `?? .stalemate` fallback
+        // is gone with the max-plies cap; if a future change brings
+        // back an "exit without engine result" path it should add a
+        // distinct termination cause rather than re-bucketing into
+        // stalemate.
+        guard let finalResult = engine.result else {
+            preconditionFailure("runGameLoop exited the while loop with engine.result == nil — only the throw path should bypass the engine.result != nil exit condition")
+        }
         let finalState = engine.state
         whitePlayer?.onGameEnded(finalResult, finalState: finalState)
         blackPlayer?.onGameEnded(finalResult, finalState: finalState)
 
         emit(.gameEnded(result: finalResult, finalState: finalState, stats: stats))
 
-        if terminatedByMaxPlies {
-            return .terminatedEarly
-        }
         return .terminatedNormally(finalResult)
     }
 
