@@ -17,13 +17,23 @@ final class HumanPlayPacerTests: XCTestCase {
 
     // MARK: - Snapshot fixtures
 
+    /// Per-test counter that mints monotonic `eventSeq` values so
+    /// every fabricated snapshot is "ahead" of the prior one — mirrors
+    /// production where `GameWatcher` increments the counter under its
+    /// lock for every mutation. Tests that need to deliberately re-
+    /// ingest the same snapshot (the "duplicate snapshot is no-op" path)
+    /// hold on to the returned value and pass it back unchanged.
+    private var nextEventSeq: UInt64 = 0
+
     private func snapshot(
         moveCount: Int,
         lastMove: ChessMove?,
         sideToMove: PieceColor,
         result: GameResult? = nil
     ) -> GameWatcher.Snapshot {
+        nextEventSeq += 1
         var s = GameWatcher.Snapshot()
+        s.eventSeq = nextEventSeq
         s.moveCount = moveCount
         s.lastMove = lastMove
         s.result = result
@@ -340,6 +350,71 @@ final class HumanPlayPacerTests: XCTestCase {
         XCTAssertEqual(pacer.displayedSnapshot.result, .checkmate(winner: .white))
     }
 
+    /// Regression: in production main-actor flows, the `didApplyMove`
+    /// and `gameEnded` emissions both happen on `ChessMachine`'s
+    /// delegate queue back-to-back; by the time the main-queue handler
+    /// for the FIRST emission runs, the watcher has already absorbed
+    /// the second mutation and `gameWatcher.snapshot()` returns the
+    /// post-`gameEnded` state (moveCount=0, result set, lastMove=
+    /// final move). The pacer must still recognize the unrecorded
+    /// final move in that coalesced snapshot, animate it, and only
+    /// then transition to `.gameOver` — otherwise the window stays
+    /// on "Waiting…" indefinitely because no `pieces` change fires
+    /// `.onChange` and `onAnimationCompleted` never runs.
+    ///
+    /// The user originally reported this as the post-promotion variant
+    /// of the prior "stuck on Waiting…" bug: white promoted a pawn to
+    /// queen with check-mate, the engine emitted both events on the
+    /// delegate queue in rapid succession, and the window hung with
+    /// the pre-promotion board still on screen.
+    func testCoalescedFinalMoveSnapshotAnimatesThenEnds() {
+        let pacer = HumanPlayPacer(postHumanDelay: .seconds(10))
+        pacer.start(
+            humanColor: .white,
+            initialSnapshot: snapshot(moveCount: 0, lastMove: nil, sideToMove: .white)
+        )
+
+        // Coalesced snapshot: moveCount zeroed by gameEnded, result
+        // set, lastMove still reflects the final move. (lastMove != the
+        // displayed snapshot's lastMove because the displayed snapshot
+        // is the pre-move state.)
+        let hm = humanWhiteMove()
+        var coalesced = snapshot(
+            moveCount: 0,
+            lastMove: hm,
+            sideToMove: .black,
+            result: .checkmate(winner: .white)
+        )
+        coalesced.lastGameStats = GameStats(
+            totalMoves: 1,
+            whiteMoves: 1,
+            blackMoves: 0,
+            whiteThinkingTimeMs: 0,
+            blackThinkingTimeMs: 0,
+            totalGameTimeMs: 0
+        )
+        pacer.ingest(coalesced)
+
+        // The final move must animate first — banner stays mid-game
+        // until completion fires.
+        XCTAssertEqual(pacer.phase, .humanAnimating(hm))
+        XCTAssertEqual(pacer.displayedSnapshot.lastMove, hm)
+        XCTAssertNil(
+            pacer.displayedSnapshot.result,
+            "result is deferred — banner must not jump ahead of the slide"
+        )
+        XCTAssertEqual(
+            pacer.history,
+            [HumanPlayPacer.HistoryEntry(plyNumber: 1, side: .white, move: hm)],
+            "the coalesced final move must still be recorded in history"
+        )
+
+        pacer.onAnimationCompleted()
+        XCTAssertEqual(pacer.phase, .gameOver(.checkmate(winner: .white)))
+        XCTAssertEqual(pacer.displayedSnapshot.result, .checkmate(winner: .white))
+        XCTAssertEqual(pacer.displayedSnapshot.lastGameStats?.totalMoves, 1)
+    }
+
     /// Regression: in production, the `gameEnded` snapshot arrives as a
     /// SEPARATE `GameWatcher.changes` emission AFTER the final move's
     /// `didApplyMove` emission, and the watcher zeroes `moveCount` on
@@ -397,6 +472,52 @@ final class HumanPlayPacerTests: XCTestCase {
         XCTAssertEqual(pacer.phase, .gameOver(.drawByThreefoldRepetition))
         XCTAssertEqual(pacer.displayedSnapshot.result, .drawByThreefoldRepetition)
         XCTAssertEqual(pacer.displayedSnapshot.lastGameStats?.totalMoves, 1)
+    }
+
+    // MARK: - Seeded history (Revert to here)
+
+    /// Reverting to a past ply re-launches the game from an
+    /// intermediate position; the pacer's `start` accepts the kept
+    /// history so the sidebar continues to display the moves that
+    /// led to the revert point, and the phase derivation looks at
+    /// `initialSnapshot.state.currentPlayer` rather than blindly
+    /// assuming white moves first — after an odd-ply revert, black
+    /// is on move and a white-playing human enters `.aiDelay` even
+    /// though the pacer was just `start(...)`-ed.
+    func testStartWithSeededHistoryPreservesEntriesAndPicksPhaseFromCurrentPlayer() {
+        let pacer = HumanPlayPacer(postHumanDelay: .seconds(10))
+        let hm = humanWhiteMove()
+        let seed = [
+            HumanPlayPacer.HistoryEntry(plyNumber: 1, side: .white, move: hm)
+        ]
+        // After ply 1, side to move is black.
+        let snap = snapshot(moveCount: 1, lastMove: hm, sideToMove: .black)
+        pacer.start(humanColor: .white, initialSnapshot: snap, seedingHistory: seed)
+
+        XCTAssertEqual(pacer.history, seed)
+        XCTAssertEqual(pacer.displayedSnapshot.lastMove, hm)
+        XCTAssertEqual(
+            pacer.phase, .aiDelay,
+            "white-playing human + black-to-move snapshot must enter .aiDelay so the AI thinks next"
+        )
+    }
+
+    func testStartWithSeededHistoryEntersHumanTurnWhenItIsHumansMove() {
+        // Even-ply revert: white-to-move next; human plays white →
+        // phase should be .humanTurn so the board accepts the next
+        // tap immediately.
+        let pacer = HumanPlayPacer(postHumanDelay: .seconds(10))
+        let hm = humanWhiteMove()
+        let am = aiBlackMove()
+        let seed = [
+            HumanPlayPacer.HistoryEntry(plyNumber: 1, side: .white, move: hm),
+            HumanPlayPacer.HistoryEntry(plyNumber: 2, side: .black, move: am)
+        ]
+        let snap = snapshot(moveCount: 2, lastMove: am, sideToMove: .white)
+        pacer.start(humanColor: .white, initialSnapshot: snap, seedingHistory: seed)
+
+        XCTAssertEqual(pacer.history, seed)
+        XCTAssertEqual(pacer.phase, .humanTurn)
     }
 
     // MARK: - Move history

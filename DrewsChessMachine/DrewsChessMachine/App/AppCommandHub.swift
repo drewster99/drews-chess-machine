@@ -65,10 +65,17 @@ final class AppCommandHub {
     var chartZoomAutoAvailable: Bool = false
 
     /// `true` while a human-vs-network game (Chess > Play…) is in
-    /// flight. Drives the Chess menu's enable/disable state and
+    /// flight. Drives the Chess menu's Stop Game enable/disable and
     /// blocks the destructive File / Train items from running
     /// concurrently with the user's game.
     var humanGameInFlight: Bool = false
+
+    /// `true` while `PlayController` remembers the last opponent
+    /// choice + side — i.e., Reset Game has settings to relaunch
+    /// with. Stays true across natural game-end so the post-game
+    /// window can still Reset; goes false on explicit Stop / window
+    /// close.
+    var humanGameCanReset: Bool = false
 
     // MARK: - Action closures
 
@@ -152,6 +159,6 @@ final class AppCommandHub {
 
     /// Chess menu > Reset Game. Restarts the in-flight human game with
     /// the same opponent type and side, re-snapshotting weights where
-    /// applicable. Disabled when `humanGameInFlight == false`.
+    /// applicable. Disabled when `humanGameCanReset == false`.
     var resetHumanGame: () -> Void = {}
 }

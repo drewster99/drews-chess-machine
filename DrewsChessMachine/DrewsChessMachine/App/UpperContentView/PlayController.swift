@@ -110,11 +110,81 @@ final class PlayController {
     /// get replaced anyway).
     private var liveTrainerMirrorNetwork: ChessMPSNetwork?
 
-    /// Remembered between `start(...)` and the next `stop(...)` so
-    /// `reset(...)` can relaunch a fresh game with the same opponent
-    /// choice and side without re-asking the user.
+    /// Remembered between `start(...)` and the next explicit `stop(...)`
+    /// so `reset(...)` can relaunch a fresh game with the same opponent
+    /// choice and side without re-asking the user. Intentionally
+    /// preserved across natural game-end (the launchGame cleanup
+    /// leaves them in place) so post-game Reset still has settings to
+    /// relaunch with. Explicit `stop()` — Stop Game / window close /
+    /// next `start()` — clears them.
     private var lastOpponentChoice: HumanPlayOpponentChoice?
     private var lastHumanColor: PieceColor?
+
+    /// True iff a remembered opponent choice + side are on file —
+    /// i.e., Reset Game has a fresh game to launch. Becomes true at
+    /// `start(...)` and stays true through natural game-end so the
+    /// post-game window can still relaunch; falls back to false on
+    /// explicit `stop()`.
+    var canReset: Bool {
+        lastOpponentChoice != nil && lastHumanColor != nil
+    }
+
+    // MARK: - Live AI sampling temperature
+
+    /// Sampling temperature (tau) the AI uses for every ply of a
+    /// human-vs-network game. 1.0 reproduces the unmodified policy
+    /// softmax; values < 1 concentrate on the top-1 move (sharper,
+    /// stronger but more predictable play); values > 1 flatten the
+    /// distribution toward uniform (weaker, more varied play).
+    ///
+    /// Live-updating: `MPSChessPlayer` reads from `humanPlayTauBox` at
+    /// the top of each `sampleMove`, so changing this between the AI's
+    /// moves takes effect on the very next AI move. Persists across
+    /// launches via `UserDefaults`.
+    var humanPlayTau: Float {
+        didSet {
+            // NaN / infinity: collapse to the default before the
+            // re-entrancy check below would loop forever (NaN != NaN
+            // is true in Swift, so a NaN write would fail every
+            // equality check). UserDefaults is the only path that
+            // could deliver an invalid value here — Sliders honor
+            // their bounded range — but a single defensive line is
+            // cheaper than depending on every caller staying healthy.
+            if !humanPlayTau.isFinite {
+                humanPlayTau = 1.0
+                return
+            }
+            let clamped = max(Self.humanPlayTauMin, min(humanPlayTau, Self.humanPlayTauMax))
+            if clamped != humanPlayTau {
+                humanPlayTau = clamped  // re-enters didSet, then commits below
+                return
+            }
+            UserDefaults.standard.set(Double(humanPlayTau), forKey: Self.humanPlayTauKey)
+            humanPlayTauBox.value = humanPlayTau
+        }
+    }
+
+    /// Lock-protected mirror of `humanPlayTau`, handed to the AI's
+    /// `MPSChessPlayer.tauOverride` so the game-task thread can read a
+    /// value the main actor wrote without a data race on the
+    /// observable property.
+    let humanPlayTauBox: SyncBox<Float>
+
+    static let humanPlayTauMin: Float = 0.05
+    static let humanPlayTauMax: Float = 3.0
+    private static let humanPlayTauKey = "humanPlayTau"
+
+    init() {
+        let stored = UserDefaults.standard.object(forKey: Self.humanPlayTauKey) as? Double
+        let initial: Float
+        if let stored, stored.isFinite {
+            initial = max(Self.humanPlayTauMin, min(Float(stored), Self.humanPlayTauMax))
+        } else {
+            initial = 1.0
+        }
+        self.humanPlayTau = initial
+        self.humanPlayTauBox = SyncBox(initial)
+    }
 
     /// Monotonically incremented by `launchGame(...)`. The launched
     /// game task captures the value at creation time and checks it
@@ -231,7 +301,19 @@ final class PlayController {
     /// `trainer` — passed in by `UpperContentView` rather than held as
     /// a property so the controller has no retain cycle on the
     /// session.
-    func start(session: SessionController, gameWatcher: GameWatcher) {
+    ///
+    /// `initialState` and `seededHistory` are non-default only for the
+    /// Revert to here path: `initialState` is the position obtained
+    /// by replaying the kept prefix, and `seededHistory` is the
+    /// matching pacer history that should appear in the move-list
+    /// sidebar from the moment the revert finishes. For a standard
+    /// fresh game both stay at their defaults (`.starting` / empty).
+    func start(
+        session: SessionController,
+        gameWatcher: GameWatcher,
+        initialState: GameState = .starting,
+        seededHistory: [HumanPlayPacer.HistoryEntry] = []
+    ) {
         guard !isPlayingHuman else {
             setupErrorText = "A human game is already running."
             return
@@ -241,6 +323,7 @@ final class PlayController {
         let opponent = opponentChoice
         let humanIsWhite = (humanColor == .white)
         let chosenURL = loadedFileURL
+        let isRevert = !seededHistory.isEmpty
 
         // Snapshot the user's two simple sources (champion / loaded file
         // weights) up front, while the trainer path needs an async
@@ -248,17 +331,32 @@ final class PlayController {
         // popover can dismiss and the UI can render "loading" instead
         // of spinning the main actor.
         isSetupVisible = false
-        SessionLogger.shared.log(
-            "[BUTTON] Chess > Play (opponent=\(Self.label(for: opponent)) humanColor=\(humanIsWhite ? "white" : "black"))"
-        )
+        if isRevert {
+            SessionLogger.shared.log(
+                "[BUTTON] Chess > Revert (opponent=\(Self.label(for: opponent)) humanColor=\(humanIsWhite ? "white" : "black") plies=\(seededHistory.count))"
+            )
+        } else {
+            SessionLogger.shared.log(
+                "[BUTTON] Chess > Play (opponent=\(Self.label(for: opponent)) humanColor=\(humanIsWhite ? "white" : "black"))"
+            )
+        }
 
-        // Reset board state immediately so the UI shows the starting
-        // position the moment Play is clicked, even before the
-        // network is materialized. Also flip `isPlaying` synchronously
-        // so the menu and `isBusy` gates pick it up before the next
-        // heartbeat — same reason the existing `playSingleGame`
-        // refreshes `gameSnapshot` right after `markPlaying(true)`.
-        gameWatcher.resetCurrentGame()
+        // Seed game state immediately so the UI shows the starting (or
+        // reverted-to) position the moment Play / Revert is clicked,
+        // even before the network is materialized. Also flip
+        // `isPlaying` synchronously so the menu and `isBusy` gates
+        // pick it up before the next heartbeat — same reason the
+        // existing `playSingleGame` refreshes `gameSnapshot` right
+        // after `markPlaying(true)`.
+        if isRevert {
+            gameWatcher.seedFreshGame(
+                state: initialState,
+                lastMove: seededHistory.last?.move,
+                moveCount: seededHistory.count
+            )
+        } else {
+            gameWatcher.resetCurrentGame()
+        }
         gameWatcher.markPlaying(true)
         isPlayingHuman = true
         lastOpponentChoice = opponent
@@ -269,13 +367,17 @@ final class PlayController {
         gameGeneration &+= 1
 
         // Stand up a fresh pacer for this game and seed it with the
-        // just-reset board snapshot so the human-play window has a
-        // consistent `displayedSnapshot` to render from the moment it
-        // opens. The pacer is also handed to the AI's gated source
-        // below so the AI side blocks on the pacer's `.aiThinking`
-        // transition for each ply.
+        // just-seeded board snapshot + any kept history (Revert path)
+        // so the human-play window has a consistent `displayedSnapshot`
+        // and move list from the moment it opens. The pacer is also
+        // handed to the AI's gated source below so the AI side blocks
+        // on the pacer's `.aiThinking` transition for each ply.
         let pacer = HumanPlayPacer()
-        pacer.start(humanColor: humanColor, initialSnapshot: gameWatcher.snapshot())
+        pacer.start(
+            humanColor: humanColor,
+            initialSnapshot: gameWatcher.snapshot(),
+            seedingHistory: seededHistory
+        )
         self.pacer = pacer
 
         materializeTask = Task { [weak self] in
@@ -332,7 +434,8 @@ final class PlayController {
                 self.launchGame(
                     source: gated,
                     humanIsWhite: humanIsWhite,
-                    gameWatcher: gameWatcher
+                    gameWatcher: gameWatcher,
+                    initialState: initialState
                 )
                 // The window controller observes this controller's
                 // `@Observable` state plus polls the gameWatcher
@@ -357,19 +460,109 @@ final class PlayController {
     /// opponents (`.championSnapshot` / `.trainerSnapshot` /
     /// `.loadedFile`) re-snapshot weights automatically and the
     /// `.liveTrainer` mirror is reused.
+    ///
+    /// Works mid-game (cancels the in-flight game first) and post-
+    /// natural-game-end (the game task already cleaned up `gameTask` /
+    /// `opponentSource` but intentionally left `lastOpponentChoice` /
+    /// `lastHumanColor` and the .gameOver pacer in place so the user
+    /// could still see the result banner and click Reset). In the
+    /// post-end branch we tear down the .gameOver pacer here so
+    /// `start(...)` can stand up a fresh one.
     func reset(session: SessionController, gameWatcher: GameWatcher) {
-        guard isPlayingHuman else { return }
         guard let choice = lastOpponentChoice, let color = lastHumanColor else { return }
         SessionLogger.shared.log("[BUTTON] Chess > Reset Game")
-        // Capture the saved values before `stop` clears them, then
-        // restore onto the bound popover state so `start` reads the
-        // same choice + color it just had.
+        // Capture the saved values before `stop` / start would clear
+        // them, then restore onto the bound popover state so
+        // `start(...)` reads the same choice + color it just had.
         let savedChoice = choice
         let savedColor = color
-        stop(gameWatcher: gameWatcher)
+        if isPlayingHuman {
+            stop(gameWatcher: gameWatcher)
+        } else {
+            // Game already ended; the launchGame cleanup ran but left
+            // the pacer in .gameOver so the result banner stayed
+            // visible. Tear it down here before the new start.
+            pacer?.stop()
+            pacer = nil
+            opponentSource = nil
+        }
         opponentChoice = savedChoice
         humanColor = savedColor
         start(session: session, gameWatcher: gameWatcher)
+    }
+
+    /// User picked a ply in the move-history sidebar and clicked
+    /// "Revert to here". Tear down the current game (mid-game or
+    /// post-game), reconstruct the game state by replaying the kept
+    /// `1...plyNumber` prefix from the standard starting position,
+    /// then launch a fresh game from that position with the kept
+    /// history pre-loaded into the pacer's history list and
+    /// sidebar.
+    ///
+    /// Constraints:
+    /// - `plyNumber >= 1` (the first ply cannot be removed; reverting
+    ///   to it keeps it and removes everything after).
+    /// - `plyNumber < pacer.history.count` (reverting to the last
+    ///   played ply is a no-op — nothing to remove).
+    ///
+    /// Settings (`lastOpponentChoice`, `lastHumanColor`,
+    /// `humanPlayTau`) are intentionally preserved across revert so
+    /// the user keeps their opponent + side + sampling temperature.
+    /// The AI re-snapshots weights for snapshot opponent modes (same
+    /// as Reset Game), so a revert against `.trainerSnapshot` gets
+    /// the trainer's current weights, not a stale copy from the
+    /// pre-revert game.
+    func revertToHistoryPly(_ plyNumber: Int, session: SessionController, gameWatcher: GameWatcher) {
+        guard let oldPacer = pacer else { return }
+        guard plyNumber >= 1, plyNumber < oldPacer.history.count else { return }
+        guard let choice = lastOpponentChoice, let color = lastHumanColor else { return }
+
+        let keptMoves = Array(oldPacer.history.prefix(plyNumber))
+
+        // Reconstruct the game state at the revert point by replaying
+        // the kept moves from the standard starting position. The
+        // alternative — querying the engine for the historical state
+        // at a specific ply — isn't supported (the engine doesn't
+        // keep per-ply snapshots), so the replay is the source of
+        // truth.
+        var revertState = GameState.starting
+        for entry in keptMoves {
+            revertState = MoveGenerator.applyMove(entry.move, to: revertState)
+        }
+
+        // Tear down the current game (preserve settings — `stop()`
+        // would clear lastOpponentChoice / lastHumanColor, which we
+        // need to feed back into `start(...)`). Mirror `stop()`'s
+        // cancellation work without the settings wipe.
+        if isPlayingHuman {
+            isPlayingHuman = false
+            materializeTask?.cancel()
+            materializeTask = nil
+            humanPlayer?.cancelPendingChoice()
+            gameTask?.cancel()
+            gameTask = nil
+            humanPlayer = nil
+        }
+        oldPacer.stop()
+        pacer = nil
+        opponentSource = nil
+        pendingLegalMoves = []
+        selectedFromSquare = nil
+        pendingPromotion = nil
+
+        // Restore opponent + side (the popover state may have drifted
+        // since the original `start(...)`, but `lastOpponentChoice` /
+        // `lastHumanColor` hold the values the game was actually
+        // playing under) and launch with the revert position + kept
+        // history seeded into the new pacer.
+        opponentChoice = choice
+        humanColor = color
+        start(
+            session: session,
+            gameWatcher: gameWatcher,
+            initialState: revertState,
+            seededHistory: keptMoves
+        )
     }
 
     /// User pressed Stop / Resign. Cancels the game task, which
@@ -419,7 +612,8 @@ final class PlayController {
     private func launchGame(
         source: MoveEvaluationSource,
         humanIsWhite: Bool,
-        gameWatcher: GameWatcher
+        gameWatcher: GameWatcher,
+        initialState: GameState
     ) {
         let humanLabel = humanIsWhite ? "White (you)" : "Black (you)"
         let aiLabel = humanIsWhite ? "Black (network)" : "White (network)"
@@ -458,8 +652,9 @@ final class PlayController {
         // `source`, `human`, `gameWatcher`, `aiLabel`, `humanIsWhite`,
         // `myGeneration` — produce the AI side and the (white, black)
         // pair entirely within the task.
-        gameTask = Task { [weak self, source, human, gameWatcher, aiLabel, humanIsWhite, myGeneration] in
-            let ai = MPSChessPlayer(name: aiLabel, source: source)
+        let tauBox = humanPlayTauBox
+        gameTask = Task { [weak self, source, human, gameWatcher, aiLabel, humanIsWhite, myGeneration, tauBox, initialState] in
+            let ai = MPSChessPlayer(name: aiLabel, source: source, tauOverride: tauBox)
             let machine = ChessMachine()
             machine.delegate = gameWatcher
             do {
@@ -472,9 +667,9 @@ final class PlayController {
                 // pass them positionally instead.
                 let raw: RawGameResult
                 if humanIsWhite {
-                    raw = try await machine.beginNewGame(white: human, black: ai)
+                    raw = try await machine.beginNewGame(white: human, black: ai, initialState: initialState)
                 } else {
-                    raw = try await machine.beginNewGame(white: ai, black: human)
+                    raw = try await machine.beginNewGame(white: ai, black: human, initialState: initialState)
                 }
                 // Log the natural game end so a "Waiting…" or otherwise
                 // surprising terminal state in the window is traceable to
@@ -519,10 +714,15 @@ final class PlayController {
                 // `.gameOver` phase. `stop()` (Stop / Reset / window
                 // close while still playing) and the next `start()`
                 // are the only paths that tear it down.
+                //
+                // `lastOpponentChoice` / `lastHumanColor` are
+                // intentionally NOT cleared here — they're what Reset
+                // Game uses to relaunch with the same settings, and
+                // we want Reset to work post-game (the on-board
+                // toolbar gates on `canReset`, not `isPlayingHuman`).
+                // Explicit `stop()` clears them.
                 self.opponentSource = nil
                 self.gameTask = nil
-                self.lastOpponentChoice = nil
-                self.lastHumanColor = nil
             }
         }
     }

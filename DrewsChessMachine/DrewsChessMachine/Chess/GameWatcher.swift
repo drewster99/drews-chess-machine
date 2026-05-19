@@ -19,6 +19,20 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     /// Snapshot of all displayable values, taken atomically. Sendable so it
     /// can flow from any thread to the main actor.
     struct Snapshot: Sendable {
+        /// Monotonically-increasing per-mutation counter. Incremented
+        /// once per `lock.withLock` write block in `GameWatcher` so any
+        /// consumer can reliably ask "has anything changed since the
+        /// last snapshot I processed?" by comparing against the prior
+        /// observation. Critical for the pacer: `ChessMachine` fires
+        /// `didApplyMove` and `gameEndedWith` back-to-back on its
+        /// serial delegate queue, and a main-actor consumer subscribing
+        /// via `.receive(on: .main)` typically observes the post-
+        /// gameEnded *coalesced* state on its first wake-up — field-
+        /// level discriminators that reset across that boundary (such
+        /// as `moveCount`, which `gameEnded` zeroes) silently lose the
+        /// "a new move just landed" signal, but `eventSeq` keeps
+        /// climbing through both mutations.
+        var eventSeq: UInt64 = 0
         var state: GameState = .starting
         var result: GameResult?
         var moveCount = 0
@@ -86,6 +100,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
 
     func resetCurrentGame() {
         lock.withLock { s in
+            s.eventSeq += 1
             s.state = .starting
             s.result = nil
             s.moveCount = 0
@@ -95,14 +110,42 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         changes.send()
     }
 
+    /// Seed a fresh game from a non-standard position. Used by
+    /// Human-vs-Network's "Revert to here" path: the engine restarts
+    /// from `state` (computed by replaying the kept-move prefix), and
+    /// the watcher's `moveCount` / `lastMove` are pre-populated so the
+    /// UI reads the right ply number and last-move highlight from the
+    /// moment Reset finishes. Equivalent to `resetCurrentGame` + a
+    /// synthetic `onMoveApplied` pre-load, but fires a single change
+    /// event (one eventSeq bump) so the pacer's discriminator sees
+    /// exactly one revert transition.
+    func seedFreshGame(state: GameState, lastMove: ChessMove?, moveCount: Int) {
+        lock.withLock { s in
+            s.eventSeq += 1
+            s.state = state
+            s.result = nil
+            s.moveCount = moveCount
+            s.lastMove = lastMove
+        }
+        changes.send()
+    }
+
     func resetAll() {
-        lock.withLock { $0 = Snapshot() }
+        lock.withLock { s in
+            // Preserve eventSeq across the reset so its monotonicity
+            // invariant holds for any consumer that's been observing
+            // this watcher.
+            let priorSeq = s.eventSeq
+            s = Snapshot()
+            s.eventSeq = priorSeq + 1
+        }
         changes.send()
     }
 
     func markPlaying(_ playing: Bool) {
         let now = CFAbsoluteTimeGetCurrent()
         lock.withLock { s in
+            s.eventSeq += 1
             Self.setPlayingLocked(&s, playing: playing, now: now)
         }
         changes.send()
@@ -134,6 +177,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     /// delegate hook below — the delegate method calls this one.
     func onMoveApplied(move: ChessMove, newState: GameState) {
         lock.withLock { s in
+            s.eventSeq += 1
             s.state = newState
             s.moveCount += 1
             s.lastMove = move
@@ -160,6 +204,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     ) {
         let now = CFAbsoluteTimeGetCurrent()
         watcher.lock.withLock { s in
+            s.eventSeq += 1
             s.result = result
             s.state = finalState
             s.lastGameStats = stats
@@ -210,6 +255,7 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     func chessMachine(_ machine: ChessMachine, playerErrored player: any ChessPlayer, error: any Error) {
         let now = CFAbsoluteTimeGetCurrent()
         lock.withLock { s in
+            s.eventSeq += 1
             Self.setPlayingLocked(&s, playing: false, now: now)
         }
         changes.send()

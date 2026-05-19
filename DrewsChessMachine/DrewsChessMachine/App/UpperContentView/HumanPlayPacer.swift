@@ -101,6 +101,20 @@ final class HumanPlayPacer {
     /// `.moveCount`, etc.
     private(set) var displayedSnapshot: GameWatcher.Snapshot = .init()
 
+    /// Last `GameWatcher.Snapshot.eventSeq` we've fully ingested.
+    /// Independent of `displayedSnapshot.eventSeq` because not every
+    /// ingest promotes the snapshot to the display — game-end second
+    /// emissions and suppressed out-of-phase emissions advance this
+    /// counter but leave the display alone. The pacer's "have I seen
+    /// this event yet?" guard is `snapshot.eventSeq > displayedEventSeq`;
+    /// see the comment on `Snapshot.eventSeq` for why this is required
+    /// vs. comparing `moveCount` / `lastMove` (the watcher zeroes
+    /// `moveCount` in the same critical section it sets `result`, so a
+    /// main-actor consumer typically observes the coalesced post-
+    /// `gameEnded` state and any field-based discriminator that resets
+    /// across that boundary silently loses the final move).
+    private var displayedEventSeq: UInt64 = 0
+
     /// Artificial post-human-move "absorb your move" delay before the
     /// AI is permitted to think. Production value is 2 seconds; tests
     /// inject a much smaller value so the suite stays fast.
@@ -164,13 +178,24 @@ final class HumanPlayPacer {
     /// - human plays white → `.humanTurn` (wait for human's tap).
     /// - human plays black → `.aiDelay` (schedule the breathing-room
     ///   timer so the AI doesn't snap-move at game start).
-    func start(humanColor: PieceColor, initialSnapshot: GameWatcher.Snapshot) {
+    func start(
+        humanColor: PieceColor,
+        initialSnapshot: GameWatcher.Snapshot,
+        seedingHistory: [HistoryEntry] = []
+    ) {
         stop()
         self.humanColor = humanColor
         self.displayedSnapshot = initialSnapshot
+        self.displayedEventSeq = initialSnapshot.eventSeq
         self.pendingEnd = nil
-        self.history = []
-        if humanColor == .white {
+        self.history = seedingHistory
+        // Phase derivation looks at the snapshot's side-to-move
+        // (rather than assuming white moves first), so a Revert to
+        // here that left black on move correctly enters .aiDelay when
+        // the human plays white — and .humanTurn when the human plays
+        // black. For a standard new game (starting position →
+        // sideToMove = white), this collapses to the prior behavior.
+        if initialSnapshot.state.currentPlayer == humanColor {
             phase = .humanTurn
         } else {
             phase = .aiDelay
@@ -226,17 +251,32 @@ final class HumanPlayPacer {
     ///     update — racing the in-flight animation with a stale or
     ///     premature snapshot is exactly the bug the pacer prevents.
     func ingest(_ snapshot: GameWatcher.Snapshot) {
+        // Monotonic gate: ignore any snapshot we've already ingested.
+        // `eventSeq` increments under the watcher's lock once per
+        // mutation, so this single comparison reliably tells us
+        // "something changed since I last looked" — independent of
+        // which fields the mutation touched and immune to the
+        // gameEnded coalesce that defeats `moveCount`-based gates.
+        guard snapshot.eventSeq > displayedEventSeq else { return }
+        displayedEventSeq = snapshot.eventSeq
+
+        // Game-end fields: stash for promotion on the next animation
+        // completion. The pendingEnd-already-set guard prevents
+        // overwrite when the watcher's didApplyMove + gameEnded
+        // emissions arrive separately (uncoalesced) and we see the
+        // result twice.
         if let result = snapshot.result, displayedSnapshot.result == nil, pendingEnd == nil {
             pendingEnd = PendingEnd(result: result, lastGameStats: snapshot.lastGameStats)
         }
 
-        // `moveCount` is the live ply counter from `GameWatcher`. Using
-        // it (rather than `lastMove != displayed.lastMove`) handles the
-        // rook-oscillation case where the same `(from, to)` repeats
-        // later in the game, and the `gameEnded` case where the
-        // watcher zeroes `moveCount` while `lastMove` stays put.
-        guard snapshot.moveCount > displayedSnapshot.moveCount,
-              let move = snapshot.lastMove
+        // Move detection: `lastMove` change relative to the displayed
+        // snapshot. eventSeq above already told us something changed;
+        // here we decide whether that something was a move worth
+        // animating. (A mutation that only flipped `isPlaying` or
+        // bumped `totalGames` advances eventSeq but doesn't change
+        // `lastMove`, and the pacer correctly skips both branches.)
+        guard let move = snapshot.lastMove,
+              snapshot.lastMove != displayedSnapshot.lastMove
         else {
             return
         }
@@ -245,11 +285,27 @@ final class HumanPlayPacer {
         // i.e., the opponent of whoever just played.
         let mover = snapshot.state.currentPlayer.opposite
 
+        // In a coalesced game-end snapshot the watcher has already
+        // zeroed `moveCount` and set `result` / `lastGameStats`. Strip
+        // result/stats before promoting (pendingEnd holds them for
+        // post-animation application so the banner doesn't jump ahead
+        // of the slide), and synthesize the ply number from the
+        // displayed counter so `plyText` reads correctly during the
+        // animation phase. In the uncoalesced path the snapshot's
+        // moveCount is already correct and bigger than displayed.
+        var nextDisplayed = snapshot
+        let plyNumber = snapshot.moveCount > displayedSnapshot.moveCount
+            ? snapshot.moveCount
+            : displayedSnapshot.moveCount + 1
+        nextDisplayed.moveCount = plyNumber
+        nextDisplayed.result = nil
+        nextDisplayed.lastGameStats = displayedSnapshot.lastGameStats
+
         if mover == humanColor {
             if case .humanTurn = phase {
-                displayedSnapshot = snapshot
+                displayedSnapshot = nextDisplayed
                 history.append(HistoryEntry(
-                    plyNumber: snapshot.moveCount,
+                    plyNumber: plyNumber,
                     side: mover,
                     move: move
                 ))
@@ -257,9 +313,9 @@ final class HumanPlayPacer {
             }
         } else {
             if case .aiThinking = phase {
-                displayedSnapshot = snapshot
+                displayedSnapshot = nextDisplayed
                 history.append(HistoryEntry(
-                    plyNumber: snapshot.moveCount,
+                    plyNumber: plyNumber,
                     side: mover,
                     move: move
                 ))

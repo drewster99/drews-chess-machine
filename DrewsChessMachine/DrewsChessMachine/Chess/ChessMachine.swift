@@ -155,6 +155,7 @@ final class ChessMachine: @unchecked Sendable {
     func beginNewGame(
         white: any ChessPlayer,
         black: any ChessPlayer,
+        initialState: GameState = .starting,
         maxPlies: Int? = nil
     ) async throws -> RawGameResult {
         if gameInProgress {
@@ -163,7 +164,15 @@ final class ChessMachine: @unchecked Sendable {
 
         whitePlayer = white
         blackPlayer = black
-        engine = ChessGameEngine()
+        // `ChessGameEngine.init(state:)` re-seeds repetition tracking
+        // for the supplied position — fine for a fresh game from
+        // either the standard starting position or a revert point in
+        // an interactive human game (Revert to here). Move history
+        // before the revert is intentionally NOT reconstructed inside
+        // the engine: 3-fold repetition only sees positions reachable
+        // from `initialState`, which is the desired behavior for a
+        // fork.
+        engine = ChessGameEngine(state: initialState)
         gameInProgress = true
         defer { gameInProgress = false }
 

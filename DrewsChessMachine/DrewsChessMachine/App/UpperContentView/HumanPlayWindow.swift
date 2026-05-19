@@ -168,6 +168,11 @@ fileprivate struct HumanPlayWindowView: View {
     let session: SessionController
     let gameWatcher: GameWatcher
 
+    /// Currently-selected ply in the move-history sidebar. Set by
+    /// tapping a half-move cell; cleared after a successful Revert
+    /// to here. Plies are 1-based and match `HumanPlayPacer.HistoryEntry.plyNumber`.
+    @State private var selectedHistoryPly: Int?
+
     /// Empty snapshot used when no game is active and
     /// `playController.pacer` is `nil` (e.g., the window briefly
     /// outlives a `stop()`). The view's body uses `??` to fall back
@@ -197,6 +202,7 @@ fileprivate struct HumanPlayWindowView: View {
                     .frame(width: Self.historyPanelWidth)
             }
             statusRow
+            tauControlRow
             toolbarRow
         }
         .padding(16)
@@ -376,7 +382,10 @@ fileprivate struct HumanPlayWindowView: View {
     /// sees every move on the board and in the list in the same
     /// order.
     private var moveHistoryPanel: some View {
-        let pairs = Self.pairRows(from: playController.pacer?.history ?? [])
+        let history = playController.pacer?.history ?? []
+        let pairs = Self.pairRows(from: history)
+        let totalPlies = history.count
+        let canRevertSelected = (selectedHistoryPly.map { $0 >= 1 && $0 < totalPlies }) ?? false
         return VStack(alignment: .leading, spacing: 4) {
             Text("Moves")
                 .font(.caption.weight(.semibold))
@@ -407,7 +416,39 @@ fileprivate struct HumanPlayWindowView: View {
                         proxy.scrollTo(lastID, anchor: .bottom)
                     }
                 }
+                // Drop the selection if the history shrank past it
+                // (typically because a fresh game / revert reset the
+                // pacer's history list). Without this, a stale
+                // highlight would survive across games and the
+                // Revert button would either dim silently or operate
+                // on a ply that no longer exists.
+                .onChange(of: totalPlies) {
+                    if let sel = selectedHistoryPly, sel > totalPlies {
+                        selectedHistoryPly = nil
+                    }
+                }
             }
+            Button(
+                action: {
+                    guard let ply = selectedHistoryPly else { return }
+                    playController.revertToHistoryPly(
+                        ply,
+                        session: session,
+                        gameWatcher: gameWatcher
+                    )
+                    selectedHistoryPly = nil
+                },
+                label: {
+                    Text("Revert to here")
+                        .frame(maxWidth: .infinity)
+                }
+            )
+            .controlSize(.small)
+            .disabled(!canRevertSelected)
+            .help(canRevertSelected
+                ? "Remove every move played after ply \(selectedHistoryPly ?? 0) and resume from there."
+                : "Tap any move except the last to enable Revert to here."
+            )
         }
     }
 
@@ -417,22 +458,61 @@ fileprivate struct HumanPlayWindowView: View {
                 .font(.system(.callout, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .frame(width: 28, alignment: .trailing)
-            Text(row.whiteText)
-                .font(.system(.callout, design: .monospaced))
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text(row.blackText)
-                .font(.system(.callout, design: .monospaced))
-                .frame(maxWidth: .infinity, alignment: .leading)
+            moveHistoryHalfCell(text: row.whiteText, ply: row.whitePly)
+            moveHistoryHalfCell(text: row.blackText, ply: row.blackPly)
         }
+    }
+
+    /// A single half-move cell. Tappable when it carries a ply (an
+    /// actual played move): tap sets `selectedHistoryPly` to that
+    /// ply, which (a) highlights the cell and (b) enables the Revert
+    /// to here button below the list. Empty cells (the unanswered
+    /// white half before black has replied) stay rendered for
+    /// alignment but are disabled.
+    @ViewBuilder
+    private func moveHistoryHalfCell(text: String, ply: Int?) -> some View {
+        let isSelected = ply != nil && ply == selectedHistoryPly
+        Button(
+            action: {
+                guard let ply else { return }
+                // Toggle: tapping the already-selected cell deselects
+                // it. Avoids needing a separate Cancel control.
+                if selectedHistoryPly == ply {
+                    selectedHistoryPly = nil
+                } else {
+                    selectedHistoryPly = ply
+                }
+            },
+            label: {
+                Text(text)
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(text.isEmpty ? Color.clear : Color.primary)
+                    .frame(maxWidth: .infinity, minHeight: 18, alignment: .leading)
+                    .padding(.horizontal, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(isSelected
+                                ? Color.accentColor.opacity(0.30)
+                                : Color.clear)
+                    )
+                    .contentShape(Rectangle())
+            }
+        )
+        .buttonStyle(.plain)
+        .disabled(ply == nil || text.isEmpty)
     }
 
     /// One row of the paired move-history list: "1. e2-e4  e7-e5".
     /// `blackText` is empty when only the white half of the pair has
     /// been played (the row appears the moment white moves; the black
-    /// half fills in when black responds).
+    /// half fills in when black responds). `whitePly` / `blackPly`
+    /// carry the 1-based ply numbers from `HumanPlayPacer.HistoryEntry`
+    /// for half-move selection; nil when that half wasn't played.
     private struct MoveRow: Identifiable, Equatable {
         let id: Int
         let moveNumber: Int
+        let whitePly: Int?
+        let blackPly: Int?
         let whiteText: String
         let blackText: String
     }
@@ -449,6 +529,8 @@ fileprivate struct HumanPlayWindowView: View {
         var currentNumber = 0
         var currentWhite = ""
         var currentBlack = ""
+        var currentWhitePly: Int?
+        var currentBlackPly: Int?
         var haveOpen = false
 
         for entry in entries {
@@ -457,24 +539,32 @@ fileprivate struct HumanPlayWindowView: View {
                     rows.append(MoveRow(
                         id: currentNumber,
                         moveNumber: currentNumber,
+                        whitePly: currentWhitePly,
+                        blackPly: currentBlackPly,
                         whiteText: currentWhite,
                         blackText: currentBlack
                     ))
                 }
                 currentNumber = rows.count + 1
                 currentWhite = entry.move.notation
+                currentWhitePly = entry.plyNumber
                 currentBlack = ""
+                currentBlackPly = nil
                 haveOpen = true
             } else {
                 if !haveOpen {
                     currentNumber = rows.count + 1
                     currentWhite = ""
+                    currentWhitePly = nil
                     haveOpen = true
                 }
                 currentBlack = entry.move.notation
+                currentBlackPly = entry.plyNumber
                 rows.append(MoveRow(
                     id: currentNumber,
                     moveNumber: currentNumber,
+                    whitePly: currentWhitePly,
+                    blackPly: currentBlackPly,
                     whiteText: currentWhite,
                     blackText: currentBlack
                 ))
@@ -485,6 +575,8 @@ fileprivate struct HumanPlayWindowView: View {
             rows.append(MoveRow(
                 id: currentNumber,
                 moveNumber: currentNumber,
+                whitePly: currentWhitePly,
+                blackPly: currentBlackPly,
                 whiteText: currentWhite,
                 blackText: currentBlack
             ))
@@ -580,19 +672,58 @@ fileprivate struct HumanPlayWindowView: View {
         return (w, b)
     }
 
+    // MARK: - AI sampling temperature
+
+    /// Slider + monospaced readout for the AI's per-ply sampling
+    /// temperature. Lives outside the toolbar so the slider has room
+    /// to breathe. Updates live: the AI's `MPSChessPlayer` re-reads
+    /// from the shared SyncBox at the top of every `sampleMove`, so a
+    /// slider move between the user's submission and the AI's next
+    /// move takes effect immediately. Persists across launches via
+    /// `UserDefaults`.
+    private var tauControlRow: some View {
+        HStack(spacing: 10) {
+            Text("AI τ")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 36, alignment: .leading)
+            Slider(
+                value: $playController.humanPlayTau,
+                in: PlayController.humanPlayTauMin...PlayController.humanPlayTauMax,
+                step: 0.05
+            )
+            .frame(maxWidth: 260)
+            Text(String(format: "%.2f", playController.humanPlayTau))
+                .font(.body.monospacedDigit())
+                .frame(width: 48, alignment: .trailing)
+            Button("Reset τ") {
+                playController.humanPlayTau = 1.0
+            }
+            .controlSize(.small)
+            .disabled(playController.humanPlayTau == 1.0)
+            Spacer(minLength: 0)
+        }
+    }
+
     // MARK: - Toolbar
 
     private var toolbarRow: some View {
         HStack(spacing: 12) {
-            // Reset only re-launches an in-flight game's opponent
-            // settings (`PlayController.reset` stops + starts using
-            // `lastOpponentChoice` / `lastHumanColor`, both cleared
-            // at game-end cleanup). Mirror the Chess menu's gate:
-            // enabled only while a game is actually running.
-            Button("Reset Game") {
+            // Reset stays enabled across natural game-end so the user
+            // can launch a fresh game without re-opening the setup
+            // popover — `PlayController.reset` works both mid-game and
+            // post-game (gates on `canReset` = remembered opponent
+            // settings, which the cleanup intentionally preserves).
+            // Label flips to "Play Again" post-game so the action
+            // reads naturally as "start a new game" rather than as
+            // "abort this one and restart" — same code path, different
+            // mental model.
+            // Stop only applies mid-game; there's nothing to stop once
+            // the result banner is up.
+            Button(playController.isPlayingHuman ? "Reset Game" : "Play Again") {
                 playController.reset(session: session, gameWatcher: gameWatcher)
             }
-            .disabled(!playController.isPlayingHuman)
+            .disabled(!playController.canReset)
             Button("Stop Game") {
                 playController.stop(gameWatcher: gameWatcher)
             }

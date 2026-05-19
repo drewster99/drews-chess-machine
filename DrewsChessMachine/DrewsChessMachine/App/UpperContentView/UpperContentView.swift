@@ -2171,6 +2171,7 @@ struct UpperContentView: View {
         commandHub.chartZoomOutAvailable = realTraining && session.canZoomChartOut
         commandHub.chartZoomAutoAvailable = realTraining && !chartCoordinator.chartZoomAuto
         commandHub.humanGameInFlight = playController.isPlayingHuman
+        commandHub.humanGameCanReset = playController.canReset
     }
 
     /// True iff any operation is currently running that conflicts

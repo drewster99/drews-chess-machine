@@ -214,6 +214,19 @@ final class MPSChessPlayer: ChessPlayer {
     /// use-after-free-style race; callers MUST only set this outside
     /// of an active `beginNewGame`.
     var schedule: SamplingSchedule
+
+    /// When non-nil, overrides `schedule` on every ply with a flat
+    /// `SamplingSchedule(startTau: box.value, decayPerPly: 0, floorTau:
+    /// box.value, dirichletNoise: nil)`. Hosted in a `SyncBox` so the
+    /// UI can write to it from the main actor while the game task
+    /// reads it from the engine's executor, with no risk of a torn
+    /// multi-word read (the struct-typed `schedule` field can't offer
+    /// the same guarantee). Used by Human-vs-Network so the user can
+    /// tune the AI's sampling temperature live between moves. `nil`
+    /// for every other caller (self-play / arena / Play Game) so they
+    /// stay on their pre-existing schedule field.
+    let tauOverride: SyncBox<Float>?
+
     private var isWhite = true
 
     // MARK: - Per-game state
@@ -264,7 +277,8 @@ final class MPSChessPlayer: ChessPlayer {
     init(
         name: String,
         source: MoveEvaluationSource,
-        schedule: SamplingSchedule = .uniform
+        schedule: SamplingSchedule = .uniform,
+        tauOverride: SyncBox<Float>? = nil
     ) {
         precondition(
             schedule.startTau > 0 && schedule.floorTau > 0 && schedule.decayPerPly >= 0,
@@ -280,6 +294,7 @@ final class MPSChessPlayer: ChessPlayer {
         self.name = name
         self.source = source
         self.schedule = schedule
+        self.tauOverride = tauOverride
         self.sampleScratch = [Float](repeating: 0, count: Self.sampleScratchCapacity)
         self.dirichletScratch = [Float](repeating: 0, count: Self.sampleScratchCapacity)
 
@@ -400,12 +415,25 @@ final class MPSChessPlayer: ChessPlayer {
                     // Dirichlet ply-limit gate, both expressed in
                     // game-total ply terms.
                     ply: 2 * gamePliesRecorded + (isWhite ? 0 : 1),
-                    schedule: schedule,
+                    schedule: effectiveSchedule(),
                     probsScratch: probs,
                     etaScratch: eta
                 )
             }
         }
         return result.move
+    }
+
+    /// Resolve the schedule to use for this ply. When `tauOverride` is
+    /// set, build a flat-tau schedule from the box's current value;
+    /// otherwise return the player's static `schedule`. The flat
+    /// override clamps the box's value to the legal range
+    /// (`SamplingSchedule` preconditions require positive tau and
+    /// non-negative decay) so a stray 0 from a UI race doesn't crash
+    /// `MoveSampler`.
+    private func effectiveSchedule() -> SamplingSchedule {
+        guard let box = tauOverride else { return schedule }
+        let tau = max(0.05, box.value)
+        return SamplingSchedule(startTau: tau, decayPerPly: 0, floorTau: tau)
     }
 }

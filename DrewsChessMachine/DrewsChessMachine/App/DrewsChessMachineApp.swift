@@ -444,7 +444,7 @@ struct DrewsChessMachineApp: App {
                 Button("Play…") { commandHub.openHumanPlaySetup() }
                     .disabled(commandHub.humanGameInFlight)
                 Button("Reset Game") { commandHub.resetHumanGame() }
-                    .disabled(!commandHub.humanGameInFlight)
+                    .disabled(!commandHub.humanGameCanReset)
                 Button("Stop Game") { commandHub.stopHumanGame() }
                     .disabled(!commandHub.humanGameInFlight)
             }
