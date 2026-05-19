@@ -8,8 +8,10 @@ import Foundation
 /// `championID` on `TournamentRecord` entries that were appended
 /// or persisted by builds before those fields existed.
 ///
-/// The scanner is read-only (no mutation, no logging) — caller
-/// owns the merge/save loop. Designed to run on a background
+/// The scanner is read-only (no mutation; logs only directory-
+/// list and per-file I/O failures under `[RECOVER]` so the user
+/// of the "Recover Arena History" button can tell a missing-logs
+/// case from a permissions/corruption case). Designed to run on a background
 /// queue: a worst-case scan over hundreds of MB of logs takes a
 /// fraction of a second on Apple Silicon, but we still don't
 /// block the UI.
@@ -64,11 +66,26 @@ enum ArenaLogRecovery {
     /// session checkpoint.
     static func scan(logsDirectory: URL) -> [Int: Recovered] {
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: logsDirectory,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else { return [:] }
+        // Missing logs directory is legitimate on a fresh install or
+        // a wiped Library/Logs; don't log that. A real I/O failure
+        // (permissions, EIO) on an existing directory is the case
+        // the user needs visibility into when "Recover Arena History"
+        // reports "0 records updated" — without this, that summary
+        // is indistinguishable from "no logs found."
+        guard fm.fileExists(atPath: logsDirectory.path) else { return [:] }
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(
+                at: logsDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            SessionLogger.shared.log(
+                "[RECOVER] failed: cannot list \(logsDirectory.path): \(error.localizedDescription)"
+            )
+            return [:]
+        }
 
         // Iterate in filename order so the day-offset bookkeeping
         // inside any single file stays consistent. Across files we
@@ -91,8 +108,22 @@ enum ArenaLogRecovery {
     // MARK: - Per-file merge
 
     private static func mergeFile(url: URL, into result: inout [Int: Recovered]) {
-        guard let launchDate = launchDate(fromFilename: url.lastPathComponent),
-              let contents = try? String(contentsOf: url, encoding: .utf8) else {
+        // launchDate==nil → foreign file (non-matching name) in the
+        // logs directory; silent skip is correct.
+        guard let launchDate = launchDate(fromFilename: url.lastPathComponent) else {
+            return
+        }
+        // Read failure on a file we just enumerated is a real fault
+        // (permissions changed mid-flight, corruption, mid-rotation).
+        // Log so the user can tell "some logs were unreadable" from
+        // "no arena lines matched."
+        let contents: String
+        do {
+            contents = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            SessionLogger.shared.log(
+                "[RECOVER] skipped \(url.lastPathComponent): \(error.localizedDescription)"
+            )
             return
         }
 
