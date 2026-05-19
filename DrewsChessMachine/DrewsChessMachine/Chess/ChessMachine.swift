@@ -185,7 +185,17 @@ final class ChessMachine: @unchecked Sendable {
     // MARK: - Game Loop
 
     private func runGameLoop(maxPlies: Int?) async throws -> RawGameResult {
-        guard let engine else { return .terminatedNormally(.stalemate) }
+        guard let engine else {
+            // `engine` is set unconditionally in `beginNewGame` at the
+            // single call site that drives this method; reaching here
+            // with `engine == nil` means a future refactor moved the
+            // assignment or introduced a second entry point and the
+            // ordering guarantee broke. The old silent-stalemate
+            // fallback would inject a fake game result into whatever
+            // consumer the player/delegate sees, which is exactly the
+            // class of bug we want surfaced loudly.
+            preconditionFailure("runGameLoop invoked without engine — beginNewGame must initialize engine before calling runGameLoop")
+        }
 
         let gameStart = CFAbsoluteTimeGetCurrent()
         var whiteThinkMs: Double = 0
@@ -348,7 +358,7 @@ private enum DelegateEvent: @unchecked Sendable {
 /// when the UI owning the delegate has gone away.
 private final class DelegateBox: @unchecked Sendable {
     let machine: ChessMachine
-    weak var delegate: AnyObject?
+    weak var delegate: (any ChessMachineDelegate)?
 
     init(machine: ChessMachine, delegate: (any ChessMachineDelegate)?) {
         self.machine = machine
@@ -356,7 +366,7 @@ private final class DelegateBox: @unchecked Sendable {
     }
 
     func deliver(_ event: DelegateEvent) {
-        guard let delegate = delegate as? any ChessMachineDelegate else { return }
+        guard let delegate else { return }
         switch event {
         case .didApplyMove(let move, let newState):
             delegate.chessMachine(machine, didApplyMove: move, newState: newState)
