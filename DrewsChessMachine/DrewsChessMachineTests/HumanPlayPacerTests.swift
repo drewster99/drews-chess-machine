@@ -330,9 +330,135 @@ final class HumanPlayPacerTests: XCTestCase {
         ))
         // Still animating — gameOver is buffered.
         XCTAssertEqual(pacer.phase, .humanAnimating(hm))
+        // The result has not yet propagated into displayedSnapshot —
+        // the banner should still show the in-progress state until the
+        // animation completes.
+        XCTAssertNil(pacer.displayedSnapshot.result)
 
         pacer.onAnimationCompleted()
         XCTAssertEqual(pacer.phase, .gameOver(.checkmate(winner: .white)))
+        XCTAssertEqual(pacer.displayedSnapshot.result, .checkmate(winner: .white))
+    }
+
+    /// Regression: in production, the `gameEnded` snapshot arrives as a
+    /// SEPARATE `GameWatcher.changes` emission AFTER the final move's
+    /// `didApplyMove` emission, and the watcher zeroes `moveCount` on
+    /// game end. The pacer must therefore stash the result+stats from
+    /// the game-end snapshot (whose moveCount=0 won't advance the
+    /// display) and promote them onto `displayedSnapshot` when the
+    /// final-move animation completes.
+    ///
+    /// Before this fix, the game-end fields were stashed but never
+    /// copied into `displayedSnapshot.result` / `.lastGameStats`, so
+    /// the window's banner stayed on "Waiting…" indefinitely after a
+    /// natural game end (the user reported this with a live-trainer
+    /// game that ended at ply 46).
+    func testSeparateGameEndedSnapshotPromotesResultIntoDisplayedSnapshot() {
+        let pacer = HumanPlayPacer(postHumanDelay: .seconds(10))
+        pacer.start(
+            humanColor: .white,
+            initialSnapshot: snapshot(moveCount: 0, lastMove: nil, sideToMove: .white)
+        )
+
+        // didApplyMove snapshot: result still nil, moveCount=1, lastMove set.
+        let hm = humanWhiteMove()
+        pacer.ingest(snapshot(
+            moveCount: 1,
+            lastMove: hm,
+            sideToMove: .black,
+            result: nil
+        ))
+        XCTAssertEqual(pacer.phase, .humanAnimating(hm))
+
+        // gameEnded snapshot: moveCount zeroed by GameWatcher, result set.
+        // Carry lastGameStats so the banner+status row can show the final
+        // ply count after the game ends.
+        var endSnap = snapshot(
+            moveCount: 0,
+            lastMove: hm,
+            sideToMove: .black,
+            result: .drawByThreefoldRepetition
+        )
+        endSnap.lastGameStats = GameStats(
+            totalMoves: 1,
+            whiteMoves: 1,
+            blackMoves: 0,
+            whiteThinkingTimeMs: 0,
+            blackThinkingTimeMs: 0,
+            totalGameTimeMs: 0
+        )
+        pacer.ingest(endSnap)
+        // Still animating — the deferred end-snapshot must not jump the
+        // banner ahead of the slide.
+        XCTAssertEqual(pacer.phase, .humanAnimating(hm))
+        XCTAssertNil(pacer.displayedSnapshot.result)
+
+        pacer.onAnimationCompleted()
+        XCTAssertEqual(pacer.phase, .gameOver(.drawByThreefoldRepetition))
+        XCTAssertEqual(pacer.displayedSnapshot.result, .drawByThreefoldRepetition)
+        XCTAssertEqual(pacer.displayedSnapshot.lastGameStats?.totalMoves, 1)
+    }
+
+    // MARK: - Move history
+
+    func testHistoryAppendsOneEntryPerIngestedMove() async throws {
+        let pacer = HumanPlayPacer(postHumanDelay: .milliseconds(20))
+        pacer.start(
+            humanColor: .white,
+            initialSnapshot: snapshot(moveCount: 0, lastMove: nil, sideToMove: .white)
+        )
+        XCTAssertEqual(pacer.history, [])
+
+        let hm = humanWhiteMove()
+        pacer.ingest(snapshot(moveCount: 1, lastMove: hm, sideToMove: .black))
+        XCTAssertEqual(pacer.history, [
+            HumanPlayPacer.HistoryEntry(plyNumber: 1, side: .white, move: hm)
+        ])
+
+        pacer.onAnimationCompleted()
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(pacer.phase, .aiThinking)
+
+        let am = aiBlackMove()
+        pacer.ingest(snapshot(moveCount: 2, lastMove: am, sideToMove: .white))
+        XCTAssertEqual(pacer.history, [
+            HumanPlayPacer.HistoryEntry(plyNumber: 1, side: .white, move: hm),
+            HumanPlayPacer.HistoryEntry(plyNumber: 2, side: .black, move: am)
+        ])
+    }
+
+    func testHistoryDoesNotRecordSuppressedSnapshots() {
+        // If an AI snapshot arrives while we are still in .humanAnimating
+        // (the bug the pacer was originally built to prevent), the pacer
+        // suppresses the snapshot and must NOT add it to history — only
+        // moves the user actually sees on the board are recorded.
+        let pacer = HumanPlayPacer(postHumanDelay: .seconds(10))
+        pacer.start(
+            humanColor: .white,
+            initialSnapshot: snapshot(moveCount: 0, lastMove: nil, sideToMove: .white)
+        )
+        let hm = humanWhiteMove()
+        pacer.ingest(snapshot(moveCount: 1, lastMove: hm, sideToMove: .black))
+        XCTAssertEqual(pacer.history.count, 1)
+
+        pacer.ingest(snapshot(moveCount: 2, lastMove: aiBlackMove(), sideToMove: .white))
+        XCTAssertEqual(pacer.history.count, 1, "AI snapshot arriving during human animation must not record history")
+    }
+
+    func testHistoryResetsOnStart() {
+        let pacer = HumanPlayPacer(postHumanDelay: .seconds(10))
+        pacer.start(
+            humanColor: .white,
+            initialSnapshot: snapshot(moveCount: 0, lastMove: nil, sideToMove: .white)
+        )
+        pacer.ingest(snapshot(moveCount: 1, lastMove: humanWhiteMove(), sideToMove: .black))
+        XCTAssertEqual(pacer.history.count, 1)
+
+        pacer.start(
+            humanColor: .white,
+            initialSnapshot: snapshot(moveCount: 0, lastMove: nil, sideToMove: .white)
+        )
+        XCTAssertEqual(pacer.history, [])
     }
 
     // MARK: - Idempotent / out-of-order ingest

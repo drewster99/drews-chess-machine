@@ -43,8 +43,12 @@ final class HumanPlayWindowController: NSWindowController, NSWindowDelegate {
         )
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.setContentSize(NSSize(width: 720, height: 860))
-        window.minSize = NSSize(width: 520, height: 660)
+        // Wider than the pre-history-panel layout: the move list now
+        // sits to the right of the board and needs a fixed strip
+        // (`HumanPlayWindowView.historyPanelWidth`) without squeezing
+        // the board into an unreadable size.
+        window.setContentSize(NSSize(width: 920, height: 860))
+        window.minSize = NSSize(width: 720, height: 660)
         window.title = "Chess — Human vs Network"
         // `isReleasedWhenClosed = false` lets the controller manage
         // the window's lifetime via the registry rather than handing
@@ -177,15 +181,26 @@ fileprivate struct HumanPlayWindowView: View {
         playController.pacer?.displayedSnapshot ?? Self.emptySnapshot
     }
 
+    /// Fixed strip width for the move-history panel that sits to the
+    /// right of the board. Sized to comfortably fit two columns of
+    /// algebraic-notation entries (e.g. "23. e2e4=Q  Qxa1#") at the
+    /// monospaced body font without truncation, with room for the
+    /// header and a vertical scroller.
+    static let historyPanelWidth: CGFloat = 200
+
     var body: some View {
         VStack(spacing: 12) {
             bannerRow
-            boardView
+            HStack(alignment: .top, spacing: 12) {
+                boardView
+                moveHistoryPanel
+                    .frame(width: Self.historyPanelWidth)
+            }
             statusRow
             toolbarRow
         }
         .padding(16)
-        .frame(minWidth: 520, minHeight: 660)
+        .frame(minWidth: 720, minHeight: 660)
         // `.onReceive` is intentionally un-throttled: this window owns
         // its own `GameWatcher` instance (one watcher per Human-vs-
         // Network game), so emissions land at human-pacing rates
@@ -349,6 +364,132 @@ fileprivate struct HumanPlayWindowView: View {
             }
         }
         return nil
+    }
+
+    // MARK: - Move history panel
+
+    /// Right-side scrollable list of all moves made in the current
+    /// game (or the just-finished game if `phase == .gameOver`).
+    /// Auto-scrolls so the latest pair is always visible. Reads
+    /// straight from the pacer's `history`, which is the same list
+    /// that drove `displayedSnapshot.lastMove` for each row — the user
+    /// sees every move on the board and in the list in the same
+    /// order.
+    private var moveHistoryPanel: some View {
+        let pairs = Self.pairRows(from: playController.pacer?.history ?? [])
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Moves")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(pairs) { row in
+                            moveHistoryRow(row)
+                                .id(row.id)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                }
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.secondary.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                )
+                .onChange(of: pairs.last?.id) {
+                    guard let lastID = pairs.last?.id else { return }
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(lastID, anchor: .bottom)
+                    }
+                }
+            }
+        }
+    }
+
+    private func moveHistoryRow(_ row: MoveRow) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("\(row.moveNumber).")
+                .font(.system(.callout, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, alignment: .trailing)
+            Text(row.whiteText)
+                .font(.system(.callout, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(row.blackText)
+                .font(.system(.callout, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// One row of the paired move-history list: "1. e2-e4  e7-e5".
+    /// `blackText` is empty when only the white half of the pair has
+    /// been played (the row appears the moment white moves; the black
+    /// half fills in when black responds).
+    private struct MoveRow: Identifiable, Equatable {
+        let id: Int
+        let moveNumber: Int
+        let whiteText: String
+        let blackText: String
+    }
+
+    /// Pair an unbounded history of `HistoryEntry` (one per ply) into
+    /// per-full-move rows. White always starts a new row; an
+    /// unanswered white move sits alone with empty `blackText`. If the
+    /// game began with a black move (engine quirk / loaded position),
+    /// the leading half-move pairs into row 1 with an empty white
+    /// slot rather than splitting it into a single row that contains
+    /// only the black half.
+    private static func pairRows(from entries: [HumanPlayPacer.HistoryEntry]) -> [MoveRow] {
+        var rows: [MoveRow] = []
+        var currentNumber = 0
+        var currentWhite = ""
+        var currentBlack = ""
+        var haveOpen = false
+
+        for entry in entries {
+            if entry.side == .white {
+                if haveOpen {
+                    rows.append(MoveRow(
+                        id: currentNumber,
+                        moveNumber: currentNumber,
+                        whiteText: currentWhite,
+                        blackText: currentBlack
+                    ))
+                }
+                currentNumber = rows.count + 1
+                currentWhite = entry.move.notation
+                currentBlack = ""
+                haveOpen = true
+            } else {
+                if !haveOpen {
+                    currentNumber = rows.count + 1
+                    currentWhite = ""
+                    haveOpen = true
+                }
+                currentBlack = entry.move.notation
+                rows.append(MoveRow(
+                    id: currentNumber,
+                    moveNumber: currentNumber,
+                    whiteText: currentWhite,
+                    blackText: currentBlack
+                ))
+                haveOpen = false
+            }
+        }
+        if haveOpen {
+            rows.append(MoveRow(
+                id: currentNumber,
+                moveNumber: currentNumber,
+                whiteText: currentWhite,
+                blackText: currentBlack
+            ))
+        }
+        return rows
     }
 
     // MARK: - Status row (ply / material / last move)

@@ -470,11 +470,18 @@ final class PlayController {
                 // before the call ran into a Swift 6 strict-concurrency
                 // "sending non-Sendable existential" diagnostic, so
                 // pass them positionally instead.
+                let raw: RawGameResult
                 if humanIsWhite {
-                    _ = try await machine.beginNewGame(white: human, black: ai)
+                    raw = try await machine.beginNewGame(white: human, black: ai)
                 } else {
-                    _ = try await machine.beginNewGame(white: ai, black: human)
+                    raw = try await machine.beginNewGame(white: ai, black: human)
                 }
+                // Log the natural game end so a "Waiting…" or otherwise
+                // surprising terminal state in the window is traceable to
+                // a concrete engine result in the session log. Without
+                // this, the only signal a human game ended was the
+                // absence of a Stop log line.
+                SessionLogger.shared.log("[CHESS] human-vs-network game ended: \(Self.describe(raw))")
             } catch is CancellationError {
                 // User stopped or a new game replaced this one. The
                 // GameWatcher state is already coherent (last applied
@@ -717,6 +724,29 @@ final class PlayController {
         try await Task.detached(priority: .userInitiated) {
             try ChessMPSNetwork(.randomWeights)
         }.value
+    }
+
+    /// Compact human-readable form of a `RawGameResult` for the session log.
+    /// Mirrors the banner copy in `HumanPlayWindow` so a log reader can
+    /// cross-check the displayed game-over message.
+    private static func describe(_ raw: RawGameResult) -> String {
+        switch raw {
+        case .terminatedEarly:
+            return "terminatedEarly"
+        case .terminatedNormally(let result):
+            switch result {
+            case .checkmate(let winner):
+                return "checkmate (\(winner == .white ? "white" : "black") wins)"
+            case .stalemate:
+                return "stalemate"
+            case .drawByFiftyMoveRule:
+                return "drawByFiftyMoveRule"
+            case .drawByInsufficientMaterial:
+                return "drawByInsufficientMaterial"
+            case .drawByThreefoldRepetition:
+                return "drawByThreefoldRepetition"
+            }
+        }
     }
 
     private static func label(for choice: HumanPlayOpponentChoice) -> String {

@@ -113,10 +113,35 @@ final class HumanPlayPacer {
     /// to move next).
     private var humanColor: PieceColor = .white
 
-    /// If a game-ending snapshot arrives during an animation, the
-    /// `.gameOver` transition is deferred until the animation
-    /// completes so the user sees the final move slide in.
-    private var pendingResult: GameResult?
+    /// Game-end fields stashed from a `gameEnded` snapshot whose move
+    /// counter does not advance `displayedSnapshot` (the watcher zeroes
+    /// `moveCount` and re-stamps `result`/`lastGameStats` in a separate
+    /// emission after the final-move emission). Promoted into
+    /// `displayedSnapshot` and used to transition `phase` to
+    /// `.gameOver` once the final-move animation completes — so the
+    /// user sees the final move slide in *before* the result banner
+    /// appears.
+    struct PendingEnd {
+        let result: GameResult
+        let lastGameStats: GameStats?
+    }
+    private var pendingEnd: PendingEnd?
+
+    /// One ingested move. Pacer appends one entry every time
+    /// `displayedSnapshot` advances to a new ply. The window's
+    /// move-history panel reads this list and pairs entries into
+    /// "1. <white> <black>" rows. Reset on `start(...)`; preserved
+    /// across game-end so the user can still read the final move list
+    /// while the game-over banner is up.
+    struct HistoryEntry: Equatable {
+        /// 1-based ply number — matches `GameWatcher.Snapshot.moveCount`
+        /// after the move was applied.
+        let plyNumber: Int
+        /// Side that played this move.
+        let side: PieceColor
+        let move: ChessMove
+    }
+    private(set) var history: [HistoryEntry] = []
 
     /// Parked `awaitAIPermission()` continuation, if any. The pacer
     /// resumes it (success) when transitioning to `.aiThinking`, or
@@ -143,7 +168,8 @@ final class HumanPlayPacer {
         stop()
         self.humanColor = humanColor
         self.displayedSnapshot = initialSnapshot
-        self.pendingResult = nil
+        self.pendingEnd = nil
+        self.history = []
         if humanColor == .white {
             phase = .humanTurn
         } else {
@@ -159,12 +185,13 @@ final class HumanPlayPacer {
     /// (game over banner with the final position) and snapping the
     /// board back to the starting state on stop would be jarring.
     ///
-    /// `pendingResult` is dropped on stop. A `.gameOver` snapshot that
+    /// `pendingEnd` is dropped on stop. A `.gameOver` snapshot that
     /// arrived mid-animation but hadn't yet been promoted by the
     /// animation-complete callback is silently discarded — `stop()` is
     /// always followed by either a new `start(...)` (which would
     /// overwrite the result anyway) or a window teardown (where
-    /// nobody cares).
+    /// nobody cares). `history` is intentionally left in place so the
+    /// post-game move list stays readable until the next `start(...)`.
     func stop() {
         aiDelayTask?.cancel()
         aiDelayTask = nil
@@ -172,7 +199,7 @@ final class HumanPlayPacer {
             aiPermissionContinuation = nil
             cont.resume(throwing: CancellationError())
         }
-        pendingResult = nil
+        pendingEnd = nil
         phase = .idle
     }
 
@@ -184,9 +211,10 @@ final class HumanPlayPacer {
     ///
     /// The decision tree:
     ///   - If the snapshot carries a game-end `result` and we haven't
-    ///     already noted it, stash it in `pendingResult` so the
-    ///     `.gameOver` transition can fire after the in-flight
-    ///     animation completes.
+    ///     already noted it, stash it (along with `lastGameStats`) in
+    ///     `pendingEnd` so the `.gameOver` transition can fire — and
+    ///     `displayedSnapshot.result` / `.lastGameStats` can be
+    ///     promoted — after the in-flight animation completes.
     ///   - If the snapshot's `moveCount` hasn't advanced past the
     ///     displayed one, there's no new move to animate; return.
     ///   - Otherwise attribute the move to a side via
@@ -198,8 +226,8 @@ final class HumanPlayPacer {
     ///     update — racing the in-flight animation with a stale or
     ///     premature snapshot is exactly the bug the pacer prevents.
     func ingest(_ snapshot: GameWatcher.Snapshot) {
-        if snapshot.result != nil, displayedSnapshot.result == nil, pendingResult == nil {
-            pendingResult = snapshot.result
+        if let result = snapshot.result, displayedSnapshot.result == nil, pendingEnd == nil {
+            pendingEnd = PendingEnd(result: result, lastGameStats: snapshot.lastGameStats)
         }
 
         // `moveCount` is the live ply counter from `GameWatcher`. Using
@@ -220,11 +248,21 @@ final class HumanPlayPacer {
         if mover == humanColor {
             if case .humanTurn = phase {
                 displayedSnapshot = snapshot
+                history.append(HistoryEntry(
+                    plyNumber: snapshot.moveCount,
+                    side: mover,
+                    move: move
+                ))
                 phase = .humanAnimating(move)
             }
         } else {
             if case .aiThinking = phase {
                 displayedSnapshot = snapshot
+                history.append(HistoryEntry(
+                    plyNumber: snapshot.moveCount,
+                    side: mover,
+                    move: move
+                ))
                 phase = .aiAnimating(move)
             }
         }
@@ -238,23 +276,39 @@ final class HumanPlayPacer {
     func onAnimationCompleted() {
         switch phase {
         case .humanAnimating:
-            if let result = pendingResult {
-                pendingResult = nil
-                phase = .gameOver(result)
+            if let end = pendingEnd {
+                pendingEnd = nil
+                applyPendingEndToDisplayedSnapshot(end)
+                phase = .gameOver(end.result)
             } else {
                 phase = .aiDelay
                 scheduleAIDelay()
             }
         case .aiAnimating:
-            if let result = pendingResult {
-                pendingResult = nil
-                phase = .gameOver(result)
+            if let end = pendingEnd {
+                pendingEnd = nil
+                applyPendingEndToDisplayedSnapshot(end)
+                phase = .gameOver(end.result)
             } else {
                 phase = .humanTurn
             }
         case .idle, .humanTurn, .aiDelay, .aiThinking, .gameOver:
             break
         }
+    }
+
+    /// Merge the result and last-game stats from the deferred game-end
+    /// snapshot into the live `displayedSnapshot`. Keeps the move-applied
+    /// snapshot's `state` / `lastMove` / `moveCount` intact so the board
+    /// keeps showing the final position; only the fields the banner and
+    /// status row read for the game-over view are updated.
+    private func applyPendingEndToDisplayedSnapshot(_ end: PendingEnd) {
+        var updated = displayedSnapshot
+        updated.result = end.result
+        if let stats = end.lastGameStats {
+            updated.lastGameStats = stats
+        }
+        displayedSnapshot = updated
     }
 
     // MARK: - Outputs
