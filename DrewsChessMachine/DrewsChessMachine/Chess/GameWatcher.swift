@@ -126,6 +126,13 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
             s.result = nil
             s.moveCount = moveCount
             s.lastMove = lastMove
+            // Unlike `resetCurrentGame` (which keeps `lastGameStats` so
+            // the post-game stat readout survives "start a new game"),
+            // a Revert-to-here is a branch off the in-flight game's
+            // own history — keeping the prior game's stats around
+            // would attribute them to a game the user has now forked
+            // away from.
+            s.lastGameStats = nil
         }
         changes.send()
     }
