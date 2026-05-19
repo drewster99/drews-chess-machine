@@ -67,13 +67,18 @@ struct LastSessionPointer: Codable, Equatable, Sendable {
         do {
             return try JSONDecoder().decode(LastSessionPointer.self, from: data)
         } catch {
-            // Corrupt pointer — log via stdout (SessionLogger may
-            // not be started yet during UserDefaults init paths)
-            // and return nil so the caller falls back to the
-            // no-saved-session launch state. Deliberately do not
-            // rewrite / clear the key: a future build with a
-            // different schema might still be able to read it.
-            print("[LastSessionPointer] decode failed: \(error.localizedDescription)")
+            // Corrupt pointer — route through SessionLogger (the
+            // singleton is queue-protected and the app starts the
+            // logger before any LastSessionPointer call site runs;
+            // the old `print` line went to stdout, which the app's
+            // log file never captures). Return nil so the caller
+            // falls back to the no-saved-session launch state.
+            // Deliberately do not rewrite / clear the key: a future
+            // build with a different schema might still be able to
+            // read it.
+            SessionLogger.shared.log(
+                "[CHECKPOINT] LastSessionPointer decode failed: \(error.localizedDescription)"
+            )
             return nil
         }
     }
@@ -87,7 +92,9 @@ struct LastSessionPointer: Codable, Equatable, Sendable {
             let data = try JSONEncoder().encode(self)
             defaults.set(data, forKey: Self.userDefaultsKey)
         } catch {
-            print("[LastSessionPointer] encode failed: \(error.localizedDescription)")
+            SessionLogger.shared.log(
+                "[CHECKPOINT] LastSessionPointer encode failed: \(error.localizedDescription)"
+            )
         }
     }
 
