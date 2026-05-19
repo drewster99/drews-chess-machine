@@ -239,8 +239,15 @@ enum BoardEncoder {
         )
         // Pointer form once, then reuse — `UnsafeMutableBufferPointer`
         // subscripting bounds-checks every access, which adds up over
-        // `tensorLength` writes per ply.
-        guard let base = buffer.baseAddress else { return }
+        // `tensorLength` writes per ply. The precondition above pins
+        // `buffer.count >= tensorLength`, so `baseAddress` is non-nil
+        // here; a nil here means the caller's invariant is broken.
+        guard let base = buffer.baseAddress else {
+            preconditionFailure(
+                "BoardEncoder.encode(into:): buffer baseAddress is nil "
+                + "despite count=\(buffer.count) >= \(tensorLength); upstream invariant violated."
+            )
+        }
 
         // Zero the full tensorLength region. Sparse planes (pieces, EP)
         // rely on this being cleared first. Uses `update` (not

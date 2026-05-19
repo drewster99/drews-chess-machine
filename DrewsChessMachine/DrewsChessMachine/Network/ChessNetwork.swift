@@ -1808,9 +1808,18 @@ final class ChessNetwork: @unchecked Sendable {
         _ buffer: UnsafeBufferPointer<Float>,
         into array: MPSNDArray
     ) {
+        precondition(
+            !buffer.isEmpty,
+            "writeInferenceInput: empty buffer would leave MPSNDArray with stale bytes"
+        )
         switch dataType {
         case .float32:
-            guard let base = buffer.baseAddress else { return }
+            guard let base = buffer.baseAddress else {
+                preconditionFailure(
+                    "writeInferenceInput: buffer baseAddress is nil (count=\(buffer.count)); "
+                    + "upstream invariant violated."
+                )
+            }
             array.writeBytes(
                 UnsafeMutableRawPointer(mutating: base),
                 strideBytes: nil
@@ -1835,9 +1844,18 @@ final class ChessNetwork: @unchecked Sendable {
     /// allocation is acceptable. Don't call from hot paths — use
     /// `writeInferenceInput` or the trainer's in-place writer instead.
     static func writeFloats(_ floats: [Float], into array: MPSNDArray) {
+        precondition(
+            !floats.isEmpty,
+            "writeFloats: empty input would silently skip the MPSNDArray write"
+        )
         let data = makeWeightData(floats)
         data.withUnsafeBytes { buf in
-            guard let base = buf.baseAddress else { return }
+            guard let base = buf.baseAddress else {
+                preconditionFailure(
+                    "writeFloats: data baseAddress is nil despite non-empty input "
+                    + "(floats.count=\(floats.count), data.count=\(data.count))"
+                )
+            }
             array.writeBytes(
                 UnsafeMutableRawPointer(mutating: base),
                 strideBytes: nil

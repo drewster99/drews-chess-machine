@@ -118,7 +118,15 @@ final class ChessMPSNetwork: @unchecked Sendable {
         var state = GameState.starting
         var ply = 0
         out.withUnsafeMutableBufferPointer { buf in
-            guard let base = buf.baseAddress else { return }
+            // `out` is `warmupBatchSize * perBoard` floats, statically
+            // non-empty; a nil baseAddress here means the array's
+            // backing storage is broken.
+            guard let base = buf.baseAddress else {
+                preconditionFailure(
+                    "warmupBatch: out buffer baseAddress is nil "
+                    + "(count=\(buf.count)); upstream invariant violated."
+                )
+            }
             while ply < warmupBatchSize {
                 let slot = UnsafeMutableBufferPointer<Float>(
                     start: base.advanced(by: ply * perBoard),
