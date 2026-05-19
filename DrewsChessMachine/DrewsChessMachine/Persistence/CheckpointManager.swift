@@ -402,10 +402,27 @@ enum CheckpointManager {
             throw CheckpointManagerError.targetAlreadyExists(finalURL)
         }
 
+        // Best-effort tmp cleanup helper used on every error branch
+        // below. Skips when the tmp file no longer exists (success
+        // path: moveItem consumed it), logs any other removal failure
+        // — silent try? would have hidden multi-MB orphans named
+        // `<final>.tmp` on disk.
+        func cleanupTmp() {
+            let fm = FileManager.default
+            guard fm.fileExists(atPath: tmpURL.path) else { return }
+            do {
+                try fm.removeItem(at: tmpURL)
+            } catch {
+                SessionLogger.shared.log(
+                    "[CHECKPOINT-CLEANUP] failed to remove \(tmpURL.lastPathComponent): \(error.localizedDescription)"
+                )
+            }
+        }
+
         do {
             try encoded.write(to: tmpURL, options: [.atomic])
         } catch {
-            try? FileManager.default.removeItem(at: tmpURL)
+            cleanupTmp()
             throw CheckpointManagerError.writeFailed(tmpURL, error)
         }
 
@@ -414,7 +431,7 @@ enum CheckpointManager {
         do {
             try fullSyncPath(tmpURL)
         } catch {
-            try? FileManager.default.removeItem(at: tmpURL)
+            cleanupTmp()
             throw error
         }
 
@@ -423,14 +440,14 @@ enum CheckpointManager {
         do {
             try await verifyModelFile(at: tmpURL, expectedWeights: weights)
         } catch {
-            try? FileManager.default.removeItem(at: tmpURL)
+            cleanupTmp()
             throw error
         }
 
         do {
             try FileManager.default.moveItem(at: tmpURL, to: finalURL)
         } catch {
-            try? FileManager.default.removeItem(at: tmpURL)
+            cleanupTmp()
             throw CheckpointManagerError.writeFailed(finalURL, error)
         }
 
@@ -522,8 +539,30 @@ enum CheckpointManager {
             throw CheckpointManagerError.directoryCreationFailed(tmpDirURL, error)
         }
 
-        func cleanupTmp() {
-            try? fm.removeItem(at: tmpDirURL)
+        // Single deferred cleanup that covers every throw site between
+        // here and the successful `moveItem(tmpDirURL → finalDirURL)`.
+        // The pre-existing manual `cleanupTmp()` call at every error
+        // branch was easy to miss — and a missed branch leaks a
+        // multi-GB staging directory (champion + trainer + replay
+        // buffer can be several GB) under
+        // `~/Library/Application Support/.../Sessions/*.tmp`.
+        //
+        // Gating on `fileExists` makes the success path a no-op
+        // (`moveItem` already consumed the source dir) and sidesteps
+        // the NSCocoa-vs-POSIX "directory missing" error-domain
+        // ambiguity; any failure that ISN'T "already gone" gets a
+        // SessionLogger breadcrumb so disk-pressure events don't
+        // disappear into a silent `try?`.
+        defer {
+            if fm.fileExists(atPath: tmpDirURL.path) {
+                do {
+                    try fm.removeItem(at: tmpDirURL)
+                } catch {
+                    SessionLogger.shared.log(
+                        "[CHECKPOINT-CLEANUP] failed to remove tmp session dir \(tmpDirURL.lastPathComponent): \(error.localizedDescription)"
+                    )
+                }
+            }
         }
 
         let championTmpURL = SessionCheckpointLayout.championURL(in: tmpDirURL)
@@ -548,7 +587,6 @@ enum CheckpointManager {
             try championEncoded.write(to: championTmpURL, options: [.atomic])
             try trainerEncoded.write(to: trainerTmpURL, options: [.atomic])
         } catch {
-            cleanupTmp()
             throw CheckpointManagerError.writeFailed(tmpDirURL, error)
         }
 
@@ -585,7 +623,6 @@ enum CheckpointManager {
             do {
                 writtenSnap = try replayBuffer.write(to: bufferTmpURL)
             } catch {
-                cleanupTmp()
                 throw CheckpointManagerError.writeFailed(bufferTmpURL, error)
             }
         }
@@ -611,7 +648,6 @@ enum CheckpointManager {
                     to: progressRateChartTmpURL
                 )
             } catch {
-                cleanupTmp()
                 throw CheckpointManagerError.chartFileWriteFailed(tmpDirURL, error)
             }
         }
@@ -642,13 +678,11 @@ enum CheckpointManager {
         do {
             stateEncoded = try effectiveState.encode()
         } catch {
-            cleanupTmp()
             throw error
         }
         do {
             try stateEncoded.write(to: stateTmpURL, options: [.atomic])
         } catch {
-            cleanupTmp()
             throw CheckpointManagerError.writeFailed(tmpDirURL, error)
         }
 
@@ -676,7 +710,6 @@ enum CheckpointManager {
                 try fullSyncPath(progressRateChartTmpURL)
             }
         } catch {
-            cleanupTmp()
             throw error
         }
 
@@ -786,7 +819,6 @@ enum CheckpointManager {
                 }
             }
         } catch {
-            cleanupTmp()
             throw error
         }
 
@@ -799,14 +831,12 @@ enum CheckpointManager {
         do {
             try fullSyncPath(tmpDirURL)
         } catch {
-            cleanupTmp()
             throw error
         }
 
         do {
             try fm.moveItem(at: tmpDirURL, to: finalDirURL)
         } catch {
-            cleanupTmp()
             throw CheckpointManagerError.writeFailed(finalDirURL, error)
         }
 
