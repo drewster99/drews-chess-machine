@@ -24,6 +24,11 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
     let runs: String
     let arenas: String
     let promotions: String
+    /// Click action for the "Promotions" cell. When non-nil the cell
+    /// becomes interactive (hover highlight + pointing-hand cursor)
+    /// and invokes this on tap. Wired by the parent to open the
+    /// promotions sheet — a filtered view of the arena history list.
+    let onShowPromotions: (() -> Void)?
     let lastPromoteCell: StatusBarCell
     let scoreCell: StatusBarCell
     @ViewBuilder let rightChips: () -> RightChips
@@ -43,7 +48,7 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
                 StatusBarCell(label: "Legal mass", value: legalMass)
                 StatusBarCell(label: "Runs", value: runs)
                 StatusBarCell(label: "Arenas", value: arenas)
-                StatusBarCell(label: "Promotions", value: promotions)
+                StatusBarCell(label: "Promotions", value: promotions, action: onShowPromotions)
                 lastPromoteCell
                 scoreCell
             },

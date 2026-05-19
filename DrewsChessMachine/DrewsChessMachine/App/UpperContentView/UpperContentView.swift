@@ -565,6 +565,10 @@ struct UpperContentView: View {
     /// before flipping this flag so the sheet doesn't anchor to a
     /// dying popover.
     @State private var showArenaHistorySheet: Bool = false
+    /// Drives the Promotions sheet — the same `ArenaHistoryView`
+    /// configured to show only the promoted records, opened by
+    /// clicking the "Promotions" cell in the top status bar.
+    @State private var showPromotionsSheet: Bool = false
     /// True while a one-shot log-scan recovery pass is running. Moved to
     /// SessionController in Stage 4r (along with `runArenaHistoryRecovery`) —
     /// forwarding proxy. (Disables the "Recover from logs" button against
@@ -1172,6 +1176,24 @@ struct UpperContentView: View {
                 configuredGamesPerTournament: trainingParams.arenaGamesPerTournament,
                 promoteThreshold: trainingParams.arenaPromoteThreshold,
                 onClose: { showArenaHistorySheet = false }
+            )
+        }
+        // Promotions sheet — reuses `ArenaHistoryView` filtered to the
+        // promoted records. The parallel `displayIndices` preserves
+        // the original "#N" arena number in each row so users can
+        // cross-reference with the full history list.
+        .sheet(isPresented: $showPromotionsSheet) {
+            let promotedPairs = tournamentHistory.enumerated().compactMap { idx, rec -> (Int, TournamentRecord)? in
+                rec.promoted ? (idx + 1, rec) : nil
+            }
+            ArenaHistoryView(
+                history: promotedPairs.map { $0.1 },
+                configuredGamesPerTournament: trainingParams.arenaGamesPerTournament,
+                promoteThreshold: trainingParams.arenaPromoteThreshold,
+                onClose: { showPromotionsSheet = false },
+                title: "Promotions",
+                unitNoun: "promotion",
+                displayIndices: promotedPairs.map { $0.0 }
             )
         }
     }
@@ -2664,6 +2686,10 @@ struct UpperContentView: View {
             runs: "\(checkpoint.cumulativeRunCount)",
             arenas: "\(tournamentHistory.count)",
             promotions: "\(tournamentHistory.lazy.filter { $0.promoted }.count)",
+            onShowPromotions: {
+                SessionLogger.shared.log("[BUTTON] Open Promotions list")
+                showPromotionsSheet = true
+            },
             lastPromoteCell: lastPromoteStatusBarCell,
             scoreCell: scoreStatusBarCell,
             // Right-side chips. Built each parent render. The
