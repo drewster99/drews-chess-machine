@@ -1,5 +1,27 @@
 import Foundation
 
+// MARK: - Errors
+
+enum TickTournamentDriverError: LocalizedError {
+    /// One of the per-network `evaluateBatched` consume closures was
+    /// handed an `UnsafeBufferPointer<Float>` with a nil `baseAddress`.
+    /// This is structurally unreachable when the per-side batch count
+    /// is `> 0` (already guarded upstream of the closure), but losing
+    /// the entire app — and every prior arena's results — to a
+    /// `preconditionFailure` here is the wrong trade. Surface as a
+    /// thrown error so the existing `do/catch` around `driver.run(...)`
+    /// in `SessionController+Arena.swift` can abort the arena cleanly
+    /// and leave the rest of the session intact.
+    case nilEvaluationBuffer(side: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .nilEvaluationBuffer(let side):
+            return "Arena \(side) network returned a nil baseAddress from evaluateBatched; aborting arena."
+        }
+    }
+}
+
 // MARK: - Tick-Based Tournament Driver
 
 /// Tournament driver for arena play, using the same tick-based
@@ -368,32 +390,49 @@ final class TickTournamentDriver: @unchecked Sendable {
             guard candCount > 0 else { return }
             let policyTarget = ArenaPointerCarrier(pointer: scratches.candPolicyScratch)
             let valueTarget = ArenaPointerCarrier(pointer: scratches.candValueScratch)
+            // The `consume` closure on `evaluateBatched` is non-throwing
+            // by signature (used on the hot self-play path), so a nil
+            // baseAddress can't be raised out of the closure directly.
+            // Capture into a Sendable flag and rethrow after `await` —
+            // the call site at L401/402 already propagates errors up to
+            // SessionController+Arena's do/catch, which aborts the
+            // arena cleanly without taking the app down.
+            let nilFlag = SyncBox<Bool>(false)
             try await candidateNetwork.evaluateBatched(
                 batchBoardsPointer: UnsafePointer(scratches.candTickScratch),
                 floatCount: candCount * boardFloats,
                 count: candCount
             ) { policyBuf, valueBuf in
                 guard let pBase = policyBuf.baseAddress, let vBase = valueBuf.baseAddress else {
-                    preconditionFailure("ChessNetwork.evaluateBatched returned nil baseAddress; arena cannot continue without policy/value data")
+                    nilFlag.value = true
+                    return
                 }
                 policyTarget.pointer.update(from: pBase, count: candCount * policySize)
                 valueTarget.pointer.update(from: vBase, count: candCount)
+            }
+            if nilFlag.value {
+                throw TickTournamentDriverError.nilEvaluationBuffer(side: "candidate")
             }
         }
         @Sendable func runChampion() async throws {
             guard champCount > 0 else { return }
             let policyTarget = ArenaPointerCarrier(pointer: scratches.champPolicyScratch)
             let valueTarget = ArenaPointerCarrier(pointer: scratches.champValueScratch)
+            let nilFlag = SyncBox<Bool>(false)
             try await championNetwork.evaluateBatched(
                 batchBoardsPointer: UnsafePointer(scratches.champTickScratch),
                 floatCount: champCount * boardFloats,
                 count: champCount
             ) { policyBuf, valueBuf in
                 guard let pBase = policyBuf.baseAddress, let vBase = valueBuf.baseAddress else {
-                    preconditionFailure("ChessNetwork.evaluateBatched returned nil baseAddress; arena cannot continue without policy/value data")
+                    nilFlag.value = true
+                    return
                 }
                 policyTarget.pointer.update(from: pBase, count: champCount * policySize)
                 valueTarget.pointer.update(from: vBase, count: champCount)
+            }
+            if nilFlag.value {
+                throw TickTournamentDriverError.nilEvaluationBuffer(side: "champion")
             }
         }
         async let candDone: Void = runCandidate()
