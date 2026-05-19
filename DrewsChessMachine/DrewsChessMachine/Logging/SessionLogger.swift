@@ -31,6 +31,14 @@ final class SessionLogger: @unchecked Sendable {
     private var fileHandle: FileHandle?
     private var fileURL: URL?
     private var didLogStartupFailure = false
+    /// Once-only breadcrumb flag for the idle-flush `synchronize()`
+    /// path. Same shape as `didLogStartupFailure`: queue-protected,
+    /// flipped before the stderr write so a persistently-failing
+    /// fsync can't recursively spam. Without this, a broken
+    /// `synchronize()` (handle invalidated, device gone, disk full)
+    /// silently disabled every coalesced flush and the user only
+    /// noticed when the post-crash log tail came up short.
+    private var didLogFsyncFailure = false
 
     /// Idle-flush coalescer. Each successful write cancels the previous
     /// pending flush and schedules a new one 0.5 s out. A burst of
@@ -131,7 +139,24 @@ final class SessionLogger: @unchecked Sendable {
                 self.pendingFlush?.cancel()
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }
-                    try? self.fileHandle?.synchronize()
+                    do {
+                        try self.fileHandle?.synchronize()
+                    } catch {
+                        // Body runs on `self.queue` (scheduled via
+                        // `queue.asyncAfter` below), so touching the
+                        // flag here is queue-protected identically to
+                        // `didLogStartupFailure`. Write to stderr
+                        // directly rather than back through `self.log`
+                        // — re-entering the write path that might
+                        // itself be the failure source is exactly
+                        // what we don't want.
+                        if !self.didLogFsyncFailure {
+                            self.didLogFsyncFailure = true
+                            FileHandle.standardError.write(
+                                Data("SessionLogger: fsync failed: \(error)\n".utf8)
+                            )
+                        }
+                    }
                 }
                 self.pendingFlush = work
                 self.queue.asyncAfter(deadline: .now() + 0.5, execute: work)
