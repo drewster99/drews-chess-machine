@@ -135,10 +135,22 @@ extension SessionController {
             ran += 1
             do {
                 let board = BoardEncoder.encode(.starting)
-                nonisolated(unsafe) var policy: [Float] = []
+                // SyncBox rather than `nonisolated(unsafe) var`: today
+                // `evaluate(board:consume:)` invokes `consume`
+                // synchronously inside ChessNetwork's serial
+                // executionQueue, so writes happen-before the
+                // post-await read — no actual race exists. But the
+                // annotation silenced Swift 6's Sendable-capture check
+                // for a guarantee that lives outside this file; if
+                // `consume` ever becomes truly async or escapes, the
+                // happens-before chain breaks silently. SyncBox makes
+                // the lock discipline explicit and removes the
+                // unsafe-annotation requirement.
+                let policyBox = SyncBox<[Float]>([])
                 try await net.evaluate(board: board) { policyBuf, _ in
-                    policy = Array(policyBuf)
+                    policyBox.value = Array(policyBuf)
                 }
+                let policy = policyBox.value
                 if policy.count == ChessNetwork.policySize {
                     SessionLogger.shared.log(
                         "[DIAG] PASS  Network forward-pass produces \(ChessNetwork.policySize) logits"
@@ -212,18 +224,27 @@ extension SessionController {
         do {
             let board1 = BoardEncoder.encode(pos1)
             let board2 = BoardEncoder.encode(pos2)
-            nonisolated(unsafe) var policy1: [Float] = []
-            nonisolated(unsafe) var value1: Float = 0
+            // SyncBox over the (policy, value) pair so the post-await
+            // read sees both fields under a single lock, with no
+            // nonisolated(unsafe) capture. See the matching note in
+            // runEngineDiagnostics above for why this is preferred
+            // over the prior `nonisolated(unsafe) var` shape.
+            let result1 = SyncBox<(policy: [Float], value: Float)>(([], 0))
             try await net.evaluate(board: board1) { policyBuf, v in
-                policy1 = Array(policyBuf)
-                value1 = v
+                // Copy policyBuf to a Sendable Array OUTSIDE the
+                // SyncBox.modify closure — `UnsafeBufferPointer` is
+                // non-Sendable, so capturing it inside another
+                // `@Sendable` closure trips Swift 6's strict check.
+                let policyCopy = Array(policyBuf)
+                result1.value = (policyCopy, v)
             }
-            nonisolated(unsafe) var policy2: [Float] = []
-            nonisolated(unsafe) var value2: Float = 0
+            let (policy1, value1) = result1.value
+            let result2 = SyncBox<(policy: [Float], value: Float)>(([], 0))
             try await net.evaluate(board: board2) { policyBuf, v in
-                policy2 = Array(policyBuf)
-                value2 = v
+                let policyCopy = Array(policyBuf)
+                result2.value = (policyCopy, v)
             }
+            let (policy2, value2) = result2.value
 
             guard policy1.count == policy2.count else {
                 SessionLogger.shared.log(
