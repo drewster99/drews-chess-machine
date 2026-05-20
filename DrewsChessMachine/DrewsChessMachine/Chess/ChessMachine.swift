@@ -143,15 +143,37 @@ final class ChessMachine: @unchecked Sendable {
     ///
     /// Throws `ChessMachineError.alreadyPlaying` if a game is already
     /// in progress (same contract as before).
+    ///
+    /// Returns `.terminatedNormally(...)` unconditionally — `ChessMachine`
+    /// only drives human-play (PlayController) and the Play Game /
+    /// Play Continuous buttons, all of which should run to a real
+    /// chess termination (checkmate, stalemate, or one of the four
+    /// draw rules). Self-play and arena use `ChessGameEngine` directly
+    /// and have their own cap handling; they do not call this entry
+    /// point. (`RawGameResult.terminatedEarly` is still produced
+    /// elsewhere — `ParallelWorkerStatsBox.recordDroppedGame` — for
+    /// its own stat-tracking ring.)
     @discardableResult
-    func beginNewGame(white: any ChessPlayer, black: any ChessPlayer) async throws -> GameResult {
+    func beginNewGame(
+        white: any ChessPlayer,
+        black: any ChessPlayer,
+        initialState: GameState = .starting
+    ) async throws -> RawGameResult {
         if gameInProgress {
             throw ChessMachineError.alreadyPlaying
         }
 
         whitePlayer = white
         blackPlayer = black
-        engine = ChessGameEngine()
+        // `ChessGameEngine.init(state:)` re-seeds repetition tracking
+        // for the supplied position — fine for a fresh game from
+        // either the standard starting position or a revert point in
+        // an interactive human game (Revert to here). Move history
+        // before the revert is intentionally NOT reconstructed inside
+        // the engine: 3-fold repetition only sees positions reachable
+        // from `initialState`, which is the desired behavior for a
+        // fork.
+        engine = ChessGameEngine(state: initialState)
         gameInProgress = true
         defer { gameInProgress = false }
 
@@ -163,8 +185,18 @@ final class ChessMachine: @unchecked Sendable {
 
     // MARK: - Game Loop
 
-    private func runGameLoop() async throws -> GameResult {
-        guard let engine else { return .stalemate }
+    private func runGameLoop() async throws -> RawGameResult {
+        guard let engine else {
+            // `engine` is set unconditionally in `beginNewGame` at the
+            // single call site that drives this method; reaching here
+            // with `engine == nil` means a future refactor moved the
+            // assignment or introduced a second entry point and the
+            // ordering guarantee broke. The old silent-stalemate
+            // fallback would inject a fake game result into whatever
+            // consumer the player/delegate sees, which is exactly the
+            // class of bug we want surfaced loudly.
+            preconditionFailure("runGameLoop invoked without engine — beginNewGame must initialize engine before calling runGameLoop")
+        }
 
         let gameStart = CFAbsoluteTimeGetCurrent()
         var whiteThinkMs: Double = 0
@@ -254,14 +286,23 @@ final class ChessMachine: @unchecked Sendable {
             totalGameTimeMs: totalGameMs
         )
 
-        let finalResult = engine.result ?? .stalemate
+        // The loop only exits when `engine.result != nil` (or via
+        // throw — handled inside the loop body), so `engine.result`
+        // is always non-nil here. The old `?? .stalemate` fallback
+        // is gone with the max-plies cap; if a future change brings
+        // back an "exit without engine result" path it should add a
+        // distinct termination cause rather than re-bucketing into
+        // stalemate.
+        guard let finalResult = engine.result else {
+            preconditionFailure("runGameLoop exited the while loop with engine.result == nil — only the throw path should bypass the engine.result != nil exit condition")
+        }
         let finalState = engine.state
         whitePlayer?.onGameEnded(finalResult, finalState: finalState)
         blackPlayer?.onGameEnded(finalResult, finalState: finalState)
 
         emit(.gameEnded(result: finalResult, finalState: finalState, stats: stats))
 
-        return finalResult
+        return .terminatedNormally(finalResult)
     }
 
     /// Dispatch a delegate event onto the serial delegate queue. Fires and
@@ -297,7 +338,7 @@ private enum DelegateEvent: @unchecked Sendable {
 /// when the UI owning the delegate has gone away.
 private final class DelegateBox: @unchecked Sendable {
     let machine: ChessMachine
-    weak var delegate: AnyObject?
+    weak var delegate: (any ChessMachineDelegate)?
 
     init(machine: ChessMachine, delegate: (any ChessMachineDelegate)?) {
         self.machine = machine
@@ -305,7 +346,7 @@ private final class DelegateBox: @unchecked Sendable {
     }
 
     func deliver(_ event: DelegateEvent) {
-        guard let delegate = delegate as? any ChessMachineDelegate else { return }
+        guard let delegate else { return }
         switch event {
         case .didApplyMove(let move, let newState):
             delegate.chessMachine(machine, didApplyMove: move, newState: newState)

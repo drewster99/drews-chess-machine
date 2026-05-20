@@ -7,7 +7,7 @@ import SwiftUI
 /// renders just that. The Concurrency Stepper used to live inside
 /// this column, but the column itself is hidden whenever
 /// `isCandidateTestActive` is true (which is forced on for
-/// `selfPlayWorkers > 1`), so the Stepper became unreachable as
+/// `selfPlayConcurrency > 1`), so the Stepper became unreachable as
 /// soon as the user bumped concurrency above 1. The Stepper now
 /// lives in its own always-visible row at the top of
 /// `UpperContentView` (`ConcurrencyStepperRow`).
@@ -34,10 +34,10 @@ struct SelfPlayStatsColumn: View {
 
 /// Always-visible Concurrency control row. Rendered above the
 /// board+text panel whenever `realTraining` is true so the user
-/// can change `selfPlayWorkers` regardless of which board mode
+/// can change `selfPlayConcurrency` regardless of which board mode
 /// (game-run, candidate-test, progress-rate) the session happens
 /// to be in. The Stepper writes through to
-/// `trainingParams.selfPlayWorkers` directly via `@Bindable`; the
+/// `trainingParams.selfPlayConcurrency` directly via `@Bindable`; the
 /// `didSet` on that property propagates to the workers' shared
 /// box on the next reconcile tick.
 struct ConcurrencyStepperRow: View {
@@ -47,12 +47,12 @@ struct ConcurrencyStepperRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Text("Concurrency:")
-            Text("\(trainingParams.selfPlayWorkers)")
+            Text("\(trainingParams.selfPlayConcurrency)")
                 .monospacedDigit()
                 .frame(minWidth: 24, alignment: .trailing)
             Stepper(
                 "Concurrency",
-                value: $trainingParams.selfPlayWorkers,
+                value: $trainingParams.selfPlayConcurrency,
                 in: 1...maxWorkers
             )
             .labelsHidden()

@@ -60,23 +60,23 @@ final class TrainingParameterMacroTests: XCTestCase {
         assertMacroExpansion(
             """
             @TrainingParameter(
-                name: "Self-Play Workers",
+                name: "Self-Play Concurrency",
                 description: "Parallel self-play game count.",
                 default: 6,
                 range: 1...256,
                 category: "Training Window",
                 liveTunable: true
             )
-            public enum SelfPlayWorkers: TrainingParameterKey {}
+            public enum SelfPlayConcurrency: TrainingParameterKey {}
             """,
             expandedSource: """
-            public enum SelfPlayWorkers: TrainingParameterKey {
+            public enum SelfPlayConcurrency: TrainingParameterKey {
 
-                public static let id: String = "self_play_workers"
+                public static let id: String = "self_play_concurrency"
 
                 public static let definition: TrainingParameterDefinition = TrainingParameterDefinition(
                     id: id,
-                    name: "Self-Play Workers",
+                    name: "Self-Play Concurrency",
                     description: "Parallel self-play game count.",
                     type: .int,
                     defaultValue: .int(6),

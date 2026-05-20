@@ -44,11 +44,11 @@ extension SessionController {
         )
         // Snap the live N into the [1, absoluteMaxSelfPlayWorkers] range
         // before doing anything else. The Stepper enforces this
-        // for user input but `TrainingParameters.shared.selfPlayWorkers` is centrally managed
+        // for user input but `TrainingParameters.shared.selfPlayConcurrency` is centrally managed
         // so the value could in principle be edited elsewhere.
-        let initialWorkerCount = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, TrainingParameters.shared.selfPlayWorkers))
-        if initialWorkerCount != TrainingParameters.shared.selfPlayWorkers {
-            TrainingParameters.shared.selfPlayWorkers = initialWorkerCount
+        let initialWorkerCount = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, TrainingParameters.shared.selfPlayConcurrency))
+        if initialWorkerCount != TrainingParameters.shared.selfPlayConcurrency {
+            TrainingParameters.shared.selfPlayConcurrency = initialWorkerCount
         }
         guard let trainer = ensureTrainer(), let network else { return }
         let gameWatcher = gameWatcherProvider()
@@ -74,6 +74,9 @@ extension SessionController {
             buffer = ReplayBuffer(capacity: TrainingParameters.shared.replayBufferCapacity)
             replayBuffer = buffer
         }
+        // Seed the buffer's per-batch sampling constraints from the current
+        // parameters immediately (the heartbeat re-pushes every tick).
+        buffer.setSamplingConstraints(ReplayBuffer.SamplingConstraints.fromCurrentParameters())
         let box: TrainingLiveStatsBox
         if continueMode, let existing = trainingBox {
             box = existing
@@ -240,6 +243,63 @@ extension SessionController {
                         "[RESUME-PARAM] batch_stats_interval: saved=nil applied=\(TrainingParameters.shared.batchStatsInterval) (defaulted)"
                     )
                 }
+                // Composition-aware replay-buffer sampler constraints. Unlike
+                // most params on this resume path these don't shadow on the
+                // trainer — the sampler reads them straight off
+                // `TrainingParameters.shared` each `sample(count:)` call
+                // (see ReplayBuffer.swift). So the resume action is just
+                // "write the saved value back onto the singleton" with the
+                // same `[RESUME-PARAM]` audit line as everything else here.
+                if let v = rs.maxPliesFromAnyOneGame {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_plies_from_any_one_game: \(TrainingParameters.shared.maxPliesFromAnyOneGame) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.maxPliesFromAnyOneGame = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_plies_from_any_one_game: saved=nil applied=\(TrainingParameters.shared.maxPliesFromAnyOneGame) (defaulted)"
+                    )
+                }
+                if let v = rs.targetSampledGameLengthPlies {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] target_sampled_game_length_plies: \(TrainingParameters.shared.targetSampledGameLengthPlies) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.targetSampledGameLengthPlies = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] target_sampled_game_length_plies: saved=nil applied=\(TrainingParameters.shared.targetSampledGameLengthPlies) (defaulted)"
+                    )
+                }
+                if let v = rs.maxDrawPercentPerBatch {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_draw_percent_per_batch: \(TrainingParameters.shared.maxDrawPercentPerBatch) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.maxDrawPercentPerBatch = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] max_draw_percent_per_batch: saved=nil applied=\(TrainingParameters.shared.maxDrawPercentPerBatch) (defaulted)"
+                    )
+                }
+                if let v = rs.selfPlayDrawKeepFraction {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] self_play_draw_keep_fraction: \(TrainingParameters.shared.selfPlayDrawKeepFraction) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.selfPlayDrawKeepFraction = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] self_play_draw_keep_fraction: saved=nil applied=\(TrainingParameters.shared.selfPlayDrawKeepFraction) (defaulted)"
+                    )
+                }
+                if let v = rs.maxPliesPerGame {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] self_play_max_plies_per_game: \(TrainingParameters.shared.selfPlayMaxPliesPerGame) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.selfPlayMaxPliesPerGame = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] self_play_max_plies_per_game: saved=nil applied=\(TrainingParameters.shared.selfPlayMaxPliesPerGame) (defaulted)"
+                    )
+                }
                 // LR warmup length and sqrt-batch LR scaling are now
                 // part of the session schema (Optional, for back-compat
                 // with older `.dcmsession` files that pre-date the
@@ -398,7 +458,7 @@ extension SessionController {
         // multi-worker sessions so the user gets a usable left-side
         // panel out of the gate; single-worker sessions keep the
         // historical Game-run default.
-        playAndTrainBoardMode = TrainingParameters.shared.selfPlayWorkers > 1 ? .candidateTest : .gameRun
+        playAndTrainBoardMode = TrainingParameters.shared.selfPlayConcurrency > 1 ? .candidateTest : .gameRun
         probeNetworkTarget = .candidate
         candidateProbeDirty = false
         lastCandidateProbeTime = .distantPast
@@ -438,7 +498,7 @@ extension SessionController {
                 } else {
                     kind = nil
                 }
-                return TournamentRecord(
+                var rec = TournamentRecord(
                     finishedAtStep: entry.finishedAtStep,
                     finishedAt: entry.finishedAtUnix.map {
                         Date(timeIntervalSince1970: TimeInterval($0))
@@ -461,6 +521,8 @@ extension SessionController {
                     candidateDrawsAsWhite: entry.candidateDrawsAsWhite ?? 0,
                     candidateDrawsAsBlack: entry.candidateDrawsAsBlack ?? 0
                 )
+                rec.extendedSummary = entry.extendedSummary
+                return rec
             }
         } else {
             // Fresh session (first Start of the launch, or one of
@@ -503,10 +565,19 @@ extension SessionController {
                 fiftyMoveDraws: rs.fiftyMoveDraws ?? 0,
                 threefoldRepetitionDraws: rs.threefoldRepetitionDraws ?? 0,
                 insufficientMaterialDraws: rs.insufficientMaterialDraws ?? 0,
-                trainingSteps: rs.trainingSteps
+                maxPliesDropped: rs.maxPliesDropped,
+                trainingSteps: rs.trainingSteps,
+                emittedGames: rs.emittedGames,
+                emittedPositions: rs.emittedPositions,
+                emittedWhiteCheckmates: rs.emittedWhiteCheckmates,
+                emittedBlackCheckmates: rs.emittedBlackCheckmates,
+                emittedStalemates: rs.emittedStalemates,
+                emittedFiftyMoveDraws: rs.emittedFiftyMoveDraws,
+                emittedThreefoldRepetitionDraws: rs.emittedThreefoldRepetitionDraws,
+                emittedInsufficientMaterialDraws: rs.emittedInsufficientMaterialDraws
             )
             if let workerCount = resumeState?.selfPlayWorkerCount {
-                TrainingParameters.shared.selfPlayWorkers = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, workerCount))
+                TrainingParameters.shared.selfPlayConcurrency = max(1, min(UpperContentView.absoluteMaxSelfPlayWorkers, workerCount))
             }
             if let delay = rs.stepDelayMs {
                 TrainingParameters.shared.trainingStepDelayMs = delay
@@ -554,16 +625,17 @@ extension SessionController {
                 seedChartCoordinatorFromLoadedSession(chartURLs: chartURLs)
             }
         }
-        // Single self-play gate. All self-play workers now share one
-        // `BatchedMoveEvaluationSource` on the champion network, driven
-        // by `BatchedSelfPlayDriver`, so there is exactly one consumer
-        // for the arena coordinator to pause. The previous per-secondary
-        // gate array is gone along with the secondary networks.
+        // Single self-play gate. `BatchedSelfPlayDriver` is one driver
+        // task that ticks K active games against the champion network
+        // (one batched `evaluateBatched` per tick), so the arena
+        // coordinator pauses exactly one consumer here. The previous
+        // per-worker-Task gate array is gone along with the legacy
+        // task-per-game topology.
         let selfPlayGate = WorkerPauseGate()
         // Shared current-N holder. Workers poll this to decide
         // whether to play another game or sit in their idle wait.
         // The Stepper writes through it (and to `@State
-        // TrainingParameters.shared.selfPlayWorkers simultaneously). Exposed via
+        // TrainingParameters.shared.selfPlayConcurrency simultaneously). Exposed via
         // so the UI can disable the buttons when the box is gone
         // (between sessions).
         let countBox = WorkerCountBox(initial: initialWorkerCount)
@@ -1022,26 +1094,12 @@ extension SessionController {
             // delay into every average for the life of the 
             pStatsBox.markWorkersStarted()
 
-            // Build the shared self-play batcher and driver. All slots
-            // play against one `ChessMPSNetwork` (the champion, via
-            // `network`) through a `BatchedMoveEvaluationSource` actor
-            // that coalesces N per-ply forward passes into one batched
-            // `graph.run`. The driver owns the slot lifecycle: it
-            // spawns up to `countBox.count` child tasks, responds to
-            // Stepper-driven count changes, and pauses the whole
-            // self-play subsystem through the shared `selfPlayGate`
-            // when arena requests it (replacing the previous
-            // per-worker gate array).
-            let selfPlayBatcher = BatchedMoveEvaluationSource(network: network)
-            // Wire the ratio controller into the batcher so every
-            // barrier fire reports an aggregate (positions, elapsed)
-            // measurement. `setReplayRatioController` is actor-
-            // isolated, so it's dispatched via a `Task`.
-            Task { [ratioController] in
-                await selfPlayBatcher.setReplayRatioController(ratioController)
-            }
+            // Build the self-play driver. Single-task tick driver
+            // that advances K concurrent games in lockstep (one ply
+            // per GPU batch). See `BatchedSelfPlayDriver`'s class
+            // doc for the topology and lifecycle.
             let selfPlayDriver = BatchedSelfPlayDriver(
-                batcher: selfPlayBatcher,
+                network: network,
                 buffer: buffer,
                 statsBox: pStatsBox,
                 diversityTracker: spDiversityTracker,
@@ -1323,11 +1381,12 @@ extension SessionController {
                         let parallelSnap = pStatsBox.snapshot()
                         let bufCount = buffer.count
                         let bufCap = buffer.capacity
+                        let bufComp = buffer.compositionSnapshot()
                         let ratioSnap = ratioController.snapshot()
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -1345,7 +1404,9 @@ extension SessionController {
                                 trainer.completedTrainSteps,
                                 TrainingParameters.shared.arenaAutoIntervalSec,
                                 TrainingParameters.shared.arenaPromoteThreshold,
-                                TrainingParameters.shared.arenaGamesPerTournament
+                                TrainingParameters.shared.arenaGamesPerTournament,
+                                TrainingParameters.shared.selfPlayDrawKeepFraction,
+                                TrainingParameters.shared.selfPlayMaxPliesPerGame
                             )
                         }
                         let policyStr: String
@@ -1451,16 +1512,20 @@ extension SessionController {
                         // a pure unit conversion, exposed here so the
                         // [STATS] line and result.json carry the rate in
                         // the unit a human asks for ("how many moves per
-                        // hour are we training on?").
+                        // hour are we training on?"). `prod` is the
+                        // EMITTED rate (post-draw-filter, the rate the
+                        // replay-ratio target compares against);
+                        // `prodRaw` is the raw GPU rate. At default
+                        // `selfPlayDrawKeepFraction = 1.0` they match.
                         let spMovesPerHour = ratioSnap.productionRate * 3600.0
                         let trainMovesPerHour = ratioSnap.consumptionRate * 3600.0
-                        let ratioStr = String(format: "target=%.2f cur=%.2f prod=%.1f cons=%.1f spRate=%.0f/hr trainRate=%.0f/hr auto=%@ delay=%dms spDelay=%dms spMs=%@ trMs=%@ workers=%d",
+                        let ratioStr = String(format: "target=%.2f cur=%.2f prod=%.1f prodRaw=%.1f cons=%.1f spRate=%.0f/hr trainRate=%.0f/hr auto=%@ delay=%dms spDelay=%dms spMs=%@ trMs=%@ workers=%d drawKeep=%.2f",
                                               ratioSnap.targetRatio, ratioSnap.currentRatio,
-                                              ratioSnap.productionRate, ratioSnap.consumptionRate,
+                                              ratioSnap.productionRate, ratioSnap.producedRate, ratioSnap.consumptionRate,
                                               spMovesPerHour, trainMovesPerHour,
                                               ratioSnap.autoAdjust ? "on" : "off",
                                               ratioSnap.computedDelayMs, ratioSnap.computedSelfPlayDelayMs,
-                                              spMsStr, trMsStr, ratioSnap.workerCount)
+                                              spMsStr, trMsStr, ratioSnap.workerCount, drawKeepFrac)
                         let outcomeStr = String(format: "wMate=%d bMate=%d stale=%d 50mv=%d 3fold=%d insuf=%d",
                                                 parallelSnap.whiteCheckmates, parallelSnap.blackCheckmates,
                                                 parallelSnap.stalemates, parallelSnap.fiftyMoveDraws,
@@ -1477,12 +1542,13 @@ extension SessionController {
                             valueW,
                             momentum
                         )
-                        // Average game length: lifetime and 10-min
-                        // rolling window. `selfPlayPositions` counts
-                        // every ply played, so dividing by the number
-                        // of completed games gives the mean plies-per-
-                        // game. Rolling avg tracks recent behavior;
-                        // lifetime avg catches longer-term drift.
+                        // Average game length: lifetime and rolling-
+                        // window (`recentWindow`, currently 1 minute).
+                        // `selfPlayPositions` counts every ply played,
+                        // so dividing by the number of completed games
+                        // gives the mean plies-per-game. Rolling avg
+                        // tracks recent behavior; lifetime avg catches
+                        // longer-term drift.
                         let lifetimeAvgLen: Double = parallelSnap.selfPlayGames > 0
                         ? Double(parallelSnap.selfPlayPositions) / Double(parallelSnap.selfPlayGames)
                         : 0
@@ -1594,6 +1660,17 @@ extension SessionController {
                         } else {
                             bufUniqStr = "--"
                         }
+                        // Pre-constraint replay-buffer composition (the
+                        // post-constraint distribution of an actual sampled
+                        // batch is the [BATCH-STATS] line). lenG = game-weighted
+                        // mean game length, lenP = position-weighted (= E[L²]/E[L]).
+                        let compStr = String(
+                            format: "games=%.0f lenG=%.1f lenP=%.1f W=%.3f D=%.3f L=%.3f",
+                            bufComp.gameWeightedResidentGameCount,
+                            bufComp.meanGameLengthPerGame,
+                            bufComp.meanGameLengthPerSampledPosition,
+                            bufComp.winFraction, bufComp.drawFraction, bufComp.lossFraction
+                        )
                         // Per-step timing means over the rolling timing
                         // window. Splits `recentStepMs` into prep/gpu/
                         // read/queueWait/step so a slowdown can be
@@ -1658,7 +1735,7 @@ extension SessionController {
                         // inputs).
                         let shapesStr = "feedCache=\(trainer.feedCacheCount)"
 
-                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
+                        let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
 
                         // CLI `--output` capture: one StatsLine per
@@ -1672,6 +1749,11 @@ extension SessionController {
                                 steps: trainingSnap.stats.steps,
                                 selfPlayGames: parallelSnap.selfPlayGames,
                                 positionsTrained: parallelSnap.selfPlayPositions,
+                                emittedGames: parallelSnap.emittedGames,
+                                emittedPositions: parallelSnap.emittedPositions,
+                                selfPlayDrawKeepFraction: drawKeepFrac,
+                                selfPlayMaxPliesPerGame: maxPliesCap,
+                                maxPliesDropped: parallelSnap.maxPliesDropped,
                                 avgLen: lifetimeAvgLen,
                                 rollingAvgLen: rollingAvgLen,
                                 gameLenP50: parallelSnap.gameLenP50,
@@ -1700,6 +1782,12 @@ extension SessionController {
                                     CliTrainingRecorder.BatchStatsSnapshot(
                                         step: s.step,
                                         batchSize: s.batchSize,
+                                        samplingConstraints: CliTrainingRecorder.BatchStatsSnapshot.SamplingConstraintsSnapshot(
+                                            applied: s.samplingConstraintsApplied,
+                                            maxPerGame: s.samplingConstraints.maxPerGame,
+                                            maxDrawPct: s.samplingConstraints.maxDrawPercent,
+                                            targetLength: s.samplingConstraints.targetMeanGameLengthPlies
+                                        ),
                                         uniqueCount: s.uniqueCount,
                                         uniquePct: s.uniquePct,
                                         dupMax: s.dupMax,
@@ -1744,6 +1832,7 @@ extension SessionController {
                                 ratioTarget: ratioSnap.targetRatio,
                                 ratioCurrent: ratioSnap.currentRatio,
                                 ratioProductionRate: ratioSnap.productionRate,
+                                ratioProducedRate: ratioSnap.producedRate,
                                 ratioConsumptionRate: ratioSnap.consumptionRate,
                                 selfPlayMovesPerHour: spMovesPerHour,
                                 trainingMovesPerHour: trainMovesPerHour,

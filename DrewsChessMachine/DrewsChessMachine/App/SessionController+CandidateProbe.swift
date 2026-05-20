@@ -1,3 +1,4 @@
+import Accelerate
 import SwiftUI
 
 /// `SessionController`'s candidate-test probe execution + forward-pass inference —
@@ -111,8 +112,13 @@ extension SessionController {
         inference: ChessRunner.InferenceResult
     ) -> CliTrainingRecorder.CandidateTest {
         let policy = inference.policy
-        let sum = Double(policy.reduce(0, +))
-        let top100Sum = Double(policy.sorted(by: >).prefix(100).reduce(0, +))
+        var sumF: Float = 0
+        policy.withUnsafeBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            vDSP_sve(base, 1, &sumF, vDSP_Length(buf.count))
+        }
+        let sum = Double(sumF)
+        let top100Sum = Self.topKSumAsDouble(policy, k: 100)
         let minP = Double(policy.min() ?? 0)
         let maxP = Double(policy.max() ?? 0)
         let legalMoves = MoveGenerator.legalMoves(for: state)
@@ -277,4 +283,44 @@ extension SessionController {
         )
     }
 
+    /// Sum of the K largest values in `values`, as Double. O(N log K)
+    /// via a fixed-size min-heap — replaces the previous full
+    /// `.sorted(by: >).prefix(K).reduce(0, +)` which is O(N log N)
+    /// plus a full sorted-copy allocation.
+    nonisolated fileprivate static func topKSumAsDouble(_ values: [Float], k: Int) -> Double {
+        guard k > 0, !values.isEmpty else { return 0 }
+        let m = min(k, values.count)
+        var heap = Array(values.prefix(m))
+        // Build min-heap in O(m).
+        var i = m / 2
+        while i > 0 {
+            i -= 1
+            siftDownF(&heap, from: i, count: m)
+        }
+        for idx in m..<values.count {
+            let v = values[idx]
+            if v > heap[0] {
+                heap[0] = v
+                siftDownF(&heap, from: 0, count: m)
+            }
+        }
+        var sum: Double = 0
+        for v in heap { sum += Double(v) }
+        return sum
+    }
+
+    nonisolated private static func siftDownF(_ heap: inout [Float], from start: Int, count: Int) {
+        var i = start
+        while true {
+            let l = 2 * i + 1
+            if l >= count { return }
+            let r = l + 1
+            var smallest = i
+            if heap[l] < heap[smallest] { smallest = l }
+            if r < count && heap[r] < heap[smallest] { smallest = r }
+            if smallest == i { return }
+            heap.swapAt(i, smallest)
+            i = smallest
+        }
+    }
 }

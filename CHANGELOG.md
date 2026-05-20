@@ -9,6 +9,191 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-05-16 — **GOLD STANDARD** training run — KbHZ lineage, ~47 h stable training, 30-plane v3 net (FINDING)
+
+This is the **current gold-standard reference run**: build-1093 (origin) through build-1178, trainer lineage `20260514-1-KbHZ-…` (champion currently `…-3`, trainer `…-4`), session `20260514-2-Ko63`. Started fresh on **2026-05-14 02:01:56 CDT** (origin log `dcm_log_20260514-020048.txt`, `[BUTTON] Play and Train` at 02:01:56 minted `20260514-1-KbHZ`), still running as of **2026-05-16 14:18** (latest `[STATS]` in `dcm_log_20260516-003734.txt`). Wall-clock since origin ≈ 60 h; **cumulative active training ≈ 47 h** (`elapsedTrainingSec=169181.55` in the 2026-05-16 16:27:30 periodic save, the gap from wall clock = closed/paused segments across the 19 segments in this run). By far the longest stable run to date — no policy-collapse alarm, no value-head collapse, no `gNorm` excursion, no manual abort. **Anchored as a line in the sand before the upcoming refactor**, so if a re-run from these parameters misbehaves we have the exact starting state recorded.
+
+**Run health at snapshot (latest `[STATS]` 14:18, step 162987).** `pLoss=+0.7733` (outcome-weighted policy CE, well into the expected post-stability range), `pEnt=2.16` nats (masked policy entropy holding well below the `log(4864)≈8.49` uniform-init ceiling and above the 5.0 alarm), `pIllM=0.0366` (illegal-move probability mass — sub-percent, the post-56bc90a "should fall to ≪0.1" criterion is met), `legalMass=0.9670` / `top1Legal=0.99`, `gNorm=1.18` (well under the 30.0 clip), `vLoss=+0.6529` (CE, healthy mid-band of `[0, ln 3≈1.099]`), `vAbs=0.0932` with `pW=0.128 / pD=0.745 / pL=0.127` — value head is **alive**: `pD` has come off its `0.75` bias-init prior, draw collapse is not happening. `diversity=200/200 unique, diverge=1.6`. Replay buffer full at `1500000/1500000`, `bufUniq=0.98`. Self-play production 24M positions/hr at 4000 workers; consumer 15M/hr at batch 4096 — `ratio=(target=1.00 cur=0.61 auto=off delay=39ms)`, deliberately below 1.0 in this segment since the user pinned auto-adjust **off** during the bulk worker rampup. 178 arenas run, none promoted in the most recent segment (the candidate has been hovering at score ≈ 0.45–0.48 vs champion `…-3`; promotions earlier in the run drove `KbHZ → -1 → -2 → -3`).
+
+---
+
+### Snapshot — full current parameter set (sources: last `[RESUME-PARAM]` block + applied PARAM events + latest periodic save `session.json` at 2026-05-16 16:27:30)
+
+| key | value |
+| --- | --- |
+| **Training math** | |
+| `learning_rate` | `5.0e-04` (`·√b` scaling on, `warmup=500`) |
+| `sqrt_batch_scaling_lr` | `true` |
+| `lr_warmup_steps` | `500` |
+| `momentum_coeff` | `0.65` |
+| `weight_decay` | `1.0e-04` |
+| `grad_clip_max_norm` | `30.0` |
+| `entropy_bonus` | `2.5e-03` |
+| `illegal_mass_weight` | `1.0` |
+| `draw_penalty` | `0.0` |
+| `policy_loss_weight` | `1.0` |
+| `value_loss_weight` | `1.0` |
+| `policy_label_smoothing_epsilon` | `0.10` |
+| `value_label_smoothing_epsilon` | `0.013` |
+| **Batching** | |
+| `training_batch_size` | `4096` |
+| `batch_stats_interval` | `10` |
+| `training_step_delay_ms` | `0` (auto-adjust pinned off; user-controlled in this segment) |
+| **Replay buffer** | |
+| `replay_buffer_capacity` | `1500000` |
+| `replay_buffer_min_positions_before_training` | `500000` |
+| `replay_ratio_target` | `1.00` |
+| `replay_ratio_auto_adjust` | `false` (manually pinned off ~46 h in) |
+| `max_plies_from_any_one_game` | `10` |
+| `target_sampled_game_length_plies` | `124` |
+| `max_draw_percent_per_batch` | `75` |
+| **Self-play** | |
+| `self_play_workers` | `4000` (UI cap recently raised 1024 → 8192 — see commit `c9963dd`) |
+| `self_play_delay_ms` | `0` |
+| `self_play_draw_keep_fraction` | `1.00` |
+| `max_plies_per_game` | `150` |
+| `self_play_start_tau` | `1.00` |
+| `self_play_target_tau` | `0.50` |
+| `self_play_tau_decay_per_ply` | `0.007` |
+| **Arena** | |
+| `arena_auto_interval_sec` | `900` |
+| `arena_concurrency` | `400` |
+| `arena_games_per_tournament` | `400` |
+| `arena_promote_threshold` | `0.53` |
+| `arena_start_tau` | `0.60` |
+| `arena_target_tau` | `0.20` |
+| `arena_tau_decay_per_ply` | `0.020` |
+| **Watchdogs** | |
+| `candidate_probe_interval_sec` | `15.0` |
+| `legal_mass_collapse_threshold` | `0.99` |
+| `legal_mass_collapse_grace_seconds` | `600` |
+| `legal_mass_collapse_no_improvement_probes` | `8` |
+
+Architecture: v3 30-plane input, 4864-output policy, 8-block-resnet with SE attention + fully-conv policy head + 3-logit W/D/L value head. `arch_hash=0x13ba0b55`. Build at snapshot = **1178** (`git=79a6dba` dirty, branch `tmp/possibly-crap`). Run origin built on **1093** (`git=460ee0b`).
+
+---
+
+### Per-event parameter-change history during the run
+
+Time = absolute CDT. Elapsed = wall-clock since the 02:01:56 origin (≈ 1.3× the cumulative active-training time). Step = nearest preceding `[STATS]` step number; `?` = pre-`[STATS]` interval at a segment boundary. No-op (`x -> x`) re-applications on segment restart are dropped; events where `old` is the post-resume default re-snap from a saved checkpoint (e.g. `maxPliesFromAnyOneGame: 2 -> N` repeating at segment starts) are kept as-is — they represent the singleton being re-pushed back to its desired user value after each resume.
+
+| date | time | elapsed | step | parameter | change |
+| --- | --- | --- | --- | --- | --- |
+| 2026-05-14 | 02:18:42 |  0h16m |   1392 | `selfPlayWorkers` | 16 → 14 |
+| 2026-05-14 | 02:19:37 |  0h17m |   1479 | `selfPlayWorkers` | 14 → 10 |
+| 2026-05-14 | 02:20:19 |  0h18m |   1561 | `selfPlayWorkers` | 10 → 32 |
+| 2026-05-14 | 02:21:15 |  0h19m |   1649 | `selfPlayWorkers` | 32 → 8 |
+| 2026-05-14 | 02:21:52 |  0h19m |   1649 | `selfPlayWorkers` | 8 → 16 |
+| 2026-05-14 | 02:22:44 |  0h20m |   1728 | `selfPlayWorkers` | 16 → 13 |
+| 2026-05-14 | 10:09:33 |  8h07m |  38145 | `replayBufferCapacity` | 800000 → **1500000** |
+| 2026-05-14 | 10:09:33 |  8h07m |  38145 | `replayBufferMinPositionsBeforeTraining` | 400000 → **500000** |
+| 2026-05-14 | 10:13:59 |  8h12m |  38369 | `maxPliesFromAnyOneGame` | 2 → 4 |
+| 2026-05-14 | 10:14:48 |  8h12m |  38451 | `maxPliesFromAnyOneGame` | 4 → 6 |
+| 2026-05-14 | 10:14:48 |  8h12m |  38451 | `targetSampledGameLengthPlies` | 144 → 154 |
+| 2026-05-14 | 10:32:39 |  8h30m |  38204 | `maxPliesFromAnyOneGame` | 2 → 4 |
+| 2026-05-14 | 10:35:31 |  8h33m |  38451 | `targetSampledGameLengthPlies` | 144 → 174 |
+| 2026-05-14 | 11:58:20 |  9h56m |  38693 | `maxPliesFromAnyOneGame` | 2 → 5 |
+| 2026-05-14 | 11:58:20 |  9h56m |  38693 | `targetSampledGameLengthPlies` | 144 → 164 |
+| 2026-05-14 | 12:34:34 | 10h32m |  38522 | `selfPlayDrawKeepFraction` | 1.00 → 0.65 |
+| 2026-05-14 | 12:34:49 | 10h32m |  38522 | `maxDrawPercentPerBatch` | 65 → 100 |
+| 2026-05-14 | 12:41:44 | 10h39m |  38968 | `selfPlayWorkers` | 13 → 24 |
+| 2026-05-14 | 13:55:11 | 11h53m |    —   | `selfPlayWorkers` | 24 → 13 |
+| 2026-05-14 | 17:32:35 | 15h30m |  38242 | `selfPlayWorkers` | 13 → 32 |
+| 2026-05-14 | 17:32:35 | 15h30m |  38242 | `maxPliesFromAnyOneGame` | 2 → 4 |
+| 2026-05-14 | 17:32:35 | 15h30m |  38242 | `targetSampledGameLengthPlies` | 144 → 204 |
+| 2026-05-14 | 18:37:06 | 16h35m |    —   | `selfPlayWorkers` | 32 → 13 |
+| 2026-05-14 | 18:38:06 | 16h36m |  38204 | `maxPliesFromAnyOneGame` | 2 → 5 |
+| 2026-05-14 | 18:38:06 | 16h36m |  38204 | `targetSampledGameLengthPlies` | 144 → 164 |
+| 2026-05-14 | 18:38:06 | 16h36m |  38204 | `maxDrawPercentPerBatch` | 65 → 75 |
+| 2026-05-14 | 18:38:22 | 16h36m |  38224 | `selfPlayWorkers` | 13 → 32 |
+| 2026-05-14 | 18:38:22 | 16h36m |  38224 | `selfPlayDrawKeepFraction` | 0.65 → 0.75 |
+| 2026-05-14 | 20:50:34 | 18h48m |  40934 | `maxPliesFromAnyOneGame` | 5 → **10** |
+| 2026-05-14 | 20:50:34 | 18h48m |  40934 | `targetSampledGameLengthPlies` | 164 → 84 |
+| 2026-05-14 | 20:50:34 | 18h48m |  40934 | `selfPlayDrawKeepFraction` | 0.75 → 0.40 |
+| 2026-05-15 | 08:41:59 | 30h40m |  61340 | `learningRate` | 1.5e-04 → **2.5e-04** |
+| 2026-05-15 | 17:05:32 | 39h03m |  84300 | `learningRate` | 2.5e-04 → **5.0e-04** |
+| 2026-05-15 | 22:39:37 | 44h37m | 107705 | `entropyBonus` | 1.0e-02 → 1.0e-03 |
+| 2026-05-15 | 23:26:00 | 45h24m | 109169 | `maxPliesPerGame` | 1000 → 200 |
+| 2026-05-15 | 23:51:23 | 45h49m | 109752 | `selfPlayDrawKeepFraction` | 0.40 → **1.00** |
+| 2026-05-15 | 23:51:23 | 45h49m | 109752 | `maxPliesPerGame` | 200 → **150** |
+| 2026-05-16 | 00:09:17 | 46h07m | 110691 | `entropyBonus` | 1.0e-03 → **2.5e-03** |
+| 2026-05-16 | 00:09:17 | 46h07m | 110691 | `valueLabelSmoothingEpsilon` | 0.025 → **0.013** |
+| 2026-05-16 | 00:11:34 | 46h09m | 110794 | `targetSampledGameLengthPlies` | 84 → 114 |
+| 2026-05-16 | 00:14:25 | 46h12m | 110945 | `maxDrawPercentPerBatch` | 75 → 70 |
+| 2026-05-16 | 00:15:15 | 46h13m | 110994 | `selfPlayWorkers` | 32 → 64 |
+| 2026-05-16 | 00:28:19 | 46h26m | 111184 | `entropyBonus` | 2.5e-03 → 1.0e-03 |
+| 2026-05-16 | 00:28:19 | 46h26m | 111184 | `selfPlayWorkers` | 64 → 256 |
+| 2026-05-16 | 00:30:08 | 46h28m | 111322 | `selfPlayWorkers` | 256 → 1024 |
+| 2026-05-16 | 00:31:38 | 46h29m | 111423 | `replayRatioAutoAdjust` | true → false |
+| 2026-05-16 | 00:33:22 | 46h31m | 111586 | `replayRatioAutoAdjust` | false → true |
+| 2026-05-16 | 00:33:57 | 46h32m | 111586 | `replayRatioAutoAdjust` | true → **false** |
+| 2026-05-16 | 00:37:55 | 46h35m | 111130 | `replayRatioAutoAdjust` | true → false *(post-resume re-apply)* |
+| 2026-05-16 | 00:38:20 | 46h36m | 111130 | `selfPlayWorkers` | 64 → 4096 |
+| 2026-05-16 | 00:42:20 | 46h40m | 111406 | `selfPlayWorkers` | 4096 → 8192 |
+| 2026-05-16 | 00:44:26 | 46h42m | 111536 | `selfPlayWorkers` | 8192 → **4000** |
+| 2026-05-16 | 00:57:48 | 46h55m | 112433 | `targetSampledGameLengthPlies` | 114 → **124** |
+| 2026-05-16 | 00:57:48 | 46h55m | 112433 | `maxDrawPercentPerBatch` | 70 → **75** |
+
+**Bold** = the value still in force at snapshot. After ~47 h there have been **no `[PARAM]` events from 00:57:48 to 14:18 on May 16** — the run has been ridden on the steady-state config for the last ~13 h of segment #19 without touching a knob.
+
+### What this run says (so we know what to preserve)
+
+- **Workers `64 → 4000`** at step ≈ 111k was the qualitative jump: post-resume the user opened up the worker count by ~60× (commit `c9963dd` raised the UI cap from 1024 to 8192) without destabilising training, because `replay_ratio_auto_adjust` was simultaneously pinned **off** and `step_delay_ms` was held at user-controlled values. The replay-ratio controller is stable in principle but isn't designed to handle a 60× producer step in one move.
+- **LR `1.5e-04 → 5.0e-04`** over the first 39 h was the slow ramp, two manual bumps. At 5.0e-04·√b the trainer never needed clipping (`gNorm≈1.2` vs `clip=30.0` cap).
+- **`entropy_bonus` settled to `2.5e-03`** after a brief excursion at `1.0e-03` — too low choked exploration; the current value sits at the boundary where the masked alarm at `5.0` nats is muted while diversity stays at 200/200.
+- **`value_label_smoothing_epsilon: 0.025 → 0.013`** at 46 h: with the WDL value head the `0.025` smoothing was too aggressive (pushed `pD` back toward init), `0.013` lets the head actually express conviction.
+- **`maxPliesPerGame: 1000 → 200 → 150`**: 1000 was the old cap from before the temporal-repetition planes shipped; the 150 cap matches the `maxDrawPercentPerBatch=75` regime and the average game length is now ≈ 135 plies, so the cap rarely binds but cuts the tail.
+- **`selfPlayDrawKeepFraction`**: spent the first ~10 h at 1.00, was throttled down for the draw-glut investigation (0.65, 0.75, 0.40), and went **back to 1.00** at 45 h — the per-batch draw cap (`maxDrawPercentPerBatch=75`) is the lever now, not the keep fraction.
+
+### If a re-run from this snapshot misbehaves
+
+Start point is `~/Library/Application Support/DrewsChessMachine/Sessions/20260516-162733-20260514-2-Ko63-periodic.dcmsession/` (4-h periodic autosave, build-1178). The earlier post-promotion save `20260516-082631-…-promote.dcmsession` is the cleaner reset point if a periodic-save artifact is suspected. The full per-event provenance above is the diff to play forward from `parameters.json` defaults if the binary checkpoint can't be loaded for any reason — re-applying these in order from a fresh `[BUTTON] Build Network` should reach the snapshot state, modulo replay-buffer content (which the binary checkpoint preserves and a from-scratch run does not).
+
+---
+
+## 2026-05-14 — 10 binary temporal-repetition-history planes (input expansion 20 → 30)
+
+Adds 10 new input planes (20–29) carrying the *temporal pattern* of recent position recurrences — plane `20 + i` is all-1 iff the position `i + 1` plies ago is a strict chess-rules duplicate (FIDE Article 9.2 `PositionKey` equality: board + STM + castling + EP) of the current position. Index 0 = 1 ply ago, index 9 = 10 plies ago. Zero-padded when fewer than 10 plies of post-irreversible-move history exist. Cleared on any halfmove-clock reset, matching the existing `positionCounts` semantics.
+
+**Why.** Threefold repetition is currently the dominant draw cause (~36% of all terminations in the build-1082 run). The existing planes 18–19 carry only the *count* of how many times this position has occurred (saturated at 2); they cannot express *when* those recurrences happened. The new planes let the network distinguish a 2-ply shuffle (bits 1 and 3 set after two visits) from a longer maneuvering cycle, which is the structural shape of the draw mode dominating the buffer. Cost is negligible (~+0.5% network compute, +2.6 GB replay-buffer storage on 1M positions) so this is the cheapest high-leverage experiment available; if it doesn't move threefold-draw share, the data itself points the next attack at conversion/endgame technique rather than repetition signal.
+
+**Files / what.**
+- **`Encoding/BoardEncoder.swift`** — `GameState` gains a `recentRepetitionMask: UInt16` field (default 0) carrying the packed 10-bit signal; `withRecentRepetitionMask(_:)` is the engine-side setter that mirrors the existing `withRepetitionCount(_:)`. `BoardEncoder.encode` reads `state.recentRepetitionMask` and fills planes 20–29 via the existing skip-if-zero broadcast pattern. Existing call sites (tests, UI editable position, `MPSChessPlayer`'s per-ply encode, the Forward Pass demo, `CheckpointManager`'s verification probe) need no source changes — synthetic `GameState`s construct with the default mask=0 and produce zero new planes, which is the correct "no recent repetitions" encoding for non-game-tracked states.
+- **`Chess/ChessGameEngine.swift`** — new `recentPositionKeys: [PositionKey]` window, max length 10, most-recent first. Maintained inside `applyMoveAndAdvance` next to the existing `positionCounts` table: the pre-apply state's `PositionKey` is prepended after each move and the window is truncated to 10; on irreversible moves (halfmove clock = 0) the window is cleared along with `positionCounts`. The mask is computed by `PositionKey`-comparing each window entry against the new state's key and is layered onto the state via `withRecentRepetitionMask`. Exposes `static let recentPositionKeyWindow = 10` so tests can read the same constant the implementation uses.
+- **`Network/ChessNetwork.swift`** — `inputPlanes = 20` → `30`. Stem weight shape becomes `[128, 30, 3, 3]` automatically; `arch_hash` (computed from input/output shape signature) shifts so old `.dcmsession` / `.dcmmodel` files fail to load with a shape mismatch — no migration code (per project policy on breaking architecture changes).
+- **`Training/ReplayBuffer.swift`** — per-position storage grows from 5.1 KB to 7.7 KB (no code change, the `floatsPerBoard` constant references `ChessNetwork.inputPlanes`); 1M-position buffer goes from 4.9 GB → 7.5 GB. Comment updated to reflect the v3 architecture.
+- **`documentation/chess-engine-design.md`** — plane table extended from 18 to 30. The doc was already stale at 18 (out of date since the 20-plane `repetitionCount` planes shipped); this brings the headline count and the table into sync with reality, including planes 18–19 it had been missing.
+- **`CLAUDE.md`** — input description in the "Board encoding and policy space" section updated from 20-plane to 30-plane.
+- **Tests** — new `DrewsChessMachineTests/RepetitionPlaneTests.swift` (10 tests): all planes zero at game start; bit-3 / plane-23 set after a single Nf3 Nc6 Ng1 Nb8 knight cycle (current position == position 4 plies ago); bits 3 and 7 set after the cycle is run twice; zero-padding when history is shorter than 10 plies; mask cleared on a pawn move (halfmove clock reset); window rebuilds correctly after the clear; `PositionKey` distinguishes opposite-STM-but-identical-pieces; `withRecentRepetitionMask` round-trips and other fields preserve; encoded planes mirror the set bits exactly; arch sanity (`tensorLength == inputPlanes × 64`, `recentPositionKeyWindow == 10`). Two existing tests had hard-coded `1280` literals that snapshot the v2 plane count (`BoardEncoderTests.testTensorLength` and `PolicyHeadCorrectnessTests.testEncoderTensorLengthMatchesNetworkInputShape`); both updated in lockstep to `1920` with explicit user approval, comments adjusted to reflect v3.
+
+**Not changed.** No backwards compatibility shim — existing `.dcmsession` and `.dcmmodel` files cannot load into the v3 build (loud shape-mismatch error at load time, as the loader's validator already does). No width/depth/head-structure changes. No sampling-parameter or loss-formulation changes. The architecture change requires a fresh training run.
+
+---
+
+## 2026-05-12 — Composition-aware replay-buffer batch sampler (3 per-batch constraints + composition readout)
+
+`ReplayBuffer.sample(count:…)` previously did `count` independent uniform draws over the resident ring — blind to which game a position came from, the game's length, or its outcome. On a draw-saturated buffer (~85% of resident positions from drawn games; ~370-ply shuffle marathons) that means the trainer's minibatch is mostly `z = 0` positions from long aimless games, so the W/D/L value head's target carries almost no position information, the policy-gradient baseline is ≈0 everywhere, and `advantage = z − vBaseline ≈ z` degenerates. This adds per-training-batch composition control plus an O(1) pre-constraint composition readout — the most direct lever on that degeneracy that doesn't require the champion to improve first (it changes what the *trainer* sees; it does **not** change the buffer's underlying draw rate, which is champion-strength × sampling-temperature and is not affected by `draw_penalty` either).
+
+**Files / what.**
+- **`Training/TrainingParameters.swift`** — three new `@TrainingParameter` keys in the `Replay Buffer` category, all `liveTunable`: `max_plies_from_any_one_game` (Int, default `10`, range `1...400` — the cap is **on by default**; with typical batch sizes (e.g. 4096) it is always active in this range), `target_sampled_game_length_plies` (Int, default `0` ⇒ off), `max_draw_percent_per_batch` (Int, default `100` ⇒ off). Registry 36 → 39 (`TrainingParametersTests.test_registry_size` and the file's header comment updated; `CLAUDE.md` "36 tunable parameters" → 39). Persisted values that fall outside the new range (the previous default `65536` from the parameter's earlier `max_samples_per_game_per_batch` name) fail validation on read and fall back to the new default — so an existing user's per-game cap silently turns ON to `10` at next launch. The earlier short-lived `max_samples_per_game_per_batch` key shipped before the rename; treat it as never released.
+- **`Training/ReplayBuffer.swift`** —
+  - *Composition aggregates* maintained incrementally under the buffer lock (in `append`'s insertion/eviction passes, alongside `hashStats`, and rebuilt in `restore`): per-class resident-position counts (`winPositions`/`drawPositions`/`lossPositions`), `sumGameLengthOverResidentPositions`, a `[UInt32:Int]` resident-game refcount (`distinctResidentGames = .count`), and a `[UInt16:Int]` resident length histogram. Exposed via `compositionSnapshot() -> CompositionSnapshot` (game-weighted and position-weighted mean game length, W/D/L fractions; the position-weighted mean is `E[L²]/E[L]`, the gap between the two is the length dispersion). Observability-only — not persisted; rebuilt on `restore` (no on-disk format bump, stays v7). Known wart documented: across a *resumed* session the per-worker game index resets, so an old resident game can collide with a new one and be merged for counting/capping — harmless.
+  - *`SamplingConstraints`* struct (`maxPerGame` / `maxDrawPercent` / `targetMeanGameLengthPlies`, `.unconstrained` ⇒ the legacy sampler, `@MainActor fromCurrentParameters()`), stored on the buffer (`samplingConstraints`, set via `setSamplingConstraints(_:)`). Owned here rather than passed per call so the off-main trainer never reads `TrainingParameters.shared`; the `ChessTrainer.sample(...)` call sites are unchanged.
+  - *`sample(...)` rewrite*: a `isNoOp(forBatchSize:)` fast path that is **bit-for-bit the legacy uniform-with-replacement sampler** at default settings; otherwise stratified-rejection on outcome for an exact `maxDrawPercent` ceiling (the draw stratum's freed slots go to decisive positions; if either stratum is short of supply the split clamps and the cap simply under-shoots), an exponential `exp(−β·max(0, L−T))` down-weight for the soft `targetMeanGameLengthPlies` (β solved per call by bisection on the resident length histogram — `solveLengthTiltBeta`; β = 0 when the untilted mean is already ≤ T), and a per-batch `[UInt32:Int]` tally for the exact `maxPerGame` cap. Hard/soft priority: the draw cap and per-game cap are hard, the length target yields first; a bounded attempt budget falls back to a uniform fill rather than hang or return a short batch.
+- **`App/SessionController.swift`** — new `bufferComposition: ReplayBuffer.CompositionSnapshot?` mirrored property.
+- **`App/SessionController+Heartbeat.swift`** — each tick: `replayBuffer?.setSamplingConstraints(.fromCurrentParameters())` (idempotent, one lock op) + dirty-checked mirror of `compositionSnapshot()` into `bufferComposition`.
+- **`App/SessionController+Training.swift`** — seed the constraints once at Play-and-Train start (no ≤5 s unconstrained window); add `comp=(games=… lenG=… lenP=… W=… D=… L=…)` to the `[STATS]` line (pre-constraint composition, distinct from the post-constraint `[BATCH-STATS]` line).
+- **`App/UpperContentView/UpperContentView.swift`** — a `Composition: len/game=… len/pos=… W/D/L=…%/…%/…%` line under the existing `Buffer:` line in the training stats column.
+- **`App/UpperContentView/TrainingSettingsPopover.swift` + `…Model.swift`** — a new "Replay sampling" section at the bottom of the Replay tab: three control rows (text + stepper, the standard `PopoverRow` pattern) — "Max plies from any 1 game" (hint `plies from 1 game`), "Target avg game plies" (hint `plies`), "Max draws % per batch" (hint `% per batch`, switches to `off — no draw cap` at 100). Wired into the model's `…Text`/`…Error` fields, the Replay-tab error aggregation, `reload`/`resetErrors`/`save` (with `[PARAM] …` log lines). Below the controls, a one-fact-per-line composition readout — games stored, per-game and per-sampled-position mean game length, W/D/L %, and the within-decisive +z/−z balance (orange when outside `[45, 55]` — a sign-assignment / colour-imbalance smell).
+- **`parameters.json`** regenerated.
+- **Tests** — new `DrewsChessMachineTests/ReplayBufferSamplingConstraintsTests.swift`: no-op constraints produce a valid uniform batch and `compositionSnapshot` matches a known append sequence; `maxDrawPercent` is an exact ceiling and freed slots are decisive; `maxPerGame` is never exceeded in a batch; `targetMeanGameLengthPlies` pulls the sampled mean down toward the target, is monotone in the target, is a no-op at 0 / above the natural mean, and never undershoots the shortest resident game; composition aggregates survive a `write`→`restore` round-trip; under-fill returns `false` and an empty stratum clamps gracefully.
+
+**Why.** The buffer's draw glut has no clean lever (a stronger champion needs promotions; the temperature schedule is the only direct knob; a ply cap just turns long games into truncated draws) — but the *trainer* doesn't have to be fed the buffer's raw composition. Capping draws and de-weighting shuffle marathons per batch gives the value head a target with real position content and de-degenerates the advantage signal without waiting on a champion improvement. The two newer levers (draw cap, length target) ship neutral so the user opts in; the per-game cap ships **on at 10** because at a 4096-batch any cap ≥ 4096 is structurally a no-op, and ≤ 400 ensures the batch always spans ≥ 10 distinct games — the actual reason the cap exists.
+
+**Not changed.** Self-play / the replay buffer's contents (champion-driven). The replay-ratio controller (it counts positions consumed/produced — composition doesn't change the count). The probe sampler in `ChessTrainer` (kept at the no-op path — it's a diagnostic forward, not a training step). No achieved-vs-requested reporting beyond the existing `[BATCH-STATS]` line for v1.
+
+---
+
 ## 2026-05-12 — WDL chart tiles: value-head row on the training grid + `vMean` plumbed; `pLoss`/`vLoss` axis split
 
 The W/D/L switch left `vLoss` on a shared Y-axis with `pLoss` (now unsharable — `vLoss` is categorical-CE-scale `~[0, ln 3 ≈ 1.10]`, `pLoss` is outcome-weighted CE that is unbounded and routinely negative) and left `pW/pD/pL`/`vAbs`/`vMean` either un-charted or not even persisted. This adds a fourth, value-head row to `TrainingChartGridView` and finishes the persistence/decimation plumbing the `pD→1` alarm entry below flagged as a follow-up.

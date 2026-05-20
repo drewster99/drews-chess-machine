@@ -1,3 +1,4 @@
+import Accelerate
 import Darwin
 import Foundation
 import Metal
@@ -12,6 +13,7 @@ enum ChessTrainerError: LocalizedError {
     case nonFiniteLoss(total: Float, policy: Float, value: Float, gradNorm: Float)
     case trainerWeightCountMismatch(expected: String, got: Int)
     case velocityReadbackMissing(String)
+    case velocityLoadGraphFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +27,8 @@ enum ChessTrainerError: LocalizedError {
             return "Trainer weight count mismatch: expected \(expected), got \(got)"
         case .velocityReadbackMissing(let name):
             return "Velocity tensor missing from graph.run results: \(name)"
+        case .velocityLoadGraphFailed(let name):
+            return "Velocity load graph.run returned empty/missing result for tensor: \(name)"
         }
     }
 }
@@ -1446,6 +1450,35 @@ final class ChessTrainer: @unchecked Sendable {
     /// acceptable for diagnostic purposes; readers may briefly see
     /// the prior value during update.
     private(set) var lastBatchStatsSummary: ReplayBuffer.BatchStatsSummary?
+
+    // Per-step phase timings, accumulated within the current
+    // batchStatsInterval window. Reset on every emit. Touched only
+    // from inside `enqueue { ... }` closures (the trainer's serial
+    // executor), so plain `var` is sufficient.
+    private var phase1WallTimesMs: [Double] = []
+    private var phase2WallTimesMs: [Double] = []
+    private var phase3WallTimesMs: [Double] = []
+    private var legalMaskLoopMsTimes: [Double] = []
+    /// Inter-step wall time: gap from the moment one training batch
+    /// completes (after phase 3) to the same moment of the next.
+    /// Captures everything `p1ms + p2ms + p3ms` doesn't — caller-side
+    /// dispatch latency, awaits between phases, replay-ratio-controller
+    /// throttle sleeps, any idle time before the next call lands. The
+    /// first step has no prior reference so its delta is skipped.
+    private var interStepWallTimesMs: [Double] = []
+    /// Wall-clock time at which the most recent training step completed
+    /// (end of phase 3). 0 means "no prior step yet" — used to skip
+    /// the first delta after session start.
+    private var lastTrainStepCompletedAt: CFAbsoluteTime = 0
+
+    // Cached scratch for the synthetic-data sweep path
+    // (`internalTrainStep(batchSize:)`). Reused across calls instead
+    // of being freshly allocated each step.
+    private var syntheticBoards: [Float] = []
+    private var syntheticMoves: [Int32] = []
+    private var syntheticZs: [Float] = []
+    private var syntheticVBaselines: [Float] = []
+    private var syntheticLegalMasks: [Float] = []
 
     // MARK: Init
 
@@ -3288,43 +3321,54 @@ final class ChessTrainer: @unchecked Sendable {
         let prepStart = CFAbsoluteTimeGetCurrent()
         let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
         let totalBoardFloats = batchSize * floatsPerBoard
+        let totalMaskFloats = batchSize * ChessNetwork.policySize
 
-        var boardFloats = [Float](repeating: 0, count: totalBoardFloats)
-        Self.fillRandomFloats(&boardFloats)
-
-        var moveIndices = [Int32](repeating: 0, count: batchSize)
+        // Reuse trainer-owned synthetic scratch across sweep calls.
+        // Reallocate only when batchSize changes.
+        if syntheticBoards.count != totalBoardFloats {
+            syntheticBoards = [Float](repeating: 0, count: totalBoardFloats)
+        }
+        if syntheticMoves.count != batchSize {
+            syntheticMoves = [Int32](repeating: 0, count: batchSize)
+        }
+        if syntheticZs.count != batchSize {
+            syntheticZs = [Float](repeating: 0, count: batchSize)
+        }
+        if syntheticVBaselines.count != batchSize {
+            // vBaselines: all zeros for the random-data sweep. An
+            // all-zero baseline degrades the advantage formulation to
+            // `z * negLogProb`, which is exactly what the random-data
+            // smoke test measured historically — so losses stay
+            // comparable to prior sweep runs.
+            syntheticVBaselines = [Float](repeating: 0, count: batchSize)
+        }
+        if syntheticLegalMasks.count != totalMaskFloats {
+            // All-ones (no masking) for the synthetic-data path; the
+            // additive mask term then evaluates to 0 everywhere and
+            // the graph behaves identically to the pre-masking
+            // version. The real per-position legal mask is built in
+            // `trainStepFromReplay`.
+            syntheticLegalMasks = [Float](repeating: 1.0, count: totalMaskFloats)
+        }
+        Self.fillRandomFloats(&syntheticBoards)
         // Random move indices in [0, policySize). One per batch row.
         for i in 0..<batchSize {
-            moveIndices[i] = Int32.random(in: 0..<Int32(ChessNetwork.policySize))
+            syntheticMoves[i] = Int32.random(in: 0..<Int32(ChessNetwork.policySize))
         }
-
-        var zValues = [Float](repeating: 0, count: batchSize)
         // Random outcomes from {-1, 0, +1} so the loss includes all three
         // signed regimes (push up, push down, no contribution).
         for i in 0..<batchSize {
-            zValues[i] = Float(Int.random(in: 0..<3) - 1)
+            syntheticZs[i] = Float(Int.random(in: 0..<3) - 1)
         }
 
-        // vBaselines: all zeros for the random-data sweep. An all-zero
-        // baseline degrades the advantage formulation to `z * negLogProb`,
-        // which is exactly what the random-data smoke test measured
-        // historically — so losses stay comparable to prior sweep runs.
-        let vBaselineValues = [Float](repeating: 0, count: batchSize)
-
-        // All-ones (no masking) for the synthetic-data path; the additive
-        // mask term then evaluates to 0 everywhere and the graph behaves
-        // identically to the pre-masking version. The real per-position
-        // legal mask is built in `trainStepFromReplay`.
-        let legalMaskValues = [Float](repeating: 1.0, count: batchSize * ChessNetwork.policySize)
-
-        // Unbox the four Swift arrays into raw pointers and feed
+        // Unbox the cached arrays into raw pointers and feed
         // them through the shared pointer-based `buildFeeds` /
         // `runPreparedStep` pipeline.
-        return try boardFloats.withUnsafeBufferPointer { boardsBuf in
-            try moveIndices.withUnsafeBufferPointer { movesBuf in
-                try zValues.withUnsafeBufferPointer { zsBuf in
-                    try vBaselineValues.withUnsafeBufferPointer { vBaseBuf in
-                        try legalMaskValues.withUnsafeBufferPointer { legalMasksBuf in
+        return try syntheticBoards.withUnsafeBufferPointer { boardsBuf in
+            try syntheticMoves.withUnsafeBufferPointer { movesBuf in
+                try syntheticZs.withUnsafeBufferPointer { zsBuf in
+                    try syntheticVBaselines.withUnsafeBufferPointer { vBaseBuf in
+                        try syntheticLegalMasks.withUnsafeBufferPointer { legalMasksBuf in
                             // The arrays were allocated just above
                             // with positive batch size, so their
                             // `baseAddress`es are guaranteed non-nil.
@@ -3398,8 +3442,10 @@ final class ChessTrainer: @unchecked Sendable {
         // hop into the network's evaluate.
         struct Phase1: Sendable {
             let boardsCopy: [Float]
+            let isStatsStep: Bool
         }
         let phase1: Phase1? = try await enqueue { [batchSize] in
+            let phase1Start = CFAbsoluteTimeGetCurrent()
             self.ensureReplayBatchCapacity(batchSize)
             guard
                 let boards = self.replayBatchBoards,
@@ -3455,11 +3501,32 @@ final class ChessTrainer: @unchecked Sendable {
                 self.lastBatchStatsUniquePct = summary.uniquePct
                 self.lastBatchStatsSummary = summary
                 SessionLogger.shared.log("[BATCH-STATS] " + summary.jsonLine())
+
+                // Surface composition-constraint deviations: stratum
+                // clamps on the draw cap (in either direction), length
+                // targets below the shortest resident game, and the
+                // attempt-budget fallback. Gated on `isStatsStep` so log
+                // volume tracks `batch_stats_interval`; only fires when
+                // there's something to report.
+                let sr = replayBuffer.lastSamplingResult()
+                if sr.wasDegraded {
+                    let reqD = String(format: "%.1f", sr.requestedDrawPercent)
+                    let gotD = String(format: "%.1f", sr.achievedDrawPercent)
+                    let mlen = String(format: "%.1f", sr.achievedMeanGameLength)
+                    let infeasible = sr.lengthTargetInfeasible ? "Y" : "N"
+                    let budget = sr.attemptBudgetHit ? "Y" : "N"
+                    let line = "[SAMPLER] step=\(nextStep) batch=\(sr.batchSize)"
+                        + " req=(K=\(sr.constraints.maxPerGame) D=\(reqD)% T=\(sr.constraints.targetMeanGameLengthPlies))"
+                        + " got=(D=\(gotD)% maxG=\(sr.achievedMaxPerGame) mlen=\(mlen))"
+                        + " flags=(infeasible_target=\(infeasible) shortest_resident=\(sr.shortestResidentLength) budget_hit=\(budget))"
+                    SessionLogger.shared.log(line)
+                }
             }
             let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
             let totalFloats = batchSize * floatsPerBoard
             let boardsCopy = Array(UnsafeBufferPointer(start: boards, count: totalFloats))
-            return Phase1(boardsCopy: boardsCopy)
+            self.phase1WallTimesMs.append((CFAbsoluteTimeGetCurrent() - phase1Start) * 1000)
+            return Phase1(boardsCopy: boardsCopy, isStatsStep: isStatsStep)
         }
         guard let phase1 else { return nil }
 
@@ -3488,10 +3555,12 @@ final class ChessTrainer: @unchecked Sendable {
         // implementation, just with vBaselines now containing
         // current-trainer values from phase 2.
         let dispatchedAtPhase3 = CFAbsoluteTimeGetCurrent()
-        return try await enqueue { [batchSize, freshValues, freshBaselineMs, dispatchedAtPhase3] in
-            let phase3QueueWaitMs = (CFAbsoluteTimeGetCurrent() - dispatchedAtPhase3) * 1000
-            let totalStart = CFAbsoluteTimeGetCurrent()
-            let prepStart = CFAbsoluteTimeGetCurrent()
+        let isStatsStep = phase1.isStatsStep
+        return try await enqueue { [batchSize, freshValues, freshBaselineMs, dispatchedAtPhase3, isStatsStep] in
+            let phase3Start = CFAbsoluteTimeGetCurrent()
+            let phase3QueueWaitMs = (phase3Start - dispatchedAtPhase3) * 1000
+            let totalStart = phase3Start
+            let prepStart = phase3Start
 
             guard
                 let boards = self.replayBatchBoards,
@@ -3507,8 +3576,11 @@ final class ChessTrainer: @unchecked Sendable {
             // current-trainer values from phase 2. The buffer is not
             // pre-populated from the replay buffer (it holds nothing
             // until this loop runs), so every entry is written here.
-            for i in 0..<batchSize {
-                vBaselines[i] = freshValues[i]
+            freshValues.withUnsafeBufferPointer { src in
+                guard let srcBase = src.baseAddress else {
+                    preconditionFailure("ChessTrainer phase 3: freshValues baseAddress is nil")
+                }
+                vBaselines.update(from: srcBase, count: batchSize)
             }
 
             // Draw-penalty rewrite: draws arrive with z=0.0 exactly
@@ -3535,6 +3607,12 @@ final class ChessTrainer: @unchecked Sendable {
             let totalMaskFloats = batchSize * policySize
             masks.update(repeating: 0.0, count: totalMaskFloats)
 
+            // Time the legal-mask construction loop (decode-board +
+            // MoveGenerator.legalMoves + scatter) to inform the Part 2
+            // decision on whether to cache legal-move indices in the
+            // replay buffer. Aggregated across the current stats window
+            // and emitted as `[LEGAL-COST]` on each `isStatsStep`.
+            let legalMaskLoopStart = CFAbsoluteTimeGetCurrent()
             for pos in 0..<batchSize {
                 let boardPtr = boards.advanced(by: pos * floatsPerBoard)
                 let state = BoardEncoder.decodeSynthetic(from: boardPtr)
@@ -3549,6 +3627,7 @@ final class ChessTrainer: @unchecked Sendable {
                     masks[maskBase + idx] = 1.0
                 }
             }
+            self.legalMaskLoopMsTimes.append((CFAbsoluteTimeGetCurrent() - legalMaskLoopStart) * 1000)
 
             if self._completedTrainSteps.value == 0 {
                 for pos in 0..<min(8, batchSize) {
@@ -3647,6 +3726,72 @@ final class ChessTrainer: @unchecked Sendable {
             // protects the increment in its own right rather than
             // relying on the queue invariant.
             self._completedTrainSteps.modify { $0 += 1 }
+
+            // Accumulate phase timings for the current stats window.
+            let completionTime = CFAbsoluteTimeGetCurrent()
+            self.phase2WallTimesMs.append(freshBaselineMs)
+            self.phase3WallTimesMs.append((completionTime - phase3Start) * 1000)
+            // Inter-step delta: wall time from the previous step's
+            // completion to this step's completion. Skips the first
+            // step (no prior reference) so the accumulator only holds
+            // genuine inter-step gaps. Window is reset alongside the
+            // phase timings on each isStatsStep emit below.
+            if self.lastTrainStepCompletedAt > 0 {
+                self.interStepWallTimesMs.append(
+                    (completionTime - self.lastTrainStepCompletedAt) * 1000
+                )
+            }
+            self.lastTrainStepCompletedAt = completionTime
+
+            // On every isStatsStep, emit one [LEGAL-COST] line with
+            // P50/P99 of each accumulator and clear them. Gates the
+            // future replay-buffer legal-mask caching decision.
+            if isStatsStep {
+                let p1Count = self.phase1WallTimesMs.count
+                let p2Count = self.phase2WallTimesMs.count
+                let p3Count = self.phase3WallTimesMs.count
+                let lmCount = self.legalMaskLoopMsTimes.count
+                let isCount = self.interStepWallTimesMs.count
+                let p1p50 = Self.percentile(self.phase1WallTimesMs, 0.50)
+                let p1p99 = Self.percentile(self.phase1WallTimesMs, 0.99)
+                let p2p50 = Self.percentile(self.phase2WallTimesMs, 0.50)
+                let p2p99 = Self.percentile(self.phase2WallTimesMs, 0.99)
+                let p3p50 = Self.percentile(self.phase3WallTimesMs, 0.50)
+                let p3p99 = Self.percentile(self.phase3WallTimesMs, 0.99)
+                let lmp50 = Self.percentile(self.legalMaskLoopMsTimes, 0.50)
+                let lmp99 = Self.percentile(self.legalMaskLoopMsTimes, 0.99)
+                let isp50 = Self.percentile(self.interStepWallTimesMs, 0.50)
+                let isp99 = Self.percentile(self.interStepWallTimesMs, 0.99)
+                // Wall-time accounting: interStep is the end-to-end
+                // measurement (step completion → next step completion).
+                // `phaseSum = p1+p2+p3`. `gap = interStep − phaseSum`
+                // surfaces dispatch latency / await overhead / replay-
+                // ratio sleeps — i.e. everything we'd miss if we only
+                // summed the phases. Computed at P50 for the headline
+                // number; consumers can inspect the raw distributions
+                // above for tail behavior.
+                let phaseSumP50 = p1p50 + p2p50 + p3p50
+                let gapP50 = isp50.isFinite ? isp50 - phaseSumP50 : .nan
+                let line = "[LEGAL-COST]"
+                    + " step=\(self._completedTrainSteps.value)"
+                    + " batch=\(batchSize)"
+                    + " window=(p1=\(p1Count) p2=\(p2Count) p3=\(p3Count) lm=\(lmCount) is=\(isCount))"
+                    + String(format: " p1ms=(p50=%.2f p99=%.2f)", p1p50, p1p99)
+                    + String(format: " p2ms=(p50=%.2f p99=%.2f)", p2p50, p2p99)
+                    + String(format: " p3ms=(p50=%.2f p99=%.2f)", p3p50, p3p99)
+                    + String(format: " legalMaskMs=(p50=%.2f p99=%.2f)", lmp50, lmp99)
+                    + String(format: " legalMaskPerPosUs=(p50=%.1f p99=%.1f)",
+                        (lmp50 / Double(batchSize)) * 1000.0,
+                        (lmp99 / Double(batchSize)) * 1000.0)
+                    + String(format: " interStepMs=(p50=%.2f p99=%.2f)", isp50, isp99)
+                    + String(format: " gapMs=(p50=%.2f)", gapP50)
+                SessionLogger.shared.log(line)
+                self.phase1WallTimesMs.removeAll(keepingCapacity: true)
+                self.phase2WallTimesMs.removeAll(keepingCapacity: true)
+                self.phase3WallTimesMs.removeAll(keepingCapacity: true)
+                self.legalMaskLoopMsTimes.removeAll(keepingCapacity: true)
+                self.interStepWallTimesMs.removeAll(keepingCapacity: true)
+            }
 
             return TrainStepTiming(
                 dataPrepMs: baseTiming.dataPrepMs,
@@ -3811,71 +3956,80 @@ final class ChessTrainer: @unchecked Sendable {
         // pair it with legalMass to interpret.
         var legalEntropySum: Double = 0
 
-        // CPU decode + softmax + mask on legal indices. ~2 ms total
-        // for sampleSize=128 in micro-benchmarks.
+        // CPU decode + softmax + mask on legal indices.
+        // Pre-allocated `expScratch` (policySize floats) is reused per
+        // position to hold the exp(logit - max) values, fed to vDSP
+        // for the sum/legal-sum and to the entropy loop for legal-cell
+        // probabilities. Max/argmax via `vDSP_maxvi`, exp via
+        // `vvexpf`, sums via `vDSP_sve`.
+        var expScratch = [Float](repeating: 0, count: policySize)
         sampled.boards.withUnsafeBufferPointer { boardsBuf in
             guard let boardsBase = boardsBuf.baseAddress else { return }
-            for pos in 0..<sampled.count {
-                let boardPtr = boardsBase.advanced(by: pos * floatsPerBoard)
-                let state = BoardEncoder.decodeSynthetic(from: boardPtr)
-                let legalMoves = MoveGenerator.legalMoves(for: state)
-                guard !legalMoves.isEmpty else { continue }
-                positionsWithLegal += 1
+            policy.withUnsafeBufferPointer { policyBuf in
+                guard let policyBase = policyBuf.baseAddress else { return }
+                expScratch.withUnsafeMutableBufferPointer { eBuf in
+                    guard let eBase = eBuf.baseAddress else { return }
+                    let policyLen = vDSP_Length(policySize)
+                    for pos in 0..<sampled.count {
+                        let boardPtr = boardsBase.advanced(by: pos * floatsPerBoard)
+                        let state = BoardEncoder.decodeSynthetic(from: boardPtr)
+                        let legalMoves = MoveGenerator.legalMoves(for: state)
+                        guard !legalMoves.isEmpty else { continue }
+                        positionsWithLegal += 1
 
-                // Stable softmax over the slot's policy slice:
-                // max-subtract, exp, normalize.
-                let base = pos * policySize
-                var maxLogit: Float = -.infinity
-                for i in 0..<policySize {
-                    let v = policy[base + i]
-                    if v > maxLogit { maxLogit = v }
-                }
-                var expSum: Double = 0
-                for i in 0..<policySize {
-                    expSum += Double(expf(policy[base + i] - maxLogit))
-                }
-                // Argmax over the full policy — for top1Legal check.
-                var argmax = 0
-                var argmaxLogit = policy[base]
-                for i in 1..<policySize {
-                    let v = policy[base + i]
-                    if v > argmaxLogit {
-                        argmaxLogit = v
-                        argmax = i
-                    }
-                }
+                        let policyRow = policyBase.advanced(by: pos * policySize)
 
-                // Sum softmax mass over the legal set.
-                var legalExpSum: Double = 0
-                var legalIndexSet = Set<Int>()
-                legalIndexSet.reserveCapacity(legalMoves.count)
-                for move in legalMoves {
-                    let idx = PolicyEncoding.policyIndex(move, currentPlayer: .white)
-                    guard idx >= 0, idx < policySize else { continue }
-                    if legalIndexSet.insert(idx).inserted {
-                        legalExpSum += Double(expf(policy[base + idx] - maxLogit))
-                    }
-                }
-                let legalMass = expSum > 0 ? legalExpSum / expSum : 0
-                legalMassSum += legalMass
-                if legalIndexSet.contains(argmax) {
-                    top1LegalCount += 1
-                }
+                        // Max + argmax in one pass.
+                        var maxLogit: Float = 0
+                        var argmaxIdx: vDSP_Length = 0
+                        vDSP_maxvi(policyRow, 1, &maxLogit, &argmaxIdx, policyLen)
+                        let argmax = Int(argmaxIdx)
 
-                // Legal-masked Shannon entropy. Renormalize the legal-
-                // only softmax mass to sum to 1 by dividing each
-                // legal-cell exp by `legalExpSum`, then compute
-                // -Σ p · log p in nats. Skip when legalExpSum is zero
-                // (network has no probability on any legal cell — rare
-                // numerical edge case).
-                if legalExpSum > 0 {
-                    var ent: Double = 0
-                    for idx in legalIndexSet {
-                        let pUn = Double(expf(policy[base + idx] - maxLogit))
-                        let p = pUn / legalExpSum
-                        if p > 0 { ent -= p * log(p) }
+                        // expScratch[i] = exp(policyRow[i] - maxLogit)
+                        var negMax = -maxLogit
+                        vDSP_vsadd(policyRow, 1, &negMax, eBase, 1, policyLen)
+                        var expCount = Int32(policySize)
+                        vvexpf(eBase, eBase, &expCount)
+
+                        var expSumF: Float = 0
+                        vDSP_sve(eBase, 1, &expSumF, policyLen)
+                        let expSum: Double = Double(expSumF)
+
+                        // Sum softmax mass over the legal set, using
+                        // already-computed exp values in expScratch.
+                        var legalExpSum: Double = 0
+                        var legalIndexSet = Set<Int>()
+                        legalIndexSet.reserveCapacity(legalMoves.count)
+                        for move in legalMoves {
+                            let idx = PolicyEncoding.policyIndex(move, currentPlayer: .white)
+                            guard idx >= 0, idx < policySize else { continue }
+                            if legalIndexSet.insert(idx).inserted {
+                                legalExpSum += Double(eBase[idx])
+                            }
+                        }
+                        let legalMass = expSum > 0 ? legalExpSum / expSum : 0
+                        legalMassSum += legalMass
+                        if legalIndexSet.contains(argmax) {
+                            top1LegalCount += 1
+                        }
+
+                        // Legal-masked Shannon entropy. Renormalize
+                        // the legal-only softmax mass to sum to 1 by
+                        // dividing each legal-cell exp by
+                        // `legalExpSum`, then compute -Σ p · log p in
+                        // nats. Skip when legalExpSum is zero (network
+                        // has no probability on any legal cell — rare
+                        // numerical edge case).
+                        if legalExpSum > 0 {
+                            var ent: Double = 0
+                            for idx in legalIndexSet {
+                                let pUn = Double(eBase[idx])
+                                let p = pUn / legalExpSum
+                                if p > 0 { ent -= p * log(p) }
+                            }
+                            legalEntropySum += ent
+                        }
                     }
-                    legalEntropySum += ent
                 }
             }
         }
@@ -4193,27 +4347,39 @@ final class ChessTrainer: @unchecked Sendable {
         }
         return try await withCheckedThrowingContinuation { continuation in
             executionQueue.async { [self] in
-                autoreleasepool {
-                    var feeds: [MPSGraphTensor: MPSGraphTensorData] = [
-                        network.inputPlaceholder: network.dummyInferenceInputTensorData
-                    ]
-                    feeds.reserveCapacity(velocityVariables.count + 1)
-                    for i in 0..<velocityVariables.count {
-                        ChessNetwork.writeFloats(weights[i], into: velocityLoadNDArrays[i])
-                        feeds[velocityLoadPlaceholders[i]] = velocityLoadTensorData[i]
+                do {
+                    try autoreleasepool {
+                        var feeds: [MPSGraphTensor: MPSGraphTensorData] = [
+                            network.inputPlaceholder: network.dummyInferenceInputTensorData
+                        ]
+                        feeds.reserveCapacity(velocityVariables.count + 1)
+                        for i in 0..<velocityVariables.count {
+                            ChessNetwork.writeFloats(weights[i], into: velocityLoadNDArrays[i])
+                            feeds[velocityLoadPlaceholders[i]] = velocityLoadTensorData[i]
+                        }
+                        // graph.run requires at least one target tensor.
+                        // Use the first velocity variable as a dummy read —
+                        // its post-assign value is whatever we just wrote,
+                        // which we discard. A missing entry in the result
+                        // dict is MPSGraph's CPU-side signal of a failed
+                        // GPU run; surface it as a thrown error so a
+                        // poisoned velocity load can't pass silently.
+                        let results = network.graph.run(
+                            with: network.commandQueue,
+                            feeds: feeds,
+                            targetTensors: [velocityVariables[0]],
+                            targetOperations: velocityLoadAssignOps
+                        )
+                        guard results[velocityVariables[0]] != nil else {
+                            throw ChessTrainerError.velocityLoadGraphFailed(
+                                velocityVariables[0].operation.name
+                            )
+                        }
                     }
-                    // graph.run requires at least one target tensor.
-                    // Use the first velocity variable as a dummy read —
-                    // its post-assign value is whatever we just wrote,
-                    // which we discard.
-                    _ = network.graph.run(
-                        with: network.commandQueue,
-                        feeds: feeds,
-                        targetTensors: [velocityVariables[0]],
-                        targetOperations: velocityLoadAssignOps
-                    )
+                    continuation.resume(returning: ())
+                } catch {
+                    continuation.resume(throwing: error)
                 }
-                continuation.resume(returning: ())
             }
         }
     }
@@ -4808,14 +4974,14 @@ final class ChessTrainer: @unchecked Sendable {
         let device = network.metalDevice
         let workingSetCap = device.recommendedMaxWorkingSetSize
         let bufferCap = UInt64(device.maxBufferLength)
-        // Skip threshold: 75% of the smaller of the two caps. The "lesser"
+        // Skip threshold: 80% of the smaller of the two caps. The "lesser"
         // bit is deliberately conservative — on this hardware
         // maxBufferLength is well under recommendedMaxWorkingSetSize, so
         // capping the *total* estimate against the smaller of the two
         // gives a safety margin even though the comparison mixes
         // different things (total vs. single-buffer). Better to skip a
         // borderline batch than to take down the machine.
-        let safetyFraction = 0.75
+        let safetyFraction = 0.80
         let estimateThreshold = UInt64(Double(min(workingSetCap, bufferCap)) * safetyFraction)
         // Once we cross either threshold, every larger batch size will too —
         // latch this so we stop trying instead of crashing the machine.
@@ -5186,5 +5352,15 @@ final class ChessTrainer: @unchecked Sendable {
                 base[i] = Float(high) * scale
             }
         }
+    }
+
+    /// Single-percentile helper over a `[Double]` accumulator. Sorts
+    /// a copy (caller's storage isn't reordered) and indexes by
+    /// fraction. Returns `.nan` on empty input.
+    fileprivate static func percentile(_ samples: [Double], _ p: Double) -> Double {
+        guard !samples.isEmpty else { return .nan }
+        let sorted = samples.sorted()
+        let idx = Int((p * Double(sorted.count - 1)).rounded())
+        return sorted[max(0, min(sorted.count - 1, idx))]
     }
 }

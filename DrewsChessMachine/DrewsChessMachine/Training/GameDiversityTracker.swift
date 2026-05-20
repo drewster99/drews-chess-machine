@@ -22,15 +22,18 @@ final class GameDiversityTracker: @unchecked Sendable {
     /// it does not exceed. The last bucket catches everything above
     /// the highest bound.
     ///
-    /// Chosen to make the "policy collapse" tail (bucket 5) visually
-    /// pop even at low counts: the first four buckets cover the range
-    /// where diverse self-play sits in steady state (0–20 plies) and
-    /// the last two highlight the pathological deep-share regime.
-    static let histogramBounds: [Int] = [2, 5, 10, 20, 40]
+    /// The first six buckets isolate plies 0 through 5 one-per-bucket
+    /// so the healthy steady-state region (where most self-play games
+    /// should diverge) reads at fine resolution; subsequent buckets
+    /// widen to track the policy-collapse tail (6-7, 8-10, 11-20,
+    /// 21-40, 41+).
+    static let histogramBounds: [Int] = [0, 1, 2, 3, 4, 5, 7, 10, 20, 40]
     /// Human-readable labels for each histogram bucket, aligned with
     /// `histogramBounds` plus a trailing "41+" overflow bucket. Used
     /// by the UI to render axis labels on the diversity chart.
-    static let histogramLabels: [String] = ["0-2", "3-5", "6-10", "11-20", "21-40", "41+"]
+    static let histogramLabels: [String] = [
+        "0", "1", "2", "3", "4", "5", "6-7", "8-10", "11-20", "21-40", "41+"
+    ]
     /// Number of buckets in the divergence histogram.
     static var histogramBucketCount: Int { histogramBounds.count + 1 }
 
@@ -83,15 +86,27 @@ final class GameDiversityTracker: @unchecked Sendable {
     ///   the same physical move at the same ply produce the same
     ///   stored index, which is what diversity comparison needs.
     func recordGame(moves: [ChessMove]) {
-        let indices = moves.enumerated().map { (i, move) -> Int16 in
-            let player: PieceColor = (i % 2 == 0) ? .white : .black
-            return Int16(clamping: PolicyEncoding.policyIndex(move, currentPlayer: player))
-        }
-        let hash = Self.fnv1a(indices)
-
+        // Rewrite the target slot's `[Int16]` storage in place rather
+        // than allocating a fresh array per call: the FIFO ring slot
+        // already holds an `[Int16]` whose capacity is typically
+        // ample for a new game, so `removeAll(keepingCapacity: true)`
+        // + per-move `append` reuses that storage. Allocations only
+        // happen the first time a slot sees a longer-than-prior game.
         lock.withLock {
-            self.sequences[self.writeIndex] = indices
-            self.hashes[self.writeIndex] = hash
+            var slot = self.sequences[self.writeIndex]
+            // Move the slot's storage into the local to avoid CoW
+            // double-copy when we mutate; reassign at the end.
+            self.sequences[self.writeIndex] = []
+            slot.removeAll(keepingCapacity: true)
+            if slot.capacity < moves.count {
+                slot.reserveCapacity(moves.count)
+            }
+            for (i, move) in moves.enumerated() {
+                let player: PieceColor = (i % 2 == 0) ? .white : .black
+                slot.append(Int16(clamping: PolicyEncoding.policyIndex(move, currentPlayer: player)))
+            }
+            self.hashes[self.writeIndex] = Self.fnv1a(slot)
+            self.sequences[self.writeIndex] = slot
             self.writeIndex = (self.writeIndex + 1) % self.windowSize
             if self.stored < self.windowSize { self.stored += 1 }
         }
@@ -169,8 +184,10 @@ final class GameDiversityTracker: @unchecked Sendable {
             for i in 0..<stored {
                 let ply = maxPrefix[i]
                 divergenceSum += ply
-                // Linear scan over bounds — 5 compares, fastest for this
-                // tiny count. Matches `bucketIndex(for:)` semantics.
+                // Linear scan over bounds — a handful of compares,
+                // fastest for this tiny count. The lowest bound the
+                // ply does not exceed wins; if none match, the final
+                // overflow bucket catches it.
                 var bucket = bounds.count  // overflow bucket by default
                 for (idx, upper) in bounds.enumerated() where ply <= upper {
                     bucket = idx

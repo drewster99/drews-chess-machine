@@ -377,6 +377,7 @@ extension SessionController {
                 )
                 periodicSaveController?.noteSuccessfulSave(at: Date())
                 checkpoint?.lastSavedAt = Date()
+                checkpoint?.lastResumedAt = nil
             case .failure(let error):
                 checkpoint?.setCheckpointStatus("Save failed: \(error.localizedDescription)", kind: .error)
                 SessionLogger.shared.log("[CHECKPOINT] Save session (\(diskTag)) failed: \(error.localizedDescription)")
@@ -533,6 +534,7 @@ extension SessionController {
                     Click Play and Train to resume.
                     """
                 checkpoint?.lastSavedAt = nil
+                checkpoint?.lastResumedAt = Date()
                 checkpoint?.setCheckpointStatus("Loaded session \(loaded.state.sessionID) — click Play and Train to resume", kind: .success)
                 let savedBuild = loaded.state.buildNumber.map(String.init) ?? "?"
                 let savedGit = loaded.state.buildGitHash ?? "?"
@@ -617,7 +619,8 @@ extension SessionController {
                 candidateDrawsAsBlack: record.candidateDrawsAsBlack,
                 finishedAtUnix: record.finishedAt.map { Int64($0.timeIntervalSince1970) },
                 candidateID: record.candidateID?.description,
-                championID: record.championID?.description
+                championID: record.championID?.description,
+                extendedSummary: record.extendedSummary
             )
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault
@@ -647,7 +650,7 @@ extension SessionController {
             arenaConcurrency: params.arenaConcurrency,
             selfPlayTau: TauConfigCodable(samplingScheduleBox?.selfPlay ?? buildSelfPlaySchedule()),
             arenaTau: TauConfigCodable(samplingScheduleBox?.arena ?? buildArenaSchedule()),
-            selfPlayWorkerCount: params.selfPlayWorkers,
+            selfPlayWorkerCount: params.selfPlayConcurrency,
             gradClipMaxNorm: Float(params.gradClipMaxNorm),
             weightDecayCoeff: Float(params.weightDecay),
             policyLossWeight: Float(params.policyLossWeight),
@@ -674,13 +677,27 @@ extension SessionController {
             legalMassCollapseGraceSeconds: params.legalMassCollapseGraceSeconds,
             legalMassCollapseNoImprovementProbes: params.legalMassCollapseNoImprovementProbes,
             batchStatsInterval: params.batchStatsInterval,
+            maxPliesFromAnyOneGame: params.maxPliesFromAnyOneGame,
+            targetSampledGameLengthPlies: params.targetSampledGameLengthPlies,
+            maxDrawPercentPerBatch: params.maxDrawPercentPerBatch,
+            selfPlayDrawKeepFraction: params.selfPlayDrawKeepFraction,
+            maxPliesPerGame: params.selfPlayMaxPliesPerGame,
+            emittedGames: snap?.emittedGames,
+            emittedPositions: snap?.emittedPositions,
             whiteCheckmates: snap?.whiteCheckmates,
             blackCheckmates: snap?.blackCheckmates,
             stalemates: snap?.stalemates,
             fiftyMoveDraws: snap?.fiftyMoveDraws,
             threefoldRepetitionDraws: snap?.threefoldRepetitionDraws,
             insufficientMaterialDraws: snap?.insufficientMaterialDraws,
+            maxPliesDropped: snap?.maxPliesDropped,
             totalGameWallMs: snap?.totalGameWallMs,
+            emittedWhiteCheckmates: snap?.emittedWhiteCheckmates,
+            emittedBlackCheckmates: snap?.emittedBlackCheckmates,
+            emittedStalemates: snap?.emittedStalemates,
+            emittedFiftyMoveDraws: snap?.emittedFiftyMoveDraws,
+            emittedThreefoldRepetitionDraws: snap?.emittedThreefoldRepetitionDraws,
+            emittedInsufficientMaterialDraws: snap?.emittedInsufficientMaterialDraws,
             buildNumber: BuildInfo.buildNumber,
             buildGitHash: BuildInfo.gitHash,
             buildGitBranch: BuildInfo.gitBranch,

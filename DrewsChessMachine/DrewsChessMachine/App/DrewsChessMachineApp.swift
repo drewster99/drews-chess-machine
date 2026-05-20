@@ -22,6 +22,7 @@ struct DrewsChessMachineApp: App {
     /// vertical space without stopping data capture.
     @AppStorage("showTrainingGraphs") private var showTrainingGraphs: Bool = true
     @AppStorage("showPolicyChannelsPanel") private var showPolicyChannelsPanel: Bool = false
+    @AppStorage("showEmitWindowStats") private var showEmitWindowStats: Bool = false
 
     /// View > Collect Chart Data preference. Persisted across launches
     /// via UserDefaults. When `false`, every chart-collection entry
@@ -243,6 +244,11 @@ struct DrewsChessMachineApp: App {
         // stats — lands in a single `dcm_log_yyyymmdd-HHMMSS.txt`
         // file under the app's Library/Logs directory.
         SessionLogger.shared.start()
+        precondition(
+            TensorChannelNames.names.count == ChessNetwork.inputPlanes
+                && TensorChannelNames.shortNames.count == ChessNetwork.inputPlanes,
+            "TensorChannelNames is out of sync with ChessNetwork.inputPlanes (\(ChessNetwork.inputPlanes)) — names=\(TensorChannelNames.names.count), shortNames=\(TensorChannelNames.shortNames.count). Update Views/Board/TensorChannelNames.swift."
+        )
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
         let archHashHex = String(format: "0x%08x", ModelCheckpointFile.currentArchHash)
         let autoTrainMarker = autoTrainOnLaunch ? " autoTrain=on" : ""
@@ -303,6 +309,7 @@ struct DrewsChessMachineApp: App {
             CommandGroup(after: .newItem) {
                 Divider()
                 Button("Save Session") { commandHub.saveSession() }
+                    .keyboardShortcut("s", modifiers: .command)
                     .disabled(
                         !commandHub.realTraining
                         || commandHub.isArenaRunning
@@ -366,6 +373,7 @@ struct DrewsChessMachineApp: App {
                 Toggle("Show Training Graphs", isOn: $showTrainingGraphs)
                 Toggle("Collect Chart Data", isOn: $chartCollectionEnabled)
                 Toggle("Show Policy Channels Panel", isOn: $showPolicyChannelsPanel)
+                Toggle("Show Emit Window Stats", isOn: $showEmitWindowStats)
                 Divider()
                 Button("Zoom In Charts") { commandHub.chartZoomIn() }
                     .keyboardShortcut("=", modifiers: .command)
@@ -416,6 +424,29 @@ struct DrewsChessMachineApp: App {
                 Divider()
                 Button("Promote Trainee Now") { commandHub.promoteTrainerNow() }
                     .disabled(!commandHub.realTraining || commandHub.isArenaRunning)
+            }
+
+            // Chess menu — human-vs-network play. The user picks the
+            // opponent (champion / trainer / a saved model file) and
+            // which side they want in the setup popover that the
+            // Play… item opens.
+            //
+            // Play is intentionally available concurrently with real
+            // training, arenas, sweeps, and the debug single-game
+            // path: the human game's AI side runs on a snapshotted
+            // inference network owned solely by the human game, so it
+            // doesn't compete with self-play workers, the arena
+            // candidate, or the live champion for graph state. The
+            // only gate is "another human game is already running in
+            // this window" — multi-window support for two-or-more
+            // simultaneous human games comes later.
+            CommandMenu("Chess") {
+                Button("Play…") { commandHub.openHumanPlaySetup() }
+                    .disabled(commandHub.humanGameInFlight)
+                Button("Reset Game") { commandHub.resetHumanGame() }
+                    .disabled(!commandHub.humanGameCanReset)
+                Button("Stop Game") { commandHub.stopHumanGame() }
+                    .disabled(!commandHub.humanGameInFlight)
             }
 
             CommandMenu("Debug") {

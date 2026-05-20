@@ -170,6 +170,57 @@ final class ArenaHistoryEntryCodableRoundTripTests: XCTestCase {
         XCTAssertNil(decoded.candidateDrawsAsWhite)
     }
 
+    func testDecodeLegacyMissingExtendedSummary() throws {
+        // Files written before extendedSummary was persisted have
+        // no `extendedSummary` key; the field must decode as nil so
+        // ArenaDetailPopover knows to hide the histogram block.
+        let legacyJson = """
+        {
+          "finishedAtStep": 4000,
+          "candidateWins": 10, "championWins": 5, "draws": 5,
+          "score": 0.625, "promoted": false, "promotedID": null,
+          "durationSec": 200.0, "gamesPlayed": 20, "promotionKind": null
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(ArenaHistoryEntryCodable.self, from: legacyJson)
+        XCTAssertNil(decoded.extendedSummary)
+    }
+
+    func testExtendedSummaryRoundTripPreservesBuckets() throws {
+        // Build a small summary directly (bypassing the aggregator
+        // — this test is just about the on-disk codec).
+        let summary = ArenaExtendedSummary(
+            wdlByLength: [
+                ArenaWDLByLengthBucket(lowerInclusive: 0, upperInclusive: 19,
+                                       wins: 2, draws: 1, losses: 0)
+            ],
+            valueByPly: [
+                ArenaValueByPlyBucket(lowerInclusive: 0, upperInclusive: 4,
+                                      mean: 0.25, wins: 2, draws: 1, losses: 0)
+            ],
+            valueByProgress: [
+                ArenaValueByProgressBucket(lowerPercent: 0, upperPercent: 5,
+                                           mean: 0.1, wins: 1, draws: 1, losses: 1)
+            ]
+        )
+        let entry = ArenaHistoryEntryCodable(
+            finishedAtStep: 1, candidateWins: 2, championWins: 0, draws: 1,
+            score: 0.833, promoted: false, promotedID: nil,
+            durationSec: 60.0, gamesPlayed: 3, promotionKind: nil,
+            extendedSummary: summary
+        )
+        let data = try JSONEncoder().encode(entry)
+        let decoded = try JSONDecoder().decode(ArenaHistoryEntryCodable.self, from: data)
+        XCTAssertEqual(decoded.extendedSummary, summary)
+        // Round-tripped score property comes back identical.
+        let decodedSummary = try XCTUnwrap(decoded.extendedSummary)
+        XCTAssertEqual(
+            decodedSummary.valueByPly[0].candidateScore,
+            (2.0 + 0.5 * 1.0) / 3.0,
+            accuracy: 1e-9
+        )
+    }
+
     func testZeroedPerSideCountsDistinctFromNil() throws {
         // An entry written with all-zero per-side counts must
         // round-trip as 0, NOT nil. The load path substitutes 0

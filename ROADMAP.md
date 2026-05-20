@@ -367,6 +367,162 @@ original rationale is not lost.
     - Load the autosaved `.dcmsession` back; the existing bit-exact forward-pass
       verification on load passes.
 
+- **Composition-aware replay-buffer batch sampler (added 2026-05-12).**
+  **✅ COMPLETED 2026-05-12.** Implemented as designed below (recommended v1:
+  stratified-rejection + exponential length tilt + per-game tally; no alias
+  tables). Deviations from the design text: (1) the constraints live *on*
+  `ReplayBuffer` (`SamplingConstraints` struct + `setSamplingConstraints(_:)`),
+  pushed from the main actor every UI heartbeat via
+  `ReplayBuffer.SamplingConstraints.fromCurrentParameters()` plus once at session
+  start — so `ChessTrainer`'s `sample(...)` call sites are unchanged and the
+  off-main trainer never reads `TrainingParameters.shared`; (2) no `[SAMPLER]`
+  degradation log line for v1 (the draw cap is documented as a ceiling and the
+  per-batch `[BATCH-STATS]` line already shows the post-constraint distribution);
+  (3) the popover "Replay sampling" section uses heartbeat-driven persistence on
+  Save (no per-keystroke live callback) — the buffer picks up the change on the
+  next ≤5 s tick. Files: `Training/ReplayBuffer.swift` (composition aggregates +
+  `CompositionSnapshot` + `SamplingConstraints` + `sample` rewrite + `solveLengthTiltBeta`),
+  `Training/TrainingParameters.swift` (3 new `Replay Buffer`-category `liveTunable`
+  Int params, registry 36→39), `App/SessionController.swift` (`bufferComposition`
+  mirrored prop), `App/SessionController+Heartbeat.swift` (push + mirror),
+  `App/SessionController+Training.swift` (seed at session start; `comp=(…)` on
+  `[STATS]`), `App/UpperContentView/UpperContentView.swift` (`Composition:` line),
+  `App/UpperContentView/TrainingSettingsPopover.swift` + `…Model.swift` ("Replay
+  sampling" section: 3 control rows + composition readout). Tests:
+  `DrewsChessMachineTests/ReplayBufferSamplingConstraintsTests.swift` (no-op
+  validity + aggregates, exact draw-cap ceiling, exact per-game cap, length-tilt
+  tracking + monotonicity, write/restore round-trip of aggregates, under-fill).
+  Original plan text retained below for the record.
+
+  Today `ReplayBuffer.sample(count:…)` did `count` independent uniform
+  draws over the resident ring — no awareness of which game a position came
+  from, the game's length, or its outcome. On the current draw-saturated buffer
+  (~85% of resident positions are from drawn games; mean game length ~370 plies;
+  the `[STATS]` `avgLen` runs higher because long shuffle-marathons contribute
+  one position per ply) that means the minibatch the trainer sees is ~85% z=0
+  positions from long aimless games — the value head's W/D/L target then carries
+  almost no position information (its honest fit is `p_draw → 1`), the
+  policy-gradient baseline is ~0 everywhere, and `advantage = z − vBaseline ≈ z`
+  degenerates to a spike at 0. Composition-aware sampling is the most direct
+  lever on that degeneracy that does not require the champion to improve first
+  (it changes what the *trainer* sees, not what the *champion* generates — the
+  buffer's underlying draw rate is still champion-strength × sampling
+  temperature, and is not affected by `draw_penalty`, which only re-labels `z`).
+
+  **All three controls are per-training-batch** (enforced inside `sample()`,
+  scoped to that one batch — not retention caps on the ring):
+  1. **Max positions from any single game per batch** (`K`). Decorrelates the
+     minibatch; the standard AlphaZero-ish knob.
+  2. **Target mean game length of the sampled positions** (`T`). When populating
+     a batch, bias selection so the *expected game length of a sampled position*
+     ≈ `T`. Soft target (an exponential tilt, not an exact per-length stratum).
+     `T ≥` the buffer's natural mean ⇒ no-op. Intended use is `T` *below* the
+     natural mean, to de-weight shuffle-marathons.
+  3. **Max % of sampled positions from drawn games per batch** (`D`). A ceiling:
+     if the buffer holds fewer than `D%` drawn positions you take what is there
+     (no padding); the freed batch slots go to decisive positions. Note (1)/(3)
+     overlap heavily — the long games *are* the draws, so the draw cap already
+     does most of the length-shortening; `T` is mostly fine-tuning on top.
+
+  **Display (current buffer composition — pre-constraint, distinct from the
+  existing per-sampled-batch stats summary, which is post-constraint and must be
+  relabelled so the two are not confused):**
+  - Mean resident game length, game-weighted = `storedCount / distinctResidentGames`
+    ("average positions per game currently in the buffer" — the figure the `K`
+    knob should be read against; ≈ true mean game length, modulo front-truncation
+    of games straddling the FIFO write head — the un-truncated value is `avgLen`
+    on `[STATS]`).
+  - Mean game length, position-weighted = `Σ_resident-positions gameLength /
+    storedCount` (= `E[L²]/E[L]`; ≥ the game-weighted mean whenever lengths
+    vary — the gap between the two *is* the game-length dispersion, so show both).
+  - % of resident positions from drawn games (z==0) vs decisive (z≠0), with the
+    z=+1 / z=−1 split as a secondary line (a decisive game contributes ~50/50
+    of each since `outcome` is relative to side-to-move; a >~55/45 skew is itself
+    a red flag — sign-assignment bug or self-play colour imbalance — so it is
+    worth surfacing even though it is not a composition lever).
+
+  **Computing the display values.** Read on every UI refresh ⇒ must be O(1) at
+  read time ⇒ maintain running aggregates under the buffer lock, updated
+  incrementally in `append()` and in the eviction loop — the same hooks
+  `hashStats` already uses. Add, alongside `hashStats`: `drawPositions` /
+  `winPositions` / `lossPositions` (`+=` per class on append, read
+  `outcomeStorage[evictedSlot]` and `-= 1` on eviction); `sumGameLengthOverResidentPositions`
+  (Int/UInt64 accumulator; `+= gameLength * count` on append, `-= gameLengthStorage[evictedSlot]`
+  on eviction); `residentGames: [UInt32: Int]` refcount map keyed on
+  `workerGameId` (bump on append, decrement on eviction, drop entries at 0 —
+  `distinctResidentGames = residentGames.count`). The `workerGameId` key has a
+  known minor wart: across a *resumed* session the per-worker game index resets,
+  so an old resident game can collide with a new one and be merged for
+  counting/capping — harmless, not worth fixing now; note it in the code.
+
+  **Populating a batch (recommended v1 — stratified-rejection + length tilt +
+  per-game tally; no new index structures, no alias tables; keeps `sample()` at
+  O(B + distinctLengths) plus the unchanged O(B · floatsPerBoard) memcpy that
+  already dominates).** Constraint priority — (1) draw cap and (2) per-game cap
+  are *hard*; (3) length target is *soft* and yields first; never silently
+  violate a hard constraint, and log + surface "achieved" numbers (achieved
+  draw %, achieved mean length, max per-game count) vs requested.
+  - Stratify on outcome for the draw cap (exact): `B_draw = min(round(D% · B),
+    drawPositions)`, `B_dec = B − B_draw`. Sample within each stratum by
+    rejection on the existing uniform-from-ring draw — accept iff the slot's
+    `outcome` matches the stratum, else redraw (~1.18× overdraw for the draw
+    stratum at 85% draws; ~6.7× for the decisive stratum, but `B_dec` is small
+    and a rejected draw is two array reads + an RNG call).
+  - Length target via exponential tilt (soft): accept a slot with probability
+    `exp(−β · max(0, gameLength − T))`, else redraw. One global `β` per `sample()`
+    call, solved by a 1-D root find on the resident-length histogram so the
+    tilted position-weighted mean equals `T` (monotone in β; sub-µs over ~hundreds
+    of distinct lengths; `β = 0` when `T ≥` natural mean ⇒ this step is a no-op;
+    cache β and re-solve only when the length histogram drifts past a threshold).
+  - Per-game cap (exact): a `[UInt32: Int]` scratch tally (or a reused
+    open-addressing scratch table) cleared each `sample()` call; after a slot
+    passes the stratum + tilt checks, look up `workerGameId`, redraw if that game
+    already has `K` picks in this batch. Expected redraws ≈ 0 for `K ≳ 3·B/G`.
+  - Accept ⇒ memcpy board/move/outcome (and the optional gameLength/workerGameId
+    out-params) into the trainer staging buffers exactly as today. Thread the
+    existing RNG so the batch stays deterministic.
+  - Degradation: if `K`, `D`, `T` are jointly infeasible for the current buffer,
+    relax in order — keep (1) and (2), let (3) drift, log a `[SAMPLER]` line.
+
+  **Upgrade path (only if rejection variance/exactness ever bites — hold in
+  reserve):** maintain a per-game index `{ringStart, residentCount, outcomeClass,
+  gameLength}` (a game's resident slots are always a contiguous wrapped run since
+  both append and eviction are FIFO and a game is one append chunk), plus
+  per-stratum Walker alias tables over games with weight `w_g = residentCount_g ·
+  e^{−β L_g}`; sample game ∝ `w_g`, uniform offset within it, then the per-game
+  tally + redraw only for (1). Makes (3) and the draw cap exact and removes the
+  rejection loop, at the cost of maintaining the index + rebuilding/patching the
+  alias tables. Much more code; the rejection version is almost certainly fast
+  and accurate enough.
+
+  **Open semantics / decisions resolved 2026-05-12:** all three controls are
+  per-batch (confirmed — not ring-retention caps). `T` is "adjust the mean game
+  length across the sampled positions when populating the batch" (confirmed).
+  Still to decide at implementation time: exact parameter names/ranges and which
+  `@TrainingParameter` category they land in (likely a new "Sampling" category);
+  whether the per-batch stats summary's histograms get a
+  "(post-sampling-constraints)" caption vs a separate pre-constraint panel;
+  whether to expose `β`/the tilt strength directly as an alternative to
+  specifying `T` (probably not — `T` is the intuitive knob, β is derived). These
+  only take effect at the next `sample()` call, so mark them `liveTunable` and
+  have the trainer re-read from `TrainingParameters.shared` (consistent with the
+  existing live params) rather than snapshotting.
+
+  **Edge cases that must be handled:** empty buffer / `storedCount < B`
+  (under-fill — preserve today's behaviour, whatever it is); a stratum with zero
+  resident positions (e.g. a fresh buffer with no decisive games yet ⇒ `B_dec`
+  clamps to 0, log it); `distinctResidentGames == 0` guard on the display
+  divisions; `B_draw` rounding so the two strata always sum to exactly `B`.
+
+  **Interactions / validation:** the replay-ratio controller is unaffected (it
+  counts positions consumed/produced — composition does not change the count).
+  Validation plan: a unit test that builds a synthetic buffer with known
+  game/outcome/length structure, draws many batches, and asserts the achieved
+  draw % equals the cap (within rounding), no game exceeds `K` in any batch, the
+  achieved mean length tracks `T` within tolerance over a range of `T`, and
+  behaviour is bit-identical to the current sampler when all three knobs are at
+  their no-op settings (`K ≥ B`, `D = 100`, `T` disabled/∞).
+
 ## Code-review remediation roadmap (added 2026-05-11)
 
 Result of an in-depth review of the codebase against Swift / SwiftUI / macOS /

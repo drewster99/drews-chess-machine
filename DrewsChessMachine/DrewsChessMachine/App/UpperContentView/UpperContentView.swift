@@ -113,6 +113,13 @@ struct UpperContentView: View {
     /// onto it in later Stage 4 slices.
     @State private var session: SessionController = SessionController()
 
+    /// Drives the Chess menu's "Play…" popover and the human-vs-network
+    /// game it kicks off. Held here so its `@Observable` state (e.g.
+    /// `isPlayingHuman`, `pendingLegalMoves`, `selectedFromSquare`)
+    /// participates in SwiftUI invalidation alongside the rest of the
+    /// view's bound state.
+    @State private var playController = PlayController()
+
     // Network — these forward to `session` so the ~150 existing `network` /
     // `runner` / `networkStatus` / `isBuilding` references keep working
     // unchanged while the source of truth lives on `SessionController`. They
@@ -133,10 +140,11 @@ struct UpperContentView: View {
         get { session.isBuilding }
         nonmutating set { session.isBuilding = newValue }
     }
-    // Legacy `secondarySelfPlayNetworks` removed — all self-play
-    // workers now share the champion network (`network`) through a
-    // `BatchedMoveEvaluationSource` barrier batcher, so N per-worker
-    // inference networks are no longer needed.
+    // Self-play workers all share the champion network (`network`).
+    // The tick driver itself encodes the K board positions and
+    // issues one batched `network.evaluateBatched(...)` call per
+    // tick — no per-worker inference network, no per-game eval
+    // source.
     // The parallel-worker stats (parallelStats / parallelWorkerStatsBox), the
     // self-play diversity tracker (selfPlayDiversityTracker), and the arena
     // coordination boxes (arenaActiveFlag / arenaTriggerBox / arenaOverrideBox
@@ -150,6 +158,7 @@ struct UpperContentView: View {
     /// whatever inference result is currently driving the on-board
     /// Top Moves overlay (Forward Pass / Candidate Test).
     @AppStorage("showPolicyChannelsPanel") private var showPolicyChannelsPanel: Bool = false
+    @AppStorage("showEmitWindowStats") private var showEmitWindowStats: Bool = false
 
     /// Square (0..<64, row*8+col) the cursor is currently hovering
     /// on the main chess board. Drives the top-3-channels-at-this-
@@ -251,20 +260,20 @@ struct UpperContentView: View {
     private var chartZoomStateVersion: Int {
         chartCoordinator.chartZoomIdx * 2 + (chartCoordinator.chartZoomAuto ? 1 : 0)
     }
-    /// Total number of games a single arena plays. 200 gives us enough
-    /// decisive games (~26 at the current ~13% decisive rate with
-    /// random networks) for the 0.55 score threshold to be meaningful.
-    /// Colors alternate every game, so candidate and champion each get
-    /// 100 games as white and 100 as black.
+    /// Total number of games a single arena plays. Sized for enough
+    /// decisive games at the typical decisive rate that the score
+    /// threshold is meaningful. Colors alternate every game, so
+    /// candidate and champion each play half as white and half as
+    /// black.
     nonisolated static let tournamentGames = 200
     /// Default number of arena games run concurrently per tournament.
-    /// Each game uses two shared `BatchedMoveEvaluationSource` batchers
-    /// (one per network) so the GPU sees K-position batches instead of
-    /// K serial single-position calls. 32 keeps the GPU well-saturated
-    /// without monopolizing it against the concurrent training worker
-    /// — the per-network barrier fires K=32 batches in the early game,
-    /// and the 5 ms coalescing window catches the desynchronized
-    /// steady-state at ~K/2. The value is user-overridable via the
+    /// The arena tick driver (`TickTournamentDriver`) partitions its K
+    /// active games by current-side network and fires one
+    /// `evaluateBatched` call per unique network (candidate / champion)
+    /// per tick, so the GPU sees batched-position calls instead of
+    /// serial single-position calls. K is chosen to keep the GPU
+    /// saturated without monopolizing it against the concurrent
+    /// training worker. User-overridable via the
     /// `trainingParams.arenaConcurrency` runtime setting (UI Stepper /
     /// session save+load / parameters.json key `arena_concurrency`).
     nonisolated static let arenaConcurrencyDefault = 200
@@ -272,11 +281,11 @@ struct UpperContentView: View {
     /// self-play `absoluteMaxSelfPlayWorkers` pattern: bounds the
     /// UI Stepper AND clamps values loaded from `parameters.json` /
     /// `session.json` so a stale or hand-edited file can't push K
-    /// past what the GPU can usefully batch in one fire. 256 is
-    /// well past the per-batch GPU throughput knee on Apple
-    /// Silicon for this network — raising it further wouldn't help
-    /// arena throughput because batches that large stall on memory
-    /// bandwidth before they finish.
+    /// past what the GPU can usefully batch in one fire. The
+    /// ceiling sits well past the per-batch GPU throughput knee on
+    /// Apple Silicon for this network — raising it further wouldn't
+    /// help arena throughput because batches that large stall on
+    /// memory bandwidth before they finish.
     nonisolated static let absoluteMaxArenaConcurrency: Int = 1024
     /// Coalescing-window upper bound (ms) for the arena's per-network
     /// batchers. The barrier fires on either count-met OR window-
@@ -400,6 +409,9 @@ struct UpperContentView: View {
     private var replayBuffer: ReplayBuffer? {
         get { session.replayBuffer } nonmutating set { session.replayBuffer = newValue }
     }
+    private var bufferComposition: ReplayBuffer.CompositionSnapshot? {
+        session.bufferComposition
+    }
     private var realRollingPolicyLoss: Double? {
         get { session.realRollingPolicyLoss } nonmutating set { session.realRollingPolicyLoss = newValue }
     }
@@ -417,7 +429,7 @@ struct UpperContentView: View {
     nonisolated static let replayBufferCapacity = 1_000_000
     /// Default number of active self-play workers when a new
     /// Play and Train session starts. The Stepper and
-    /// `trainingParams.selfPlayWorkers` (formerly `@State`) defaults to this
+    /// `trainingParams.selfPlayConcurrency` (formerly `@State`) defaults to this
     /// value — it's the *initial* setting, **not** an upper
     /// bound. The user can raise or lower the live count at any
     /// time via the Stepper, and changes take effect at each
@@ -431,7 +443,7 @@ struct UpperContentView: View {
     /// cache footprint (one `[N, inputPlanes, 8, 8]` float32 MPSNDArray
     /// per distinct N, so ~5.1 KB per slot) plus the per-batch
     /// `graph.run` latency. Must be ≥ `initialSelfPlayWorkerCount`.
-    nonisolated static let absoluteMaxSelfPlayWorkers: Int = 64
+    nonisolated static let absoluteMaxSelfPlayWorkers: Int = 8192
     /// Current active self-play worker count for the running
     /// session. The Stepper writes through `workerCountBinding`
     /// which updates this value and `workerCountBox` atomically;
@@ -440,7 +452,7 @@ struct UpperContentView: View {
     /// wait state. Persisted to UserDefaults via `@AppStorage` so
     /// the user's last chosen concurrency level survives app
     /// restart. Bounded at runtime by `absoluteMaxSelfPlayWorkers`.
-    // selfPlayWorkerCount migrated to `trainingParams.selfPlayWorkers`.
+    // selfPlayWorkerCount migrated to `trainingParams.selfPlayConcurrency`.
     /// Upper bound on the adjustable training-step delay. 500 ms
     /// already turns a ~60 steps/s training worker into roughly
     /// 2 steps/s, which is as slow as anyone reasonably wants to
@@ -467,10 +479,10 @@ struct UpperContentView: View {
     // the training worker reads the live delay from
     // `replayRatioController.recordTrainingBatchAndGetDelay(...)` each
     // step, so no separate lock-protected mirror is needed.
-    /// Shared lock-protected mirror of `trainingParams.selfPlayWorkers` the
+    /// Shared lock-protected mirror of `trainingParams.selfPlayConcurrency` the
     /// self-play worker tasks read between games. Moved to SessionController in
     /// Stage 4d — forwarding proxy. (The Stepper updates
-    /// `trainingParams.selfPlayWorkers` AND this box atomically via the
+    /// `trainingParams.selfPlayConcurrency` AND this box atomically via the
     /// binding side-effect; workers poll the box at the top of each iteration.
     /// Allocated at session start, cleared on session end.)
     private var workerCountBox: WorkerCountBox? {
@@ -553,6 +565,10 @@ struct UpperContentView: View {
     /// before flipping this flag so the sheet doesn't anchor to a
     /// dying popover.
     @State private var showArenaHistorySheet: Bool = false
+    /// Drives the Promotions sheet — the same `ArenaHistoryView`
+    /// configured to show only the promoted records, opened by
+    /// clicking the "Promotions" cell in the top status bar.
+    @State private var showPromotionsSheet: Bool = false
     /// True while a one-shot log-scan recovery pass is running. Moved to
     /// SessionController in Stage 4r (along with `runArenaHistoryRecovery`) —
     /// forwarding proxy. (Disables the "Recover from logs" button against
@@ -573,25 +589,13 @@ struct UpperContentView: View {
     /// second. Matches the user's spec.
     /// Rolling window width used to compute each sample's
     /// moves/hr from the delta between "now" and "the sample
-    /// closest to 3 minutes ago". 180 s, as requested.
+    /// closest to one window-width ago". Owned by
+    /// `SessionController.progressRateWindowSec` (currently 60 s).
     /// Visible X-axis length shown on the Progress rate chart
     /// at any one time, in elapsed seconds. The chart scrolls
     /// horizontally through the full session's data in chunks
-    /// of this size. 10 minutes matches the existing "last 10m"
-    /// rolling column in the Self Play stats panel, so the eye
-    /// can correlate chart movement with the numeric column.
+    /// of this size.
     nonisolated static let progressRateVisibleDomainSec: Double = 1800
-    /// Wall-clock seconds the Play and Train Session panel waits
-    /// after session start before showing rate-based stats fields
-    /// (Moves/hr, Games/hr in both lifetime and 10-min columns).
-    /// Below this threshold the very first game's near-zero
-    /// elapsed denominator would print absurd millions-of-moves/hr
-    /// values; the dashes fade in once the session has had enough
-    /// wall clock for the rates to be meaningful. Per-game and
-    /// per-move averages aren't gated — they don't divide by wall
-    /// clock so they're correct from the first completed game.
-    nonisolated static let statsWarmupSeconds: Double = 5.0
-
     // `rollingLossWindow` (live-loss rolling-window size) moved to
     // `SessionController` in Stage 4g — `SessionController.rollingLossWindow`.
 
@@ -602,6 +606,17 @@ struct UpperContentView: View {
     }
     private var sweepResults: [SweepRow] {
         get { session.sweepResults } nonmutating set { session.sweepResults = newValue }
+    }
+
+    /// True while the sweep output panel is on screen — either the
+    /// sweep is actively running, or it has finished and its rows
+    /// are still visible waiting for the user to switch modes
+    /// (which fires `clearTrainingDisplay()` and zeroes
+    /// `sweepResults`). Drives the suppression of the middle data
+    /// cards (Self Play / Results / EmitWindow) so the results
+    /// table doesn't snap away the instant the sweep completes.
+    private var sweepPanelVisible: Bool {
+        sweepRunning || !sweepResults.isEmpty
     }
     private var sweepProgress: SweepProgress? {
         get { session.sweepProgress } nonmutating set { session.sweepProgress = newValue }
@@ -991,19 +1006,29 @@ struct UpperContentView: View {
     private var overlayLabel: String {
         if selectedOverlay < 0 { return "" }
         if selectedOverlay == 0 { return "Top Moves" }
-        return "Channel \(selectedOverlay - 1): \(TensorChannelNames.names[selectedOverlay - 1])"
+        let i = selectedOverlay - 1
+        guard i >= 0, i < TensorChannelNames.names.count else {
+            return "Channel \(i)"
+        }
+        return "Channel \(i): \(TensorChannelNames.names[i])"
     }
 
-    /// "Last saved: 5/6/26 at 4:34 PM" or "Last saved: Never" — the
-    /// "Never" case covers both a fresh Build Network with no save
-    /// yet and a session that was resumed from disk but hasn't been
-    /// re-saved in this app run. The on-disk `.dcmsession`'s age is
-    /// deliberately ignored; this label tracks save activity *in
-    /// this app session* so the user can see at a glance whether
-    /// the trainer's current state has been written anywhere.
+    /// "Last saved: 5/6/26 at 4:34 PM", "Resumed 5/6/26 at 4:34 PM",
+    /// or "Last saved: Never". A successful save wins ("Last saved:");
+    /// a load with no subsequent save shows the resume timestamp; a
+    /// fresh Build Network with neither shows "Never". The on-disk
+    /// `.dcmsession`'s age is deliberately ignored — this label tracks
+    /// save / resume activity *in this app session* so the user can
+    /// see at a glance whether the trainer's current state has been
+    /// written anywhere since the most recent load.
     private var lastSavedDisplayString: String {
-        guard let when = checkpoint.lastSavedAt else { return "Last saved: Never" }
-        return "Last saved: \(when.formatted(date: .abbreviated, time: .shortened))"
+        if let when = checkpoint.lastSavedAt {
+            return "Last saved: \(when.formatted(date: .abbreviated, time: .shortened))"
+        }
+        if let resumedAt = checkpoint.lastResumedAt {
+            return "Resumed \(resumedAt.formatted(date: .abbreviated, time: .shortened))"
+        }
+        return "Last saved: Never"
     }
 
     private var currentOverlay: ChessBoardView.Overlay {
@@ -1046,7 +1071,19 @@ struct UpperContentView: View {
         // Steppers/Toggles inside the body.
         @Bindable var trainingParams = self.trainingParams
         return VStack(alignment: .leading, spacing: 8) {
-            titleBar
+            // Extracted to TitleBarView + `.equatable()` so re-renders
+            // driven by other body deps (trainingStats, gameSnapshot,
+            // alarm.active) skip rebuilding the title-bar subtree when
+            // none of its own inputs changed.
+            TitleBarView(
+                network: network,
+                networkIdentifier: network?.identifier,
+                networkStatus: networkStatus,
+                hasSavedCheckpoint: checkpoint.lastSavedAt != nil,
+                lastSavedDisplayString: lastSavedDisplayString,
+                showingInfoPopover: $showingInfoPopover
+            )
+            .equatable()
             if let alarm = trainingAlarm.active {
                 TrainingAlarmBanner(
                     alarm: alarm,
@@ -1078,25 +1115,6 @@ struct UpperContentView: View {
         .background { filePresentationHosts }
         .background(WindowAccessor(window: $contentWindow, onAttached: handleWindowAttached))
         .onAppear { handleBodyOnAppear() }
-        .sheet(isPresented: $autoResume.sheetShowing) {
-            if let pointer = autoResume.pointer {
-                AutoResumeSheetView(
-                    pointer: pointer,
-                    summary: autoResume.summary,
-                    countdownRemaining: autoResume.countdownRemaining,
-                    onDismiss: { autoResume.dismiss() },
-                    onResume: { autoResume.performResume() }
-                )
-            }
-        }
-        .sheet(isPresented: $showArenaHistorySheet) {
-            ArenaHistoryView(
-                history: tournamentHistory,
-                configuredGamesPerTournament: trainingParams.arenaGamesPerTournament,
-                promoteThreshold: trainingParams.arenaPromoteThreshold,
-                onClose: { showArenaHistorySheet = false }
-            )
-        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { note in
             handleWindowWillClose(note: note)
         }
@@ -1106,22 +1124,6 @@ struct UpperContentView: View {
         // to be — `body` tolerates it directly now that the surrounding view
         // is far smaller, so the old `MenuHubSyncProbe` carrier is gone.
         .onChange(of: menuHubSignature) { syncMenuCommandHubState() }
-        .background(ControlSideEffectsProbe(
-            playAndTrainBoardMode: $session.playAndTrainBoardMode,
-            probeNetworkTarget: $session.probeNetworkTarget,
-            candidateProbeDirty: $session.candidateProbeDirty,
-            selectedOverlay: $selectedOverlay,
-            resyncLrWarmupText: trainingSettingsPopover.resyncLrWarmupText,
-            effectiveReplayRatioTarget: $session.effectiveReplayRatioTarget,
-            lastReplayRatioCompensatorAt: $session.lastReplayRatioCompensatorAt,
-            trainingParams: trainingParams,
-            workerCountBox: workerCountBox,
-            trainer: trainer,
-            replayRatioController: replayRatioController,
-            snapDelayToNearestValidRung: { delay in
-                Self.validDelayRungsMs.min(by: { abs($0 - delay) < abs($1 - delay) }) ?? delay
-            }
-        ))
         .onReceive(snapshotTimer) { _ in
             // Capture timestamp at dispatch so the tick body can
             // measure how long the main actor took to begin executing
@@ -1141,6 +1143,59 @@ struct UpperContentView: View {
             // of `UpperContentView`'s private @State.
             chartCoordinator.isActive = newValue
         }
+        .background(ControlSideEffectsProbe(
+            playAndTrainBoardMode: $session.playAndTrainBoardMode,
+            probeNetworkTarget: $session.probeNetworkTarget,
+            candidateProbeDirty: $session.candidateProbeDirty,
+            selectedOverlay: $selectedOverlay,
+            resyncLrWarmupText: trainingSettingsPopover.resyncLrWarmupText,
+            effectiveReplayRatioTarget: $session.effectiveReplayRatioTarget,
+            lastReplayRatioCompensatorAt: $session.lastReplayRatioCompensatorAt,
+            trainingParams: trainingParams,
+            workerCountBox: workerCountBox,
+            trainer: trainer,
+            replayRatioController: replayRatioController,
+            snapDelayToNearestValidRung: { delay in
+                Self.validDelayRungsMs.min(by: { abs($0 - delay) < abs($1 - delay) }) ?? delay
+            }
+        ))
+        .sheet(isPresented: $autoResume.sheetShowing) {
+            if let pointer = autoResume.pointer {
+                AutoResumeSheetView(
+                    pointer: pointer,
+                    summary: autoResume.summary,
+                    countdownRemaining: autoResume.countdownRemaining,
+                    onDismiss: { autoResume.dismiss() },
+                    onResume: { autoResume.performResume() }
+                )
+            }
+        }
+        .sheet(isPresented: $showArenaHistorySheet) {
+            ArenaHistoryView(
+                history: tournamentHistory,
+                configuredGamesPerTournament: trainingParams.arenaGamesPerTournament,
+                promoteThreshold: trainingParams.arenaPromoteThreshold,
+                onClose: { showArenaHistorySheet = false }
+            )
+        }
+        // Promotions sheet — reuses `ArenaHistoryView` filtered to the
+        // promoted records. The parallel `displayIndices` preserves
+        // the original "#N" arena number in each row so users can
+        // cross-reference with the full history list.
+        .sheet(isPresented: $showPromotionsSheet) {
+            let promotedPairs = tournamentHistory.enumerated().compactMap { idx, rec -> (Int, TournamentRecord)? in
+                rec.promoted ? (idx + 1, rec) : nil
+            }
+            ArenaHistoryView(
+                history: promotedPairs.map { $0.1 },
+                configuredGamesPerTournament: trainingParams.arenaGamesPerTournament,
+                promoteThreshold: trainingParams.arenaPromoteThreshold,
+                onClose: { showPromotionsSheet = false },
+                title: "Promotions",
+                unitNoun: "promotion",
+                displayIndices: promotedPairs.map { $0.0 }
+            )
+        }
     }
 
     // MARK: - body sub-views
@@ -1150,47 +1205,9 @@ struct UpperContentView: View {
     // a single 200-line `body` blew past the `-warn-long-function-bodies`
     // budget; the slices each stay well under it.
 
-    /// Title bar: build/git summary + info popover on the left, self-play
-    /// network ID / status / last-saved indicator on the right.
-    @ViewBuilder
-    private var titleBar: some View {
-        HStack(spacing: 8) {
-            Text(BuildInfo.summary)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            Button(action: { showingInfoPopover.toggle() }) {
-                Image(systemName: "info.circle")
-                    .font(.title3)
-            }
-            .buttonStyle(.plain)
-            .popover(isPresented: $showingInfoPopover) {
-                AboutPopoverContent(network: network)
-            }
-            Spacer()
-            // Right-side ID + network status — bumped from .caption to
-            // .callout so they're readable at glance distance. Contrast
-            // (.secondary) was already fine; only the size changes.
-            if let net = network {
-                Text("Self play ID: \(net.identifier?.description ?? "–")")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            Text(networkStatus.isEmpty ? "" : networkStatus.components(separatedBy: "\n").first ?? "")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            HStack(spacing: 4) {
-                if checkpoint.lastSavedAt != nil {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                }
-                Text(lastSavedDisplayString)
-                    .font(.callout)
-                    .foregroundStyle(checkpoint.lastSavedAt == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.green))
-                    .lineLimit(1)
-            }
-        }
-    }
+    // `titleBar` lives in its own file as `TitleBarView` (an Equatable
+    // SwiftUI struct), so re-renders of `body` driven by other tracked
+    // deps don't force the title bar to recompute its body.
 
     /// Whether the busy/status row has anything to show — a
     /// non-`realTraining` busy state, an in-flight tournament, or a
@@ -1284,27 +1301,40 @@ struct UpperContentView: View {
     /// main text panel on the right.
     @ViewBuilder
     private var boardAndTextRow: some View {
+        // Human-vs-network play flips the board 180° when the user is
+        // black so the user's pieces sit at the bottom (standard chess
+        // convention). Click-routing + highlight + promotion-picker
+        // visual coordinates all live in `HumanPlayWindow` now; the
+        // inline board only needs the flipped pieces array because it
+        // mirrors the game position (non-interactive) for at-a-glance
+        // visibility on the main window during a human game.
+        let humanBoardFlipped = playController.isPlayingHuman
+            && playController.humanColor == .black
+        let boardPieces: [Piece?] = humanBoardFlipped
+            ? Array(displayedPieces.reversed())
+            : displayedPieces
         HStack(alignment: .top, spacing: 24) {
+            VStack(spacing: 6) {
             BoardSideView(
                 playAndTrainBoardMode: $session.playAndTrainBoardMode,
                 sideToMoveBinding: sideToMoveBinding,
                 probeNetworkTarget: $session.probeNetworkTarget,
                 realTraining: realTraining,
-                workerCount: trainingParams.selfPlayWorkers,
+                workerCount: trainingParams.selfPlayConcurrency,
                 inferenceResultPresent: inferenceResult != nil,
                 showForwardPassUI: showForwardPassUI,
                 forwardPassEditable: forwardPassEditable,
                 isCandidateTestActive: isCandidateTestActive,
                 overlayLabel: overlayLabel,
                 board: LiveBoardWithNavigationView(
-                    pieces: displayedPieces,
+                    pieces: boardPieces,
                     overlay: currentOverlay,
                     selectedOverlay: selectedOverlay,
                     inferenceResultPresent: inferenceResult != nil,
                     forwardPassEditable: forwardPassEditable,
                     realTraining: realTraining,
                     isCandidateTestActive: isCandidateTestActive,
-                    workerCount: trainingParams.selfPlayWorkers,
+                    workerCount: trainingParams.selfPlayConcurrency,
                     onNavigate: { navigateOverlay($0) },
                     onApplyFreePlacementDrag: { from, to in
                         applyFreePlacementDrag(from: from, to: to)
@@ -1314,9 +1344,90 @@ struct UpperContentView: View {
                     },
                     onHoverSquare: { sq in
                         hoveredBoardSquare = sq
-                    }
+                    },
+                    // Reset action wired to the button under the board.
+                    // Drops the forward-pass demo's editable position
+                    // back to the standard starting position and
+                    // requests a fresh forward pass (routes correctly
+                    // for both pure forward-pass and Candidate-test
+                    // modes via `requestForwardPassReeval`).
+                    onResetBoard: {
+                        editableState = .starting
+                        inferenceResult = nil
+                        requestForwardPassReeval()
+                    },
+                    // The main window's inline board no longer accepts
+                    // human-play taps — human games render in their own
+                    // window (HumanPlayWindow) where the click routing,
+                    // highlights, promotion picker, and Reset / Stop
+                    // toolbar all live. The inline board still mirrors
+                    // the position (via gameWatcher.state.board) so the
+                    // user can glance at it during a human game without
+                    // switching windows. All human-play wiring is set
+                    // to no-op equivalents to keep the call site stable
+                    // (the project's SwiftUI view-stability rule).
+                    humanMoveActive: false,
+                    selectedFromSquare: nil,
+                    legalMoveTargets: [],
+                    pendingPromotion: nil,
+                    humanColor: nil,
+                    promotionVisualSquare: nil,
+                    onTapSquare: { _ in },
+                    onSelectPromotion: { _ in },
+                    onCancelPromotion: { }
                 )
             )
+            .popover(isPresented: $playController.isSetupVisible, arrowEdge: .top) {
+                PlaySetupPopover(
+                    controller: playController,
+                    championAvailable: networkReady,
+                    trainerAvailable: session.trainer != nil,
+                    onStart: {
+                        playController.start(session: session, gameWatcher: gameWatcher)
+                    }
+                )
+            }
+
+            // The Reset / Stop toolbar now lives inside the human-
+            // play window (HumanPlayWindow). The inline placement
+            // below the mini board was confusing operator-side
+            // ("am I supposed to use that?"). Kept the view-tree
+            // slot as an opacity-0 / height-0 spacer so the
+            // surrounding VStack's shape doesn't change between
+            // builds.
+            Color.clear
+                .frame(height: 0)
+            }
+
+            // Self Play + Results card column. Sits between the chess
+            // board (left) and the existing left/right text columns
+            // (the `MainTextPanel` below). Always rendered during
+            // training — the cards gracefully show "—" placeholders
+            // when no Play-and-Train session has produced stats yet,
+            // so the layout doesn't reflow on session start. Bound to
+            // the live `parallelStats` snapshot so SwiftUI re-renders
+            // the card body whenever the heartbeat ticks.
+            //
+            // Hidden while the sweep output panel is on screen
+            // (`sweepPanelVisible` = running OR has completed rows
+            // still showing). A batch-size sweep doesn't produce
+            // per-game stats, so these cards would just sit there
+            // with all "—" cells while reclaiming that horizontal
+            // space lets the sweep output and the chessboard
+            // breathe. Stays hidden after the sweep finishes so the
+            // operator can examine the table without the layout
+            // snapping back the instant the sweep completes; the
+            // cards return when the user starts another mode
+            // (which fires `clearTrainingDisplay()`).
+            if !sweepPanelVisible {
+                VStack(alignment: .leading, spacing: 8) {
+                    SelfPlayStatsCard(
+                        snapshot: session.parallelStats,
+                        modelID: network?.identifier?.description ?? "—"
+                    )
+                    ResultsCard(snapshot: session.parallelStats)
+                }
+            }
 
             // Hover-driven top-3 channels overlay. When the cursor is over
             // a square AND we have an inference result with raw logits,
@@ -1343,6 +1454,29 @@ struct UpperContentView: View {
                     isCandidateTestActive: isCandidateTestActive,
                     inferenceResultText: inferenceResult?.textOutput,
                     trainingError: trainingError,
+                    topColumn2: {
+                        // View > Show Emit Window Stats toggle: when
+                        // on, the EmitWindowStatsCard sits at the top
+                        // of column 2 above whatever mode-body the
+                        // panel renders below it (self-play stats /
+                        // candidate-test text / nothing in N>1 multi-
+                        // worker training without a candidate probe).
+                        // Wired as `topColumn2` rather than wrapping
+                        // `selfPlayColumn` because in multi-worker
+                        // training `isCandidateTestActive` is forced
+                        // on and `selfPlayColumn` is never invoked —
+                        // the panel needs to render regardless.
+                        //
+                        // Suppressed while the sweep output panel is
+                        // on screen for the same reason as the Self
+                        // Play + Results column above. Stays hidden
+                        // after the sweep finishes so the operator
+                        // can review the table without the layout
+                        // reflowing the moment the sweep ends.
+                        if showEmitWindowStats && !sweepPanelVisible {
+                            EmitWindowStatsCard(snapshot: session.parallelStats)
+                        }
+                    },
                     selfPlayColumn: { selfPlayStatsColumn },
                     trainingColumn: { trainingStatsColumnView }
                 )
@@ -1424,11 +1558,7 @@ struct UpperContentView: View {
                     session.handleLoadModelPickResult(result)
                 }
             )
-            .fileDialogDefaultDirectory(
-                checkpoint.showingLoadModelImporter
-                ? CheckpointPaths.modelsDir
-                : CheckpointPaths.sessionsDir
-            )
+            .fileDialogDefaultDirectory(CheckpointPaths.modelsDir)
 
         Color.clear
             .fileImporter(
@@ -1439,6 +1569,7 @@ struct UpperContentView: View {
                     session.handleLoadSessionPickResult(result)
                 }
             )
+            .fileDialogDefaultDirectory(CheckpointPaths.sessionsDir)
 
         Color.clear
             .fileImporter(
@@ -1859,12 +1990,12 @@ struct UpperContentView: View {
         // Pre-process the value map: apply UI-specific clamps that the
         // macro's range alone can't express (e.g. snapping
         // training_step_delay_ms onto the Stepper's ladder, or
-        // narrowing self_play_workers to a per-build absolute cap that
+        // narrowing self_play_concurrency to a per-build absolute cap that
         // is tighter than the macro's permissive 1...256).
         var values = cfg.trainingParameters
-        if case .int(let v) = values[SelfPlayWorkers.id] {
+        if case .int(let v) = values[SelfPlayConcurrency.id] {
             let clamped = max(1, min(Self.absoluteMaxSelfPlayWorkers, v))
-            values[SelfPlayWorkers.id] = .int(clamped)
+            values[SelfPlayConcurrency.id] = .int(clamped)
         }
         if case .int(let v) = values[TrainingStepDelayMs.id] {
             let clamped = max(0, min(Self.stepDelayMaxMs, v))
@@ -2029,6 +2160,11 @@ struct UpperContentView: View {
         commandHub.chartZoomIn = { session.chartZoomIn() }
         commandHub.chartZoomOut = { session.chartZoomOut() }
         commandHub.chartZoomEnableAuto = { session.chartZoomEnableAuto() }
+        commandHub.openHumanPlaySetup = { playController.openSetupPopover() }
+        commandHub.stopHumanGame = { playController.stop(gameWatcher: gameWatcher) }
+        commandHub.resetHumanGame = {
+            playController.reset(session: session, gameWatcher: gameWatcher)
+        }
     }
 
     /// Push the subset of view state that governs menu enable/disable
@@ -2056,6 +2192,8 @@ struct UpperContentView: View {
         commandHub.chartZoomInAvailable = realTraining && session.canZoomChartIn
         commandHub.chartZoomOutAvailable = realTraining && session.canZoomChartOut
         commandHub.chartZoomAutoAvailable = realTraining && !chartCoordinator.chartZoomAuto
+        commandHub.humanGameInFlight = playController.isPlayingHuman
+        commandHub.humanGameCanReset = playController.canReset
     }
 
     /// True iff any operation is currently running that conflicts
@@ -2205,6 +2343,26 @@ struct UpperContentView: View {
         requestForwardPassReeval()
     }
 
+    /// Visual squares (0..<64) where the user could move *to* from
+    /// `from` (logical), given the current `pending` legal-move list.
+    /// When `flipped`, applies the 180° board flip so the result is
+    /// already in visual coordinates suitable for board highlighting.
+    private static func legalTargetsVisual(
+        from: Int?,
+        pending: [ChessMove],
+        flipped: Bool
+    ) -> Set<Int> {
+        guard let from else { return [] }
+        let fromRow = from / 8
+        let fromCol = from % 8
+        var out: Set<Int> = []
+        for move in pending where move.fromRow == fromRow && move.fromCol == fromCol {
+            let logical = move.toRow * 8 + move.toCol
+            out.insert(flipped ? 63 - logical : logical)
+        }
+        return out
+    }
+
     /// Convert a point in the board-overlay's local coordinate space into
     /// a 0-63 square index. Returns nil if the point lies outside the
     /// board's square frame, which the drag handler treats as "off-board"
@@ -2243,7 +2401,10 @@ struct UpperContentView: View {
             let black = MPSChessPlayer(name: "Black", source: source)
             do {
                 _ = try await machine.beginNewGame(white: white, black: black)
+            } catch is CancellationError {
+                gameWatcher.markPlaying(false)
             } catch {
+                SessionLogger.shared.log("[PLAY-ERR] beginNewGame threw: \(error)")
                 gameWatcher.markPlaying(false)
             }
         }
@@ -2270,7 +2431,11 @@ struct UpperContentView: View {
                 let black = MPSChessPlayer(name: "Black", source: source)
                 do {
                     _ = try await machine.beginNewGame(white: white, black: black)
+                } catch is CancellationError {
+                    gameWatcher.markPlaying(false)
+                    break
                 } catch {
+                    SessionLogger.shared.log("[PLAY-ERR] beginNewGame threw: \(error)")
                     gameWatcher.markPlaying(false)
                     break
                 }
@@ -2521,6 +2686,11 @@ struct UpperContentView: View {
             runs: "\(checkpoint.cumulativeRunCount)",
             arenas: "\(tournamentHistory.count)",
             promotions: "\(tournamentHistory.lazy.filter { $0.promoted }.count)",
+            onShowPromotions: {
+                SessionLogger.shared.log("[BUTTON] Open Promotions list")
+                showPromotionsSheet = true
+            },
+            lastPromoteCell: lastPromoteStatusBarCell,
             scoreCell: scoreStatusBarCell,
             // Right-side chips. Built each parent render. The
             // popovers' bindings / error flags / callbacks remain
@@ -2579,6 +2749,34 @@ struct UpperContentView: View {
             return ArenaEloStats.formatEloWithCI(r.eloSummary)
         }
         return String(format: "%.1f%%", r.score * 100)
+    }
+
+    /// Shared formatter for the "Last promote" status-bar cell. Drops
+    /// the year (the bar is read in real time, so the wall-clock that
+    /// matters is month/day + time-of-day) and uses the same 12-hour
+    /// `h:mm a` convention as `ArenaHistoryView`.
+    private static let lastPromoteDateFmt: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d, h:mm a"
+        return f
+    }()
+
+    /// "Last promote" cell — wall-clock of the most recent arena that
+    /// promoted, irrespective of how many newer non-promoting arenas
+    /// have run since. Dimmed em-dash when no promotion has happened
+    /// yet, matching the Score cell's empty-state convention.
+    private var lastPromoteStatusBarCell: StatusBarCell {
+        let lastPromotion = tournamentHistory.last(where: { $0.promoted })
+        let value: String
+        let color: Color
+        if let finishedAt = lastPromotion?.finishedAt {
+            value = Self.lastPromoteDateFmt.string(from: finishedAt)
+            color = .primary
+        } else {
+            value = "—"
+            color = .secondary
+        }
+        return StatusBarCell(label: "Last promote", value: value, valueColor: color)
     }
 
     /// The Score / Elo cell for the status bar. Broken out of the
@@ -2781,7 +2979,7 @@ struct UpperContentView: View {
     }
 
     /// Value for the status bar's "Training rate" cell: the most
-    /// recent 3-minute-rolling trainer moves/hour, or `"—"` before
+    /// recent 1-minute-rolling trainer moves/hour, or `"—"` before
     /// any sample has been recorded this session. `chartCoordinator.progressRateRing`
     /// is populated on the heartbeat while `realTraining == true`; after Stop
     /// the last value persists (until the next fresh Play-and-Train
@@ -2845,6 +3043,19 @@ struct UpperContentView: View {
             let bufRamMB = Double(bufCap * ReplayBuffer.bytesPerPosition) / (1024.0 * 1024.0)
             let bufStr = String(format: "%6d / %d  (%.0f MB)", bufCount, bufCap, bufRamMB)
             lines.append("  Buffer:     \(bufStr)")
+            // Pre-constraint composition: game-weighted mean game length,
+            // position-weighted mean game length, and W/D/L position split.
+            let compStr: String
+            if let c = bufferComposition, c.storedCount > 0 {
+                compStr = String(
+                    format: "game-mean=%5.0f  position-mean=%5.0f  W/D/L=%2.0f%%/%2.0f%%/%2.0f%%",
+                    c.meanGameLengthPerGame, c.meanGameLengthPerSampledPosition,
+                    c.winFraction * 100, c.drawFraction * 100, c.lossFraction * 100
+                )
+            } else {
+                compStr = "game-mean=\(dash)  position-mean=\(dash)  W/D/L=\(dash)"
+            }
+            lines.append("  Composition: \(compStr)")
             let policyStr: String
             if let loss = realRollingPolicyLoss {
                 policyStr = String(format: "%+.6f", loss)
@@ -3088,12 +3299,12 @@ struct UpperContentView: View {
     /// Play and Train self-play stats text. Built from the aggregate
     /// `ParallelWorkerStatsBox` snapshot so all N workers contribute
     /// identically, plus the live `GameWatcher` snapshot used only
-    /// when `trainingParams.selfPlayWorkers == 1` to render the current-game
-    /// Status line. Session rates are computed against wall clock
-    /// since `sessionStart` (not the old `GameWatcher` stopwatch,
-    /// which was worker-0-only and had an async-dispatch race); a
-    /// second column shows the same rates restricted to the rolling
-    /// 10-minute window for short-term throughput visibility.
+    /// when `trainingParams.selfPlayConcurrency == 1` to render the current-
+    /// game Status line. Session rates and the per-outcome Results
+    /// breakdown moved to the `SelfPlayStatsCard` and `ResultsCard`
+    /// SwiftUI views in the new card column between the chess board
+    /// and `MainTextPanel`; this function now only emits the Status
+    /// line for single-worker mode.
     private func playAndTrainStatsText(
         game: GameWatcher.Snapshot,
         session: ParallelWorkerStatsBox.Snapshot
@@ -3106,7 +3317,17 @@ struct UpperContentView: View {
         // the live board can re-appear instantly when the user
         // drops back to N=1) but the Status line is hidden because
         // it would only describe one of N concurrent games.
-        if trainingParams.selfPlayWorkers == 1 {
+        //
+        // The Self Play counts / averages / rates / Results blocks
+        // moved off this text path onto SwiftUI cards
+        // (`SelfPlayStatsCard`, `ResultsCard`) rendered in the new
+        // column between the chess board and `MainTextPanel`. The
+        // `session` parameter is intentionally unused here —
+        // retained so the call sites match the old signature, and
+        // because the Status line still wants the GameWatcher
+        // snapshot for the to-move readout.
+        _ = session
+        if trainingParams.selfPlayConcurrency == 1 {
             let status: String
             if game.isPlaying {
                 let turn = game.state.currentPlayer == .white ? "White" : "Black"
@@ -3129,135 +3350,10 @@ struct UpperContentView: View {
                 status = dash
             }
             lines.append("Status: \(status)")
-            lines.append("")
         }
 
-        // Section header — labelled with the champion model ID
-        // (the network all self-play slots share through the
-        // barrier batcher). The lifetime "Time" field
-        // used to live here too but moved to the top busy row
-        // alongside memory stats — see `busyLabel` for that. The
-        // Concurrency row used to live as the first body line but
-        // is now rendered outside this string as a SwiftUI HStack
-        // with an inline Stepper so the user can adjust N without
-        // leaving the stats panel.
         let championIDStr = network?.identifier?.description ?? "no id"
         let header = "Self Play [\(championIDStr)]"
-
-        let games = session.selfPlayGames
-        let moves = session.selfPlayPositions
-        let elapsed = max(0.1, Date().timeIntervalSince(session.sessionStart))
-
-        let sGames = games > 0 ? games.formatted(.number.grouping(.automatic)) : dash
-        let sMoves = moves > 0 ? moves.formatted(.number.grouping(.automatic)) : dash
-        // `Time` left this panel on the layout refactor — it now
-        // lives in the top busy row next to memory stats. The
-        // formatHMS helper still drives that display, just not
-        // from here.
-
-        // Wall-clock-derived rate denominator. Rate fields show "--"
-        // for the first few seconds of a session so the first game
-        // (with elapsed near zero) doesn't flash an absurd
-        // millions-of-moves/hr value.
-        let ratesValid = elapsed >= Self.statsWarmupSeconds && games > 0
-
-        // System-level averages: every metric measures the
-        // collective rate the N workers produce, not the per-worker
-        // average. With N workers, "Avg move" is wall-clock seconds
-        // divided by total moves (N times faster than per-worker
-        // move time), and "Avg game" is wall-clock seconds divided
-        // by total games. This matches the user's natural reading:
-        // "the system pops out a move every X ms" / "a game every
-        // Y ms," which is what the busy label's positions/sec also
-        // reports. Per-worker averages are not displayed.
-        let elapsedMs = elapsed * 1000
-        let lifetimeAvgMoveMs = moves > 0 ? elapsedMs / Double(moves) : 0
-        let lifetimeAvgGameMs = games > 0 ? elapsedMs / Double(games) : 0
-        let lifetimeMovesPerHour = Double(moves) / elapsed * 3600
-        let lifetimeGamesPerHour = Double(games) / elapsed * 3600
-
-        // Rolling-window aggregates. The right denominator for "rate
-        // over the last 10 minutes" is `min(recentWindow, elapsed)`,
-        // *not* the gap between the oldest stored entry and now —
-        // the gap form collapses to zero on the first game and
-        // understates the window in steady state. With min(window,
-        // elapsed): during the first 10 minutes of a session the
-        // rolling values equal the lifetime values (the window
-        // covers everything since sessionStart); after 10 minutes
-        // the rolling window is exactly 10 minutes wide.
-        let recentGames = session.recentGames
-        let recentMoves = session.recentMoves
-        let recentDenom = min(ParallelWorkerStatsBox.recentWindow, elapsed)
-        let recentDenomMs = recentDenom * 1000
-
-        let recentAvgMoveMs = recentMoves > 0 ? recentDenomMs / Double(recentMoves) : 0
-        let recentAvgGameMs = recentGames > 0 ? recentDenomMs / Double(recentGames) : 0
-        let recentMovesPerHour = recentDenom > 0 ? Double(recentMoves) / recentDenom * 3600 : 0
-        let recentGamesPerHour = recentDenom > 0 ? Double(recentGames) / recentDenom * 3600 : 0
-
-        let sAvgMove = ratesValid && moves > 0
-        ? String(format: "%.2f ms", lifetimeAvgMoveMs)
-        : dash
-        let sAvgGame = ratesValid && games > 0
-        ? String(format: "%.1f ms", lifetimeAvgGameMs)
-        : dash
-        let sMovesHr = ratesValid
-        ? Int(lifetimeMovesPerHour.rounded()).formatted(.number.grouping(.automatic))
-        : dash
-        let sGamesHr = ratesValid
-        ? Int(lifetimeGamesPerHour.rounded()).formatted(.number.grouping(.automatic))
-        : dash
-
-        let sAvgMoveR = ratesValid && recentGames > 0
-        ? String(format: "%.2f ms", recentAvgMoveMs)
-        : dash
-        let sAvgGameR = ratesValid && recentGames > 0
-        ? String(format: "%.1f ms", recentAvgGameMs)
-        : dash
-        let sMovesHrR = ratesValid && recentGames > 0
-        ? Int(recentMovesPerHour.rounded()).formatted(.number.grouping(.automatic))
-        : dash
-        let sGamesHrR = ratesValid && recentGames > 0
-        ? Int(recentGamesPerHour.rounded()).formatted(.number.grouping(.automatic))
-        : dash
-
-        // Column-aligned output. First rate column is right-padded
-        // to 12 chars so the 10-min column starts at a consistent
-        // offset regardless of first-column width; second column
-        // renders its value directly (no padding needed — it's the
-        // last thing on the line).
-        func rjust(_ value: String, _ width: Int) -> String {
-            guard value.count < width else { return value }
-            return String(repeating: " ", count: width - value.count) + value
-        }
-
-        lines.append("  Games:     \(rjust(sGames, 12))")
-        lines.append("  Moves:     \(rjust(sMoves, 12))")
-        lines.append("                             (last 10m)")
-        lines.append("  Avg move:  \(rjust(sAvgMove, 12))  \(rjust(sAvgMoveR, 12))")
-        lines.append("  Avg game:  \(rjust(sAvgGame, 12))  \(rjust(sAvgGameR, 12))")
-        lines.append("  Moves/hr:  \(rjust(sMovesHr, 12))  \(rjust(sMovesHrR, 12))")
-        lines.append("  Games/hr:  \(rjust(sGamesHr, 12))  \(rjust(sGamesHrR, 12))")
-        lines.append("")
-
-        // Results — per-outcome counters from the aggregate box,
-        // formatted exactly like the old GameWatcher rendering so
-        // the display layout is unchanged.
-        let totalCheckmates = session.whiteCheckmates + session.blackCheckmates
-        func pct(_ count: Int) -> String {
-            guard games > 0 else { return "" }
-            return String(format: "  (%.1f%%)", Double(count) / Double(games) * 100)
-        }
-
-        lines.append("Results")
-        lines.append("  Checkmate:      \(totalCheckmates)\(pct(totalCheckmates))")
-        lines.append("    White wins:     \(session.whiteCheckmates)\(pct(session.whiteCheckmates))")
-        lines.append("    Black wins:     \(session.blackCheckmates)\(pct(session.blackCheckmates))")
-        lines.append("  Stalemate:      \(session.stalemates)\(pct(session.stalemates))")
-        lines.append("  50-move draw:   \(session.fiftyMoveDraws)\(pct(session.fiftyMoveDraws))")
-        lines.append("  Threefold rep:  \(session.threefoldRepetitionDraws)\(pct(session.threefoldRepetitionDraws))")
-        lines.append("  Insufficient:   \(session.insufficientMaterialDraws)\(pct(session.insufficientMaterialDraws))")
-
         return (header: header, body: lines.joined(separator: "\n"))
     }
 
@@ -3347,7 +3443,10 @@ extension UpperContentView {
                 replayRatioCurrent: replayRatioSnapshot?.currentRatio,
                 replayRatioComputedDelayMs: replayRatioSnapshot?.computedDelayMs,
                 replayRatioComputedSelfPlayDelayMs: replayRatioSnapshot?.computedSelfPlayDelayMs,
-                bytesPerPosition: ReplayBuffer.bytesPerPosition
+                bytesPerPosition: ReplayBuffer.bytesPerPosition,
+                bufferComposition: session.bufferComposition,
+                lastSamplingResult: session.lastSamplingResult,
+                parallelStats: session.parallelStats
             )
         }
     }

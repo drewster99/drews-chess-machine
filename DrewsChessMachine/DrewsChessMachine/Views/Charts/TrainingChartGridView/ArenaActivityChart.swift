@@ -19,12 +19,32 @@ struct ArenaActivityChart: View {
         return max(start, lastTrainingElapsedSec ?? start)
     }
 
+    /// Single source of truth for the visible window — used both for
+    /// `chartXScale` and for the hover overlay's manual screen→data
+    /// mapping. If these two drift, the hover crosshair lands on a
+    /// different time than what the chart is showing.
+    private var visibleXDomain: ClosedRange<Double> {
+        let lo = max(0, scrollX)
+        let hi = lo + max(0.001, context.visibleDomainSec)
+        return lo...hi
+    }
+
+    /// Hovered arena ID. Snaps to the arena whose band midpoint is
+    /// closest to the cursor when no band contains the cursor — arena
+    /// durations (~20s) are tiny relative to the visible window
+    /// (~1h), so strict interval-containment left the hover dead in
+    /// ~95% of cursor positions.
     private var hoverArenaID: Int? {
-        guard let t = hoveredSec else { return nil }
+        guard let t = hoveredSec, !events.isEmpty else { return nil }
         for e in events where t >= e.startElapsedSec && t <= e.endElapsedSec {
             return e.id
         }
-        return nil
+        let nearest = events.min(by: {
+            let m0 = ($0.startElapsedSec + $0.endElapsedSec) * 0.5
+            let m1 = ($1.startElapsedSec + $1.endElapsedSec) * 0.5
+            return abs(m0 - t) < abs(m1 - t)
+        })
+        return nearest?.id
     }
 
     /// "M:SS" from a duration in seconds.
@@ -63,18 +83,43 @@ struct ArenaActivityChart: View {
         events.isEmpty && activeArenaStartElapsed == nil
     }
 
-    /// Score-bar fill color for a completed arena (brighter when hovered).
+    /// Full-height fill color for a completed arena, encoding the
+    /// verdict categorically:
+    ///   - promoted:        bright green
+    ///   - kept, score≥0.5: medium gray (candidate competitive but
+    ///                      didn't clear the promotion threshold)
+    ///   - kept, score<0.5: muted red (candidate actively lost ground
+    ///                      vs the champion — surfaces regressions
+    ///                      that would otherwise blend into "kept")
+    /// Brighter when hovered. Bars fill the full Y range (0..1) so
+    /// every arena is at least one pixel tall even at full-history
+    /// zoom-out, and color does the work of conveying the verdict
+    /// (score-vs-time lives on the companion `ArenaWinChart`).
     private func barColor(for e: ArenaChartEvent, hoveredID: Int?) -> Color {
         let hovered = hoveredID == e.id
         if e.promoted {
             return Color.green.opacity(hovered ? 1.0 : 0.7)
         }
-        return Color.gray.opacity(hovered ? 1.0 : 0.5)
+        if e.score < 0.5 {
+            return Color.red.opacity(hovered ? 0.8 : 0.5)
+        }
+        return Color.gray.opacity(hovered ? 0.9 : 0.45)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            ChartTileHeader(title: "Arena activity", value: headerText)
+            ChartTileHeader(
+                title: "Arena activity",
+                value: headerText,
+                titleHelp: AttributedString("""
+                    Full-height duration bands — one per arena tournament — across the same X axis \
+                    as the rest of the chart grid, so you can see exactly when training paused for \
+                    arena play. Color encodes the verdict: green = candidate promoted; gray = kept \
+                    (score ≥ 0.5, candidate competitive); red = kept but candidate lost ground \
+                    (score < 0.5). A blue tint marks the in-progress arena. Score-vs-time trend \
+                    is on the companion 'Arena win %' tile.
+                    """)
+            )
             Chart {
                 chartContent
             }
@@ -92,12 +137,12 @@ struct ArenaActivityChart: View {
                     }
                 }
             }
-            .chartXScale(domain: context.timeSeriesXDomain)
-            .chartScrollableAxes(.horizontal)
-            .chartXVisibleDomain(length: context.visibleDomainSec)
-            .chartScrollPosition(x: $scrollX)
+            // Visible-window-only X domain — matches the migrated
+            // tiles, so the layout doesn't jump every time a new
+            // training sample bumps `lastElapsed` upward.
+            .chartXScale(domain: visibleXDomain)
             .chartOverlay { proxy in
-                ChartHoverOverlay(proxy: proxy, hoveredSec: $hoveredSec)
+                ChartHoverOverlay(proxy: proxy, xDomain: visibleXDomain, hoveredSec: $hoveredSec)
             }
             .overlay {
                 if isEmpty {
@@ -123,21 +168,25 @@ struct ArenaActivityChart: View {
     @ChartContentBuilder
     private var chartContent: some ChartContent {
         let hoveredID = hoverArenaID
-        ForEach(events) { e in
+        // Full-height verdict bars. Drawn in two passes so promotions
+        // (green) paint AFTER every other arena and always sit on top
+        // if any visual overlap occurs (rare — arenas are disjoint in
+        // time — but cheap insurance against future stacking changes).
+        ForEach(events.filter { !$0.promoted }) { e in
             RectangleMark(
                 xStart: .value("Start", e.startElapsedSec),
                 xEnd: .value("End", e.endElapsedSec),
                 yStart: .value("Floor", 0.0),
                 yEnd: .value("Top", 1.0)
             )
-            .foregroundStyle(Color.secondary.opacity(hoveredID == e.id ? 0.25 : 0.12))
+            .foregroundStyle(barColor(for: e, hoveredID: hoveredID))
         }
-        ForEach(events) { e in
+        ForEach(events.filter { $0.promoted }) { e in
             RectangleMark(
                 xStart: .value("Start", e.startElapsedSec),
                 xEnd: .value("End", e.endElapsedSec),
                 yStart: .value("Floor", 0.0),
-                yEnd: .value("Score", e.score)
+                yEnd: .value("Top", 1.0)
             )
             .foregroundStyle(barColor(for: e, hoveredID: hoveredID))
         }
@@ -150,9 +199,6 @@ struct ArenaActivityChart: View {
             )
             .foregroundStyle(Color.blue.opacity(0.35))
         }
-        RuleMark(y: .value("Threshold", promoteThreshold))
-            .foregroundStyle(Color.orange.opacity(0.6))
-            .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
         if let t = hoveredSec {
             RuleMark(x: .value("Time", t))
                 .foregroundStyle(Color.gray.opacity(0.5))

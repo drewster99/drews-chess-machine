@@ -118,7 +118,15 @@ final class ChessMPSNetwork: @unchecked Sendable {
         var state = GameState.starting
         var ply = 0
         out.withUnsafeMutableBufferPointer { buf in
-            guard let base = buf.baseAddress else { return }
+            // `out` is `warmupBatchSize * perBoard` floats, statically
+            // non-empty; a nil baseAddress here means the array's
+            // backing storage is broken.
+            guard let base = buf.baseAddress else {
+                preconditionFailure(
+                    "warmupBatch: out buffer baseAddress is nil "
+                    + "(count=\(buf.count)); upstream invariant violated."
+                )
+            }
             while ply < warmupBatchSize {
                 let slot = UnsafeMutableBufferPointer<Float>(
                     start: base.advanced(by: ply * perBoard),
@@ -226,9 +234,8 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// the full contract.
     ///
     /// - Parameters:
-    ///   - batchBoards: `count * BoardEncoder.tensorLength` floats (currently
-    ///                  `count * 1280`), NCHW order, positions laid
-    ///                  out back-to-back.
+    ///   - batchBoards: `count * BoardEncoder.tensorLength` floats,
+    ///                  NCHW order, positions laid out back-to-back.
     ///   - count: batch size; must be >= 1.
     ///   - consume: receives `policy` (`count * policySize` logits, position-major)
     ///              and `values` (`count` scalars in [-1, +1]).
@@ -238,6 +245,28 @@ final class ChessMPSNetwork: @unchecked Sendable {
         consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
     ) async throws {
         try await network.evaluateBatched(batchBoards: batchBoards, count: count, consume: consume)
+    }
+
+    /// Pointer-flavored sibling of the `[Float]` overload above. The
+    /// tick-driver self-play path holds its batched-input scratch as
+    /// an `UnsafeMutablePointer<Float>` field and calls this method
+    /// directly per tick, avoiding the per-fire `[Float]` allocation
+    /// the `[Float]` overload's `withUnsafeBufferPointer` round-trip
+    /// would otherwise require. See
+    /// `ChessNetwork.evaluateBatched(batchBoardsPointer:floatCount:count:consume:)`
+    /// for the lifetime contract and Sendable handling.
+    func evaluateBatched(
+        batchBoardsPointer: UnsafePointer<Float>,
+        floatCount: Int,
+        count: Int,
+        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+    ) async throws {
+        try await network.evaluateBatched(
+            batchBoardsPointer: batchBoardsPointer,
+            floatCount: floatCount,
+            count: count,
+            consume: consume
+        )
     }
 
     func exportWeights() async throws -> [[Float]] {

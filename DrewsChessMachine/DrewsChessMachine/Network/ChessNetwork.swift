@@ -83,6 +83,20 @@ enum BNMode {
 /// Marked `@unchecked Sendable` because MPSGraph/Metal state is not
 /// Sendable, but all public entry points serialize access through the
 /// instance's private execution queue.
+
+/// Sendable carrier for an externally-owned batched-input pointer.
+/// `UnsafePointer<Float>` is not Sendable; this carrier crosses the
+/// `enqueue` closure boundary so the pointer-flavored
+/// `evaluateBatched(batchBoardsPointer:floatCount:count:consume:)`
+/// can hand the buffer to the network's execution-queue work block
+/// without boxing into a `[Float]`. Caller's lifetime responsibility:
+/// the buffer must outlive the await (the awaiting task is suspended,
+/// so any field-stored pointer on the caller stays alive).
+struct BatchBoardSource: @unchecked Sendable {
+    let pointer: UnsafePointer<Float>
+    let floatCount: Int
+}
+
 final class ChessNetwork: @unchecked Sendable {
 
     // MARK: Configuration
@@ -99,7 +113,15 @@ final class ChessNetwork: @unchecked Sendable {
     static let dataType: MPSDataType = .float32
 
     static let channels = 128
-    static let inputPlanes = 20
+    /// Input plane count. v3 architecture: 20 baseline planes (pieces +
+    /// castling + EP + halfmove clock + 2 repetition-count planes) plus
+    /// 10 binary temporal-repetition-history planes (planes 20–29 in
+    /// `BoardEncoder`). Changing this value automatically propagates
+    /// through `BoardEncoder.tensorLength`, `ReplayBuffer.floatsPerBoard`,
+    /// the stem's weight shape `[channels, inputPlanes, 3, 3]`, and the
+    /// network's `arch_hash`, so old checkpoints with a different value
+    /// fail to load with a clear shape mismatch at startup.
+    static let inputPlanes = 30
     static let boardSize = 8
     static let numBlocks = 8
     /// Number of policy output channels: 56 queen-style (8 dirs × 7 dists)
@@ -687,7 +709,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// hot path — steady-state batches allocate nothing.
     ///
     /// - Parameters:
-    ///   - batchBoards: `count * inputPlanes * 8 * 8 = count * 1280` floats in
+    ///   - batchBoards: `count * inputPlanes * 8 * 8` floats in
     ///                  NCHW order, one position after another.
     ///   - count: number of positions in the batch; must be >= 1.
     ///   - consume: non-throwing closure invoked once with the policy
@@ -699,6 +721,41 @@ final class ChessNetwork: @unchecked Sendable {
     ) async throws {
         try await enqueue {
             try self.internalEvaluate(batchBoards: batchBoards, count: count, consume: consume)
+        }
+    }
+
+    /// Pointer-flavored batched evaluate. The caller owns
+    /// `batchBoardsPointer` and is responsible for keeping the
+    /// underlying buffer alive across the `await` (typically by
+    /// holding it as an instance field of the caller's driver). This
+    /// avoids the per-fire `[Float](repeating: …)` allocation the
+    /// `[Float]`-flavored overload's `withUnsafeBufferPointer` would
+    /// require if the caller had to convert pointer → Array.
+    ///
+    /// Sendable handling: `UnsafePointer<Float>` is not Sendable, so
+    /// the pointer + count are wrapped in `BatchBoardSource` (an
+    /// `@unchecked Sendable` carrier) to cross the `enqueue` closure
+    /// boundary. The caller's lifetime contract above keeps the
+    /// pointer valid for the entire `await`.
+    ///
+    /// - Parameters:
+    ///   - batchBoardsPointer: base pointer to a contiguous run of
+    ///     `floatCount = count * inputPlanes * 8 * 8` floats.
+    ///   - floatCount: total element count addressed by the pointer.
+    ///                 Must equal `count * inputPlanes * 8 * 8`;
+    ///                 enforced inside `internalEvaluate`.
+    ///   - count: number of positions in the batch; must be >= 1.
+    ///   - consume: identical contract to the `[Float]` overload.
+    func evaluateBatched(
+        batchBoardsPointer: UnsafePointer<Float>,
+        floatCount: Int,
+        count: Int,
+        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+    ) async throws {
+        let source = BatchBoardSource(pointer: batchBoardsPointer, floatCount: floatCount)
+        try await enqueue {
+            let buf = UnsafeBufferPointer<Float>(start: source.pointer, count: source.floatCount)
+            try self.internalEvaluate(batchBoards: buf, count: count, consume: consume)
         }
     }
 
@@ -1751,9 +1808,18 @@ final class ChessNetwork: @unchecked Sendable {
         _ buffer: UnsafeBufferPointer<Float>,
         into array: MPSNDArray
     ) {
+        precondition(
+            !buffer.isEmpty,
+            "writeInferenceInput: empty buffer would leave MPSNDArray with stale bytes"
+        )
         switch dataType {
         case .float32:
-            guard let base = buffer.baseAddress else { return }
+            guard let base = buffer.baseAddress else {
+                preconditionFailure(
+                    "writeInferenceInput: buffer baseAddress is nil (count=\(buffer.count)); "
+                    + "upstream invariant violated."
+                )
+            }
             array.writeBytes(
                 UnsafeMutableRawPointer(mutating: base),
                 strideBytes: nil
@@ -1778,9 +1844,18 @@ final class ChessNetwork: @unchecked Sendable {
     /// allocation is acceptable. Don't call from hot paths — use
     /// `writeInferenceInput` or the trainer's in-place writer instead.
     static func writeFloats(_ floats: [Float], into array: MPSNDArray) {
+        precondition(
+            !floats.isEmpty,
+            "writeFloats: empty input would silently skip the MPSNDArray write"
+        )
         let data = makeWeightData(floats)
         data.withUnsafeBytes { buf in
-            guard let base = buf.baseAddress else { return }
+            guard let base = buf.baseAddress else {
+                preconditionFailure(
+                    "writeFloats: data baseAddress is nil despite non-empty input "
+                    + "(floats.count=\(floats.count), data.count=\(data.count))"
+                )
+            }
             array.writeBytes(
                 UnsafeMutableRawPointer(mutating: base),
                 strideBytes: nil

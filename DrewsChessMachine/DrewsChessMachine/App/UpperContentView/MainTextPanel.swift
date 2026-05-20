@@ -8,7 +8,15 @@ import SwiftUI
 /// mode both are shown side-by-side. The columns themselves are
 /// supplied by the caller as `@ViewBuilder` closures, so this
 /// shell stays decoupled from their state-heavy initializers.
-struct MainTextPanel<SelfPlay: View, Training: View>: View {
+///
+/// `topColumn2` sits above whatever column-2 body the current mode
+/// emits (selfPlayColumn / inference text / nothing). This is the
+/// always-visible top slot the View > Show Emit Window Stats
+/// toggle uses — it must render regardless of `isCandidateTestActive`
+/// or `inferenceResultText` so the operator can see the panel even
+/// in multi-worker training mode (where the per-mode body of column
+/// 2 might be empty).
+struct MainTextPanel<TopColumn2: View, SelfPlay: View, Training: View>: View {
     let isGameMode: Bool
     let isTrainingMode: Bool
     let isCandidateTestActive: Bool
@@ -19,6 +27,7 @@ struct MainTextPanel<SelfPlay: View, Training: View>: View {
     /// Most-recent training error message, surfaced in red below the
     /// columns. `nil` when training has not raised an error.
     let trainingError: String?
+    @ViewBuilder var topColumn2: () -> TopColumn2
     @ViewBuilder var selfPlayColumn: () -> SelfPlay
     @ViewBuilder var trainingColumn: () -> Training
 
@@ -26,25 +35,32 @@ struct MainTextPanel<SelfPlay: View, Training: View>: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top, spacing: 16) {
-                    // Candidate test mode replaces the game-stats
-                    // column with the inference-result column so
-                    // the user sees what the network thinks of the
-                    // probe position alongside the running training
-                    // stats. Same min-width as the game column so
-                    // the overall text panel doesn't reflow when
-                    // toggling between Game run and Candidate test.
-                    if isGameMode && !isCandidateTestActive {
-                        selfPlayColumn()
-                    }
-                    if isCandidateTestActive, let result = inferenceResultText {
-                        Text(result)
-                            .frame(minWidth: 330, alignment: .topLeading)
+                    // Column 2 — wrapped in a VStack so the always-on
+                    // `topColumn2` content sits above whichever
+                    // mode-specific body the current state selects
+                    // (self-play stats, candidate-test inference text,
+                    // or nothing). When `topColumn2` returns
+                    // `EmptyView`, SwiftUI elides the slot and the
+                    // VStack collapses to its body's natural size.
+                    VStack(alignment: .leading, spacing: 8) {
+                        topColumn2()
+                        if isGameMode && !isCandidateTestActive {
+                            selfPlayColumn()
+                        }
+                        if isCandidateTestActive, let result = inferenceResultText {
+                            Text(result)
+                                .frame(minWidth: 330, alignment: .topLeading)
+                        }
+                        // Pure forward-pass mode (neither game nor
+                        // training): inference text floats here too,
+                        // matching the original placement before
+                        // column 2 was wrapped in a VStack.
+                        if !isGameMode, !isTrainingMode, let result = inferenceResultText {
+                            Text(result)
+                        }
                     }
                     if isTrainingMode {
                         trainingColumn()
-                    }
-                    if !isGameMode, !isTrainingMode, let result = inferenceResultText {
-                        Text(result)
                     }
                 }
 

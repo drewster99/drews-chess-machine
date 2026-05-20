@@ -307,8 +307,26 @@ final class CliTrainingRecorder: @unchecked Sendable {
     /// each `[STATS]` tick from the trainer's most-recent stats
     /// batch. Field semantics match `ReplayBuffer.BatchStatsSummary`.
     struct BatchStatsSnapshot: Encodable, Sendable {
+        /// Composition constraints in effect when the batch summarised
+        /// here was sampled. `applied == false` means the batch took
+        /// the legacy uniform fast path; the histograms below are then
+        /// the pre-constraint distribution. `applied == true` means
+        /// the histograms are post-sampling-constraints.
+        struct SamplingConstraintsSnapshot: Encodable, Sendable {
+            let applied: Bool
+            let maxPerGame: Int
+            let maxDrawPct: Int
+            let targetLength: Int
+            enum CodingKeys: String, CodingKey {
+                case applied
+                case maxPerGame = "max_per_game"
+                case maxDrawPct = "max_draw_pct"
+                case targetLength = "target_length"
+            }
+        }
         let step: Int
         let batchSize: Int
+        let samplingConstraints: SamplingConstraintsSnapshot
         let uniqueCount: Int
         let uniquePct: Double
         let dupMax: Int
@@ -346,6 +364,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         enum CodingKeys: String, CodingKey {
             case step
             case batchSize = "batch_size"
+            case samplingConstraints = "sampling_constraints"
             case uniqueCount = "unique_count"
             case uniquePct = "unique_pct"
             case dupMax = "dup_max"
@@ -374,6 +393,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         init(
             step: Int,
             batchSize: Int,
+            samplingConstraints: SamplingConstraintsSnapshot,
             uniqueCount: Int,
             uniquePct: Double,
             dupMax: Int,
@@ -390,6 +410,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
         ) {
             self.step = step
             self.batchSize = batchSize
+            self.samplingConstraints = samplingConstraints
             self.uniqueCount = uniqueCount
             self.uniquePct = uniquePct
             self.dupMax = dupMax
@@ -437,6 +458,28 @@ final class CliTrainingRecorder: @unchecked Sendable {
         /// trained" counter in the top-level JSON when it's the
         /// last stats line at exit time.
         let positionsTrained: Int
+        /// Lifetime count of self-play games that survived the
+        /// per-game keep/drop filter (`selfPlayDrawKeepFraction`)
+        /// and were flushed into the replay buffer. `<= selfPlayGames`;
+        /// equal at default keepFraction of 1.0.
+        let emittedGames: Int
+        /// Lifetime count of plies emitted into the replay buffer
+        /// (both colours summed across kept games). `<=
+        /// positionsTrained` (raw produced).
+        let emittedPositions: Int
+        /// `selfPlayDrawKeepFraction` in effect at this stats tick.
+        /// 1.0 = keep every drawn game; < 1.0 = filter drawn games
+        /// stochastically.
+        let selfPlayDrawKeepFraction: Double
+        /// `selfPlayMaxPliesPerGame` in effect at this stats tick. Self-play
+        /// games hitting this cap are dropped (never emitted) and
+        /// counted in `maxPliesDropped` rather than W/D/L.
+        let selfPlayMaxPliesPerGame: Int
+        /// Lifetime count of self-play games that hit the
+        /// `selfPlayMaxPliesPerGame` cap and were dropped. Included in
+        /// `selfPlayGames` and `positionsTrained` (the games WERE
+        /// played) but never in per-outcome W/D/L counts.
+        let maxPliesDropped: Int
         let avgLen: Double
         let rollingAvgLen: Double
         let gameLenP50: Int?
@@ -509,7 +552,17 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let diversityAvgDivergencePly: Double
         let ratioTarget: Double
         let ratioCurrent: Double
+        /// Self-play EMITTED-positions rate (positions/sec) — the
+        /// rate the replay-ratio target is computed against. Equals
+        /// `ratioProducedRate` when `selfPlayDrawKeepFraction = 1.0`
+        /// (default), strictly less when filtering is active.
         let ratioProductionRate: Double
+        /// Self-play RAW-produced-positions rate (positions/sec) —
+        /// every ply that came off the GPU, kept or dropped. Equal
+        /// to `ratioProductionRate` at default keep-fraction;
+        /// surfaced separately so the observed keep-fraction can be
+        /// read off as `ratioProductionRate / ratioProducedRate`.
+        let ratioProducedRate: Double
         let ratioConsumptionRate: Double
         /// Self-play production rate expressed in moves/hour (3600 ×
         /// `ratioProductionRate`). Same rolling 60-s window as the
@@ -548,6 +601,11 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case steps
             case selfPlayGames = "self_play_games"
             case positionsTrained = "positions_trained"
+            case emittedGames = "emitted_games"
+            case emittedPositions = "emitted_positions"
+            case selfPlayDrawKeepFraction = "self_play_draw_keep_fraction"
+            case selfPlayMaxPliesPerGame = "self_play_max_plies_per_game"
+            case maxPliesDropped = "max_plies_dropped"
             case avgLen = "avg_len"
             case rollingAvgLen = "rolling_avg_len"
             case gameLenP50 = "game_len_p50"
@@ -600,6 +658,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case ratioTarget = "ratio_target"
             case ratioCurrent = "ratio_current"
             case ratioProductionRate = "ratio_production_rate"
+            case ratioProducedRate = "ratio_produced_rate"
             case ratioConsumptionRate = "ratio_consumption_rate"
             case selfPlayMovesPerHour = "self_play_moves_per_hour"
             case trainingMovesPerHour = "training_moves_per_hour"

@@ -29,10 +29,11 @@ final class SessionController {
 
     // MARK: - Champion network + build state
 
-    /// The live champion network. Self-play workers evaluate against this via
-    /// the shared `BatchedMoveEvaluationSource`; Play Game / Run Forward Pass
-    /// use it directly; the arena snapshots it into `arenaChampionNetwork`.
-    /// `nil` until Build Network (or a load) populates it.
+    /// The live champion network. `BatchedSelfPlayDriver` evaluates K
+    /// active self-play games against this network per tick; Play Game /
+    /// Run Forward Pass use it directly; the arena snapshots it into
+    /// `arenaChampionNetwork`. `nil` until Build Network (or a load)
+    /// populates it.
     var network: ChessMPSNetwork?
 
     /// `ChessRunner` wrapping `network`. Rebuilt whenever `network` is.
@@ -79,6 +80,20 @@ final class SessionController {
     /// from `parallelWorkerStatsBox` by the UI heartbeat. `nil` outside of a
     /// Play-and-Train session.
     var parallelStats: ParallelWorkerStatsBox.Snapshot?
+
+    /// Resident-set composition of the replay buffer (game-length means,
+    /// W/D/L position fractions), mirrored from `replayBuffer.compositionSnapshot()`
+    /// by the UI heartbeat. `nil` outside a Play-and-Train session.
+    var bufferComposition: ReplayBuffer.CompositionSnapshot?
+
+    /// Most recent `ReplayBuffer.sample(...)` achievement report — the
+    /// post-constraint W/D/L counts, distinct game count, max samples
+    /// per game, and Σ game length over the emitted batch. Mirrored
+    /// from `replayBuffer.lastSamplingResult()` by the heartbeat and
+    /// displayed in the "Last sampled batch" column of the Replay
+    /// Sampling popover readout. `nil` until the first batch has
+    /// landed in the current Play-and-Train session.
+    var lastSamplingResult: ReplayBuffer.SamplingResult?
 
     /// Lock-protected counter box shared across the parallel self-play and
     /// training worker tasks. Workers call `recordSelfPlayGame` /
@@ -558,7 +573,7 @@ final class SessionController {
     /// useful left-side output).
     var isCandidateTestActive: Bool {
         guard realTraining else { return false }
-        if TrainingParameters.shared.selfPlayWorkers > 1 { return true }
+        if TrainingParameters.shared.selfPlayConcurrency > 1 { return true }
         return playAndTrainBoardMode == .candidateTest
     }
 
@@ -789,6 +804,7 @@ final class SessionController {
                       -> 8 res+SE blocks -> policy(4864) + value(1)
                     """
                 checkpoint?.lastSavedAt = nil
+                checkpoint?.lastResumedAt = nil
             case .failure(let error):
                 network = nil
                 runner = nil

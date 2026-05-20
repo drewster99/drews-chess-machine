@@ -28,6 +28,20 @@ struct ArenaHistoryView: View {
     /// dashed reference line in the sparkline.
     let promoteThreshold: Double
     let onClose: () -> Void
+    /// Sheet title — defaults to "Arena History". Overridden when the
+    /// view is reused for filtered subsets (e.g. promotions only).
+    var title: String = "Arena History"
+    /// Noun used in the header's count text. Singular form; rendered
+    /// with a simple "+s" pluralization in `headerBar`. Defaults to
+    /// "tournament" so existing call sites keep their wording.
+    var unitNoun: String = "tournament"
+    /// Optional parallel array mapping `history[i]` to the arena
+    /// number it should display as ("#23", "#56", …). When nil, rows
+    /// fall back to `i + 1` — i.e., the row's index in `history`.
+    /// Required length, if non-nil, equals `history.count`; mismatch
+    /// is treated as nil so a render never crashes from a stale
+    /// caller-side filter.
+    var displayIndices: [Int]? = nil
     /// Optional recovery callback — when present and at least one
     /// row has nil `finishedAt` / `candidateID` / `championID`,
     /// the header shows a "Recover from logs" button that
@@ -88,10 +102,10 @@ struct ArenaHistoryView: View {
     @ViewBuilder
     private var headerBar: some View {
         HStack {
-            Text("Arena History")
+            Text(title)
                 .font(.title2.weight(.semibold))
             Spacer()
-            Text("\(history.count) tournament\(history.count == 1 ? "" : "s")")
+            Text("\(history.count) \(unitNoun)\(history.count == 1 ? "" : "s")")
                 .font(.callout)
                 .foregroundStyle(.secondary)
             if let onRecoverFromLogs, hasMissingFields {
@@ -150,7 +164,7 @@ struct ArenaHistoryView: View {
     @ViewBuilder
     private func row(idx: Int, record: TournamentRecord) -> some View {
         ArenaHistoryRow(
-            index: idx + 1,
+            index: displayIndex(forRowAt: idx),
             record: record,
             promoteThreshold: promoteThreshold,
             configuredGamesPerTournament: configuredGamesPerTournament,
@@ -163,6 +177,17 @@ struct ArenaHistoryView: View {
             )
         )
         .id(record.id)
+    }
+
+    /// Pick the arena number to render in the row's "#N" badge. Uses
+    /// the caller-supplied `displayIndices` when its length matches
+    /// `history`; otherwise falls back to the row's 1-based position
+    /// — matches the pre-parameter behavior.
+    private func displayIndex(forRowAt idx: Int) -> Int {
+        if let displayIndices, displayIndices.count == history.count {
+            return displayIndices[idx]
+        }
+        return idx + 1
     }
 }
 
@@ -661,6 +686,12 @@ private struct ArenaDetailPopover: View {
                 }
             }
 
+            if let ext = record.extendedSummary {
+                Divider()
+
+                ArenaBreakdownsView(summary: ext)
+            }
+
             Divider()
 
             HStack {
@@ -674,7 +705,7 @@ private struct ArenaDetailPopover: View {
             }
         }
         .padding(16)
-        .frame(width: 360)
+        .frame(width: record.extendedSummary == nil ? 360 : 560)
     }
 
     @ViewBuilder

@@ -300,6 +300,8 @@ He init's `fan_in` becomes `inputPlanes * 9 = 180` (was 162). Auto-handled by `h
 
 ### 4.2 SE block insertion
 
+SE = Squeeze and Excitation
+
 In `residualBlock`, insert the ~30-line SE module between `bn2` and the skip-add. Code already drafted in the previous turn — drop it in verbatim.
 
 Per-block additions to `trainables` / `shouldDecay`:

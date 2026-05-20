@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import os
 
@@ -18,11 +19,33 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
     /// Snapshot of all displayable values, taken atomically. Sendable so it
     /// can flow from any thread to the main actor.
     struct Snapshot: Sendable {
+        /// Monotonically-increasing per-mutation counter. Incremented
+        /// once per `lock.withLock` write block in `GameWatcher` so any
+        /// consumer can reliably ask "has anything changed since the
+        /// last snapshot I processed?" by comparing against the prior
+        /// observation. Critical for the pacer: `ChessMachine` fires
+        /// `didApplyMove` and `gameEndedWith` back-to-back on its
+        /// serial delegate queue, and a main-actor consumer subscribing
+        /// via `.receive(on: .main)` typically observes the post-
+        /// gameEnded *coalesced* state on its first wake-up — field-
+        /// level discriminators that reset across that boundary (such
+        /// as `moveCount`, which `gameEnded` zeroes) silently lose the
+        /// "a new move just landed" signal, but `eventSeq` keeps
+        /// climbing through both mutations.
+        var eventSeq: UInt64 = 0
         var state: GameState = .starting
         var result: GameResult?
         var moveCount = 0
         var isPlaying = false
         var lastGameStats: GameStats?
+
+        /// The most recent move applied to the current game, or nil
+        /// before the first move (and after `resetCurrentGame`). Read
+        /// by the human-play window to highlight the destination
+        /// square and to display the move in algebraic notation;
+        /// preserved across the game-end transition so the post-game
+        /// status row can still show the final move.
+        var lastMove: ChessMove?
 
         var totalGames = 0
         var totalMoves = 0
@@ -49,6 +72,15 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
 
     private let lock = OSAllocatedUnfairLock<Snapshot>(initialState: Snapshot())
 
+    /// Fires `()` after every successful mutation of the internal
+    /// `Snapshot`. UI consumers (e.g. `HumanPlayWindow`) subscribe via
+    /// `.throttle(...)` to receive bounded-rate change events without
+    /// polling — the watcher itself stays non-`@Observable` so the
+    /// ChessMachine delegate queue never pays SwiftUI invalidation
+    /// cost; the throttle on the subscriber side decouples UI redraw
+    /// frequency from game-loop rate.
+    let changes = PassthroughSubject<Void, Never>()
+
     func snapshot() -> Snapshot {
         lock.withLock { $0 }
     }
@@ -68,22 +100,62 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
 
     func resetCurrentGame() {
         lock.withLock { s in
+            s.eventSeq += 1
             s.state = .starting
             s.result = nil
             s.moveCount = 0
+            s.lastMove = nil
             // Keep lastGameStats — show previous game until the next one ends
         }
+        changes.send()
+    }
+
+    /// Seed a fresh game from a non-standard position. Used by
+    /// Human-vs-Network's "Revert to here" path: the engine restarts
+    /// from `state` (computed by replaying the kept-move prefix), and
+    /// the watcher's `moveCount` / `lastMove` are pre-populated so the
+    /// UI reads the right ply number and last-move highlight from the
+    /// moment Reset finishes. Equivalent to `resetCurrentGame` + a
+    /// synthetic `onMoveApplied` pre-load, but fires a single change
+    /// event (one eventSeq bump) so the pacer's discriminator sees
+    /// exactly one revert transition.
+    func seedFreshGame(state: GameState, lastMove: ChessMove?, moveCount: Int) {
+        lock.withLock { s in
+            s.eventSeq += 1
+            s.state = state
+            s.result = nil
+            s.moveCount = moveCount
+            s.lastMove = lastMove
+            // Unlike `resetCurrentGame` (which keeps `lastGameStats` so
+            // the post-game stat readout survives "start a new game"),
+            // a Revert-to-here is a branch off the in-flight game's
+            // own history — keeping the prior game's stats around
+            // would attribute them to a game the user has now forked
+            // away from.
+            s.lastGameStats = nil
+        }
+        changes.send()
     }
 
     func resetAll() {
-        lock.withLock { $0 = Snapshot() }
+        lock.withLock { s in
+            // Preserve eventSeq across the reset so its monotonicity
+            // invariant holds for any consumer that's been observing
+            // this watcher.
+            let priorSeq = s.eventSeq
+            s = Snapshot()
+            s.eventSeq = priorSeq + 1
+        }
+        changes.send()
     }
 
     func markPlaying(_ playing: Bool) {
         let now = CFAbsoluteTimeGetCurrent()
         lock.withLock { s in
+            s.eventSeq += 1
             Self.setPlayingLocked(&s, playing: playing, now: now)
         }
+        changes.send()
     }
 
     /// Toggle isPlaying and update the active-play stopwatch. Caller
@@ -103,36 +175,53 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
         s.isPlaying = playing
     }
 
-    // MARK: - Delegate (called on ChessMachine.delegateQueue, never main)
+    // MARK: - Direct ingestion (no ChessMachine delegate indirection)
 
-    func chessMachine(_ machine: ChessMachine, didApplyMove move: ChessMove, newState: GameState) {
+    /// Tick-driver entry point for move events. The driver doesn't own
+    /// a `ChessMachine` (it talks to `ChessGameEngine` directly), so it
+    /// can't go through the delegate protocol. This method has the
+    /// same body as the `chessMachine(_:didApplyMove:newState:)`
+    /// delegate hook below — the delegate method calls this one.
+    func onMoveApplied(move: ChessMove, newState: GameState) {
         lock.withLock { s in
+            s.eventSeq += 1
             s.state = newState
             s.moveCount += 1
+            s.lastMove = move
         }
+        changes.send()
     }
 
-    func chessMachine(
-        _ machine: ChessMachine,
-        gameEndedWith result: GameResult,
+    /// Tick-driver entry point for game-end events. Same body as
+    /// `chessMachine(_:gameEndedWith:finalState:stats:)`. The driver
+    /// constructs `GameStats` from its own per-game timing
+    /// (`gameStartedAt` on `ActiveGame` for `totalGameTimeMs`;
+    /// per-side think time is not separately tracked under the
+    /// lockstep tick model, so the driver passes the full game time
+    /// in `totalGameTimeMs` and zeros the per-side think fields).
+    func onGameEnded(result: GameResult, finalState: GameState, stats: GameStats) {
+        Self.applyGameEndedLocked(self, result: result, finalState: finalState, stats: stats)
+    }
+
+    private static func applyGameEndedLocked(
+        _ watcher: GameWatcher,
+        result: GameResult,
         finalState: GameState,
         stats: GameStats
     ) {
         let now = CFAbsoluteTimeGetCurrent()
-        lock.withLock { s in
+        watcher.lock.withLock { s in
+            s.eventSeq += 1
             s.result = result
             s.state = finalState
             s.lastGameStats = stats
-            Self.setPlayingLocked(&s, playing: false, now: now)
+            setPlayingLocked(&s, playing: false, now: now)
 
             s.totalGames += 1
             s.totalMoves += stats.totalMoves
             s.totalGameTimeMs += stats.totalGameTimeMs
             s.totalWhiteThinkMs += stats.whiteThinkingTimeMs
             s.totalBlackThinkMs += stats.blackThinkingTimeMs
-            // Move counting handed off to totalMoves; zero the per-game counter
-            // atomically so display helpers using `totalMoves + moveCount` don't
-            // double-count between gameEnded and the next resetCurrentGame call.
             s.moveCount = 0
 
             switch result {
@@ -152,13 +241,31 @@ final class GameWatcher: ChessMachineDelegate, @unchecked Sendable {
                 s.threefoldRepetitionDraws += 1
             }
         }
+        watcher.changes.send()
+    }
+
+    // MARK: - Delegate (called on ChessMachine.delegateQueue, never main)
+
+    func chessMachine(_ machine: ChessMachine, didApplyMove move: ChessMove, newState: GameState) {
+        onMoveApplied(move: move, newState: newState)
+    }
+
+    func chessMachine(
+        _ machine: ChessMachine,
+        gameEndedWith result: GameResult,
+        finalState: GameState,
+        stats: GameStats
+    ) {
+        onGameEnded(result: result, finalState: finalState, stats: stats)
     }
 
     func chessMachine(_ machine: ChessMachine, playerErrored player: any ChessPlayer, error: any Error) {
         let now = CFAbsoluteTimeGetCurrent()
         lock.withLock { s in
+            s.eventSeq += 1
             Self.setPlayingLocked(&s, playing: false, now: now)
         }
+        changes.send()
     }
 }
 

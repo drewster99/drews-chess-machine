@@ -102,6 +102,14 @@ struct ArenaHistoryEntryCodable: Codable, Equatable {
     /// Champion `ModelID` description as of arena start, before
     /// any promotion copy. Optional for back-compat.
     var championID: String?
+    /// Per-arena breakdown blocks (W/D/L by game length; candidate
+    /// value + arena-style score by absolute ply; same by game
+    /// progress). Optional for back-compat — older session files
+    /// don't carry it, and the arena-history row popover renders
+    /// "no breakdown data" placeholders when it's nil. `ArenaExtendedSummary`
+    /// is itself Codable, so the persisted shape is just a nested
+    /// object inside this entry.
+    var extendedSummary: ArenaExtendedSummary?
 }
 
 // MARK: - Session State
@@ -224,6 +232,38 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → loader falls through to
     /// `TrainingParameters.shared.batchStatsInterval`.
     var batchStatsInterval: Int?
+    /// Composition-aware replay-buffer sampler constraints in effect at
+    /// save time. All Optional for back-compat with session files written
+    /// before these knobs existed; absent → loader falls through to the
+    /// user's current `TrainingParameters.shared` value. The sampler reads
+    /// these directly off `TrainingParameters.shared` per `sample(count:)`
+    /// call (see `ReplayBuffer.swift`), so resume just needs to write the
+    /// saved value back onto the singleton.
+    var maxPliesFromAnyOneGame: Int?
+    var targetSampledGameLengthPlies: Int?
+    var maxDrawPercentPerBatch: Int?
+    /// Fraction of drawn self-play games kept in the replay buffer
+    /// at game end (the rest are dropped). 1.0 = legacy behaviour
+    /// (keep everything). Optional for back-compat with sessions
+    /// saved before the draw-keep filter existed; absent → loader
+    /// falls through to `TrainingParameters.shared.selfPlayDrawKeepFraction`
+    /// (which is 1.0 by default).
+    var selfPlayDrawKeepFraction: Double?
+    /// Hard cap on self-play game length (plies) before the game is
+    /// dropped without emit. Optional for back-compat with sessions
+    /// saved before the cap existed; absent → loader falls through
+    /// to `TrainingParameters.shared.selfPlayMaxPliesPerGame`. The
+    /// on-disk JSON key is still `maxPliesPerGame` — keeping the
+    /// struct field name preserves loadability of pre-rename sessions.
+    var maxPliesPerGame: Int?
+    /// Lifetime self-play games that were emitted into the replay
+    /// buffer (i.e. survived the draw-keep filter). `<= selfPlayGames`;
+    /// equal at default keep-fraction. Optional for back-compat.
+    var emittedGames: Int?
+    /// Lifetime plies emitted into the replay buffer across the
+    /// session. `<= selfPlayMoves`; equal at default keep-fraction.
+    /// Optional for back-compat.
+    var emittedPositions: Int?
 
     // Game-result breakdown (added v1.1 — Optional for compat)
     var whiteCheckmates: Int?
@@ -232,7 +272,24 @@ struct SessionCheckpointState: Codable, Equatable {
     var fiftyMoveDraws: Int?
     var threefoldRepetitionDraws: Int?
     var insufficientMaterialDraws: Int?
+    /// Lifetime count of self-play games dropped for hitting the
+    /// `selfPlayMaxPliesPerGame` cap. Optional for back-compat — absent in
+    /// sessions saved before the cap existed; treated as 0 on load.
+    var maxPliesDropped: Int?
     var totalGameWallMs: Double?
+
+    // Per-outcome emitted-game breakdown (added when the Results card
+    // gained an Overall vs Kept layout). All Optional for back-compat
+    // with sessions saved before these counters existed; loader falls
+    // back to the played-side counterparts (the draw-keep filter was
+    // either disabled or absent in those sessions, so emitted == played
+    // at every outcome category).
+    var emittedWhiteCheckmates: Int?
+    var emittedBlackCheckmates: Int?
+    var emittedStalemates: Int?
+    var emittedFiftyMoveDraws: Int?
+    var emittedThreefoldRepetitionDraws: Int?
+    var emittedInsufficientMaterialDraws: Int?
 
     // Build metadata captured at save time. Optional for back-compat
     // with older session.json files that lack these fields.

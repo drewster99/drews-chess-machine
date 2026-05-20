@@ -3,7 +3,7 @@
 //  DrewsChessMachineTests
 //
 //  Pins the contract of the centralized TrainingParameters singleton:
-//    - Registry covers exactly 36 keys (one per parameter the engine exposes).
+//    - Registry covers exactly 39 keys (one per parameter the engine exposes).
 //    - All ids are unique.
 //    - Every definition's defaultValue passes the definition's own validator.
 //    - defaultsJSON round-trips through CliTrainingConfig.load + apply with
@@ -19,7 +19,7 @@ final class TrainingParametersTests: XCTestCase {
     func test_registry_size() {
         XCTAssertEqual(
             TrainingParameters.allKeys.count,
-            36,
+            39,
             "Adding/removing a TrainingParameter requires intentionally updating this count."
         )
     }

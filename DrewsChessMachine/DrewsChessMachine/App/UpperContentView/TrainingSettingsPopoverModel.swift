@@ -15,15 +15,19 @@ import SwiftUI
 /// `pushSelfPlaySchedule` closure), and dismisses the popover only if every
 /// field parsed.
 ///
-/// **Live-propagation exception for the replay-ratio fields.** The three
-/// replay-ratio control fields (`selfPlayDelayMs`, `trainingStepDelayMs`,
-/// `replayRatioAutoAdjust`) plus `replayRatioTarget` write through to
-/// `TrainingParameters.shared` *immediately on change* via the `applyLive…`
-/// methods rather than waiting for Save, so the user can watch the live ratio
-/// display respond. On Cancel (or outside-click dismiss) those four are
-/// reverted from the stash captured in `seedFromParams()`, matching the
-/// "edit → cancel discards" mental model even though the live writes already
-/// landed.
+/// **Live-propagation exception for selected Replay-tab fields.** Seven
+/// fields write through to `TrainingParameters.shared` *immediately on
+/// change* via the `applyLive…` methods rather than waiting for Save, so
+/// the user can watch the live ratio display and the live sampling-
+/// composition readout respond. On Cancel (or outside-click dismiss) all
+/// seven are reverted from the stash captured in `seedFromParams()`,
+/// matching the "edit → cancel discards" mental model even though the
+/// live writes already landed:
+///
+///   - Replay-ratio control: `replayRatioTarget`, `selfPlayDelayMs`,
+///     `trainingStepDelayMs`, `replayRatioAutoAdjust`.
+///   - Sampling constraints: `maxPliesFromAnyOneGame`,
+///     `targetSampledGameLengthPlies`, `maxDrawPercentPerBatch`.
 ///
 /// The live `trainer` / `ReplayRatioController` and the self-play-schedule push
 /// are reached through injected closures so this model carries no dependency on
@@ -66,15 +70,19 @@ final class TrainingSettingsPopoverModel {
 
     // MARK: - Self Play tab
 
-    var selfPlayWorkersText = "" { didSet { selfPlayWorkersError = false } }
+    var selfPlayConcurrencyText = "" { didSet { selfPlayConcurrencyError = false } }
     var selfPlayStartTauText = "" { didSet { selfPlayStartTauError = false } }
     var selfPlayDecayPerPlyText = "" { didSet { selfPlayDecayPerPlyError = false } }
     var selfPlayFloorTauText = "" { didSet { selfPlayFloorTauError = false } }
+    var selfPlayDrawKeepFractionText = "" { didSet { selfPlayDrawKeepFractionError = false } }
+    var selfPlayMaxPliesPerGameText = "" { didSet { selfPlayMaxPliesPerGameError = false } }
 
-    private(set) var selfPlayWorkersError = false
+    private(set) var selfPlayConcurrencyError = false
     private(set) var selfPlayStartTauError = false
     private(set) var selfPlayDecayPerPlyError = false
     private(set) var selfPlayFloorTauError = false
+    private(set) var selfPlayDrawKeepFractionError = false
+    private(set) var selfPlayMaxPliesPerGameError = false
 
     // MARK: - Replay tab
 
@@ -84,12 +92,18 @@ final class TrainingSettingsPopoverModel {
     var replaySelfPlayDelayText = "" { didSet { replaySelfPlayDelayError = false } }
     var replayTrainingStepDelayText = "" { didSet { replayTrainingStepDelayError = false } }
     var replayRatioAutoAdjust = true
+    var maxPliesFromAnyOneGameText = "" { didSet { maxPliesFromAnyOneGameError = false } }
+    var targetSampledGameLengthPliesText = "" { didSet { targetSampledGameLengthPliesError = false } }
+    var maxDrawPercentPerBatchText = "" { didSet { maxDrawPercentPerBatchError = false } }
 
     private(set) var replayBufferCapacityError = false
     private(set) var replayBufferMinPositionsError = false
     private(set) var replayRatioTargetError = false
     private(set) var replaySelfPlayDelayError = false
     private(set) var replayTrainingStepDelayError = false
+    private(set) var maxPliesFromAnyOneGameError = false
+    private(set) var targetSampledGameLengthPliesError = false
+    private(set) var maxDrawPercentPerBatchError = false
 
     // MARK: - Cancel stash (for the live-propagated replay-ratio fields)
 
@@ -97,6 +111,17 @@ final class TrainingSettingsPopoverModel {
     private var originalReplaySelfPlayDelayMs: Int = 0
     private var originalReplayTrainingStepDelayMs: Int = 0
     private var originalReplayRatioAutoAdjust: Bool = true
+
+    // MARK: - Cancel stash (for the live-propagated sampling-constraint fields)
+
+    private var originalMaxPliesFromAnyOneGame: Int = 10
+    private var originalTargetSampledGameLengthPlies: Int = 0
+    private var originalMaxDrawPercentPerBatch: Int = 100
+
+    // MARK: - Cancel stash (for the live-propagated self-play draw-keep field)
+
+    private var originalSelfPlayDrawKeepFraction: Double = 1.0
+    private var originalSelfPlayMaxPliesPerGame: Int = 150
 
     // MARK: - Injected dependencies
 
@@ -156,10 +181,12 @@ final class TrainingSettingsPopoverModel {
         drawPenaltyText = String(format: "%.3f", p.drawPenalty)
         trainingBatchSizeText = String(p.trainingBatchSize)
         // --- Self Play tab ---
-        selfPlayWorkersText = String(p.selfPlayWorkers)
+        selfPlayConcurrencyText = String(p.selfPlayConcurrency)
         selfPlayStartTauText = String(format: "%.2f", p.selfPlayStartTau)
         selfPlayDecayPerPlyText = String(format: "%.3f", p.selfPlayTauDecayPerPly)
         selfPlayFloorTauText = String(format: "%.2f", p.selfPlayTargetTau)
+        selfPlayDrawKeepFractionText = String(format: "%.2f", p.selfPlayDrawKeepFraction)
+        selfPlayMaxPliesPerGameText = String(p.selfPlayMaxPliesPerGame)
         // --- Replay tab ---
         replayBufferCapacityText = String(p.replayBufferCapacity)
         replayBufferMinPositionsText = String(p.replayBufferMinPositionsBeforeTraining)
@@ -167,6 +194,9 @@ final class TrainingSettingsPopoverModel {
         replaySelfPlayDelayText = String(p.selfPlayDelayMs)
         replayTrainingStepDelayText = String(p.trainingStepDelayMs)
         replayRatioAutoAdjust = p.replayRatioAutoAdjust
+        maxPliesFromAnyOneGameText = String(p.maxPliesFromAnyOneGame)
+        targetSampledGameLengthPliesText = String(p.targetSampledGameLengthPlies)
+        maxDrawPercentPerBatchText = String(p.maxDrawPercentPerBatch)
         // Stash pre-edit values for the four replay-ratio control fields. The
         // Replay tab live-propagates changes to those fields; if the user hits
         // Cancel we restore from this stash, matching the standard
@@ -176,6 +206,16 @@ final class TrainingSettingsPopoverModel {
         originalReplaySelfPlayDelayMs = p.selfPlayDelayMs
         originalReplayTrainingStepDelayMs = p.trainingStepDelayMs
         originalReplayRatioAutoAdjust = p.replayRatioAutoAdjust
+        // Same stash-for-revert pattern for the three sampling-constraint
+        // fields. The buffer's `Composition` readout updates live with the
+        // current values so the operator can watch a stepper change and see
+        // the realized batch composition shift in real time; if they Cancel
+        // (or click outside the popover) we revert to these snapshots.
+        originalMaxPliesFromAnyOneGame = p.maxPliesFromAnyOneGame
+        originalTargetSampledGameLengthPlies = p.targetSampledGameLengthPlies
+        originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
+        originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
+        originalSelfPlayMaxPliesPerGame = p.selfPlayMaxPliesPerGame
         // Reset every error flag — a fresh open should never carry red overlays
         // from a previously-cancelled bad input.
         lrError = false
@@ -190,25 +230,31 @@ final class TrainingSettingsPopoverModel {
         valueLabelSmoothingError = false
         drawPenaltyError = false
         trainingBatchSizeError = false
-        selfPlayWorkersError = false
+        selfPlayConcurrencyError = false
         selfPlayStartTauError = false
         selfPlayDecayPerPlyError = false
         selfPlayFloorTauError = false
+        selfPlayDrawKeepFractionError = false
+        selfPlayMaxPliesPerGameError = false
         replayBufferCapacityError = false
         replayBufferMinPositionsError = false
         replayRatioTargetError = false
         replaySelfPlayDelayError = false
         replayTrainingStepDelayError = false
+        maxPliesFromAnyOneGameError = false
+        targetSampledGameLengthPliesError = false
+        maxDrawPercentPerBatchError = false
     }
 
-    /// Restore the four live-propagated replay-ratio control fields from the
-    /// stash captured in `seedFromParams()`, then dismiss. Matches the
-    /// user-facing "Cancel discards changes" pattern even though the underlying
-    /// `trainingParams` writes already happened during the edit session. No
-    /// `[PARAM]` log on revert (the live-update writes were not logged either —
-    /// see `save()` for the commit-time logging). Idempotent: `save()` updates
-    /// the stash before closing, so a Save → onDisappear sequence finds nothing
-    /// to revert.
+    /// Restore the seven live-propagated Replay-tab fields (four replay-ratio
+    /// control + three sampling constraints) from the stash captured in
+    /// `seedFromParams()`, then dismiss. Matches the user-facing "Cancel
+    /// discards changes" pattern even though the underlying `trainingParams`
+    /// writes already happened during the edit session. No `[PARAM]` log on
+    /// revert (the live-update writes were not logged either — see `save()`
+    /// for the commit-time logging). Idempotent: `save()` updates the stash
+    /// before closing, so a Save → onDisappear sequence finds nothing to
+    /// revert.
     func cancel() {
         let p = TrainingParameters.shared
         if abs(p.replayRatioTarget - originalReplayRatioTarget) > Double.ulpOfOne {
@@ -227,6 +273,24 @@ final class TrainingSettingsPopoverModel {
         }
         if p.replayRatioAutoAdjust != originalReplayRatioAutoAdjust {
             p.replayRatioAutoAdjust = originalReplayRatioAutoAdjust
+        }
+        // Sampling-constraint fields: same revert pattern. The heartbeat
+        // pushes the restored value into `ReplayBuffer.setSamplingConstraints`
+        // on its next tick, so no direct buffer call is needed here.
+        if p.maxPliesFromAnyOneGame != originalMaxPliesFromAnyOneGame {
+            p.maxPliesFromAnyOneGame = originalMaxPliesFromAnyOneGame
+        }
+        if p.targetSampledGameLengthPlies != originalTargetSampledGameLengthPlies {
+            p.targetSampledGameLengthPlies = originalTargetSampledGameLengthPlies
+        }
+        if p.maxDrawPercentPerBatch != originalMaxDrawPercentPerBatch {
+            p.maxDrawPercentPerBatch = originalMaxDrawPercentPerBatch
+        }
+        if abs(p.selfPlayDrawKeepFraction - originalSelfPlayDrawKeepFraction) > Double.ulpOfOne {
+            p.selfPlayDrawKeepFraction = originalSelfPlayDrawKeepFraction
+        }
+        if p.selfPlayMaxPliesPerGame != originalSelfPlayMaxPliesPerGame {
+            p.selfPlayMaxPliesPerGame = originalSelfPlayMaxPliesPerGame
         }
         isPresented = false
     }
@@ -288,6 +352,70 @@ final class TrainingSettingsPopoverModel {
                     self.replayTrainingStepDelayText = String(q.trainingStepDelayMs)
                 }
             }
+        }
+    }
+
+    /// Live-propagate the max-plies-per-game edit to
+    /// `trainingParams.maxPliesFromAnyOneGame`. The heartbeat re-reads
+    /// every sampling-constraint param into `ReplayBuffer.setSamplingConstraints`
+    /// on its next tick, so this single write is sufficient — the
+    /// next training batch picks up the new K cap and the popover's
+    /// Composition readout reflects the change on the heartbeat after.
+    /// Snapped to the parameter's `[1, 400]` range.
+    func applyLiveMaxPliesFromAnyOneGame(_ newValue: Int) {
+        let snapped = max(1, min(400, newValue))
+        let p = TrainingParameters.shared
+        if p.maxPliesFromAnyOneGame != snapped {
+            p.maxPliesFromAnyOneGame = snapped
+        }
+    }
+
+    /// Live-propagate the target-sampled-game-length edit. Snapped to
+    /// the parameter's `[0, 10_000]` range; 0 disables the length tilt.
+    func applyLiveTargetSampledGameLengthPlies(_ newValue: Int) {
+        let snapped = max(0, min(10_000, newValue))
+        let p = TrainingParameters.shared
+        if p.targetSampledGameLengthPlies != snapped {
+            p.targetSampledGameLengthPlies = snapped
+        }
+    }
+
+    /// Live-propagate the max-draw-percent-per-batch edit. Snapped to
+    /// the parameter's `[0, 100]` range; 100 disables the draw cap.
+    func applyLiveMaxDrawPercentPerBatch(_ newValue: Int) {
+        let snapped = max(0, min(100, newValue))
+        let p = TrainingParameters.shared
+        if p.maxDrawPercentPerBatch != snapped {
+            p.maxDrawPercentPerBatch = snapped
+        }
+    }
+
+    /// Live-propagate the self-play draw-keep-fraction edit straight
+    /// to `trainingParams.selfPlayDrawKeepFraction`. The slot driver
+    /// reads `TrainingParameters.shared.selfPlayDrawKeepFraction`
+    /// at the end of every self-play game, so a mid-session edit
+    /// takes effect on the next completed game on every worker slot
+    /// without further plumbing. Snapped to the parameter's
+    /// `[0.0, 1.0]` range; non-finite inputs are ignored.
+    func applyLiveSelfPlayDrawKeepFraction(_ newValue: Double) {
+        guard newValue.isFinite else { return }
+        let snapped = max(0.0, min(1.0, newValue))
+        let p = TrainingParameters.shared
+        if abs(p.selfPlayDrawKeepFraction - snapped) > Double.ulpOfOne {
+            p.selfPlayDrawKeepFraction = snapped
+        }
+    }
+
+    /// Live-propagate the max-plies-per-game edit. The self-play
+    /// driver reads `TrainingParameters.shared.selfPlayMaxPliesPerGame` at the
+    /// start of every game, so a mid-session edit takes effect on the
+    /// next game spawned by each worker slot. Snapped to the
+    /// parameter's `[25, 500]` range; non-positive inputs are ignored.
+    func applyLiveMaxPliesPerGame(_ newValue: Int) {
+        let snapped = max(25, min(500, newValue))
+        let p = TrainingParameters.shared
+        if p.selfPlayMaxPliesPerGame != snapped {
+            p.selfPlayMaxPliesPerGame = snapped
         }
     }
 
@@ -502,15 +630,15 @@ final class TrainingSettingsPopoverModel {
 
         // Self-play workers — Int in [1, maxSelfPlayWorkers]. Live-tunable: the
         // BatchedSelfPlayDriver reconcile loop picks up the new count.
-        if let n = Int(selfPlayWorkersText.trimmingCharacters(in: .whitespaces)),
+        if let n = Int(selfPlayConcurrencyText.trimmingCharacters(in: .whitespaces)),
            n >= 1, n <= maxSelfPlayWorkers {
-            selfPlayWorkersError = false
-            if n != p.selfPlayWorkers {
-                SessionLogger.shared.log("[PARAM] selfPlayWorkers: \(p.selfPlayWorkers) -> \(n)")
-                p.selfPlayWorkers = n
+            selfPlayConcurrencyError = false
+            if n != p.selfPlayConcurrency {
+                SessionLogger.shared.log("[PARAM] selfPlayConcurrency: \(p.selfPlayConcurrency) -> \(n)")
+                p.selfPlayConcurrency = n
             }
         } else {
-            selfPlayWorkersError = true
+            selfPlayConcurrencyError = true
             anyError = true
         }
 
@@ -557,6 +685,43 @@ final class TrainingSettingsPopoverModel {
             selfPlayFloorTauError = true
             anyError = true
         }
+        // Self-Play Draw Keep Fraction — Double in [0.0, 1.0].
+        // Live-propagated to `TrainingParameters.shared` during the
+        // edit via `applyLiveSelfPlayDrawKeepFraction`, so save() only
+        // needs to validate the current edit text for the red-overlay
+        // display; the new committed value is captured by the next
+        // `seedFromParams()` call into `originalSelfPlayDrawKeepFraction`
+        // so a subsequent Cancel after Save reverts to "what Save
+        // committed," not the original pre-edit value.
+        // Empty text is treated as the parameter's default (1.0 =
+        // keep every drawn game) — matches the popover's placeholder
+        // and the `.onChange` handler's "blank means default" branch
+        // (which has already fired the live propagation by the time
+        // we get here).
+        let drawKeepTrimmed = selfPlayDrawKeepFractionText.trimmingCharacters(in: .whitespaces)
+        if drawKeepTrimmed.isEmpty {
+            selfPlayDrawKeepFractionError = false
+        } else if let v = Double(drawKeepTrimmed),
+                  v >= 0.0, v <= 1.0, v.isFinite {
+            selfPlayDrawKeepFractionError = false
+        } else {
+            selfPlayDrawKeepFractionError = true
+            anyError = true
+        }
+        // Max plies per game — Int in [25, 1000]. Same live-propagated
+        // pattern as draw-keep fraction: the slot driver reads
+        // `TrainingParameters.shared.selfPlayMaxPliesPerGame` at the start of
+        // each game, so save() just validates the current text and
+        // logs a [PARAM] line if the committed value changed.
+        let selfPlayMaxPliesPerGameTrimmed = selfPlayMaxPliesPerGameText.trimmingCharacters(in: .whitespaces)
+        if selfPlayMaxPliesPerGameTrimmed.isEmpty {
+            selfPlayMaxPliesPerGameError = false
+        } else if let n = Int(selfPlayMaxPliesPerGameTrimmed), n >= 25, n <= 500 {
+            selfPlayMaxPliesPerGameError = false
+        } else {
+            selfPlayMaxPliesPerGameError = true
+            anyError = true
+        }
         // Push the freshly-edited self-play schedule into the live
         // `samplingScheduleBox` so the next self-play game on each worker slot
         // picks up the new τ curve. Safe to call unconditionally — the box's
@@ -592,6 +757,48 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
 
+        // Replay-sampling constraints — Int, live-propagated during edits
+        // via `applyLiveMaxPliesFromAnyOneGame` / `applyLiveTargetSampledGameLengthPlies`
+        // / `applyLiveMaxDrawPercentPerBatch` so the buffer's Composition
+        // readout updates in real time. Save validates the current edit
+        // text against each parameter's range for the red-overlay display;
+        // the [PARAM] log line fires below if the committed value differs
+        // from the pre-edit stash (mirrors the four replay-ratio fields).
+        // Empty text on each live-propagated field is treated as the
+        // parameter's default — matches the popover's placeholder
+        // and the `.onChange` handler's "blank means default" branch
+        // (which has already fired the live propagation by the time
+        // we get here). Without this, Save would error-flag the
+        // field for blank input even though the live readout below
+        // the field already shows the default value.
+        let maxPliesTrimmed = maxPliesFromAnyOneGameText.trimmingCharacters(in: .whitespaces)
+        if maxPliesTrimmed.isEmpty {
+            maxPliesFromAnyOneGameError = false
+        } else if let n = Int(maxPliesTrimmed), n >= 1, n <= 400 {
+            maxPliesFromAnyOneGameError = false
+        } else {
+            maxPliesFromAnyOneGameError = true
+            anyError = true
+        }
+        let targetLenTrimmed = targetSampledGameLengthPliesText.trimmingCharacters(in: .whitespaces)
+        if targetLenTrimmed.isEmpty {
+            targetSampledGameLengthPliesError = false
+        } else if let n = Int(targetLenTrimmed), n >= 0, n <= 10_000 {
+            targetSampledGameLengthPliesError = false
+        } else {
+            targetSampledGameLengthPliesError = true
+            anyError = true
+        }
+        let maxDrawTrimmed = maxDrawPercentPerBatchText.trimmingCharacters(in: .whitespaces)
+        if maxDrawTrimmed.isEmpty {
+            maxDrawPercentPerBatchError = false
+        } else if let n = Int(maxDrawTrimmed), n >= 0, n <= 100 {
+            maxDrawPercentPerBatchError = false
+        } else {
+            maxDrawPercentPerBatchError = true
+            anyError = true
+        }
+
         // Replay-ratio control fields are live-propagated during edits via
         // `applyLive…` — the writes already reached `trainingParams`. Save
         // validates the current text values for red-overlay display only; no
@@ -619,8 +826,8 @@ final class TrainingSettingsPopoverModel {
         }
 
         if !anyError {
-            // Commit-time [PARAM] log lines for the four live-propagated
-            // replay-ratio fields. The live writes during the edit session are
+            // Commit-time [PARAM] log lines for the seven live-propagated
+            // Replay-tab fields. The live writes during the edit session are
             // intentionally silent (a log per keystroke would be noise); this
             // is the single authoritative log line per Save.
             if abs(p.replayRatioTarget - originalReplayRatioTarget) > Double.ulpOfOne {
@@ -643,13 +850,53 @@ final class TrainingSettingsPopoverModel {
                     "[PARAM] replayRatioAutoAdjust: \(originalReplayRatioAutoAdjust) -> \(p.replayRatioAutoAdjust)"
                 )
             }
+            // Same commit-time logging for the three live-propagated
+            // sampling-constraint fields.
+            if p.maxPliesFromAnyOneGame != originalMaxPliesFromAnyOneGame {
+                SessionLogger.shared.log(
+                    "[PARAM] maxPliesFromAnyOneGame: \(originalMaxPliesFromAnyOneGame) -> \(p.maxPliesFromAnyOneGame)"
+                )
+            }
+            if p.targetSampledGameLengthPlies != originalTargetSampledGameLengthPlies {
+                SessionLogger.shared.log(
+                    "[PARAM] targetSampledGameLengthPlies: \(originalTargetSampledGameLengthPlies) -> \(p.targetSampledGameLengthPlies)"
+                )
+            }
+            if p.maxDrawPercentPerBatch != originalMaxDrawPercentPerBatch {
+                SessionLogger.shared.log(
+                    "[PARAM] maxDrawPercentPerBatch: \(originalMaxDrawPercentPerBatch) -> \(p.maxDrawPercentPerBatch)"
+                )
+            }
+            if abs(p.selfPlayDrawKeepFraction - originalSelfPlayDrawKeepFraction) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(
+                        format: "[PARAM] selfPlayDrawKeepFraction: %.2f -> %.2f",
+                        originalSelfPlayDrawKeepFraction,
+                        p.selfPlayDrawKeepFraction
+                    )
+                )
+            }
+            if p.selfPlayMaxPliesPerGame != originalSelfPlayMaxPliesPerGame {
+                SessionLogger.shared.log(
+                    "[PARAM] selfPlayMaxPliesPerGame: \(originalSelfPlayMaxPliesPerGame) -> \(p.selfPlayMaxPliesPerGame)"
+                )
+            }
             // On successful save the stash that backs Cancel becomes the new
             // pre-edit baseline — closing the popover with Save commits the
-            // live ratio writes.
+            // live writes. Missing this line for `selfPlayDrawKeepFraction`
+            // was the bug behind the reported "edit saved 0.50 then reopened
+            // and it's 1.00" symptom: the popover dismissed via Save →
+            // onDisappear → cancel() saw a stash that still held the
+            // pre-edit value and reverted the just-committed change.
             originalReplayRatioTarget = p.replayRatioTarget
             originalReplaySelfPlayDelayMs = p.selfPlayDelayMs
             originalReplayTrainingStepDelayMs = p.trainingStepDelayMs
             originalReplayRatioAutoAdjust = p.replayRatioAutoAdjust
+            originalMaxPliesFromAnyOneGame = p.maxPliesFromAnyOneGame
+            originalTargetSampledGameLengthPlies = p.targetSampledGameLengthPlies
+            originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
+            originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
+            originalSelfPlayMaxPliesPerGame = p.selfPlayMaxPliesPerGame
             isPresented = false
         }
     }

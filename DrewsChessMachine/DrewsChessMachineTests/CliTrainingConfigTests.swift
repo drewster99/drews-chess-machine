@@ -28,7 +28,7 @@ final class CliTrainingConfigTests: XCTestCase {
         {
             "entropy_bonus": 0.0025,
             "grad_clip_max_norm": 42.0,
-            "self_play_workers": 12,
+            "self_play_concurrency": 12,
             "sqrt_batch_scaling_lr": false,
             "training_time_limit": 600.0
         }
@@ -42,7 +42,7 @@ final class CliTrainingConfigTests: XCTestCase {
         XCTAssertEqual(cfg.trainingParameters.count, 4)
         XCTAssertEqual(cfg.trainingParameters["entropy_bonus"], .double(0.0025))
         XCTAssertEqual(cfg.trainingParameters["grad_clip_max_norm"], .double(42.0))
-        XCTAssertEqual(cfg.trainingParameters["self_play_workers"], .int(12))
+        XCTAssertEqual(cfg.trainingParameters["self_play_concurrency"], .int(12))
         XCTAssertEqual(cfg.trainingParameters["sqrt_batch_scaling_lr"], .bool(false))
     }
 
@@ -71,7 +71,7 @@ final class CliTrainingConfigTests: XCTestCase {
     func testSummary_sortsAndIncludesTimeLimit() {
         let cfg = CliTrainingConfig(
             trainingParameters: [
-                "self_play_workers": .int(8),
+                "self_play_concurrency": .int(8),
                 "entropy_bonus": .double(0.001)
             ],
             trainingTimeLimitSec: 300.0
@@ -79,11 +79,11 @@ final class CliTrainingConfigTests: XCTestCase {
         let summary = cfg.summaryString()
         // Sorted by id for stable diffs.
         XCTAssertTrue(summary.contains("entropy_bonus=0.001"))
-        XCTAssertTrue(summary.contains("self_play_workers=8"))
+        XCTAssertTrue(summary.contains("self_play_concurrency=8"))
         XCTAssertTrue(summary.contains("training_time_limit=300.0"))
-        // Sort order: entropy_bonus < self_play_workers < training_time_limit
+        // Sort order: entropy_bonus < self_play_concurrency < training_time_limit
         let idxEnt = summary.range(of: "entropy_bonus")!.lowerBound
-        let idxWork = summary.range(of: "self_play_workers")!.lowerBound
+        let idxWork = summary.range(of: "self_play_concurrency")!.lowerBound
         XCTAssertTrue(idxEnt < idxWork)
     }
 

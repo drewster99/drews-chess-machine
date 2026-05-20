@@ -52,5 +52,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if EarlyStopCoordinator.shared.hasActiveCLIFlush {
             EarlyStopCoordinator.shared.requestEarlyStop(reason: .appWillTerminate)
         }
+        // Final synchronous flush+close of the session log. The
+        // per-write fsync has been replaced by a 0.5 s idle coalescer
+        // (see SessionLogger), so without this call a normal AppKit
+        // teardown could drop the last sub-second of log lines.
+        SessionLogger.shared.shutdown()
     }
 }

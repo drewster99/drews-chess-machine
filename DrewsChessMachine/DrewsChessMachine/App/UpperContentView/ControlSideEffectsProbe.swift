@@ -56,13 +56,13 @@ struct ControlSideEffectsProbe: View {
                 // results.
                 candidateProbeDirty = true
             }
-            .onChange(of: trainingParams.selfPlayWorkers) { oldValue, newValue in
+            .onChange(of: trainingParams.selfPlayConcurrency) { oldValue, newValue in
                 // Stepper's `in:` range clamps; `.onChange` only fires
                 // on real change, so log + box update happen only when
                 // N actually shifts. `workerCountBox` is nil between
                 // sessions, so out-of-session writes just update the
                 // @State and take effect on the next session start.
-                SessionLogger.shared.log("[PARAM] selfPlayWorkers: \(oldValue) -> \(newValue)")
+                SessionLogger.shared.log("[PARAM] selfPlayConcurrency: \(oldValue) -> \(newValue)")
                 workerCountBox?.set(newValue)
                 // Game-run mode is a placeholder card with N > 1 (the
                 // live board hides itself behind a "N concurrent games"
@@ -100,6 +100,22 @@ struct ControlSideEffectsProbe: View {
                 // Without this, the training loop sees the correct value
                 // but the popover (when opened) shows the stale one.
                 resyncLrWarmupText(String(newValue))
+            }
+            .onChange(of: trainingParams.trainingStepDelayMs) { oldValue, newValue in
+                // Single source of truth: `trainingParams.trainingStepDelayMs`
+                // is the parameter; the controller's `_manualDelayMs` is
+                // the value `recordTrainingBatchAndGetDelay` reads each
+                // training step when `_autoAdjust == false`. Without this
+                // forwarder, any path that writes the parameter without
+                // also writing the controller silently desyncs: the popover
+                // showed 0 ms but the trainer kept sleeping the prior
+                // controller-resident value (session restore at
+                // `SessionController+Training.swift` and CLI / parameters.json
+                // applies all hit this). The popover's `applyLiveTrainingStepDelay`
+                // still writes `manualDelayMs` directly — that's redundant
+                // with this handler but harmless (same value, same lock).
+                SessionLogger.shared.log("[PARAM] trainingStepDelayMs: \(oldValue) -> \(newValue)")
+                replayRatioController?.manualDelayMs = newValue
             }
             .onChange(of: trainingParams.replayRatioAutoAdjust) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] replayRatioAutoAdjust: \(oldValue) -> \(newValue)")

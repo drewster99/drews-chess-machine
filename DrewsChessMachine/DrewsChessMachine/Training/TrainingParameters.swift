@@ -161,12 +161,12 @@ public protocol TrainingParameterKey: Sendable {
     static func decode(_ value: ParameterValue) throws -> Value
 }
 
-// MARK: - 36 parameter keys (macro-driven)
+// MARK: - 39 parameter keys (macro-driven)
 
 @TrainingParameter(
     name: "Entropy Bonus",
     description: "Entropy regularization coefficient. Higher keeps the policy diverse longer; too high stalls learning.",
-    default: 0.001,
+    default: 0.0025,
     range: 0.0...0.1,
     category: "Optimizer",
     liveTunable: true
@@ -195,8 +195,8 @@ public enum PolicyLabelSmoothingEpsilon: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Value Label Smoothing ε",
-    description: "Label-smoothing coefficient on the value-head W/D/L cross-entropy target. The target is built in-graph as (1−ε)·one_hot(1−z) + ε·(1/3), where 1−z maps the play-time outcome z ∈ {+1,0,−1} to the [win,draw,loss] slot. ε=0 = hard one-hot on the game result (default for the first WDL run). ε>0 gives the value CE a reachable finite-logit equilibrium instead of ±∞, the same way Policy Label Smoothing does for the policy CE. Range [0, 0.5].",
-    default: 0.0,
+    description: "Label-smoothing coefficient on the value-head W/D/L cross-entropy target. The target is built in-graph as (1−ε)·one_hot(1−z) + ε·(1/3), where 1−z maps the play-time outcome z ∈ {+1,0,−1} to the [win,draw,loss] slot. ε=0 = hard one-hot on the game result. ε>0 gives the value CE a reachable finite-logit equilibrium instead of ±∞, the same way Policy Label Smoothing does for the policy CE. Range [0, 0.5].",
+    default: 0.013,
     range: 0.0...0.5,
     category: "Optimizer",
     liveTunable: true
@@ -248,7 +248,7 @@ public enum ValueLossWeight: TrainingParameterKey {}
 @TrainingParameter(
     name: "Learning Rate",
     description: "SGD-with-momentum optimizer learning rate. Lower is slower but more stable. Pairs with sqrt_batch_scaling_lr.",
-    default: 5.0e-5,
+    default: 5.0e-4,
     range: 1.0e-7...1.0,
     category: "Optimizer",
     liveTunable: true
@@ -258,7 +258,7 @@ public enum LearningRate: TrainingParameterKey {}
 @TrainingParameter(
     name: "Momentum Coefficient",
     description: "Polyak momentum μ for SGD. 0.0 disables momentum (pure SGD); higher μ accumulates more gradient history. The optimizer uses decoupled weight decay (AdamW-style), so μ and Weight Decay tune independently — raising μ no longer amplifies decay. Effective step size in correlated-gradient regimes still scales ~1/(1−μ), so a high μ paired with the existing LR can be too aggressive — pair μ jumps with a proportional LR drop. Start low (≤0.5) and watch legalMass / pEntLegal before raising further.",
-    default: 0.0,
+    default: 0.65,
     range: 0.0...0.99,
     category: "Optimizer",
     liveTunable: true
@@ -277,7 +277,7 @@ public enum SqrtBatchScalingLR: TrainingParameterKey {}
 @TrainingParameter(
     name: "LR Warmup Steps",
     description: "Number of training steps over which the learning rate linearly ramps from zero to its target.",
-    default: 100,
+    default: 500,
     range: 0...100000,
     category: "Optimizer",
     liveTunable: true
@@ -287,7 +287,7 @@ public enum LRWarmupSteps: TrainingParameterKey {}
 @TrainingParameter(
     name: "Draw Penalty",
     description: "Outcome value applied to drawn games (in [-1, +1]). Push negative to discourage learned drawing behavior.",
-    default: 0.1,
+    default: 0.0,
     range: -1.0...1.0,
     category: "Optimizer",
     liveTunable: true
@@ -296,8 +296,8 @@ public enum DrawPenalty: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Self-Play Start Tau",
-    description: "Initial sampling temperature for self-play games. Decays toward target over self_play_tau_decay_per_ply per move.",
-    default: 2.0,
+    description: "Initial sampling temperature for self-play games at game-total ply 0 (the starting position). Decays toward target by self_play_tau_decay_per_ply each game-total ply (i.e. each half-move from either side advances the schedule).",
+    default: 1.0,
     range: 0.05...5.0,
     category: "Self-Play Sampling",
     liveTunable: true
@@ -307,7 +307,7 @@ public enum SelfPlayStartTau: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Target Tau",
     description: "Floor sampling temperature for self-play games — start_tau decays toward this value.",
-    default: 0.4,
+    default: 0.5,
     range: 0.05...5.0,
     category: "Self-Play Sampling",
     liveTunable: true
@@ -316,8 +316,8 @@ public enum SelfPlayTargetTau: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Self-Play Tau Decay Per Ply",
-    description: "Per-ply decay rate moving start_tau toward target_tau during a self-play game.",
-    default: 0.03,
+    description: "Decay applied to tau on every game-total ply (each half-move from either side), moving start_tau toward target_tau during a self-play game. tau(ply) = max(target_tau, start_tau − decay·ply).",
+    default: 0.007,
     range: 0.0...1.0,
     category: "Self-Play Sampling",
     liveTunable: true
@@ -325,9 +325,29 @@ public enum SelfPlayTargetTau: TrainingParameterKey {}
 public enum SelfPlayTauDecayPerPly: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Self-Play Draw Keep Fraction",
+    description: "Fraction of self-play games ending in a draw that are pushed into the replay buffer at game end. 1.0 = keep every drawn game (legacy behavior, no filtering); 0.0 = discard every drawn game (only decisive games train). Decisive (checkmate) games are always kept regardless of this knob. The replay-ratio controller targets the EMITTED positions/sec rate, so dropping draws automatically slows training to keep the cons/prod ratio at target.",
+    default: 1.0,
+    range: 0.0...1.0,
+    category: "Self-Play Sampling",
+    liveTunable: true
+)
+public enum SelfPlayDrawKeepFraction: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Self-Play Max Plies Per Game",
+    description: "Self-play games are auto-terminated when they reach this many plies. Acts as a safety net against games that fail to terminate via the 50-move rule or 3-fold repetition. Terminated games are NOT emitted — they're counted as 'dropped' in the Played stats and never reach the replay buffer. Applies to self-play only — arena games are not affected.",
+    default: 150,
+    range: 25...500,
+    category: "Self-Play Sampling",
+    liveTunable: true
+)
+public enum SelfPlayMaxPliesPerGame: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Arena Start Tau",
     description: "Initial sampling temperature for arena games. Tighter than self-play to improve W/L/D signal.",
-    default: 2.0,
+    default: 0.6,
     range: 0.05...5.0,
     category: "Arena",
     liveTunable: true
@@ -346,8 +366,8 @@ public enum ArenaTargetTau: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Arena Tau Decay Per Ply",
-    description: "Per-ply decay rate moving arena start_tau toward target_tau.",
-    default: 0.04,
+    description: "Decay applied to tau on every game-total ply (each half-move from either side), moving arena start_tau toward target_tau.",
+    default: 0.02,
     range: 0.0...1.0,
     category: "Arena",
     liveTunable: true
@@ -367,26 +387,26 @@ public enum ReplayRatioTarget: TrainingParameterKey {}
 @TrainingParameter(
     name: "Replay Ratio Auto Adjust",
     description: "Whether ReplayRatioController auto-tunes the trainer step delay to track Replay Ratio Target.",
-    default: true,
+    default: false,
     category: "Replay Buffer",
     liveTunable: true
 )
 public enum ReplayRatioAutoAdjust: TrainingParameterKey {}
 
 @TrainingParameter(
-    name: "Self-Play Workers",
+    name: "Self-Play Concurrency",
     description: "Parallel self-play game count. More = faster replay-buffer fill but more GPU contention.",
-    default: 24,
-    range: 1...256,
+    default: 4000,
+    range: 1...8192,
     category: "Training Window",
     liveTunable: true
 )
-public enum SelfPlayWorkers: TrainingParameterKey {}
+public enum SelfPlayConcurrency: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Training Step Delay (ms)",
     description: "Delay between trainer SGD steps in milliseconds. Auto-adjusted by ReplayRatioController when auto-adjust is on.",
-    default: 50,
+    default: 0,
     range: 0...10000,
     category: "Training Window",
     liveTunable: true
@@ -416,7 +436,7 @@ public enum TrainingBatchSize: TrainingParameterKey {}
 @TrainingParameter(
     name: "Replay Buffer Capacity",
     description: "Maximum number of positions retained in the FIFO replay buffer.",
-    default: 1000000,
+    default: 1500000,
     range: 1000...10000000,
     category: "Replay Buffer",
     liveTunable: false
@@ -426,7 +446,7 @@ public enum ReplayBufferCapacity: TrainingParameterKey {}
 @TrainingParameter(
     name: "Replay Buffer Min Positions Before Training",
     description: "Number of self-play positions accumulated before the trainer starts pulling minibatches.",
-    default: 600000,
+    default: 500000,
     range: 0...10000000,
     category: "Replay Buffer",
     liveTunable: false
@@ -434,9 +454,39 @@ public enum ReplayBufferCapacity: TrainingParameterKey {}
 public enum ReplayBufferMinPositionsBeforeTraining: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Max Plies From Any 1 Game",
+    description: "Cap on how many plies may be drawn from any single self-play game within one training batch. Decorrelates the minibatch by forcing it to span many distinct games rather than letting one long marathon dominate. Default 10. Range capped at 400 — with typical batch sizes (e.g. 4096) the cap is always active.",
+    default: 10,
+    range: 1...400,
+    category: "Replay Buffer",
+    liveTunable: true
+)
+public enum MaxPliesFromAnyOneGame: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Target Sampled Game Length (plies)",
+    description: "When > 0, the batch sampler exponentially down-weights positions from long games so the position-weighted mean game length of the sampled batch approaches this value (in plies). 0 disables the length tilt. Intended to be set below the buffer's natural mean to de-weight shuffle-draw marathons.",
+    default: 124,
+    range: 0...10000,
+    category: "Replay Buffer",
+    liveTunable: true
+)
+public enum TargetSampledGameLengthPlies: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Max Draws Per Batch (%)",
+    description: "Ceiling on the percentage of positions in a training batch that come from drawn games. If the buffer holds fewer drawn positions than the cap allows, the batch simply contains fewer (no padding); freed slots go to positions from decisive games. 100 disables the cap.",
+    default: 75,
+    range: 0...100,
+    category: "Replay Buffer",
+    liveTunable: true
+)
+public enum MaxDrawPercentPerBatch: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Arena Promote Threshold",
     description: "Minimum candidate score (in [0, 1]) required to promote the candidate over the champion.",
-    default: 0.55,
+    default: 0.53,
     range: 0.5...1.0,
     category: "Arena",
     liveTunable: false
@@ -446,7 +496,7 @@ public enum ArenaPromoteThreshold: TrainingParameterKey {}
 @TrainingParameter(
     name: "Arena Games Per Tournament",
     description: "Number of candidate-vs-champion games per arena run. Higher = tighter Wilson confidence interval.",
-    default: 200,
+    default: 400,
     range: 4...10000,
     category: "Arena",
     liveTunable: false
@@ -456,7 +506,7 @@ public enum ArenaGamesPerTournament: TrainingParameterKey {}
 @TrainingParameter(
     name: "Arena Auto Interval (sec)",
     description: "Automatic arena interval in seconds; the play-and-train loop schedules a new arena every N seconds.",
-    default: 1800.0,
+    default: 900.0,
     range: 60.0...86400.0,
     category: "Arena",
     liveTunable: true
@@ -476,7 +526,7 @@ public enum CandidateProbeIntervalSec: TrainingParameterKey {}
 @TrainingParameter(
     name: "Legal-Mass Collapse Threshold",
     description: "If illegal_mass_sum stays at or above this for the no-improvement window, the run early-bails.",
-    default: 0.999,
+    default: 0.99,
     range: 0.5...1.0,
     category: "Collapse Detection",
     liveTunable: false
@@ -486,7 +536,7 @@ public enum LegalMassCollapseThreshold: TrainingParameterKey {}
 @TrainingParameter(
     name: "Legal-Mass Collapse Grace (sec)",
     description: "Post-training-start grace window during which legal-mass collapse early-bail is suppressed.",
-    default: 180.0,
+    default: 600.0,
     range: 0.0...86400.0,
     category: "Collapse Detection",
     liveTunable: false
@@ -496,7 +546,7 @@ public enum LegalMassCollapseGraceSeconds: TrainingParameterKey {}
 @TrainingParameter(
     name: "Legal-Mass Collapse No-Improvement Probes",
     description: "Number of consecutive collapsed probes (after grace) before the run early-bails.",
-    default: 5,
+    default: 8,
     range: 1...1000,
     category: "Collapse Detection",
     liveTunable: false
@@ -506,12 +556,13 @@ public enum LegalMassCollapseNoImprovementProbes: TrainingParameterKey {}
 @TrainingParameter(
     name: "Arena Concurrency",
     description: "Number of concurrent arena games. Higher = faster arena throughput at cost of GPU contention.",
-    default: 200,
+    default: 400,
     range: 1...4096,
     category: "Arena",
     liveTunable: true
 )
 public enum ArenaConcurrency: TrainingParameterKey {}
+
 
 @TrainingParameter(
     name: "Batch Stats Interval",
@@ -572,17 +623,22 @@ public extension TrainingParametersSnapshot {
     var selfPlayStartTau: Double { value(for: SelfPlayStartTau.self) }
     var selfPlayTargetTau: Double { value(for: SelfPlayTargetTau.self) }
     var selfPlayTauDecayPerPly: Double { value(for: SelfPlayTauDecayPerPly.self) }
+    var selfPlayDrawKeepFraction: Double { value(for: SelfPlayDrawKeepFraction.self) }
+    var selfPlayMaxPliesPerGame: Int { value(for: SelfPlayMaxPliesPerGame.self) }
     var arenaStartTau: Double { value(for: ArenaStartTau.self) }
     var arenaTargetTau: Double { value(for: ArenaTargetTau.self) }
     var arenaTauDecayPerPly: Double { value(for: ArenaTauDecayPerPly.self) }
     var replayRatioTarget: Double { value(for: ReplayRatioTarget.self) }
     var replayRatioAutoAdjust: Bool { value(for: ReplayRatioAutoAdjust.self) }
-    var selfPlayWorkers: Int { value(for: SelfPlayWorkers.self) }
+    var selfPlayConcurrency: Int { value(for: SelfPlayConcurrency.self) }
     var trainingStepDelayMs: Int { value(for: TrainingStepDelayMs.self) }
     var selfPlayDelayMs: Int { value(for: SelfPlayDelayMs.self) }
     var trainingBatchSize: Int { value(for: TrainingBatchSize.self) }
     var replayBufferCapacity: Int { value(for: ReplayBufferCapacity.self) }
     var replayBufferMinPositionsBeforeTraining: Int { value(for: ReplayBufferMinPositionsBeforeTraining.self) }
+    var maxPliesFromAnyOneGame: Int { value(for: MaxPliesFromAnyOneGame.self) }
+    var targetSampledGameLengthPlies: Int { value(for: TargetSampledGameLengthPlies.self) }
+    var maxDrawPercentPerBatch: Int { value(for: MaxDrawPercentPerBatch.self) }
     var arenaPromoteThreshold: Double { value(for: ArenaPromoteThreshold.self) }
     var arenaGamesPerTournament: Int { value(for: ArenaGamesPerTournament.self) }
     var arenaAutoIntervalSec: Double { value(for: ArenaAutoIntervalSec.self) }
@@ -619,17 +675,22 @@ public final class TrainingParameters {
     public var selfPlayStartTau: Double { didSet { Self.persist(SelfPlayStartTau.self, value: selfPlayStartTau) } }
     public var selfPlayTargetTau: Double { didSet { Self.persist(SelfPlayTargetTau.self, value: selfPlayTargetTau) } }
     public var selfPlayTauDecayPerPly: Double { didSet { Self.persist(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly) } }
+    public var selfPlayDrawKeepFraction: Double { didSet { Self.persist(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction) } }
+    public var selfPlayMaxPliesPerGame: Int { didSet { Self.persist(SelfPlayMaxPliesPerGame.self, value: selfPlayMaxPliesPerGame) } }
     public var arenaStartTau: Double { didSet { Self.persist(ArenaStartTau.self, value: arenaStartTau) } }
     public var arenaTargetTau: Double { didSet { Self.persist(ArenaTargetTau.self, value: arenaTargetTau) } }
     public var arenaTauDecayPerPly: Double { didSet { Self.persist(ArenaTauDecayPerPly.self, value: arenaTauDecayPerPly) } }
     public var replayRatioTarget: Double { didSet { Self.persist(ReplayRatioTarget.self, value: replayRatioTarget) } }
     public var replayRatioAutoAdjust: Bool { didSet { Self.persist(ReplayRatioAutoAdjust.self, value: replayRatioAutoAdjust) } }
-    public var selfPlayWorkers: Int { didSet { Self.persist(SelfPlayWorkers.self, value: selfPlayWorkers) } }
+    public var selfPlayConcurrency: Int { didSet { Self.persist(SelfPlayConcurrency.self, value: selfPlayConcurrency) } }
     public var trainingStepDelayMs: Int { didSet { Self.persist(TrainingStepDelayMs.self, value: trainingStepDelayMs) } }
     public var selfPlayDelayMs: Int { didSet { Self.persist(SelfPlayDelayMs.self, value: selfPlayDelayMs) } }
     public var trainingBatchSize: Int { didSet { Self.persist(TrainingBatchSize.self, value: trainingBatchSize) } }
     public var replayBufferCapacity: Int { didSet { Self.persist(ReplayBufferCapacity.self, value: replayBufferCapacity) } }
     public var replayBufferMinPositionsBeforeTraining: Int { didSet { Self.persist(ReplayBufferMinPositionsBeforeTraining.self, value: replayBufferMinPositionsBeforeTraining) } }
+    public var maxPliesFromAnyOneGame: Int { didSet { Self.persist(MaxPliesFromAnyOneGame.self, value: maxPliesFromAnyOneGame) } }
+    public var targetSampledGameLengthPlies: Int { didSet { Self.persist(TargetSampledGameLengthPlies.self, value: targetSampledGameLengthPlies) } }
+    public var maxDrawPercentPerBatch: Int { didSet { Self.persist(MaxDrawPercentPerBatch.self, value: maxDrawPercentPerBatch) } }
     public var arenaPromoteThreshold: Double { didSet { Self.persist(ArenaPromoteThreshold.self, value: arenaPromoteThreshold) } }
     public var arenaGamesPerTournament: Int { didSet { Self.persist(ArenaGamesPerTournament.self, value: arenaGamesPerTournament) } }
     public var arenaAutoIntervalSec: Double { didSet { Self.persist(ArenaAutoIntervalSec.self, value: arenaAutoIntervalSec) } }
@@ -659,17 +720,22 @@ public final class TrainingParameters {
         self.selfPlayStartTau = Self.read(SelfPlayStartTau.self)
         self.selfPlayTargetTau = Self.read(SelfPlayTargetTau.self)
         self.selfPlayTauDecayPerPly = Self.read(SelfPlayTauDecayPerPly.self)
+        self.selfPlayDrawKeepFraction = Self.read(SelfPlayDrawKeepFraction.self)
+        self.selfPlayMaxPliesPerGame = Self.read(SelfPlayMaxPliesPerGame.self)
         self.arenaStartTau = Self.read(ArenaStartTau.self)
         self.arenaTargetTau = Self.read(ArenaTargetTau.self)
         self.arenaTauDecayPerPly = Self.read(ArenaTauDecayPerPly.self)
         self.replayRatioTarget = Self.read(ReplayRatioTarget.self)
         self.replayRatioAutoAdjust = Self.read(ReplayRatioAutoAdjust.self)
-        self.selfPlayWorkers = Self.read(SelfPlayWorkers.self)
+        self.selfPlayConcurrency = Self.read(SelfPlayConcurrency.self)
         self.trainingStepDelayMs = Self.read(TrainingStepDelayMs.self)
         self.selfPlayDelayMs = Self.read(SelfPlayDelayMs.self)
         self.trainingBatchSize = Self.read(TrainingBatchSize.self)
         self.replayBufferCapacity = Self.read(ReplayBufferCapacity.self)
         self.replayBufferMinPositionsBeforeTraining = Self.read(ReplayBufferMinPositionsBeforeTraining.self)
+        self.maxPliesFromAnyOneGame = Self.read(MaxPliesFromAnyOneGame.self)
+        self.targetSampledGameLengthPlies = Self.read(TargetSampledGameLengthPlies.self)
+        self.maxDrawPercentPerBatch = Self.read(MaxDrawPercentPerBatch.self)
         self.arenaPromoteThreshold = Self.read(ArenaPromoteThreshold.self)
         self.arenaGamesPerTournament = Self.read(ArenaGamesPerTournament.self)
         self.arenaAutoIntervalSec = Self.read(ArenaAutoIntervalSec.self)
@@ -705,17 +771,22 @@ public final class TrainingParameters {
         v[SelfPlayStartTau.id] = SelfPlayStartTau.encode(selfPlayStartTau)
         v[SelfPlayTargetTau.id] = SelfPlayTargetTau.encode(selfPlayTargetTau)
         v[SelfPlayTauDecayPerPly.id] = SelfPlayTauDecayPerPly.encode(selfPlayTauDecayPerPly)
+        v[SelfPlayDrawKeepFraction.id] = SelfPlayDrawKeepFraction.encode(selfPlayDrawKeepFraction)
+        v[SelfPlayMaxPliesPerGame.id] = SelfPlayMaxPliesPerGame.encode(selfPlayMaxPliesPerGame)
         v[ArenaStartTau.id] = ArenaStartTau.encode(arenaStartTau)
         v[ArenaTargetTau.id] = ArenaTargetTau.encode(arenaTargetTau)
         v[ArenaTauDecayPerPly.id] = ArenaTauDecayPerPly.encode(arenaTauDecayPerPly)
         v[ReplayRatioTarget.id] = ReplayRatioTarget.encode(replayRatioTarget)
         v[ReplayRatioAutoAdjust.id] = ReplayRatioAutoAdjust.encode(replayRatioAutoAdjust)
-        v[SelfPlayWorkers.id] = SelfPlayWorkers.encode(selfPlayWorkers)
+        v[SelfPlayConcurrency.id] = SelfPlayConcurrency.encode(selfPlayConcurrency)
         v[TrainingStepDelayMs.id] = TrainingStepDelayMs.encode(trainingStepDelayMs)
         v[SelfPlayDelayMs.id] = SelfPlayDelayMs.encode(selfPlayDelayMs)
         v[TrainingBatchSize.id] = TrainingBatchSize.encode(trainingBatchSize)
         v[ReplayBufferCapacity.id] = ReplayBufferCapacity.encode(replayBufferCapacity)
         v[ReplayBufferMinPositionsBeforeTraining.id] = ReplayBufferMinPositionsBeforeTraining.encode(replayBufferMinPositionsBeforeTraining)
+        v[MaxPliesFromAnyOneGame.id] = MaxPliesFromAnyOneGame.encode(maxPliesFromAnyOneGame)
+        v[TargetSampledGameLengthPlies.id] = TargetSampledGameLengthPlies.encode(targetSampledGameLengthPlies)
+        v[MaxDrawPercentPerBatch.id] = MaxDrawPercentPerBatch.encode(maxDrawPercentPerBatch)
         v[ArenaPromoteThreshold.id] = ArenaPromoteThreshold.encode(arenaPromoteThreshold)
         v[ArenaGamesPerTournament.id] = ArenaGamesPerTournament.encode(arenaGamesPerTournament)
         v[ArenaAutoIntervalSec.id] = ArenaAutoIntervalSec.encode(arenaAutoIntervalSec)
@@ -773,6 +844,10 @@ public final class TrainingParameters {
             try SelfPlayTargetTau.definition.validate(raw); selfPlayTargetTau = try SelfPlayTargetTau.decode(raw)
         case SelfPlayTauDecayPerPly.id:
             try SelfPlayTauDecayPerPly.definition.validate(raw); selfPlayTauDecayPerPly = try SelfPlayTauDecayPerPly.decode(raw)
+        case SelfPlayDrawKeepFraction.id:
+            try SelfPlayDrawKeepFraction.definition.validate(raw); selfPlayDrawKeepFraction = try SelfPlayDrawKeepFraction.decode(raw)
+        case SelfPlayMaxPliesPerGame.id:
+            try SelfPlayMaxPliesPerGame.definition.validate(raw); selfPlayMaxPliesPerGame = try SelfPlayMaxPliesPerGame.decode(raw)
         case ArenaStartTau.id:
             try ArenaStartTau.definition.validate(raw); arenaStartTau = try ArenaStartTau.decode(raw)
         case ArenaTargetTau.id:
@@ -783,8 +858,8 @@ public final class TrainingParameters {
             try ReplayRatioTarget.definition.validate(raw); replayRatioTarget = try ReplayRatioTarget.decode(raw)
         case ReplayRatioAutoAdjust.id:
             try ReplayRatioAutoAdjust.definition.validate(raw); replayRatioAutoAdjust = try ReplayRatioAutoAdjust.decode(raw)
-        case SelfPlayWorkers.id:
-            try SelfPlayWorkers.definition.validate(raw); selfPlayWorkers = try SelfPlayWorkers.decode(raw)
+        case SelfPlayConcurrency.id:
+            try SelfPlayConcurrency.definition.validate(raw); selfPlayConcurrency = try SelfPlayConcurrency.decode(raw)
         case TrainingStepDelayMs.id:
             try TrainingStepDelayMs.definition.validate(raw); trainingStepDelayMs = try TrainingStepDelayMs.decode(raw)
         case SelfPlayDelayMs.id:
@@ -795,6 +870,12 @@ public final class TrainingParameters {
             try ReplayBufferCapacity.definition.validate(raw); replayBufferCapacity = try ReplayBufferCapacity.decode(raw)
         case ReplayBufferMinPositionsBeforeTraining.id:
             try ReplayBufferMinPositionsBeforeTraining.definition.validate(raw); replayBufferMinPositionsBeforeTraining = try ReplayBufferMinPositionsBeforeTraining.decode(raw)
+        case MaxPliesFromAnyOneGame.id:
+            try MaxPliesFromAnyOneGame.definition.validate(raw); maxPliesFromAnyOneGame = try MaxPliesFromAnyOneGame.decode(raw)
+        case TargetSampledGameLengthPlies.id:
+            try TargetSampledGameLengthPlies.definition.validate(raw); targetSampledGameLengthPlies = try TargetSampledGameLengthPlies.decode(raw)
+        case MaxDrawPercentPerBatch.id:
+            try MaxDrawPercentPerBatch.definition.validate(raw); maxDrawPercentPerBatch = try MaxDrawPercentPerBatch.decode(raw)
         case ArenaPromoteThreshold.id:
             try ArenaPromoteThreshold.definition.validate(raw); arenaPromoteThreshold = try ArenaPromoteThreshold.decode(raw)
         case ArenaGamesPerTournament.id:
@@ -899,17 +980,22 @@ public final class TrainingParameters {
         SelfPlayStartTau.self,
         SelfPlayTargetTau.self,
         SelfPlayTauDecayPerPly.self,
+        SelfPlayDrawKeepFraction.self,
+        SelfPlayMaxPliesPerGame.self,
         ArenaStartTau.self,
         ArenaTargetTau.self,
         ArenaTauDecayPerPly.self,
         ReplayRatioTarget.self,
         ReplayRatioAutoAdjust.self,
-        SelfPlayWorkers.self,
+        SelfPlayConcurrency.self,
         TrainingStepDelayMs.self,
         SelfPlayDelayMs.self,
         TrainingBatchSize.self,
         ReplayBufferCapacity.self,
         ReplayBufferMinPositionsBeforeTraining.self,
+        MaxPliesFromAnyOneGame.self,
+        TargetSampledGameLengthPlies.self,
+        MaxDrawPercentPerBatch.self,
         ArenaPromoteThreshold.self,
         ArenaGamesPerTournament.self,
         ArenaAutoIntervalSec.self,
