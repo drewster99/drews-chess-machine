@@ -93,6 +93,60 @@ final class ChartSampleRingTests: XCTestCase {
         XCTAssertEqual(ring[2], TestSample(id: 2, elapsedSec: 2))
     }
 
+    /// `bulkRestore` of a single-block-or-smaller payload must be
+    /// readable end-to-end. Baseline guard for the multi-block case
+    /// below.
+    func testBulkRestoreSingleBlockIsFullyReadable() {
+        let ring = ChartSampleRing<TestSample>()
+        let total = 1_000
+        let samples = (0..<total).map { TestSample(id: $0, elapsedSec: Double($0)) }
+        ring.bulkRestore(samples)
+
+        XCTAssertEqual(ring.count, total)
+        for i in 0..<total {
+            XCTAssertEqual(ring[i], TestSample(id: i, elapsedSec: Double(i)))
+        }
+    }
+
+    /// Regression: a `bulkRestore` payload that spans more than one
+    /// block must leave EVERY linear index backed by real storage.
+    /// The earlier implementation pre-appended empty blocks before
+    /// the append loop, but `append` always writes to the last
+    /// block — so every sample landed in the final block while
+    /// `blocks[0]` stayed empty, and `ring[0]` trapped with
+    /// "Index out of range". This is the session-resume crash that
+    /// fired once a saved chart trajectory exceeded `blockSize`
+    /// samples.
+    func testBulkRestoreMultiBlockIsFullyReadable() {
+        let ring = ChartSampleRing<TestSample>()
+        let total = ChartSampleRing<TestSample>.blockSize + 25
+        let samples = (0..<total).map { TestSample(id: $0, elapsedSec: Double($0)) }
+        ring.bulkRestore(samples)
+
+        XCTAssertEqual(ring.count, total)
+        // Read the first element, the elements straddling the block
+        // boundary, and the last element. The first element is the
+        // one that crashed before the fix.
+        let boundary = ChartSampleRing<TestSample>.blockSize
+        XCTAssertEqual(ring[0], TestSample(id: 0, elapsedSec: 0))
+        XCTAssertEqual(ring[boundary - 1], TestSample(id: boundary - 1, elapsedSec: Double(boundary - 1)))
+        XCTAssertEqual(ring[boundary], TestSample(id: boundary, elapsedSec: Double(boundary)))
+        XCTAssertEqual(ring[total - 1], TestSample(id: total - 1, elapsedSec: Double(total - 1)))
+        XCTAssertEqual(ring.last, TestSample(id: total - 1, elapsedSec: Double(total - 1)))
+
+        // Exhaustive read so no interior index is left unbacked.
+        for i in 0..<total {
+            XCTAssertEqual(ring[i], TestSample(id: i, elapsedSec: Double(i)))
+        }
+
+        // Binary search (the actual crash site in the stack trace)
+        // must also walk every index without trapping.
+        XCTAssertEqual(
+            ring.firstIndex(elapsedSecAtLeast: Double(boundary)) { $0.elapsedSec },
+            boundary
+        )
+    }
+
     func testFirstIndexBinarySearchOnEmptyRing() {
         let ring = ChartSampleRing<TestSample>()
         let idx = ring.firstIndex(elapsedSecAtLeast: 5) { $0.elapsedSec }
