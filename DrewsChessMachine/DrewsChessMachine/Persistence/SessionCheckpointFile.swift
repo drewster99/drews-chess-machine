@@ -102,6 +102,14 @@ struct ArenaHistoryEntryCodable: Codable, Equatable {
     /// Champion `ModelID` description as of arena start, before
     /// any promotion copy. Optional for back-compat.
     var championID: String?
+    /// Per-arena breakdown blocks (W/D/L by game length; candidate
+    /// value + arena-style score by absolute ply; same by game
+    /// progress). Optional for back-compat — older session files
+    /// don't carry it, and the arena-history row popover renders
+    /// "no breakdown data" placeholders when it's nil. `ArenaExtendedSummary`
+    /// is itself Codable, so the persisted shape is just a nested
+    /// object inside this entry.
+    var extendedSummary: ArenaExtendedSummary?
 }
 
 // MARK: - Session State

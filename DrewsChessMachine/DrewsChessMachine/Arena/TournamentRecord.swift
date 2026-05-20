@@ -60,6 +60,17 @@ struct TournamentRecord: Sendable, Identifiable {
     let candidateDrawsAsWhite: Int
     let candidateDrawsAsBlack: Int
 
+    /// Post-arena breakdown of W/D/L by game length and the
+    /// candidate value scalar + arena-style score by absolute ply
+    /// and game progress. `nil` in two cases:
+    ///   - records loaded from session files written before
+    ///     extended summaries were persisted;
+    ///   - a zero-game tournament abort, where the breakdown would
+    ///     be entirely empty (see `runArenaTournament`).
+    /// Any UI / log site that consumes this must tolerate nil and
+    /// hide the histograms.
+    var extendedSummary: ArenaExtendedSummary? = nil
+
     /// AlphaZero-style score for candidate's white games only.
     /// 0 if the tournament was aborted before a white game finished.
     var candidateScoreAsWhite: Double {

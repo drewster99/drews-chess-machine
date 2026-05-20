@@ -48,7 +48,7 @@ extension SessionController {
                 if newFinishedAt != record.finishedAt
                     || newCandidateID != record.candidateID
                     || newChampionID != record.championID {
-                    updated[i] = TournamentRecord(
+                    var rebuilt = TournamentRecord(
                         finishedAtStep: record.finishedAtStep,
                         finishedAt: newFinishedAt,
                         candidateID: newCandidateID,
@@ -69,6 +69,12 @@ extension SessionController {
                         candidateDrawsAsWhite: record.candidateDrawsAsWhite,
                         candidateDrawsAsBlack: record.candidateDrawsAsBlack
                     )
+                    // Recovery only backfills finishedAt / candidate /
+                    // champion IDs — every other field, including the
+                    // extended-summary histograms, carries through
+                    // unchanged from the original record.
+                    rebuilt.extendedSummary = record.extendedSummary
+                    updated[i] = rebuilt
                     changedCount += 1
                 }
             }
@@ -420,7 +426,16 @@ extension SessionController {
 
         // Append to history and clear arena state.
         let durationSec = Date().timeIntervalSince(startTime)
-        let record = TournamentRecord(
+        // Compute the post-arena breakdown aggregates (W/D/L by game
+        // length, candidate value scalar + arena-style score by
+        // absolute ply, same by game progress) from the harvested
+        // per-game records. Persisted on `TournamentRecord` so the
+        // arena-history row popover can render histograms after a
+        // session save/load round-trip.
+        let extendedSummary = ArenaSummaryAggregator.aggregate(
+            records: recordsBox.snapshot()
+        )
+        var record = TournamentRecord(
             finishedAtStep: steps,
             finishedAt: Date(),
             candidateID: candidateInference.identifier,
@@ -441,6 +456,13 @@ extension SessionController {
             candidateDrawsAsWhite: stats.playerADrawsAsWhite,
             candidateDrawsAsBlack: stats.playerADrawsAsBlack
         )
+        // Store the breakdown on the record only when at least one
+        // game was played. A zero-game abort yields an all-empty
+        // summary that the row popover would render as three "no
+        // data" placeholders — leaving it nil keeps that popover at
+        // its compact width instead. The log block below still gets
+        // the (empty) summary so the `[ARENA]` output is unchanged.
+        record.extendedSummary = playedGames > 0 ? extendedSummary : nil
         tournamentHistory.append(record)
         // Mirror into the chart-tile event stream. Compute the
         // elapsed-second start/end against the chart-coordinator's
@@ -469,14 +491,6 @@ extension SessionController {
             score: score,
             promoted: promoted
         ))
-        // Compute the post-arena breakdown aggregates (W/D/L by game
-        // length, candidate value scalar by absolute ply, candidate
-        // value scalar by game progress) from the harvested per-game
-        // records. These are diagnostic only — not persisted on
-        // `TournamentRecord`, just emitted in the `[ARENA]` log block.
-        let extendedSummary = ArenaSummaryAggregator.aggregate(
-            records: recordsBox.snapshot()
-        )
         logArenaResult(
             record: record,
             index: tournamentHistory.count,

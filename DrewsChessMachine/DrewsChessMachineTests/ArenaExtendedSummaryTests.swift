@@ -3,10 +3,11 @@
 //  DrewsChessMachineTests
 //
 //  Pure-Swift tests for `ArenaSummaryAggregator.aggregate` — the
-//  per-arena bucket aggregator behind the new `[ARENA]` block lines:
+//  per-arena bucket aggregator behind the `[ARENA]` block lines and
+//  the per-row arena-history histograms:
 //   - W/D/L by game length (20-ply buckets, candidate perspective)
-//   - candidate value scalar by absolute ply (5-ply buckets)
-//   - candidate value scalar by game progress (5% buckets)
+//   - candidate value scalar + arena-style score by absolute ply
+//   - candidate value scalar + arena-style score by game progress
 //
 
 import XCTest
@@ -259,6 +260,105 @@ final class ArenaExtendedSummaryTests: XCTestCase {
         XCTAssertEqual(summary.wdlByLength[0].draws, 1)
         XCTAssertTrue(summary.valueByPly.isEmpty)
         XCTAssertTrue(summary.valueByProgress.isEmpty)
+    }
+
+    // MARK: - W/D/L attribution + candidateScore
+
+    func testValueByPlyBucketAttributesEachSampleToGameOutcome() {
+        // Two candidate plies in a game the candidate wins: both
+        // plies must be counted as W in their bucket. The mean value
+        // scalar is independent of the outcome.
+        let win = makeRecord(length: 4, aIsWhite: true,
+                             result: .checkmate(winner: .white),
+                             samples: [CandidateValueSample(ply: 0, value: 0.2),
+                                       CandidateValueSample(ply: 2, value: 0.4)])
+        let loss = makeRecord(length: 4, aIsWhite: true,
+                              result: .checkmate(winner: .black),
+                              samples: [CandidateValueSample(ply: 0, value: -0.1),
+                                        CandidateValueSample(ply: 2, value: -0.3)])
+        let draw = makeRecord(length: 4, aIsWhite: false,
+                              result: .stalemate,
+                              samples: [CandidateValueSample(ply: 1, value: 0.05),
+                                        CandidateValueSample(ply: 3, value: -0.05)])
+        let summary = ArenaSummaryAggregator.aggregate(records: [win, loss, draw])
+
+        // All six samples land in bucket [0-4].
+        XCTAssertEqual(summary.valueByPly.count, 1)
+        let bucket = summary.valueByPly[0]
+        XCTAssertEqual(bucket.count, 6)
+        XCTAssertEqual(bucket.wins, 2)
+        XCTAssertEqual(bucket.losses, 2)
+        XCTAssertEqual(bucket.draws, 2)
+        // (W + 0.5D) / N = (2 + 1) / 6 = 0.5
+        XCTAssertEqual(bucket.candidateScore, 0.5, accuracy: 1e-9)
+    }
+
+    func testValueByProgressBucketAttributesOutcomeToEveryCandidatePly() {
+        // 20-ply game candidate plays white, wins. Candidate moves
+        // on plies 0,2,...,18 → 10 samples spanning 0-90% of game.
+        let samples: [CandidateValueSample] = stride(from: 0, to: 20, by: 2).map {
+            CandidateValueSample(ply: $0, value: 0.0)
+        }
+        let rec = makeRecord(length: 20, aIsWhite: true,
+                             result: .checkmate(winner: .white),
+                             samples: samples)
+        let summary = ArenaSummaryAggregator.aggregate(records: [rec])
+
+        // Every populated progress bucket has wins == count and
+        // candidateScore == 1.0 (it's the same game throughout).
+        XCTAssertFalse(summary.valueByProgress.isEmpty)
+        for b in summary.valueByProgress {
+            XCTAssertEqual(b.wins, b.count, "bucket \(b.lowerPercent)")
+            XCTAssertEqual(b.draws, 0)
+            XCTAssertEqual(b.losses, 0)
+            XCTAssertEqual(b.candidateScore, 1.0, accuracy: 1e-9,
+                           "bucket \(b.lowerPercent)")
+        }
+    }
+
+    func testWDLByLengthCandidateScoreUsesArenaIdentity() {
+        // 1 win, 1 draw, 0 losses in the same length bucket →
+        // (1 + 0.5) / 2 = 0.75.
+        let win = makeRecord(length: 10, aIsWhite: true,
+                             result: .checkmate(winner: .white))
+        let draw = makeRecord(length: 15, aIsWhite: true, result: .stalemate)
+        let summary = ArenaSummaryAggregator.aggregate(records: [win, draw])
+
+        XCTAssertEqual(summary.wdlByLength[0].count, 2)
+        XCTAssertEqual(summary.wdlByLength[0].candidateScore, 0.75, accuracy: 1e-9)
+    }
+
+    func testEmptyBucketsHaveZeroScore() {
+        let summary = ArenaSummaryAggregator.aggregate(records: [])
+        for b in summary.wdlByLength {
+            XCTAssertEqual(b.count, 0)
+            XCTAssertEqual(b.candidateScore, 0)
+        }
+    }
+
+    // MARK: - Codable round-trip
+
+    func testExtendedSummaryRoundTripsThroughJSON() throws {
+        let win = makeRecord(length: 10, aIsWhite: true,
+                             result: .checkmate(winner: .white),
+                             samples: [CandidateValueSample(ply: 0, value: 0.3),
+                                       CandidateValueSample(ply: 2, value: -0.1)])
+        let draw = makeRecord(length: 30, aIsWhite: false,
+                              result: .drawByThreefoldRepetition,
+                              samples: [CandidateValueSample(ply: 1, value: 0.0),
+                                        CandidateValueSample(ply: 5, value: 0.1)])
+        let original = ArenaSummaryAggregator.aggregate(records: [win, draw])
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(ArenaExtendedSummary.self, from: data)
+
+        XCTAssertEqual(decoded, original)
+        // Sanity: candidateScore is derived from counts, so it must
+        // survive a round-trip even though it isn't stored.
+        XCTAssertEqual(
+            decoded.wdlByLength.map(\.candidateScore),
+            original.wdlByLength.map(\.candidateScore)
+        )
     }
 
     // MARK: - Fixture helpers

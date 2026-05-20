@@ -686,6 +686,12 @@ private struct ArenaDetailPopover: View {
                 }
             }
 
+            if let ext = record.extendedSummary {
+                Divider()
+
+                ArenaBreakdownsView(summary: ext)
+            }
+
             Divider()
 
             HStack {
@@ -699,7 +705,7 @@ private struct ArenaDetailPopover: View {
             }
         }
         .padding(16)
-        .frame(width: 360)
+        .frame(width: record.extendedSummary == nil ? 360 : 560)
     }
 
     @ViewBuilder

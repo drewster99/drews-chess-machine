@@ -498,7 +498,7 @@ extension SessionController {
                 } else {
                     kind = nil
                 }
-                return TournamentRecord(
+                var rec = TournamentRecord(
                     finishedAtStep: entry.finishedAtStep,
                     finishedAt: entry.finishedAtUnix.map {
                         Date(timeIntervalSince1970: TimeInterval($0))
@@ -521,6 +521,8 @@ extension SessionController {
                     candidateDrawsAsWhite: entry.candidateDrawsAsWhite ?? 0,
                     candidateDrawsAsBlack: entry.candidateDrawsAsBlack ?? 0
                 )
+                rec.extendedSummary = entry.extendedSummary
+                return rec
             }
         } else {
             // Fresh session (first Start of the launch, or one of

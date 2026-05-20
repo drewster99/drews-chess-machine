@@ -619,7 +619,8 @@ extension SessionController {
                 candidateDrawsAsBlack: record.candidateDrawsAsBlack,
                 finishedAtUnix: record.finishedAt.map { Int64($0.timeIntervalSince1970) },
                 candidateID: record.candidateID?.description,
-                championID: record.championID?.description
+                championID: record.championID?.description,
+                extendedSummary: record.extendedSummary
             )
         }
         let lr = trainer?.learningRate ?? Self.trainerLearningRateDefault

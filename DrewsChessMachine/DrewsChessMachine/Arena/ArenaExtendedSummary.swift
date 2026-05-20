@@ -5,7 +5,7 @@ import Foundation
 /// Per-bucket W/D/L tally for one game-length range, from the
 /// candidate's perspective. `upperInclusive == nil` marks the
 /// open-ended overflow bucket (e.g. "200+ plies").
-struct ArenaWDLByLengthBucket: Sendable {
+struct ArenaWDLByLengthBucket: Sendable, Codable, Equatable {
     let lowerInclusive: Int
     /// nil for the overflow bucket.
     let upperInclusive: Int?
@@ -14,36 +14,80 @@ struct ArenaWDLByLengthBucket: Sendable {
     let losses: Int
 
     var count: Int { wins + draws + losses }
+
+    /// AlphaZero-style mean score `(W + 0.5·D) / N` for this length
+    /// bucket — same identity used to decide promotion at the
+    /// tournament level. 0 when the bucket is empty.
+    var candidateScore: Double {
+        guard count > 0 else { return 0 }
+        return (Double(wins) + 0.5 * Double(draws)) / Double(count)
+    }
 }
 
-/// Per-bucket mean of the candidate's value-head scalar
-/// (`p_win - p_loss ∈ [-1, +1]`, side-to-move == candidate), bucketed
-/// by absolute ply index. `lowerInclusive` and `upperInclusive` are
-/// 0-indexed ply numbers.
-struct ArenaValueByPlyBucket: Sendable {
+/// Per-bucket statistics for candidate-to-move plies bucketed by
+/// absolute ply index.
+///
+/// Carries two distinct signals over the same sample population:
+///   - `mean` — mean of the candidate network's value-head scalar
+///     (`p_win - p_loss ∈ [-1, +1]`) at those plies. The network's
+///     own self-assessment.
+///   - `wins / draws / losses` — each ply attributed to its game's
+///     eventual outcome from the candidate's perspective. The
+///     derived `candidateScore = (W + 0.5·D) / N` is the same
+///     metric the arena uses to score a tournament, but bucketed
+///     by ply so the user can see *at which point in the game* the
+///     candidate is actually winning rather than just *what it
+///     thinks*. The two signals together form a calibration view.
+struct ArenaValueByPlyBucket: Sendable, Codable, Equatable {
     let lowerInclusive: Int
     let upperInclusive: Int
+    /// Mean candidate value scalar over plies in this bucket.
     let mean: Float
-    let count: Int
+    /// Per-bucket W/D/L attribution: each candidate-to-move ply
+    /// that fell in this bucket adds one to W, D, or L depending on
+    /// the eventual outcome of the game it came from. Sum =
+    /// `count`.
+    let wins: Int
+    let draws: Int
+    let losses: Int
+
+    var count: Int { wins + draws + losses }
+
+    /// AlphaZero-style score over plies in this bucket. 0 when the
+    /// bucket is empty.
+    var candidateScore: Double {
+        guard count > 0 else { return 0 }
+        return (Double(wins) + 0.5 * Double(draws)) / Double(count)
+    }
 }
 
-/// Per-bucket mean of the candidate's value-head scalar, bucketed by
-/// the sample's position within its game (`ply / gameLength`, in
-/// percent). 20 fixed buckets of width 5%; the last bucket is
-/// inclusive of 100 so the very last candidate ply of a finished
-/// game lands cleanly.
-struct ArenaValueByProgressBucket: Sendable {
+/// Per-bucket statistics for candidate-to-move plies bucketed by
+/// position within the game (`ply / gameLength`, in percent). 20
+/// fixed buckets of width 5%; the last bucket is inclusive of 100
+/// so the very last candidate ply of a finished game lands cleanly.
+///
+/// Same dual signal as `ArenaValueByPlyBucket` — see that doc for
+/// the rationale on carrying both `mean` and the W/D/L attribution.
+struct ArenaValueByProgressBucket: Sendable, Codable, Equatable {
     let lowerPercent: Int     // inclusive
     let upperPercent: Int     // exclusive, except final bucket which is inclusive of 100
     let mean: Float
-    let count: Int
+    let wins: Int
+    let draws: Int
+    let losses: Int
+
+    var count: Int { wins + draws + losses }
+
+    var candidateScore: Double {
+        guard count > 0 else { return 0 }
+        return (Double(wins) + 0.5 * Double(draws)) / Double(count)
+    }
 }
 
-/// Aggregated breakdowns appended to the post-arena `[ARENA]` block.
-/// Computed once from `[TournamentGameRecord]` at end-of-arena and
-/// not persisted on `TournamentRecord` — these are diagnostic-only
-/// and would bloat the session-file schema if stored.
-struct ArenaExtendedSummary: Sendable {
+/// Aggregated breakdowns appended to the post-arena `[ARENA]` block
+/// and persisted on `TournamentRecord` so the row's detail popover
+/// can render histograms after a session save/load round-trip.
+struct ArenaExtendedSummary: Sendable, Codable, Equatable {
     let wdlByLength: [ArenaWDLByLengthBucket]
     let valueByPly: [ArenaValueByPlyBucket]
     let valueByProgress: [ArenaValueByProgressBucket]
@@ -67,6 +111,12 @@ enum ArenaSummaryAggregator {
     static let progressBucketWidth = 5
     static let progressBucketCount = 100 / progressBucketWidth  // 20
 
+    /// Outcome category for a single game, from the candidate's
+    /// perspective. Used both to update the length-bucket W/D/L
+    /// tally and to attribute every per-ply sample from the same
+    /// game to the same outcome bucket.
+    private enum CandidateOutcome { case win, draw, loss }
+
     /// Pure function: aggregate per-game records into the three
     /// breakdowns. Empty `records` yields empty arrays; ply / progress
     /// buckets with zero samples are filtered out, so a downstream
@@ -79,31 +129,32 @@ enum ArenaSummaryAggregator {
             count: closedLengthBucketCount + 1
         )
 
-        // (2) Mean candidate value by absolute ply. Growing as we see
-        // longer games; pre-reserve a generous capacity.
-        var plyAccum: [(sum: Double, count: Int)] = []
+        // (2) Mean candidate value + W/D/L attribution by absolute
+        // ply. Growing as we see longer games; pre-reserve a
+        // generous capacity.
+        var plyAccum: [PlyAccumulator] = []
         plyAccum.reserveCapacity(40)
 
-        // (3) Mean candidate value by progress-percent. Fixed
+        // (3) Same payload, bucketed by progress percent. Fixed
         // `progressBucketCount` buckets of width `progressBucketWidth`.
-        var progressAccum: [(sum: Double, count: Int)] = Array(
-            repeating: (0, 0),
+        var progressAccum: [PlyAccumulator] = Array(
+            repeating: PlyAccumulator(),
             count: progressBucketCount
         )
 
         for rec in records {
             let length = rec.moveHistory.count
             let lengthBucketIdx = min(length / lengthBucketWidth, closedLengthBucketCount)
-            updateWDL(&wdl[lengthBucketIdx], result: rec.result, candidateIsWhite: rec.aIsWhite)
+            let outcome = candidateOutcome(result: rec.result, candidateIsWhite: rec.aIsWhite)
+            updateWDL(&wdl[lengthBucketIdx], outcome: outcome)
 
             for sample in rec.candidateValueSamples {
                 // Absolute-ply bucket.
                 let pBucket = max(0, sample.ply) / plyBucketWidth
                 while plyAccum.count <= pBucket {
-                    plyAccum.append((0, 0))
+                    plyAccum.append(PlyAccumulator())
                 }
-                plyAccum[pBucket].sum += Double(sample.value)
-                plyAccum[pBucket].count += 1
+                plyAccum[pBucket].add(value: sample.value, outcome: outcome)
 
                 // Progress-percent bucket. Requires length >= 1; the
                 // candidate samples loop already implies length >= 1
@@ -112,8 +163,7 @@ enum ArenaSummaryAggregator {
                 if length > 0 {
                     let pct = (sample.ply * 100) / length
                     let progBucket = min(pct / progressBucketWidth, progressBucketCount - 1)
-                    progressAccum[progBucket].sum += Double(sample.value)
-                    progressAccum[progBucket].count += 1
+                    progressAccum[progBucket].add(value: sample.value, outcome: outcome)
                 }
             }
         }
@@ -151,8 +201,10 @@ enum ArenaSummaryAggregator {
             plyOut.append(ArenaValueByPlyBucket(
                 lowerInclusive: lo,
                 upperInclusive: hi,
-                mean: Float(entry.sum / Double(entry.count)),
-                count: entry.count
+                mean: entry.mean,
+                wins: entry.wins,
+                draws: entry.draws,
+                losses: entry.losses
             ))
         }
 
@@ -166,8 +218,10 @@ enum ArenaSummaryAggregator {
             progressOut.append(ArenaValueByProgressBucket(
                 lowerPercent: lo,
                 upperPercent: hi,
-                mean: Float(entry.sum / Double(entry.count)),
-                count: entry.count
+                mean: entry.mean,
+                wins: entry.wins,
+                draws: entry.draws,
+                losses: entry.losses
             ))
         }
 
@@ -178,25 +232,57 @@ enum ArenaSummaryAggregator {
         )
     }
 
-    private static func updateWDL(
-        _ bucket: inout (w: Int, d: Int, l: Int),
+    /// Mutable running accumulator for one ply / progress bucket.
+    /// Tracks the value-scalar sum (for `mean`) and the per-outcome
+    /// counts (for `candidateScore`) without exposing the raw
+    /// running sum to callers.
+    private struct PlyAccumulator {
+        var sum: Double = 0
+        var wins: Int = 0
+        var draws: Int = 0
+        var losses: Int = 0
+
+        var count: Int { wins + draws + losses }
+        var mean: Float {
+            guard count > 0 else { return 0 }
+            return Float(sum / Double(count))
+        }
+
+        mutating func add(value: Float, outcome: CandidateOutcome) {
+            sum += Double(value)
+            switch outcome {
+            case .win:  wins += 1
+            case .draw: draws += 1
+            case .loss: losses += 1
+            }
+        }
+    }
+
+    private static func candidateOutcome(
         result: GameResult,
         candidateIsWhite: Bool
-    ) {
+    ) -> CandidateOutcome {
         switch result {
         case .checkmate(let winner):
-            let candidateWon = (winner == .white && candidateIsWhite)
+            let won = (winner == .white && candidateIsWhite)
                 || (winner == .black && !candidateIsWhite)
-            if candidateWon {
-                bucket.w += 1
-            } else {
-                bucket.l += 1
-            }
+            return won ? .win : .loss
         case .stalemate,
              .drawByFiftyMoveRule,
              .drawByInsufficientMaterial,
              .drawByThreefoldRepetition:
-            bucket.d += 1
+            return .draw
+        }
+    }
+
+    private static func updateWDL(
+        _ bucket: inout (w: Int, d: Int, l: Int),
+        outcome: CandidateOutcome
+    ) {
+        switch outcome {
+        case .win:  bucket.w += 1
+        case .draw: bucket.d += 1
+        case .loss: bucket.l += 1
         }
     }
 }

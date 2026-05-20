@@ -139,6 +139,16 @@ enum ArenaLogFormatter {
     /// Inserted between the "By side" block and the parameters line
     /// so the headline scoring is still at the top, with detail
     /// breakdowns flowing below it.
+    ///
+    /// The per-ply and per-progress sections render two metrics per
+    /// bucket: `v=` is the mean candidate value-head scalar (the
+    /// network's own assessment), and `score=` is the arena-style
+    /// `(W + 0.5·D) / N` over candidate plies in the bucket — the
+    /// same identity used to score the tournament itself, just
+    /// attributed per ply. Pairing them is the calibration signal
+    /// — when `v` stays high but `score` is near 0.5 across many
+    /// arenas, the network is consistently over-rating its own
+    /// position.
     static func formatExtendedBlock(extended ext: ArenaExtendedSummary) -> [String] {
         var lines: [String] = []
 
@@ -151,35 +161,39 @@ enum ArenaLogFormatter {
             for bucket in ext.wdlByLength {
                 let label = lengthBucketLabel(bucket)
                     .padding(toLength: labelWidth, withPad: " ", startingAt: 0)
+                let scoreStr = bucket.count > 0
+                    ? String(format: " score=%.3f", bucket.candidateScore)
+                    : ""
                 lines.append(
-                    "[ARENA]       \(label)  \(bucket.wins)W/\(bucket.draws)D/\(bucket.losses)L  (n=\(bucket.count))"
+                    "[ARENA]       \(label)  \(bucket.wins)W/\(bucket.draws)D/\(bucket.losses)L  (n=\(bucket.count)\(scoreStr))"
                 )
             }
         }
 
-        // (2) Candidate value scalar by absolute ply. Drops empty
-        // trailing buckets in the aggregator; render the rest.
+        // (2) Candidate value scalar + arena-style score by absolute
+        // ply. Drops empty trailing buckets in the aggregator; render
+        // the rest.
         if !ext.valueByPly.isEmpty {
-            lines.append("[ARENA]     Candidate value by ply (5-ply buckets, candidate-to-move only):")
+            lines.append("[ARENA]     Value + score by ply (5-ply buckets, candidate-to-move only):")
             let labelWidth = ext.valueByPly.map { plyBucketLabel($0).count }.max() ?? 0
             for bucket in ext.valueByPly {
                 let label = plyBucketLabel(bucket)
                     .padding(toLength: labelWidth, withPad: " ", startingAt: 0)
                 lines.append(
-                    "[ARENA]       \(label)  \(formatSignedValue(bucket.mean))  (n=\(bucket.count))"
+                    "[ARENA]       \(label)  v=\(formatSignedValue(bucket.mean)) score=\(formatScore(bucket.candidateScore))  (n=\(bucket.count))"
                 )
             }
         }
 
-        // (3) Candidate value scalar by progress through game.
+        // (3) Candidate value scalar + score by progress through game.
         if !ext.valueByProgress.isEmpty {
-            lines.append("[ARENA]     Candidate value by game progress (5% buckets):")
+            lines.append("[ARENA]     Value + score by game progress (5% buckets):")
             let labelWidth = ext.valueByProgress.map { progressBucketLabel($0).count }.max() ?? 0
             for bucket in ext.valueByProgress {
                 let label = progressBucketLabel(bucket)
                     .padding(toLength: labelWidth, withPad: " ", startingAt: 0)
                 lines.append(
-                    "[ARENA]       \(label)  \(formatSignedValue(bucket.mean))  (n=\(bucket.count))"
+                    "[ARENA]       \(label)  v=\(formatSignedValue(bucket.mean)) score=\(formatScore(bucket.candidateScore))  (n=\(bucket.count))"
                 )
             }
         }
@@ -293,5 +307,12 @@ enum ArenaLogFormatter {
     /// formatter's idiom.
     static func formatSignedValue(_ v: Float) -> String {
         String(format: "%+0.3f", Double(v))
+    }
+
+    /// Format an arena-style score in `[0, 1]` as a fixed-width
+    /// `0.NNN`. Unsigned to distinguish it visually from the signed
+    /// value-scalar column when both appear side by side.
+    static func formatScore(_ s: Double) -> String {
+        String(format: "%0.3f", s)
     }
 }
