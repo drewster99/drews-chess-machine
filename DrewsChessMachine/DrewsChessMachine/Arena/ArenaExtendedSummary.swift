@@ -99,7 +99,7 @@ enum ArenaSummaryAggregator {
 
     // Bucket widths chosen to be human-readable in the log block:
     //   - length:   20 plies (roughly one "phase" of a chess game)
-    //   - ply:      5 plies  (matches user's explicit request)
+    //   - ply:      20 plies (matches user's explicit request)
     //   - progress: 5%       (matches user's explicit request → 20
     //               buckets exactly covering [0, 100])
     //
@@ -107,7 +107,7 @@ enum ArenaSummaryAggregator {
     // overflow bucket "200+". 10 closed buckets + 1 overflow.
     static let lengthBucketWidth = 20
     static let closedLengthBucketCount = 10
-    static let plyBucketWidth = 5
+    static let plyBucketWidth = 20
     static let progressBucketWidth = 5
     static let progressBucketCount = 100 / progressBucketWidth  // 20
 

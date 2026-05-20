@@ -174,7 +174,7 @@ enum ArenaLogFormatter {
         // ply. Drops empty trailing buckets in the aggregator; render
         // the rest.
         if !ext.valueByPly.isEmpty {
-            lines.append("[ARENA]     Value + score by ply (5-ply buckets, candidate-to-move only):")
+            lines.append("[ARENA]     Value + score by ply (20-ply buckets, candidate-to-move only):")
             let labelWidth = ext.valueByPly.map { plyBucketLabel($0).count }.max() ?? 0
             for bucket in ext.valueByPly {
                 let label = plyBucketLabel(bucket)
@@ -282,8 +282,8 @@ enum ArenaLogFormatter {
         return "\(bucket.lowerInclusive)+ plies:"
     }
 
-    /// Render an absolute-ply bucket label, e.g. "ply  0- 4:" or
-    /// "ply 100-104:". Width-padded so the digits column-align in
+    /// Render an absolute-ply bucket label, e.g. "ply  0- 19:" or
+    /// "ply 100-119:". Width-padded so the digits column-align in
     /// the log block.
     static func plyBucketLabel(_ bucket: ArenaValueByPlyBucket) -> String {
         let lo = String(format: "%3d", bucket.lowerInclusive)

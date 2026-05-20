@@ -101,50 +101,50 @@ final class ArenaExtendedSummaryTests: XCTestCase {
     // MARK: - Value by absolute ply
 
     func testValueByPlyMeansAcrossSingleGame() {
-        // 4 candidate-to-move samples at plies 0, 2, 4, 6 — all fall
-        // into different 5-ply buckets: [0-4] gets plies 0,2,4;
-        // [5-9] gets ply 6.
+        // 4 candidate-to-move samples — plies 0, 2, 4 fall into the
+        // first 20-ply bucket [0-19]; ply 25 falls into [20-39].
         let samples: [CandidateValueSample] = [
             CandidateValueSample(ply: 0, value: 0.1),
             CandidateValueSample(ply: 2, value: 0.2),
             CandidateValueSample(ply: 4, value: 0.3),
-            CandidateValueSample(ply: 6, value: -0.4)
-        ]
-        let record = makeRecord(length: 7, aIsWhite: true,
-                                result: .checkmate(winner: .white),
-                                samples: samples)
-        let summary = ArenaSummaryAggregator.aggregate(records: [record])
-
-        // Bucket 0 (plies 0-4): mean = (0.1 + 0.2 + 0.3) / 3 = 0.2
-        // Bucket 1 (plies 5-9): mean = -0.4
-        XCTAssertEqual(summary.valueByPly.count, 2)
-        XCTAssertEqual(summary.valueByPly[0].lowerInclusive, 0)
-        XCTAssertEqual(summary.valueByPly[0].upperInclusive, 4)
-        XCTAssertEqual(summary.valueByPly[0].count, 3)
-        XCTAssertEqual(summary.valueByPly[0].mean, 0.2, accuracy: 1e-6)
-        XCTAssertEqual(summary.valueByPly[1].lowerInclusive, 5)
-        XCTAssertEqual(summary.valueByPly[1].upperInclusive, 9)
-        XCTAssertEqual(summary.valueByPly[1].count, 1)
-        XCTAssertEqual(summary.valueByPly[1].mean, -0.4, accuracy: 1e-6)
-    }
-
-    func testValueByPlyDropsEmptyTrailingBucketsButKeepsGaps() {
-        // One sample at ply 0, one at ply 25 → buckets 0 and 5 have
-        // data, 1-4 are empty. The aggregator filters empty buckets
-        // entirely, including the gap.
-        let samples: [CandidateValueSample] = [
-            CandidateValueSample(ply: 0, value: 0.1),
-            CandidateValueSample(ply: 25, value: 0.5)
+            CandidateValueSample(ply: 25, value: -0.4)
         ]
         let record = makeRecord(length: 26, aIsWhite: true,
                                 result: .checkmate(winner: .white),
                                 samples: samples)
         let summary = ArenaSummaryAggregator.aggregate(records: [record])
 
+        // Bucket 0 (plies 0-19): mean = (0.1 + 0.2 + 0.3) / 3 = 0.2
+        // Bucket 1 (plies 20-39): mean = -0.4
         XCTAssertEqual(summary.valueByPly.count, 2)
         XCTAssertEqual(summary.valueByPly[0].lowerInclusive, 0)
-        XCTAssertEqual(summary.valueByPly[1].lowerInclusive, 25)
-        XCTAssertEqual(summary.valueByPly[1].upperInclusive, 29)
+        XCTAssertEqual(summary.valueByPly[0].upperInclusive, 19)
+        XCTAssertEqual(summary.valueByPly[0].count, 3)
+        XCTAssertEqual(summary.valueByPly[0].mean, 0.2, accuracy: 1e-6)
+        XCTAssertEqual(summary.valueByPly[1].lowerInclusive, 20)
+        XCTAssertEqual(summary.valueByPly[1].upperInclusive, 39)
+        XCTAssertEqual(summary.valueByPly[1].count, 1)
+        XCTAssertEqual(summary.valueByPly[1].mean, -0.4, accuracy: 1e-6)
+    }
+
+    func testValueByPlyDropsEmptyTrailingBucketsButKeepsGaps() {
+        // One sample at ply 0, one at ply 45 → 20-ply buckets [0-19]
+        // and [40-59] have data, [20-39] is empty. The aggregator
+        // filters empty buckets entirely, including the gap.
+        let samples: [CandidateValueSample] = [
+            CandidateValueSample(ply: 0, value: 0.1),
+            CandidateValueSample(ply: 45, value: 0.5)
+        ]
+        let record = makeRecord(length: 46, aIsWhite: true,
+                                result: .checkmate(winner: .white),
+                                samples: samples)
+        let summary = ArenaSummaryAggregator.aggregate(records: [record])
+
+        XCTAssertEqual(summary.valueByPly.count, 2)
+        XCTAssertEqual(summary.valueByPly[0].lowerInclusive, 0)
+        XCTAssertEqual(summary.valueByPly[0].upperInclusive, 19)
+        XCTAssertEqual(summary.valueByPly[1].lowerInclusive, 40)
+        XCTAssertEqual(summary.valueByPly[1].upperInclusive, 59)
     }
 
     func testValueByPlyAggregatesAcrossMultipleGames() {
@@ -282,7 +282,7 @@ final class ArenaExtendedSummaryTests: XCTestCase {
                                         CandidateValueSample(ply: 3, value: -0.05)])
         let summary = ArenaSummaryAggregator.aggregate(records: [win, loss, draw])
 
-        // All six samples land in bucket [0-4].
+        // All six samples land in bucket [0-19].
         XCTAssertEqual(summary.valueByPly.count, 1)
         let bucket = summary.valueByPly[0]
         XCTAssertEqual(bucket.count, 6)

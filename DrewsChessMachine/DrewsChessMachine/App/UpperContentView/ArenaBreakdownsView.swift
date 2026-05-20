@@ -10,7 +10,7 @@ import SwiftUI
 ///      (gray), losses (red) per 20-ply bucket. Tells you whether
 ///      losses are concentrated in short blunders or long endgame
 ///      grinds.
-///   2. **Score by ply.** Line chart over 5-ply candidate-to-move
+///   2. **Score by ply.** Line chart over 20-ply candidate-to-move
 ///      buckets, where the per-bucket score is computed the same way
 ///      a tournament's overall score is — `(W + 0.5·D) / N`, but
 ///      attributed per ply: every candidate-to-move ply gets a credit
@@ -65,7 +65,7 @@ struct ArenaBreakdownsView: View {
 
     private var scoreByPlySection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Win rate by ply (5-ply buckets, (W+0.5·D)/N)")
+            Text("Win rate by ply (20-ply buckets, (W+0.5·D)/N)")
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
 
@@ -187,9 +187,8 @@ private struct ScoreByPlyChart: View {
 
     private var points: [Point] {
         buckets.map { b in
-            // Use the bucket's midpoint as the x-coordinate so the
-            // line traces through 2.5, 7.5, 12.5, ... and looks
-            // visually centered in each 5-ply span.
+            // Use the bucket's midpoint as the x-coordinate so each
+            // dot sits visually centered in its ply span.
             let mid = Double(b.lowerInclusive + b.upperInclusive) / 2.0
             return Point(midPly: Int(mid.rounded()), score: b.candidateScore, count: b.count)
         }
@@ -211,18 +210,7 @@ private struct ScoreByPlyChart: View {
             .symbolSize(Double(8 + min(p.count, 32)))
             .foregroundStyle(Color.accentColor)
         }
-        .chartYScale(domain: 0...1)
-        .chartYAxis {
-            AxisMarks(position: .leading, values: [0, 0.5, 1]) { val in
-                AxisGridLine()
-                AxisValueLabel {
-                    if let v = val.as(Double.self) {
-                        Text(String(format: "%.1f", v))
-                            .font(.system(size: 8))
-                    }
-                }
-            }
-        }
+        .winRateYAxis(scores: points.map(\.score))
         .chartXAxis {
             AxisMarks {
                 AxisGridLine()
@@ -287,19 +275,8 @@ private struct ScoreByProgressChart: View {
             .symbolSize(Double(8 + min(p.count, 32)))
             .foregroundStyle(Color.accentColor)
         }
-        .chartYScale(domain: 0...1)
+        .winRateYAxis(scores: points.map(\.score))
         .chartXScale(domain: 0...100)
-        .chartYAxis {
-            AxisMarks(position: .leading, values: [0, 0.5, 1]) { val in
-                AxisGridLine()
-                AxisValueLabel {
-                    if let v = val.as(Double.self) {
-                        Text(String(format: "%.1f", v))
-                            .font(.system(size: 8))
-                    }
-                }
-            }
-        }
         .chartXAxis {
             AxisMarks(values: [0, 25, 50, 75, 100]) { val in
                 AxisGridLine()
@@ -332,5 +309,35 @@ private struct ScoreByProgressChart: View {
                 )
             }
         }
+    }
+}
+
+// MARK: - Shared win-rate Y-axis
+
+private extension View {
+    /// Y-axis treatment shared by the score-by-ply and
+    /// score-by-progress charts. Arena win rate hugs the 0.5 "even"
+    /// mark tightly — a full-scale axis flattens it into a
+    /// featureless band — so the axis instead pins to a narrow fixed
+    /// window straddling 0.5, with one gridline + label per stride
+    /// step. The window widens only far enough to contain any score
+    /// that genuinely falls outside it, so a lopsided arena still
+    /// fits while the common, near-even case stays high-resolution.
+    func winRateYAxis(scores: [Double]) -> some View {
+        let lower = min(0.47, scores.min() ?? 0.47)
+        let upper = max(0.54, scores.max() ?? 0.54)
+        return self
+            .chartYScale(domain: lower...upper)
+            .chartYAxis {
+                AxisMarks(position: .leading, values: .stride(by: 0.01)) { val in
+                    AxisGridLine()
+                    AxisValueLabel {
+                        if let v = val.as(Double.self) {
+                            Text(String(format: "%.2f", v))
+                                .font(.system(size: 8))
+                        }
+                    }
+                }
+            }
     }
 }
