@@ -197,12 +197,21 @@ final class ArenaHistoryEntryCodableRoundTripTests: XCTestCase {
             valueByPly: [
                 ArenaValueByPlyBucket(lowerInclusive: 0, upperInclusive: 4,
                                       mean: 0.25, meanPolicyProbability: 0.45,
+                                      meanMaterialAdvantage: 1.5,
                                       wins: 2, draws: 1, losses: 0)
             ],
             valueByProgress: [
                 ArenaValueByProgressBucket(lowerPercent: 0, upperPercent: 5,
                                            mean: 0.1, meanPolicyProbability: 0.55,
                                            wins: 1, draws: 1, losses: 1)
+            ],
+            valueByMaterialAdvantage: [
+                ArenaValueByMaterialAdvantageBucket(advantage: 2, mean: 0.3,
+                                                    wins: 3, draws: 0, losses: 1)
+            ],
+            valueByTotalMaterial: [
+                ArenaValueByTotalMaterialBucket(lowerInclusive: 72, upperInclusive: 77,
+                                                mean: 0.05, wins: 1, draws: 2, losses: 0)
             ]
         )
         let entry = ArenaHistoryEntryCodable(
@@ -221,6 +230,20 @@ final class ArenaHistoryEntryCodableRoundTripTests: XCTestCase {
             (2.0 + 0.5 * 1.0) / 3.0,
             accuracy: 1e-9
         )
+    }
+
+    func testExtendedSummaryDecodesLegacyJSONWithoutMaterialBreakdowns() throws {
+        // Summaries persisted before the material breakdowns existed
+        // carry no `valueByMaterialAdvantage` / `valueByTotalMaterial`
+        // keys; the custom decoder must default them to empty rather
+        // than failing the whole summary load.
+        let legacy = #"""
+        {"wdlByLength":[],"valueByPly":[],"valueByProgress":[]}
+        """#
+        let summary = try JSONDecoder().decode(
+            ArenaExtendedSummary.self, from: Data(legacy.utf8))
+        XCTAssertTrue(summary.valueByMaterialAdvantage.isEmpty)
+        XCTAssertTrue(summary.valueByTotalMaterial.isEmpty)
     }
 
     func testValueBucketsDecodeLegacyJSONWithoutPolicyProbability() throws {

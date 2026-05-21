@@ -31,6 +31,15 @@ import SwiftUI
 ///      normalizes out short-vs-long games.
 ///   6. **Value-head by progress.** Mean value-head scalar bucketed
 ///      the same way, in 5% game-progress increments.
+///   7. **Win rate by material advantage.** `(W + 0.5·D)/N` bucketed
+///      by the candidate's material edge — its piece value minus the
+///      opponent's. A calibration axis orthogonal to game phase.
+///   8. **Value-head by material advantage.** Mean value-head scalar
+///      over the same material-advantage buckets.
+///   9. **Win rate by total material.** `(W + 0.5·D)/N` bucketed by
+///      total material on the board — a game-phase axis.
+///  10. **Value-head by total material.** Mean value-head scalar over
+///      the same total-material buckets.
 ///
 /// The 0.5 dashed reference line on the score charts is the "even"
 /// mark — bullets above mean the candidate is on track to score in
@@ -53,6 +62,10 @@ struct ArenaBreakdownsView: View {
             valueByPlySection
             scoreByProgressSection
             valueByProgressSection
+            scoreByMaterialAdvantageSection
+            valueByMaterialAdvantageSection
+            scoreByTotalMaterialSection
+            valueByTotalMaterialSection
         }
     }
 
@@ -162,6 +175,74 @@ struct ArenaBreakdownsView: View {
                 emptyChartPlaceholder
             } else {
                 ValueByProgressChart(buckets: summary.valueByProgress)
+                    .frame(height: 110)
+            }
+        }
+    }
+
+    // MARK: - Win rate by material advantage
+
+    private var scoreByMaterialAdvantageSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            sectionHeader(
+                "Win rate by material advantage ((W+0.5·D)/N)",
+                info: "Each candidate-to-move ply is bucketed by the candidate's material advantage — its standard piece value (P1 N3 B3 R5 Q9) minus the opponent's — then credited with its game's final result. Per bucket the chart plots (W + 0.5·D) / N. A calibration axis orthogonal to game phase: it shows whether the candidate actually converts a material edge. The ±9 end buckets are overflow."
+            )
+            if summary.valueByMaterialAdvantage.isEmpty {
+                emptyChartPlaceholder
+            } else {
+                ScoreByMaterialAdvantageChart(buckets: summary.valueByMaterialAdvantage)
+                    .frame(height: 110)
+            }
+        }
+    }
+
+    // MARK: - Value-head by material advantage
+
+    private var valueByMaterialAdvantageSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            sectionHeader(
+                "Value-head by material advantage (mean p_win − p_loss)",
+                info: "The mean value-head scalar over candidate-to-move plies bucketed by the candidate's material advantage. What the network believed about positions at each material level; win-rate-by-material-advantage is what actually happened."
+            )
+            if summary.valueByMaterialAdvantage.isEmpty {
+                emptyChartPlaceholder
+            } else {
+                ValueByMaterialAdvantageChart(buckets: summary.valueByMaterialAdvantage)
+                    .frame(height: 110)
+            }
+        }
+    }
+
+    // MARK: - Win rate by total material
+
+    private var scoreByTotalMaterialSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            sectionHeader(
+                "Win rate by total material ((W+0.5·D)/N)",
+                info: "Each candidate-to-move ply is bucketed by the total non-king material on the board (both sides, standard piece values), then credited with its game's final result. Per bucket the chart plots (W + 0.5·D) / N. A game-phase axis — a high total marks the opening, a low total the endgame."
+            )
+            if summary.valueByTotalMaterial.isEmpty {
+                emptyChartPlaceholder
+            } else {
+                ScoreByTotalMaterialChart(buckets: summary.valueByTotalMaterial)
+                    .frame(height: 110)
+            }
+        }
+    }
+
+    // MARK: - Value-head by total material
+
+    private var valueByTotalMaterialSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            sectionHeader(
+                "Value-head by total material (mean p_win − p_loss)",
+                info: "The mean value-head scalar over candidate-to-move plies bucketed by total material on the board — the value-head companion to win-rate-by-total-material."
+            )
+            if summary.valueByTotalMaterial.isEmpty {
+                emptyChartPlaceholder
+            } else {
+                ValueByTotalMaterialChart(buckets: summary.valueByTotalMaterial)
                     .frame(height: 110)
             }
         }
@@ -605,6 +686,214 @@ private struct PlySampleCountChart: View {
     }
 }
 
+// MARK: - Material advantage charts
+
+private struct ScoreByMaterialAdvantageChart: View {
+    let buckets: [ArenaValueByMaterialAdvantageBucket]
+
+    private struct Point: Identifiable {
+        let id = UUID()
+        let advantage: Int
+        let score: Double
+        let count: Int
+    }
+
+    private var points: [Point] {
+        buckets.map { Point(advantage: $0.advantage, score: $0.candidateScore, count: $0.count) }
+    }
+
+    var body: some View {
+        let pts = points
+        return Chart(pts) { p in
+            LineMark(
+                x: .value("Material advantage", p.advantage),
+                y: .value("Score", p.score)
+            )
+            .foregroundStyle(Color.accentColor)
+            PointMark(
+                x: .value("Material advantage", p.advantage),
+                y: .value("Score", p.score)
+            )
+            .symbolSize(Double(8 + min(p.count, 32)))
+            .foregroundStyle(Color.accentColor)
+        }
+        .winRateYAxis(scores: pts.map(\.score))
+        .chartXAxis {
+            AxisMarks {
+                AxisGridLine()
+                AxisValueLabel()
+                    .font(.system(size: 8))
+            }
+        }
+        .chartOverlay { proxy in
+            ArenaChartHoverOverlay(
+                proxy: proxy,
+                columnXs: pts.map(\.advantage),
+                referenceLineY: 0.5,
+                markerY: { pts[$0].score },
+                readout: { arenaMaterialAdvantageReadout(for: buckets[$0]) }
+            )
+        }
+    }
+}
+
+private struct ValueByMaterialAdvantageChart: View {
+    let buckets: [ArenaValueByMaterialAdvantageBucket]
+
+    private struct Point: Identifiable {
+        let id = UUID()
+        let advantage: Int
+        let value: Double
+        let count: Int
+    }
+
+    private var points: [Point] {
+        buckets.map { Point(advantage: $0.advantage, value: Double($0.mean), count: $0.count) }
+    }
+
+    var body: some View {
+        let pts = points
+        return Chart(pts) { p in
+            LineMark(
+                x: .value("Material advantage", p.advantage),
+                y: .value("Value", p.value)
+            )
+            .foregroundStyle(Color.accentColor)
+            PointMark(
+                x: .value("Material advantage", p.advantage),
+                y: .value("Value", p.value)
+            )
+            .symbolSize(Double(8 + min(p.count, 32)))
+            .foregroundStyle(Color.accentColor)
+        }
+        .valueYAxis(values: pts.map(\.value))
+        .chartXAxis {
+            AxisMarks {
+                AxisGridLine()
+                AxisValueLabel()
+                    .font(.system(size: 8))
+            }
+        }
+        .chartOverlay { proxy in
+            ArenaChartHoverOverlay(
+                proxy: proxy,
+                columnXs: pts.map(\.advantage),
+                referenceLineY: 0.0,
+                markerY: { pts[$0].value },
+                readout: { arenaMaterialAdvantageReadout(for: buckets[$0]) }
+            )
+        }
+    }
+}
+
+// MARK: - Total material charts
+
+private struct ScoreByTotalMaterialChart: View {
+    let buckets: [ArenaValueByTotalMaterialBucket]
+
+    private struct Point: Identifiable {
+        let id = UUID()
+        let midMaterial: Int
+        let score: Double
+        let count: Int
+    }
+
+    private var points: [Point] {
+        buckets.map { b in
+            // Bucket midpoint as the x-coordinate so each dot sits
+            // centered in its material span.
+            let mid = (b.lowerInclusive + b.upperInclusive) / 2
+            return Point(midMaterial: mid, score: b.candidateScore, count: b.count)
+        }
+    }
+
+    var body: some View {
+        let pts = points
+        return Chart(pts) { p in
+            LineMark(
+                x: .value("Total material", p.midMaterial),
+                y: .value("Score", p.score)
+            )
+            .foregroundStyle(Color.accentColor)
+            PointMark(
+                x: .value("Total material", p.midMaterial),
+                y: .value("Score", p.score)
+            )
+            .symbolSize(Double(8 + min(p.count, 32)))
+            .foregroundStyle(Color.accentColor)
+        }
+        .winRateYAxis(scores: pts.map(\.score))
+        .chartXAxis {
+            AxisMarks {
+                AxisGridLine()
+                AxisValueLabel()
+                    .font(.system(size: 8))
+            }
+        }
+        .chartOverlay { proxy in
+            ArenaChartHoverOverlay(
+                proxy: proxy,
+                columnXs: pts.map(\.midMaterial),
+                referenceLineY: 0.5,
+                markerY: { pts[$0].score },
+                readout: { arenaTotalMaterialReadout(for: buckets[$0]) }
+            )
+        }
+    }
+}
+
+private struct ValueByTotalMaterialChart: View {
+    let buckets: [ArenaValueByTotalMaterialBucket]
+
+    private struct Point: Identifiable {
+        let id = UUID()
+        let midMaterial: Int
+        let value: Double
+        let count: Int
+    }
+
+    private var points: [Point] {
+        buckets.map { b in
+            let mid = (b.lowerInclusive + b.upperInclusive) / 2
+            return Point(midMaterial: mid, value: Double(b.mean), count: b.count)
+        }
+    }
+
+    var body: some View {
+        let pts = points
+        return Chart(pts) { p in
+            LineMark(
+                x: .value("Total material", p.midMaterial),
+                y: .value("Value", p.value)
+            )
+            .foregroundStyle(Color.accentColor)
+            PointMark(
+                x: .value("Total material", p.midMaterial),
+                y: .value("Value", p.value)
+            )
+            .symbolSize(Double(8 + min(p.count, 32)))
+            .foregroundStyle(Color.accentColor)
+        }
+        .valueYAxis(values: pts.map(\.value))
+        .chartXAxis {
+            AxisMarks {
+                AxisGridLine()
+                AxisValueLabel()
+                    .font(.system(size: 8))
+            }
+        }
+        .chartOverlay { proxy in
+            ArenaChartHoverOverlay(
+                proxy: proxy,
+                columnXs: pts.map(\.midMaterial),
+                referenceLineY: 0.0,
+                markerY: { pts[$0].value },
+                readout: { arenaTotalMaterialReadout(for: buckets[$0]) }
+            )
+        }
+    }
+}
+
 // MARK: - Shared hover overlay
 
 /// Hover + reference-line overlay shared by every arena-breakdown
@@ -714,6 +1003,28 @@ private struct ArenaChartHoverOverlay<X: Plottable>: View {
 
 // MARK: - Shared win-rate / value Y-axis
 
+/// Pick a "nice" axis stride — a 1/2/5 × 10ⁿ value — so a domain of
+/// width `span` shows roughly `targetMarks` gridlines. The breakdown
+/// Y-axes pin to a tight window in the common near-even case but
+/// widen to fit a lopsided arena's outliers; a stride that looks
+/// right at the narrow width smears into an illegible band of labels
+/// once the window stretches, so the stride has to scale with the
+/// span actually shown.
+private func niceAxisStride(span: Double, targetMarks: Int = 10) -> Double {
+    guard span > 0, targetMarks > 0 else { return 0.01 }
+    let rough = span / Double(targetMarks)
+    let magnitude = pow(10, floor(log10(rough)))
+    let normalized = rough / magnitude   // in [1, 10)
+    let niceNormalized: Double
+    switch normalized {
+    case ..<1.5: niceNormalized = 1
+    case ..<3.5: niceNormalized = 2
+    case ..<7.5: niceNormalized = 5
+    default:     niceNormalized = 10
+    }
+    return niceNormalized * magnitude
+}
+
 private extension View {
     /// Y-axis treatment shared by the score-by-ply and
     /// score-by-progress charts. Arena win rate hugs the 0.5 "even"
@@ -730,7 +1041,7 @@ private extension View {
         return self
             .chartYScale(domain: lower...upper)
             .chartYAxis {
-                AxisMarks(position: .leading, values: .stride(by: 0.01)) { val in
+                AxisMarks(position: .leading, values: .stride(by: niceAxisStride(span: upper - lower))) { val in
                     AxisGridLine()
                     AxisValueLabel {
                         if let v = val.as(Double.self) {
@@ -757,7 +1068,7 @@ private extension View {
         return self
             .chartYScale(domain: lower...upper)
             .chartYAxis {
-                AxisMarks(position: .leading, values: .stride(by: 0.01)) { val in
+                AxisMarks(position: .leading, values: .stride(by: niceAxisStride(span: upper - lower))) { val in
                     AxisGridLine()
                     AxisValueLabel {
                         if let v = val.as(Double.self) {
@@ -943,6 +1254,55 @@ private func arenaProgressReadout(for bucket: ArenaValueByProgressBucket) -> Cha
     return ChartHoverReadout(
         title: "\(bucket.lowerPercent)–\(bucket.upperPercent)% of game",
         rows: rows
+    )
+}
+
+/// Hover-readout card for an `ArenaValueByMaterialAdvantageBucket`,
+/// shared by the win-rate and value-head material-advantage charts.
+private func arenaMaterialAdvantageReadout(for bucket: ArenaValueByMaterialAdvantageBucket) -> ChartHoverReadout {
+    let advantageLabel = bucket.advantage == 0
+        ? "even"
+        : String(format: "%+d", bucket.advantage)
+    return ChartHoverReadout(
+        title: "Material \(advantageLabel)",
+        rows: [
+            ChartHoverReadout.Row(
+                label: "Win rate",
+                value: arenaBreakdownPercent(bucket.candidateScore)
+            ),
+            ChartHoverReadout.Row(
+                label: "Value",
+                value: arenaBreakdownSignedValue(bucket.mean)
+            ),
+            ChartHoverReadout.Row(
+                label: "W·D·L",
+                value: "\(bucket.wins) · \(bucket.draws) · \(bucket.losses)"
+            ),
+            ChartHoverReadout.Row(label: "Samples", value: "\(bucket.count)")
+        ]
+    )
+}
+
+/// Hover-readout card for an `ArenaValueByTotalMaterialBucket`, shared
+/// by the win-rate and value-head total-material charts.
+private func arenaTotalMaterialReadout(for bucket: ArenaValueByTotalMaterialBucket) -> ChartHoverReadout {
+    ChartHoverReadout(
+        title: "Total material \(bucket.lowerInclusive)–\(bucket.upperInclusive)",
+        rows: [
+            ChartHoverReadout.Row(
+                label: "Win rate",
+                value: arenaBreakdownPercent(bucket.candidateScore)
+            ),
+            ChartHoverReadout.Row(
+                label: "Value",
+                value: arenaBreakdownSignedValue(bucket.mean)
+            ),
+            ChartHoverReadout.Row(
+                label: "W·D·L",
+                value: "\(bucket.wins) · \(bucket.draws) · \(bucket.losses)"
+            ),
+            ChartHoverReadout.Row(label: "Samples", value: "\(bucket.count)")
+        ]
     )
 }
 

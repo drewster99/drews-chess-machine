@@ -5,8 +5,8 @@ import SwiftUI
 // MARK: - Surface metric
 
 /// Which per-ply quantity the arena surface plots as its height and
-/// color. Both metrics are bucketed by absolute ply and stacked across
-/// arenas; the user toggles between them with a segmented control.
+/// color. Each metric is bucketed by absolute ply and stacked across
+/// arenas; the user picks one with a segmented control.
 enum SurfaceMetric: String, CaseIterable, Identifiable {
     /// Candidate win rate `(W + 0.5·D)/N` — the arena's own scoring
     /// identity, per ply bucket.
@@ -14,29 +14,33 @@ enum SurfaceMetric: String, CaseIterable, Identifiable {
     /// Mean value-head scalar `p_win − p_loss` — what the candidate
     /// network *thought* of its position, per ply bucket.
     case valueHead = "Value head"
+    /// Mean candidate material advantage — standard piece values,
+    /// candidate minus opponent — per ply bucket.
+    case materialAdvantage = "Material advantage"
 
     var id: String { rawValue }
 
     /// `[lo, hi]` clamp window for the surface's height and color. The
-    /// interesting band is narrow for both metrics (a near-parity
+    /// interesting band is narrow for every metric (a near-parity
     /// candidate sits at the neutral midpoint), so clamping to this
     /// window gives the band visible relief instead of flattening
     /// everything toward the middle.
     var displayRange: (lo: Double, hi: Double) {
         switch self {
-        case .winRate:   return (0.40, 0.60)
-        case .valueHead: return (-0.10, 0.10)
+        case .winRate:           return (0.40, 0.60)
+        case .valueHead:         return (-0.10, 0.10)
+        case .materialAdvantage: return (-2.0, 2.0)
         }
     }
 
     /// The neutral midpoint — rendered gray on the diverging color map,
     /// and used as the fill value for cells past an arena's longest
-    /// game (`0.5` is the all-draw win rate; `0.0` is the even value
-    /// scalar).
+    /// game (`0.5` is the all-draw win rate; `0.0` is both the even
+    /// value scalar and the even material advantage).
     var neutralValue: Double {
         switch self {
-        case .winRate:   return 0.5
-        case .valueHead: return 0.0
+        case .winRate:                       return 0.5
+        case .valueHead, .materialAdvantage: return 0.0
         }
     }
 }
@@ -96,15 +100,17 @@ struct ArenaSurfaceGrid {
         // Re-bin each qualifying arena onto the common 20-ply grid.
         // Win rate sums raw W/D/L (summing the counts, not averaging
         // pre-computed scores, keeps the merged win rate exact). Value
-        // head sums `mean · count` so the re-binned value is the
-        // count-weighted mean over the merged sample population —
-        // averaging the pre-computed per-bucket means directly would
-        // be wrong whenever the merged buckets differ in sample count.
+        // head and material advantage sum `mean · count` so the
+        // re-binned value is the count-weighted mean over the merged
+        // sample population — averaging the pre-computed per-bucket
+        // means directly would be wrong whenever the merged buckets
+        // differ in sample count.
         struct ColumnTally {
             var wins = 0
             var draws = 0
             var losses = 0
             var valueWeightedSum = 0.0
+            var materialWeightedSum = 0.0
         }
 
         var perArenaColumns: [[Int: ColumnTally]] = []
@@ -125,6 +131,8 @@ struct ArenaSurfaceGrid {
                 tally.draws += bucket.draws
                 tally.losses += bucket.losses
                 tally.valueWeightedSum += Double(bucket.mean) * Double(bucket.count)
+                tally.materialWeightedSum +=
+                    Double(bucket.meanMaterialAdvantage ?? 0) * Double(bucket.count)
                 columns[commonColumn] = tally
                 maxCommonColumn = max(maxCommonColumn, commonColumn)
             }
@@ -163,6 +171,8 @@ struct ArenaSurfaceGrid {
                     row.append((Double(tally.wins) + 0.5 * Double(tally.draws)) / Double(n))
                 case .valueHead:
                     row.append(tally.valueWeightedSum / Double(n))
+                case .materialAdvantage:
+                    row.append(tally.materialWeightedSum / Double(n))
                 }
             }
             values.append(row)
@@ -274,10 +284,12 @@ struct SceneKitSurfaceView: NSViewRepresentable {
         SCNScene()
     }
 
-    /// Add billboarded text labels at the far end of each axis so the
-    /// dimensions are unambiguous from any orbit angle: "Ply" along X,
-    /// "Arena" along Z, and the metric name along Y. Skipped for a
-    /// degenerate grid (the host shows a placeholder instead).
+    /// Add text labels at the far end of each axis: "Ply" along X,
+    /// "Arena" along Z, and the metric name along Y. They are ordinary
+    /// scene nodes — no billboard constraint — so they rotate and
+    /// translate with the surface as the user orbits the camera,
+    /// reading as part of the 3D scene. Skipped for a degenerate grid
+    /// (the host shows a placeholder instead).
     private func addAxisLabels(to scene: SCNScene) {
         guard grid.rowCount >= 2, grid.columnCount >= 2 else { return }
 
@@ -294,11 +306,12 @@ struct SceneKitSurfaceView: NSViewRepresentable {
         scene.rootNode.addChildNode(metricLabel)
     }
 
-    /// One axis label: flat `SCNText`, billboard-constrained so it
-    /// always faces the camera, scaled from font points down into the
-    /// 2-unit scene, and pivoted on its bounding-box center so the
-    /// node's position is the label's center. Sizing/placement here is
-    /// tuned by eye and may want nudging.
+    /// One axis label: flat `SCNText`, scaled from font points down
+    /// into the 2-unit scene and pivoted on its bounding-box center so
+    /// the node's position is the label's center. No billboard
+    /// constraint — the label is a fixed part of the scene and orbits
+    /// with the surface. Sizing/placement here is tuned by eye and may
+    /// want nudging.
     private func makeAxisLabel(_ text: String) -> SCNNode {
         let scnText = SCNText(string: text, extrusionDepth: 0.0)
         scnText.font = NSFont.systemFont(ofSize: 12)
@@ -319,7 +332,6 @@ struct SceneKitSurfaceView: NSViewRepresentable {
             (box.min.y + box.max.y) / 2,
             (box.min.z + box.max.z) / 2
         )
-        node.constraints = [SCNBillboardConstraint()]
         return node
     }
 
@@ -610,6 +622,8 @@ struct ArenaSurfaceView: View {
             return "X → ply (early→late) · Z → arena (oldest→newest) · height & color → candidate win rate (red <0.5, green >0.5). Cells past an arena's longest game are filled at 0.50."
         case .valueHead:
             return "X → ply (early→late) · Z → arena (oldest→newest) · height & color → mean value-head scalar p_win − p_loss (red <0, green >0). Cells past an arena's longest game are filled at 0.00."
+        case .materialAdvantage:
+            return "X → ply (early→late) · Z → arena (oldest→newest) · height & color → mean candidate material advantage in piece-value points (red <0, green >0). Cells past an arena's longest game are filled at 0.00."
         }
     }
 

@@ -22,6 +22,21 @@ enum PieceType: Int, Sendable, CaseIterable, Hashable {
     case rook = 3
     case queen = 4
     case king = 5
+
+    /// Standard chess material value, used by the arena
+    /// material-advantage breakdowns. Kings are 0 — both sides always
+    /// have exactly one, so a king contributes a constant that cancels
+    /// out of any candidate-minus-opponent difference.
+    var materialValue: Int {
+        switch self {
+        case .pawn:   return 1
+        case .knight: return 3
+        case .bishop: return 3
+        case .rook:   return 5
+        case .queen:  return 9
+        case .king:   return 0
+        }
+    }
 }
 
 struct Piece: Sendable, Hashable {

@@ -84,6 +84,14 @@ struct CandidateValueSample: Sendable {
     /// position is; `policyProbability` is how committed it was to
     /// the move it chose.
     let policyProbability: Float
+    /// Candidate's material edge at this ply — its standard
+    /// piece-value sum minus the opponent's (kings 0). Positive = the
+    /// candidate is up material. Shares the perspective of `value`
+    /// (the candidate is the side to move at every sampled ply).
+    let materialAdvantage: Int
+    /// Total non-king material on the board at this ply, both sides
+    /// summed, in standard piece values. A game-phase proxy.
+    let totalMaterial: Int
 }
 
 /// One completed game's worth of data harvested by the tournament

@@ -202,6 +202,32 @@ enum ArenaLogFormatter {
             }
         }
 
+        // (4) Candidate value scalar + score by material advantage.
+        if !ext.valueByMaterialAdvantage.isEmpty {
+            lines.append("[ARENA]     Value + score by material advantage (candidate − opponent):")
+            let labelWidth = ext.valueByMaterialAdvantage.map { materialAdvantageBucketLabel($0).count }.max() ?? 0
+            for bucket in ext.valueByMaterialAdvantage {
+                let label = materialAdvantageBucketLabel(bucket)
+                    .padding(toLength: labelWidth, withPad: " ", startingAt: 0)
+                lines.append(
+                    "[ARENA]       \(label)  v=\(formatSignedValue(bucket.mean)) score=\(formatScore(bucket.candidateScore))  (n=\(bucket.count))"
+                )
+            }
+        }
+
+        // (5) Candidate value scalar + score by total material on board.
+        if !ext.valueByTotalMaterial.isEmpty {
+            lines.append("[ARENA]     Value + score by total material (both sides):")
+            let labelWidth = ext.valueByTotalMaterial.map { totalMaterialBucketLabel($0).count }.max() ?? 0
+            for bucket in ext.valueByTotalMaterial {
+                let label = totalMaterialBucketLabel(bucket)
+                    .padding(toLength: labelWidth, withPad: " ", startingAt: 0)
+                lines.append(
+                    "[ARENA]       \(label)  v=\(formatSignedValue(bucket.mean)) score=\(formatScore(bucket.candidateScore))  (n=\(bucket.count))"
+                )
+            }
+        }
+
         return lines
     }
 
@@ -303,6 +329,20 @@ enum ArenaLogFormatter {
         let lo = String(format: "%3d", bucket.lowerPercent)
         let hi = String(format: "%3d", bucket.upperPercent)
         return "\(lo)-\(hi)%:"
+    }
+
+    /// Render a material-advantage bucket label, e.g. "adv  +3:" or
+    /// "adv  -2:". Width-padded so the digits column-align.
+    static func materialAdvantageBucketLabel(_ bucket: ArenaValueByMaterialAdvantageBucket) -> String {
+        "adv \(String(format: "%+3d", bucket.advantage)):"
+    }
+
+    /// Render a total-material bucket label, e.g. "mat   0-  5:" or
+    /// "mat  72- 77:". Width-padded so the digits column-align.
+    static func totalMaterialBucketLabel(_ bucket: ArenaValueByTotalMaterialBucket) -> String {
+        let lo = String(format: "%3d", bucket.lowerInclusive)
+        let hi = String(format: "%3d", bucket.upperInclusive)
+        return "mat \(lo)-\(hi):"
     }
 
     /// Format a value in `[-1, +1]` as a signed three-decimal-place

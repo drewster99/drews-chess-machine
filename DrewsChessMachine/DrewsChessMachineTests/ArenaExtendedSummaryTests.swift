@@ -405,6 +405,120 @@ final class ArenaExtendedSummaryTests: XCTestCase {
         )
     }
 
+    // MARK: - Material breakdowns
+
+    func testValueByMaterialAdvantageAggregates() {
+        // Three candidate plies at advantages -2, 0, +2; white wins,
+        // so every ply scores 1.0. Each distinct advantage is its own
+        // bucket, emitted in ascending order.
+        let samples: [CandidateValueSample] = [
+            CandidateValueSample(ply: 0, value: 0.1, policyProbability: 0,
+                                 materialAdvantage: -2, totalMaterial: 40),
+            CandidateValueSample(ply: 2, value: 0.2, policyProbability: 0,
+                                 materialAdvantage: 0, totalMaterial: 38),
+            CandidateValueSample(ply: 4, value: 0.3, policyProbability: 0,
+                                 materialAdvantage: 2, totalMaterial: 36)
+        ]
+        let record = makeRecord(length: 5, aIsWhite: true,
+                                result: .checkmate(winner: .white), samples: samples)
+        let summary = ArenaSummaryAggregator.aggregate(records: [record])
+
+        XCTAssertEqual(summary.valueByMaterialAdvantage.map(\.advantage), [-2, 0, 2])
+        for bucket in summary.valueByMaterialAdvantage {
+            XCTAssertEqual(bucket.count, 1)
+            XCTAssertEqual(bucket.candidateScore, 1.0, accuracy: 1e-9)
+        }
+    }
+
+    func testValueByMaterialAdvantageClampsBeyondNine() {
+        // Advantages past ±9 fold into the ±9 overflow buckets.
+        let samples: [CandidateValueSample] = [
+            CandidateValueSample(ply: 0, value: 0, policyProbability: 0,
+                                 materialAdvantage: 15, totalMaterial: 50),
+            CandidateValueSample(ply: 2, value: 0, policyProbability: 0,
+                                 materialAdvantage: -30, totalMaterial: 50)
+        ]
+        let record = makeRecord(length: 3, aIsWhite: true,
+                                result: .stalemate, samples: samples)
+        let summary = ArenaSummaryAggregator.aggregate(records: [record])
+
+        XCTAssertEqual(summary.valueByMaterialAdvantage.map(\.advantage), [-9, 9])
+    }
+
+    func testValueByMaterialAdvantageMeanIsValueMean() {
+        // Two plies at the same advantage → one bucket whose `mean`
+        // is the value-scalar mean over those plies.
+        let samples: [CandidateValueSample] = [
+            CandidateValueSample(ply: 0, value: 0.2, policyProbability: 0,
+                                 materialAdvantage: 3, totalMaterial: 40),
+            CandidateValueSample(ply: 2, value: 0.4, policyProbability: 0,
+                                 materialAdvantage: 3, totalMaterial: 40)
+        ]
+        let record = makeRecord(length: 3, aIsWhite: true,
+                                result: .checkmate(winner: .white), samples: samples)
+        let summary = ArenaSummaryAggregator.aggregate(records: [record])
+
+        XCTAssertEqual(summary.valueByMaterialAdvantage.count, 1)
+        let bucket = summary.valueByMaterialAdvantage[0]
+        XCTAssertEqual(bucket.advantage, 3)
+        XCTAssertEqual(bucket.count, 2)
+        XCTAssertEqual(bucket.mean, 0.3, accuracy: 1e-6)
+    }
+
+    func testValueByTotalMaterialBucketsByWidthSix() {
+        // totalMaterial 8 → bucket 1 ([6-11]); 40 → bucket 6 ([36-41]).
+        let samples: [CandidateValueSample] = [
+            CandidateValueSample(ply: 0, value: 0.1, policyProbability: 0,
+                                 materialAdvantage: 0, totalMaterial: 8),
+            CandidateValueSample(ply: 2, value: 0.5, policyProbability: 0,
+                                 materialAdvantage: 0, totalMaterial: 40)
+        ]
+        let record = makeRecord(length: 3, aIsWhite: true,
+                                result: .checkmate(winner: .white), samples: samples)
+        let summary = ArenaSummaryAggregator.aggregate(records: [record])
+
+        XCTAssertEqual(summary.valueByTotalMaterial.count, 2)
+        XCTAssertEqual(summary.valueByTotalMaterial[0].lowerInclusive, 6)
+        XCTAssertEqual(summary.valueByTotalMaterial[0].upperInclusive, 11)
+        XCTAssertEqual(summary.valueByTotalMaterial[1].lowerInclusive, 36)
+        XCTAssertEqual(summary.valueByTotalMaterial[1].upperInclusive, 41)
+    }
+
+    func testValueByPlyCarriesMeanMaterialAdvantage() throws {
+        // Two candidate plies in the first 20-ply bucket at material
+        // advantages 2 and 4 → the bucket's meanMaterialAdvantage is 3.
+        let samples: [CandidateValueSample] = [
+            CandidateValueSample(ply: 0, value: 0, policyProbability: 0,
+                                 materialAdvantage: 2, totalMaterial: 40),
+            CandidateValueSample(ply: 2, value: 0, policyProbability: 0,
+                                 materialAdvantage: 4, totalMaterial: 40)
+        ]
+        let record = makeRecord(length: 3, aIsWhite: true,
+                                result: .checkmate(winner: .white), samples: samples)
+        let summary = ArenaSummaryAggregator.aggregate(records: [record])
+
+        XCTAssertEqual(summary.valueByPly.count, 1)
+        let material = try XCTUnwrap(summary.valueByPly[0].meanMaterialAdvantage)
+        XCTAssertEqual(material, 3.0, accuracy: 1e-6)
+    }
+
+    func testArenaMaterialSummaryFromBoard() {
+        // White: queen (9) + king (0). Black: rook (5) + king (0).
+        var board: [Piece?] = Array(repeating: nil, count: 64)
+        board[0] = Piece(type: .king, color: .white)
+        board[1] = Piece(type: .queen, color: .white)
+        board[2] = Piece(type: .king, color: .black)
+        board[3] = Piece(type: .rook, color: .black)
+
+        let white = ArenaMaterial.summary(board: board, candidateColor: .white)
+        XCTAssertEqual(white.advantage, 4)   // 9 − 5
+        XCTAssertEqual(white.total, 14)      // 9 + 5
+
+        let black = ArenaMaterial.summary(board: board, candidateColor: .black)
+        XCTAssertEqual(black.advantage, -4)  // 5 − 9
+        XCTAssertEqual(black.total, 14)
+    }
+
     // MARK: - Fixture helpers
 
     /// A `ChessMove` stub used only to pad `moveHistory` to a desired
@@ -431,10 +545,16 @@ final class ArenaExtendedSummaryTests: XCTestCase {
 
 extension CandidateValueSample {
     /// Test convenience. Most aggregator tests exercise the value /
-    /// W·D·L paths and don't depend on the chosen-move policy
-    /// probability; this keeps their fixtures terse. Tests that DO
-    /// assert on policy probability use the full memberwise init.
+    /// W·D·L paths and don't depend on policy probability or material;
+    /// these keep their fixtures terse. Tests that assert on those
+    /// signals use the full memberwise init.
     init(ply: Int, value: Float) {
-        self.init(ply: ply, value: value, policyProbability: 0)
+        self.init(ply: ply, value: value, policyProbability: 0,
+                  materialAdvantage: 0, totalMaterial: 0)
+    }
+
+    init(ply: Int, value: Float, policyProbability: Float) {
+        self.init(ply: ply, value: value, policyProbability: policyProbability,
+                  materialAdvantage: 0, totalMaterial: 0)
     }
 }

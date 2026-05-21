@@ -462,14 +462,16 @@ final class TickTournamentDriver: @unchecked Sendable {
         // `p_win - p_loss` from the candidate's perspective
         // (side-to-move == candidate this ply).
         //
-        // The third `CandidateValueSample` field — the chosen-move
-        // policy probability — is only known once the parallel apply
-        // pass below has sampled, so the complete sample is assembled
-        // in a sequential pass after that (see `pendingCandidateSamples`
-        // and the post-tick assembly loop). Drained per-game into the
-        // `TournamentGameRecord` for the post-arena strength-by-ply /
-        // strength-by-progress summaries.
-        var pendingCandidateSamples: [(slot: Int, ply: Int, value: Float)] = []
+        // Material advantage and total material are read from the
+        // pre-apply board right here — the candidate is the side to
+        // move at every candidate slot. The chosen-move policy
+        // probability, by contrast, is only known once the parallel
+        // apply pass below has sampled, so the complete
+        // `CandidateValueSample` is assembled in a sequential pass
+        // after that (see `pendingCandidateSamples` and the post-tick
+        // assembly loop). Drained per-game into the
+        // `TournamentGameRecord` for the post-arena breakdown summaries.
+        var pendingCandidateSamples: [(slot: Int, ply: Int, value: Float, materialAdvantage: Int, totalMaterial: Int)] = []
         pendingCandidateSamples.reserveCapacity(candIndices.count)
         for compact in 0..<candIndices.count {
             let slotIdx = candIndices[compact]
@@ -480,10 +482,16 @@ final class TickTournamentDriver: @unchecked Sendable {
             // any result check), but the value isn't a meaningful
             // "trainer assessment of this game" sample.
             if g.engine.result != nil { continue }
+            let material = ArenaMaterial.summary(
+                board: g.engine.state.board,
+                candidateColor: g.engine.state.currentPlayer
+            )
             pendingCandidateSamples.append(
                 (slot: slotIdx,
                  ply: g.totalPliesPlayed,
-                 value: scratches.candValueScratch[compact])
+                 value: scratches.candValueScratch[compact],
+                 materialAdvantage: material.advantage,
+                 totalMaterial: material.total)
             )
         }
 
@@ -601,7 +609,9 @@ final class TickTournamentDriver: @unchecked Sendable {
                 CandidateValueSample(
                     ply: pending.ply,
                     value: pending.value,
-                    policyProbability: scratches.candChosenProbScratch[pending.slot]
+                    policyProbability: scratches.candChosenProbScratch[pending.slot],
+                    materialAdvantage: pending.materialAdvantage,
+                    totalMaterial: pending.totalMaterial
                 )
             )
         }
