@@ -196,11 +196,13 @@ final class ArenaHistoryEntryCodableRoundTripTests: XCTestCase {
             ],
             valueByPly: [
                 ArenaValueByPlyBucket(lowerInclusive: 0, upperInclusive: 4,
-                                      mean: 0.25, wins: 2, draws: 1, losses: 0)
+                                      mean: 0.25, meanPolicyProbability: 0.45,
+                                      wins: 2, draws: 1, losses: 0)
             ],
             valueByProgress: [
                 ArenaValueByProgressBucket(lowerPercent: 0, upperPercent: 5,
-                                           mean: 0.1, wins: 1, draws: 1, losses: 1)
+                                           mean: 0.1, meanPolicyProbability: 0.55,
+                                           wins: 1, draws: 1, losses: 1)
             ]
         )
         let entry = ArenaHistoryEntryCodable(
@@ -219,6 +221,27 @@ final class ArenaHistoryEntryCodableRoundTripTests: XCTestCase {
             (2.0 + 0.5 * 1.0) / 3.0,
             accuracy: 1e-9
         )
+    }
+
+    func testValueBucketsDecodeLegacyJSONWithoutPolicyProbability() throws {
+        // Buckets persisted before `meanPolicyProbability` existed
+        // carry no such key; the Optional field must decode as nil
+        // rather than failing the whole summary load.
+        let legacyPly = #"""
+        {"lowerInclusive":0,"upperInclusive":19,"mean":0.1,"wins":2,"draws":1,"losses":0}
+        """#
+        let ply = try JSONDecoder().decode(
+            ArenaValueByPlyBucket.self, from: Data(legacyPly.utf8))
+        XCTAssertNil(ply.meanPolicyProbability)
+        XCTAssertEqual(ply.wins, 2)
+
+        let legacyProgress = #"""
+        {"lowerPercent":0,"upperPercent":5,"mean":0.1,"wins":1,"draws":1,"losses":1}
+        """#
+        let progress = try JSONDecoder().decode(
+            ArenaValueByProgressBucket.self, from: Data(legacyProgress.utf8))
+        XCTAssertNil(progress.meanPolicyProbability)
+        XCTAssertEqual(progress.losses, 1)
     }
 
     func testZeroedPerSideCountsDistinctFromNil() throws {

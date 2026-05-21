@@ -368,23 +368,32 @@ private struct ScoreByPlyChart: View {
     }
 
     private func readout(for bucket: ArenaValueByPlyBucket) -> ChartHoverReadout {
-        ChartHoverReadout(
+        var rows: [ChartHoverReadout.Row] = [
+            ChartHoverReadout.Row(
+                label: "Win rate",
+                value: arenaBreakdownPercent(bucket.candidateScore)
+            ),
+            ChartHoverReadout.Row(
+                label: "Value",
+                value: arenaBreakdownSignedValue(bucket.mean)
+            )
+        ]
+        // `meanPolicyProbability` is nil only for summaries persisted
+        // before the field existed — show the row when present.
+        if let policy = bucket.meanPolicyProbability {
+            rows.append(ChartHoverReadout.Row(
+                label: "Policy",
+                value: arenaBreakdownPercent(Double(policy))
+            ))
+        }
+        rows.append(ChartHoverReadout.Row(
+            label: "W·D·L",
+            value: "\(bucket.wins) · \(bucket.draws) · \(bucket.losses)"
+        ))
+        rows.append(ChartHoverReadout.Row(label: "Samples", value: "\(bucket.count)"))
+        return ChartHoverReadout(
             title: "Ply \(bucket.lowerInclusive)–\(bucket.upperInclusive)",
-            rows: [
-                ChartHoverReadout.Row(
-                    label: "Win rate",
-                    value: arenaBreakdownPercent(bucket.candidateScore)
-                ),
-                ChartHoverReadout.Row(
-                    label: "Value",
-                    value: arenaBreakdownSignedValue(bucket.mean)
-                ),
-                ChartHoverReadout.Row(
-                    label: "W·D·L",
-                    value: "\(bucket.wins) · \(bucket.draws) · \(bucket.losses)"
-                ),
-                ChartHoverReadout.Row(label: "Samples", value: "\(bucket.count)")
-            ]
+            rows: rows
         )
     }
 
@@ -518,23 +527,32 @@ private struct ScoreByProgressChart: View {
     }
 
     private func readout(for bucket: ArenaValueByProgressBucket) -> ChartHoverReadout {
-        ChartHoverReadout(
+        var rows: [ChartHoverReadout.Row] = [
+            ChartHoverReadout.Row(
+                label: "Win rate",
+                value: arenaBreakdownPercent(bucket.candidateScore)
+            ),
+            ChartHoverReadout.Row(
+                label: "Value",
+                value: arenaBreakdownSignedValue(bucket.mean)
+            )
+        ]
+        // `meanPolicyProbability` is nil only for summaries persisted
+        // before the field existed — show the row when present.
+        if let policy = bucket.meanPolicyProbability {
+            rows.append(ChartHoverReadout.Row(
+                label: "Policy",
+                value: arenaBreakdownPercent(Double(policy))
+            ))
+        }
+        rows.append(ChartHoverReadout.Row(
+            label: "W·D·L",
+            value: "\(bucket.wins) · \(bucket.draws) · \(bucket.losses)"
+        ))
+        rows.append(ChartHoverReadout.Row(label: "Samples", value: "\(bucket.count)"))
+        return ChartHoverReadout(
             title: "\(bucket.lowerPercent)–\(bucket.upperPercent)% of game",
-            rows: [
-                ChartHoverReadout.Row(
-                    label: "Win rate",
-                    value: arenaBreakdownPercent(bucket.candidateScore)
-                ),
-                ChartHoverReadout.Row(
-                    label: "Value",
-                    value: arenaBreakdownSignedValue(bucket.mean)
-                ),
-                ChartHoverReadout.Row(
-                    label: "W·D·L",
-                    value: "\(bucket.wins) · \(bucket.draws) · \(bucket.losses)"
-                ),
-                ChartHoverReadout.Row(label: "Samples", value: "\(bucket.count)")
-            ]
+            rows: rows
         )
     }
 

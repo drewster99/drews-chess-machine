@@ -137,6 +137,41 @@ final class MoveSamplerTests: XCTestCase {
         XCTAssertEqual(result.policyIndex, PolicyEncoding.policyIndex(move1, currentPlayer: .black))
     }
 
+    // MARK: - chosenProbability
+
+    func test_chosenProbability_singleLegalMoveIsOne() {
+        // A forced move's softmax is a one-element distribution, so
+        // the chosen move always carries the full probability mass.
+        let result = sample(logits: zeroLogits(), legalMoves: [move1])
+        XCTAssertEqual(result.chosenProbability, 1.0, accuracy: 1e-6)
+    }
+
+    func test_chosenProbability_flatLogitsIsUniform() {
+        // Flat logits over four legal moves → uniform softmax → the
+        // chosen move (whichever it is) carries 1/4 of the mass.
+        for _ in 0..<50 {
+            let result = sample(
+                logits: zeroLogits(),
+                legalMoves: [move1, move2, move3, move4]
+            )
+            XCTAssertEqual(result.chosenProbability, 0.25, accuracy: 1e-5)
+        }
+    }
+
+    func test_chosenProbability_lowTauApproachesOne() {
+        // Sharp logits + tau→0 collapse the softmax onto the argmax
+        // cell, so the chosen move's probability is ~1.0.
+        let logits = sharpLogits(winner: move3, currentPlayer: .white)
+        let schedule = SamplingSchedule(startTau: 0.0001, decayPerPly: 0.0, floorTau: 0.0001)
+        let result = sample(
+            logits: logits,
+            legalMoves: [move1, move2, move3, move4],
+            schedule: schedule
+        )
+        XCTAssertEqual(result.move, move3)
+        XCTAssertGreaterThan(result.chosenProbability, 0.99)
+    }
+
     // MARK: - randomish flag
 
     func test_randomish_trueForFlatLogits() {

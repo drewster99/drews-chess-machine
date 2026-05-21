@@ -361,6 +361,50 @@ final class ArenaExtendedSummaryTests: XCTestCase {
         )
     }
 
+    // MARK: - Mean policy probability
+
+    func testValueByPlyMeanPolicyProbability() throws {
+        // Two candidate plies in the first 20-ply bucket, each with a
+        // known chosen-move policy probability → the bucket's
+        // meanPolicyProbability is their average.
+        let samples: [CandidateValueSample] = [
+            CandidateValueSample(ply: 0, value: 0.1, policyProbability: 0.4),
+            CandidateValueSample(ply: 2, value: 0.2, policyProbability: 0.6)
+        ]
+        let record = makeRecord(length: 3, aIsWhite: true,
+                                result: .checkmate(winner: .white),
+                                samples: samples)
+        let summary = ArenaSummaryAggregator.aggregate(records: [record])
+
+        XCTAssertEqual(summary.valueByPly.count, 1)
+        let policy = try XCTUnwrap(summary.valueByPly[0].meanPolicyProbability)
+        XCTAssertEqual(policy, 0.5, accuracy: 1e-6)  // (0.4 + 0.6) / 2
+    }
+
+    func testValueByProgressMeanPolicyProbability() throws {
+        // 20-ply game, candidate white. ply 0 → progress bucket
+        // [0,5); ply 10 → [50,55). Each carries its own policy
+        // probability, so each bucket's mean is that single value.
+        let samples: [CandidateValueSample] = [
+            CandidateValueSample(ply: 0, value: 0.0, policyProbability: 0.3),
+            CandidateValueSample(ply: 10, value: 0.0, policyProbability: 0.7)
+        ]
+        let record = makeRecord(length: 20, aIsWhite: true,
+                                result: .checkmate(winner: .white),
+                                samples: samples)
+        let summary = ArenaSummaryAggregator.aggregate(records: [record])
+
+        XCTAssertEqual(summary.valueByProgress.count, 2)
+        XCTAssertEqual(
+            try XCTUnwrap(summary.valueByProgress[0].meanPolicyProbability),
+            0.3, accuracy: 1e-6
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(summary.valueByProgress[1].meanPolicyProbability),
+            0.7, accuracy: 1e-6
+        )
+    }
+
     // MARK: - Fixture helpers
 
     /// A `ChessMove` stub used only to pad `moveHistory` to a desired
@@ -382,5 +426,15 @@ final class ArenaExtendedSummaryTests: XCTestCase {
             moveHistory: history,
             candidateValueSamples: samples
         )
+    }
+}
+
+extension CandidateValueSample {
+    /// Test convenience. Most aggregator tests exercise the value /
+    /// W·D·L paths and don't depend on the chosen-move policy
+    /// probability; this keeps their fixtures terse. Tests that DO
+    /// assert on policy probability use the full memberwise init.
+    init(ply: Int, value: Float) {
+        self.init(ply: ply, value: value, policyProbability: 0)
     }
 }

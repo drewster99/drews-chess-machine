@@ -36,8 +36,9 @@ import Foundation
 ///   — caller can reuse the same scratches for the next call.
 ///
 /// Returns the sampled move, its raw policy index (so the caller can
-/// record it without re-calling `PolicyEncoding.policyIndex`), and a
-/// `randomish` flag (true when the post-temperature legal-only
+/// record it without re-calling `PolicyEncoding.policyIndex`), the
+/// probability mass the sampling distribution placed on that move,
+/// and a `randomish` flag (true when the post-temperature legal-only
 /// softmax was essentially uniform — i.e. the sampler was picking
 /// at random, not acting on a network opinion). The flag is computed
 /// pre-Dirichlet so Dirichlet noise doesn't mask a flat-policy signal.
@@ -52,6 +53,12 @@ enum MoveSampler {
         let move: ChessMove
         let policyIndex: Int
         let randomish: Bool
+        /// Probability the sampling distribution placed on `move` —
+        /// the post-temperature legal-only softmax value at the
+        /// chosen move, after any Dirichlet mix. For a noise-free
+        /// schedule this is exactly the network's temperature-scaled
+        /// policy probability for the move it played.
+        let chosenProbability: Float
     }
 
     /// - parameter ply: Game-total ply count of the position being
@@ -167,7 +174,8 @@ enum MoveSampler {
                 return Result(
                     move: legalMoves[i],
                     policyIndex: PolicyEncoding.policyIndex(legalMoves[i], currentPlayer: currentPlayer),
-                    randomish: randomish
+                    randomish: randomish,
+                    chosenProbability: probsBase[i]
                 )
             }
         }
@@ -177,7 +185,8 @@ enum MoveSampler {
         return Result(
             move: legalMoves[n - 1],
             policyIndex: PolicyEncoding.policyIndex(legalMoves[n - 1], currentPlayer: currentPlayer),
-            randomish: randomish
+            randomish: randomish,
+            chosenProbability: probsBase[n - 1]
         )
     }
 

@@ -27,22 +27,31 @@ struct ArenaWDLByLengthBucket: Sendable, Codable, Equatable {
 /// Per-bucket statistics for candidate-to-move plies bucketed by
 /// absolute ply index.
 ///
-/// Carries two distinct signals over the same sample population:
+/// Carries three signals over the same sample population:
 ///   - `mean` — mean of the candidate network's value-head scalar
 ///     (`p_win - p_loss ∈ [-1, +1]`) at those plies. The network's
-///     own self-assessment.
+///     own self-assessment of the position.
+///   - `meanPolicyProbability` — mean probability the candidate's
+///     policy placed on the move it actually played. How committed
+///     the policy was, distinct from how good it judged the
+///     position to be.
 ///   - `wins / draws / losses` — each ply attributed to its game's
 ///     eventual outcome from the candidate's perspective. The
 ///     derived `candidateScore = (W + 0.5·D) / N` is the same
 ///     metric the arena uses to score a tournament, but bucketed
 ///     by ply so the user can see *at which point in the game* the
 ///     candidate is actually winning rather than just *what it
-///     thinks*. The two signals together form a calibration view.
+///     thinks*. The signals together form a calibration view.
 struct ArenaValueByPlyBucket: Sendable, Codable, Equatable {
     let lowerInclusive: Int
     let upperInclusive: Int
     /// Mean candidate value scalar over plies in this bucket.
     let mean: Float
+    /// Mean chosen-move policy probability over plies in this bucket
+    /// — how committed the candidate's policy was, on average, to the
+    /// moves it actually played here. `nil` for summaries persisted
+    /// before this field was added.
+    let meanPolicyProbability: Float?
     /// Per-bucket W/D/L attribution: each candidate-to-move ply
     /// that fell in this bucket adds one to W, D, or L depending on
     /// the eventual outcome of the game it came from. Sum =
@@ -66,12 +75,16 @@ struct ArenaValueByPlyBucket: Sendable, Codable, Equatable {
 /// fixed buckets of width 5%; the last bucket is inclusive of 100
 /// so the very last candidate ply of a finished game lands cleanly.
 ///
-/// Same dual signal as `ArenaValueByPlyBucket` — see that doc for
-/// the rationale on carrying both `mean` and the W/D/L attribution.
+/// Same signals as `ArenaValueByPlyBucket` — see that doc for the
+/// rationale on carrying `mean`, `meanPolicyProbability`, and the
+/// W/D/L attribution.
 struct ArenaValueByProgressBucket: Sendable, Codable, Equatable {
     let lowerPercent: Int     // inclusive
     let upperPercent: Int     // exclusive, except final bucket which is inclusive of 100
     let mean: Float
+    /// Mean chosen-move policy probability over plies in this bucket.
+    /// `nil` for summaries persisted before this field was added.
+    let meanPolicyProbability: Float?
     let wins: Int
     let draws: Int
     let losses: Int
@@ -154,7 +167,11 @@ enum ArenaSummaryAggregator {
                 while plyAccum.count <= pBucket {
                     plyAccum.append(PlyAccumulator())
                 }
-                plyAccum[pBucket].add(value: sample.value, outcome: outcome)
+                plyAccum[pBucket].add(
+                    value: sample.value,
+                    policyProbability: sample.policyProbability,
+                    outcome: outcome
+                )
 
                 // Progress-percent bucket. Requires length >= 1; the
                 // candidate samples loop already implies length >= 1
@@ -163,7 +180,11 @@ enum ArenaSummaryAggregator {
                 if length > 0 {
                     let pct = (sample.ply * 100) / length
                     let progBucket = min(pct / progressBucketWidth, progressBucketCount - 1)
-                    progressAccum[progBucket].add(value: sample.value, outcome: outcome)
+                    progressAccum[progBucket].add(
+                        value: sample.value,
+                        policyProbability: sample.policyProbability,
+                        outcome: outcome
+                    )
                 }
             }
         }
@@ -202,6 +223,7 @@ enum ArenaSummaryAggregator {
                 lowerInclusive: lo,
                 upperInclusive: hi,
                 mean: entry.mean,
+                meanPolicyProbability: entry.meanPolicy,
                 wins: entry.wins,
                 draws: entry.draws,
                 losses: entry.losses
@@ -219,6 +241,7 @@ enum ArenaSummaryAggregator {
                 lowerPercent: lo,
                 upperPercent: hi,
                 mean: entry.mean,
+                meanPolicyProbability: entry.meanPolicy,
                 wins: entry.wins,
                 draws: entry.draws,
                 losses: entry.losses
@@ -238,6 +261,7 @@ enum ArenaSummaryAggregator {
     /// running sum to callers.
     private struct PlyAccumulator {
         var sum: Double = 0
+        var policySum: Double = 0
         var wins: Int = 0
         var draws: Int = 0
         var losses: Int = 0
@@ -247,9 +271,14 @@ enum ArenaSummaryAggregator {
             guard count > 0 else { return 0 }
             return Float(sum / Double(count))
         }
+        var meanPolicy: Float {
+            guard count > 0 else { return 0 }
+            return Float(policySum / Double(count))
+        }
 
-        mutating func add(value: Float, outcome: CandidateOutcome) {
+        mutating func add(value: Float, policyProbability: Float, outcome: CandidateOutcome) {
             sum += Double(value)
+            policySum += Double(policyProbability)
             switch outcome {
             case .win:  wins += 1
             case .draw: draws += 1

@@ -179,8 +179,10 @@ enum ArenaLogFormatter {
             for bucket in ext.valueByPly {
                 let label = plyBucketLabel(bucket)
                     .padding(toLength: labelWidth, withPad: " ", startingAt: 0)
+                let pol = bucket.meanPolicyProbability
+                    .map { String(format: "pol=%.3f ", $0) } ?? ""
                 lines.append(
-                    "[ARENA]       \(label)  v=\(formatSignedValue(bucket.mean)) score=\(formatScore(bucket.candidateScore))  (n=\(bucket.count))"
+                    "[ARENA]       \(label)  v=\(formatSignedValue(bucket.mean)) \(pol)score=\(formatScore(bucket.candidateScore))  (n=\(bucket.count))"
                 )
             }
         }
@@ -192,8 +194,10 @@ enum ArenaLogFormatter {
             for bucket in ext.valueByProgress {
                 let label = progressBucketLabel(bucket)
                     .padding(toLength: labelWidth, withPad: " ", startingAt: 0)
+                let pol = bucket.meanPolicyProbability
+                    .map { String(format: "pol=%.3f ", $0) } ?? ""
                 lines.append(
-                    "[ARENA]       \(label)  v=\(formatSignedValue(bucket.mean)) score=\(formatScore(bucket.candidateScore))  (n=\(bucket.count))"
+                    "[ARENA]       \(label)  v=\(formatSignedValue(bucket.mean)) \(pol)score=\(formatScore(bucket.candidateScore))  (n=\(bucket.count))"
                 )
             }
         }

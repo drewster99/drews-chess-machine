@@ -77,6 +77,13 @@ struct CandidateValueSample: Sendable {
     /// Candidate network's value-head scalar at that ply, in `[-1, +1]`.
     /// Positive = candidate thinks it's winning.
     let value: Float
+    /// Probability mass the candidate's policy placed on the move it
+    /// actually played at this ply — the post-temperature legal-only
+    /// softmax value at the chosen move. A calibration companion to
+    /// `value`: `value` is how good the candidate *thinks* the
+    /// position is; `policyProbability` is how committed it was to
+    /// the move it chose.
+    let policyProbability: Float
 }
 
 /// One completed game's worth of data harvested by the tournament

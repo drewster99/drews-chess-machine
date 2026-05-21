@@ -454,14 +454,23 @@ final class TickTournamentDriver: @unchecked Sendable {
         try await candDone
         try await champDone
 
-        // Snapshot the candidate value scalar for each candidate-to-move
-        // slot, before the sample+apply pass mutates engine state and
-        // increments `totalPliesPlayed`. The captured ply index is the
-        // ply about to be played — i.e., 0-indexed `totalPliesPlayed`
-        // pre-apply — and the value is `p_win - p_loss` from the
-        // candidate's perspective (side-to-move == candidate this ply).
-        // Drained per-game into the `TournamentGameRecord` for the
-        // post-arena strength-by-ply / strength-by-progress summaries.
+        // Snapshot the candidate value scalar + pre-apply ply for each
+        // candidate-to-move slot, before the sample+apply pass mutates
+        // engine state and increments `totalPliesPlayed`. The captured
+        // ply index is the ply about to be played — i.e., 0-indexed
+        // `totalPliesPlayed` pre-apply — and the value is
+        // `p_win - p_loss` from the candidate's perspective
+        // (side-to-move == candidate this ply).
+        //
+        // The third `CandidateValueSample` field — the chosen-move
+        // policy probability — is only known once the parallel apply
+        // pass below has sampled, so the complete sample is assembled
+        // in a sequential pass after that (see `pendingCandidateSamples`
+        // and the post-tick assembly loop). Drained per-game into the
+        // `TournamentGameRecord` for the post-arena strength-by-ply /
+        // strength-by-progress summaries.
+        var pendingCandidateSamples: [(slot: Int, ply: Int, value: Float)] = []
+        pendingCandidateSamples.reserveCapacity(candIndices.count)
         for compact in 0..<candIndices.count {
             let slotIdx = candIndices[compact]
             let g = games[slotIdx]
@@ -471,9 +480,10 @@ final class TickTournamentDriver: @unchecked Sendable {
             // any result check), but the value isn't a meaningful
             // "trainer assessment of this game" sample.
             if g.engine.result != nil { continue }
-            let v = scratches.candValueScratch[compact]
-            perSlotCandidateValues[slotIdx].append(
-                CandidateValueSample(ply: g.totalPliesPlayed, value: v)
+            pendingCandidateSamples.append(
+                (slot: slotIdx,
+                 ply: g.totalPliesPlayed,
+                 value: scratches.candValueScratch[compact])
             )
         }
 
@@ -484,6 +494,7 @@ final class TickTournamentDriver: @unchecked Sendable {
         let champPolicyCarrier = ArenaPointerCarrier(pointer: scratches.champPolicyScratch)
         let probsCarrier = ArenaPointerCarrier(pointer: scratches.samplerProbsScratch)
         let etaCarrier = ArenaPointerCarrier(pointer: scratches.samplerEtaScratch)
+        let chosenProbCarrier = ArenaPointerCarrier(pointer: scratches.candChosenProbScratch)
         // Capture for closure
         let scratchCandCarrier = candCarrier
         let scratchChampCarrier = champCarrier
@@ -533,6 +544,16 @@ final class TickTournamentDriver: @unchecked Sendable {
                             etaScratch: etaSliceBuf
                         )
 
+                        // Record the candidate's commitment to the move
+                        // it just sampled — the post-temperature policy
+                        // probability — so the post-tick assembly pass
+                        // can complete this slot's `CandidateValueSample`.
+                        // Champion slots aren't summarized, so skip them.
+                        // Distinct `i` per task ⇒ no cross-slot races.
+                        if isCand {
+                            chosenProbCarrier.pointer[i] = result.chosenProbability
+                        }
+
                         // Material-count loop kept inline; same
                         // cheap 64-square iteration as self-play.
                         var matCount: Int = 0
@@ -566,6 +587,24 @@ final class TickTournamentDriver: @unchecked Sendable {
                 }
             }
         }
+
+        // Post-tick assembly: complete each candidate-to-move ply's
+        // `CandidateValueSample` now that the apply pass has produced
+        // its chosen-move policy probability. Every slot in
+        // `pendingCandidateSamples` is a non-terminal candidate-to-move
+        // slot — exactly the set the apply pass sampled (a non-terminal
+        // position always has at least one legal move) — so
+        // `candChosenProbScratch` holds a freshly written probability
+        // for each one this tick.
+        for pending in pendingCandidateSamples {
+            perSlotCandidateValues[pending.slot].append(
+                CandidateValueSample(
+                    ply: pending.ply,
+                    value: pending.value,
+                    policyProbability: scratches.candChosenProbScratch[pending.slot]
+                )
+            )
+        }
     }
 }
 
@@ -585,6 +624,7 @@ private final class TickArenaScratches: @unchecked Sendable {
     let champPolicyScratch: UnsafeMutablePointer<Float>  // capK * policySize
     let candValueScratch: UnsafeMutablePointer<Float>    // capK
     let champValueScratch: UnsafeMutablePointer<Float>   // capK
+    let candChosenProbScratch: UnsafeMutablePointer<Float> // capK
     let samplerProbsScratch: UnsafeMutablePointer<Float> // capK * MoveSampler.scratchCapacity
     let samplerEtaScratch: UnsafeMutablePointer<Float>   // capK * MoveSampler.scratchCapacity
 
@@ -601,6 +641,7 @@ private final class TickArenaScratches: @unchecked Sendable {
         self.champPolicyScratch = Self.alloc(capK * policySize)
         self.candValueScratch   = Self.alloc(capK)
         self.champValueScratch  = Self.alloc(capK)
+        self.candChosenProbScratch = Self.alloc(capK)
         self.samplerProbsScratch = Self.alloc(capK * scratchCap)
         self.samplerEtaScratch   = Self.alloc(capK * scratchCap)
     }
@@ -621,6 +662,7 @@ private final class TickArenaScratches: @unchecked Sendable {
         champPolicyScratch.deinitialize(count: capK * policySize); champPolicyScratch.deallocate()
         candValueScratch.deinitialize(count: capK);  candValueScratch.deallocate()
         champValueScratch.deinitialize(count: capK); champValueScratch.deallocate()
+        candChosenProbScratch.deinitialize(count: capK); candChosenProbScratch.deallocate()
         samplerProbsScratch.deinitialize(count: capK * scratchCap); samplerProbsScratch.deallocate()
         samplerEtaScratch.deinitialize(count: capK * scratchCap);   samplerEtaScratch.deallocate()
     }
