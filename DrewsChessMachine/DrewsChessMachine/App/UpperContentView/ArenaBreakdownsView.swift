@@ -61,7 +61,7 @@ struct ArenaBreakdownsView: View {
                     valueByProgressSection
                 }
             }
-            .frame(height: 480)
+            .frame(height: 720)
         }
     }
 
@@ -72,9 +72,10 @@ struct ArenaBreakdownsView: View {
         // 100 plies shouldn't dedicate half the chart to empty rows.
         let buckets = summary.wdlByLength.filter { $0.count > 0 }
         return VStack(alignment: .leading, spacing: 4) {
-            Text("Outcome by game length")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+            sectionHeader(
+                "Outcome by game length",
+                info: "Every completed arena game, bucketed by length in 20-ply bands and stacked by the candidate's outcome — win (green), draw (gray), loss (red). Bar height is the game count. Shows whether losses cluster in short games or long ones."
+            )
 
             if buckets.isEmpty {
                 emptyChartPlaceholder
@@ -89,9 +90,10 @@ struct ArenaBreakdownsView: View {
 
     private var scoreByPlySection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Win rate by ply (20-ply buckets, (W+0.5·D)/N)")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+            sectionHeader(
+                "Win rate by ply (20-ply buckets, (W+0.5·D)/N)",
+                info: "Each candidate-to-move ply is credited with its game's final result: 1 for a win, ½ for a draw, 0 for a loss. Per 20-ply bucket the chart plots (W + 0.5·D) / N over those plies — the score the arena assigns overall, resolved by how deep into the game the ply occurred. Dot size grows with the bucket's sample count."
+            )
 
             if summary.valueByPly.isEmpty {
                 emptyChartPlaceholder
@@ -106,9 +108,10 @@ struct ArenaBreakdownsView: View {
 
     private var plySampleCountSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Samples per ply bucket (candidate plies = win-rate N)")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+            sectionHeader(
+                "Samples per ply bucket (candidate plies = win-rate N)",
+                info: "How many candidate-to-move plies fell in each 20-ply bucket — the exact denominator N behind the matching point on the win-rate-by-ply chart below. Each game contributes about one sample per candidate move (~10 per bucket), so tall bars mark a well-supported curve and a short tail means only a few long games reached that depth."
+            )
 
             if summary.valueByPly.isEmpty {
                 emptyChartPlaceholder
@@ -123,9 +126,10 @@ struct ArenaBreakdownsView: View {
 
     private var valueByPlySection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Value-head by ply (mean p_win − p_loss)")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+            sectionHeader(
+                "Value-head by ply (mean p_win − p_loss)",
+                info: "The mean of the candidate network's value-head output — p_win − p_loss, in [−1, +1] — over every candidate-to-move ply in each 20-ply bucket. This is what the network believed about its position; win-rate-by-ply is what actually happened. Comparing the two is a calibration check."
+            )
 
             if summary.valueByPly.isEmpty {
                 emptyChartPlaceholder
@@ -140,9 +144,10 @@ struct ArenaBreakdownsView: View {
 
     private var scoreByProgressSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Win rate by game progress (5% buckets)")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+            sectionHeader(
+                "Win rate by game progress (5% buckets)",
+                info: "The same (W + 0.5·D) / N scoring as win-rate-by-ply, but bucketed by game progress — ply ÷ total game length — in 5% bands. Dividing by game length makes the curve comparable across short and long games."
+            )
 
             if summary.valueByProgress.isEmpty {
                 emptyChartPlaceholder
@@ -157,9 +162,10 @@ struct ArenaBreakdownsView: View {
 
     private var valueByProgressSection: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Value-head by game progress (5% buckets)")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+            sectionHeader(
+                "Value-head by game progress (5% buckets)",
+                info: "The mean value-head scalar (p_win − p_loss) over candidate-to-move plies, bucketed by game progress (ply ÷ length) in 5% bands — the value-head companion to win-rate-by-game-progress."
+            )
 
             if summary.valueByProgress.isEmpty {
                 emptyChartPlaceholder
@@ -170,11 +176,49 @@ struct ArenaBreakdownsView: View {
         }
     }
 
+    /// A chart section's title row: the caption plus an info button
+    /// that explains what the chart plots and how it is computed.
+    @ViewBuilder
+    private func sectionHeader(_ title: String, info: String) -> some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.secondary)
+            ChartInfoButton(explanation: info)
+        }
+    }
+
     private var emptyChartPlaceholder: some View {
         Text("no data")
             .font(.caption)
             .foregroundStyle(.tertiary)
             .frame(maxWidth: .infinity, minHeight: 60, alignment: .center)
+    }
+}
+
+// MARK: - Chart info button
+
+/// A small `ⓘ` button shown next to a chart's title. Tapping it opens
+/// a popover that explains, in plain language, what the chart plots
+/// and how its value is computed.
+private struct ChartInfoButton: View {
+    let explanation: String
+    @State private var showing = false
+
+    var body: some View {
+        Button(action: { showing = true }, label: {
+            Image(systemName: "info.circle")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+        })
+        .buttonStyle(.plain)
+        .popover(isPresented: $showing, arrowEdge: .top) {
+            Text(explanation)
+                .font(.callout)
+                .multilineTextAlignment(.leading)
+                .padding(14)
+                .frame(width: 320)
+        }
     }
 }
 

@@ -2,13 +2,52 @@ import AppKit
 import SceneKit
 import SwiftUI
 
+// MARK: - Surface metric
+
+/// Which per-ply quantity the arena surface plots as its height and
+/// color. Both metrics are bucketed by absolute ply and stacked across
+/// arenas; the user toggles between them with a segmented control.
+enum SurfaceMetric: String, CaseIterable, Identifiable {
+    /// Candidate win rate `(W + 0.5·D)/N` — the arena's own scoring
+    /// identity, per ply bucket.
+    case winRate = "Win rate"
+    /// Mean value-head scalar `p_win − p_loss` — what the candidate
+    /// network *thought* of its position, per ply bucket.
+    case valueHead = "Value head"
+
+    var id: String { rawValue }
+
+    /// `[lo, hi]` clamp window for the surface's height and color. The
+    /// interesting band is narrow for both metrics (a near-parity
+    /// candidate sits at the neutral midpoint), so clamping to this
+    /// window gives the band visible relief instead of flattening
+    /// everything toward the middle.
+    var displayRange: (lo: Double, hi: Double) {
+        switch self {
+        case .winRate:   return (0.40, 0.60)
+        case .valueHead: return (-0.10, 0.10)
+        }
+    }
+
+    /// The neutral midpoint — rendered gray on the diverging color map,
+    /// and used as the fill value for cells past an arena's longest
+    /// game (`0.5` is the all-draw win rate; `0.0` is the even value
+    /// scalar).
+    var neutralValue: Double {
+        switch self {
+        case .winRate:   return 0.5
+        case .valueHead: return 0.0
+        }
+    }
+}
+
 // MARK: - Data aggregation
 
-/// The win-rate-by-ply chart, stacked across every prior arena into a
-/// 3D surface: each arena contributes one row of win-rate samples and
-/// the rows are laid out along a Z axis in chronological order, so the
-/// user sees the candidate's per-ply scoring profile *evolve* over the
-/// training session at a glance.
+/// The per-ply chart, stacked across every prior arena into a 3D
+/// surface: each arena contributes one row of samples and the rows are
+/// laid out along a Z axis in chronological order, so the user sees the
+/// candidate's per-ply profile *evolve* over the training session at a
+/// glance.
 ///
 /// Two complications drive the re-binning logic below:
 ///
@@ -25,14 +64,15 @@ import SwiftUI
 ///   2. Ragged game lengths. A short-game arena has no buckets past,
 ///      say, ply 60 while a long-game arena reaches ply 200. The grid
 ///      must stay rectangular for the mesh, so absent (arena, column)
-///      cells are filled with 0.5 — the draw / even-match baseline,
-///      which reads as neutral gray on the diverging color map rather
-///      than as a spurious win or loss.
-struct ArenaWinRateSurfaceGrid {
-    /// `winRate[arenaRow][plyColumn]`, fully rectangular: `rowCount`
+///      cells are filled with the metric's neutral value, which reads
+///      as neutral gray on the diverging color map.
+struct ArenaSurfaceGrid {
+    /// Which metric `values` carries — drives the height/color mapping.
+    let metric: SurfaceMetric
+    /// `values[arenaRow][plyColumn]`, fully rectangular: `rowCount`
     /// rows by `columnCount` columns. Row 0 is the oldest arena.
-    let winRate: [[Double]]
-    /// Number of arena rows (Z axis). Equals `winRate.count`.
+    let values: [[Double]]
+    /// Number of arena rows (Z axis). Equals `values.count`.
     let rowCount: Int
     /// Number of common 20-ply columns (X axis).
     let columnCount: Int
@@ -42,31 +82,29 @@ struct ArenaWinRateSurfaceGrid {
     /// width.
     static let commonColumnWidth = 20
 
-    /// Win-rate value used for (arena, column) cells past an arena's
-    /// longest game. 0.5 is the even-match / all-draw score, which the
-    /// diverging color map renders as neutral gray.
-    static let baselineWinRate = 0.5
-
     /// Ply midpoint represented by column `c`, used for axis captions.
     static func plyMidpoint(forColumn c: Int) -> Int {
         commonColumnWidth * c + commonColumnWidth / 2
     }
 
-    /// Build the rectangular win-rate grid from a chronological arena
-    /// history. Only records that carry a non-empty `valueByPly`
-    /// breakdown become rows; records without an `extendedSummary`
-    /// (or with an empty one) are skipped entirely so the Z axis stays
+    /// Build the rectangular grid for `metric` from a chronological
+    /// arena history. Only records that carry a non-empty `valueByPly`
+    /// breakdown become rows; records without an `extendedSummary` (or
+    /// with an empty one) are skipped entirely so the Z axis stays
     /// contiguous rather than leaving gaps for un-summarized arenas.
-    static func build(history: [TournamentRecord]) -> ArenaWinRateSurfaceGrid {
-        // (1) Re-bin each qualifying arena onto the common 20-ply grid,
-        // summing raw W/D/L across every source bucket that maps to the
-        // same common column. Summing the counts (rather than averaging
-        // pre-computed scores) keeps the re-binned win rate exact: it's
-        // still (W + 0.5·D)/N over the merged sample population.
+    static func build(history: [TournamentRecord], metric: SurfaceMetric) -> ArenaSurfaceGrid {
+        // Re-bin each qualifying arena onto the common 20-ply grid.
+        // Win rate sums raw W/D/L (summing the counts, not averaging
+        // pre-computed scores, keeps the merged win rate exact). Value
+        // head sums `mean · count` so the re-binned value is the
+        // count-weighted mean over the merged sample population —
+        // averaging the pre-computed per-bucket means directly would
+        // be wrong whenever the merged buckets differ in sample count.
         struct ColumnTally {
             var wins = 0
             var draws = 0
             var losses = 0
+            var valueWeightedSum = 0.0
         }
 
         var perArenaColumns: [[Int: ColumnTally]] = []
@@ -86,6 +124,7 @@ struct ArenaWinRateSurfaceGrid {
                 tally.wins += bucket.wins
                 tally.draws += bucket.draws
                 tally.losses += bucket.losses
+                tally.valueWeightedSum += Double(bucket.mean) * Double(bucket.count)
                 columns[commonColumn] = tally
                 maxCommonColumn = max(maxCommonColumn, commonColumn)
             }
@@ -95,37 +134,43 @@ struct ArenaWinRateSurfaceGrid {
         // No qualifying arenas — an empty grid; the host view renders a
         // placeholder when the row/column counts are too small.
         guard maxCommonColumn >= 0, !perArenaColumns.isEmpty else {
-            return ArenaWinRateSurfaceGrid(winRate: [], rowCount: 0, columnCount: 0)
+            return ArenaSurfaceGrid(metric: metric, values: [], rowCount: 0, columnCount: 0)
         }
 
         let columnCount = maxCommonColumn + 1
         let rowCount = perArenaColumns.count
+        let baseline = metric.neutralValue
 
-        // (2) Materialize the rectangular grid. Cells with no source
-        // bucket for that arena fall back to the neutral baseline.
-        var winRate: [[Double]] = []
-        winRate.reserveCapacity(rowCount)
+        // Materialize the rectangular grid. Cells with no source bucket
+        // (or a zero-sample tally) fall back to the neutral baseline.
+        var values: [[Double]] = []
+        values.reserveCapacity(rowCount)
         for columns in perArenaColumns {
             var row: [Double] = []
             row.reserveCapacity(columnCount)
             for c in 0..<columnCount {
-                if let tally = columns[c] {
-                    let n = tally.wins + tally.draws + tally.losses
-                    if n > 0 {
-                        let score = (Double(tally.wins) + 0.5 * Double(tally.draws)) / Double(n)
-                        row.append(score)
-                    } else {
-                        row.append(baselineWinRate)
-                    }
-                } else {
-                    row.append(baselineWinRate)
+                guard let tally = columns[c] else {
+                    row.append(baseline)
+                    continue
+                }
+                let n = tally.wins + tally.draws + tally.losses
+                guard n > 0 else {
+                    row.append(baseline)
+                    continue
+                }
+                switch metric {
+                case .winRate:
+                    row.append((Double(tally.wins) + 0.5 * Double(tally.draws)) / Double(n))
+                case .valueHead:
+                    row.append(tally.valueWeightedSum / Double(n))
                 }
             }
-            winRate.append(row)
+            values.append(row)
         }
 
-        return ArenaWinRateSurfaceGrid(
-            winRate: winRate,
+        return ArenaSurfaceGrid(
+            metric: metric,
+            values: values,
             rowCount: rowCount,
             columnCount: columnCount
         )
@@ -134,17 +179,17 @@ struct ArenaWinRateSurfaceGrid {
 
 // MARK: - SceneKit surface
 
-/// `NSViewRepresentable` wrapping an `SCNView` that renders the
-/// win-rate grid as a height-mapped, per-vertex-colored triangle mesh.
+/// `NSViewRepresentable` wrapping an `SCNView` that renders the surface
+/// grid as a height-mapped, per-vertex-colored triangle mesh.
 ///
 /// The mesh uses `lightingModel = .constant`: the surface carries no
-/// normals and needs none — each vertex's win rate maps directly to
+/// normals and needs none — each vertex's metric value maps directly to
 /// both its height and its color, and constant shading paints that
 /// vertex color through unmodified by any light. This keeps the
 /// geometry construction to two buffers (positions, colors) plus an
 /// index buffer with no normal computation.
 struct SceneKitSurfaceView: NSViewRepresentable {
-    let grid: ArenaWinRateSurfaceGrid
+    let grid: ArenaSurfaceGrid
 
     func makeNSView(context: Context) -> SCNView {
         let scnView = SCNView()
@@ -169,8 +214,8 @@ struct SceneKitSurfaceView: NSViewRepresentable {
 
     func updateNSView(_ scnView: SCNView, context: Context) {
         // Rebuilding the whole scene is cheap relative to the rarity of
-        // a grid change (only when a new arena completes while the
-        // sheet is open) and avoids having to diff vertex buffers.
+        // a grid change (a new arena completes, or the user toggles the
+        // metric) and avoids having to diff vertex buffers.
         guard !gridsEqual(context.coordinator.lastGrid, grid) else { return }
         installScene(into: scnView)
         context.coordinator.lastGrid = grid
@@ -184,7 +229,7 @@ struct SceneKitSurfaceView: NSViewRepresentable {
     /// redundant rebuild when SwiftUI re-invokes it with no real
     /// change.
     final class Coordinator {
-        var lastGrid: ArenaWinRateSurfaceGrid?
+        var lastGrid: ArenaSurfaceGrid?
     }
 
     // MARK: Scene construction
@@ -193,9 +238,9 @@ struct SceneKitSurfaceView: NSViewRepresentable {
     /// rather than relying on literal type inference at each call site:
     /// `SCNVector3`'s macOS initializer takes `CGFloat`, and inline
     /// numeric literals forced the Swift type-checker into an
-    /// expensive overload-resolution pass (a "took Nms to type-check"
-    /// warning). Funneling every construction through this typed
-    /// helper keeps those expressions trivial.
+    /// expensive overload-resolution pass. Funneling every
+    /// construction through this typed helper keeps those expressions
+    /// trivial.
     private static func vector3(_ x: Double, _ y: Double, _ z: Double) -> SCNVector3 {
         SCNVector3(CGFloat(x), CGFloat(y), CGFloat(z))
     }
@@ -212,11 +257,8 @@ struct SceneKitSurfaceView: NSViewRepresentable {
     /// here so the `pointOfView` is always wired to the live scene.
     ///
     /// The scene assembly is deliberately fanned out across the small
-    /// `make*` helpers below. SceneKit's imported API surface is large
-    /// enough that putting the whole assembly in one method body pushes
-    /// the Swift type-checker past its long-body warning threshold;
-    /// keeping each helper down to one or two SceneKit types each
-    /// keeps every body trivial to check.
+    /// `make*` helpers below — keeping each helper down to one or two
+    /// SceneKit types each keeps every body trivial for the type-checker.
     private func installScene(into scnView: SCNView) {
         let scene = makeBaseScene()
         addSurfaceNodeIfPossible(to: scene)
@@ -274,7 +316,7 @@ struct SceneKitSurfaceView: NSViewRepresentable {
     /// covering its four corner vertices. Winding is irrelevant because
     /// the material is double-sided, so the two triangles are emitted
     /// in a fixed order without back-face concern.
-    private func makeSurfaceGeometry(grid: ArenaWinRateSurfaceGrid) -> SCNGeometry? {
+    private func makeSurfaceGeometry(grid: ArenaSurfaceGrid) -> SCNGeometry? {
         let rows = grid.rowCount
         let cols = grid.columnCount
         guard rows >= 2, cols >= 2 else { return nil }
@@ -290,16 +332,15 @@ struct SceneKitSurfaceView: NSViewRepresentable {
         let rowSpan = Float(max(rows - 1, 1))
 
         for r in 0..<rows {
-            let row = grid.winRate[r]
+            let row = grid.values[r]
             for c in 0..<cols {
-                let winRate = row[c]
+                let value = row[c]
                 let x: Float = Float(c) / colSpan * 2.0
                 let z: Float = Float(r) / rowSpan * 2.0
-                let y: Float = Float(heightNorm(winRate: winRate)) * 1.0
+                let y: Float = Float(heightNorm(value: value, metric: grid.metric)) * 1.0
                 positions.append(Self.vector3(Double(x), Double(y), Double(z)))
 
-                let color = divergingColor(winRate: winRate)
-                colors.append(color)
+                colors.append(divergingColor(value: value, metric: grid.metric))
             }
         }
 
@@ -319,11 +360,11 @@ struct SceneKitSurfaceView: NSViewRepresentable {
         }
 
         let positionSource = SCNGeometrySource(vertices: positions)
-        let colorSource = colorSource(from: colors)
+        let colorGeometrySource = colorSource(from: colors)
         let element = SCNGeometryElement(indices: indices, primitiveType: .triangles)
 
         let geometry = SCNGeometry(
-            sources: [positionSource, colorSource],
+            sources: [positionSource, colorGeometrySource],
             elements: [element]
         )
 
@@ -368,39 +409,43 @@ struct SceneKitSurfaceView: NSViewRepresentable {
 
     // MARK: Value → geometry mappings
 
-    /// Map a win rate to a normalized height in [0, 1]. The interesting
-    /// range of arena scores is narrow — a candidate near parity sits
-    /// around 0.5 — so the height window is clamped to [0.40, 0.60].
-    /// That gives the surface visible relief for the band where
-    /// promotion decisions actually live instead of flattening
-    /// everything toward a mid value.
-    private func heightNorm(winRate: Double) -> Double {
-        let clamped = min(max(winRate, 0.40), 0.60)
-        return (clamped - 0.40) / 0.20
+    /// Map a metric value to a normalized height in [0, 1] by clamping
+    /// to the metric's `displayRange`. The interesting band is narrow
+    /// for both metrics, so the clamp gives the surface visible relief
+    /// where promotion decisions actually live.
+    private func heightNorm(value: Double, metric: SurfaceMetric) -> Double {
+        let (lo, hi) = metric.displayRange
+        let clamped = min(max(value, lo), hi)
+        return (clamped - lo) / (hi - lo)
     }
 
-    /// Diverging red→gray→green color for a win rate. Red marks the
-    /// candidate losing the bucket (≤ 0.45), light gray marks parity
-    /// (0.50), green marks winning (≥ 0.55); values between are
-    /// linearly interpolated. Returned as an RGBA vector for direct
-    /// packing into the color geometry source.
-    private func divergingColor(winRate: Double) -> SCNVector4 {
+    /// Diverging red→gray→green color for a metric value. Red marks the
+    /// candidate below the metric's neutral midpoint, gray marks
+    /// parity, green marks above; the color saturates a quarter of the
+    /// display window out from neutral and interpolates within that
+    /// quarter. Returned as an RGBA vector for direct packing into the
+    /// color geometry source.
+    private func divergingColor(value: Double, metric: SurfaceMetric) -> SCNVector4 {
         let red = NSColor(calibratedRed: 0.85, green: 0.20, blue: 0.20, alpha: 1.0)
         let gray = NSColor(calibratedRed: 0.80, green: 0.80, blue: 0.80, alpha: 1.0)
         let green = NSColor(calibratedRed: 0.20, green: 0.75, blue: 0.30, alpha: 1.0)
 
+        let (lo, hi) = metric.displayRange
+        // Full red/green a quarter of the display window out from the
+        // neutral midpoint; interpolate across that inner quarter.
+        let saturation = (hi - lo) / 4.0
+        let delta = value - metric.neutralValue
+
         let color: NSColor
-        if winRate <= 0.45 {
+        if delta <= -saturation {
             color = red
-        } else if winRate < 0.50 {
-            // Interpolate red → gray across (0.45, 0.50).
-            let t = CGFloat((winRate - 0.45) / 0.05)
+        } else if delta < 0 {
+            let t = CGFloat((delta + saturation) / saturation)
             color = interpolate(from: red, to: gray, t: t)
-        } else if winRate >= 0.55 {
+        } else if delta >= saturation {
             color = green
         } else {
-            // Interpolate gray → green across [0.50, 0.55).
-            let t = CGFloat((winRate - 0.50) / 0.05)
+            let t = CGFloat(delta / saturation)
             color = interpolate(from: gray, to: green, t: t)
         }
         return SCNVector4(
@@ -422,33 +467,39 @@ struct SceneKitSurfaceView: NSViewRepresentable {
         )
     }
 
-    /// Two surface grids are equal for redraw purposes iff every
-    /// win-rate cell matches. Dimensions are compared first as a fast
-    /// reject.
-    private func gridsEqual(_ lhs: ArenaWinRateSurfaceGrid?, _ rhs: ArenaWinRateSurfaceGrid) -> Bool {
+    /// Two surface grids are equal for redraw purposes iff they carry
+    /// the same metric and every cell matches. Metric and dimensions
+    /// are compared first as a fast reject.
+    private func gridsEqual(_ lhs: ArenaSurfaceGrid?, _ rhs: ArenaSurfaceGrid) -> Bool {
         guard let lhs else { return false }
-        guard lhs.rowCount == rhs.rowCount, lhs.columnCount == rhs.columnCount else {
+        guard lhs.metric == rhs.metric,
+              lhs.rowCount == rhs.rowCount,
+              lhs.columnCount == rhs.columnCount else {
             return false
         }
-        return lhs.winRate == rhs.winRate
+        return lhs.values == rhs.values
     }
 }
 
 // MARK: - Host view
 
-/// Sheet content hosting the 3D arena win-rate surface. Builds the
-/// re-binned grid from the session's arena history and either renders
-/// the SceneKit surface or, when there isn't enough data for a
-/// meaningful mesh, a centered placeholder.
-struct ArenaWinRateSurfaceView: View {
+/// Sheet content hosting the 3D arena surface. Builds the re-binned
+/// grid from the session's arena history for the selected metric and
+/// either renders the SceneKit surface or, when there isn't enough
+/// data for a meaningful mesh, a centered placeholder.
+struct ArenaSurfaceView: View {
     let history: [TournamentRecord]
     let onClose: () -> Void
 
-    /// Re-binned win-rate grid. Recomputed when `history` changes;
-    /// cheap enough (a handful of integer-bucket passes) to do in a
-    /// computed property.
-    private var grid: ArenaWinRateSurfaceGrid {
-        ArenaWinRateSurfaceGrid.build(history: history)
+    /// Metric the surface currently plots; toggled by the header's
+    /// segmented control.
+    @State private var metric: SurfaceMetric = .winRate
+
+    /// Re-binned grid for the selected metric. Recomputed when
+    /// `history` or `metric` changes; cheap enough (a handful of
+    /// integer-bucket passes) to do in a computed property.
+    private var grid: ArenaSurfaceGrid {
+        ArenaSurfaceGrid.build(history: history, metric: metric)
     }
 
     /// A surface needs at least a 2×2 grid — two arenas to span the Z
@@ -479,9 +530,17 @@ struct ArenaWinRateSurfaceView: View {
     @ViewBuilder
     private var header: some View {
         HStack {
-            Text("Win-rate surface")
+            Text("Arena surface")
                 .font(.title2.weight(.semibold))
             Spacer()
+            Picker("Metric", selection: $metric) {
+                ForEach(SurfaceMetric.allCases) { option in
+                    Text(option.rawValue).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
             Button("Close", action: onClose)
                 .keyboardShortcut(.cancelAction)
         }
@@ -491,12 +550,22 @@ struct ArenaWinRateSurfaceView: View {
 
     @ViewBuilder
     private var caption: some View {
-        Text("X → ply (early→late) · Z → arena (oldest→newest) · height & color → candidate win rate (red <0.5, green >0.5). Cells past an arena's longest game are filled at 0.50.")
+        Text(captionText)
             .font(.caption)
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
+    }
+
+    /// Axis legend, worded for the selected metric.
+    private var captionText: String {
+        switch metric {
+        case .winRate:
+            return "X → ply (early→late) · Z → arena (oldest→newest) · height & color → candidate win rate (red <0.5, green >0.5). Cells past an arena's longest game are filled at 0.50."
+        case .valueHead:
+            return "X → ply (early→late) · Z → arena (oldest→newest) · height & color → mean value-head scalar p_win − p_loss (red <0, green >0). Cells past an arena's longest game are filled at 0.00."
+        }
     }
 
     @ViewBuilder

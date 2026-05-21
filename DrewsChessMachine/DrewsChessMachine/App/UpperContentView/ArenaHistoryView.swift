@@ -102,7 +102,7 @@ struct ArenaHistoryView: View {
         }
         .frame(minWidth: 600, idealWidth: 760, minHeight: 380, idealHeight: 600)
         .sheet(isPresented: $showSurface) {
-            ArenaWinRateSurfaceView(
+            ArenaSurfaceView(
                 history: history,
                 onClose: { showSurface = false }
             )
@@ -716,7 +716,7 @@ private struct ArenaDetailPopover: View {
             }
         }
         .padding(16)
-        .frame(width: record.extendedSummary == nil ? 360 : 560)
+        .frame(width: record.extendedSummary == nil ? 360 : 672)
     }
 
     @ViewBuilder
