@@ -687,7 +687,7 @@ private struct OptimizerTab: View {
                         fallback: 0.1,
                         format: "%.3f"
                     ),
-                    in: -1.0...1.0,
+                    in: 0.0...1.0,
                     step: 0.05
                 )
             }

@@ -286,9 +286,9 @@ public enum LRWarmupSteps: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Draw Penalty",
-    description: "Outcome value applied to drawn games (in [-1, +1]). Push negative to discourage learned drawing behavior.",
+    description: "Contempt factor. When greater than 0, each drawn game's training outcome is rewritten from 0 to −drawPenalty before it reaches the trainer, so draws train as partial losses and the network is discouraged from drawing. 0 (default) leaves draws neutral; 1.0 trains draws as full losses. Negative values have no effect.",
     default: 0.0,
-    range: -1.0...1.0,
+    range: 0.0...1.0,
     category: "Optimizer",
     liveTunable: true
 )

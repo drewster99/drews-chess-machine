@@ -598,9 +598,9 @@ final class TrainingSettingsPopoverModel {
             anyError = true
         }
 
-        // Draw penalty — Double in [-1, 1].
+        // Draw penalty — Double in [0, 1].
         if let v = Double(drawPenaltyText.trimmingCharacters(in: .whitespaces)),
-           v >= -1.0, v <= 1.0, v.isFinite {
+           v >= 0.0, v <= 1.0, v.isFinite {
             drawPenaltyError = false
             if abs(v - p.drawPenalty) > Double.ulpOfOne {
                 SessionLogger.shared.log(
