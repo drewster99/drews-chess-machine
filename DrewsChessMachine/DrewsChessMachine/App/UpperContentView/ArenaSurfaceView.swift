@@ -262,6 +262,7 @@ struct SceneKitSurfaceView: NSViewRepresentable {
     private func installScene(into scnView: SCNView) {
         let scene = makeBaseScene()
         addSurfaceNodeIfPossible(to: scene)
+        addAxisLabels(to: scene)
         let targetNode = addLookAtTarget(to: scene)
         let cameraNode = addCamera(to: scene, aimedAt: targetNode)
         scnView.scene = scene
@@ -271,6 +272,55 @@ struct SceneKitSurfaceView: NSViewRepresentable {
     /// An empty scene — the assembly's starting point.
     private func makeBaseScene() -> SCNScene {
         SCNScene()
+    }
+
+    /// Add billboarded text labels at the far end of each axis so the
+    /// dimensions are unambiguous from any orbit angle: "Ply" along X,
+    /// "Arena" along Z, and the metric name along Y. Skipped for a
+    /// degenerate grid (the host shows a placeholder instead).
+    private func addAxisLabels(to scene: SCNScene) {
+        guard grid.rowCount >= 2, grid.columnCount >= 2 else { return }
+
+        let plyLabel = makeAxisLabel("Ply →")
+        plyLabel.position = Self.vector3(2.25, 0.0, 1.0)
+        scene.rootNode.addChildNode(plyLabel)
+
+        let arenaLabel = makeAxisLabel("Arena →")
+        arenaLabel.position = Self.vector3(1.0, 0.0, 2.25)
+        scene.rootNode.addChildNode(arenaLabel)
+
+        let metricLabel = makeAxisLabel(grid.metric.rawValue)
+        metricLabel.position = Self.vector3(-0.3, 1.2, -0.3)
+        scene.rootNode.addChildNode(metricLabel)
+    }
+
+    /// One axis label: flat `SCNText`, billboard-constrained so it
+    /// always faces the camera, scaled from font points down into the
+    /// 2-unit scene, and pivoted on its bounding-box center so the
+    /// node's position is the label's center. Sizing/placement here is
+    /// tuned by eye and may want nudging.
+    private func makeAxisLabel(_ text: String) -> SCNNode {
+        let scnText = SCNText(string: text, extrusionDepth: 0.0)
+        scnText.font = NSFont.systemFont(ofSize: 12)
+        scnText.flatness = 0.1
+        let material = SCNMaterial()
+        material.lightingModel = .constant
+        material.diffuse.contents = NSColor.secondaryLabelColor
+        material.isDoubleSided = true
+        scnText.materials = [material]
+
+        let node = SCNNode(geometry: scnText)
+        node.scale = Self.vector3(0.015, 0.015, 0.015)
+        // SCNText's origin is its bounding-box corner; re-pivot to the
+        // center so `position` places the label's middle on the axis.
+        let box = scnText.boundingBox
+        node.pivot = SCNMatrix4MakeTranslation(
+            (box.min.x + box.max.x) / 2,
+            (box.min.y + box.max.y) / 2,
+            (box.min.z + box.max.z) / 2
+        )
+        node.constraints = [SCNBillboardConstraint()]
+        return node
     }
 
     /// Build the surface mesh from the current grid and attach it. A

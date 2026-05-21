@@ -49,8 +49,8 @@ struct ArenaBreakdownsView: View {
 
             // Six 110pt charts stacked unbounded would push the
             // enclosing arena-detail popover off-screen. A fixed-height
-            // scroll viewport keeps the popover bounded; the user
-            // scrolls within it to reach the lower charts.
+            // scroll viewport keeps the popover within screen bounds;
+            // the user scrolls within it to reach the lower charts.
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     wdlByLengthSection
@@ -61,7 +61,7 @@ struct ArenaBreakdownsView: View {
                     valueByProgressSection
                 }
             }
-            .frame(height: 720)
+            .frame(height: 480)
         }
     }
 
@@ -109,7 +109,7 @@ struct ArenaBreakdownsView: View {
     private var plySampleCountSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             sectionHeader(
-                "Samples per ply bucket (candidate plies = win-rate N)",
+                "Candidate moves per 20-ply bucket",
                 info: "How many candidate-to-move plies fell in each 20-ply bucket — the exact denominator N behind the matching point on the win-rate-by-ply chart below. Each game contributes about one sample per candidate move (~10 per bucket), so tall bars mark a well-supported curve and a short tail means only a few long games reached that depth."
             )
 
@@ -145,7 +145,7 @@ struct ArenaBreakdownsView: View {
     private var scoreByProgressSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             sectionHeader(
-                "Win rate by game progress (5% buckets)",
+                "Win rate by game progress (ply ÷ length)",
                 info: "The same (W + 0.5·D) / N scoring as win-rate-by-ply, but bucketed by game progress — ply ÷ total game length — in 5% bands. Dividing by game length makes the curve comparable across short and long games."
             )
 
@@ -163,7 +163,7 @@ struct ArenaBreakdownsView: View {
     private var valueByProgressSection: some View {
         VStack(alignment: .leading, spacing: 4) {
             sectionHeader(
-                "Value-head by game progress (5% buckets)",
+                "Value-head by game progress (ply ÷ length)",
                 info: "The mean value-head scalar (p_win − p_loss) over candidate-to-move plies, bucketed by game progress (ply ÷ length) in 5% bands — the value-head companion to win-rate-by-game-progress."
             )
 
@@ -246,9 +246,11 @@ private struct WDLByLengthChart: View {
         buckets.flatMap { bucket -> [Row] in
             let lab = label(for: bucket)
             return [
-                Row(bucketLabel: lab, outcome: "W", count: bucket.wins),
+                // Emitted loss-first so the stack reads L (bottom),
+                // D, W (top) — wins crown the bar.
+                Row(bucketLabel: lab, outcome: "L", count: bucket.losses),
                 Row(bucketLabel: lab, outcome: "D", count: bucket.draws),
-                Row(bucketLabel: lab, outcome: "L", count: bucket.losses)
+                Row(bucketLabel: lab, outcome: "W", count: bucket.wins)
             ]
         }
     }
@@ -1071,6 +1073,10 @@ private struct ChartHoverReadout: View {
     let title: String
     let rows: [Row]
 
+    /// Fixed width so `ChartHoverDecorations` can place the card
+    /// adjacent to the cursor with known geometry.
+    static let cardWidth: CGFloat = 168
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title)
@@ -1088,22 +1094,23 @@ private struct ChartHoverReadout: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
+        .frame(width: Self.cardWidth, alignment: .leading)
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 5))
         .overlay {
             RoundedRectangle(cornerRadius: 5)
                 .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 0.5)
         }
-        .fixedSize()
     }
 }
 
 /// Hover decorations drawn over an arena breakdown chart: a thin
 /// vertical rule at the hovered column, an optional ring on the
-/// hovered data point, and the readout card pinned to whichever top
-/// corner of the plot is opposite the cursor — so the card never
-/// hides the thing being pointed at. Hit-testing is disabled so the
-/// chart's transparent hover-capture layer keeps receiving events
-/// through it.
+/// hovered data point, and the readout card placed just beside the
+/// cursor — to its right when the cursor is in the plot's left half,
+/// to its left otherwise — clamped to stay within the plot so it
+/// reads close to whatever is being pointed at. Hit-testing is
+/// disabled so the chart's transparent hover-capture layer keeps
+/// receiving events through it.
 private struct ChartHoverDecorations: View {
     /// Screen-space X of the hovered column (GeometryReader space).
     let highlightX: CGFloat
@@ -1128,15 +1135,32 @@ private struct ChartHoverDecorations: View {
             }
 
             readout
-                .padding(4)
-                .frame(
-                    width: plotRect.width,
-                    height: plotRect.height,
-                    alignment: highlightX < plotRect.midX ? .topTrailing : .topLeading
-                )
-                .offset(x: plotRect.minX, y: plotRect.minY)
+                .position(x: cardCenterX, y: cardCenterY)
         }
         .allowsHitTesting(false)
+    }
+
+    /// Card center X: one gap beside the hovered column — to its right
+    /// when the cursor is in the plot's left half, to its left
+    /// otherwise — then clamped so the card stays inside the plot.
+    private var cardCenterX: CGFloat {
+        let halfWidth = ChartHoverReadout.cardWidth / 2
+        let gap: CGFloat = 12
+        let onLeftHalf = highlightX < plotRect.midX
+        let raw = onLeftHalf
+            ? highlightX + gap + halfWidth
+            : highlightX - gap - halfWidth
+        return min(max(raw, plotRect.minX + halfWidth), plotRect.maxX - halfWidth)
+    }
+
+    /// Card center Y: level with the hovered point (or the plot
+    /// middle for the bar chart), clamped to keep the card in-plot.
+    /// The card's height isn't known here, so a generous half-height
+    /// estimate is used for the clamp.
+    private var cardCenterY: CGFloat {
+        let anchor = markerY ?? plotRect.midY
+        let halfHeight: CGFloat = 46
+        return min(max(anchor, plotRect.minY + halfHeight), plotRect.maxY - halfHeight)
     }
 }
 
