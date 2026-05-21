@@ -1,7 +1,7 @@
 import Charts
 import SwiftUI
 
-/// Three-up histogram block embedded in `ArenaDetailPopover` when the
+/// Three-up histogram block embedded in `ArenaDetailView` when the
 /// row's `TournamentRecord` carries an `extendedSummary`. The user
 /// opens it by clicking an arena-history row.
 ///
@@ -218,10 +218,6 @@ private struct ChartInfoButton: View {
 private struct WDLByLengthChart: View {
     let buckets: [ArenaWDLByLengthBucket]
 
-    /// Bucket label of the column currently under the cursor, or
-    /// `nil` when not hovering. Drives the readout card.
-    @State private var hoveredLabel: String?
-
     /// Three plot rows per bucket so Swift Charts can stack them
     /// inside a single `BarMark` series. Naming the outcome as a
     /// String keeps `.foregroundStyle(by:)` happy and gives us a
@@ -280,58 +276,12 @@ private struct WDLByLengthChart: View {
         }
         .chartLegend(position: .top, alignment: .trailing, spacing: 4)
         .chartOverlay { proxy in
-            hoverOverlay(proxy: proxy)
-        }
-    }
-
-    @ViewBuilder
-    private func hoverOverlay(proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            if let plotFrame = proxy.plotFrame {
-                let plotRect = geo[plotFrame]
-                ZStack {
-                    Rectangle()
-                        .fill(Color.clear)
-                        .contentShape(Rectangle())
-                        .onContinuousHover { phase in
-                            handleHover(phase, plotRect: plotRect, proxy: proxy)
-                        }
-                    if let lbl = hoveredLabel,
-                       let bucket = buckets.first(where: { label(for: $0) == lbl }),
-                       let xPos = proxy.position(forX: lbl) {
-                        ChartHoverDecorations(
-                            highlightX: xPos + plotRect.minX,
-                            markerY: nil,
-                            plotRect: plotRect,
-                            readout: readout(for: bucket)
-                        )
-                    }
-                }
-                .frame(width: geo.size.width, height: geo.size.height)
-            }
-        }
-    }
-
-    private func handleHover(_ phase: HoverPhase, plotRect: CGRect, proxy: ChartProxy) {
-        switch phase {
-        case .active(let location):
-            guard location.x >= plotRect.minX, location.x <= plotRect.maxX else {
-                hoveredLabel = nil
-                return
-            }
-            var bestLabel: String?
-            var bestDistance = CGFloat.greatestFiniteMagnitude
-            for lbl in xOrder {
-                guard let px = proxy.position(forX: lbl) else { continue }
-                let distance = abs(px + plotRect.minX - location.x)
-                if distance < bestDistance {
-                    bestDistance = distance
-                    bestLabel = lbl
-                }
-            }
-            hoveredLabel = bestLabel
-        case .ended:
-            hoveredLabel = nil
+            ArenaChartHoverOverlay(
+                proxy: proxy,
+                columnXs: xOrder,
+                markerY: { _ in nil },
+                readout: { readout(for: buckets[$0]) }
+            )
         }
     }
 
@@ -372,10 +322,6 @@ private struct WDLByLengthChart: View {
 private struct ScoreByPlyChart: View {
     let buckets: [ArenaValueByPlyBucket]
 
-    /// Index (into `buckets` / `points`) of the dot currently under
-    /// the cursor, or `nil` when not hovering.
-    @State private var hoveredIndex: Int?
-
     private struct Point: Identifiable {
         let id = UUID()
         let midPly: Int
@@ -393,7 +339,8 @@ private struct ScoreByPlyChart: View {
     }
 
     var body: some View {
-        Chart(points) { p in
+        let pts = points
+        return Chart(pts) { p in
             LineMark(
                 x: .value("Ply", p.midPly),
                 y: .value("Score", p.score)
@@ -408,7 +355,7 @@ private struct ScoreByPlyChart: View {
             .symbolSize(Double(8 + min(p.count, 32)))
             .foregroundStyle(Color.accentColor)
         }
-        .winRateYAxis(scores: points.map(\.score))
+        .winRateYAxis(scores: pts.map(\.score))
         .chartXAxis {
             AxisMarks {
                 AxisGridLine()
@@ -417,84 +364,13 @@ private struct ScoreByPlyChart: View {
             }
         }
         .chartOverlay { proxy in
-            ZStack {
-                referenceLine(at: 0.5, proxy: proxy)
-                hoverOverlay(proxy: proxy)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func hoverOverlay(proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            if let plotFrame = proxy.plotFrame {
-                let plotRect = geo[plotFrame]
-                ZStack {
-                    Rectangle()
-                        .fill(Color.clear)
-                        .contentShape(Rectangle())
-                        .onContinuousHover { phase in
-                            handleHover(phase, plotRect: plotRect, proxy: proxy)
-                        }
-                    if let idx = hoveredIndex, idx >= 0, idx < points.count {
-                        let p = points[idx]
-                        let highlightX = (proxy.position(forX: p.midPly) ?? 0) + plotRect.minX
-                        let markerY = proxy.position(forY: p.score).map { $0 + plotRect.minY }
-                        ChartHoverDecorations(
-                            highlightX: highlightX,
-                            markerY: markerY,
-                            plotRect: plotRect,
-                            readout: readout(for: buckets[idx])
-                        )
-                    }
-                }
-                .frame(width: geo.size.width, height: geo.size.height)
-            }
-        }
-    }
-
-    private func handleHover(_ phase: HoverPhase, plotRect: CGRect, proxy: ChartProxy) {
-        switch phase {
-        case .active(let location):
-            guard location.x >= plotRect.minX, location.x <= plotRect.maxX else {
-                hoveredIndex = nil
-                return
-            }
-            var bestIndex: Int?
-            var bestDistance = CGFloat.greatestFiniteMagnitude
-            for (i, p) in points.enumerated() {
-                guard let px = proxy.position(forX: p.midPly) else { continue }
-                let distance = abs(px + plotRect.minX - location.x)
-                if distance < bestDistance {
-                    bestDistance = distance
-                    bestIndex = i
-                }
-            }
-            hoveredIndex = bestIndex
-        case .ended:
-            hoveredIndex = nil
-        }
-    }
-
-    private func readout(for bucket: ArenaValueByPlyBucket) -> ChartHoverReadout {
-        arenaPlyReadout(for: bucket)
-    }
-
-    @ViewBuilder
-    private func referenceLine(at y: Double, proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            if let plotFrame = proxy.plotFrame,
-               let yPos = proxy.position(forY: y) {
-                let rect = geo[plotFrame]
-                Path { path in
-                    path.move(to: CGPoint(x: rect.minX, y: rect.origin.y + yPos))
-                    path.addLine(to: CGPoint(x: rect.maxX, y: rect.origin.y + yPos))
-                }
-                .stroke(
-                    Color.secondary.opacity(0.45),
-                    style: StrokeStyle(lineWidth: 1, dash: [3, 3])
-                )
-            }
+            ArenaChartHoverOverlay(
+                proxy: proxy,
+                columnXs: pts.map(\.midPly),
+                referenceLineY: 0.5,
+                markerY: { pts[$0].score },
+                readout: { arenaPlyReadout(for: buckets[$0]) }
+            )
         }
     }
 }
@@ -503,10 +379,6 @@ private struct ScoreByPlyChart: View {
 
 private struct ScoreByProgressChart: View {
     let buckets: [ArenaValueByProgressBucket]
-
-    /// Index (into `buckets` / `points`) of the dot currently under
-    /// the cursor, or `nil` when not hovering.
-    @State private var hoveredIndex: Int?
 
     private struct Point: Identifiable {
         let id = UUID()
@@ -523,7 +395,8 @@ private struct ScoreByProgressChart: View {
     }
 
     var body: some View {
-        Chart(points) { p in
+        let pts = points
+        return Chart(pts) { p in
             LineMark(
                 x: .value("Game progress %", p.midPct),
                 y: .value("Score", p.score)
@@ -536,7 +409,7 @@ private struct ScoreByProgressChart: View {
             .symbolSize(Double(8 + min(p.count, 32)))
             .foregroundStyle(Color.accentColor)
         }
-        .winRateYAxis(scores: points.map(\.score))
+        .winRateYAxis(scores: pts.map(\.score))
         .chartXScale(domain: 0...100)
         .chartXAxis {
             AxisMarks(values: [0, 25, 50, 75, 100]) { val in
@@ -550,84 +423,13 @@ private struct ScoreByProgressChart: View {
             }
         }
         .chartOverlay { proxy in
-            ZStack {
-                referenceLine(at: 0.5, proxy: proxy)
-                hoverOverlay(proxy: proxy)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func hoverOverlay(proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            if let plotFrame = proxy.plotFrame {
-                let plotRect = geo[plotFrame]
-                ZStack {
-                    Rectangle()
-                        .fill(Color.clear)
-                        .contentShape(Rectangle())
-                        .onContinuousHover { phase in
-                            handleHover(phase, plotRect: plotRect, proxy: proxy)
-                        }
-                    if let idx = hoveredIndex, idx >= 0, idx < points.count {
-                        let p = points[idx]
-                        let highlightX = (proxy.position(forX: p.midPct) ?? 0) + plotRect.minX
-                        let markerY = proxy.position(forY: p.score).map { $0 + plotRect.minY }
-                        ChartHoverDecorations(
-                            highlightX: highlightX,
-                            markerY: markerY,
-                            plotRect: plotRect,
-                            readout: readout(for: buckets[idx])
-                        )
-                    }
-                }
-                .frame(width: geo.size.width, height: geo.size.height)
-            }
-        }
-    }
-
-    private func handleHover(_ phase: HoverPhase, plotRect: CGRect, proxy: ChartProxy) {
-        switch phase {
-        case .active(let location):
-            guard location.x >= plotRect.minX, location.x <= plotRect.maxX else {
-                hoveredIndex = nil
-                return
-            }
-            var bestIndex: Int?
-            var bestDistance = CGFloat.greatestFiniteMagnitude
-            for (i, p) in points.enumerated() {
-                guard let px = proxy.position(forX: p.midPct) else { continue }
-                let distance = abs(px + plotRect.minX - location.x)
-                if distance < bestDistance {
-                    bestDistance = distance
-                    bestIndex = i
-                }
-            }
-            hoveredIndex = bestIndex
-        case .ended:
-            hoveredIndex = nil
-        }
-    }
-
-    private func readout(for bucket: ArenaValueByProgressBucket) -> ChartHoverReadout {
-        arenaProgressReadout(for: bucket)
-    }
-
-    @ViewBuilder
-    private func referenceLine(at y: Double, proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            if let plotFrame = proxy.plotFrame,
-               let yPos = proxy.position(forY: y) {
-                let rect = geo[plotFrame]
-                Path { path in
-                    path.move(to: CGPoint(x: rect.minX, y: rect.origin.y + yPos))
-                    path.addLine(to: CGPoint(x: rect.maxX, y: rect.origin.y + yPos))
-                }
-                .stroke(
-                    Color.secondary.opacity(0.45),
-                    style: StrokeStyle(lineWidth: 1, dash: [3, 3])
-                )
-            }
+            ArenaChartHoverOverlay(
+                proxy: proxy,
+                columnXs: pts.map(\.midPct),
+                referenceLineY: 0.5,
+                markerY: { pts[$0].score },
+                readout: { arenaProgressReadout(for: buckets[$0]) }
+            )
         }
     }
 }
@@ -636,10 +438,6 @@ private struct ScoreByProgressChart: View {
 
 private struct ValueByPlyChart: View {
     let buckets: [ArenaValueByPlyBucket]
-
-    /// Index (into `buckets` / `points`) of the dot currently under
-    /// the cursor, or `nil` when not hovering.
-    @State private var hoveredIndex: Int?
 
     private struct Point: Identifiable {
         let id = UUID()
@@ -658,7 +456,8 @@ private struct ValueByPlyChart: View {
     }
 
     var body: some View {
-        Chart(points) { p in
+        let pts = points
+        return Chart(pts) { p in
             LineMark(
                 x: .value("Ply", p.midPly),
                 y: .value("Value", p.value)
@@ -673,7 +472,7 @@ private struct ValueByPlyChart: View {
             .symbolSize(Double(8 + min(p.count, 32)))
             .foregroundStyle(Color.accentColor)
         }
-        .valueYAxis(values: points.map(\.value))
+        .valueYAxis(values: pts.map(\.value))
         .chartXAxis {
             AxisMarks {
                 AxisGridLine()
@@ -682,80 +481,13 @@ private struct ValueByPlyChart: View {
             }
         }
         .chartOverlay { proxy in
-            ZStack {
-                referenceLine(at: 0.0, proxy: proxy)
-                hoverOverlay(proxy: proxy)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func hoverOverlay(proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            if let plotFrame = proxy.plotFrame {
-                let plotRect = geo[plotFrame]
-                ZStack {
-                    Rectangle()
-                        .fill(Color.clear)
-                        .contentShape(Rectangle())
-                        .onContinuousHover { phase in
-                            handleHover(phase, plotRect: plotRect, proxy: proxy)
-                        }
-                    if let idx = hoveredIndex, idx >= 0, idx < points.count {
-                        let p = points[idx]
-                        let highlightX = (proxy.position(forX: p.midPly) ?? 0) + plotRect.minX
-                        let markerY = proxy.position(forY: p.value).map { $0 + plotRect.minY }
-                        ChartHoverDecorations(
-                            highlightX: highlightX,
-                            markerY: markerY,
-                            plotRect: plotRect,
-                            readout: arenaPlyReadout(for: buckets[idx])
-                        )
-                    }
-                }
-                .frame(width: geo.size.width, height: geo.size.height)
-            }
-        }
-    }
-
-    private func handleHover(_ phase: HoverPhase, plotRect: CGRect, proxy: ChartProxy) {
-        switch phase {
-        case .active(let location):
-            guard location.x >= plotRect.minX, location.x <= plotRect.maxX else {
-                hoveredIndex = nil
-                return
-            }
-            var bestIndex: Int?
-            var bestDistance = CGFloat.greatestFiniteMagnitude
-            for (i, p) in points.enumerated() {
-                guard let px = proxy.position(forX: p.midPly) else { continue }
-                let distance = abs(px + plotRect.minX - location.x)
-                if distance < bestDistance {
-                    bestDistance = distance
-                    bestIndex = i
-                }
-            }
-            hoveredIndex = bestIndex
-        case .ended:
-            hoveredIndex = nil
-        }
-    }
-
-    @ViewBuilder
-    private func referenceLine(at y: Double, proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            if let plotFrame = proxy.plotFrame,
-               let yPos = proxy.position(forY: y) {
-                let rect = geo[plotFrame]
-                Path { path in
-                    path.move(to: CGPoint(x: rect.minX, y: rect.origin.y + yPos))
-                    path.addLine(to: CGPoint(x: rect.maxX, y: rect.origin.y + yPos))
-                }
-                .stroke(
-                    Color.secondary.opacity(0.45),
-                    style: StrokeStyle(lineWidth: 1, dash: [3, 3])
-                )
-            }
+            ArenaChartHoverOverlay(
+                proxy: proxy,
+                columnXs: pts.map(\.midPly),
+                referenceLineY: 0.0,
+                markerY: { pts[$0].value },
+                readout: { arenaPlyReadout(for: buckets[$0]) }
+            )
         }
     }
 }
@@ -764,10 +496,6 @@ private struct ValueByPlyChart: View {
 
 private struct ValueByProgressChart: View {
     let buckets: [ArenaValueByProgressBucket]
-
-    /// Index (into `buckets` / `points`) of the dot currently under
-    /// the cursor, or `nil` when not hovering.
-    @State private var hoveredIndex: Int?
 
     private struct Point: Identifiable {
         let id = UUID()
@@ -784,7 +512,8 @@ private struct ValueByProgressChart: View {
     }
 
     var body: some View {
-        Chart(points) { p in
+        let pts = points
+        return Chart(pts) { p in
             LineMark(
                 x: .value("Game progress %", p.midPct),
                 y: .value("Value", p.value)
@@ -797,7 +526,7 @@ private struct ValueByProgressChart: View {
             .symbolSize(Double(8 + min(p.count, 32)))
             .foregroundStyle(Color.accentColor)
         }
-        .valueYAxis(values: points.map(\.value))
+        .valueYAxis(values: pts.map(\.value))
         .chartXScale(domain: 0...100)
         .chartXAxis {
             AxisMarks(values: [0, 25, 50, 75, 100]) { val in
@@ -811,80 +540,13 @@ private struct ValueByProgressChart: View {
             }
         }
         .chartOverlay { proxy in
-            ZStack {
-                referenceLine(at: 0.0, proxy: proxy)
-                hoverOverlay(proxy: proxy)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func hoverOverlay(proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            if let plotFrame = proxy.plotFrame {
-                let plotRect = geo[plotFrame]
-                ZStack {
-                    Rectangle()
-                        .fill(Color.clear)
-                        .contentShape(Rectangle())
-                        .onContinuousHover { phase in
-                            handleHover(phase, plotRect: plotRect, proxy: proxy)
-                        }
-                    if let idx = hoveredIndex, idx >= 0, idx < points.count {
-                        let p = points[idx]
-                        let highlightX = (proxy.position(forX: p.midPct) ?? 0) + plotRect.minX
-                        let markerY = proxy.position(forY: p.value).map { $0 + plotRect.minY }
-                        ChartHoverDecorations(
-                            highlightX: highlightX,
-                            markerY: markerY,
-                            plotRect: plotRect,
-                            readout: arenaProgressReadout(for: buckets[idx])
-                        )
-                    }
-                }
-                .frame(width: geo.size.width, height: geo.size.height)
-            }
-        }
-    }
-
-    private func handleHover(_ phase: HoverPhase, plotRect: CGRect, proxy: ChartProxy) {
-        switch phase {
-        case .active(let location):
-            guard location.x >= plotRect.minX, location.x <= plotRect.maxX else {
-                hoveredIndex = nil
-                return
-            }
-            var bestIndex: Int?
-            var bestDistance = CGFloat.greatestFiniteMagnitude
-            for (i, p) in points.enumerated() {
-                guard let px = proxy.position(forX: p.midPct) else { continue }
-                let distance = abs(px + plotRect.minX - location.x)
-                if distance < bestDistance {
-                    bestDistance = distance
-                    bestIndex = i
-                }
-            }
-            hoveredIndex = bestIndex
-        case .ended:
-            hoveredIndex = nil
-        }
-    }
-
-    @ViewBuilder
-    private func referenceLine(at y: Double, proxy: ChartProxy) -> some View {
-        GeometryReader { geo in
-            if let plotFrame = proxy.plotFrame,
-               let yPos = proxy.position(forY: y) {
-                let rect = geo[plotFrame]
-                Path { path in
-                    path.move(to: CGPoint(x: rect.minX, y: rect.origin.y + yPos))
-                    path.addLine(to: CGPoint(x: rect.maxX, y: rect.origin.y + yPos))
-                }
-                .stroke(
-                    Color.secondary.opacity(0.45),
-                    style: StrokeStyle(lineWidth: 1, dash: [3, 3])
-                )
-            }
+            ArenaChartHoverOverlay(
+                proxy: proxy,
+                columnXs: pts.map(\.midPct),
+                referenceLineY: 0.0,
+                markerY: { pts[$0].value },
+                readout: { arenaProgressReadout(for: buckets[$0]) }
+            )
         }
     }
 }
@@ -893,10 +555,6 @@ private struct ValueByProgressChart: View {
 
 private struct PlySampleCountChart: View {
     let buckets: [ArenaValueByPlyBucket]
-
-    /// Index (into `buckets` / `points`) of the bar currently under
-    /// the cursor, or `nil` when not hovering.
-    @State private var hoveredIndex: Int?
 
     private struct Point: Identifiable {
         let id = UUID()
@@ -914,7 +572,8 @@ private struct PlySampleCountChart: View {
     }
 
     var body: some View {
-        Chart(points) { p in
+        let pts = points
+        return Chart(pts) { p in
             BarMark(
                 x: .value("Ply", p.midPly),
                 y: .value("Samples", p.count)
@@ -936,31 +595,64 @@ private struct PlySampleCountChart: View {
             }
         }
         .chartOverlay { proxy in
-            hoverOverlay(proxy: proxy)
+            ArenaChartHoverOverlay(
+                proxy: proxy,
+                columnXs: pts.map(\.midPly),
+                markerY: { _ in nil },
+                readout: { arenaPlyReadout(for: buckets[$0]) }
+            )
         }
     }
+}
 
-    @ViewBuilder
-    private func hoverOverlay(proxy: ChartProxy) -> some View {
+// MARK: - Shared hover overlay
+
+/// Hover + reference-line overlay shared by every arena-breakdown
+/// chart. Placed inside `.chartOverlay`, it draws — in back-to-front
+/// order — an optional dashed horizontal reference line, a transparent
+/// hover-capture layer over the plot, and the `ChartHoverDecorations`
+/// card for whatever column the cursor lands on.
+///
+/// Generic over the chart's X value: `Int` ply, `Double` progress %,
+/// or `String` length-bucket label. `columnXs` are the plottable X
+/// coordinates of the chart's columns in index order — the hit test
+/// snaps the cursor to the nearest one and reports that index.
+/// `markerY` returns a column's data-space Y for the hover ring, or
+/// `nil` for bar charts that have no single point to ring; `readout`
+/// builds the card for the resolved index.
+///
+/// The hovered-column state lives on this overlay rather than on each
+/// chart, so moving the cursor invalidates only the overlay, not the
+/// whole `Chart`.
+private struct ArenaChartHoverOverlay<X: Plottable>: View {
+    let proxy: ChartProxy
+    let columnXs: [X]
+    /// Data-space Y for the dashed "even" reference line, or `nil` for
+    /// charts that draw none.
+    var referenceLineY: Double?
+    /// Data-space Y of column `i`'s data point, for the hover ring.
+    /// `nil` suppresses the ring (bar charts).
+    let markerY: (Int) -> Double?
+    let readout: (Int) -> ChartHoverReadout
+
+    @State private var hoveredIndex: Int?
+
+    var body: some View {
         GeometryReader { geo in
             if let plotFrame = proxy.plotFrame {
                 let plotRect = geo[plotFrame]
                 ZStack {
+                    if let y = referenceLineY {
+                        referenceLine(at: y, plotRect: plotRect)
+                    }
                     Rectangle()
                         .fill(Color.clear)
                         .contentShape(Rectangle())
                         .onContinuousHover { phase in
-                            handleHover(phase, plotRect: plotRect, proxy: proxy)
+                            handleHover(phase, plotRect: plotRect)
                         }
-                    if let idx = hoveredIndex, idx >= 0, idx < points.count {
-                        let p = points[idx]
-                        let highlightX = (proxy.position(forX: p.midPly) ?? 0) + plotRect.minX
-                        ChartHoverDecorations(
-                            highlightX: highlightX,
-                            markerY: nil,
-                            plotRect: plotRect,
-                            readout: arenaPlyReadout(for: buckets[idx])
-                        )
+                    if let idx = hoveredIndex, columnXs.indices.contains(idx) {
+                        decorations(for: idx, plotRect: plotRect)
                     }
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
@@ -968,7 +660,21 @@ private struct PlySampleCountChart: View {
         }
     }
 
-    private func handleHover(_ phase: HoverPhase, plotRect: CGRect, proxy: ChartProxy) {
+    private func decorations(for idx: Int, plotRect: CGRect) -> ChartHoverDecorations {
+        let highlightX = (proxy.position(forX: columnXs[idx]) ?? 0) + plotRect.minX
+        let marker = markerY(idx)
+            .flatMap { proxy.position(forY: $0) }
+            .map { $0 + plotRect.minY }
+        return ChartHoverDecorations(
+            highlightX: highlightX,
+            markerY: marker,
+            plotRect: plotRect,
+            readout: readout(idx)
+        )
+    }
+
+    /// Snap the cursor to the nearest column and publish its index.
+    private func handleHover(_ phase: HoverPhase, plotRect: CGRect) {
         switch phase {
         case .active(let location):
             guard location.x >= plotRect.minX, location.x <= plotRect.maxX else {
@@ -977,8 +683,8 @@ private struct PlySampleCountChart: View {
             }
             var bestIndex: Int?
             var bestDistance = CGFloat.greatestFiniteMagnitude
-            for (i, p) in points.enumerated() {
-                guard let px = proxy.position(forX: p.midPly) else { continue }
+            for (i, x) in columnXs.enumerated() {
+                guard let px = proxy.position(forX: x) else { continue }
                 let distance = abs(px + plotRect.minX - location.x)
                 if distance < bestDistance {
                     bestDistance = distance
@@ -990,21 +696,36 @@ private struct PlySampleCountChart: View {
             hoveredIndex = nil
         }
     }
+
+    @ViewBuilder
+    private func referenceLine(at y: Double, plotRect: CGRect) -> some View {
+        if let yPos = proxy.position(forY: y) {
+            Path { path in
+                path.move(to: CGPoint(x: plotRect.minX, y: plotRect.minY + yPos))
+                path.addLine(to: CGPoint(x: plotRect.maxX, y: plotRect.minY + yPos))
+            }
+            .stroke(
+                Color.secondary.opacity(0.45),
+                style: StrokeStyle(lineWidth: 1, dash: [3, 3])
+            )
+        }
+    }
 }
 
-// MARK: - Shared win-rate Y-axis
+// MARK: - Shared win-rate / value Y-axis
 
 private extension View {
     /// Y-axis treatment shared by the score-by-ply and
     /// score-by-progress charts. Arena win rate hugs the 0.5 "even"
     /// mark tightly — a full-scale axis flattens it into a
     /// featureless band — so the axis instead pins to a narrow fixed
-    /// window straddling 0.5, with one gridline + label per stride
-    /// step. The window widens only far enough to contain any score
-    /// that genuinely falls outside it, so a lopsided arena still
-    /// fits while the common, near-even case stays high-resolution.
+    /// window straddling 0.5 symmetrically, with one gridline + label
+    /// per stride step. The window widens only far enough to contain
+    /// any score that genuinely falls outside it, so a lopsided arena
+    /// still fits while the common, near-even case stays
+    /// high-resolution.
     func winRateYAxis(scores: [Double]) -> some View {
-        let lower = min(0.47, scores.min() ?? 0.47)
+        let lower = min(0.46, scores.min() ?? 0.46)
         let upper = max(0.54, scores.max() ?? 0.54)
         return self
             .chartYScale(domain: lower...upper)

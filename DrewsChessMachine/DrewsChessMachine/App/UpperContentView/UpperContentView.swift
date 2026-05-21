@@ -569,13 +569,6 @@ struct UpperContentView: View {
     /// configured to show only the promoted records, opened by
     /// clicking the "Promotions" cell in the top status bar.
     @State private var showPromotionsSheet: Bool = false
-    /// True while a one-shot log-scan recovery pass is running. Moved to
-    /// SessionController in Stage 4r (along with `runArenaHistoryRecovery`) —
-    /// forwarding proxy. (Disables the "Recover from logs" button against
-    /// overlapping scans; drives a spinner in the arena-history sheet header.)
-    private var arenaRecoveryInProgress: Bool {
-        get { session.arenaRecoveryInProgress } nonmutating set { session.arenaRecoveryInProgress = newValue }
-    }
     // Sampling cadence (`chartCoordinator.progressRateLastFetch`,
     // `chartCoordinator.progressRateNextId`, `chartCoordinator.trainingChartNextId`,
     // `chartCoordinator.prevChartTotalGpuMs`), chart navigation (`chartCoordinator.scrollX`,
@@ -947,8 +940,7 @@ struct UpperContentView: View {
             gameIsPlaying: gameSnapshot.isPlaying,
             hasNetwork: network != nil,
             hasPendingLoadedSession: pendingLoadedSession != nil,
-            autoResumeStateVersion: autoResumeStateVersion,
-            arenaRecoveryInProgress: arenaRecoveryInProgress
+            autoResumeStateVersion: autoResumeStateVersion
         )
     }
 
@@ -2124,7 +2116,6 @@ struct UpperContentView: View {
         }
         commandHub.runEngineDiagnostics = { session.runEngineDiagnostics() }
         commandHub.runPolicyConditioningDiagnostic = { session.runPolicyConditioningDiagnostic() }
-        commandHub.recoverArenaHistoryFromLogs = { session.runArenaHistoryRecovery() }
         commandHub.abortArena = {
             SessionLogger.shared.log("[BUTTON] Abort Arena")
             session.arenaOverrideBox?.abort()
@@ -2185,7 +2176,6 @@ struct UpperContentView: View {
         commandHub.checkpointSaveInFlight = checkpoint.checkpointSaveInFlight
         commandHub.pendingLoadedSessionExists = pendingLoadedSession != nil
         commandHub.canResumeFromAutosave = canResumeFromAutosave
-        commandHub.arenaRecoveryInProgress = arenaRecoveryInProgress
         // Zoom: the chart grid only renders during Play-and-Train, so
         // the View menu items follow the same gate plus their
         // individual extremum checks.
@@ -2907,33 +2897,6 @@ struct UpperContentView: View {
         }
         return "\(Int(s))s"
     }
-
-
-
-    /// Backfill `finishedAt` / `candidateID` / `championID` on
-    /// any `tournamentHistory` entries that lack them, by scanning
-    /// the per-launch session logs at
-    /// `~/Library/Logs/DrewsChessMachine/`. Triggered by the
-    /// "Recover from logs" button in `ArenaHistoryView`.
-    ///
-    /// Match strategy: each `[ARENA] #N kv step=…` log line is
-    /// keyed by training-step. We accept a recovery if and only
-    /// if the log line's W/D/L counts match the saved record's
-    /// — same step but different counts means the saved record
-    /// belongs to a different arena run (e.g. a re-run after a
-    /// crash that didn't survive the next save), and silently
-    /// merging would corrupt history.
-    ///
-    /// The scan runs on a detached background task. After a
-    /// successful merge the in-memory `tournamentHistory` is
-    /// replaced with the recovered version and a save-button log
-    /// line is emitted; the user can hit Save Session (or wait
-    /// for the periodic autosave) to persist. We deliberately
-    /// don't auto-save here so the recovery is reversible from
-    /// the user's perspective until they confirm.
-    @MainActor
-    // runArenaHistoryRecovery() moved to SessionController in Stage 4r —
-    // commandHub.recoverArenaHistoryFromLogs calls session.runArenaHistoryRecovery().
 
     // The chart-zoom control row moved to `LowerContentView`
     // alongside the chart grid it controls. Keyboard shortcuts and

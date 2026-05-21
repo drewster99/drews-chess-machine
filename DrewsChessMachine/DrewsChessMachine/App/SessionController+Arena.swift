@@ -2,94 +2,10 @@ import SwiftUI
 
 /// `SessionController`'s arena machinery — split out of `SessionController.swift`
 /// to keep that file navigable. Holds the parallel-mode tournament
-/// (`runArenaParallel`, ~690 lines), its result-logging + teardown helpers, and
-/// the "Recover Arena History from logs" scanner. All state is `var` (internal)
-/// on `SessionController`, so this extension has full access.
+/// (`runArenaParallel`, ~690 lines) and its result-logging + teardown
+/// helpers. All state is `var` (internal) on `SessionController`, so this
+/// extension has full access.
 extension SessionController {
-
-    // MARK: - Arena-history recovery (Stage 4r)
-
-    func runArenaHistoryRecovery() {
-        guard !arenaRecoveryInProgress else { return }
-        arenaRecoveryInProgress = true
-        SessionLogger.shared.log("[BUTTON] Recover Arena History from logs (start)")
-
-        Task.detached(priority: .userInitiated) { [tournamentHistory] in
-            let logsDir: URL
-            do {
-                logsDir = try ArenaLogRecovery.defaultLogsDirectory()
-            } catch {
-                await MainActor.run {
-                    SessionLogger.shared.log(
-                        "[RECOVER] failed: cannot resolve logs directory: \(error.localizedDescription)"
-                    )
-                    self.arenaRecoveryInProgress = false
-                }
-                return
-            }
-            let recovered = ArenaLogRecovery.scan(logsDirectory: logsDir)
-
-            // Merge in-place on a copy; only adopt the new array
-            // if at least one record actually changed.
-            var updated = tournamentHistory
-            var changedCount = 0
-            for (i, record) in tournamentHistory.enumerated() {
-                guard let hit = recovered[record.finishedAtStep] else { continue }
-                guard hit.candidateWins == record.candidateWins,
-                      hit.draws == record.draws,
-                      hit.championWins == record.championWins else {
-                    continue
-                }
-                let newFinishedAt = record.finishedAt ?? hit.finishedAt
-                let newCandidateID = record.candidateID
-                    ?? hit.candidateID.map { ModelID(value: $0) }
-                let newChampionID = record.championID
-                    ?? hit.championID.map { ModelID(value: $0) }
-                if newFinishedAt != record.finishedAt
-                    || newCandidateID != record.candidateID
-                    || newChampionID != record.championID {
-                    var rebuilt = TournamentRecord(
-                        finishedAtStep: record.finishedAtStep,
-                        finishedAt: newFinishedAt,
-                        candidateID: newCandidateID,
-                        championID: newChampionID,
-                        gamesPlayed: record.gamesPlayed,
-                        candidateWins: record.candidateWins,
-                        championWins: record.championWins,
-                        draws: record.draws,
-                        score: record.score,
-                        promoted: record.promoted,
-                        promotionKind: record.promotionKind,
-                        promotedID: record.promotedID,
-                        durationSec: record.durationSec,
-                        candidateWinsAsWhite: record.candidateWinsAsWhite,
-                        candidateWinsAsBlack: record.candidateWinsAsBlack,
-                        candidateLossesAsWhite: record.candidateLossesAsWhite,
-                        candidateLossesAsBlack: record.candidateLossesAsBlack,
-                        candidateDrawsAsWhite: record.candidateDrawsAsWhite,
-                        candidateDrawsAsBlack: record.candidateDrawsAsBlack
-                    )
-                    // Recovery only backfills finishedAt / candidate /
-                    // champion IDs — every other field, including the
-                    // extended-summary histograms, carries through
-                    // unchanged from the original record.
-                    rebuilt.extendedSummary = record.extendedSummary
-                    updated[i] = rebuilt
-                    changedCount += 1
-                }
-            }
-
-            await MainActor.run {
-                if changedCount > 0 {
-                    self.tournamentHistory = updated
-                }
-                SessionLogger.shared.log(
-                    "[RECOVER] Arena history scan: \(recovered.count) kv lines mapped, \(changedCount) records updated (of \(tournamentHistory.count) total). Save the session to persist."
-                )
-                self.arenaRecoveryInProgress = false
-            }
-        }
-    }
 
     // MARK: - Arena tournament (Stage 4n)
 

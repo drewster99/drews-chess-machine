@@ -464,11 +464,6 @@ final class SessionController {
     /// Device memory caps snapshot taken at sweep start (for the header).
     var sweepDeviceCaps: MetalDeviceMemoryLimits?
 
-    /// True while a one-shot log-scan arena-history recovery pass is running
-    /// (disables the "Recover from logs" button against overlapping scans;
-    /// drives a spinner in the arena-history sheet header).
-    var arenaRecoveryInProgress: Bool = false
-
     // The heartbeat (processSnapshotTimerTick / __processSnapshotTimerTick /
     // periodicSaveTick / refreshChartZoomTick / chartZoom{In,Out,EnableAuto} /
     // refresh{Memory,TrainingChart,ProgressRate,Usage}IfNeeded / formatElapsedAxis +

@@ -42,17 +42,6 @@ struct ArenaHistoryView: View {
     /// is treated as nil so a render never crashes from a stale
     /// caller-side filter.
     var displayIndices: [Int]? = nil
-    /// Optional recovery callback — when present and at least one
-    /// row has nil `finishedAt` / `candidateID` / `championID`,
-    /// the header shows a "Recover from logs" button that
-    /// triggers a one-shot scan of `~/Library/Logs/DrewsChessMachine/`
-    /// to backfill missing fields. Owner is responsible for
-    /// triggering a session save after a successful recovery so
-    /// the recovered data persists across resumes.
-    var onRecoverFromLogs: (() -> Void)?
-    /// Set true while a recovery is in progress so the button can
-    /// disable itself and the header can show a spinner.
-    var recoveryInProgress: Bool = false
 
     /// Row the list should scroll to. Set when a sparkline dot is
     /// tapped so the list jumps to that arena; the change drives the
@@ -63,17 +52,6 @@ struct ArenaHistoryView: View {
     /// Drives the 3D arena win-rate surface sheet — the per-ply
     /// win-rate chart stacked across every arena along a Z axis.
     @State private var showSurface = false
-
-    /// True iff at least one row is missing the fields a recovery
-    /// pass could fill in. When false, the recovery button stays
-    /// hidden — there's nothing to backfill.
-    private var hasMissingFields: Bool {
-        history.contains { record in
-            record.finishedAt == nil
-            || record.candidateID == nil
-            || record.championID == nil
-        }
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -116,14 +94,6 @@ struct ArenaHistoryView: View {
             Text("\(history.count) \(unitNoun)\(history.count == 1 ? "" : "s")")
                 .font(.callout)
                 .foregroundStyle(.secondary)
-            if let onRecoverFromLogs, hasMissingFields {
-                if recoveryInProgress {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Button("Recover from logs", action: onRecoverFromLogs)
-                    .disabled(recoveryInProgress)
-            }
             Button("3D Surface") { showSurface = true }
             Button("Close", action: onClose)
                 .keyboardShortcut(.cancelAction)
@@ -586,6 +556,14 @@ final class ArenaDetailWindowManager: NSObject, NSWindowDelegate {
     /// deallocates.
     private var windows: [UUID: NSWindow] = [:]
 
+    /// Top-left point the next cascaded window should take. Seeded from
+    /// the first (centered) window and stepped by `cascadeTopLeft(from:)`
+    /// each time another opens, so multiple detail windows fan out
+    /// down-and-right instead of stacking on one spot. Once every
+    /// window has closed, the next first-window open re-centers and
+    /// re-seeds it.
+    private var cascadeOrigin = NSPoint.zero
+
     func open(record: TournamentRecord, index: Int, configuredGamesPerTournament: Int) {
         if let existing = windows[record.id] {
             existing.makeKeyAndOrderFront(nil)
@@ -610,7 +588,17 @@ final class ArenaDetailWindowManager: NSObject, NSWindowDelegate {
             width: hasSummary ? 700 : 380,
             height: hasSummary ? 760 : 440
         ))
-        window.center()
+        if windows.isEmpty {
+            // First window: center it, then seed the cascade origin
+            // from its frame. `cascadeTopLeft(from: .zero)` is a no-op
+            // move that only returns the next cascade point.
+            window.center()
+            cascadeOrigin = window.cascadeTopLeft(from: .zero)
+        } else {
+            // Subsequent windows step down-and-right from the last,
+            // so opening several arenas leaves them all visible.
+            cascadeOrigin = window.cascadeTopLeft(from: cascadeOrigin)
+        }
         windows[record.id] = window
         window.makeKeyAndOrderFront(nil)
     }

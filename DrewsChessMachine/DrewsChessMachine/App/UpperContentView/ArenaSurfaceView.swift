@@ -545,22 +545,17 @@ struct ArenaSurfaceView: View {
     /// segmented control.
     @State private var metric: SurfaceMetric = .winRate
 
-    /// Re-binned grid for the selected metric. Recomputed when
-    /// `history` or `metric` changes; cheap enough (a handful of
-    /// integer-bucket passes) to do in a computed property.
-    private var grid: ArenaSurfaceGrid {
-        ArenaSurfaceGrid.build(history: history, metric: metric)
-    }
-
-    /// A surface needs at least a 2×2 grid — two arenas to span the Z
-    /// axis and two ply columns to span the X axis — before there are
-    /// any triangles to draw.
-    private var hasRenderableSurface: Bool {
-        grid.rowCount >= 2 && grid.columnCount >= 2
-    }
-
     var body: some View {
-        VStack(spacing: 0) {
+        // Re-bin the selected metric once per render. Cheap (a handful
+        // of integer-bucket passes), but both the renderability gate
+        // and the SceneKit view need it, so build it here rather than
+        // in a computed property that would run twice.
+        let grid = ArenaSurfaceGrid.build(history: history, metric: metric)
+        // A surface needs at least a 2×2 grid — two arenas to span the
+        // Z axis and two ply columns to span the X axis — before there
+        // are any triangles to draw.
+        let hasRenderableSurface = grid.rowCount >= 2 && grid.columnCount >= 2
+        return VStack(spacing: 0) {
             header
             Divider()
             if hasRenderableSurface {
