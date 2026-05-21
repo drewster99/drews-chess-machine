@@ -62,6 +62,10 @@ struct ArenaHistoryView: View {
     /// single render pass and SwiftUI would briefly stack them.
     @State private var popoverShownForID: UUID?
 
+    /// Drives the 3D arena win-rate surface sheet — the per-ply
+    /// win-rate chart stacked across every arena along a Z axis.
+    @State private var showSurface = false
+
     /// True iff at least one row is missing the fields a recovery
     /// pass could fill in. When false, the recovery button stays
     /// hidden — there's nothing to backfill.
@@ -97,6 +101,12 @@ struct ArenaHistoryView: View {
             }
         }
         .frame(minWidth: 600, idealWidth: 760, minHeight: 380, idealHeight: 600)
+        .sheet(isPresented: $showSurface) {
+            ArenaWinRateSurfaceView(
+                history: history,
+                onClose: { showSurface = false }
+            )
+        }
     }
 
     @ViewBuilder
@@ -116,6 +126,7 @@ struct ArenaHistoryView: View {
                 Button("Recover from logs", action: onRecoverFromLogs)
                     .disabled(recoveryInProgress)
             }
+            Button("3D Surface") { showSurface = true }
             Button("Close", action: onClose)
                 .keyboardShortcut(.cancelAction)
         }
