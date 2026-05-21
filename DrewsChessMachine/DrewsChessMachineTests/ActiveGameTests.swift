@@ -226,21 +226,22 @@ final class ActiveGameTests: XCTestCase {
     }
 
     func test_flush_blackCheckmate_appendsWithSignFlippedOutcomes() {
-        // 4 white + 4 black; .checkmate(.black) ⇒ white outcome=-1,
-        // black outcome=+1. We sample everything and assert at least
+        // 32 white + 32 black; .checkmate(.black) ⇒ white outcome=-1,
+        // black outcome=+1. We sample the buffer and assert at least
         // one of each sign appears.
-        let g = makeGame(capPlies: 20)
-        for i in 0..<4 {
+        let g = makeGame(capPlies: 80)
+        for i in 0..<32 {
             record(g, side: .white, seed: UInt32(i + 1))
             record(g, side: .black, seed: UInt32(i + 100))
         }
         let buffer = ReplayBuffer(capacity: 100)
         _ = g.flush(buffer: buffer, result: .checkmate(winner: .black))
-        XCTAssertEqual(buffer.count, 8)
+        XCTAssertEqual(buffer.count, 64)
 
-        // Sample-with-replacement N times; over 200 draws we should see
-        // both -1 and +1.
-        let n = 200
+        // Sample-with-replacement n = storedCount times (`ReplayBuffer.sample`
+        // requires count <= storedCount). With a 32/32 sign split, a 64-draw
+        // batch missing either sign has probability ~2^-63.
+        let n = 64
         var boards = [Float](repeating: 0, count: n * ReplayBuffer.floatsPerBoard)
         var moves  = [Int32](repeating: 0, count: n)
         var zs     = [Float](repeating: 0, count: n)

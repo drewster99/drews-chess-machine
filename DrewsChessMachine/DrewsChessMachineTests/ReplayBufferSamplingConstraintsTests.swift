@@ -159,10 +159,12 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
     }
 
     func testMaxPerGameCapIsHard() {
-        // 5 games of 200 plies each = 1000 positions, all from distinct games.
+        // 512 games of 2 plies each = 1024 positions, all from distinct
+        // games. The game count must be >= the batch size so the cap is
+        // satisfiable even at maxPerGame=1 (cap * gameCount >= batch).
         let buf = ReplayBuffer(capacity: 10_000)
-        for gi in 0..<5 { appendGame(to: buf, length: 200, outcome: gi % 2 == 0 ? 1 : -1, workerId: 0, gameIndex: UInt32(gi)) }
-        XCTAssertEqual(buf.count, 1000)
+        for gi in 0..<512 { appendGame(to: buf, length: 2, outcome: gi % 2 == 0 ? 1 : -1, workerId: 0, gameIndex: UInt32(gi)) }
+        XCTAssertEqual(buf.count, 1024)
         for cap in [1, 4, 16, 64] {
             buf.setSamplingConstraints(constraints(maxPerGame: cap))
             let b = drawBatch(buf, count: 256)
@@ -217,7 +219,11 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
     }
 
     func testCompositionAggregatesSurviveRoundTrip() throws {
-        let buf = makeMixedBuffer(capacity: 5_000, nDrawGames: 7, drawLen: 50, nDecGames: 5, decLen: 33)
+        // 30 draw + 60 decisive games — sized so the constrained sample
+        // below (maxPerGame=2, 30% draw cap, batch 128) is feasible: the
+        // per-game cap (90 games · 2 >= 128) and both K-aware stratum
+        // ceilings (2·60 decisive >= 90, 2·30 draw >= 38) clear the batch.
+        let buf = makeMixedBuffer(capacity: 5_000, nDrawGames: 30, drawLen: 50, nDecGames: 60, decLen: 33)
         let before = buf.compositionSnapshot()
         try buf.write(to: tempFile)
         let restored = ReplayBuffer(capacity: 5_000)
@@ -277,7 +283,8 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         // weighted mean game length ≈ (400*40 + 300*30) / 700 ≈ 35.71.
         let buf = makeMixedBuffer(capacity: 10_000, nDrawGames: 10, drawLen: 40, nDecGames: 10, decLen: 30)
         buf.setSamplingConstraints(.unconstrained)
-        let batchSize = 4096
+        // The whole buffer: `ReplayBuffer.sample` requires count <= storedCount.
+        let batchSize = 700
         let b = drawBatch(buf, count: batchSize)
         XCTAssertTrue(b.ok)
         let sr = buf.lastSamplingResult()
@@ -292,7 +299,8 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(Double(sr.achievedMaxPerGame), avgPerGame)
         XCTAssertLessThanOrEqual(sr.achievedMaxPerGame, batchSize)
         // Achieved mean game length should be close to the position-
-        // weighted mean of the buffer (35.71). 4096 samples ⇒ tight CLT.
+        // weighted mean of the buffer (35.71). 700 samples keep the CLT
+        // tight enough for the 2.0 tolerance below.
         let bufferMean = Double(400 * 40 + 300 * 30) / 700.0
         XCTAssertEqual(sr.achievedMeanGameLength, bufferMean, accuracy: 2.0,
             "fast-path achieved mean \(sr.achievedMeanGameLength) should track buffer mean \(bufferMean)")
