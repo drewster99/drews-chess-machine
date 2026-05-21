@@ -47,21 +47,12 @@ struct ArenaBreakdownsView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            // Six 110pt charts stacked unbounded would push the
-            // enclosing arena-detail popover off-screen. A fixed-height
-            // scroll viewport keeps the popover within screen bounds;
-            // the user scrolls within it to reach the lower charts.
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    wdlByLengthSection
-                    plySampleCountSection
-                    scoreByPlySection
-                    valueByPlySection
-                    scoreByProgressSection
-                    valueByProgressSection
-                }
-            }
-            .frame(height: 480)
+            wdlByLengthSection
+            plySampleCountSection
+            scoreByPlySection
+            valueByPlySection
+            scoreByProgressSection
+            valueByProgressSection
         }
     }
 

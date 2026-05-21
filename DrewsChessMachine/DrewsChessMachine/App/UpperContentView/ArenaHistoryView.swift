@@ -10,13 +10,13 @@ import SwiftUI
 /// score, W/D/L proportional bar, Elo±CI on lane 1; index, date,
 /// games+duration, step on lane 2. Long ModelIDs and the per-color
 /// (W/B) breakdown are hidden by default and revealed by clicking
-/// any row, which opens a popover with all the diagnostic detail
-/// plus a "Copy details" button.
+/// any row, which opens an independent, movable detail window with
+/// all the diagnostic detail plus a "Copy details" button.
 ///
 /// A 60pt sparkline above the list shows the score trend across the
 /// session, with one dot per arena colored by status. Tapping a dot
-/// scrolls the list to that row and opens its popover so the trend
-/// view doubles as a navigation index.
+/// scrolls the list to that row, so the trend view doubles as a
+/// navigation index.
 struct ArenaHistoryView: View {
     let history: [TournamentRecord]
     /// Total games configured for tournaments at the time the
@@ -54,13 +54,11 @@ struct ArenaHistoryView: View {
     /// disable itself and the header can show a spinner.
     var recoveryInProgress: Bool = false
 
-    /// Single source of truth for which row's popover (if any) is
-    /// open. Lifted to the parent so that tapping a different row
-    /// or a sparkline dot atomically dismisses the previous popover
-    /// before showing the new one — keeping per-row local state
-    /// would let two popovers be true simultaneously across a
-    /// single render pass and SwiftUI would briefly stack them.
-    @State private var popoverShownForID: UUID?
+    /// Row the list should scroll to. Set when a sparkline dot is
+    /// tapped so the list jumps to that arena; the change drives the
+    /// `.onChange` scroll below. (Arena detail itself now opens as an
+    /// independent window — see `ArenaDetailWindowManager`.)
+    @State private var scrollTargetID: UUID?
 
     /// Drives the 3D arena win-rate surface sheet — the per-ply
     /// win-rate chart stacked across every arena along a Z axis.
@@ -88,7 +86,7 @@ struct ArenaHistoryView: View {
                     history: history,
                     promoteThreshold: promoteThreshold,
                     onTapRecord: { id in
-                        popoverShownForID = id
+                        scrollTargetID = id
                     }
                 )
                 .frame(height: 60)
@@ -160,7 +158,7 @@ struct ArenaHistoryView: View {
                     }
                 }
             }
-            .onChange(of: popoverShownForID) { _, newID in
+            .onChange(of: scrollTargetID) { _, newID in
                 guard let id = newID else { return }
                 // Animate the scroll so a sparkline-tap that jumps to
                 // an offscreen row doesn't make the popover appear out
@@ -179,13 +177,7 @@ struct ArenaHistoryView: View {
             record: record,
             promoteThreshold: promoteThreshold,
             configuredGamesPerTournament: configuredGamesPerTournament,
-            rowParity: idx % 2,
-            showPopover: Binding(
-                get: { popoverShownForID == record.id },
-                set: { newValue in
-                    popoverShownForID = newValue ? record.id : nil
-                }
-            )
+            rowParity: idx % 2
         )
         .id(record.id)
     }
@@ -387,7 +379,6 @@ private struct ArenaHistoryRow: View {
     /// stripe pattern stays stable across re-renders even though
     /// the visible order is reversed.
     let rowParity: Int
-    @Binding var showPopover: Bool
 
     @State private var hovering = false
 
@@ -507,10 +498,7 @@ private struct ArenaHistoryRow: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture {
-            showPopover.toggle()
-        }
-        .popover(isPresented: $showPopover) {
-            ArenaDetailPopover(
+            ArenaDetailWindowManager.shared.open(
                 record: record,
                 index: index,
                 configuredGamesPerTournament: configuredGamesPerTournament
@@ -581,13 +569,66 @@ private struct WLDBar: View {
 
 // MARK: - Detail popover
 
-/// Per-arena detail card opened by tapping a row (or a sparkline
-/// dot). Surfaces every field on `TournamentRecord` that the
+// MARK: - Detail window
+
+/// Opens and retains independent arena-detail windows. Each detail is
+/// a real, movable, resizable `NSWindow` that stays open after the
+/// Arena History sheet is dismissed. One window per arena record —
+/// re-requesting an already-open record brings its window forward
+/// rather than stacking a duplicate.
+@MainActor
+final class ArenaDetailWindowManager: NSObject, NSWindowDelegate {
+    static let shared = ArenaDetailWindowManager()
+
+    /// Open detail windows keyed by record id. This dictionary is the
+    /// sole strong reference keeping each window alive; the entry is
+    /// dropped in `windowWillClose`, at which point the window
+    /// deallocates.
+    private var windows: [UUID: NSWindow] = [:]
+
+    func open(record: TournamentRecord, index: Int, configuredGamesPerTournament: Int) {
+        if let existing = windows[record.id] {
+            existing.makeKeyAndOrderFront(nil)
+            return
+        }
+        let hasSummary = record.extendedSummary != nil
+        let content = ArenaDetailView(
+            record: record,
+            index: index,
+            configuredGamesPerTournament: configuredGamesPerTournament
+        )
+        let window = NSWindow(contentViewController: NSHostingController(rootView: content))
+        window.title = "Arena #\(index)"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        // We own the only strong reference (`windows`); dropping it in
+        // `windowWillClose` is what frees the window, so AppKit must
+        // not also release it on close.
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.contentMinSize = NSSize(width: 360, height: 320)
+        window.setContentSize(NSSize(
+            width: hasSummary ? 700 : 380,
+            height: hasSummary ? 760 : 440
+        ))
+        window.center()
+        windows[record.id] = window
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow else { return }
+        windows = windows.filter { $0.value !== closing }
+    }
+}
+
+/// Per-arena detail view — the content of the independent window
+/// `ArenaDetailWindowManager` opens when an arena-history row is
+/// clicked. Surfaces every field on `TournamentRecord` that the
 /// row's two-lane summary leaves out — the per-color (W/B)
-/// breakdown, the three ModelIDs, and a "Copy details" button
-/// that puts a structured plain-text summary on the pasteboard
-/// for log/commit-message use.
-private struct ArenaDetailPopover: View {
+/// breakdown, the three ModelIDs, the breakdown charts, and a
+/// "Copy details" button that puts a structured plain-text summary
+/// on the pasteboard for log/commit-message use.
+private struct ArenaDetailView: View {
     let record: TournamentRecord
     let index: Int
     let configuredGamesPerTournament: Int
@@ -639,6 +680,13 @@ private struct ArenaDetailPopover: View {
     }
 
     var body: some View {
+        ScrollView {
+            detailContent
+        }
+    }
+
+    @ViewBuilder
+    private var detailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(headline)
                 .font(.headline)
@@ -716,7 +764,6 @@ private struct ArenaDetailPopover: View {
             }
         }
         .padding(16)
-        .frame(width: record.extendedSummary == nil ? 360 : 672)
     }
 
     @ViewBuilder
