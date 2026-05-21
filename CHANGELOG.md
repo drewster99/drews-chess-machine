@@ -9,6 +9,18 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-05-21 18:25 CDT — Mid-run replay/loss parameter tweaks on the KbHZ run (FINDING)
+
+Three live-tunable parameters adjusted via the Training Settings popover during the still-running **`20260514-1-KbHZ`** lineage — the same run as the 2026-05-16 gold-standard entry below, now at build 1339, trainer `…-14`, champion `…-13`, step ≈ 433k. No source change. Context: the buffer remains heavily drawn — latest `[STATS]` `pD ≈ 0.75`, emitted W/D/L ≈ 11 / 79 / 11 %, `comp` draw share 0.77, mean game length ≈ 118 plies (hard cap 160).
+
+| time (CDT) | parameter (`id`) | change | effect |
+| --- | --- | --- | --- |
+| 18:16:04 | `max_draw_percent_per_batch` | 80 → **70** | Lowers the ceiling on drawn-game positions per training batch; freed slots go to decisive games, raising decisive-game weight in each minibatch. |
+| 18:16:04 | `target_sampled_game_length_plies` | 175 → **999** | Both the old and new values sit above the buffer's natural mean length (~118 plies, hard cap 160), so the length-tilt long-game down-weighting was already inactive; 999 is an unambiguous "tilt off" sentinel. |
+| 18:21:32 | `draw_penalty` | 0.000 → **+0.050** | Outcome value assigned to drawn games in the outcome-weighted policy loss: drawn-game positions now carry a small **positive** policy-gradient weight instead of zero. The parameter doc frames *negative* values as the draw-discouraging direction. |
+
+---
+
 ## 2026-05-16 — **GOLD STANDARD** training run — KbHZ lineage, ~47 h stable training, 30-plane v3 net (FINDING)
 
 This is the **current gold-standard reference run**: build-1093 (origin) through build-1178, trainer lineage `20260514-1-KbHZ-…` (champion currently `…-3`, trainer `…-4`), session `20260514-2-Ko63`. Started fresh on **2026-05-14 02:01:56 CDT** (origin log `dcm_log_20260514-020048.txt`, `[BUTTON] Play and Train` at 02:01:56 minted `20260514-1-KbHZ`), still running as of **2026-05-16 14:18** (latest `[STATS]` in `dcm_log_20260516-003734.txt`). Wall-clock since origin ≈ 60 h; **cumulative active training ≈ 47 h** (`elapsedTrainingSec=169181.55` in the 2026-05-16 16:27:30 periodic save, the gap from wall clock = closed/paused segments across the 19 segments in this run). By far the longest stable run to date — no policy-collapse alarm, no value-head collapse, no `gNorm` excursion, no manual abort. **Anchored as a line in the sand before the upcoming refactor**, so if a re-run from these parameters misbehaves we have the exact starting state recorded.
