@@ -1172,41 +1172,46 @@ final class ChessTrainer: @unchecked Sendable {
     /// `pEntLegal` before raising further.
     var momentumCoeff: Float
 
-    /// Bootstrap-phase knob that rewrites drawn-game `z` values from 0
-    /// to `-drawPenalty` before they reach the graph. Applied CPU-side
-    /// in `trainStep` after the replay-buffer sample returns and
-    /// before `buildFeeds`. Zero = no change (default). The transform
-    /// treats all draw types the same (stalemate, 50-move, threefold,
-    /// insufficient material); anything with z=0.0 exactly becomes
-    /// `-drawPenalty`.
+    /// Bootstrap-phase contempt knob. When `drawPenalty > 0`, every
+    /// drawn game's outcome `z` is rewritten from `0.0` to
+    /// `-drawPenalty` before the batch reaches the training graph —
+    /// applied CPU-side in `trainStepFromReplay` (phase 3), after the
+    /// replay sample is staged. `0` (default) is a no-op. All four
+    /// draw types (stalemate, 50-move, threefold, insufficient
+    /// material) arrive with `z == 0.0` exactly and are treated alike.
     ///
-    /// What it actually does, math-wise: the rewritten `z` flows into
-    /// (a) the advantage `z − vBaseline` — for non-draw positions the
-    /// baseline `vBaseline` is unchanged but the *threshold* draws sit
-    /// at moves down by `drawPenalty`, so winning-game gradients get a
-    /// small extra positive lift relative to the prior baseline and
-    /// drawn-game gradients are roughly unchanged in expectation — and
-    /// (b) the value head's W/D/L cross-entropy slot,
-    /// `slot = clamp(int(1 − z), 0, 2)`: for a fractional penalty
-    /// (`drawPenalty ∈ (0, 1)`) that truncates back to slot 1 (draw),
-    /// so the value *target* for drawn positions is unchanged at "draw";
-    /// only the full penalty (`drawPenalty = 1`) moves it to slot 2
-    /// (loss). So the dominant effect at the default `0.1` is the
-    /// advantage shift, not a value-target change.
+    /// The rewritten `z` reaches two consumers:
     ///
-    /// Caveat — the docstring USED to claim this "turns REINFORCE-
-    /// silent drawn games into a mild negative signal." That framing
-    /// is misleading: drawn games are NOT REINFORCE-silent under
-    /// `drawPenalty=0`. They produce signal *relative to the value
-    /// baseline* — a draw with vBaseline > 0 (model thought you were
-    /// winning) gives negative advantage; a draw with vBaseline < 0
-    /// gives positive advantage. drawPenalty just shifts the
-    /// "neutral-draw" threshold by `drawPenalty` units. The
-    /// "self-limiting" property still holds: as v converges toward
-    /// `-drawPenalty` for draw-prone positions, the threshold-shift
-    /// effect washes out. So this is most defensible as an early-
-    /// bootstrap nudge that anneals naturally; for steady-state
-    /// runs `drawPenalty=0` is a reasonable default.
+    /// (a) The policy gradient. The per-position weight is
+    /// `max(0, normalize(z − vBaseline))` — REINFORCE-with-baseline,
+    /// advantage RMS-normalized, then the negative branch dropped (see
+    /// `buildTrainingOps`: `−A·log p` is unbounded below for `A < 0`).
+    /// Because negatives are clamped to zero, `drawPenalty` can never
+    /// produce a *punishing* gradient on a draw — it only shifts draws
+    /// toward (or into) the dropped zone. A drawn position reinforces
+    /// its played moves only when `z − vBaseline > 0`, i.e. when
+    /// `vBaseline < −drawPenalty`: the network must have expected to
+    /// lose by more than `drawPenalty` for clawing back the draw to
+    /// still count as a positive sample. So `drawPenalty` is a
+    /// *threshold on salvaged draws*, not a penalty term.
+    ///
+    /// (b) The value head W/D/L slot, `clamp(int(1 − z), 0, 2)`. For
+    /// `drawPenalty ∈ (0, 1)`, `int(1 + drawPenalty)` truncates back
+    /// to slot 1 (draw) — the value target is unchanged. Only the full
+    /// `drawPenalty = 1` lands on slot 2 (loss), relabeling draws as
+    /// losses and corrupting the W/D/L calibration the head exists to
+    /// provide. So for any `drawPenalty < 1`, consumer (b) is inert and
+    /// the entire effect is the policy-gradient threshold in (a).
+    ///
+    /// Why "bootstrap-phase": early in a fresh run the value head is
+    /// near-random (`vBaseline ≈ 0` everywhere), so a positive
+    /// `drawPenalty` keeps essentially every draw below the
+    /// reinforcement threshold and the policy learns predominantly
+    /// from decisive wins. As the value head calibrates, confidently
+    /// drawn positions converge to `vBaseline ≈ 0` and sit just under
+    /// the threshold regardless of `drawPenalty` — so the knob's effect
+    /// concentrates on the transient and on misjudged draws, and `0`
+    /// is a reasonable steady-state default.
     var drawPenalty: Float
     /// Count of successfully-completed SGD steps this trainer has
     /// run since construction (or since a session-resume `seed`).
@@ -2072,17 +2077,21 @@ final class ChessTrainer: @unchecked Sendable {
         // would otherwise inflate `pLogitAbsMax`.
         // --- Advantage baseline: (z − vBaseline) · −log p(a*) ---
         //
-        // `vBaseline` is a placeholder — the inference-time v(position)
-        // captured during self-play and stored alongside each position
-        // in the ReplayBuffer. Feeding it back through a placeholder
-        // is the MPSGraph-compatible way to "detach" (MPSGraph has no
-        // stopGradient op, verified empirically in the 22:35 CDT
-        // gradient-stop experiment: `variableFromTensor` + `read` does
-        // not block backward flow). The advantage formulation reduces
-        // policy-gradient variance by 5–20× per standard
-        // REINFORCE-with-baseline literature, with zero bias — the
-        // baseline only has to be a function of state, not the
-        // current network's prediction.
+        // `vBaseline` is a placeholder fed, each step, with a fresh
+        // forward pass of the current trainer network over the batch
+        // positions (staged in `trainStepFromReplay` phase 3 — the
+        // ReplayBuffer no longer carries a per-position baseline
+        // column; the WDL rewrite made the play-time-frozen baseline
+        // obsolete, on-disk format v6→v7). Feeding it through a
+        // placeholder is the MPSGraph-compatible way to "detach"
+        // (MPSGraph has no stopGradient op, verified empirically in
+        // the 22:35 CDT gradient-stop experiment: `variableFromTensor`
+        // + `read` does not block backward flow), so no gradient flows
+        // from the policy loss back through the baseline. The advantage
+        // formulation reduces policy-gradient variance by 5–20× per
+        // standard REINFORCE-with-baseline literature, with zero bias:
+        // the baseline only has to be a function of state, which the
+        // network's own value estimate is.
         let advantage = graph.subtraction(z, vBaseline, name: "advantage")
         // Per-batch advantage standardization: `A / RMS(A)`
         // before multiplying into the policy loss. Stabilizes the
@@ -2251,13 +2260,14 @@ final class ChessTrainer: @unchecked Sendable {
         // NOTE on `draw_penalty`: by the time `z` reaches the graph it
         // may have been rewritten from 0.0 to `-drawPenalty` for drawn
         // positions (see `trainStepFromReplay` phase 3). With the
-        // default `drawPenalty = 0` that's a no-op. With a small
-        // positive penalty (< 1), `int(1 − z)` truncates back to slot 1
-        // (draw); with a large one (≥ 1) it lands on slot 2 (loss).
-        // That is the intended contempt behavior — `drawPenalty` is the
-        // anti-draw lever — but it means the value target is *not*
-        // always a clean one-hot on the true game result when the
-        // penalty is on. Documented so it isn't mistaken for a bug.
+        // default `drawPenalty = 0` that's a no-op. For any
+        // `drawPenalty ∈ (0, 1)`, `int(1 − z)` truncates back to slot 1
+        // (draw), so the value target here is unchanged — the contempt
+        // effect lives entirely in the policy-gradient path, not this
+        // CE. Only the full `drawPenalty = 1` lands on slot 2 (loss),
+        // relabeling drawn positions as losses; that is the one setting
+        // where the value target stops matching the true game result.
+        // Documented so it isn't mistaken for a bug.
 
         // value_label_smoothing_epsilon — scalar placeholder, live-tunable;
         // declared here next to its only consumer (the smoothed target).
@@ -2270,7 +2280,7 @@ final class ChessTrainer: @unchecked Sendable {
         // FP32), so `1 − z ∈ {2, 1, 0}` is exact; casting to int32
         // truncates toward zero, which is identity on those values and
         // maps a `-drawPenalty` rewrite as described above. With the
-        // current drawPenalty range ([-1, 1]) the rewritten z stays in
+        // current drawPenalty range ([0, 1]) the rewritten z stays in
         // [-1, 0], so `1 − z ∈ [1, 2]` and the truncated index is
         // always in {1, 2} ⊂ {0, 1, 2} — but clamp to [0, 2] anyway
         // (same defensive stance as the policy path's `max(|legal|, 1)`
