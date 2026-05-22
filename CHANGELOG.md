@@ -9,6 +9,12 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-05-22 11:51 CDT — Arena surface window enlarged + axis labels reoriented along their axes (48511e8)
+
+The 3D arena-surface sheet (`ArenaSurfaceView`) is enlarged 50% — frame `820×620 → 1230×930` ideal, `640×480 → 960×720` minimum. Its three `SCNText` axis labels were all built upright in the same plane, so "Ply →" and "Arena →" ran parallel along world X. The two ground-axis labels are now laid flat on the XZ plane, each running along its own axis: **Ply** is pitched −90° about X (glyphs along world +X); **Arena** is pitched flat, then nested in a holder yawed +90° about Y so its glyphs run along world Z. Because the holder yaw lands the glyphs on −Z, the Arena string leads with "←" so its arrow still points oldest→newest (+Z). The metric label stays upright above the Y axis. Verified visually after a rebuild — both ground labels read upright from the default 3/4 camera; nearest-to-viewer is the most recent arena.
+
+---
+
 ## 2026-05-21 20:30 CDT — Learning rate 5e-4 → 1e-3 on the KbHZ run (FINDING)
 
 `learning_rate` doubled from `5.0e-04` to `1.0e-03`, live-tuned on the still-running **`20260514-1-KbHZ`** lineage (build 1339, trainer `…-15`, champion `…-14`, step ≈ 435k). A manual session checkpoint was saved immediately before the change so the pre-bump state is recoverable. No source change.
@@ -16,6 +22,14 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 **Why.** Training has plateaued: `gNorm` pinned at ~1.16 (clip 30 — 25× of headroom), `pEnt` frozen at ~1.71, `pLoss` flat at ~0.57, arena candidates hovering near parity (`#543` score 0.5088, elo +6, kept) with only infrequent promotions. `gNorm` is small because the gradients themselves are small — a flat loss landscape — and `gNorm` does not depend on LR, so this is a modest, low-risk attempt to traverse the flat region ~2× faster, not a claim the LR was "too low." Effective LR equals the base value here: batch 4096 is the `sqrt(batch/4096)` scaling pivot (×1.0) and the 500-step warmup is long finished. 1e-3 is still conservative for decoupled-SGD-with-momentum (μ = 0.65) on the 2.4M-parameter ResNet.
 
 **What to watch (~500–1000 steps).** Healthy = `pEnt` unfreezes and drifts, `pLoss` starts moving, arena scores vary. Collapse = `pEnt` nosedives, `pIllM` climbs off ~0.013, `legalMass` falls off ~0.994 — revert to the saved checkpoint if so.
+
+---
+
+## 2026-05-21 18:39 CDT — draw_penalty: corrected backwards documentation, tightened range (1fe15da, 9314106)
+
+The `draw_penalty` parameter description was backwards — it told the user to push the value *negative* to discourage drawing. The rewrite in `ChessTrainer` is gated on `drawPenalty > 0` (a drawn game's outcome `z` is rewritten `0 → −drawPenalty`), so negative values are a no-op and *positive* values are the contempt direction. The description was corrected, and the parameter range, the popover stepper bounds, and the popover-model validation were all tightened from `[−1, 1]` to `[0, 1]` so the dead negative half is no longer reachable (`1fe15da`).
+
+A follow-up pass corrected four stale `ChessTrainer` comments that predated the WDL value head, the `max(0, advantage)` negative-branch drop, and the fresh-per-step baseline: the `drawPenalty` docstring (it is a *threshold on which salvaged draws reach the policy gradient* — it does not punish draws, and a constant value does not "wash out"), the `vBaseline` comment (the baseline is a fresh forward pass each step, not a stored ReplayBuffer column), the value-CE note, and a stale `[−1, 1]` range reference (`9314106`).
 
 ---
 
