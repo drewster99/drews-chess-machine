@@ -284,23 +284,46 @@ struct SceneKitSurfaceView: NSViewRepresentable {
         SCNScene()
     }
 
-    /// Add text labels at the far end of each axis: "Ply" along X,
-    /// "Arena" along Z, and the metric name along Y. They are ordinary
-    /// scene nodes — no billboard constraint — so they rotate and
-    /// translate with the surface as the user orbits the camera,
-    /// reading as part of the 3D scene. Skipped for a degenerate grid
-    /// (the host shows a placeholder instead).
+    /// Add text labels oriented along each axis: "Ply" and "Arena" laid
+    /// flat on the XZ ground plane so each genuinely runs *along* its
+    /// own axis, plus the metric name upright above the Y (height) axis.
+    /// They are ordinary scene nodes — no billboard constraint — so they
+    /// rotate and translate with the surface as the user orbits the
+    /// camera, reading as part of the 3D scene. Skipped for a degenerate
+    /// grid (the host shows a placeholder instead).
+    ///
+    /// `SCNText` is built upright in its local XY plane with glyphs
+    /// running along local +X. To lay a label flat on the floor it is
+    /// pitched −90° about local X (tipping the upright text down, face
+    /// up). The Ply axis runs along world +X, so that single pitch is
+    /// all Ply needs. The Arena axis runs along world Z, so the flat
+    /// Arena label is additionally nested in a holder yawed +90° about
+    /// Y — composing two single-axis rotations rather than one
+    /// multi-axis `eulerAngles`, whose component order is easy to get
+    /// wrong. After the holder yaw the glyphs run along world −Z, so the
+    /// Arena string leads with a "←" — which then points along +Z
+    /// (oldest→newest) — and its letters stay upright to the default
+    /// 3/4 camera.
     private func addAxisLabels(to scene: SCNScene) {
         guard grid.rowCount >= 2, grid.columnCount >= 2 else { return }
 
+        // Ply: flat on the floor, glyphs running along world +X.
         let plyLabel = makeAxisLabel("Ply →")
+        plyLabel.eulerAngles = Self.vector3(-.pi / 2, 0.0, 0.0)
         plyLabel.position = Self.vector3(2.25, 0.0, 1.0)
         scene.rootNode.addChildNode(plyLabel)
 
-        let arenaLabel = makeAxisLabel("Arena →")
-        arenaLabel.position = Self.vector3(1.0, 0.0, 2.25)
-        scene.rootNode.addChildNode(arenaLabel)
+        // Arena: flat on the floor, glyphs running along world Z. The
+        // label is pitched flat, then a holder yaws it onto the Z axis.
+        let arenaLabel = makeAxisLabel("← Arena")
+        arenaLabel.eulerAngles = Self.vector3(-.pi / 2, 0.0, 0.0)
+        let arenaHolder = SCNNode()
+        arenaHolder.addChildNode(arenaLabel)
+        arenaHolder.eulerAngles = Self.vector3(0.0, .pi / 2, 0.0)
+        arenaHolder.position = Self.vector3(1.0, 0.0, 2.25)
+        scene.rootNode.addChildNode(arenaHolder)
 
+        // Metric name: upright caption above the Y (height) axis.
         let metricLabel = makeAxisLabel(grid.metric.rawValue)
         metricLabel.position = Self.vector3(-0.3, 1.2, -0.3)
         scene.rootNode.addChildNode(metricLabel)
@@ -579,8 +602,8 @@ struct ArenaSurfaceView: View {
             }
         }
         .frame(
-            minWidth: 640, idealWidth: 820,
-            minHeight: 480, idealHeight: 620
+            minWidth: 960, idealWidth: 1230,
+            minHeight: 720, idealHeight: 930
         )
     }
 
