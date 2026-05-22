@@ -9,6 +9,16 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-05-21 20:30 CDT — Learning rate 5e-4 → 1e-3 on the KbHZ run (FINDING)
+
+`learning_rate` doubled from `5.0e-04` to `1.0e-03`, live-tuned on the still-running **`20260514-1-KbHZ`** lineage (build 1339, trainer `…-15`, champion `…-14`, step ≈ 435k). A manual session checkpoint was saved immediately before the change so the pre-bump state is recoverable. No source change.
+
+**Why.** Training has plateaued: `gNorm` pinned at ~1.16 (clip 30 — 25× of headroom), `pEnt` frozen at ~1.71, `pLoss` flat at ~0.57, arena candidates hovering near parity (`#543` score 0.5088, elo +6, kept) with only infrequent promotions. `gNorm` is small because the gradients themselves are small — a flat loss landscape — and `gNorm` does not depend on LR, so this is a modest, low-risk attempt to traverse the flat region ~2× faster, not a claim the LR was "too low." Effective LR equals the base value here: batch 4096 is the `sqrt(batch/4096)` scaling pivot (×1.0) and the 500-step warmup is long finished. 1e-3 is still conservative for decoupled-SGD-with-momentum (μ = 0.65) on the 2.4M-parameter ResNet.
+
+**What to watch (~500–1000 steps).** Healthy = `pEnt` unfreezes and drifts, `pLoss` starts moving, arena scores vary. Collapse = `pEnt` nosedives, `pIllM` climbs off ~0.013, `legalMass` falls off ~0.994 — revert to the saved checkpoint if so.
+
+---
+
 ## 2026-05-21 18:25 CDT — Mid-run replay/loss parameter tweaks on the KbHZ run (FINDING)
 
 Three live-tunable parameters adjusted via the Training Settings popover during the still-running **`20260514-1-KbHZ`** lineage — the same run as the 2026-05-16 gold-standard entry below, now at build 1339, trainer `…-14`, champion `…-13`, step ≈ 433k. No source change. Context: the buffer remains heavily drawn — latest `[STATS]` `pD ≈ 0.75`, emitted W/D/L ≈ 11 / 79 / 11 %, `comp` draw share 0.77, mean game length ≈ 118 plies (hard cap 160).
