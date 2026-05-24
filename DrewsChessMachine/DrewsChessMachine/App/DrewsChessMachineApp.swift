@@ -491,6 +491,8 @@ struct DrewsChessMachineApp: App {
                     .disabled(commandHub.isBusy)
                 Button("Run Policy-Conditioning Probe") { commandHub.runPolicyConditioningDiagnostic() }
                     .disabled(commandHub.isBusy)
+                Button("Run Tactical Probe") { commandHub.runTacticalProbe() }
+                    .disabled(!commandHub.networkReady)
                 Divider()
                 Button("Open Session Log") {
                     if let path = SessionLogger.shared.activeLogPath {

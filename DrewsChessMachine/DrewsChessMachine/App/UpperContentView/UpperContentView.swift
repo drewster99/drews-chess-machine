@@ -2116,6 +2116,7 @@ struct UpperContentView: View {
         }
         commandHub.runEngineDiagnostics = { session.runEngineDiagnostics() }
         commandHub.runPolicyConditioningDiagnostic = { session.runPolicyConditioningDiagnostic() }
+        commandHub.runTacticalProbe = { session.runTacticalProbe() }
         commandHub.abortArena = {
             SessionLogger.shared.log("[BUTTON] Abort Arena")
             session.arenaOverrideBox?.abort()

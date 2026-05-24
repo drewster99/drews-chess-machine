@@ -130,6 +130,17 @@ final class AppCommandHub {
     /// logged with `[DIAG]` prefix, same pattern as
     /// `runEngineDiagnostics`.
     var runPolicyConditioningDiagnostic: () -> Void = {}
+    /// One-shot tactical-probe battery against the live champion
+    /// network: a small hand-built set of unambiguous mate-in-1,
+    /// hanging-piece-capture, and forced-promotion positions. For
+    /// each, logs the network's top-5 legal moves with probabilities,
+    /// the expected-move rank, and a verdict bucket
+    /// (correctAndConfident / correctButFlat / correctInTop5 / wrong).
+    /// Output goes to the session log with `[TACTICAL]` prefix. Used
+    /// to disambiguate "the network can't represent sharp policy"
+    /// (capacity ceiling) from "the network can but isn't being
+    /// trained to commit" (signal/optimization ceiling).
+    var runTacticalProbe: () -> Void = {}
 
     // Chart-zoom actions. Wired to the View menu's ⌘= / ⌘- items
     // and the Auto toggle. A manual in/out press flips auto off
