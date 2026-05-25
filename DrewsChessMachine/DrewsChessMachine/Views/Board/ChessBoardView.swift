@@ -128,7 +128,9 @@ struct ChessBoardView: View {
                         extTo = toCenter
                     }
 
-                    let color = Self.arrowColor(forRank: rank, of: moves.count)
+                    // Per-move override wins; fall back to the
+                    // rank-based hue gradient when no override is set.
+                    let color = move.color ?? Self.arrowColor(forRank: rank, of: moves.count)
                     let path = Self.arrowPath(
                         from: extFrom,
                         to: extTo,

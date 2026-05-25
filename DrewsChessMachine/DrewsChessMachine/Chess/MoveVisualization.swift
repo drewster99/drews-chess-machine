@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// A move to visualize on the board with an arrow and ghost piece.
 struct MoveVisualization: Sendable {
@@ -26,6 +27,15 @@ struct MoveVisualization: Sendable {
     /// in the move text, which makes it impossible to tell which
     /// channel a top-K entry actually came from.
     let promotion: PieceType?
+    /// Optional explicit arrow color. When nil, `ChessBoardView`
+    /// falls back to its rank-based hue gradient (the default for
+    /// the forward-pass demo and candidate-test panel). The Tactical
+    /// Probe popover passes per-arrow colors here to encode
+    /// expected-vs-actual outcome at a glance (green = expected at
+    /// rank 1, yellow-green = expected in top-5, red = expected
+    /// missed top-5, blue = actual top-1 that wasn't expected,
+    /// tan = other top-5 moves).
+    let color: Color?
 
     init(
         fromRow: Int,
@@ -35,7 +45,8 @@ struct MoveVisualization: Sendable {
         probability: Float,
         piece: String?,
         isLegal: Bool = true,
-        promotion: PieceType? = nil
+        promotion: PieceType? = nil,
+        color: Color? = nil
     ) {
         self.fromRow = fromRow
         self.fromCol = fromCol
@@ -45,5 +56,6 @@ struct MoveVisualization: Sendable {
         self.piece = piece
         self.isLegal = isLegal
         self.promotion = promotion
+        self.color = color
     }
 }
