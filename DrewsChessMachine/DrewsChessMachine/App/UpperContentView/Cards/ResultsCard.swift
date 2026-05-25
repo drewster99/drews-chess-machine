@@ -109,6 +109,18 @@ struct ResultsCard: View {
                 kept: cells(threefoldKept, of: keptTotal),
                 indent: true
             )
+
+            // Games dropped at the max-plies cap. Counted toward
+            // `overallTotal` but never emitted, so they otherwise show
+            // up only as the gap between the Overall and Kept totals
+            // and as the reason the Overall percentages don't sum to
+            // 100. Kept column is always 0 by construction.
+            row(
+                label: "max plies",
+                overall: cells(maxPliesOverall, of: overallTotal),
+                kept: cells(0, of: keptTotal),
+                indent: false
+            )
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -183,6 +195,8 @@ struct ResultsCard: View {
     private var fiftyMoveKept: Int { snapshot?.emittedFiftyMoveDraws ?? 0 }
     private var threefoldKept: Int { snapshot?.emittedThreefoldRepetitionDraws ?? 0 }
     private var drawKept: Int { stalemateKept + insufficientKept + fiftyMoveKept + threefoldKept }
+
+    private var maxPliesOverall: Int { snapshot?.maxPliesDropped ?? 0 }
 
     // MARK: - Formatters
 
