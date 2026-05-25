@@ -141,6 +141,14 @@ final class AppCommandHub {
     /// (capacity ceiling) from "the network can but isn't being
     /// trained to commit" (signal/optimization ceiling).
     var runTacticalProbe: () -> Void = {}
+    /// Open the standalone Tactical Probe Monitor window. Runs the
+    /// 7-probe battery every 15 seconds against the live champion
+    /// and shows current values + per-metric spark line + tick-
+    /// direction color (green = value up, red = value down) for each
+    /// probe. Independent of the one-shot menu probe — they can both
+    /// be active simultaneously. Multiple monitor windows can be
+    /// opened; each owns its own history store and watcher.
+    var openTacticalProbeMonitor: () -> Void = {}
 
     // Chart-zoom actions. Wired to the View menu's ⌘= / ⌘- items
     // and the Auto toggle. A manual in/out press flips auto off

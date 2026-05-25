@@ -187,6 +187,71 @@ private func buildProbeResult(
     )
 }
 
+// MARK: - Tactical Probe — Runner (shared by one-shot + monitor)
+
+/// Pure namespace for the per-probe runner. Wrapped in an enum (not
+/// a free function) so the call site reads `TacticalProbeRunner.run(probe, against: net)`
+/// — unambiguous from `SessionController.runTacticalProbe()`, the
+/// no-arg instance method that drives the one-shot menu battery.
+enum TacticalProbeRunner {
+
+/// Run one probe through `net` and assemble its result. Two forward
+/// passes per probe: one for the policy logits (the path
+/// `MPSChessPlayer.chooseMove` uses) and one for the W/D/L value-head
+/// distribution (the diagnostic-only path). Total cost ~3ms.
+///
+/// Pure async function — no actor isolation. The forward passes
+/// serialize on `net`'s `executionQueue`, so concurrent invocations
+/// from the one-shot menu path and the periodic monitor watcher
+/// don't race. Errors are logged under `[TACTICAL]` and the function
+/// returns a `.error`-verdict result so the caller's batch summary
+/// stays well-formed.
+static func run(_ probe: TacticalProbe, against net: ChessMPSNetwork) async -> ProbeResult {
+    let boardTensor = BoardEncoder.encode(probe.state)
+
+    // Forward pass #1: raw policy logits. Box them into a Sendable
+    // holder so the @Sendable consume closure can write into a value
+    // we read after the await — same pattern as
+    // `ChessRunner.evaluate(board:state:pieces:)`.
+    let logitsBox = LogitsBox()
+    do {
+        try await net.evaluate(board: boardTensor) { logitsBuf, _ in
+            logitsBox.set(Array(logitsBuf))
+        }
+    } catch {
+        SessionLogger.shared.log("[TACTICAL] evaluate failed for '\(probe.name)': \(error)")
+        return ProbeResult(
+            probe: probe,
+            topMoves: [],
+            expectedRank: nil,
+            expectedProb: 0,
+            legalCount: 0,
+            legalEntropyNats: 0,
+            uniformLegalEntropy: 0,
+            illegalMass: 0,
+            valueWDL: (0, 0, 0),
+            verdict: .error
+        )
+    }
+
+    // Forward pass #2: value-head W/D/L distribution.
+    let wdl: (win: Float, draw: Float, loss: Float)
+    do {
+        wdl = try await net.evaluateValueDistribution(board: boardTensor)
+    } catch {
+        SessionLogger.shared.log(
+            "[TACTICAL] evaluateValueDistribution failed for '\(probe.name)': \(error) — continuing with W/D/L=0/0/0"
+        )
+        wdl = (0, 0, 0)
+    }
+
+    let rawLogits = logitsBox.take()
+    let rawPolicy = ChessRunner.softmax(rawLogits)
+    return buildProbeResult(probe: probe, rawPolicy: rawPolicy, wdl: wdl)
+}
+
+}   // end enum TacticalProbeRunner
+
 // MARK: - Tactical Probe — SessionController extension
 
 extension SessionController {
@@ -224,7 +289,7 @@ extension SessionController {
 
         var verdictCounts: [ProbeVerdict: Int] = [:]
         for (i, probe) in probes.enumerated() {
-            let result = await runOneTacticalProbe(probe: probe, net: net)
+            let result = await TacticalProbeRunner.run(probe, against: net)
             verdictCounts[result.verdict, default: 0] += 1
             logProbeResult(index: i + 1, total: probes.count, result: result)
         }
@@ -233,57 +298,6 @@ extension SessionController {
             .map { v in "\(v.rawValue)=\(verdictCounts[v] ?? 0)" }
             .joined(separator: " ")
         SessionLogger.shared.log("[TACTICAL] === summary: \(summary) ===")
-    }
-
-    /// Run one probe through the network and assemble its result.
-    /// Two forward passes per probe: one for the policy/value scalar
-    /// (the path `MPSChessPlayer.chooseMove` uses) and one for the
-    /// W/D/L distribution (the diagnostic-only path). Total cost ~3ms.
-    private func runOneTacticalProbe(
-        probe: TacticalProbe,
-        net: ChessMPSNetwork
-    ) async -> ProbeResult {
-        let boardTensor = BoardEncoder.encode(probe.state)
-
-        // Forward pass #1: raw policy logits. Box them into a
-        // Sendable holder so the @Sendable consume closure can write
-        // into a value we read after the await — same pattern as
-        // `ChessRunner.evaluate(board:state:pieces:)`.
-        let logitsBox = LogitsBox()
-        do {
-            try await net.evaluate(board: boardTensor) { logitsBuf, _ in
-                logitsBox.set(Array(logitsBuf))
-            }
-        } catch {
-            SessionLogger.shared.log("[TACTICAL] evaluate failed for '\(probe.name)': \(error)")
-            return ProbeResult(
-                probe: probe,
-                topMoves: [],
-                expectedRank: nil,
-                expectedProb: 0,
-                legalCount: 0,
-                legalEntropyNats: 0,
-                uniformLegalEntropy: 0,
-                illegalMass: 0,
-                valueWDL: (0, 0, 0),
-                verdict: .error
-            )
-        }
-
-        // Forward pass #2: value-head W/D/L distribution.
-        let wdl: (win: Float, draw: Float, loss: Float)
-        do {
-            wdl = try await net.evaluateValueDistribution(board: boardTensor)
-        } catch {
-            SessionLogger.shared.log(
-                "[TACTICAL] evaluateValueDistribution failed for '\(probe.name)': \(error) — continuing with W/D/L=0/0/0"
-            )
-            wdl = (0, 0, 0)
-        }
-
-        let rawLogits = logitsBox.take()
-        let rawPolicy = ChessRunner.softmax(rawLogits)
-        return buildProbeResult(probe: probe, rawPolicy: rawPolicy, wdl: wdl)
     }
 
     /// Log one probe's result as a short multi-line block. Each line

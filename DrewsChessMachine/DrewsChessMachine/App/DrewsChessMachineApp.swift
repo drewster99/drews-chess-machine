@@ -493,6 +493,8 @@ struct DrewsChessMachineApp: App {
                     .disabled(commandHub.isBusy)
                 Button("Run Tactical Probe") { commandHub.runTacticalProbe() }
                     .disabled(!commandHub.networkReady)
+                Button("Open Tactical Probe Monitor…") { commandHub.openTacticalProbeMonitor() }
+                    .disabled(!commandHub.networkReady)
                 Divider()
                 Button("Open Session Log") {
                     if let path = SessionLogger.shared.activeLogPath {
