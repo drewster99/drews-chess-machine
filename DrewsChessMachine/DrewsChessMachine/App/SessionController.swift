@@ -48,6 +48,24 @@ final class SessionController {
     /// Whether a champion network exists. (Was `UpperContentView.networkReady`.)
     var networkReady: Bool { network != nil }
 
+    // MARK: - Tactical Probe Monitor (always-on)
+
+    /// Shared longitudinal history of tactical-probe results. Populated
+    /// by `tacticalProbeWatcher` once per 15 seconds and read by any
+    /// open Tactical Probe Monitor window. Lifetime = lifetime of the
+    /// session controller; closing all monitor windows doesn't drop
+    /// the history, and opening a new window picks up where the
+    /// previous window left off.
+    let tacticalProbeHistory = TacticalProbeHistory()
+
+    /// Periodic driver behind `tacticalProbeHistory`. Lazily created
+    /// the first time `startTacticalProbeWatcher()` runs (typically
+    /// from `handleBodyOnAppear` in the main view). Once started,
+    /// runs for the life of the session — no-ops cleanly on each
+    /// tick when `network` is still nil (waiting for the user to
+    /// build / load).
+    private var tacticalProbeWatcher: TacticalProbeWatcher?
+
     // MARK: - Inference networks (life-of-app caches)
 
     /// Inference-mode network used as the arena's "candidate side" player. The
@@ -583,6 +601,20 @@ final class SessionController {
     /// stored properties, was a multi-hundred-millisecond hit at the one such
     /// site, `UpperContentView`'s `@State var session`).
     init() {}
+
+    // MARK: - Tactical Probe Monitor lifecycle
+
+    /// Idempotent. Creates and starts `tacticalProbeWatcher` on first
+    /// call; subsequent calls are no-ops. Wired into the view-tree's
+    /// `handleBodyOnAppear` so the watcher begins right after the main
+    /// view mounts (whether or not a champion network exists yet —
+    /// ticks no-op while `network == nil`).
+    func startTacticalProbeWatcher() {
+        guard tacticalProbeWatcher == nil else { return }
+        let w = TacticalProbeWatcher(sessionController: self, history: tacticalProbeHistory)
+        tacticalProbeWatcher = w
+        w.start()
+    }
 
     // MARK: - Demo training (Train Once / Continuous Training) (Stage 4g)
 

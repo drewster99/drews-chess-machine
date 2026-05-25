@@ -1,25 +1,18 @@
 import AppKit
 import SwiftUI
 
-/// Standalone window for the Tactical Probe Monitor. Mirrors the
-/// `LogAnalysisWindowController` pattern: NSWindowController +
-/// NSWindowDelegate, kept alive by `TacticalProbeMonitorWindowRegistry`
-/// while the window is open. Owns the `TacticalProbeHistory` store and
-/// the `TacticalProbeWatcher` driver; the watcher's tick loop starts
-/// on window open and is cancelled in `windowWillClose(_:)`.
+/// Standalone window for the Tactical Probe Monitor. The history and
+/// watcher are owned by `SessionController` (always-on, life-of-session)
+/// so opening or closing this window doesn't start/stop ticking — the
+/// window is purely an observer. Multiple monitor windows can be
+/// opened simultaneously; they all observe the same shared history.
+/// Kept alive by `TacticalProbeMonitorWindowRegistry` while open.
 @MainActor
 final class TacticalProbeMonitorWindowController: NSWindowController, NSWindowDelegate {
     let history: TacticalProbeHistory
-    let watcher: TacticalProbeWatcher
 
-    init(sessionController: SessionController) {
-        let history = TacticalProbeHistory()
+    init(history: TacticalProbeHistory) {
         self.history = history
-        let watcher = TacticalProbeWatcher(
-            sessionController: sessionController,
-            history: history
-        )
-        self.watcher = watcher
         let view = TacticalProbeMonitorView(history: history)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
@@ -30,7 +23,6 @@ final class TacticalProbeMonitorWindowController: NSWindowController, NSWindowDe
         window.center()
         super.init(window: window)
         window.delegate = self
-        watcher.start()
     }
 
     required init?(coder: NSCoder) {
@@ -38,7 +30,8 @@ final class TacticalProbeMonitorWindowController: NSWindowController, NSWindowDe
     }
 
     func windowWillClose(_ notification: Notification) {
-        watcher.stop()
+        // Watcher lives on SessionController; closing the window is a
+        // pure observer-detach. Nothing to stop here.
         TacticalProbeMonitorWindowRegistry.shared.unregister(self)
     }
 }
@@ -64,27 +57,18 @@ final class TacticalProbeMonitorWindowRegistry {
     }
 }
 
-/// Bridges the Debug menu button to the window launcher. Validates
-/// the precondition (a champion network must exist — the watcher
-/// no-ops gracefully on tick if it disappears mid-session, but
-/// opening with no network would show 7 empty rows forever) and
-/// surfaces an NSAlert when blocked. Otherwise builds the controller,
-/// registers it, shows the window.
+/// Bridges the Debug menu button to the window launcher. The watcher
+/// keeps running regardless of whether a window is open — opening a
+/// window with no network yet is fine: the existing history (empty
+/// or otherwise) renders; subsequent ticks fill rows in once a network
+/// is built.
 @MainActor
 enum TacticalProbeMonitorLauncher {
     static func openWindow(sessionController: SessionController) {
-        guard sessionController.network != nil else {
-            let alert = NSAlert()
-            alert.messageText = "No champion network"
-            alert.informativeText = "Build a network (or load a model / session) before opening the Tactical Probe Monitor."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-            return
-        }
-
         SessionLogger.shared.log("[BUTTON] Open Tactical Probe Monitor")
-        let controller = TacticalProbeMonitorWindowController(sessionController: sessionController)
+        let controller = TacticalProbeMonitorWindowController(
+            history: sessionController.tacticalProbeHistory
+        )
         TacticalProbeMonitorWindowRegistry.shared.register(controller)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)

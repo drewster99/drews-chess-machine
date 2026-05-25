@@ -20,6 +20,11 @@ struct TacticalProbeRowView: View {
     let rankSeries: [Float]
     let entropySeries: [Float]
 
+    /// Click-toggled popover showing the rendered board for this
+    /// probe's position, with the top-K legal moves drawn as arrows.
+    /// Local @State so each row's popover toggle is independent.
+    @State private var isShowingBoardPopover = false
+
     var body: some View {
         HStack(spacing: 8) {
             verdictPill
@@ -55,6 +60,16 @@ struct TacticalProbeRowView: View {
                 .frame(width: 120, alignment: .trailing)
         }
         .padding(.vertical, 2)
+        // Make the entire row tappable (not just the parts with text
+        // / arrows / sparks) so clicking near the row's empty padding
+        // also triggers the popover.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            isShowingBoardPopover.toggle()
+        }
+        .popover(isPresented: $isShowingBoardPopover, arrowEdge: .leading) {
+            TacticalProbeBoardPopover(result: current.result)
+        }
     }
 
     // MARK: Verdict pill

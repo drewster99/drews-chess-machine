@@ -1635,6 +1635,9 @@ struct UpperContentView: View {
     private func handleBodyOnAppear() {
         wireMenuCommandHub()
         syncMenuCommandHubState()
+        // Begin the always-on tactical-probe watcher. Idempotent so
+        // a transient .onAppear re-fire doesn't double-start.
+        session.startTacticalProbeWatcher()
         // Wire the popover models' side-effect hooks. The Arena popover pushes
         // the new τ schedule into the live `samplingScheduleBox` after a Save;
         // the Training popover does the same for its self-play schedule and

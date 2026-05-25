@@ -77,9 +77,9 @@ struct TacticalProbeMonitorView: View {
                 .frame(width: 100, alignment: .center)
             Text("PROBE")
                 .frame(minWidth: 180, idealWidth: 240, maxWidth: .infinity, alignment: .leading)
-            metricHeader(label: "EXPECTED PROB", valueWidth: 56)
+            metricHeader(label: "PROB", valueWidth: 56)
             metricHeader(label: "RANK", valueWidth: 38)
-            metricHeader(label: "LEGAL ENT", valueWidth: 56)
+            metricHeader(label: "ENT", valueWidth: 56)
             Text("W / D / L")
                 .frame(width: 120, alignment: .trailing)
         }
@@ -132,9 +132,9 @@ struct TacticalProbeMonitorView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .frame(minWidth: 180, idealWidth: 240, maxWidth: .infinity, alignment: .leading)
-            placeholderCell()
-            placeholderCell()
-            placeholderCell()
+            placeholderCell(valueWidth: 56)   // prob
+            placeholderCell(valueWidth: 38)   // rank
+            placeholderCell(valueWidth: 56)   // entropy
             Text("—")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -144,12 +144,12 @@ struct TacticalProbeMonitorView: View {
     }
 
     @ViewBuilder
-    private func placeholderCell() -> some View {
+    private func placeholderCell(valueWidth: CGFloat) -> some View {
         HStack(spacing: 4) {
             Text("—")
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .frame(width: 56, alignment: .trailing)
+                .frame(width: valueWidth, alignment: .trailing)
             Spacer().frame(width: 10)
             TacticalProbeSparkView(values: [], stroke: .secondary)
                 .frame(width: 80)
