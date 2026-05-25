@@ -26,6 +26,16 @@ struct MiniLineChart: View {
     /// chart's title. Varies per call site — pwNorm / gNorm / ||v|| /
     /// vLoss / vMean / vAbs each pass their own description through.
     var titleHelp: AttributedString? = nil
+    /// Optional supplementary text appended to the chart's current-
+    /// value header. Receives the same bucket the header value was
+    /// read from (latest or hovered) and returns a short suffix like
+    /// `"(32.1%)"`. Used by the vAbs tile to surface the normalized
+    /// `vAbs / (1 − pD) × 100` reading next to the raw vAbs value,
+    /// since raw vAbs is structurally capped at `(1 − pD)` and the
+    /// percentage is the apples-to-apples cross-run signal. Returning
+    /// `nil` (or omitting the accessor) renders the header value
+    /// alone.
+    var annotationAccessor: ((TrainingBucket) -> String?)? = nil
 
     var body: some View {
         let yRange = observedYRange()
@@ -101,20 +111,22 @@ struct MiniLineChart: View {
 
     private func headerString(at hoveredX: Double?) -> AttributedString {
         let unitSuffix = unit.isEmpty ? "" : " \(unit)"
+        let bucket: TrainingBucket?
         if let t = hoveredX {
-            if let v = nearest(at: t).flatMap({ rangeAccessor($0)?.max }) {
-                let valueStr = wholeNumber ? String(Int(v))
-                    : FastChartFormatters.compact(v)
-                return AttributedString("\(valueStr)\(unitSuffix)")
-            }
-            return AttributedString("— no data")
+            bucket = nearest(at: t)
+        } else {
+            bucket = buckets.last
         }
-        if let v = buckets.last.flatMap({ rangeAccessor($0)?.max }) {
-            let valueStr = wholeNumber ? String(Int(v))
-                : FastChartFormatters.compact(v)
-            return AttributedString("\(valueStr)\(unitSuffix)")
+        guard let b = bucket, let v = rangeAccessor(b)?.max else {
+            return AttributedString(hoveredX != nil ? "— no data" : "--")
         }
-        return AttributedString("--")
+        let valueStr = wholeNumber ? String(Int(v))
+            : FastChartFormatters.compact(v)
+        let annotation = annotationAccessor?(b)
+        if let suffix = annotation, !suffix.isEmpty {
+            return AttributedString("\(valueStr)\(unitSuffix) \(suffix)")
+        }
+        return AttributedString("\(valueStr)\(unitSuffix)")
     }
 
     private func nearest(at t: Double) -> TrainingBucket? {

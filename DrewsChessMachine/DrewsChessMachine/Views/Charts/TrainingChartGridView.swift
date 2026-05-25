@@ -258,8 +258,21 @@ struct TrainingChartGridView: View {
                 titleHelp: AttributedString("""
                     Batch mean of |p_win − p_loss|. Higher = more confident value-head predictions \
                     on average; very low means "everything looks like a draw" — a classic \
-                    value-head collapse symptom.
-                    """)
+                    value-head collapse symptom. \
+                    The `(X%)` annotation next to the current value is `vAbs / (1 − pD) × 100` — \
+                    raw vAbs is structurally capped at `(1 − pD)` (a batch that's 70% draws \
+                    bounds vAbs at 0.30; a batch that's 50% draws bounds it at 0.50), so the \
+                    percentage is the apples-to-apples cross-run reading of "how much of the \
+                    available discrimination range is the value head actually using."
+                    """),
+                annotationAccessor: { bucket in
+                    guard let vAbs = bucket.valueAbsMean?.max,
+                          let pD = bucket.valueProbDraw?.max else { return nil }
+                    let decisive = 1.0 - pD
+                    guard decisive > 1e-3 else { return nil }
+                    let pct = vAbs / decisive * 100.0
+                    return String(format: "(%.1f%%)", pct)
+                }
             )
             ArenaWinChart(
                 events: arenaEvents,
