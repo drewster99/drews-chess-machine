@@ -2183,8 +2183,16 @@ final class ChessTrainer: @unchecked Sendable {
         // complementary CE on the negative branch (below) keeps both
         // signs of advantage bounded below by zero without dropping
         // any samples. At convergence the per-position positive CE
-        // settles near the smoothed-target entropy (`H(smoothed) ≈
-        // 0.64 nats` at ε=0.1); the complement CE settles symmetrically.
+        // settles near the positive-target entropy (`H(positive) ≈
+        // 0.64 nats` for ε=0.1, |legal|≈30) and the complement CE
+        // settles near the complement-target entropy, which is *higher*
+        // than the positive-target entropy because the (1−ε) main mass
+        // spreads over `(|legal|−1)` cells in the complement vs 1 cell
+        // in the positive target (e.g. `H(complement) ≈ 3.4 nats` at
+        // ε=0.1, |legal|≈30). Different equilibrium *magnitudes*, but
+        // both equilibria are reachable and bounded — that's what
+        // matters for stability; absolute magnitude isn't a divergence
+        // signal here.
         // Either can be transiently *large* — up to ≈ log(policySize)
         // ≈ 8.5 nats while raw softmax mass is still mostly on illegal
         // cells, the post-`acc5340` recovery regime — but a large CE
@@ -2282,8 +2290,13 @@ final class ChessTrainer: @unchecked Sendable {
         //   • Positive branch (advNorm > 0): p(played) → (1 − ε) + ε/|legal|
         //     — the legacy smoothed-CE attractor.
         //   • Negative branch (advNorm < 0): p(played) → ε/|legal|
-        //     — symmetric attractor, with the (1 − ε) main mass
-        //     redistributed over the other legal moves.
+        //     — structural mirror of the positive attractor; the
+        //     (1 − ε) main mass redistributes over `(|legal| − 1)`
+        //     other legal moves. Per-other-legal target mass therefore
+        //     `(1 − ε)/(|legal| − 1) + ε/|legal|`, NOT the same as the
+        //     positive branch's per-played mass — the structural form
+        //     mirrors but the per-cell magnitudes (and hence the
+        //     complement-target entropy) don't.
         //
         // `complementEnable` is a runtime scalar (1.0 / 0.0) so the
         // user can A/B between this signed-split formulation and the
@@ -2297,9 +2310,11 @@ final class ChessTrainer: @unchecked Sendable {
         // below (z-sign masked means of `weightedCE`) now reports the
         // per-sign loss CONTRIBUTION rather than only the positive
         // branch's. With the complement branch live, `policyLossLoss`
-        // becomes the rolling negative-A signal — previously identically
-        // zero, now the headline "is the network learning from losses
-        // and draws as well as wins" diagnostic.
+        // becomes the rolling negative-A signal — under the legacy
+        // clamp-on regime (recoverable via complementEnable = 0) it
+        // would be identically zero since loss positions clamp out;
+        // with complement-CE active it's the headline "is the network
+        // learning from losses and draws as well as wins" diagnostic.
         let zeroForAdvantage = graph.constant(0.0, dataType: dtype)
         let advantageNegated = graph.negative(
             with: advantageNormalized,

@@ -276,7 +276,7 @@ public enum SqrtBatchScalingLR: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Signed-Advantage Complement CE",
-    description: "When true, the policy gradient drives both positive-advantage (standard smoothed CE on the played move) and negative-advantage (complementary smoothed CE that pushes mass toward the OTHER legal moves) samples — each contribution bounded below by zero, so the total policy loss stays bounded below by zero on both signs and decisive losses train as actively as decisive wins. When false, only positive-advantage samples teach the policy (legacy clamp-on regime) and negative samples contribute zero gradient.",
+    description: "When true, the policy gradient runs two cross-entropies — positive-advantage samples teach via standard smoothed CE on the played move, negative-advantage samples teach via a complementary smoothed CE that pushes mass off the played move toward the OTHER legal moves. Each contribution is bounded below by zero so the total policy loss stays bounded below by zero on both signs. When false, only positive-advantage samples teach the policy (legacy clamp-on regime) and negative samples contribute zero gradient. Note: complement-target entropy is structurally higher than positive-target entropy (the (1−ε) main mass spreads over (|legal|−1) cells vs 1 cell), so the per-position negative-branch loss magnitudes will look larger in [STATS] — that's the target geometry, not a divergence signal.",
     default: true,
     category: "Optimizer",
     liveTunable: true
