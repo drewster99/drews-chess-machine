@@ -20,7 +20,6 @@ import SwiftUI
 /// `TacticalProbeBoardPopover` showing the position rendered with
 /// the network's top-5 legal moves as arrows.
 struct TacticalProbeRowView: View {
-    let probeName: String
     let current: TacticalProbeHistory.Entry
     let previous: TacticalProbeHistory.Entry?
     let probSeries: [Float]

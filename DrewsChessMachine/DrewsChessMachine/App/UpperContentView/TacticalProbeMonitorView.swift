@@ -109,7 +109,6 @@ struct TacticalProbeMonitorView: View {
     private func rowOrPlaceholder(probe: TacticalProbe) -> some View {
         if let pair = history.latestPair(probe.name) {
             TacticalProbeRowView(
-                probeName: probe.name,
                 current: pair.current,
                 previous: pair.previous,
                 probSeries: history.sparkSeries(probe.name, metric: .expectedProb),
