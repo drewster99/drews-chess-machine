@@ -1,24 +1,31 @@
 import SwiftUI
 
-/// One row of the Tactical Probe Monitor: verdict pill on the left,
-/// then three metric columns (Prob, Rank, Entropy) each showing a
-/// value + delta arrow + spark, then the value head's W/D/L softmax.
+/// One row of the Tactical Probe Monitor: verdict pill, short probe
+/// description, the move the network currently picks (ACTUAL), the
+/// move we expected (EXPECTED), then three metric columns (Prob,
+/// Rank, Entropy %) each showing a value + delta arrow + spark, then
+/// the value head's W/D/L softmax.
 ///
-/// Tick-direction color: green if the current value > previous,
-/// red if < previous, neutral gray otherwise (no prior tick, or equal
-/// to the previous). The same color is reused for the spark stroke,
-/// so the row's color story is visually unified. Note that for `rank`
-/// this means "rank numerically went up" not "rank improved" — rank
-/// going from 5 to 1 is a numerical drop and renders red even though
-/// it's a tactical improvement; the user reads the direction
-/// literally and applies the semantic interpretation themselves.
+/// Tick-direction color for the metric values: green if the current
+/// value > previous, red if < previous, neutral gray otherwise (no
+/// prior tick, or equal to the previous). The same color is reused
+/// for the spark stroke, so the row's color story is visually
+/// unified. Note that for `rank` this means "rank numerically went
+/// up" not "rank improved" — rank going from 5 to 1 is a numerical
+/// drop and renders red even though it's a tactical improvement; the
+/// user reads the direction literally and applies the semantic
+/// interpretation themselves.
+///
+/// The row itself is tappable — clicking anywhere on it opens
+/// `TacticalProbeBoardPopover` showing the position rendered with
+/// the network's top-5 legal moves as arrows.
 struct TacticalProbeRowView: View {
     let probeName: String
     let current: TacticalProbeHistory.Entry
     let previous: TacticalProbeHistory.Entry?
     let probSeries: [Float]
     let rankSeries: [Float]
-    let entropySeries: [Float]
+    let entropyPctSeries: [Float]
 
     /// Click-toggled popover showing the rendered board for this
     /// probe's position, with the top-K legal moves drawn as arrows.
@@ -29,11 +36,16 @@ struct TacticalProbeRowView: View {
         HStack(spacing: 8) {
             verdictPill
                 .frame(width: 100, alignment: .center)
-            Text(probeName)
+            Text(current.result.probe.shortDescription)
                 .font(.system(.body))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(minWidth: 180, idealWidth: 240, maxWidth: .infinity, alignment: .leading)
+                .frame(width: 130, alignment: .leading)
+
+            actualMoveCell
+                .frame(width: 80, alignment: .leading)
+            expectedMoveCell
+                .frame(width: 80, alignment: .leading)
 
             metricCell(
                 value: current.result.expectedProb,
@@ -50,19 +62,16 @@ struct TacticalProbeRowView: View {
                 valueWidth: 38
             )
             metricCell(
-                value: current.result.legalEntropyNats,
-                previous: previous?.result.legalEntropyNats,
-                format: "%.2f",
-                series: entropySeries,
+                value: entropyPercent(current.result),
+                previous: previous.map { entropyPercent($0.result) },
+                format: "%.0f%%",
+                series: entropyPctSeries,
                 valueWidth: 56
             )
             wdlCell
                 .frame(width: 120, alignment: .trailing)
         }
         .padding(.vertical, 2)
-        // Make the entire row tappable (not just the parts with text
-        // / arrows / sparks) so clicking near the row's empty padding
-        // also triggers the popover.
         .contentShape(Rectangle())
         .onTapGesture {
             isShowingBoardPopover.toggle()
@@ -90,6 +99,49 @@ struct TacticalProbeRowView: View {
                     .stroke(verdictColor(v).opacity(0.55), lineWidth: 1)
             )
             .foregroundStyle(verdictColor(v))
+    }
+
+    // MARK: Actual / expected move cells
+
+    /// The network's current top-mass move. Green when it equals an
+    /// acceptable (correct) move — i.e. the network is currently
+    /// picking right — primary text otherwise. Hyphen if no top move
+    /// is available (e.g. the probe errored out).
+    @ViewBuilder
+    private var actualMoveCell: some View {
+        if let top = current.result.topMoves.first {
+            let isCorrect = current.result.probe.acceptable.contains(top.move)
+            Text(top.move.notation)
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(isCorrect ? Color.green : Color.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        } else {
+            Text("—")
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// The fixture's correct move (or first of several if the fixture
+    /// has multiple acceptable). Shown in the secondary color since
+    /// it's static reference info — what we want the network to play
+    /// — not a live metric.
+    @ViewBuilder
+    private var expectedMoveCell: some View {
+        Text(expectedNotation)
+            .font(.system(.body, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+    }
+
+    private var expectedNotation: String {
+        if let first = current.result.probe.acceptable.sorted(by: { $0.notation < $1.notation }).first {
+            let count = current.result.probe.acceptable.count
+            return count > 1 ? "\(first.notation)+\(count - 1)" : first.notation
+        }
+        return "—"
     }
 
     // MARK: WDL cell — three small probabilities
@@ -164,6 +216,16 @@ struct TacticalProbeRowView: View {
         case .down: return .red
         case .neutral: return .primary
         }
+    }
+
+    /// Entropy as a percentage of the legal-uniform ceiling. 100% =
+    /// uniform on legals (no preference); 0% = collapsed onto a single
+    /// move. Returns 0 for the degenerate `uniformLegalEntropy == 0`
+    /// case (one-legal-move position — entropy is by definition 0).
+    private func entropyPercent(_ r: ProbeResult) -> Float {
+        let denom = r.uniformLegalEntropy
+        guard denom > 1e-6 else { return 0 }
+        return r.legalEntropyNats / denom * 100
     }
 
     // MARK: Verdict color / label

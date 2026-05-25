@@ -1,11 +1,17 @@
 import Foundation
 
 /// Driver that runs the full 7-probe battery every `intervalSec`
-/// while the Tactical Probe Monitor window is open. Each tick reads
+/// (default 60 seconds) for the life of the session. Each tick reads
 /// the live champion `ChessMPSNetwork` off `SessionController` (via a
-/// weak ref so the window doesn't keep the session alive after the
+/// weak ref so the watcher doesn't keep the session alive after the
 /// app's main lifecycle ends) and appends one snapshot to the shared
 /// `TacticalProbeHistory`. Gracefully no-ops when the network is nil.
+///
+/// Cadence rationale: 15s was too fast — probe values typically move
+/// over many minutes to hours of training, so a 15s spark line is
+/// 90%+ flatline with the occasional jiggle. 60s gives ~2 hours of
+/// history at the 120-entry cap, which is enough to see slow
+/// drift while keeping the spark visually informative.
 ///
 /// @MainActor isolated because both the network handle and the
 /// history store live on the main actor. The forward passes
@@ -28,7 +34,7 @@ final class TacticalProbeWatcher {
     init(
         sessionController: SessionController,
         history: TacticalProbeHistory,
-        intervalSec: TimeInterval = 15.0
+        intervalSec: TimeInterval = 60.0
     ) {
         self.sessionController = sessionController
         self.history = history

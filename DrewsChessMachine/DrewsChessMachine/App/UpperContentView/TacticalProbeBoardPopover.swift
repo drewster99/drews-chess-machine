@@ -30,7 +30,7 @@ struct TacticalProbeBoardPopover: View {
     @ViewBuilder
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(result.probe.name)
+            Text(result.probe.shortDescription)
                 .font(.system(.headline))
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)

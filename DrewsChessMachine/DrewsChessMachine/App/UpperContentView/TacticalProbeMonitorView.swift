@@ -76,10 +76,14 @@ struct TacticalProbeMonitorView: View {
             Text("VERDICT")
                 .frame(width: 100, alignment: .center)
             Text("PROBE")
-                .frame(minWidth: 180, idealWidth: 240, maxWidth: .infinity, alignment: .leading)
+                .frame(width: 130, alignment: .leading)
+            Text("ACTUAL")
+                .frame(width: 80, alignment: .leading)
+            Text("EXPECTED")
+                .frame(width: 80, alignment: .leading)
             metricHeader(label: "PROB", valueWidth: 56)
             metricHeader(label: "RANK", valueWidth: 38)
-            metricHeader(label: "ENT", valueWidth: 56)
+            metricHeader(label: "ENTROPY %", valueWidth: 56)
             Text("W / D / L")
                 .frame(width: 120, alignment: .trailing)
         }
@@ -110,31 +114,39 @@ struct TacticalProbeMonitorView: View {
                 previous: pair.previous,
                 probSeries: history.sparkSeries(probe.name, metric: .expectedProb),
                 rankSeries: history.sparkSeries(probe.name, metric: .expectedRank),
-                entropySeries: history.sparkSeries(probe.name, metric: .legalEntropyNats)
+                entropyPctSeries: history.sparkSeries(probe.name, metric: .entropyPercent)
             )
         } else {
             // No tick recorded yet for this probe — render the row
             // with neutral placeholders. Keeps the column alignment
             // intact and prevents flicker once the first tick lands.
-            placeholderRow(name: probe.name)
+            placeholderRow(probe: probe)
         }
     }
 
     @ViewBuilder
-    private func placeholderRow(name: String) -> some View {
+    private func placeholderRow(probe: TacticalProbe) -> some View {
         HStack(spacing: 8) {
             Text("— ")
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .frame(width: 100, alignment: .center)
-            Text(name)
+            Text(probe.shortDescription)
                 .font(.system(.body))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .frame(minWidth: 180, idealWidth: 240, maxWidth: .infinity, alignment: .leading)
+                .frame(width: 130, alignment: .leading)
+            Text("—")
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 80, alignment: .leading)
+            Text(probe.acceptable.sorted(by: { $0.notation < $1.notation }).first?.notation ?? "—")
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 80, alignment: .leading)
             placeholderCell(valueWidth: 56)   // prob
             placeholderCell(valueWidth: 38)   // rank
-            placeholderCell(valueWidth: 56)   // entropy
+            placeholderCell(valueWidth: 56)   // entropy %
             Text("—")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -163,7 +175,7 @@ struct TacticalProbeMonitorView: View {
         VStack(alignment: .leading, spacing: 2) {
             Divider()
             HStack {
-                Text("Ticks every 15s. Color = direction since prior tick: green = value up, red = value down, gray = first tick or unchanged.")
+                Text("Tap any row to view the position. Color on metrics = direction since prior tick: green = value up, red = value down, gray = first tick or unchanged. ACTUAL move is green when it matches an expected move.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()

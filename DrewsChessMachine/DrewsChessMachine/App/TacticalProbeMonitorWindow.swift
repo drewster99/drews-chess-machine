@@ -16,8 +16,8 @@ final class TacticalProbeMonitorWindowController: NSWindowController, NSWindowDe
         let view = TacticalProbeMonitorView(history: history)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.setContentSize(NSSize(width: 1080, height: 460))
-        window.minSize = NSSize(width: 820, height: 320)
+        window.setContentSize(NSSize(width: 1220, height: 460))
+        window.minSize = NSSize(width: 1000, height: 320)
         window.title = "Tactical Probe Monitor"
         window.isReleasedWhenClosed = false
         window.center()

@@ -118,6 +118,7 @@ enum TacticalProbeData {
         )
         return TacticalProbe(
             name: "K+Q mate, Qd1-d8#",
+            shortDescription: "K+Q mate",
             category: .mateInOne,
             state: state,
             acceptable: [mv("d1", "d8")]
@@ -141,6 +142,7 @@ enum TacticalProbeData {
         )
         return TacticalProbe(
             name: "Back-rank mate, Ra1-a8#",
+            shortDescription: "Back-rank mate",
             category: .mateInOne,
             state: state,
             acceptable: [mv("a1", "a8")]
@@ -158,6 +160,7 @@ enum TacticalProbeData {
         )
         return TacticalProbe(
             name: "Two-rook ladder, Re6-e8#",
+            shortDescription: "Two-rook ladder",
             category: .mateInOne,
             state: state,
             acceptable: [mv("e6", "e8")]
@@ -178,6 +181,7 @@ enum TacticalProbeData {
         )
         return TacticalProbe(
             name: "Free queen, Nc4xe5",
+            shortDescription: "Free queen",
             category: .hangingPieceCapture,
             state: state,
             acceptable: [mv("c4", "e5")]
@@ -196,6 +200,7 @@ enum TacticalProbeData {
         )
         return TacticalProbe(
             name: "Free knight, Be4xc6",
+            shortDescription: "Free knight",
             category: .hangingPieceCapture,
             state: state,
             acceptable: [mv("e4", "c6")]
@@ -213,6 +218,7 @@ enum TacticalProbeData {
         )
         return TacticalProbe(
             name: "Free rook, Rf2xa2",
+            shortDescription: "Free rook",
             category: .hangingPieceCapture,
             state: state,
             acceptable: [mv("f2", "a2")]
@@ -234,6 +240,7 @@ enum TacticalProbeData {
         )
         return TacticalProbe(
             name: "Forced promotion, b7-b8=Q",
+            shortDescription: "Forced promotion",
             category: .forcedPromotion,
             state: state,
             acceptable: [mv("b7", "b8", promote: .queen)]

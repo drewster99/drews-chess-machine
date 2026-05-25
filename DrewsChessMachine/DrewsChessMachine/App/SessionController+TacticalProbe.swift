@@ -21,7 +21,16 @@ enum ProbeCategory: String, Sendable {
 /// stalemate positions might have multiple safe mates. For mate-in-1
 /// and free-capture fixtures the set has exactly one element.
 struct TacticalProbe: Sendable {
+    /// Full name including the canonical correct move, e.g.
+    /// `"Free knight, Be4xc6"`. Used in `[TACTICAL]` log lines and
+    /// in the monitor's popover heading where having both the
+    /// description and the correct move on the same line is useful.
     let name: String
+    /// Short description without the move, e.g. `"Free knight"`. Used
+    /// in the monitor's PROBE column where ACTUAL / EXPECTED columns
+    /// already display the moves themselves, so repeating the move
+    /// in the name would be redundant noise.
+    let shortDescription: String
     let category: ProbeCategory
     let state: GameState
     let acceptable: Set<ChessMove>

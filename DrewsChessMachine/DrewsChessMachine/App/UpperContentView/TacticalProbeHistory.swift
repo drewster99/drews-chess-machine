@@ -28,7 +28,12 @@ final class TacticalProbeHistory {
     enum SparkMetric: String, CaseIterable, Sendable {
         case expectedProb
         case expectedRank
-        case legalEntropyNats
+        /// Entropy expressed as percentage of the legal-uniform
+        /// ceiling: `legalEntropyNats / uniformLegalEntropy * 100`.
+        /// Easier to read at a glance than raw nats (a 3.0-nats value
+        /// is "high" when uniform is 3.4 but "collapsed" when uniform
+        /// is 8.5).
+        case entropyPercent
     }
 
     /// Per-probe-name time series, newest at the end. The dictionary is
@@ -94,8 +99,13 @@ final class TacticalProbeHistory {
                 out.append(entry.result.expectedProb)
             case .expectedRank:
                 if let r = entry.result.expectedRank { out.append(Float(r)) }
-            case .legalEntropyNats:
-                out.append(entry.result.legalEntropyNats)
+            case .entropyPercent:
+                let denom = entry.result.uniformLegalEntropy
+                if denom > 1e-6 {
+                    out.append(entry.result.legalEntropyNats / denom * 100)
+                } else {
+                    out.append(0)
+                }
             }
         }
         return out
