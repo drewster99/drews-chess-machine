@@ -24,10 +24,10 @@ import Foundation
 ///    up here; the count is the strongest available proxy for the
 ///    "kernel walks N entries on every command-buffer commit" cost.
 ///    Implemented via repeated `mach_vm_region_recurse` calls, which is
-///    the same syscall path `vmmap` uses. Cost is roughly O(regions) —
-///    ~1-3 ms per call at typical app sizes (~2K regions). Calling once
-///    per `[STATS]` emit (60 s cadence) is well below 1% overhead;
-///    callers MUST NOT call it per training step.
+///    the same syscall path `vmmap` uses. Cost is roughly O(regions),
+///    which can grow large in a trained-up session. Calling once per
+///    `[STATS]` emit (60 s steady-state cadence) is well below 1%
+///    overhead; callers MUST NOT call it per training step.
 enum DiagSampler {
     /// Resident memory in bytes (`phys_footprint`). 0 on failure.
     static func currentResidentBytes() -> UInt64 {
@@ -51,24 +51,28 @@ enum DiagSampler {
 
     /// Iterate the process VM region map and return (totalRegions,
     /// ioAcceleratorRegions). The second value is the count of regions
-    /// tagged `VM_MEMORY_IOACCELERATOR` (273) — the tag the kernel
-    /// applies to AGX-mapped GPU memory. When MPSGraph allocates a new
+    /// whose `vm_region_submap_info_data_64_t.user_tag` equals 273 —
+    /// the observed runtime tag for AGX-mapped GPU memory on Apple
+    /// Silicon. When MPSGraph allocates a new
     /// `MTLBuffer` mid-encoding ("Late MTLBuffer creation" in the Metal
     /// trace), one of these IOAccelerator entries appears. Returns
     /// (0, 0) on failure rather than throwing — the caller is on a
     /// telemetry path and a missed reading is recoverable.
     ///
-    /// Cost: one `mach_vm_region_recurse` syscall per region. On a
-    /// trained-up DrewsChessMachine session that's ~2000 regions, so
-    /// ~1-3 ms per call. Safe at 60 s cadence; do NOT call per step.
+    /// Cost: one `mach_vm_region_recurse` syscall per region, which
+    /// scales with the size of the process VM region map. Safe at 60 s
+    /// cadence; do NOT call per step.
     static func currentVMRegionCount() -> (total: UInt32, ioAccelerator: UInt32) {
         var address: vm_address_t = 0
         var total: UInt32 = 0
         var ioAccel: UInt32 = 0
-        // VM_MEMORY_IOACCELERATOR is 273. The macro lives in
-        // <mach/vm_statistics.h>; reproducing the literal here avoids
-        // an import dance for one constant. The kernel's tagging for
-        // GPU mappings on Apple Silicon uses this tag.
+        // 273 is the observed runtime tag value found in
+        // `vm_region_submap_info_data_64_t.user_tag` for AGX-mapped
+        // GPU memory regions on Apple Silicon. (This is distinct from
+        // the `VM_MEMORY_IOACCELERATOR` macro in
+        // <mach/vm_statistics.h>; do not assume they have the same
+        // numeric value.) Reproducing the literal here avoids any
+        // import dance.
         let ioAcceleratorTag: UInt32 = 273
         // Cap the loop so a runaway address space doesn't spin
         // forever. ~1 M regions is wildly more than any healthy

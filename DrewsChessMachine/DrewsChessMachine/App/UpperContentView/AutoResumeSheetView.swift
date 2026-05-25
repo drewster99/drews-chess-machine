@@ -1,11 +1,9 @@
 import SwiftUI
 
 /// The "Resume last training session?" sheet shown at app launch when a
-/// `LastSessionPointer` still names an on-disk `.dcmsession`. Extracted out of
-/// `UpperContentView` (it used to be a `autoResumeSheetContentView() -> AnyView`
-/// helper, written that way only to keep the `.sheet { … }` call site from
-/// inflating the already-huge body's type-inference cost — a concrete `View`
-/// struct does that job better and drops the `AnyView`).
+/// `LastSessionPointer` still names an on-disk `.dcmsession`. Extracted from
+/// `UpperContentView`'s `.sheet { … }` call site to keep the body's type-
+/// inference cost down and avoid `AnyView`.
 ///
 /// The countdown / pointer / summary state and the actual resume + dismiss
 /// logic stay on `UpperContentView` for now; this view just renders them and

@@ -12,7 +12,7 @@ struct TournamentProgress: Sendable {
     let championWins: Int
     let draws: Int
     /// Wall-clock time the tournament started, captured once in
-    /// `runArenaTournament` before the first game and carried through
+    /// `runArenaParallel` before the first game and carried through
     /// every per-game update so the busy label can compute live
     /// elapsed time via `Date().timeIntervalSince(startTime)` on each
     /// render without needing a separate ticking timer.

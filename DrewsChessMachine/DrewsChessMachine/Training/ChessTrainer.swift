@@ -70,7 +70,7 @@ struct TrainStepTiming: Sendable {
     let valueLoss: Float
     /// Mean Shannon entropy (in nats) of the trainee's policy softmax over
     /// this batch. Diagnostic only — not part of `loss`. Range is
-    /// [0, log(policySize)] ≈ [0, 8.49] for the current 4864-logit head.
+    /// [0, log(ChessNetwork.policySize)] nats.
     /// Random init sits near the ceiling; a collapsed policy heads toward 0.
     /// Watch for monotonic drift to either extreme — that's the signature
     /// of policy collapse or a stuck-at-uniform learning failure.
@@ -143,7 +143,7 @@ struct TrainStepTiming: Sendable {
     /// loss** in this trainer: adv_normalized has zero batch-mean by
     /// construction, so ~half the positions push `p(a*)` up and ~half
     /// push it down. The unconditional mean can stay near
-    /// `1/policySize ≈ 0.0002` even when training is perfectly healthy,
+    /// `1/policySize` even when training is perfectly healthy,
     /// and can rise spuriously on outcome-skewed batches where the
     /// `/σ[A]` normalization amplifies tail updates. Keep for backward
     /// compatibility with prior logs and as a coarse index-mismatch
@@ -195,10 +195,9 @@ struct TrainStepTiming: Sendable {
     /// Per-position advantage values for this step, one float per
     /// batch row. Used by `TrainingLiveStatsBox` to maintain a rolling
     /// window of raw values for p05/p50/p95 percentile computation.
-    /// Readback cost is a single `[batch, 1]` tensor (~2 KB at
-    /// batch=512) — trivial against the existing per-step readback
-    /// budget. Nil on the random-data sweep path (percentile view is
-    /// meaningless there).
+    /// Readback cost is a single `[batch, 1]` tensor — trivial against
+    /// the existing per-step readback budget. Nil on the random-data
+    /// sweep path (percentile view is meaningless there).
     let advantageRaw: [Float]?
 
     /// Mean policy loss over the batch positions where outcome z > 0.5
@@ -635,16 +634,18 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     /// (vs. ~150 ms at the prior 2 M-entry ceiling), yet 32 K samples
     /// already pin the empirical p05/p50/p95 to within ~0.5% of the
     /// true distribution — more than tight enough for a diagnostic
-    /// that's eyeballed in logs. Sized so that at the default batch
-    /// of 4096 the ring still holds 8 full batches' worth of raw
+    /// that's eyeballed in logs. Sized so that at the configured
+    /// `TrainingBatchSize` default the ring holds
+    /// `advRawRingMaxCapacity / batchSize` full batches' worth of raw
     /// advantages; at smaller batches the ring is effectively the
     /// `rollingWindow` * batchSize product anyway.
     private static let advRawRingMaxCapacity: Int = 32_768
 
     /// Rolling-window length for per-step timing means
-    /// (`recentDataPrepMs`, `recentGpuRunMs`, etc.). 512 steps at
-    /// typical Play-and-Train throughput (~30 steps/min on the M-series
-    /// dev machine) is ~17 minutes of history — long enough to smooth
+    /// (`recentDataPrepMs`, `recentGpuRunMs`, etc.). The
+    /// `rollingTimingWindow`-step window at typical Play-and-Train
+    /// throughput (~30 steps/min on the M-series dev machine) is
+    /// ~17 minutes of history — long enough to smooth
     /// out per-step jitter, short enough that a slowdown beginning at
     /// the most recent arena boundary is visible within one [STATS]
     /// emit (60 s) rather than being washed out by hours of fast
@@ -1010,13 +1011,11 @@ final class ChessTrainer: @unchecked Sendable {
     /// weights directly rather than folded into the gradient, so μ and
     /// `weightDecayC` tune independently (raising μ does not amplify decay).
     /// With μ=0 the velocity term vanishes and the per-step update for
-    /// decay-eligible variables is `v_new = v - lr * (clipped_grad + weightDecayC * v)`,
-    /// i.e. `(1 - lr*c) * v - lr * clipped_grad`. Decay is applied only to
-    /// conv and FC weight matrices; BN gamma/beta and FC biases are excluded,
-    /// matching the standard PyTorch / AdamW recipe for which params to decay.
-    /// (Decaying BN gamma toward zero zeros out a channel and reduces effective
-    /// capacity — the prior "L2 on all params" decision was reverted after the
-    /// deep ML review.)
+    /// decay-eligible variables is
+    /// `weight_new = (1 − lr·weightDecayC) · weight − lr · clipped_grad`.
+    /// Decay is applied only to conv and FC weight matrices; BN gamma/beta
+    /// and FC biases are excluded, matching the standard PyTorch / AdamW
+    /// recipe for which params to decay.
     ///
     /// The actual value applied by the graph is read from
     /// `weightDecayC` and fed as a per-step scalar so the user can
@@ -1026,10 +1025,10 @@ final class ChessTrainer: @unchecked Sendable {
     /// Default global L2-norm gradient clipping threshold. If the L2
     /// norm of the concatenated gradient vector over every trainable
     /// variable exceeds this value, every gradient is scaled by
-    /// `maxNorm / globalNorm` so the effective step is capped. 5.0 is
+    /// `maxNorm / globalNorm` so the effective step is capped. 30.0 is
     /// a conservative value that sits well above steady-state norms
-    /// under healthy training but cuts off the single-step blowups
-    /// (see 2026-04-15 incident). Under heavy policy-collapse
+    /// under healthy training but cuts off the single-step blowups.
+    /// Under heavy policy-collapse
     /// pressure the natural gradient norm can vastly exceed this,
     /// nullifying effective learning rate — live-tunable to let the
     /// user widen the valve when that happens.
@@ -1037,7 +1036,8 @@ final class ChessTrainer: @unchecked Sendable {
 
     /// Default per-head loss coefficients in `total_loss =
     /// valueLossWeight · valueLoss + policyLossWeight · policyLoss
-    /// − entropyCoeff · policyEntropy`. AlphaZero canonical is
+    /// − entropyCoeff · policyEntropy
+    /// + illegalMassWeight · illegalMassPenalty`. AlphaZero canonical is
     /// 1.0 / 1.0 (both heads weighted equally); Lc0 / KataGo expose
     /// these as `policy_loss_weight` / `value_loss_weight` and tune
     /// the ratio per training stage.
@@ -1166,7 +1166,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// ~1/(1−μ) in steady state under correlated gradients, so
     /// μ=0.9 still behaves like ~10× the LR on the gradient term —
     /// known to push this network into the one-hot-illegal collapse
-    /// mode at the empirical sweet-spot LR of 5e-5. Decay is now
+    /// mode at the default `learningRate`. Decay is now
     /// independent of μ (decoupled form), so changing μ no longer
     /// silently amplifies decay. Start low and watch `legalMass` /
     /// `pEntLegal` before raising further.
@@ -2184,17 +2184,18 @@ final class ChessTrainer: @unchecked Sendable {
         // signs of advantage bounded below by zero without dropping
         // any samples. At convergence the per-position positive CE
         // settles near the positive-target entropy (`H(positive) ≈
-        // 0.64 nats` for ε=0.1, |legal|≈30) and the complement CE
-        // settles near the complement-target entropy, which is *higher*
-        // than the positive-target entropy because the (1−ε) main mass
-        // spreads over `(|legal|−1)` cells in the complement vs 1 cell
-        // in the positive target (e.g. `H(complement) ≈ 3.4 nats` at
-        // ε=0.1, |legal|≈30). Different equilibrium *magnitudes*, but
+        // 0.64 nats` for the current ε=`policyLabelSmoothingEpsilon`
+        // default, |legal|≈30) and the complement CE settles near the
+        // complement-target entropy, which is *higher* than the
+        // positive-target entropy because the (1−ε) main mass spreads
+        // over `(|legal|−1)` cells in the complement vs 1 cell in the
+        // positive target (e.g. `H(complement) ≈ 3.4 nats` at the same
+        // ε default, |legal|≈30). Different equilibrium *magnitudes*, but
         // both equilibria are reachable and bounded — that's what
         // matters for stability; absolute magnitude isn't a divergence
         // signal here.
-        // Either can be transiently *large* — up to ≈ log(policySize)
-        // ≈ 8.5 nats while raw softmax mass is still mostly on illegal
+        // Either can be transiently *large* — up to ≈ log(ChessNetwork.policySize)
+        // nats while raw softmax mass is still mostly on illegal
         // cells, the post-`acc5340` recovery regime — but a large CE
         // *value* is not a large *update*: the CE's gradient on every
         // logit (legal or illegal) is `softmax_raw − target ∈ [−1, 1]`,
@@ -2935,7 +2936,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
         // frac(|A| < 0.05): "near-zero-signal" positions whose
         // policy-gradient contribution is tiny. Threshold 0.05
-        // picked to match the default `drawPenalty` — positions
+        // picked as a small fixed cutoff — positions
         // where the fresh baseline already predicts z closely are
         // "well-learned" and shouldn't update much.
         let advantageAbs = graph.absolute(with: advantage, name: "advantage_abs")
@@ -3186,12 +3187,6 @@ final class ChessTrainer: @unchecked Sendable {
         // reduces bit-exact to plain SGD with weight decay (since
         // both forms collapse to the same `lr · (grad + decayC · weight)`
         // expression when the velocity term zeros out).
-        //
-        // The earlier coupled form had a documented "μ near 0.9
-        // amplifies effective step size by ~10×" trap because the
-        // decayC · weight term lived inside the velocity buffer, so
-        // raising μ silently amplified decay by the same factor. The
-        // decoupled form fixes that.
         //
         // Decay is applied only to variables flagged in
         // `network.trainableShouldDecay` — conv and FC weight matrices
@@ -5183,10 +5178,11 @@ final class ChessTrainer: @unchecked Sendable {
             if cancelled() { break }
 
             // Largest single MTLBuffer we'll ask Metal for. Exact, not
-            // estimated: the trainer literally uploads a [batch, 128, 8, 8]
+            // estimated: the trainer literally uploads a
+            // [batch, ChessNetwork.channels, ChessNetwork.boardSize, ChessNetwork.boardSize]
             // float32 activation tensor and that's the biggest buffer in
             // the graph (beats the [batch, policySize] policy tensors and
-            // the [batch, inputPlanes, 8, 8] input).
+            // the [batch, inputPlanes, ChessNetwork.boardSize, ChessNetwork.boardSize] input).
             let largestBufferBytes = Self.largestBufferBytes(forBatchSize: batchSize)
             // Working-set prediction comes from a least-squares fit over
             // the rows we've already run. Returns nil before we have any
@@ -5300,9 +5296,11 @@ final class ChessTrainer: @unchecked Sendable {
     // MARK: - Footprint Helpers
 
     /// Exact size of the largest single MTLBuffer the trainer requests at
-    /// this batch size — one [batch, 128, 8, 8] float32 activation tensor.
-    /// That's larger than the [batch, policySize] policy tensors and the
-    /// [batch, inputPlanes, 8, 8] input, so it's the buffer that would first hit
+    /// this batch size — one
+    /// [batch, ChessNetwork.channels, ChessNetwork.boardSize, ChessNetwork.boardSize]
+    /// float32 activation tensor. That's larger than the [batch, policySize]
+    /// policy tensors and the [batch, inputPlanes, ChessNetwork.boardSize,
+    /// ChessNetwork.boardSize] input, so it's the buffer that would first hit
     /// `maxBufferLength`. This is an architectural fact, not a guess.
     static func largestBufferBytes(forBatchSize batchSize: Int) -> UInt64 {
         let floatBytes = MemoryLayout<Float>.size

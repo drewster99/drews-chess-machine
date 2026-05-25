@@ -17,8 +17,8 @@ import Foundation
 /// history store live on the main actor. The forward passes
 /// themselves are async and bounce off the network's `executionQueue`,
 /// so the main actor is only briefly held to dispatch and to write
-/// the result back into the history. Probe cost is ~3ms × 7 ≈ 21ms
-/// per tick (a small fraction of the 15s cadence).
+/// the result back into the history. Probe cost is a small fraction
+/// of `intervalSec` per tick.
 ///
 /// Two-phase lifecycle: `start()` kicks the loop; `stop()` cancels it.
 /// The window controller calls `stop()` from `windowWillClose(_:)`

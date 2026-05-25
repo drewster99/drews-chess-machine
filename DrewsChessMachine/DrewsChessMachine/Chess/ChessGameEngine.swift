@@ -97,7 +97,8 @@ enum ChessGameError: LocalizedError {
 /// from any source (self-play player, arena player, UI, tests, file load)
 /// and the engine rejects anything illegal with
 /// `ChessGameError.illegalMove` instead of trusting the caller and
-/// potentially trapping inside `MoveGenerator.applyMove`'s force unwrap.
+/// potentially trapping inside `MoveGenerator.applyMove`'s
+/// `preconditionFailure`.
 /// `MoveGenerator.legalMoves(for:)` still runs exactly once per ply — the
 /// list the engine produces after applying move N is reused both for
 /// end-of-game detection and as the guard for move N+1.
@@ -117,9 +118,10 @@ final class ChessGameEngine {
     /// an irreversible move.
     private var positionCounts: [PositionKey: Int] = [:]
 
-    /// Ordered window of up to the 10 most recent prior positions, with
-    /// index 0 = position 1 ply ago, index 9 = position 10 plies ago.
-    /// Drives `GameState.recentRepetitionMask` and `BoardEncoder` planes
+    /// Ordered window of up to the `recentPositionKeyWindow` most recent
+    /// prior positions, with index 0 = position 1 ply ago, index
+    /// `recentPositionKeyWindow - 1` = oldest. Drives
+    /// `GameState.recentRepetitionMask` and `BoardEncoder` planes
     /// 20–29. Cleared in the same conditions as `positionCounts`
     /// (halfmoveClock = 0 after an irreversible move) — entries from
     /// before such a move can never match a future position.
@@ -197,11 +199,11 @@ final class ChessGameEngine {
         positionCounts[key] = totalVisits
         let isThreefold = totalVisits >= 3
 
-        // Compute the 10-bit temporal-repetition mask: bit `i` is set
-        // iff `recentPositionKeys[i] == key`. After an irreversible move
-        // the window is empty so the mask is necessarily 0 — matching
-        // the chess-rules fact that no prior position can equal the new
-        // one across a pawn move or capture.
+        // Compute the temporal-repetition mask (one bit per windowed
+        // prior position): bit `i` is set iff `recentPositionKeys[i] == key`.
+        // After an irreversible move the window is empty so the mask is
+        // necessarily 0 — matching the chess-rules fact that no prior
+        // position can equal the new one across a pawn move or capture.
         var mask: UInt16 = 0
         for i in 0..<recentPositionKeys.count {
             if recentPositionKeys[i] == key {

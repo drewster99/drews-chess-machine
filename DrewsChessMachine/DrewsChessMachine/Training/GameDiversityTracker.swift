@@ -25,8 +25,8 @@ final class GameDiversityTracker: @unchecked Sendable {
     /// The first six buckets isolate plies 0 through 5 one-per-bucket
     /// so the healthy steady-state region (where most self-play games
     /// should diverge) reads at fine resolution; subsequent buckets
-    /// widen to track the policy-collapse tail (6-7, 8-10, 11-20,
-    /// 21-40, 41+).
+    /// widen to track the policy-collapse tail (see `histogramLabels`
+    /// below for the exact bucket labels).
     static let histogramBounds: [Int] = [0, 1, 2, 3, 4, 5, 7, 10, 20, 40]
     /// Human-readable labels for each histogram bucket, aligned with
     /// `histogramBounds` plus a trailing "41+" overflow bucket. Used

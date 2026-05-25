@@ -7,7 +7,7 @@ import os
 /// of the score. (Promotion is decided solely by the score-threshold
 /// check at the end of `runArenaParallel` — there is no "force
 /// promote this candidate" button; if you want the current *trainer*
-/// promoted right now without an arena, use `Engine ▸ Promote Trainee
+/// promoted right now without an arena, use `Train ▸ Promote Trainee
 /// Now`, which is `SessionController.promoteTrainerNow()`.) The flag
 /// is set-once and idempotent — repeated `abort()` clicks are a
 /// no-op. `runArenaParallel` clears the box at the start of every

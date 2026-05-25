@@ -15,9 +15,11 @@ extension TrainingChartGridView {
         let visibleDomainSec: Double
         /// Width of one decimation bucket in seconds. Used by hover-
         /// readout helpers to size the "is the cursor near a bucket"
-        /// tolerance — at very wide zoom levels, the per-sample
-        /// 1.5 s tolerance would cause every hover to read as
-        /// no-data.
+        /// tolerance, computed as
+        /// `max(TrainingChartGridView.hoverMatchToleranceSec, bucketWidthSec * 1.5)` —
+        /// at very wide zoom levels, falling back to just the
+        /// `hoverMatchToleranceSec` floor would cause every hover to
+        /// read as no-data.
         let bucketWidthSec: Double
     }
 }

@@ -36,8 +36,8 @@ struct LastSessionPointer: Codable, Equatable, Sendable {
     let savedAtUnix: Int64
 
     /// Which save path wrote this pointer. One of `"manual"`,
-    /// `"post-promotion"`, `"periodic"`. Purely informational —
-    /// the resume flow treats all three the same way.
+    /// `"periodic"`, `"promote"`, `"post-promotion"`. Purely
+    /// informational — the resume flow treats all four the same way.
     let trigger: String
 
     /// Reconstruct the directory URL from the stored path.

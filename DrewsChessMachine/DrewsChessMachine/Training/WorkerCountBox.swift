@@ -16,7 +16,7 @@ import Foundation
 /// all expressible. The UI Stepper's `range` constant is what
 /// enforces the user-facing floor; the upper bound is similarly
 /// enforced by the Stepper and the spawn loop's
-/// `absoluteMaxSelfPlayWorkers` constant, not here.
+/// `UpperContentView.absoluteMaxSelfPlayWorkers` constant, not here.
 final class WorkerCountBox: @unchecked Sendable {
     private let _count: SyncBox<Int>
 

@@ -124,9 +124,9 @@ final class ChessMachine: @unchecked Sendable {
     /// the caller's Task propagates to the game loop at the next
     /// ply-boundary `Task.checkCancellation()` (or at any `await`
     /// downstream of `onChooseNextMove`), so `stopAll`-style pauses no
-    /// longer have to wait out an entire 300-ply game before a slot can
-    /// exit. That was the mechanism behind the 15-second save-session
-    /// pause timeouts observed in the session log.
+    /// longer have to wait out an entire game before a slot can
+    /// exit. That was the mechanism behind the save-session pause
+    /// timeouts observed in the session log.
     ///
     /// On cancellation this throws `CancellationError` **before**
     /// calling `onGameEnded` on either player and **before** emitting the
@@ -191,10 +191,7 @@ final class ChessMachine: @unchecked Sendable {
             // single call site that drives this method; reaching here
             // with `engine == nil` means a future refactor moved the
             // assignment or introduced a second entry point and the
-            // ordering guarantee broke. The old silent-stalemate
-            // fallback would inject a fake game result into whatever
-            // consumer the player/delegate sees, which is exactly the
-            // class of bug we want surfaced loudly.
+            // ordering guarantee broke.
             preconditionFailure("runGameLoop invoked without engine — beginNewGame must initialize engine before calling runGameLoop")
         }
 
@@ -288,11 +285,9 @@ final class ChessMachine: @unchecked Sendable {
 
         // The loop only exits when `engine.result != nil` (or via
         // throw — handled inside the loop body), so `engine.result`
-        // is always non-nil here. The old `?? .stalemate` fallback
-        // is gone with the max-plies cap; if a future change brings
-        // back an "exit without engine result" path it should add a
-        // distinct termination cause rather than re-bucketing into
-        // stalemate.
+        // is always non-nil here. If a future change brings back an
+        // "exit without engine result" path it should add a distinct
+        // termination cause rather than re-bucketing into stalemate.
         guard let finalResult = engine.result else {
             preconditionFailure("runGameLoop exited the while loop with engine.result == nil — only the throw path should bypass the engine.result != nil exit condition")
         }

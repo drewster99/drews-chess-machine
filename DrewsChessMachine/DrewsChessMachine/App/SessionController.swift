@@ -45,7 +45,7 @@ final class SessionController {
     /// True while a `performBuild()` detached task is in flight.
     var isBuilding: Bool = false
 
-    /// Whether a champion network exists. (Was `UpperContentView.networkReady`.)
+    /// Whether a champion network exists.
     var networkReady: Bool { network != nil }
 
     // MARK: - Tactical Probe Monitor (always-on)
@@ -290,8 +290,7 @@ final class SessionController {
 
     /// Last auto-computed step delay (auto-controller state, persisted across
     /// sessions so the next session resumes where the auto-adjuster left off).
-    /// `UserDefaults`-backed (was `@AppStorage("lastAutoComputedDelayMs")` on
-    /// the view). Not a training parameter — intentionally NOT in
+    /// `UserDefaults`-backed. Not a training parameter — intentionally NOT in
     /// `TrainingParameters`. Not read during `body`, so a plain computed
     /// (non-observable) UserDefaults accessor is fine.
     var lastAutoComputedDelayMs: Int {
@@ -338,8 +337,7 @@ final class SessionController {
     /// live. Wraps the inner controller without modifying it: each tick, observe
     /// `gap = userTarget − snap.currentRatio`, nudge the controller's INTERNAL
     /// set-point `T_eff` in the same sign (`T_eff += k·gap·dt`), bounded to
-    /// `[0.5, 5.0]·userTarget`. The user-facing parameter never moves. See the
-    /// long derivation comment that was on `UpperContentView` for the full why.
+    /// `[0.5, 5.0]·userTarget`. The user-facing parameter never moves.
     @MainActor
     func updateReplayRatioCompensator(snap: ReplayRatioController.RatioSnapshot) {
         guard realTraining, let rc = replayRatioController else {
@@ -429,10 +427,11 @@ final class SessionController {
     //   • candidate-probe + inference     — SessionController+CandidateProbe.swift
     //   • checkpoint save/load/snapshot   — SessionController+Checkpoint.swift
     //   • Play-and-Train orchestration    — SessionController+Training.swift
-    // The heartbeat (processSnapshotTimerTick / __processSnapshotTimerTick /
-    // periodicSaveTick / refreshChartZoomTick / refresh{Memory,TrainingChart,
-    // ProgressRate,Usage}IfNeeded) is still below in this file. Stored properties
-    // for all of these stay here (extensions can't hold stored properties).
+    //   • manual "Promote Trainee Now"    — SessionController+ManualPromote.swift
+    //   • tactical-probe battery          — SessionController+TacticalProbe.swift
+    //   • heartbeat tick + refreshers     — SessionController+Heartbeat.swift
+    // Stored properties for all of these stay here (extensions can't hold
+    // stored properties).
 
     // MARK: - Heartbeat-related state
 
@@ -828,9 +827,8 @@ final class SessionController {
                 networkStatus = """
                     Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
                     ID: \(idStr)
-                    Parameters: ~2,400,000 (~2.4M)
-                    Architecture: 20x8x8 -> stem(128)
-                      -> 8 res+SE blocks -> policy(4864) + value(1)
+                    Architecture: \(ChessNetwork.inputPlanes)x8x8 -> stem(128)
+                      -> 8 res+SE blocks -> policy(\(ChessNetwork.policySize)) + value(3 W/D/L)
                     """
                 checkpoint?.lastSavedAt = nil
                 checkpoint?.lastResumedAt = nil

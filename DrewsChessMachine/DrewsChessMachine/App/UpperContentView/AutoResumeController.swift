@@ -3,9 +3,9 @@ import SwiftUI
 /// Owns the launch-time auto-resume flow, lifted out of `UpperContentView`.
 ///
 /// On app launch (`maybePresentSheet`), if a `LastSessionPointer` still names an
-/// on-disk `.dcmsession`, the sheet is shown with a 30-second countdown; if the
-/// user neither resumes nor dismisses, the countdown fires the resume
-/// automatically. After dismiss, the File-menu "Resume training from autosave"
+/// on-disk `.dcmsession`, the sheet is shown with a `countdownStartSec`-second
+/// countdown; if the user neither resumes nor dismisses, the countdown fires
+/// the resume automatically. After dismiss, the File-menu "Resume training from autosave"
 /// command (`resumeFromPointer`) covers the same flow for the rest of the
 /// launch. The actual load-and-start chain lives on `UpperContentView`
 /// (`loadSessionFrom(url:startAfterLoad:)`); the controller reaches it through

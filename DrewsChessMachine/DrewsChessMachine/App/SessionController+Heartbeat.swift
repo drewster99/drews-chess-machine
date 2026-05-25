@@ -73,11 +73,9 @@ extension SessionController {
     /// box (game, sweep, training, arena, parallel-worker counters,
     /// replay-ratio controller, diversity tracker) into the matching
     /// `@State`, throttled internally where each consumer cares about
-    /// avoiding redundant invalidations. Extracted out of the inline
+    /// avoiding redundant invalidations. Kept out of the inline
     /// `.onReceive(snapshotTimer)` closure so `body`'s expression
-    /// type-check stays cheap — the closure used to be ~140 lines and
-    /// dragged the whole modifier chain past the
-    /// `-warn-long-expression-type-checking` budget.
+    /// type-check stays cheap.
     private func __processSnapshotTimerTick() async {
         // Pull the latest game state into @State once per heartbeat.
         // Cheap (single locked struct copy) and bounds UI work even
@@ -150,8 +148,7 @@ extension SessionController {
             // Pass the locally-snapshotted step count so the LR uses the
             // same observation rather than re-acquiring the SyncBox; the
             // count and LR in the published snapshot are then guaranteed
-            // consistent (they were previously two independent reads with
-            // a one-step disagreement window).
+            // consistent.
             let effectiveLR = await trainer.asyncEffectiveLearningRate(
                 forBatchSize: TrainingParameters.shared.trainingBatchSize,
                 completedSteps: completedTrainSteps
@@ -540,7 +537,7 @@ extension SessionController {
         // sorted, so anything older is also out of window. Bounded
         // at `progressRateWindowSec / progressRateRefreshSec`
         // iterations per call in steady state regardless of total
-        // session length (~60 at the current 60s window / 1s refresh).
+        // session length.
         let cutoff = now.addingTimeInterval(-Self.progressRateWindowSec)
         var windowStart: ProgressRateSample?
         var i = (chartCoordinator?.progressRateRing.count ?? 0) - 1

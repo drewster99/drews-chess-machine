@@ -4,13 +4,9 @@ import Foundation
 /// row. Determines the leading icon (none / green check / red error
 /// glyph), the text color, and the auto-clear lifetime.
 ///
-/// Success messages are visually distinct and linger longer because
-/// the original flow — "Saving session (manual)…" then a same-styled
-/// gray "Saved <filename>" that cleared after 6 seconds — was easy to
-/// miss, leaving the user unsure whether the save had actually
-/// completed. A green checkmark plus a longer dwell time gives a
-/// durable confirmation of success without resorting to a modal
-/// alert.
+/// Success messages get a green checkmark and a longer dwell time
+/// so they're hard to miss — a durable confirmation of success
+/// without resorting to a modal alert.
 enum CheckpointStatusKind: Sendable {
     case progress
     /// Save has been running longer than the watchdog deadline.

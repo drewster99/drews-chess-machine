@@ -119,10 +119,10 @@ extension SessionController {
 
     /// Upper bound on how long a save path will wait for a
     /// worker to acknowledge a pause request. Has to cover one
-    /// in-flight self-play game or training step, so 15 s is a
-    /// comfortable margin above the worst-case game length at
-    /// typical self-play rates. On timeout the save bails with
-    /// a user-visible error rather than blocking forever.
+    /// in-flight self-play game or training step — a comfortable
+    /// margin above the worst-case game length at typical self-play
+    /// rates. On timeout the save bails with a user-visible error
+    /// rather than blocking forever.
     nonisolated static let saveGateTimeoutMs: Int = 15_000
 
     /// Manual "Save Session" — writes a full `.dcmsession` with
@@ -320,7 +320,7 @@ extension SessionController {
             }
 
             // Final write + verify on a detached task so UI stays
-            // responsive during the ~150 ms scratch-network build.
+            // responsive during the scratch-network build (sub-second).
             let championMetadata = ModelCheckpointMetadata(
                 creator: diskTag,
                 trainingStep: trainingStep,

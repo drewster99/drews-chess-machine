@@ -135,17 +135,10 @@ extension SessionController {
             ran += 1
             do {
                 let board = BoardEncoder.encode(.starting)
-                // SyncBox rather than `nonisolated(unsafe) var`: today
-                // `evaluate(board:consume:)` invokes `consume`
-                // synchronously inside ChessNetwork's serial
-                // executionQueue, so writes happen-before the
-                // post-await read — no actual race exists. But the
-                // annotation silenced Swift 6's Sendable-capture check
-                // for a guarantee that lives outside this file; if
-                // `consume` ever becomes truly async or escapes, the
-                // happens-before chain breaks silently. SyncBox makes
-                // the lock discipline explicit and removes the
-                // unsafe-annotation requirement.
+                // Uses `SyncBox<[Float]>` so the lock discipline is explicit
+                // — the `consume` closure's happens-before guarantee with the
+                // post-await read lives outside this file and would break
+                // silently if `consume` ever became truly async or escaped.
                 let policyBox = SyncBox<[Float]>([])
                 try await net.evaluate(board: board) { policyBuf, _ in
                     policyBox.value = Array(policyBuf)
@@ -178,11 +171,12 @@ extension SessionController {
     /// output?" probe. Two very different positions go through the live
     /// champion network in inference mode; the policy outputs are
     /// compared for L1 distance, max single-cell |Δ|, and value-head Δ.
-    /// If the policy outputs are essentially identical (avg per-cell
-    /// |Δ| < 1e-4) the policy head has collapsed to a position-agnostic
-    /// constant — that's the symptom we've been chasing in the masked
-    /// CE / entropy debugging. Healthy networks emit meaningfully
-    /// different policies for unrelated boards.
+    /// If the policy outputs are essentially identical (below the
+    /// noise-floor threshold checked in the implementation) the policy
+    /// head has collapsed to a position-agnostic constant — that's the
+    /// symptom we've been chasing in the masked CE / entropy debugging.
+    /// Healthy networks emit meaningfully different policies for
+    /// unrelated boards.
     func runPolicyConditioningDiagnostic() {
         SessionLogger.shared.log("[BUTTON] Policy Conditioning Probe")
         let networkRef = network
@@ -227,8 +221,7 @@ extension SessionController {
             // SyncBox over the (policy, value) pair so the post-await
             // read sees both fields under a single lock, with no
             // nonisolated(unsafe) capture. See the matching note in
-            // runEngineDiagnostics above for why this is preferred
-            // over the prior `nonisolated(unsafe) var` shape.
+            // runEngineDiagnostics above for the rationale.
             let result1 = SyncBox<(policy: [Float], value: Float)>(([], 0))
             try await net.evaluate(board: board1) { policyBuf, v in
                 // Copy policyBuf to a Sendable Array OUTSIDE the

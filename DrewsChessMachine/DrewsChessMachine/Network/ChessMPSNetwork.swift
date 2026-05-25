@@ -209,7 +209,7 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// `ChessNetwork.evaluate(board:consume:)` for the full contract
     /// (closure-validity window, non-throwing requirement).
     ///
-    /// - Parameter board: `inputPlanes`×8×8 = 1,280 floats (from `BoardEncoder.encode`).
+    /// - Parameter board: `inputPlanes`×8×8 = 1,920 floats (from `BoardEncoder.encode`).
     /// - Parameter consume: receives `policySize` (4,864) raw policy logits and the derived scalar value `p_win − p_loss ∈ [−1, +1]` (the W/D/L head's softmax · `[+1, 0, −1]`). The full `(p_win, p_draw, p_loss)` distribution is not carried by this closure — call `evaluateValueDistribution(board:)` for that.
     func evaluate(
         board: [Float],

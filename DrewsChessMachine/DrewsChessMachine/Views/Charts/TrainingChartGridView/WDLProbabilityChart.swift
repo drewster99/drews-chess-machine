@@ -3,8 +3,9 @@ import SwiftUIFastCharts
 
 /// Value-head row tile: the W/D/L softmax batch means (`pW` green,
 /// `pD` gray, `pL` red), summing to ≈ 1 and clamped to `[0, 1]`.
-/// 0.75 dashed reference marks the draw-bias init — `pD` trending
-/// up to and staying there is the regression-toward-collapse signal.
+/// `pD` trending up toward 1.0 and staying there is the
+/// regression-toward-collapse signal; the 0.75 line is just the
+/// init reference so post-init movement is legible.
 struct WDLProbabilityChart: View {
     let buckets: [TrainingBucket]
     let group: FastChartGroup

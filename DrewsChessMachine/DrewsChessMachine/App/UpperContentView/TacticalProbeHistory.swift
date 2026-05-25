@@ -42,9 +42,9 @@ final class TacticalProbeHistory {
     private(set) var entries: [String: [Entry]] = [:]
 
     /// Cap per series so a long-running monitor session doesn't grow
-    /// unboundedly. 120 entries × 15-second cadence ≈ 30 minutes of
-    /// history — enough to read short-term drift in the spark line
-    /// without filling the panel with stale data.
+    /// unboundedly. `maxEntriesPerProbe` × the watcher's `intervalSec`
+    /// determines the visible history window — enough to read short-term
+    /// drift in the spark line without filling the panel with stale data.
     let maxEntriesPerProbe: Int
 
     init(maxEntriesPerProbe: Int = 120) {

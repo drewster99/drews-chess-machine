@@ -8,11 +8,13 @@ import Foundation
 /// — `training_time_limit` — is the session-time budget (a CLI launch
 /// concern, not a training tunable), so it's surfaced separately.
 ///
-/// Unknown keys are tolerated quietly so older and newer parameter
-/// files can coexist; a typo in a recognized id surfaces as an
-/// `unknownParameter` error from `TrainingParameters.apply` later,
-/// since this loader does not pre-validate ids — it just collects
-/// them.
+/// Unknown keys are passed through to `TrainingParameters.apply`,
+/// which throws `TrainingConfigError.unknownParameter` for any
+/// unrecognized id. This loader does not pre-validate; the apply
+/// path is strict (a file written by a newer build with a new key
+/// will fail to load on an older build, and a typo in a recognized
+/// id will likewise surface as an `unknownParameter` error at apply
+/// time).
 struct CliTrainingConfig: Sendable {
     /// Map of `TrainingParameters` ids to typed `ParameterValue`
     /// payloads. Feed this to `TrainingParameters.shared.apply(_:)`

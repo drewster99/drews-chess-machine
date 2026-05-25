@@ -5,9 +5,7 @@ import SwiftUI
 ///
 /// Holds every editable field as a `String`/`Bool` (the raw control contents)
 /// plus a matching `*Error` flag that drives the red invalid-input overlay.
-/// Editing a field clears its own error via `didSet` (this replaces the ~19
-/// per-field `.onChange` handlers that previously had to be split into an
-/// `AnyView` chain to stay under the type-checker's per-expression budget).
+/// Editing a field clears its own error via `didSet`.
 /// `save()` parses every field, writes valid values back to
 /// `TrainingParameters.shared` (logging each `[PARAM]` transition), mirrors the
 /// optimizer-touching params onto the live `trainer`, pushes the freshly-edited

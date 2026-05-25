@@ -81,28 +81,9 @@ struct UpperContentView: View {
         get { session.cliRecorder } nonmutating set { session.cliRecorder = newValue }
     }
 
-    // MARK: - CLI-overridable effective values
-    //
-    // These start at the compile-time defaults (the matching
-    // `Self.X` static constants) and remain unchanged throughout
-    // a normal interactive run. When `--parameters` specifies an
-    // override, `applyCliConfigOverrides` writes the new value
-    // into the matching field here. Every runtime read site that
-    // formerly read `Self.X` now reads `effectiveX` instead, so
-    // the override flows to self-play, training, the arena, and
-    // the stats/arena log lines uniformly.
-    //
-    // The corresponding `Self.X` constants stay as the SSOT
-    // defaults — these @State fields exist only so a runtime
-    // value can shadow them. That split lets the compile-time
-    // value still be referenced from anywhere that does not
-    // have a `ContentView` instance in scope (e.g. type-level
-    // code, tests), while a live session reads the effective
-    // value.
-    // Migrated to TrainingParameters.shared (see below). Properties
-    // formerly stored here as @State / @AppStorage are now accessed
-    // via `trainingParams.<name>`. Defaults and persistence are
-    // centralized in TrainingParameters.swift.
+    // Properties formerly stored here as @State / @AppStorage are
+    // accessed via `trainingParams.<name>`. Defaults and persistence
+    // are centralized in TrainingParameters.swift.
 
     /// Session-lifecycle controller. Owns the champion `network` / `runner` /
     /// `networkStatus` / `isBuilding`, the build flow (`buildNetwork()` /
@@ -305,7 +286,7 @@ struct UpperContentView: View {
     /// parallel mode. Checked inside the training worker between SGD
     /// steps; when `now - lastTournamentTime >= secondsPerTournament`
     /// and no arena is already running, a new arena is spawned.
-    /// 30 minutes is the default — long enough that arenas are
+    /// The default cadence is long enough that arenas are
     /// consequential events rather than noise, short enough that a
     /// session hits several of them. Also available on demand via
     /// the Run Arena button regardless of this cadence.
@@ -384,10 +365,10 @@ struct UpperContentView: View {
     /// Number of training steps at the start of a Play-and-Train
     /// session for which the `[STATS]` line fires on every step.
     /// After this many steps the STATS ticker switches to a 60 s
-    /// time-based cadence. 500 picked so the bootstrap window covers
-    /// the first few minutes of training — long enough to see the
-    /// initial loss curve shape without flooding the log once
-    /// training settles.
+    /// time-based cadence. The bootstrap window covers the first
+    /// few minutes of training — long enough to see the initial
+    /// loss curve shape without flooding the log once training
+    /// settles.
     nonisolated static let bootstrapStatsStepCount: Int = 500
 
     // The training-alarm thresholds, divergence-streak detector, and the
@@ -453,20 +434,20 @@ struct UpperContentView: View {
     /// the user's last chosen concurrency level survives app
     /// restart. Bounded at runtime by `absoluteMaxSelfPlayWorkers`.
     // selfPlayWorkerCount migrated to `trainingParams.selfPlayConcurrency`.
-    /// Upper bound on the adjustable training-step delay. 500 ms
-    /// already turns a ~60 steps/s training worker into roughly
-    /// 2 steps/s, which is as slow as anyone reasonably wants to
-    /// crawl the learning rate while still making progress.
+    /// Upper bound on the adjustable training-step delay. At the
+    /// ceiling a ~60 steps/s training worker is throttled to well
+    /// under 1 step/s, which is as slow as anyone reasonably wants
+    /// to crawl the learning rate while still making progress.
     nonisolated static let stepDelayMaxMs: Int = 3000
     /// Upper bound on the self-play-side per-game delay the replay-
     /// ratio auto-adjuster may impose. This is the reverse lever
     /// that kicks in when GPU training overhead alone exceeds the
     /// target cycle and training can't be slowed down any further
-    /// (its delay is already 0). Per-slot, per-game — with N
-    /// workers, a 500 ms rung removes roughly N × 2 games/sec of
-    /// aggregate production, which is usually more than enough to
-    /// bring the ratio back. 2000 ms is the ceiling so a runaway
-    /// auto-adjust can't stall the session outright.
+    /// (its delay is already 0). Per-slot, per-game — a few hundred
+    /// ms of added delay with N workers cuts aggregate production
+    /// substantially, which is usually more than enough to bring
+    /// the ratio back. The ceiling caps a runaway auto-adjust so
+    /// it can't stall the session outright.
     nonisolated static let selfPlayDelayMaxMs: Int = 3000
     /// Discrete set of valid delay values in milliseconds used by
     /// both manual stepper edits and auto-computed delay handoff.
@@ -542,11 +523,10 @@ struct UpperContentView: View {
     /// Shared chart-layer state and decimation pipeline. Owned by
     /// `ContentView` (the composer) and forwarded to both
     /// `UpperContentView` (heartbeat append path) and
-    /// `LowerContentView` (chart-grid render path). All
-    /// chart-related `@State` that used to live here — the rings,
-    /// decimated frame, scroll position, hover position, zoom
-    /// state, arena events, diversity bars — moved onto the
-    /// coordinator. See `ChartCoordinator.swift`.
+    /// `LowerContentView` (chart-grid render path). All chart-layer
+    /// state (rings, decimated frame, scroll/hover/zoom, arena
+    /// events, diversity bars) lives on `ChartCoordinator` — see
+    /// `ChartCoordinator.swift`.
     let chartCoordinator: ChartCoordinator
     @State private var showingInfoPopover: Bool = false
     /// All transactional state for the top-bar Arena countdown chip's
@@ -668,7 +648,7 @@ struct UpperContentView: View {
     /// loaded session (a disk load has its own resume path).
     @State private var showStartTrainingDialog: Bool = false
 
-    /// Drives the confirmation dialog for `Engine ▸ Promote Trainee
+    /// Drives the confirmation dialog for `Train ▸ Promote Trainee
     /// Now`. The action promotes un-arena-validated weights, so it
     /// always asks first.
     @State private var showPromoteTrainerNowDialog: Bool = false
@@ -1089,9 +1069,8 @@ struct UpperContentView: View {
             boardAndTextRow
             policyChannelsPanelSection
             inputTensorStripSection
-            // The chart layer (zoom-control row + chart grid) is no
-            // longer rendered here — it lives in `LowerContentView`,
-            // which `ContentView` mounts as a sibling of
+            // The chart layer is rendered by `LowerContentView`;
+            // `ContentView` mounts it as a sibling of
             // `UpperContentView` when the chart coordinator's
             // `isActive` flag is true. UpperContentView mirrors
             // `realTraining` into `chartCoordinator.isActive` via
@@ -1111,10 +1090,9 @@ struct UpperContentView: View {
             handleWindowWillClose(note: note)
         }
         // Re-sync the AppKit menu command hub whenever any of the flags that
-        // gate its items changes. Driven off the single `MenuHubSignature`
-        // Equatable so this is one `.onChange`, not the 13-deep chain it used
-        // to be — `body` tolerates it directly now that the surrounding view
-        // is far smaller, so the old `MenuHubSyncProbe` carrier is gone.
+        // gate its items changes. Driven off a single `MenuHubSignature`
+        // Equatable so any field change in the hub-watched set fires one
+        // handler.
         .onChange(of: menuHubSignature) { syncMenuCommandHubState() }
         .onReceive(snapshotTimer) { _ in
             // Capture timestamp at dispatch so the tick body can
@@ -1348,16 +1326,14 @@ struct UpperContentView: View {
                         inferenceResult = nil
                         requestForwardPassReeval()
                     },
-                    // The main window's inline board no longer accepts
-                    // human-play taps — human games render in their own
-                    // window (HumanPlayWindow) where the click routing,
-                    // highlights, promotion picker, and Reset / Stop
-                    // toolbar all live. The inline board still mirrors
-                    // the position (via gameWatcher.state.board) so the
-                    // user can glance at it during a human game without
-                    // switching windows. All human-play wiring is set
-                    // to no-op equivalents to keep the call site stable
-                    // (the project's SwiftUI view-stability rule).
+                    // The inline board mirrors the live game position
+                    // (via gameWatcher.state.board) for at-a-glance
+                    // visibility; human-play taps, highlights, the
+                    // promotion picker, and the Reset / Stop toolbar
+                    // live in `HumanPlayWindow`, so all human-play
+                    // wiring here is no-op equivalents to keep the
+                    // call site stable (the project's SwiftUI view-
+                    // stability rule).
                     humanMoveActive: false,
                     selectedFromSquare: nil,
                     legalMoveTargets: [],
@@ -1380,13 +1356,9 @@ struct UpperContentView: View {
                 )
             }
 
-            // The Reset / Stop toolbar now lives inside the human-
-            // play window (HumanPlayWindow). The inline placement
-            // below the mini board was confusing operator-side
-            // ("am I supposed to use that?"). Kept the view-tree
-            // slot as an opacity-0 / height-0 spacer so the
-            // surrounding VStack's shape doesn't change between
-            // builds.
+            // View-tree slot preserved as an opacity-0 / height-0
+            // spacer to keep the surrounding VStack's shape stable
+            // across builds.
             Color.clear
                 .frame(height: 0)
             }
@@ -1590,11 +1562,10 @@ struct UpperContentView: View {
     /// whether the window has become key / front / visible. This is
     /// the right hook for headless-mode startup work that doesn't
     /// require a visible window: under `--train`, `exec`-launched
-    /// processes don't get auto-foregrounded by macOS, so the
-    /// formerly-used `.onAppear` hook can stall indefinitely
-    /// waiting for a user click on the dock icon. Driving from
-    /// `WindowAccessor` decouples headless-mode startup from
-    /// window visibility.
+    /// processes don't get auto-foregrounded by macOS, so using
+    /// `.onAppear` instead would stall indefinitely on dock-icon-
+    /// foreground. Driving from `WindowAccessor` decouples
+    /// headless-mode startup from window visibility.
     ///
     /// Wires the menu command hub and syncs its mirrored state
     /// here too so `runAutoTrainLaunchSequence`'s prerequisites
@@ -1769,12 +1740,9 @@ struct UpperContentView: View {
     private var busyLabel: String {
         if isBuilding { return "Building network..." }
         if realTraining {
-            // The session time / GPU RAM / CPU / GPU block that used to
-            // live here moved into the top-bar status chip + chart-grid
-            // tiles (App memory, GPU, CPU) once those existed. Real
-            // training intentionally returns empty here so the busy row
-            // collapses to nothing during a session — the chip carries
-            // the "what is happening?" information now.
+            // Real training intentionally returns empty so the busy row
+            // collapses to nothing during a session — the top-bar chip +
+            // chart tiles (App memory, GPU, CPU) carry the live information.
             return ""
         }
         if gameSnapshot.isPlaying { return "Game \(gameSnapshot.totalGames + 1), move \(gameSnapshot.moveCount)..." }
@@ -2257,7 +2225,7 @@ struct UpperContentView: View {
     /// a training block). Fires a forward pass on the current editable
     /// state iff Candidate test mode is active AND either the user has
     /// dirtied the probe (drag / side-to-move / Board-picker flip) or the
-    /// 15-second interval has elapsed since the last probe.
+    /// `candidateProbeIntervalSec` interval has elapsed since the last probe.
     ///
     /// Serialization: this runs from the driver task, which is paused on
     /// the `await` for the duration of the inference. No game or training
@@ -2568,7 +2536,7 @@ struct UpperContentView: View {
         }
     }
 
-    /// Entry point for `Engine ▸ Promote Trainee Now`. In-function
+    /// Entry point for `Train ▸ Promote Trainee Now`. In-function
     /// guards (belt-and-suspenders with the menu-item disable), then
     /// raises the confirmation dialog — the actual promotion runs from
     /// the dialog's "Promote" button so a stray keyboard-shortcut /
@@ -2990,16 +2958,11 @@ struct UpperContentView: View {
         var lines: [String] = []
         // Header is labelled with the trainer's model ID — the
         // moving SGD copy that arena promotion turns into a
-        // champion. The separate Trainer ID / Champion ID rows
-        // are dropped: the trainer ID is in the header, and the
-        // champion ID is already shown as the Self Play column
-        // header.
+        // champion. The champion ID is shown as the Self Play
+        // column header.
         let trainerIDStr = trainer?.identifier?.description ?? dash
         let header = "Training [\(trainerIDStr)]"
         lines.append("  Batch size:  \(trainingParams.trainingBatchSize)")
-        // SP tau / Arena tau / clip / decay are now surfaced as editable
-        // text fields above the body, so they are not duplicated here.
-        // Learning rate likewise lives in the interactive text field.
 
         // Self-Play adds two extra header lines (replay buffer fill, rolling
         // loss). Both are present from the first render of a self-play run,
@@ -3126,9 +3089,6 @@ struct UpperContentView: View {
                     ))
                 }
             }
-            // Ent reg / Grad clip / Weight dec / Draw pen previously
-            // listed here are duplicates of the editable fields shown
-            // above the loss section. Removed to avoid redundancy.
             // Candidate-test probe counter + time-since-last, so the user
             // can distinguish "probes firing but imperceptible" from "probes
             // stuck". Shown in both Game run and Candidate test modes so
@@ -3256,25 +3216,16 @@ struct UpperContentView: View {
             lines.append("  Moves/hr:    \(movesHrStr)")
         }
 
-        // Arena history used to be appended here as a multi-line
-        // block. It now lives in the Arena History sheet (opened
-        // via the History button in the Arena settings popover) so
-        // the stats text panel stays focused on live training
-        // counters and doesn't grow unboundedly with every
-        // tournament.
-
         return (header: header, body: lines.joined(separator: "\n"))
     }
 
-    /// Play and Train self-play stats text. Built from the aggregate
+    /// Play and Train self-play stats text. Emits only the single-worker
+    /// Status line; counts / averages / rates / Results live in
+    /// `SelfPlayStatsCard` and `ResultsCard`. Built from the aggregate
     /// `ParallelWorkerStatsBox` snapshot so all N workers contribute
     /// identically, plus the live `GameWatcher` snapshot used only
-    /// when `trainingParams.selfPlayConcurrency == 1` to render the current-
-    /// game Status line. Session rates and the per-outcome Results
-    /// breakdown moved to the `SelfPlayStatsCard` and `ResultsCard`
-    /// SwiftUI views in the new card column between the chess board
-    /// and `MainTextPanel`; this function now only emits the Status
-    /// line for single-worker mode.
+    /// when `trainingParams.selfPlayConcurrency == 1` to render the
+    /// current-game Status line.
     private func playAndTrainStatsText(
         game: GameWatcher.Snapshot,
         session: ParallelWorkerStatsBox.Snapshot
@@ -3356,12 +3307,10 @@ struct UpperContentView: View {
 
 // MARK: - Body subviews
 //
-// Extracted out of `body` so each chunk type-checks independently. Before
-// these existed, `body` was ~1020 lines of nested generics and clocked in
-// at ~16 seconds in the type-checker (`-warn-long-function-bodies=100`
-// flagged it on every clean build). Each extracted property is its own
-// type-check unit, so the compiler solves them independently and `body`
-// shrinks to a flat composition of named pieces.
+// Each chunk type-checks independently. A monolithic `body` blew past
+// `-warn-long-function-bodies`; splitting keeps each piece well under
+// the budget so the compiler solves them independently and `body`
+// remains a flat composition of named pieces.
 //
 // Properties that need `$trainingParams.<name>` projections take a local
 // `@Bindable` shadow; everything else stays a plain `@ViewBuilder`. None
@@ -3398,12 +3347,10 @@ extension UpperContentView {
     }
 
     /// The Training Settings chip + popover. All transactional state and
-    /// per-field validation now lives on `trainingSettingsPopover`
+    /// per-field validation lives on `trainingSettingsPopover`
     /// (`TrainingSettingsPopoverModel`) — editing a field clears its own
     /// error via the model's `didSet`, so this is a single trivial wrapper:
-    /// no `.onChange` chain, no `AnyView`. (The old form had to split a
-    /// 19-deep `.onChange` chain into five `AnyView` chunks to stay under
-    /// the type-checker's per-expression budget; that's all gone.)
+    /// no `.onChange` chain, no `AnyView`.
     var trainingSettingsChip: some View {
         TrainingSettingsChip(showPopover: $trainingSettingsPopover.isPresented) {
             TrainingSettingsPopover(

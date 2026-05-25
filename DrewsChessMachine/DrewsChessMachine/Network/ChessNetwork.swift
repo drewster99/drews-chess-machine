@@ -56,10 +56,14 @@ enum BNMode {
 
 /// Chess engine neural network forward pass implemented with MPSGraph.
 ///
-/// Architecture v2 (post-refresh — see dcm_architecture_v2.md):
-/// - Input: 20x8x8 board tensor (NCHW layout). Planes 18 and 19 are
-///   threefold-repetition signals (≥1× before, ≥2× before).
-/// - Stem: 3x3 conv (20 -> 128 channels), batch norm, ReLU
+/// Architecture v3:
+/// - Input: 30x8x8 board tensor (NCHW layout). 20 baseline planes
+///   (pieces + castling + EP + halfmove clock + 2 repetition-count
+///   planes — planes 18/19 are ≥1× before / ≥2× before signals) plus
+///   10 binary temporal-repetition-history planes (20–29). See
+///   `BoardEncoder` and the `inputPlanes` doc below for the full
+///   plane table.
+/// - Stem: 3x3 conv (`inputPlanes` -> 128 channels), batch norm, ReLU
 /// - Tower: 8 residual blocks. Each block:
 ///     conv -> BN -> ReLU -> conv -> BN -> [SE module] -> skip add -> ReLU
 ///   The SE module is squeeze (global avg pool) -> FC(128 -> 32) ->
@@ -575,7 +579,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// one network must give each game its own `ChessNetwork` or add
     /// explicit serialization here.
     ///
-    /// - Parameter board: `inputPlanes`×8×8 = 1,280 floats in NCHW order (planes, rows, cols).
+    /// - Parameter board: `inputPlanes`×8×8 = 1,920 floats in NCHW order (planes, rows, cols).
     func evaluate(
         board: [Float],
         consume: @Sendable @escaping (UnsafeBufferPointer<Float>, Float) -> Void

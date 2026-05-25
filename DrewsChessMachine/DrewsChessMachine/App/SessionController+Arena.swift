@@ -20,12 +20,12 @@ extension SessionController {
     nonisolated static let autosaveSessionsOnPromote: Bool = true
 
 
-    /// Run one arena tournament in parallel mode — 200 games between
-    /// the candidate (synced from trainer at start) and the arena
-    /// champion (synced from the real champion at start), while
+    /// Run one arena tournament in parallel mode — a configurable number
+    /// of games between the candidate (synced from trainer at start) and
+    /// the arena champion (synced from the real champion at start), while
     /// self-play and training continue running in the background.
     /// Promotes the candidate into the real champion iff the score
-    /// meets the 0.55 threshold.
+    /// meets the configured `arenaPromoteThreshold`.
     ///
     /// Synchronization: this is called from the arena coordinator
     /// task, which is a peer to the self-play and training workers.
@@ -67,7 +67,7 @@ extension SessionController {
         // against a concurrent `trainer.trainStep`. Release training
         // as soon as the snapshot lands — the rest of the arena
         // runs on `candidateInference`, not on `trainer`, so training
-        // can continue through the 200 games.
+        // can continue through the full tournament.
         await trainingGate.pauseAndWait()
         if Task.isCancelled {
             trainingGate.resume()
@@ -86,9 +86,7 @@ extension SessionController {
         // wins the arena, we'll restore THIS snapshot when we copy
         // the candidate weights back into the trainer — the velocity
         // that built the validated candidate is the right velocity
-        // for the candidate's weight surface. (Earlier behavior
-        // zeroed velocity on promotion, throwing away accumulated
-        // gradient signal.)
+        // for the candidate's weight surface.
         var trainerSnapshotWeights: [[Float]] = []
         var trainerSnapshotVelocity: [[Float]] = []
         do {
@@ -151,7 +149,7 @@ extension SessionController {
         // `withTaskCancellationHandler` so clicking Stop flips a
         // `CancelBox` that `TickTournamentDriver.run` checks between
         // ticks. The worst-case delay from Stop to actually breaking
-        // out is one in-flight arena game (~400 ms).
+        // out is one in-flight arena game.
         let cancelBox = CancelBox()
         let arenaDiversity = GameDiversityTracker(windowSize: totalGames)
         // Snapshot the current arena schedule once at tournament start
@@ -182,11 +180,10 @@ extension SessionController {
         ))
         tournamentProgress = tBox.snapshot()
 
-        // Records collector. Both driver paths fire `onGameRecorded`
-        // from a single task (legacy: parent harvest loop; tick:
-        // serial game-end pass), so the Box's append needs no actual
-        // synchronization — the internal lock is a defensive belt
-        // for the @Sendable closure contract.
+        // Records collector. The driver fires `onGameRecorded` from a
+        // single task (the serial game-end pass), so the Box's append
+        // needs no actual synchronization — the internal lock is a
+        // defensive belt for the @Sendable closure contract.
         let recordsBox = TournamentRecordsBox()
         let stats: TournamentStats
 
@@ -245,7 +242,7 @@ extension SessionController {
         // of score. Otherwise the usual score-threshold check decides:
         // a full tournament must have been played AND the candidate's
         // score must meet `arenaPromoteThreshold`. (There is no
-        // force-promote override anymore — `Engine ▸ Promote Trainee
+        // force-promote override anymore — `Train ▸ Promote Trainee
         // Now` covers "promote the current trainer right now" without
         // an arena.) The consume also clears the box for the next
         // tournament.

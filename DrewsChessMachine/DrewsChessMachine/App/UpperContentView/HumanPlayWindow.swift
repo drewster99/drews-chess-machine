@@ -43,10 +43,9 @@ final class HumanPlayWindowController: NSWindowController, NSWindowDelegate {
         )
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        // Wider than the pre-history-panel layout: the move list now
-        // sits to the right of the board and needs a fixed strip
-        // (`HumanPlayWindowView.historyPanelWidth`) without squeezing
-        // the board into an unreadable size.
+        // The move-list strip on the right needs
+        // `HumanPlayWindowView.historyPanelWidth` of fixed width
+        // without squeezing the board into an unreadable size.
         window.setContentSize(NSSize(width: 920, height: 860))
         window.minSize = NSSize(width: 720, height: 660)
         window.title = "Chess — Human vs Network"
@@ -212,11 +211,9 @@ fileprivate struct HumanPlayWindowView: View {
         // Network game), so emissions land at human-pacing rates
         // rather than self-play / arena rates. `pacer.ingest` is
         // cheap (a state-machine `switch`) and `gameWatcher.snapshot()`
-        // is a single locked read of a small struct — the original
-        // 10 Hz `.throttle` from the pre-pacer flow is no longer
-        // necessary at this volume. `.receive(on: DispatchQueue.main)`
-        // stays because `.onReceive` doesn't guarantee main-actor
-        // delivery on every Combine source.
+        // is a single locked read of a small struct.
+        // `.receive(on: DispatchQueue.main)` stays because `.onReceive`
+        // doesn't guarantee main-actor delivery on every Combine source.
         .onReceive(gameWatcher.changes.receive(on: DispatchQueue.main)) { _ in
             playController.pacer?.ingest(gameWatcher.snapshot())
         }

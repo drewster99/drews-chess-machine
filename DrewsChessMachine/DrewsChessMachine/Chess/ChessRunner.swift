@@ -16,17 +16,18 @@ final class ChessRunner: @unchecked Sendable {
     /// Run the forward pass on a board position.
     ///
     /// The network emits raw policy logits (no softmax in the graph). For
-    /// the UI demo we softmax over all `policySize` (4864) slots once here
+    /// the UI demo we softmax over all `policySize` slots once here
     /// so the displayed percentages are real probabilities. Self-play does
     /// not go through this path; it consumes the logits directly via
     /// MPSChessPlayer.
     ///
     /// `pieces` is the unflipped display board used to look up ghost-piece
     /// icons for each arrow. `state` is the source GameState the board was
-    /// encoded from; `PolicyEncoding.decode` uses it both to interpret the
-    /// (channel, row, col) cells back into absolute coordinates AND to
-    /// filter to the legal subset (so absurd top-K cells like "knight jump
-    /// from a square with no piece" don't appear as ghost arrows).
+    /// encoded from; `PolicyEncoding.geometricDecode` interprets the
+    /// (channel, row, col) cells back into absolute coordinates, and a
+    /// separately-computed `legalSet` filters to the legal subset (so
+    /// absurd top-K cells like "knight jump from a square with no piece"
+    /// don't appear as ghost arrows).
     func evaluate(
         board: [Float],
         state: GameState,
@@ -140,7 +141,7 @@ final class ChessRunner: @unchecked Sendable {
         // probability mass (observed with policy collapse) — in that
         // case the result list came back empty or near-empty because
         // the top N cells were all off-board and we ran out of
-        // headroom. Sorting the full 4864-cell vector costs nothing
+        // headroom. Sorting the full `policySize`-cell vector costs nothing
         // (policy-size array, one pass) and guarantees we'll always
         // find `count` on-board cells if they exist in the
         // distribution at all.

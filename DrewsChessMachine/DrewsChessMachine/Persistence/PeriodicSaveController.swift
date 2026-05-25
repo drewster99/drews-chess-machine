@@ -1,6 +1,6 @@
 import Foundation
 
-/// Pure-logic scheduler for the 4-hour periodic session autosave.
+/// Pure-logic scheduler for the periodic session autosave.
 ///
 /// The controller tracks a single deadline relative to the most
 /// recent successful session save. It is armed while Play-and-Train
@@ -15,7 +15,7 @@ import Foundation
 ///   arena's own promotion path already wrote the session and a
 ///   second save on top would be redundant; or
 /// - fires immediately if no save came in during that window, so
-///   the 4-hour cadence is only a little late instead of skipping
+///   the configured cadence is only a little late instead of skipping
 ///   an entire interval.
 ///
 /// The controller is **not** a timer — it holds no `Task` or
@@ -33,10 +33,9 @@ import Foundation
 final class PeriodicSaveController {
 
     /// Interval between scheduled saves while Play-and-Train is
-    /// armed. 4 hours per the spec; the controller does not know
-    /// about this from anywhere else, so the caller passes it in
-    /// once at construction for ease of testing with a shorter
-    /// cadence.
+    /// armed. The controller is interval-agnostic; the caller
+    /// passes it in once at construction for ease of testing with
+    /// a shorter cadence.
     let interval: TimeInterval
 
     /// `true` while Play-and-Train is running. The deadline clock
@@ -206,13 +205,9 @@ final class PeriodicSaveController {
         // Both reduce to "fire and let the caller reset the
         // deadline on success via noteSuccessfulSave(at:)".
         if pendingFire {
-            // We intentionally do NOT clear pendingFire here —
-            // `noteSuccessfulSave` will clear it on the save's
-            // success path, or a subsequent failure will let the
-            // next tick re-fire if still past the (stale) deadline.
-            // But to avoid immediate re-firing on the very next
-            // tick (while the save task is in flight), clear it
-            // now — the caller is expected to follow up with
+            // Clear pendingFire now to avoid immediate re-firing on
+            // the very next tick while the save task is in flight;
+            // the caller is expected to follow up with
             // noteSuccessfulSave. On failure the next deadline
             // (unchanged) will still be in the past, so the next
             // decide() call will return .fire again.

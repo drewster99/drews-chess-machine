@@ -13,7 +13,7 @@ import SwiftUI
 /// any row, which opens an independent, movable detail window with
 /// all the diagnostic detail plus a "Copy details" button.
 ///
-/// A 60pt sparkline above the list shows the score trend across the
+/// A sparkline above the list shows the score trend across the
 /// session, with one dot per arena colored by status. Tapping a dot
 /// scrolls the list to that row, so the trend view doubles as a
 /// navigation index.
@@ -307,8 +307,8 @@ private struct ArenaTrendSparkline: View {
     }
 
     /// Convert a tap into a chart-X coordinate, snap to the nearest
-    /// arena index, and fire `onTapRecord` if the tap landed within a
-    /// 14pt capture radius of that dot. The radius keeps fat-finger
+    /// arena index, and fire `onTapRecord` if the tap landed within
+    /// a capture radius of that dot. The radius keeps fat-finger
     /// taps in the right neighborhood without grabbing taps that
     /// aren't really on a dot.
     private func handleTap(
@@ -407,9 +407,9 @@ private struct ArenaHistoryRow: View {
 
         HStack(spacing: 0) {
             // Color edge accent — the glanceable status signal.
-            // 4pt is wide enough to catch the eye when scanning
-            // a long list but narrow enough that a noise-band
-            // (clear) edge doesn't leave a visible gap.
+            // Wide enough to catch the eye when scanning a long
+            // list but narrow enough that a noise-band (clear) edge
+            // doesn't leave a visible gap.
             Rectangle()
                 .fill(statusKind.accentColor)
                 .frame(width: 4)

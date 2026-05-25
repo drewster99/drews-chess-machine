@@ -211,7 +211,8 @@ final class ReplayRatioController: @unchecked Sendable {
     /// `_rateSamples`. Rate = (newest.total − oldest_in_window.total)
     /// / (newest.at − oldest_in_window.at). Window = 60 s.
     ///
-    /// Subsampling keeps the buffer bounded at ~240 entries instead
+    /// Subsampling keeps the buffer bounded at
+    /// `rateWindowSec / rateSampleIntervalSec` entries instead
     /// of the ~162k we'd accumulate sampling every barrier tick.
     ///
     /// We track TWO self-play position counters: the raw produced

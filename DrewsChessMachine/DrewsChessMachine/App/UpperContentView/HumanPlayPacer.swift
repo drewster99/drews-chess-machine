@@ -10,8 +10,8 @@ import Observation
 ///
 /// Before the pacer existed, the AI's pre-move "absorb your move"
 /// sleep (`DelayedMoveEvaluationSource`) ran in parallel with the UI
-/// rendering of the human's move: the 2-second timer started as soon
-/// as the human's continuation resumed, and snapshots from
+/// rendering of the human's move: the `postHumanDelay` timer started
+/// as soon as the human's continuation resumed, and snapshots from
 /// `GameWatcher` flowed into `HumanPlayWindowView` through a
 /// `.throttle(0.1)` on the watcher's `PassthroughSubject`. When the
 /// main thread was busy (heavy SwiftUI charts, training stats updates,
@@ -36,8 +36,8 @@ import Observation
 ///   3. `HumanPlayBoardView` animates its `tracked` pieces with
 ///      `withAnimation(_:_:completion:)` and calls
 ///      `onAnimationCompleted()` from the completion block. The pacer
-///      then advances `.humanAnimating → .aiDelay` (scheduling the 2s
-///      timer) or `.aiAnimating → .humanTurn`.
+///      then advances `.humanAnimating → .aiDelay` (scheduling the
+///      `postHumanDelay` timer) or `.aiAnimating → .humanTurn`.
 ///   4. The AI side wraps its `MoveEvaluationSource` in
 ///      `UIGatedMoveEvaluationSource`, whose `evaluate(...)` parks in
 ///      `awaitAIPermission()` until the pacer reaches `.aiThinking`.
@@ -116,7 +116,7 @@ final class HumanPlayPacer {
     private var displayedEventSeq: UInt64 = 0
 
     /// Artificial post-human-move "absorb your move" delay before the
-    /// AI is permitted to think. Production value is 2 seconds; tests
+    /// AI is permitted to think. Production uses the init default; tests
     /// inject a much smaller value so the suite stays fast.
     private let postHumanDelay: Duration
 

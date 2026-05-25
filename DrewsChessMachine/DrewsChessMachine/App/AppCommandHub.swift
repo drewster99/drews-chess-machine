@@ -90,7 +90,7 @@ final class AppCommandHub {
     var stopAnyContinuous: () -> Void = {}
     var runArena: () -> Void = {}
     var abortArena: () -> Void = {}
-    /// Engine menu > Promote Trainee Now — promote the *current* trainer
+    /// Train menu > Promote Trainee Now — promote the *current* trainer
     /// weights into the champion with no arena. Enabled only while
     /// Play-and-Train is running and no arena is in flight. The
     /// implementation raises a confirmation dialog first (the weights

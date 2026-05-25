@@ -121,7 +121,8 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
 
     /// Per-tick sampler scratches (one slice per game per pass).
     /// Sized `tickScratchCapK × MoveSampler.scratchCapacity` floats
-    /// each. Game `i`'s sample uses bytes `i*256..<(i+1)*256` —
+    /// each. Game `i`'s sample uses floats
+    /// `i*scratchCapacity..<(i+1)*scratchCapacity` —
     /// distinct per game so parallel sampling has no aliasing.
     private var samplerProbsScratch: UnsafeMutablePointer<Float>?
     private var samplerEtaScratch: UnsafeMutablePointer<Float>?

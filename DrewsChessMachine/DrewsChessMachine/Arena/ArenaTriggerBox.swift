@@ -2,8 +2,9 @@ import Foundation
 import os
 
 /// Trigger inbox for the arena coordinator task. The training worker
-/// fires the trigger when the 30-minute auto cadence elapses; the UI
-/// fires it via the Run Arena button. The arena coordinator awaits
+/// fires the trigger when the configured auto cadence
+/// (`arenaAutoIntervalSec`) elapses; the UI fires it via the Run Arena
+/// button. The arena coordinator awaits
 /// `waitForTrigger()` and runs an arena whenever `consume()` returns
 /// true. `recordArenaCompleted()` resets the "last arena" timestamp
 /// so the auto-fire math stays accurate across both paths.
@@ -160,7 +161,7 @@ final class ArenaTriggerBox: @unchecked Sendable {
     /// Update the last arena timestamp to a specific time (usually
     /// 'now') WITHOUT clearing the pending flag. Used by the
     /// training worker to keep the auto-arena anchor fresh during
-    /// the prefill/warmup phase, so the 30-minute clock only
+    /// the prefill/warmup phase, so the auto-fire clock only
     /// begins once the model is stable.
     func resetLastArenaTime(to date: Date) {
         lock.withLock { $0.lastArenaTime = date }

@@ -39,10 +39,10 @@ struct TacticalProbe: Sendable {
 /// Bucketed result of running one probe against the network. The
 /// thresholds are deliberately conservative — `correctAndConfident`
 /// requires the network to put more than half its legal-masked mass on
-/// the expected move(s). At current training state (`pEnt ≈ 1.7`, ~5
-/// effective moves) we expect mostly `correctButFlat` results on
-/// mate-in-1 positions; if even those come back `wrong`, the network
-/// can't represent sharp policy and we have a capacity question.
+/// the expected move(s). Early in training we expect mostly
+/// `correctButFlat` results on mate-in-1 positions; if even those come
+/// back `wrong`, the network can't represent sharp policy and we have
+/// a capacity question.
 enum ProbeVerdict: String, Sendable {
     case correctAndConfident   // expected move ranked #1 AND combined prob ≥ 0.5
     case correctButFlat        // expected move ranked #1 AND combined prob <  0.5
@@ -207,7 +207,7 @@ enum TacticalProbeRunner {
 /// Run one probe through `net` and assemble its result. Two forward
 /// passes per probe: one for the policy logits (the path
 /// `MPSChessPlayer.chooseMove` uses) and one for the W/D/L value-head
-/// distribution (the diagnostic-only path). Total cost ~3ms.
+/// distribution (the diagnostic-only path).
 ///
 /// Pure async function — no actor isolation. The forward passes
 /// serialize on `net`'s `executionQueue`, so concurrent invocations

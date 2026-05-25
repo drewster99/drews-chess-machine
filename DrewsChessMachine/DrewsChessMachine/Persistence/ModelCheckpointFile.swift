@@ -59,7 +59,7 @@ enum ModelCheckpointError: LocalizedError {
 /// `.dcmmodel` file. Extensible — new fields can be added in this
 /// JSON blob without breaking the fixed binary header.
 struct ModelCheckpointMetadata: Codable, Equatable {
-    /// Source of the save: `manual`, `promote`, or `session-autosave`.
+    /// Source of the save: `manual`, `promote`, or `periodic`.
     let creator: String
     /// Training step at mint time, if the model came from a live
     /// training session. Nil for standalone builds.
@@ -153,7 +153,7 @@ struct ModelCheckpointFile {
     ///
     /// Current largest tensors at the post-refresh architecture:
     /// - residual conv weights: `channels × channels × 9 = 147,456`
-    /// - stem conv: `inputPlanes × channels × 9 = 23,040`
+    /// - stem conv: `inputPlanes × channels × 9 = 34,560`
     /// - policy 1×1 conv: `channels × policyChannels = 9,728`
     /// - SE FC: `channels × (channels / r) = 4,096`
     /// All well below the cap. The 65,536-element slack lets a minor

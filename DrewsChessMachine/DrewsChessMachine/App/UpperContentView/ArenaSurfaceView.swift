@@ -55,9 +55,9 @@ enum SurfaceMetric: String, CaseIterable, Identifiable {
 ///
 /// Two complications drive the re-binning logic below:
 ///
-///   1. Bucket-width drift. Arenas run before a recent change emitted
-///      `valueByPly` in 5-ply buckets; current arenas use 20-ply
-///      buckets (`ArenaSummaryAggregator.plyBucketWidth`). A surface
+///   1. Bucket-width drift. Some persisted arena summaries used 5-ply
+///      buckets while current arenas use 20-ply buckets
+///      (`ArenaSummaryAggregator.plyBucketWidth`). A surface
 ///      needs every row on a common X grid, so each source bucket is
 ///      mapped to a common 20-ply column by `lowerInclusive / 20`.
 ///      Integer division collapses four consecutive legacy 5-ply

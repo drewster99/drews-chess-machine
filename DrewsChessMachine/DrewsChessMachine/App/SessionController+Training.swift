@@ -19,9 +19,10 @@ extension SessionController {
     /// streams labeled positions into the replay buffer. Training runs
     /// a tight-loop SGD on the trainer network, sampling the buffer
     /// for each batch. The arena coordinator sleeps until triggered
-    /// (either by the 30-minute auto-fire or the Run Arena button),
-    /// then runs 200 games between the candidate inference network
-    /// and a fourth "arena champion" network — both snapshots taken
+    /// (either by the configurable auto-fire interval or by the Run
+    /// Arena button), then runs the configured number of games between
+    /// the candidate inference network and a fourth "arena champion"
+    /// network — both snapshots taken
     /// under brief per-worker pauses so game play and training never
     /// actually stop, even during a tournament.
     ///
@@ -641,9 +642,7 @@ extension SessionController {
         // Single self-play gate. `BatchedSelfPlayDriver` is one driver
         // task that ticks K active games against the champion network
         // (one batched `evaluateBatched` per tick), so the arena
-        // coordinator pauses exactly one consumer here. The previous
-        // per-worker-Task gate array is gone along with the legacy
-        // task-per-game topology.
+        // coordinator pauses exactly one consumer here.
         let selfPlayGate = WorkerPauseGate()
         // Shared current-N holder. Workers poll this to decide
         // whether to play another game or sit in their idle wait.
@@ -951,8 +950,8 @@ extension SessionController {
             // (`min(1, completedTrainSteps / lrWarmupSteps)`) would restart
             // from zero on every resume — i.e. warmup re-runs each time the
             // session is reopened. Re-apply the saved count here, *after* the
-            // reset, so warmup picks up mid-session as the line-287 seed
-            // intended. `.continueAfterStop` / `.newSessionKeepTrainer`
+            // reset, so warmup picks up mid-session as the earlier seed of
+            // `trainer.completedTrainSteps` from `rs.trainingSteps` intended. `.continueAfterStop` / `.newSessionKeepTrainer`
             // skipped `resetNetwork()` entirely (their counter is already
             // correct), and `.newSessionResetTrainerFromChampion` forks from
             // the champion and deliberately *wants* warmup to restart, so
@@ -1127,10 +1126,9 @@ extension SessionController {
             // tasks can capture. It's a @State on this view, so
             // reading it requires a MainActor hop that child tasks
             // would otherwise repeat. Built lazily earlier in this
-            // function (lines ~7694-7703); should be non-nil here but
-            // we tolerate nil and skip probes in that case rather
-            // than fall back to the pollution-prone trainer-network
-            // probe path.
+            // function; should be non-nil here but we tolerate nil
+            // and skip probes in that case rather than fall back to
+            // the pollution-prone trainer-network probe path.
             let probeInferenceForProbes: ChessMPSNetwork? = await MainActor.run {
                 probeInferenceNetwork
             }
@@ -1160,11 +1158,12 @@ extension SessionController {
 
                 // Training worker: tight-loop SGD on the trainer,
                 // sampling batches from the replay buffer. Fires the
-                // candidate probe at its own 15 s cadence between
-                // steps, and nudges the arena trigger box when the
-                // 30 min auto cadence elapses. Pauses at `trainingGate`
-                // so the arena coordinator can briefly snapshot
-                // trainer weights.
+                // candidate probe at the configured cadence
+                // (`candidateProbeIntervalSec`) between steps, and
+                // nudges the arena trigger box when the configured
+                // `arenaAutoIntervalSec` elapses. Pauses at
+                // `trainingGate` so the arena coordinator can briefly
+                // snapshot trainer weights.
                 let trainingTaskCreatedAt = Date()
                 group.addTask(priority: .high) {
                     [trainer, buffer, box, pStatsBox, trainingGate, triggerBox, ratioController,
@@ -1294,8 +1293,8 @@ extension SessionController {
                 // Arena coordinator: polls the trigger inbox and runs
                 // a tournament whenever one is pending. Blocks its
                 // own loop (not the worker tasks) during arena
-                // execution. Both the 30-minute auto-fire and the
-                // Run Arena button enter here via `triggerBox.trigger()`.
+                // execution. Both the auto-fire and the Run Arena
+                // button enter here via `triggerBox.trigger()`.
                 let arenaTaskCreatedAt = Date()
                 group.addTask(priority: .high) {
                     [arenaTaskCreatedAt] in
@@ -1350,15 +1349,15 @@ extension SessionController {
                     let sessionStart = Date()
                     // Bootstrap-phase step threshold for the per-step
                     // emit. `UpperContentView.bootstrapStatsStepCount` is tunable
-                    // on the view; at default 500 steps this covers
-                    // roughly the first 1-3 minutes of real-data
-                    // training at typical throughput.
+                    // on the view; at the default this covers roughly
+                    // the first 1-3 minutes of real-data training at
+                    // typical throughput.
                     let bootstrapSteps = UpperContentView.bootstrapStatsStepCount
                     // Time between STATS emits after the bootstrap
                     // window closes. 60 s chosen so a session's
                     // steady-state log file grows at a manageable rate
-                    // (~60 lines/hr) while still capturing drift
-                    // inside the typical 30-minute arena cadence.
+                    // while still capturing drift inside the typical
+                    // arena cadence.
                     let steadyInterval: TimeInterval = 60
                     // Cadence for refreshing legalMass during the
                     // per-step bootstrap window — refreshing every

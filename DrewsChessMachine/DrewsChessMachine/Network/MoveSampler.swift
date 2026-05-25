@@ -23,9 +23,9 @@ import Foundation
 /// - `currentPlayer` matches the player whose turn it is — used to
 ///   pick the right encoder-frame flip inside
 ///   `PolicyEncoding.policyIndex`.
-/// - `ply` is the side-relative ply index (0 for this player's first
-///   move, 1 for their second, etc.) — drives both the tau schedule
-///   and the Dirichlet ply-limit check.
+/// - `ply` is the game-total (half-move) ply index (0 for the starting
+///   position, 1 after white's first move, etc.) — drives both the tau
+///   schedule and the Dirichlet ply-limit check.
 /// - `schedule` is the active sampling schedule (tau curve, optional
 ///   Dirichlet config).
 /// - `probsScratch` and `etaScratch` are both at least `scratchCapacity`

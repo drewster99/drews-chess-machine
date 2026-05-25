@@ -745,7 +745,7 @@ enum CheckpointManager {
             }
             // Replay-buffer verification: re-load the file we just
             // wrote into a scratch ReplayBuffer. The scratch restore
-            // runs the full v4 validation stack — magic, version,
+            // runs the full current-version validation stack — magic, version,
             // size-equality, upper-bound caps, SHA-256 trailer verify
             // — so a mismatch throws a specific PersistenceError.
             // We then compare the restored storedCount and lifetime

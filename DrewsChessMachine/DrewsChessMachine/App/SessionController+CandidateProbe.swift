@@ -43,8 +43,8 @@ extension SessionController {
             switch target {
             case .candidate:
                 // Snapshot the trainer's current state into the probe inference
-                // network, then immediately run the probe. Doing the ~11.6 MB
-                // trainer → probe copy here — not after every training block —
+                // network, then immediately run the probe. Doing the trainer
+                // → probe copy here — not after every training block —
                 // means it happens only when the probe is actually about to
                 // fire. The probe network is dedicated; the only potentially
                 // concurrent op is `trainer.network.exportWeights` during an
@@ -284,9 +284,7 @@ extension SessionController {
     }
 
     /// Sum of the K largest values in `values`, as Double. O(N log K)
-    /// via a fixed-size min-heap — replaces the previous full
-    /// `.sorted(by: >).prefix(K).reduce(0, +)` which is O(N log N)
-    /// plus a full sorted-copy allocation.
+    /// via a fixed-size min-heap.
     nonisolated fileprivate static func topKSumAsDouble(_ values: [Float], k: Int) -> Double {
         guard k > 0, !values.isEmpty else { return 0 }
         let m = min(k, values.count)

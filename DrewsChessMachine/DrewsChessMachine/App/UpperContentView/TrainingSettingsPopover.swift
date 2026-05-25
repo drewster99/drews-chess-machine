@@ -160,7 +160,7 @@ struct TrainingSettingsPopover: View {
             // Tab bar — a small custom segmented control rather than
             // `Picker(.segmented)` because the macOS native segmented
             // control does not allow per-segment colored content. We
-            // render a 6-pt red dot next to a tab's label whenever
+            // render a small red dot next to a tab's label whenever
             // any field on that tab is currently flagged with a
             // validation error, so the user can see at a glance which
             // tab(s) need attention even when looking at a different
@@ -318,7 +318,7 @@ struct TrainingSettingsPopover: View {
 }
 
 /// Custom segmented control. One button per `Tab` case, with an
-/// optional 6-pt red dot trailing the label when that tab's
+/// optional small red dot trailing the label when that tab's
 /// `*HasError` input is true. The selected tab is filled with a
 /// light accent-color tint; unselected tabs render with a
 /// secondary foreground for the label.
@@ -1089,9 +1089,9 @@ private struct SelfPlayTab: View {
         let s = parallelStats
         let dash = "—"
         let hasStats = (s?.selfPlayGames ?? 0) > 0
-        // Rolling rates (plies / hour) over the box's `recentWindow`
-        // (1-minute) window. Stays at "—" while `recentWindowSeconds`
-        // is 0 (first ~minute of a session before the window fills).
+        // Rolling rates (plies / hour) over the box's `recentWindow`.
+        // Stays at "—" while `recentWindowSeconds` is 0 (first sampling
+        // window of a session before it fills).
         let recentWindow = s?.recentWindowSeconds ?? 0
         let playedRate: Double = hasStats && recentWindow > 0
             ? Double(s?.recentMoves ?? 0) / recentWindow * 3600
@@ -1637,7 +1637,7 @@ private struct ReplayTab: View {
         // asked for) or undershoot (not enough resident draws to
         // support the cap). The configured cap stays visible in the
         // "Max draws % per batch:" field above, so we don't duplicate
-        // it inline (would push the row over the popover's 540 pt
+        // it inline (would push the row over the popover's 616 pt
         // width budget).
         let drawCountSlop = max(1, (sr?.batchSize ?? 0) / 100)
         let drawCapDegraded = constraintsActive
@@ -1756,13 +1756,13 @@ private struct ReplayTab: View {
                     ? String(format: "%.2f", sr?.achievedMeanSamplesPerGame ?? 0)
                     : dash
             )
-            // Single merged W/D/L row — replaces the prior W: / D: / L:
-            // triple. Format mirrors the Self Play tab's "W / D / L %"
-            // readout. Buffer side is *position-weighted* (each ply
-            // counts once); the row below reports the *game-weighted*
-            // draw share for direct comparison against the Self Play
-            // tab's per-game W/D/L. Batch cell turns red when the
-            // achieved-vs-requested gap exceeds the sampler's slop.
+            // Single merged W/D/L row. Format mirrors the Self Play
+            // tab's "W / D / L %" readout. Buffer side is
+            // *position-weighted* (each ply counts once); the row below
+            // reports the *game-weighted* draw share for direct
+            // comparison against the Self Play tab's per-game W/D/L.
+            // Batch cell turns red when the achieved-vs-requested gap
+            // exceeds the sampler's slop.
             twoColRow(
                 label: "avg W / D / L:",
                 bufferValue: bufWdlText,
@@ -1900,7 +1900,7 @@ private struct ReplayTab: View {
     /// `drawCapDegraded` in `replayCompositionReadout`. The configured
     /// cap itself is always visible in the "Max draws % per batch:"
     /// field above, so an inline annotation would duplicate it and
-    /// blow out the popover's fixed 540 pt width.
+    /// blow out the popover's fixed 616 pt width.
     private static func formatBatchWdl(
         _ sr: ReplayBuffer.SamplingResult?,
         dash: String

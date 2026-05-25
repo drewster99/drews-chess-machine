@@ -66,7 +66,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
 
     /// Encode the Codable snapshot to `Data`. Shared back-end of
     /// `writeJSON(to:)` and `writeJSONToStdout(...)` so both paths
-    /// emit byte-identical output. Holds the lock only for the
+    /// emit a byte-identical JSON payload. Holds the lock only for the
     /// array copies (assembling the Snapshot value) and releases it
     /// before the JSON encode step, which doesn't need the
     /// recorder's state.

@@ -15,12 +15,12 @@ enum SessionSaveTrigger: Sendable {
     /// User explicitly invoked File > Save Session (or the
     /// equivalent menu command).
     case manual
-    /// Fired by `PeriodicSaveController` when its 4-hour deadline
+    /// Fired by `PeriodicSaveController` when its configured deadline
     /// elapsed. Arena-conflicts are already resolved by the
     /// controller before we get here.
     case periodic
     /// Fired right after a user-initiated "Promote Trainee Now"
-    /// (`Engine ▸ Promote Trainee Now`) so the just-promoted champion
+    /// (`Train ▸ Promote Trainee Now`) so the just-promoted champion
     /// + trainer pair is captured to disk the same way an arena
     /// promotion is. Distinct from the arena's own post-promotion
     /// autosave (which is inline in the arena coordinator and reuses

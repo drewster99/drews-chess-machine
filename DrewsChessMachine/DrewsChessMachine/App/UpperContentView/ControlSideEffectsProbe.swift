@@ -43,8 +43,9 @@ struct ControlSideEffectsProbe: View {
             .onChange(of: playAndTrainBoardMode) { _, newValue in
                 // Flipping to Candidate-test marks the probe dirty so
                 // the driver fires an immediate forward pass on the
-                // next gap — otherwise the user would wait up to 15s
-                // for the interval probe to trigger on the new mode.
+                // next gap — otherwise the user would wait up to
+                // `candidateProbeIntervalSec` for the interval probe to
+                // trigger on the new mode.
                 if newValue == .candidateTest {
                     candidateProbeDirty = true
                 }

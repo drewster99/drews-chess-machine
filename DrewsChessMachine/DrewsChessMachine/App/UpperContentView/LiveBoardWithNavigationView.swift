@@ -212,10 +212,9 @@ struct LiveBoardWithNavigationView: View {
             // Navigation row under the board. Chevrons left-and-right
             // walk the overlay mode; an optional Reset button between
             // them resets the editable forward-pass board to the
-            // starting position. Chevrons were previously flanking the
-            // board to its left and right; moving them underneath
-            // gives the board more horizontal room without the side
-            // gutters and lets us slot the Reset action between them.
+            // starting position. Placing the chevrons underneath the
+            // board gives it more horizontal room without side gutters
+            // and lets us slot the Reset action between them.
             let leftDisabled = selectedOverlay <= -1
             // Right chevron walks up through Top Moves / channels. Both
             // of those require an inferenceResult to render meaningful

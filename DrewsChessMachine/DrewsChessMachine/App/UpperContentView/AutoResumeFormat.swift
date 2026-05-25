@@ -74,7 +74,7 @@ enum AutoResumeFormat {
         return "\(days) day\(days == 1 ? "" : "s") ago"
     }
 
-    /// "Started Apr 30, 2026 at 8:00 AM (10h ago)" line. Rendered
+    /// "Started <Date> at <Time> (<Nh ago>)" line. Rendered
     /// only when the session.json peek succeeded — without the
     /// session-start timestamp the line would be empty noise.
     static func startedLine(sessionStartUnix: Int64) -> String {

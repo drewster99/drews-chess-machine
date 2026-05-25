@@ -14,10 +14,10 @@ import SwiftUI
 /// the `@Observable` properties this view reads.
 struct LowerContentView: View {
     /// Promotion threshold drawn as a horizontal reference line on
-    /// the arena-activity chart. Lives on `UpperContentView` (it
-    /// is a tunable training parameter), forwarded here as a
-    /// `let` so the chart grid stays decoupled from
-    /// `TrainingParameters`.
+    /// the arena-activity chart. Sourced from
+    /// `TrainingParameters.shared.arenaPromoteThreshold`, forwarded
+    /// here as a `let` so the chart grid stays decoupled from the
+    /// singleton.
     let promoteThreshold: Double
     /// Target replay ratio rendered as a dashed horizontal
     /// reference line on the replay-ratio tile. Same forwarding

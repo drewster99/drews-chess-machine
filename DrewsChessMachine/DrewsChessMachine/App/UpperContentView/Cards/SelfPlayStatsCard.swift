@@ -13,9 +13,9 @@ import SwiftUI
 /// effective production cost (slower per kept unit because some plies
 /// were thrown away).
 ///
-/// Rates are 1-minute rolling — `ParallelWorkerStatsBox.recentWindow`
-/// is 60 s, with the Played counters feeding "Overall" and the
-/// Emitted counters feeding "Kept."
+/// Rates are rolling over `ParallelWorkerStatsBox.recentWindow`,
+/// with the Played counters feeding "Overall" and the Emitted
+/// counters feeding "Kept."
 struct SelfPlayStatsCard: View {
     let snapshot: ParallelWorkerStatsBox.Snapshot?
     let modelID: String

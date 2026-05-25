@@ -28,17 +28,15 @@ enum TickTournamentDriverError: LocalizedError {
 /// topology as `BatchedSelfPlayDriver`: one driver Task pumps K
 /// active games in lockstep with parallel encode + parallel sample
 /// across P CPU workers, and two batched `network.evaluateBatched`
-/// calls per tick — one per network (candidate / champion) —
-/// instead of K Swift tasks each parking in an actor barrier.
+/// calls per tick — one per network (candidate / champion).
 ///
-/// **Public contract** mirrors `TournamentDriver.run` so the call
-/// site in `SessionController+Arena.swift` can branch on the
-/// `arenaUseTickDriver` flag and feed either driver into the same
-/// downstream `TournamentStats` consumer. The signature differs in
-/// taking `(candidateNetwork:, championNetwork:)` directly rather
-/// than `(playerA:, playerB:)` factories — the tick driver doesn't
+/// **Public contract.** The signature takes
+/// `(candidateNetwork:, championNetwork:)` directly rather than
+/// `(playerA:, playerB:)` factories — the tick driver doesn't
 /// allocate per-game player objects; it owns the per-game state on
-/// an `ActiveGame` and calls `MoveSampler` inline.
+/// an `ActiveGame` and calls `MoveSampler` inline. Output goes into
+/// the same downstream `TournamentStats` consumer the call site in
+/// `SessionController+Arena.swift` expects.
 ///
 /// **K behavior.** Initial K = `min(concurrency, games)`. As games
 /// finish, the slot is recycled for the next gameIndex (alternating
@@ -47,8 +45,8 @@ enum TickTournamentDriverError: LocalizedError {
 /// slot count shrinks as the remaining in-flight games complete.
 /// Driver exits when K reaches 0.
 ///
-/// **Cancellation.** Checked at top of each tick body — same gate as
-/// the legacy driver's `Task.isCancelled || isCancelled?() == true`.
+/// **Cancellation.** Checked at top of each tick body via
+/// `Task.isCancelled || isCancelled?() == true`.
 /// On cancel, the driver finishes the current tick (so we don't
 /// abandon in-progress GPU work mid-call) and exits. In-flight games'
 /// `TournamentGameRecord`s are NOT emitted for unfinished games —
@@ -66,7 +64,7 @@ enum TickTournamentDriverError: LocalizedError {
 ///
 /// **GameWatcher live display is not wired here.** Arena's UX
 /// surfaces the per-game progress through `onGameCompleted` (chip
-/// + countdown), not a watcher board. Matches the legacy driver.
+/// + countdown), not a watcher board.
 final class TickTournamentDriver: @unchecked Sendable {
 
     // MARK: - Public API
@@ -408,7 +406,7 @@ final class TickTournamentDriver: @unchecked Sendable {
             // by signature (used on the hot self-play path), so a nil
             // baseAddress can't be raised out of the closure directly.
             // Capture into a Sendable flag and rethrow after `await` —
-            // the call site at L401/402 already propagates errors up to
+            // the call site already propagates errors up to
             // SessionController+Arena's do/catch, which aborts the
             // arena cleanly without taking the app down.
             let nilFlag = SyncBox<Bool>(false)

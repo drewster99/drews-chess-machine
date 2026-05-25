@@ -211,13 +211,17 @@ struct ArenaExtendedSummary: Sendable, Codable, Equatable {
 enum ArenaSummaryAggregator {
 
     // Bucket widths chosen to be human-readable in the log block:
-    //   - length:   20 plies (roughly one "phase" of a chess game)
-    //   - ply:      20 plies (matches user's explicit request)
-    //   - progress: 5%       (matches user's explicit request → 20
-    //               buckets exactly covering [0, 100])
+    //   - length:   `lengthBucketWidth` plies (roughly one "phase"
+    //               of a chess game)
+    //   - ply:      `plyBucketWidth` plies
+    //   - progress: `progressBucketWidth` % (chosen to divide 100
+    //               evenly → `progressBucketCount` buckets covering
+    //               [0, 100])
     //
-    // length buckets are 0-19, 20-39, ..., 180-199, then an open-ended
-    // overflow bucket "200+". 10 closed buckets + 1 overflow.
+    // length buckets are `closedLengthBucketCount` closed
+    // `lengthBucketWidth`-wide buckets starting at 0, then an
+    // open-ended overflow bucket above
+    // `closedLengthBucketCount * lengthBucketWidth`.
     static let lengthBucketWidth = 20
     static let closedLengthBucketCount = 10
     static let plyBucketWidth = 20
@@ -228,10 +232,13 @@ enum ArenaSummaryAggregator {
     // advantage, clamped to ±this — the end buckets are overflow
     // ("a queen up or more"). 2·clamp + 1 buckets total.
     static let materialAdvantageClamp = 9
-    // Total-material axis: bucket width in standard piece-value
-    // points. Total non-king material starts at 78 and can exceed it
-    // after promotions, so the total-material accumulator grows
-    // dynamically rather than assuming a fixed maximum.
+    // Total-material axis: bucket width
+    // (`totalMaterialBucketWidth`) in standard piece-value points.
+    // Total non-king material starts at the sum of the standard
+    // material values for both sides (per `BoardEncoder.materialValue`)
+    // and can exceed it after promotions, so the total-material
+    // accumulator grows dynamically rather than assuming a fixed
+    // maximum.
     static let totalMaterialBucketWidth = 6
 
     /// Outcome category for a single game, from the candidate's

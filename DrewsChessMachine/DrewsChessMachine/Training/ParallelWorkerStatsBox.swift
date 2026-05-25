@@ -95,10 +95,10 @@ public struct FlushedGameStats: Sendable {
 /// clock rate is computed against `sessionStart`.
 final class ParallelWorkerStatsBox: @unchecked Sendable {
     /// Rolling-window length in seconds for the "recent" rate columns
-    /// shown next to the lifetime rates in the Session panel. Fixed at
-    /// 1 minute so the displayed rate reacts quickly to throughput
-    /// shifts (e.g. after an arena pause, or when training/self-play
-    /// contention changes) without lagging behind by minutes.
+    /// shown next to the lifetime rates in the Session panel. Sized to
+    /// the `recentWindow` so the displayed rate reacts quickly to
+    /// throughput shifts (e.g. after an arena pause, or when training/
+    /// self-play contention changes) without lagging behind by minutes.
     static let recentWindow: TimeInterval = 60
 
     /// One completed game, stored in the rolling window. Drops out of

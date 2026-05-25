@@ -4,7 +4,7 @@ import Foundation
 //
 // The network's policy head emits raw logits laid out as
 // `[batch, policyChannels, 8, 8]`, flattened in NCHW row-major order to
-// `[batch, policySize]` where `policySize = policyChannels * 64 = 4864`.
+// `[batch, policySize]` where `policySize = policyChannels * 64`.
 // Each output cell at `(channel, row, col)` is the logit for "move of
 // type `channel` from square `(row, col)`" in the current player's
 // encoder frame (board flipped vertically when black is to move).
@@ -21,7 +21,7 @@ import Foundation
 // Channels 0–55: queen-style moves (8 directions × 7 distances).
 //   Direction order, clockwise from "up": N, NE, E, SE, S, SW, W, NW.
 //   `channel = direction_index * 7 + (distance - 1)` for
-//   `direction_index ∈ 0..<8`, `distance ∈ 1..7`.
+//   `direction_index ∈ 0..<8`, `distance ∈ 1...7`.
 //   Covers all sliding-piece moves (R/B/Q), king's normal moves,
 //   pawn pushes, pawn diagonal captures, and queen-promotions
 //   ARE NOT encoded here — promotions get dedicated channels (see
@@ -41,7 +41,7 @@ import Foundation
 // Channels 73–75: queen-promotions (3 directions; same direction
 //   encoding as underpromotions). `channel = 73 + direction_index`.
 //
-// Total: 56 + 8 + 9 + 3 = 76 channels × 64 squares = 4864 logits.
+// Total: 56 + 8 + 9 + 3 = `policyChannels` channels × 64 squares = `policySize` logits.
 //
 // ## Encoder frame
 //
@@ -186,7 +186,7 @@ enum PolicyEncoding {
 
     /// Flat policy index: `channel * 64 + row * 8 + col`. Matches NCHW
     /// row-major flatten of the network's `[batch, 76, 8, 8]` policy
-    /// output. Index range: `0..<policySize` (= 4864).
+    /// output. Index range: `0..<policySize`.
     static func policyIndex(_ move: ChessMove, currentPlayer: PieceColor) -> Int {
         let (chan, r, c) = encode(move, currentPlayer: currentPlayer)
         return chan * 64 + r * 8 + c

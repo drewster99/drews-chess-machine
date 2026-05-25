@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Standalone-window root view for the Tactical Probe Monitor.
 /// Shows one row per probe in `TacticalProbeData.standardSet`,
-/// updating every 15s via the owning window controller's watcher.
+/// updating on the cadence of the owning window controller's watcher
+/// (`TacticalProbeWatcher.intervalSec`).
 ///
 /// First-tick UI: rows render with "—" cells and a flat stub spark
 /// until the initial probe batch lands (typically within a few

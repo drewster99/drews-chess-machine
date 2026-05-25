@@ -42,11 +42,11 @@ final class SessionLogger: @unchecked Sendable {
 
     /// Idle-flush coalescer. Each successful write cancels the previous
     /// pending flush and schedules a new one 0.5 s out. A burst of
-    /// writes (per-step STATS at 5–20 Hz, BATCH-STATS at ~1 Hz) therefore
-    /// produces at most one `synchronize()` per ~0.5 s of idle, instead
-    /// of one per line. On hard kernel-level crash we lose at most the
-    /// last 0.5 s of log tail; on a normal app exit `shutdown()` does a
-    /// final synchronous flush. Mutated only inside the serial queue.
+    /// writes therefore produces at most one `synchronize()` per ~0.5 s
+    /// of idle, instead of one per line. On hard kernel-level crash we
+    /// lose at most the last 0.5 s of log tail; on a normal app exit
+    /// `shutdown()` does a final synchronous flush. Mutated only inside
+    /// the serial queue.
     private var pendingFlush: DispatchWorkItem?
 
     /// Local-time formatter for the filename stamp — the log file

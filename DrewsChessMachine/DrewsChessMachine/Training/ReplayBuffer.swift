@@ -53,29 +53,29 @@ final class ReplayBuffer: @unchecked Sendable {
     private let outcomeStorage: UnsafeMutablePointer<Float>
 
     /// Per-position 0-based ply index within its game. Same ring index
-    /// as `boardStorage`. Observability-only; not persisted in v4.
+    /// as `boardStorage`. Observability; persisted in v5+.
     private let plyIndexStorage: UnsafeMutablePointer<UInt16>
 
     /// Per-position total game length (plies). Broadcast across every
     /// row of a single appended game. Same ring index as `boardStorage`.
-    /// Observability-only; not persisted in v4.
+    /// Observability; persisted in v5+.
     private let gameLengthStorage: UnsafeMutablePointer<UInt16>
 
     /// Per-position temperature (tau) actually used at sampling time.
-    /// Same ring index as `boardStorage`. Observability-only; not
-    /// persisted in v4.
+    /// Same ring index as `boardStorage`. Observability; persisted in v5+.
     private let samplingTauStorage: UnsafeMutablePointer<Float>
 
     /// Per-position state hash (Swift `Hasher` over the encoded board
     /// bytes). Used as the key for global per-position duplicate
-    /// counts. Same ring index as `boardStorage`. Observability-only;
-    /// not persisted in v4 — rebuilt on restore.
+    /// counts. Same ring index as `boardStorage`. Observability;
+    /// persisted in v5+ (per-slot hash bytes serialized; the `hashStats`
+    /// dict itself is rebuilt on restore).
     private let stateHashStorage: UnsafeMutablePointer<UInt64>
 
-    /// Per-position 32-bit packed identity: high 8 bits = `workerId`,
-    /// low 24 bits = `intraWorkerGameIndex`. Broadcast across every
+    /// Per-position 32-bit packed identity: high 16 bits = `workerId`,
+    /// low 16 bits = `intraWorkerGameIndex` (masked). Broadcast across every
     /// row of a single appended game. Same ring index as `boardStorage`.
-    /// Observability-only; not persisted in v4.
+    /// Observability; persisted in v5+.
     private let workerGameIdStorage: UnsafeMutablePointer<UInt32>
 
     /// Per-position non-pawn piece count (range 0–30). Drives the
@@ -284,8 +284,12 @@ final class ReplayBuffer: @unchecked Sendable {
     }
 
     /// Pack a worker_id (0..65_535) and an intra-worker game index
-    /// (0..65_535) into a single UInt32 for storage in
-    /// `workerGameIdStorage`. Top 16 bits = worker, low 16 bits = game.
+    /// into a single UInt32 for storage in `workerGameIdStorage`.
+    /// Top 16 bits = worker, low 16 bits = game. The `gameIndex`
+    /// parameter is `UInt32` but is silently masked to 16 bits inside
+    /// the pack, so aliasing occurs after 65_536 games per worker
+    /// (call sites typically pass an `ActiveGame.intraWorkerGameIndex`
+    /// that increments with `&+= 1` in the full UInt32 domain).
     ///
     /// The 16-bit worker domain is large enough that the slot-ID
     /// counter (which monotonically increments across arena
@@ -1827,7 +1831,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// SHA-256 hasher whose final digest becomes the file's integrity
     /// trailer. Passing the hasher inout (rather than capturing it in
     /// an escaping closure) lets the single hasher object accumulate
-    /// across all four section writes from a single `_writeLocked`
+    /// across all column-section writes from a single `_writeLocked`
     /// call.
     private func writeRange(
         handle: FileHandle,
@@ -1902,8 +1906,8 @@ final class ReplayBuffer: @unchecked Sendable {
     ///
     /// Only after all eight pass does the function mutate any live
     /// state (taking the buffer's `lock`, resetting counters,
-    /// re-seeking to the header end, and reading the four sections
-    /// into the ring storage).
+    /// re-seeking to the header end, and reading the nine column
+    /// sections into the ring storage).
     func restore(from url: URL) throws {
         let handle: FileHandle
         do {

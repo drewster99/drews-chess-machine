@@ -6,7 +6,7 @@ import SwiftUI
 /// hosts the checkpoint **status display** (`checkpointStatusMessage` /
 /// `checkpointStatusKind` + the auto-clear timer + the `[CHECKPOINT-ERR]` echo)
 /// and the **slow-save watchdog** that flips a still-running save to a
-/// `.slowProgress` row after 10 s. The big save / load / segments / periodic-
+/// `.slowProgress` row after `slowSaveWatchdogSeconds`. The big save / load / segments / periodic-
 /// save logic is still on `UpperContentView` and calls into this controller via
 /// `checkpoint.setCheckpointStatus(_:kind:)` / `.startSlowSaveWatchdog(label:)`
 /// / `.cancelSlowSaveWatchdog()` / `.checkpointSaveInFlight = …`. Part 2 of the
@@ -38,9 +38,9 @@ final class CheckpointController {
     /// exactly once per save (no progressive warnings — completion
     /// will eventually flip the row to success/error and restore
     /// normal styling). Calibrated to the typical save cost: a
-    /// healthy session save (two ~10 MB `.dcmmodel` files plus a 35
-    /// MB replay buffer at 500k positions) takes well under a second
-    /// on SSD; 10 s leaves headroom for the post-promotion path's
+    /// healthy session save (current network `.dcmmodel` files plus
+    /// the replay buffer) takes well under a second on SSD; the
+    /// deadline leaves headroom for the post-promotion path's
     /// `.utility`-priority detached task to be scheduled under load
     /// without firing false-positive warnings, while still surfacing
     /// genuinely stuck saves promptly.
@@ -49,18 +49,19 @@ final class CheckpointController {
     /// Surface a status message on the checkpoint status row, auto-clearing
     /// after a kind-dependent lifetime so a transient save success line doesn't
     /// linger past usefulness. Errors are also echoed to the session log
-    /// (`[CHECKPOINT-ERR]`) so a 12-s on-screen line that auto-clears is still
-    /// recoverable from the persistent log file. Success lifetime is 20 s — long
-    /// enough for the user to glance up and confirm the save actually landed —
-    /// versus 6 s for progress lines and 12 s for errors.
+    /// (`[CHECKPOINT-ERR]`) so an `.error`-lifetime on-screen line that
+    /// auto-clears is still recoverable from the persistent log file. The
+    /// `.success` lifetime is the longest — long enough for the user to glance
+    /// up and confirm the save actually landed — versus shorter lifetimes for
+    /// `.progress` and `.error` (see the lifetime switch below).
     func setCheckpointStatus(_ message: String, kind: CheckpointStatusKind) {
         checkpointStatusMessage = message
         checkpointStatusKind = kind
         // Always echo errors to the session log so a transient on-screen
-        // error message that auto-clears in 12 seconds is still
-        // recoverable from the persistent log file. (Some callsites
-        // also log their own more-detailed [CHECKPOINT] line — minor
-        // duplication is fine; visibility is the priority.)
+        // error message that auto-clears is still recoverable from the
+        // persistent log file. (Some callsites also log their own more-
+        // detailed [CHECKPOINT] line — minor duplication is fine;
+        // visibility is the priority.)
         if kind == .error {
             SessionLogger.shared.log("[CHECKPOINT-ERR] \(message)")
         }
@@ -73,8 +74,9 @@ final class CheckpointController {
         case .progress: lifetimeSeconds = 6
         // Slow-save status persists noticeably longer than a normal
         // progress line — the user is presumably waiting on it, and a
-        // 6-second auto-clear in the middle of a stuck save would just
-        // leave them confused about whether anything is still happening.
+        // `.progress`-length auto-clear in the middle of a stuck save
+        // would just leave them confused about whether anything is
+        // still happening.
         case .slowProgress: lifetimeSeconds = 120
         case .success: lifetimeSeconds = 20
         case .error: lifetimeSeconds = 12

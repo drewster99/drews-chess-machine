@@ -22,9 +22,10 @@ struct TournamentRecord: Sendable, Identifiable {
     /// `nil` on legacy records.
     var championID: ModelID? = nil
     /// Number of arena games that actually completed before the
-    /// tournament ended. May be less than `Self.tournamentGames` if
-    /// the user clicked Abort or Promote mid-tournament, or if the
-    /// session was stopped while the arena was in flight.
+    /// tournament ended. May be less than the configured tournament
+    /// size (`TrainingParameters.shared.arenaGamesPerTournament`,
+    /// default 400) if the user clicked Abort or if the session was
+    /// stopped while the arena was in flight.
     let gamesPlayed: Int
     let candidateWins: Int
     let championWins: Int
@@ -66,7 +67,7 @@ struct TournamentRecord: Sendable, Identifiable {
     ///   - records loaded from session files written before
     ///     extended summaries were persisted;
     ///   - a zero-game tournament abort, where the breakdown would
-    ///     be entirely empty (see `runArenaTournament`).
+    ///     be entirely empty (see `runArenaParallel`).
     /// Any UI / log site that consumes this must tolerate nil and
     /// hide the histograms.
     var extendedSummary: ArenaExtendedSummary? = nil

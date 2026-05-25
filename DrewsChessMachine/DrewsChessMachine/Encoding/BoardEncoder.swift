@@ -208,8 +208,8 @@ struct GameState: Sendable {
 /// - Board flipped vertically if black is playing (so current player is always at bottom)
 /// - Planes 0-5: current player's pieces (pawn, knight, bishop, rook, queen, king)
 /// - Planes 6-11: opponent's pieces (same order)
-/// - Plane 12-13: current player's castling rights (kingside, queenside)
-/// - Plane 14-15: opponent's castling rights (kingside, queenside)
+/// - Planes 12-13: current player's castling rights (kingside, queenside)
+/// - Planes 14-15: opponent's castling rights (kingside, queenside)
 /// - Plane 16: en passant target square
 /// - Plane 17: halfmove clock, normalized as `min(clock, 99) / 99` (Leela-style)
 /// - Plane 18: 1.0 if current position has occurred ≥1 time before in this game
@@ -230,12 +230,10 @@ struct GameState: Sendable {
 enum BoardEncoder {
 
     /// Number of floats one encoded position occupies: `inputPlanes`
-    /// × 64 squares. With the v3 architecture refresh (10 binary
-    /// temporal-repetition planes added on top of the v2 baseline) this
-    /// is 30 × 64 = 1920.
+    /// × 64 squares.
     static let tensorLength = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
 
-    /// Encode a game state into a caller-owned slice of `tensorLength` (= 1,920) floats.
+    /// Encode a game state into a caller-owned slice of `tensorLength` floats.
     ///
     /// The per-move inference hot path uses this variant so the encoded
     /// tensor can live in a pre-allocated per-game scratch buffer,
@@ -333,11 +331,12 @@ enum BoardEncoder {
 
         // Planes 18 and 19: threefold-repetition signals. Always-fill
         // pattern (no skip-if-zero optimization) so each plane is
-        // self-contained and doesn't depend on the leading clear at
-        // line 136 — easier to reason about and immune to the silent
-        // failure mode where someone bumps `tensorLength` without
-        // updating the leading clear's count. Cost is 128 extra writes
-        // per encode, negligible against the existing tensorLength-float clear.
+        // self-contained and doesn't depend on the leading
+        // `base.update(repeating: 0, count: tensorLength)` above —
+        // easier to reason about and immune to the silent failure mode
+        // where someone bumps `tensorLength` without updating the
+        // leading clear's count. Cost is 128 extra writes per encode,
+        // negligible against the existing tensorLength-float clear.
         //
         // The rep count is read from the GameState itself (populated
         // by ChessGameEngine after every move from its positionCounts
@@ -352,8 +351,8 @@ enum BoardEncoder {
         // all-1 iff bit `i` of `state.recentRepetitionMask` is set,
         // meaning the position `i + 1` plies ago is a `PositionKey`
         // duplicate of the current position. Skip-if-zero is fine here
-        // (unlike planes 18/19) because the leading `base.update` at
-        // line 192 already cleared the full tensorLength region — we
+        // (unlike planes 18/19) because the leading `base.update`
+        // above already cleared the full tensorLength region — we
         // only need to fill the 1-bits, not also zero out the 0-bits.
         //
         // The mask is read from the GameState itself (populated by
@@ -369,7 +368,7 @@ enum BoardEncoder {
         }
     }
 
-    /// Encode a game state into a 30×8×8 = 1,920 float tensor.
+    /// Encode a game state into a `tensorLength`-float tensor.
     ///
     /// Allocating variant — delegates to `encode(_:into:)` so both
     /// paths share the same encoding logic. Used by non-hot-path
