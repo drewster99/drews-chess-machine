@@ -1132,10 +1132,10 @@ final class ChessTrainer: @unchecked Sendable {
     /// instead of the unreachable `p(played) = 1`, capping per-
     /// position concentration at a fixed level and converting the
     /// unbounded `−log p` gradient drive into a stable fixed point.
-    /// Together with `max(0, advantageNormalized)` in `buildTrainingOps`
-    /// this turns the policy CE into a bounded supervised-CE-shaped
-    /// loss; see `CHECK_NEXT.md` for the divergence analysis that
-    /// motivated both changes.
+    /// The same ε also parameterizes the complement target used by
+    /// the negative-advantage branch (`useSignedAdvantageComplementCE`),
+    /// so the bounded-below equilibrium holds symmetrically on both
+    /// signs of the advantage.
     var policyLabelSmoothingEpsilon: Float
 
     /// Label-smoothing coefficient ε for the value-head W/D/L CE
@@ -1171,6 +1171,29 @@ final class ChessTrainer: @unchecked Sendable {
     /// silently amplifies decay. Start low and watch `legalMass` /
     /// `pEntLegal` before raising further.
     var momentumCoeff: Float
+
+    /// Engage the complementary-CE branch for negative-advantage
+    /// samples. Fed into the training graph each step as a 1.0/0.0
+    /// scalar (live-tunable).
+    ///
+    /// When true, the policy gradient is driven by two cross-entropy
+    /// terms, each bounded below by zero:
+    ///   weightedCE = max(0, advNorm) * positiveCE
+    ///              + max(0, -advNorm) * complementCE
+    /// where `positiveCE` targets the smoothed one-hot on the played
+    /// move (existing label smoothing) and `complementCE` targets a
+    /// mirror-smoothed distribution that puts the (1 − ε) main mass
+    /// on the *other* legal moves and ε across all legals. Negative-
+    /// advantage samples push the played-move mass toward the other
+    /// legals; the loss is bounded below by zero on both signs and the
+    /// equilibria are reachable (p(played) → 1 − ε + ε/|legal| for
+    /// positives, p(played) → ε/|legal| for negatives).
+    ///
+    /// When false, only the positive branch is active and negative-
+    /// advantage samples contribute zero policy gradient — the legacy
+    /// `max(0, advNorm) * positiveCE` clamp regime. Provided as the
+    /// kill switch in case the complement branch destabilizes training.
+    var useSignedAdvantageComplementCE: Bool
 
     /// Bootstrap-phase contempt knob. When `drawPenalty > 0`, every
     /// drawn game's outcome `z` is rewritten from `0.0` to
@@ -1260,6 +1283,7 @@ final class ChessTrainer: @unchecked Sendable {
     private var labelSmoothingEpsilonPlaceholder: MPSGraphTensor // [] scalar float
     private var valueLabelSmoothingEpsilonPlaceholder: MPSGraphTensor // [] scalar float
     private var momentumPlaceholder: MPSGraphTensor     // [] scalar float — Polyak μ
+    private var complementCEEnablePlaceholder: MPSGraphTensor // [] scalar float (1.0/0.0)
     /// Per-trainable-variable momentum velocity buffers, allocated parallel
     /// to `network.trainableVariables`. Each step's update is
     /// `v_new = μ·v_old + (clipped_grad + decayC·variable)`; this list
@@ -1345,6 +1369,8 @@ final class ChessTrainer: @unchecked Sendable {
     private var valueLabelSmoothingEpsilonTensorData: MPSGraphTensorData
     private var momentumNDArray: MPSNDArray
     private var momentumTensorData: MPSGraphTensorData
+    private var complementCEEnableNDArray: MPSNDArray
+    private var complementCEEnableTensorData: MPSGraphTensorData
 
     /// Pre-allocated ND-array-backed tensor data for the three training
     /// placeholders at a given batch size, plus the pre-built
@@ -1499,6 +1525,7 @@ final class ChessTrainer: @unchecked Sendable {
         policyLabelSmoothingEpsilon: Float = 0.1,
         valueLabelSmoothingEpsilon: Float = 0.0,
         momentumCoeff: Float = 0.0,
+        useSignedAdvantageComplementCE: Bool = true,
         sqrtBatchScalingForLR: Bool = true,
         lrWarmupSteps: Int = 100
     ) throws {
@@ -1513,6 +1540,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.policyLabelSmoothingEpsilon = policyLabelSmoothingEpsilon
         self.valueLabelSmoothingEpsilon = valueLabelSmoothingEpsilon
         self.momentumCoeff = momentumCoeff
+        self.useSignedAdvantageComplementCE = useSignedAdvantageComplementCE
         self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         self.lrWarmupSteps = lrWarmupSteps
         let net = try ChessNetwork(bnMode: .training)
@@ -1533,6 +1561,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.labelSmoothingEpsilonPlaceholder = built.labelSmoothingEpsilon
         self.valueLabelSmoothingEpsilonPlaceholder = built.valueLabelSmoothingEpsilon
         self.momentumPlaceholder = built.momentum
+        self.complementCEEnablePlaceholder = built.complementCEEnable
         self.velocityVariables = built.velocityVariables
         self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
         self.velocityLoadAssignOps = built.velocityLoadAssignOps
@@ -1613,6 +1642,10 @@ final class ChessTrainer: @unchecked Sendable {
         momentumND.label = "momentumND"
         self.momentumNDArray = momentumND
         self.momentumTensorData = MPSGraphTensorData(momentumND)
+        let complementCEEnableND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        complementCEEnableND.label = "complementCEEnableND"
+        self.complementCEEnableNDArray = complementCEEnableND
+        self.complementCEEnableTensorData = MPSGraphTensorData(complementCEEnableND)
 
         let lossPtr = UnsafeMutablePointer<Float>.allocate(
             capacity: Self.lossReadbackSlotCount
@@ -1700,6 +1733,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.labelSmoothingEpsilonPlaceholder = built.labelSmoothingEpsilon
         self.valueLabelSmoothingEpsilonPlaceholder = built.valueLabelSmoothingEpsilon
         self.momentumPlaceholder = built.momentum
+        self.complementCEEnablePlaceholder = built.complementCEEnable
         self.velocityVariables = built.velocityVariables
         self.velocityLoadPlaceholders = built.velocityLoadPlaceholders
         self.velocityLoadAssignOps = built.velocityLoadAssignOps
@@ -1770,6 +1804,9 @@ final class ChessTrainer: @unchecked Sendable {
         self.momentumNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.momentumNDArray.label = "trainer.scalar.momentum (reset)"
         self.momentumTensorData = MPSGraphTensorData(momentumNDArray)
+        self.complementCEEnableNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.complementCEEnableNDArray.label = "trainer.scalar.complementCEEnable (reset)"
+        self.complementCEEnableTensorData = MPSGraphTensorData(complementCEEnableNDArray)
         // The cached ND arrays were allocated against the old network's
         // device and are keyed by batch size against the old graph's
         // placeholders. Drop the cache so the first trainStep after
@@ -1807,6 +1844,7 @@ final class ChessTrainer: @unchecked Sendable {
         labelSmoothingEpsilon: MPSGraphTensor,
         valueLabelSmoothingEpsilon: MPSGraphTensor,
         momentum: MPSGraphTensor,
+        complementCEEnable: MPSGraphTensor,
         velocityVariables: [MPSGraphTensor],
         velocityLoadPlaceholders: [MPSGraphTensor],
         velocityLoadAssignOps: [MPSGraphOperation],
@@ -1881,7 +1919,12 @@ final class ChessTrainer: @unchecked Sendable {
         let additiveMask = graph.multiplication(illegalMask, largeNeg, name: "additive_mask")
         let maskedLogits = graph.addition(network.policyOutput, additiveMask, name: "masked_logits")
 
-        // --- Policy loss: L = mean( max(0, advNorm) · CE(smoothedTarget, p) ) ---
+        // --- Policy loss: signed-advantage CE with positive + complement targets ---
+        //
+        //   L = mean(
+        //          max(0,  advNorm) · CE(smoothedTarget,    p)
+        //        + max(0, -advNorm) · CE(complementTarget,  p) · complementEnable
+        //   )
         //
         // Three structural pieces, each motivated by a distinct past
         // failure mode (the first two by the divergence analysed in
@@ -1903,12 +1946,26 @@ final class ChessTrainer: @unchecked Sendable {
         //    whose gradient self-corrects (passing `p(played) > 1 − ε`
         //    flips the sign of the played-cell gradient).
         //
-        // 2. Negative-advantage gate (further down in this function).
-        //    `max(0, advantageNormalized)` so only positive-advantage
-        //    positions contribute to the policy gradient. The negative-
-        //    advantage branch was the source of the unbounded-below loss
-        //    (`−adv · log p` going to −∞ as `p → 0`); dropping it makes
-        //    the policy loss bounded below by zero, supervised-CE-shaped.
+        // 2. Signed-advantage split with complementary CE on the
+        //    negative branch (built further down). The naïve form
+        //    `advNorm · −log p(played)` is **unbounded below** when
+        //    `advNorm < 0` (as p → 0, log p → −∞, so the whole
+        //    expression → −∞ with a non-vanishing gradient on the
+        //    played logit — no stopping condition; observed earlier
+        //    in `dcm_log_20260509-155952.txt`, pLoss = −64868 before
+        //    abort, full analysis in CHECK_NEXT.md). The replacement
+        //    drives the negative branch with a *complementary* CE
+        //    against a mirrored smoothed target — main mass on the
+        //    OTHER legal moves, ε share spread across all legals —
+        //    weighted by `max(0, −advNorm)`. Both terms are
+        //    non-negative; total loss is bounded below by zero
+        //    regardless of advantage sign. Equilibria: positive
+        //    branch attracts `p(played) → 1 − ε + ε/|legal|`,
+        //    negative branch attracts `p(played) → ε/|legal|`.
+        //    The `useSignedAdvantageComplementCE` knob multiplies the
+        //    negative branch by a runtime 1.0/0.0 scalar so the legacy
+        //    positive-only clamp regime can be re-engaged at runtime
+        //    if needed.
         //
         // 3. The CE softmax is over the **raw** policy logits
         //    (`network.policyOutput`), NOT the legal-masked logits.
@@ -2015,6 +2072,52 @@ final class ChessTrainer: @unchecked Sendable {
             name: "policy_smoothed_target"
         )
 
+        // Complement smoothed target — mirror of `smoothedTarget` with
+        // the (1 − ε) "main" mass spread over the OTHER legal moves
+        // and the ε "smoothing" mass shared across all legals.
+        //   complement = (1 − ε) · uniform(otherLegals) + ε · uniform(legal)
+        // where uniform(otherLegals) = (legalMask − oneHot) / max(1, |legal| − 1).
+        // Used by the negative-advantage branch (see the signed-split
+        // construction further down). Teaches "the played move was bad
+        // here; mass should sit on any other legal move." The (1 − ε)
+        // numerator is all-zeros when |legal| = 1 (played is the only
+        // option), so the main component vanishes and the target reduces
+        // to ε · oneHot(played) — a small loss; one-legal positions are
+        // a structural edge case (mostly forced replies in check) and
+        // not worth a separate masking branch.
+        let otherLegalMaskRaw = graph.subtraction(
+            legalMask,
+            oneHot,
+            name: "other_legal_mask"
+        )
+        let legalCountMinusOne = graph.subtraction(
+            legalCountSafe,
+            oneFloatForLegal,
+            name: "legal_count_minus_one"
+        )
+        let otherLegalCountSafe = graph.maximum(
+            legalCountMinusOne,
+            oneFloatForLegal,
+            name: "other_legal_count_safe"
+        )
+        let uniformOverOtherLegal = graph.division(
+            otherLegalMaskRaw,
+            otherLegalCountSafe,
+            name: "uniform_over_other_legal"
+        )
+        let complementMainComponent = graph.multiplication(
+            uniformOverOtherLegal,
+            oneMinusEpsilon,
+            name: "complement_target_main_part"
+        )
+        // `smoothedTargetUniformComponent` (= ε · uniformOverLegal) is
+        // already built above — the complement target shares it.
+        let complementTarget = graph.addition(
+            complementMainComponent,
+            smoothedTargetUniformComponent,
+            name: "policy_complement_target"
+        )
+
         // Raw policy logits, NOT `maskedLogits` — the CE must see the
         // illegal cells in order to drive their softmax mass to zero.
         // See structural piece 3 in the comment block above (and the
@@ -2027,6 +2130,18 @@ final class ChessTrainer: @unchecked Sendable {
             name: "policy_ce_raw"
         )
 
+        // Parallel CE against the complement target — same raw-logits
+        // softmax base as the positive-target CE so the illegal-mass
+        // pressure stays in effect on both branches. Combined with the
+        // positive branch via the signed-advantage split below.
+        let ceLossComplementRaw = graph.softMaxCrossEntropy(
+            network.policyOutput,
+            labels: complementTarget,
+            axis: 1,
+            reuctionType: .none,
+            name: "policy_ce_complement_raw"
+        )
+
         // softMaxCrossEntropy with .none reduces the class axis, leaving
         // one loss per batch element. Reshape to [batch, 1] so it lines up
         // with z for the outcome-weighted multiply.
@@ -2034,6 +2149,11 @@ final class ChessTrainer: @unchecked Sendable {
             ceLossRaw,
             shape: [-1, 1],
             name: "policy_ce_per_pos"
+        )
+        let negLogProbComplement = graph.reshape(
+            ceLossComplementRaw,
+            shape: [-1, 1],
+            name: "policy_ce_complement_per_pos"
         )
         // No per-position CE clamp here. Two prior approaches and why
         // they were both rejected, kept for reference because the
@@ -2058,16 +2178,17 @@ final class ChessTrainer: @unchecked Sendable {
         //       full analysis in CHECK_NEXT.md).
         //
         // The current fix bounds the loss at a structural level
-        // instead — label smoothing (above) gives the policy CE a
-        // reachable fixed point, and `max(0, advNorm)` (below) drops
-        // the negative-advantage branch that lacked any fixed point.
-        // Together they make the policy loss bounded below by zero, and
-        // at convergence the per-position CE settles near the smoothed-
-        // target entropy (`H(smoothed) ≈ 0.64 nats` at ε=0.1). It can
-        // be transiently *large* — up to ≈ log(policySize) ≈ 8.5 nats
-        // while raw softmax mass is still mostly on illegal cells, which
-        // is exactly the post-`acc5340` recovery regime — but a large
-        // CE *value* is not a large *update*: the CE's gradient on every
+        // instead — label smoothing (above) gives both CE branches a
+        // reachable fixed point, and the signed-advantage split with
+        // complementary CE on the negative branch (below) keeps both
+        // signs of advantage bounded below by zero without dropping
+        // any samples. At convergence the per-position positive CE
+        // settles near the smoothed-target entropy (`H(smoothed) ≈
+        // 0.64 nats` at ε=0.1); the complement CE settles symmetrically.
+        // Either can be transiently *large* — up to ≈ log(policySize)
+        // ≈ 8.5 nats while raw softmax mass is still mostly on illegal
+        // cells, the post-`acc5340` recovery regime — but a large CE
+        // *value* is not a large *update*: the CE's gradient on every
         // logit (legal or illegal) is `softmax_raw − target ∈ [−1, 1]`,
         // a hard bound that holds regardless of how concentrated the raw
         // softmax is. So no graph-level CE clamp is needed, and feeding
@@ -2149,39 +2270,74 @@ final class ChessTrainer: @unchecked Sendable {
             advantageRMSForNorm,
             name: "advantage_normalized"
         )
-        // Drop the negative-advantage branch of the policy gradient.
+        // Signed-advantage policy gradient with complementary CE on
+        // the negative branch.
         //
-        // `−advNorm · log p(played)` is **unbounded below** when
-        // advNorm < 0 (as p → 0, log p → −∞, so the whole expression
-        // → −∞). The trainer minimizes the loss, so the optimizer is
-        // happy to drive `p(played) → 0` indefinitely — and the
-        // gradient on the played logit at `p(played) → 0` is the
-        // non-vanishing constant `−advNorm`, so there's no stopping
-        // condition. The original outcome-weighted formulation
-        // assumed this loss had a floor; it doesn't. See
-        // CHECK_NEXT.md for the per-step numbers (pLoss reached
-        // −64,868 in dcm_log_20260509-155952.txt before the run was
-        // stopped).
+        //   weightedCE = max(0, advNorm) · positiveCE
+        //              + max(0, −advNorm) · complementCE · complementEnable
         //
-        // Replacing `advNorm` with `max(0, advNorm)` here changes the
-        // policy CE into the supervised-CE shape: bounded below by 0,
-        // gradient vanishes at the (smoothed-target) equilibrium.
-        // Negative-advantage positions contribute zero to the policy
-        // gradient but are still seen by the value head (its W/D/L
-        // cross-entropy loss is built independently from
-        // `network.valueLogits` vs the one-hot game result, below).
-        // This is equivalent to "reward-weighted regression on
-        // positive-reward samples," a known stable reformulation of
-        // REINFORCE.
-        let zeroAdvantage = graph.constant(0.0, dataType: dtype)
-        let advantagePositive = graph.maximum(
-            advantageNormalized,
-            zeroAdvantage,
-            name: "advantage_positive_only"
+        // Both products are non-negative by construction, so the total
+        // policy loss is bounded below by 0 regardless of advantage
+        // sign. Equilibria:
+        //   • Positive branch (advNorm > 0): p(played) → (1 − ε) + ε/|legal|
+        //     — the legacy smoothed-CE attractor.
+        //   • Negative branch (advNorm < 0): p(played) → ε/|legal|
+        //     — symmetric attractor, with the (1 − ε) main mass
+        //     redistributed over the other legal moves.
+        //
+        // `complementEnable` is a runtime scalar (1.0 / 0.0) so the
+        // user can A/B between this signed-split formulation and the
+        // legacy positive-only clamp regime without recompiling.
+        // When the scalar is 0, the negative branch's contribution
+        // collapses to zero and we recover `max(0, advNorm) · positiveCE`
+        // bit-exact — the historical "wins teach, losses contribute
+        // nothing" form.
+        //
+        // The diagnostic `policyLossWin` / `policyLossLoss` split
+        // below (z-sign masked means of `weightedCE`) now reports the
+        // per-sign loss CONTRIBUTION rather than only the positive
+        // branch's. With the complement branch live, `policyLossLoss`
+        // becomes the rolling negative-A signal — previously identically
+        // zero, now the headline "is the network learning from losses
+        // and draws as well as wins" diagnostic.
+        let zeroForAdvantage = graph.constant(0.0, dataType: dtype)
+        let advantageNegated = graph.negative(
+            with: advantageNormalized,
+            name: "advantage_negated"
         )
-        let weightedCE = graph.multiplication(
-            advantagePositive,
+        let advantagePositivePart = graph.maximum(
+            advantageNormalized,
+            zeroForAdvantage,
+            name: "advantage_positive_part"
+        )
+        let advantageNegativePart = graph.maximum(
+            advantageNegated,
+            zeroForAdvantage,
+            name: "advantage_negative_part"
+        )
+        let complementCEEnableTensor = graph.placeholder(
+            shape: [1],
+            dataType: dtype,
+            name: "complement_ce_enable"
+        )
+        let policyTermPositive = graph.multiplication(
+            advantagePositivePart,
             negLogProb,
+            name: "policy_term_positive"
+        )
+        let policyTermNegativeUngated = graph.multiplication(
+            advantageNegativePart,
+            negLogProbComplement,
+            name: "policy_term_negative_ungated"
+        )
+        let policyTermNegative = graph.multiplication(
+            policyTermNegativeUngated,
+            complementCEEnableTensor,
+            name: "policy_term_negative"
+        )
+        let weightedCE = graph.addition(
+            policyTermPositive,
+            policyTermNegative,
             name: "adv_weighted_ce"
         )
         let policyLoss = graph.mean(
@@ -3194,7 +3350,9 @@ final class ChessTrainer: @unchecked Sendable {
             illegalMassWeightTensor,
             labelSmoothingEpsilonTensor,
             valueLabelSmoothingEpsilonTensor,
-            momentumTensor, velocities,
+            momentumTensor,
+            complementCEEnableTensor,
+            velocities,
             velLoadPlaceholders, velLoadAssignOps, velLoadNDArrays, velLoadTensorData,
             totalLossTensor, policyLoss, valueLoss,
             policyEntropy, illegalMassPenalty, policyNonNegCount, policyNonNegIllegalCount, gradGlobalNorm, valueMean, valueAbsMean,
@@ -4519,6 +4677,8 @@ final class ChessTrainer: @unchecked Sendable {
         valueLabelSmoothingEpsilonNDArray.writeBytes(&valueLabelSmoothEps, strideBytes: nil)
         var momentum = momentumCoeff
         momentumNDArray.writeBytes(&momentum, strideBytes: nil)
+        var complementCEEnableScalar: Float = useSignedAdvantageComplementCE ? 1.0 : 0.0
+        complementCEEnableNDArray.writeBytes(&complementCEEnableScalar, strideBytes: nil)
 
         return cached.feedsDict
     }
@@ -4607,7 +4767,8 @@ final class ChessTrainer: @unchecked Sendable {
             illegalMassWeightPlaceholder: illegalMassWeightTensorData,
             labelSmoothingEpsilonPlaceholder: labelSmoothingEpsilonTensorData,
             valueLabelSmoothingEpsilonPlaceholder: valueLabelSmoothingEpsilonTensorData,
-            momentumPlaceholder: momentumTensorData
+            momentumPlaceholder: momentumTensorData,
+            complementCEEnablePlaceholder: complementCEEnableTensorData
         ]
 
         let feeds = BatchFeeds(

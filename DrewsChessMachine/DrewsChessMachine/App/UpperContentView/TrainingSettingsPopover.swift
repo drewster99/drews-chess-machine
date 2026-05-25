@@ -196,6 +196,7 @@ struct TrainingSettingsPopover: View {
                     warmupText: $model.warmupText,
                     momentumText: $model.momentumText,
                     sqrtBatchScalingValue: $model.sqrtBatchScalingValue,
+                    signedAdvantageComplementCEValue: $model.signedAdvantageComplementCEValue,
                     entropyText: $model.entropyText,
                     illegalMassWeightText: $model.illegalMassWeightText,
                     gradClipText: $model.gradClipText,
@@ -454,6 +455,7 @@ private struct OptimizerTab: View {
     @Binding var warmupText: String
     @Binding var momentumText: String
     @Binding var sqrtBatchScalingValue: Bool
+    @Binding var signedAdvantageComplementCEValue: Bool
     @Binding var entropyText: String
     @Binding var illegalMassWeightText: String
     @Binding var gradClipText: String
@@ -533,6 +535,13 @@ private struct OptimizerTab: View {
                         Text("")
                             .frame(width: 160, alignment: .trailing)
                         Toggle("Batch scaling", isOn: $sqrtBatchScalingValue)
+                            .toggleStyle(.checkbox)
+                        Spacer()
+                    }
+                    HStack(spacing: 8) {
+                        Text("")
+                            .frame(width: 160, alignment: .trailing)
+                        Toggle("Complement CE (negative-A)", isOn: $signedAdvantageComplementCEValue)
                             .toggleStyle(.checkbox)
                         Spacer()
                     }

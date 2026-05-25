@@ -704,6 +704,7 @@ final class SessionController {
             trainer.policyLabelSmoothingEpsilon = Float(params.policyLabelSmoothingEpsilon)
             trainer.valueLabelSmoothingEpsilon = Float(params.valueLabelSmoothingEpsilon)
             trainer.momentumCoeff = Float(params.momentumCoeff)
+            trainer.useSignedAdvantageComplementCE = params.signedAdvantageComplementCE
             trainer.sqrtBatchScalingForLR = params.sqrtBatchScalingLR
             trainer.lrWarmupSteps = params.lrWarmupSteps
             trainer.batchStatsInterval = params.batchStatsInterval
@@ -722,6 +723,7 @@ final class SessionController {
                 policyLabelSmoothingEpsilon: Float(params.policyLabelSmoothingEpsilon),
                 valueLabelSmoothingEpsilon: Float(params.valueLabelSmoothingEpsilon),
                 momentumCoeff: Float(params.momentumCoeff),
+                useSignedAdvantageComplementCE: params.signedAdvantageComplementCE,
                 sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
                 lrWarmupSteps: params.lrWarmupSteps
             )

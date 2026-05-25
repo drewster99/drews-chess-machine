@@ -45,6 +45,7 @@ final class TrainingSettingsPopoverModel {
     var warmupText = "" { didSet { warmupError = false } }
     var momentumText = "" { didSet { momentumError = false } }
     var sqrtBatchScalingValue = true
+    var signedAdvantageComplementCEValue = true
     var entropyText = "" { didSet { entropyError = false } }
     var illegalMassWeightText = "" { didSet { illegalMassWeightError = false } }
     var gradClipText = "" { didSet { gradClipError = false } }
@@ -171,6 +172,7 @@ final class TrainingSettingsPopoverModel {
         warmupText = String(p.lrWarmupSteps)
         momentumText = String(format: "%.3f", p.momentumCoeff)
         sqrtBatchScalingValue = p.sqrtBatchScalingLR
+        signedAdvantageComplementCEValue = p.signedAdvantageComplementCE
         entropyText = String(format: "%.2e", p.entropyBonus)
         illegalMassWeightText = String(format: "%.2f", p.illegalMassWeight)
         gradClipText = String(format: "%.1f", p.gradClipMaxNorm)
@@ -484,6 +486,14 @@ final class TrainingSettingsPopoverModel {
                 "[PARAM] sqrtBatchScalingLR: \(p.sqrtBatchScalingLR) -> \(sqrtBatchScalingValue)"
             )
             p.sqrtBatchScalingLR = sqrtBatchScalingValue
+        }
+
+        // Signed-advantage complement-CE toggle — Bool.
+        if signedAdvantageComplementCEValue != p.signedAdvantageComplementCE {
+            SessionLogger.shared.log(
+                "[PARAM] signedAdvantageComplementCE: \(p.signedAdvantageComplementCE) -> \(signedAdvantageComplementCEValue)"
+            )
+            p.signedAdvantageComplementCE = signedAdvantageComplementCEValue
         }
 
         // Entropy regularization — Double in [0, 0.1].

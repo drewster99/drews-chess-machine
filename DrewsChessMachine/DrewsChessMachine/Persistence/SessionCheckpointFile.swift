@@ -222,6 +222,15 @@ struct SessionCheckpointState: Codable, Equatable {
     // overrides @AppStorage so reload is fully reproducible.
     var lrWarmupSteps: Int?
     var sqrtBatchScalingForLR: Bool?
+    /// Whether the signed-advantage complement-CE branch was active at
+    /// save time. When true, negative-advantage samples drive the
+    /// policy via a complementary CE against a mirror-smoothed target
+    /// (mass on the OTHER legal moves) instead of contributing zero
+    /// gradient (the legacy clamp-on regime). Optional for back-compat
+    /// with session files written before the toggle landed; absent →
+    /// loader falls through to the user's current
+    /// `TrainingParameters.shared.signedAdvantageComplementCE`.
+    var signedAdvantageComplementCE: Bool?
     var replayBufferMinPositionsBeforeTraining: Int?
     var arenaAutoIntervalSec: Double?
     var candidateProbeIntervalSec: Double?

@@ -9,6 +9,25 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-05-24 18:30 CDT — Complementary CE on the negative-advantage policy branch
+
+`ChessTrainer.buildTrainingOps` now drives the policy gradient by a **signed-advantage split** with a complementary cross-entropy on the negative branch:
+
+```
+weightedCE = max(0,  advNorm) · CE(smoothedTarget,    p)
+           + max(0, −advNorm) · CE(complementTarget,  p) · complementEnable
+```
+
+The new `complementTarget` mirrors the existing smoothed target with `(1 − ε)` of the mass on **the other legal moves** (`uniform_over_other_legals = (legalMask − oneHot) / max(1, |legal| − 1)`) and the same `ε · uniform_over_legal` smoothing share. Both terms are non-negative by construction so the total policy loss is bounded below by zero on **both** signs of advantage; equilibria are reachable on both sides — positive branch attracts `p(played) → 1 − ε + ε/|legal|`, negative branch attracts `p(played) → ε/|legal|`. Same raw-logits softmax base on both branches, so the `illegalMassPenalty` pressure stays in effect for both.
+
+New live-tunable parameter `signed_advantage_complement_ce: Bool` (default `true`, Optimizer category) controls the runtime `complementEnable` scalar. Set false to revert to the legacy `max(0, advNorm) · positiveCE` clamp-on regime (only wins/positive-advantage samples teach), bit-exact. Persisted alongside the other optimizer parameters in `.dcmsession`; a `[RESUME-PARAM] signed_advantage_complement_ce: …` line is logged on both the "from session" and the "saved=nil (defaulted)" branches. `[STATS]` `reg=(…)` now reports `complCE=on/off`.
+
+The earlier (commented-out) `max(0, advNorm)` clamp at the old line 2177 is gone, along with the 24-line stale comment block that described it as the canonical structural fix. The "structural piece 2" intro comment and the `policyLabelSmoothingEpsilon` docstring were rewritten to describe the signed-split formulation as the current bounded-below mechanism.
+
+Motivation: the May 24 tactical probe ([TACTICAL] log) showed the 2B-trained champion *actively suppressing* free captures and pawn promotions on out-of-distribution positions — a fresh-init network ranks `Bxc6` at #2 and at least promotes the pawn (just to a rook), while the 2B-trained network ranks `Bxc6` at 11/13 and prefers a king sidestep over promoting at all. The "wins teach, losses contribute zero" regime amplifies whatever directions the win subset happens to favor (long maneuvering ending in eventual blunder) without any counter-pressure from "missing tactical wins is also bad." Complement-CE lets the (currently 11%/side) decisive losses contribute a real, bounded-below policy gradient.
+
+---
+
 ## 2026-05-22 11:51 CDT — Arena surface window enlarged + axis labels reoriented along their axes (48511e8)
 
 The 3D arena-surface sheet (`ArenaSurfaceView`) is enlarged 50% — frame `820×620 → 1230×930` ideal, `640×480 → 960×720` minimum. Its three `SCNText` axis labels were all built upright in the same plane, so "Ply →" and "Arena →" ran parallel along world X. The two ground-axis labels are now laid flat on the XZ plane, each running along its own axis: **Ply** is pitched −90° about X (glyphs along world +X); **Arena** is pitched flat, then nested in a holder yawed +90° about Y so its glyphs run along world Z. Because the holder yaw lands the glyphs on −Z, the Arena string leads with "←" so its arrow still points oldest→newest (+Z). The metric label stays upright above the Y axis. Verified visually after a rebuild — both ground labels read upright from the default 3/4 camera; nearest-to-viewer is the most recent arena.

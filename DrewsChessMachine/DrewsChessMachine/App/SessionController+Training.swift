@@ -332,6 +332,18 @@ extension SessionController {
                         "[RESUME-PARAM] sqrt_batch_scaling_lr: saved=nil applied=\(TrainingParameters.shared.sqrtBatchScalingLR) (defaulted)"
                     )
                 }
+                if let savedComplCE = rs.signedAdvantageComplementCE {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] signed_advantage_complement_ce: \(TrainingParameters.shared.signedAdvantageComplementCE) -> \(savedComplCE) (from session)"
+                    )
+                    trainer.useSignedAdvantageComplementCE = savedComplCE
+                    TrainingParameters.shared.signedAdvantageComplementCE = savedComplCE
+                } else {
+                    trainer.useSignedAdvantageComplementCE = TrainingParameters.shared.signedAdvantageComplementCE
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] signed_advantage_complement_ce: saved=nil applied=\(TrainingParameters.shared.signedAdvantageComplementCE) (defaulted)"
+                    )
+                }
                 if let savedWarmup = rs.lrWarmupSteps, savedWarmup >= 0 {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] lr_warmup_steps: \(TrainingParameters.shared.lrWarmupSteps) -> \(savedWarmup) (from session)"
@@ -442,6 +454,7 @@ extension SessionController {
                 trainer.policyLossWeight = Float(TrainingParameters.shared.policyLossWeight)
                 trainer.valueLossWeight = Float(TrainingParameters.shared.valueLossWeight)
                 trainer.momentumCoeff = Float(TrainingParameters.shared.momentumCoeff)
+                trainer.useSignedAdvantageComplementCE = TrainingParameters.shared.signedAdvantageComplementCE
                 trainer.sqrtBatchScalingForLR = TrainingParameters.shared.sqrtBatchScalingLR
                 trainer.lrWarmupSteps = TrainingParameters.shared.lrWarmupSteps
             }
@@ -1386,7 +1399,7 @@ extension SessionController {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, complementCEOn) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -1406,7 +1419,8 @@ extension SessionController {
                                 TrainingParameters.shared.arenaPromoteThreshold,
                                 TrainingParameters.shared.arenaGamesPerTournament,
                                 TrainingParameters.shared.selfPlayDrawKeepFraction,
-                                TrainingParameters.shared.selfPlayMaxPliesPerGame
+                                TrainingParameters.shared.selfPlayMaxPliesPerGame,
+                                trainer.useSignedAdvantageComplementCE
                             )
                         }
                         let policyStr: String
@@ -1532,7 +1546,7 @@ extension SessionController {
                                                 parallelSnap.threefoldRepetitionDraws, parallelSnap.insufficientMaterialDraws)
                         let cfgStr = "batch=\(sessionTrainingBatchSize) lr=\(lrStr) promote>=\(String(format: "%.2f", livePromoteThreshold)) arenaGames=\(liveTournamentGames) arenaAutoSec=\(Int(arenaAutoSec)) workers=\(workerN)"
                         let regStr = String(
-                            format: "clip=%.1f decay=%.0e ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f",
+                            format: "clip=%.1f decay=%.0e ent=%.1e illM=%.1e drawPen=%.3f pLossW=%.2f vLossW=%.2f μ=%.2f complCE=%@",
                             gradClip,
                             weightDec,
                             entropyCoeff,
@@ -1540,7 +1554,8 @@ extension SessionController {
                             drawPen,
                             policyW,
                             valueW,
-                            momentum
+                            momentum,
+                            complementCEOn ? "on" : "off"
                         )
                         // Average game length: lifetime and rolling-
                         // window (`recentWindow`, currently 1 minute).

@@ -275,6 +275,15 @@ public enum MomentumCoeff: TrainingParameterKey {}
 public enum SqrtBatchScalingLR: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Signed-Advantage Complement CE",
+    description: "When true, the policy gradient drives both positive-advantage (standard smoothed CE on the played move) and negative-advantage (complementary smoothed CE that pushes mass toward the OTHER legal moves) samples — each contribution bounded below by zero, so the total policy loss stays bounded below by zero on both signs and decisive losses train as actively as decisive wins. When false, only positive-advantage samples teach the policy (legacy clamp-on regime) and negative samples contribute zero gradient.",
+    default: true,
+    category: "Optimizer",
+    liveTunable: true
+)
+public enum SignedAdvantageComplementCE: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "LR Warmup Steps",
     description: "Number of training steps over which the learning rate linearly ramps from zero to its target.",
     default: 500,
@@ -618,6 +627,7 @@ public extension TrainingParametersSnapshot {
     var learningRate: Double { value(for: LearningRate.self) }
     var momentumCoeff: Double { value(for: MomentumCoeff.self) }
     var sqrtBatchScalingLR: Bool { value(for: SqrtBatchScalingLR.self) }
+    var signedAdvantageComplementCE: Bool { value(for: SignedAdvantageComplementCE.self) }
     var lrWarmupSteps: Int { value(for: LRWarmupSteps.self) }
     var drawPenalty: Double { value(for: DrawPenalty.self) }
     var selfPlayStartTau: Double { value(for: SelfPlayStartTau.self) }
@@ -670,6 +680,7 @@ public final class TrainingParameters {
     public var learningRate: Double { didSet { Self.persist(LearningRate.self, value: learningRate) } }
     public var momentumCoeff: Double { didSet { Self.persist(MomentumCoeff.self, value: momentumCoeff) } }
     public var sqrtBatchScalingLR: Bool { didSet { Self.persist(SqrtBatchScalingLR.self, value: sqrtBatchScalingLR) } }
+    public var signedAdvantageComplementCE: Bool { didSet { Self.persist(SignedAdvantageComplementCE.self, value: signedAdvantageComplementCE) } }
     public var lrWarmupSteps: Int { didSet { Self.persist(LRWarmupSteps.self, value: lrWarmupSteps) } }
     public var drawPenalty: Double { didSet { Self.persist(DrawPenalty.self, value: drawPenalty) } }
     public var selfPlayStartTau: Double { didSet { Self.persist(SelfPlayStartTau.self, value: selfPlayStartTau) } }
@@ -715,6 +726,7 @@ public final class TrainingParameters {
         self.learningRate = Self.read(LearningRate.self)
         self.momentumCoeff = Self.read(MomentumCoeff.self)
         self.sqrtBatchScalingLR = Self.read(SqrtBatchScalingLR.self)
+        self.signedAdvantageComplementCE = Self.read(SignedAdvantageComplementCE.self)
         self.lrWarmupSteps = Self.read(LRWarmupSteps.self)
         self.drawPenalty = Self.read(DrawPenalty.self)
         self.selfPlayStartTau = Self.read(SelfPlayStartTau.self)
@@ -766,6 +778,7 @@ public final class TrainingParameters {
         v[LearningRate.id] = LearningRate.encode(learningRate)
         v[MomentumCoeff.id] = MomentumCoeff.encode(momentumCoeff)
         v[SqrtBatchScalingLR.id] = SqrtBatchScalingLR.encode(sqrtBatchScalingLR)
+        v[SignedAdvantageComplementCE.id] = SignedAdvantageComplementCE.encode(signedAdvantageComplementCE)
         v[LRWarmupSteps.id] = LRWarmupSteps.encode(lrWarmupSteps)
         v[DrawPenalty.id] = DrawPenalty.encode(drawPenalty)
         v[SelfPlayStartTau.id] = SelfPlayStartTau.encode(selfPlayStartTau)
@@ -834,6 +847,8 @@ public final class TrainingParameters {
             try MomentumCoeff.definition.validate(raw); momentumCoeff = try MomentumCoeff.decode(raw)
         case SqrtBatchScalingLR.id:
             try SqrtBatchScalingLR.definition.validate(raw); sqrtBatchScalingLR = try SqrtBatchScalingLR.decode(raw)
+        case SignedAdvantageComplementCE.id:
+            try SignedAdvantageComplementCE.definition.validate(raw); signedAdvantageComplementCE = try SignedAdvantageComplementCE.decode(raw)
         case LRWarmupSteps.id:
             try LRWarmupSteps.definition.validate(raw); lrWarmupSteps = try LRWarmupSteps.decode(raw)
         case DrawPenalty.id:
@@ -975,6 +990,7 @@ public final class TrainingParameters {
         LearningRate.self,
         MomentumCoeff.self,
         SqrtBatchScalingLR.self,
+        SignedAdvantageComplementCE.self,
         LRWarmupSteps.self,
         DrawPenalty.self,
         SelfPlayStartTau.self,
