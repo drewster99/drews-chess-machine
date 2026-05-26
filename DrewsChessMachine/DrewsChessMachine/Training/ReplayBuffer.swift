@@ -342,8 +342,14 @@ final class ReplayBuffer: @unchecked Sendable {
         /// No-op for any value ≥ the batch size.
         public var maxPerGame: Int
         /// Ceiling on the % of sampled positions from drawn games
-        /// (`outcome == 0`). `100` ⇒ no cap; a buffer with fewer drawn
-        /// positions than the cap allows just yields fewer (no padding).
+        /// (`outcome == 0`). True ceiling, not a target:
+        /// - if the buffer's *natural* draw fraction (under the
+        ///   `maxPerGame` K cap) is **below** this value, the batch
+        ///   matches the natural rate — no draw-side padding.
+        /// - if the natural rate is **above** this value, the batch
+        ///   is downsampled to this percentage.
+        /// `100` ⇒ no cap; batch tracks the natural rate exactly
+        /// (subject to the other constraints).
         public var maxDrawPercent: Int
         /// Target position-weighted mean game length (plies) of the
         /// sampled batch, enforced by an exponential down-weight on long
@@ -1004,18 +1010,54 @@ final class ReplayBuffer: @unchecked Sendable {
             let (drawProduct, drawOverflow) = cap.multipliedReportingOverflow(by: residentDrawGameCount)
             let drawReachable = drawOverflow ? drawCount : min(drawCount, drawProduct)
 
-            // Stratum sizes. `maxDrawPercent` is a ceiling — if the buffer
-            // holds fewer reachable drawn positions than it allows, just
-            // take fewer (the slack goes to decisive). Conversely, if the
-            // reachable decisive pool is short, the slack flows back to
-            // draws (the cap under-shoots).
+            // Stratum sizes. `maxDrawPercent` is a true CEILING (not a
+            // fill-to-target): the requested draw count is
+            // `min(pct% · sampleCount, natural% · sampleCount)`, where
+            // "natural %" is the draw fraction we'd see under uniform-
+            // with-K-cap sampling (drawReachable / (drawReachable +
+            // decisiveReachable)). Three cases:
+            //   * natural < cap → take natural (cap doesn't bind)
+            //   * natural > cap → take cap (cap downsamples draws)
+            //   * pct >= 100 → take natural (no cap at all)
+            // The historical implementation was a fill-to-target
+            // (always emit pct% draws even when the buffer was
+            // naturally below the cap), which made it impossible to
+            // ever sample at the buffer's natural composition without
+            // also relaxing the per-game K cap. Confirmed broken via
+            // [BATCH-STATS] showing batch D=50.0% on a buffer with
+            // D=58.9% — the cap was binding correctly there, but on
+            // the symmetric case (buffer below cap) it was inflating.
             //
-            // `requestedDrawCount` is the pre-clamp value (what the cap
-            // would have produced if both strata had unlimited reachable
-            // positions); the trainer compares it against `bDraw` after
-            // clamping to decide whether to emit a `[SAMPLER]` line.
+            // If the decisive pool is short of (sampleCount - bDraw),
+            // the slack still flows back to draws so the batch fills
+            // (existing behavior). In that case `achievedDrawCount`
+            // exceeds `requestedDrawCount` and the trainer surfaces a
+            // `[SAMPLER]` line via `wasDegraded` — the cap got
+            // exceeded because the alternative was an underfilled
+            // batch.
+            //
+            // `requestedDrawCount` is the EFFECTIVE intent (post-min
+            // with natural). The trainer compares it against `bDraw`
+            // after clamping to decide whether to emit a `[SAMPLER]`
+            // line; under the new semantics a batch at the natural
+            // rate is NOT degraded even if the cap was set higher.
             let pct = min(max(constraints.maxDrawPercent, 0), 100)
-            let requestedDrawCount = Int((Double(pct) / 100.0 * Double(sampleCount)).rounded())
+            let reachableTotal = drawReachable + decisiveReachable
+            let naturalDrawCount: Int
+            if reachableTotal > 0 {
+                naturalDrawCount = Int(
+                    (Double(drawReachable) / Double(reachableTotal) * Double(sampleCount)).rounded()
+                )
+            } else {
+                naturalDrawCount = 0
+            }
+            let capAllowedDrawCount = Int((Double(pct) / 100.0 * Double(sampleCount)).rounded())
+            let requestedDrawCount: Int
+            if pct >= 100 {
+                requestedDrawCount = naturalDrawCount
+            } else {
+                requestedDrawCount = min(capAllowedDrawCount, naturalDrawCount)
+            }
             var bDraw = min(requestedDrawCount, drawReachable)
             var bDec = sampleCount - bDraw
             if bDec > decisiveReachable {

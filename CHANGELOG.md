@@ -9,6 +9,39 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-05-26 09:20 CDT — `maxDrawPercentPerBatch` becomes a true ceiling (was fill-to-target)
+
+`ReplayBuffer.sample(...)`'s draw-stratum computation changed from a fill-to-target to a true ceiling. Old code (`ReplayBuffer.swift` ~line 1018):
+
+```swift
+let requestedDrawCount = Int((Double(pct) / 100.0 * Double(sampleCount)).rounded())
+```
+
+— always asked for exactly `pct%` of the batch as draws, regardless of the buffer's natural composition. When the buffer naturally had **fewer** draws than the cap (e.g. 30%-draws buffer with `cap=50`), the sampler **padded** the batch up to 50% draws by oversampling from the draw pool. And `pct=100` did not give "natural composition" — it set `requestedDrawCount = sampleCount` (all draws) unless every *other* constraint was also at its no-op value (`isNoOp` fast path required `maxPerGame >= sampleCount && targetMeanGameLengthPlies <= 0` simultaneously). There was no parameter value that produced "let the batch follow the buffer's natural draw share under the K cap." Confirmed broken via [BATCH-STATS] showing batch `D=50.0%` on a buffer with `D=58.9%` — the cap was binding correctly *in that direction*, but the symmetric case (buffer below cap → batch inflated to cap) was undetected.
+
+New code computes the natural draw count under uniform-with-K-cap sampling and takes the min:
+
+```swift
+let reachableTotal = drawReachable + decisiveReachable
+let naturalDrawCount = reachableTotal > 0
+    ? Int((Double(drawReachable) / Double(reachableTotal) * Double(sampleCount)).rounded())
+    : 0
+let capAllowedDrawCount = Int((Double(pct) / 100.0 * Double(sampleCount)).rounded())
+let requestedDrawCount = pct >= 100
+    ? naturalDrawCount                              // pct=100 → no cap
+    : min(capAllowedDrawCount, naturalDrawCount)    // true ceiling
+```
+
+Three cases now: natural < cap → take natural (cap doesn't bind); natural > cap → take cap (cap downsamples draws); `pct=100` → take natural regardless of other constraints. The slack-absorb path when the decisive pool is short (cap-exceeded fallback so the batch still fills) is unchanged — and `wasDegraded` still fires there because the resulting batch genuinely deviated from intent.
+
+The `SamplingConstraints.maxDrawPercent` doc comment was rewritten to describe true-ceiling semantics. The existing `testSamplingResultReportsDrawStratumUndershoot` test (which expected the buffer to be padded up to the cap and flagged as "degraded undershoot") was the canary for the bug — replaced with `testDrawCapDoesNotBoostAboveNaturalRate` asserting that high cap on a low-draw buffer produces the natural rate, NOT padding, AND is *not* flagged degraded. Added `testDrawCapMatchesNaturalRateBelowCap` to pin the symmetric below-cap case directly.
+
+**Why now.** The value-head pD was observed stuck at 0.498 across three monitoring ticks despite the resident buffer drifting from D=0.10 → D=0.61 over the session. Investigation showed every training batch was exactly 50.0% draws (per `[BATCH-STATS] outcome_pct`), because the cap-at-50 was being interpreted as fill-to-50. The value head was perfectly converged to its training data — the bug was that the training data composition was decoupled from the buffer. With the fix in place, batches will track the buffer's natural composition unless the cap is genuinely binding, which is what the parameter name and doc always promised.
+
+Build green. Test suite not executed (DCM session is active — per project convention tests are deferred until the active session ends); test logic updated in `ReplayBufferSamplingConstraintsTests` to match the new semantics — the existing K-cap, draw-cap-binding-when-natural-exceeds, length-tilt, and slack-absorb-overshoot cases were not affected by the diff and should continue to work, and the two new tests above pin the previously-broken below-cap symmetry that's the whole point of this change.
+
+---
+
 ## 2026-05-24 18:30 CDT — Complementary CE on the negative-advantage policy branch
 
 `ChessTrainer.buildTrainingOps` now drives the policy gradient by a **signed-advantage split** with a complementary cross-entropy on the negative branch:

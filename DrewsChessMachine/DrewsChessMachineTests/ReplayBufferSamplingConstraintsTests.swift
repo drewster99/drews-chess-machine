@@ -336,13 +336,20 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         XCTAssertTrue(sr.wasDegraded)
     }
 
-    /// Buffer is mostly decisive. With a *high* draw cap of 90%, the
-    /// draw stratum gets requested ~460 positions but the buffer only
-    /// has ~80 drawn — `bDraw` clamps down, the decisive stratum eats
-    /// the slack. Achieved < requested. Still flagged as degraded so
-    /// the operator notices the buffer can't support the cap.
-    func testSamplingResultReportsDrawStratumUndershoot() {
+    /// Buffer is mostly decisive (natural draw share ≈ 9%). With a
+    /// *high* draw cap of 90%, the cap does NOT bind — the new TRUE-
+    /// CAP semantics use `min(cap%, natural%)` for the requested draw
+    /// stratum, so the batch tracks the natural rate (~9%) rather
+    /// than being padded up to 90%. `requestedDrawCount` reflects the
+    /// effective intent (post-min), `achievedDrawCount` matches it,
+    /// and `wasDegraded` is **false** because the batch is exactly
+    /// what an unconstrained sample would have produced (cap was a
+    /// non-binding ceiling). Replaces the old fill-to-target
+    /// "undershoot" test which expected the buffer to be padded up
+    /// to the cap and flagged as degraded — that was the bug.
+    func testDrawCapDoesNotBoostAboveNaturalRate() {
         // 2 drawn 40-ply + 20 decisive 40-ply ⇒ 80 draws, 800 decisive.
+        // Natural draw share = 80 / 880 ≈ 9.1%.
         let buf = makeMixedBuffer(capacity: 50_000, nDrawGames: 2, drawLen: 40, nDecGames: 20, decLen: 40)
         let batchSize = 512
         buf.setSamplingConstraints(constraints(maxDrawPercent: 90))
@@ -350,10 +357,46 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         XCTAssertTrue(b.ok)
         let sr = buf.lastSamplingResult()
         XCTAssertTrue(sr.wasConstrainedPath)
-        XCTAssertEqual(sr.requestedDrawCount, Int((0.90 * 512).rounded()))
-        XCTAssertLessThan(sr.achievedDrawCount, sr.requestedDrawCount,
-            "achieved=\(sr.achievedDrawCount) should undershoot requested=\(sr.requestedDrawCount)")
-        XCTAssertTrue(sr.wasDegraded)
+        // requestedDrawCount = min(90% × 512, natural × 512)
+        //                    = min(461, round(80/880 × 512))
+        //                    ≈ min(461, 47) = 47
+        let expectedNatural = Int((Double(80) / Double(880) * Double(batchSize)).rounded())
+        XCTAssertEqual(sr.requestedDrawCount, expectedNatural,
+            "cap=90% on a 9%-draws buffer must request the natural rate, not the cap rate")
+        XCTAssertEqual(sr.achievedDrawCount, expectedNatural,
+            "achieved must match requested when cap is non-binding (no clamp event)")
+        XCTAssertFalse(sr.wasDegraded,
+            "natural-rate sample under a non-binding cap is NOT a degradation event")
+    }
+
+    /// Buffer naturally has ~30% draws and cap=50. The cap is well
+    /// above the natural rate, so the requested + achieved draw
+    /// count should be ≈ the natural rate (30%), NOT inflated to
+    /// the cap (50%). This is the case that was silently broken
+    /// before the true-CAP fix: the old fill-to-target implementation
+    /// would have padded the batch up to 50% draws, ignoring the
+    /// buffer's natural composition.
+    func testDrawCapMatchesNaturalRateBelowCap() {
+        // 3 drawn 40-ply + 7 decisive 40-ply ⇒ 120 draws, 280 decisive.
+        // Natural draw share = 120 / 400 = 30%.
+        let buf = makeMixedBuffer(capacity: 10_000, nDrawGames: 3, drawLen: 40, nDecGames: 7, decLen: 40)
+        let batchSize = 256
+        buf.setSamplingConstraints(constraints(maxDrawPercent: 50))
+        let b = drawBatch(buf, count: batchSize)
+        XCTAssertTrue(b.ok)
+        let drawn = b.zs.filter { $0 == 0 }.count
+        // Achieved draws should be near 30% (natural), well below the
+        // 50% cap. Tolerance of ±5% accounts for sampling variance
+        // on a finite batch.
+        let achievedPct = Double(drawn) / Double(batchSize) * 100
+        XCTAssertLessThan(achievedPct, 40,
+            "achieved \(achievedPct)% should be near natural (30%), NOT inflated toward cap (50%)")
+        XCTAssertGreaterThan(achievedPct, 20,
+            "achieved \(achievedPct)% should be near natural (30%), not zero")
+        // And it should NOT report degradation.
+        let sr = buf.lastSamplingResult()
+        XCTAssertFalse(sr.wasDegraded,
+            "natural-rate sample under non-binding cap is NOT a degradation event")
     }
 
     /// Length target *above* the shortest resident game is feasible —
