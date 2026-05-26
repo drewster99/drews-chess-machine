@@ -319,6 +319,16 @@ final class ChessNetwork: @unchecked Sendable {
     private var batchValueScratchPtr: UnsafeMutablePointer<Float>?
     private var batchValueScratchCapacity: Int = 0
 
+    /// Readback scratch for the batched W/D/L softmax — `count * 3`
+    /// floats in slot order `[win, draw, loss]`, position-major. Same
+    /// re-entrancy contract as `batchPolicyScratchPtr`: the pointer
+    /// handed to the third arg of `consume` aliases this storage and
+    /// is valid only for the duration of that closure call. Consumed
+    /// by the self-play `DrawWatchTracker` (per-ply pDraw monitoring);
+    /// arena and tests pass a `_ in`-style closure and ignore it.
+    private var batchValueProbsScratchPtr: UnsafeMutablePointer<Float>?
+    private var batchValueProbsScratchCapacity: Int = 0
+
     // MARK: Metal
 
     let metalDevice: MTLDevice
@@ -519,7 +529,7 @@ final class ChessNetwork: @unchecked Sendable {
         // through `writeBytes` on the same underlying storage every
         // call.
         inferenceFeeds = [inputPlaceholder: inferenceInputTensorData]
-        inferenceTargets = [policyOutput, valueOutput]
+        inferenceTargets = [policyOutput, valueOutput, valueProbs]
 
         // Raw-pointer readback scratches for the policy logits and
         // value scalar. UnsafeMutablePointer avoids Swift array CoW so
@@ -549,6 +559,10 @@ final class ChessNetwork: @unchecked Sendable {
         }
         if let ptr = batchValueScratchPtr {
             ptr.deinitialize(count: batchValueScratchCapacity)
+            ptr.deallocate()
+        }
+        if let ptr = batchValueProbsScratchPtr {
+            ptr.deinitialize(count: batchValueProbsScratchCapacity)
             ptr.deallocate()
         }
     }
@@ -717,11 +731,20 @@ final class ChessNetwork: @unchecked Sendable {
     ///                  NCHW order, one position after another.
     ///   - count: number of positions in the batch; must be >= 1.
     ///   - consume: non-throwing closure invoked once with the policy
-    ///              and value buffers when evaluation succeeds.
+    ///              logits, the derived value scalars, and the per-
+    ///              position W/D/L softmax probabilities (`count * 3`
+    ///              floats, position-major, slot order
+    ///              `[win, draw, loss]`). Callers that don't need the
+    ///              W/D/L distribution can ignore the third argument
+    ///              (`{ policy, values, _ in ... }`).
     func evaluateBatched(
         batchBoards: [Float],
         count: Int,
-        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+        consume: @Sendable @escaping (
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>
+        ) -> Void
     ) async throws {
         try await enqueue {
             try self.internalEvaluate(batchBoards: batchBoards, count: count, consume: consume)
@@ -754,7 +777,11 @@ final class ChessNetwork: @unchecked Sendable {
         batchBoardsPointer: UnsafePointer<Float>,
         floatCount: Int,
         count: Int,
-        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+        consume: @Sendable @escaping (
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>
+        ) -> Void
     ) async throws {
         let source = BatchBoardSource(pointer: batchBoardsPointer, floatCount: floatCount)
         try await enqueue {
@@ -766,7 +793,11 @@ final class ChessNetwork: @unchecked Sendable {
     private func internalEvaluate(
         batchBoards: UnsafeBufferPointer<Float>,
         count: Int,
-        consume: (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+        consume: (
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>
+        ) -> Void
     ) throws {
         // Validation runs synchronously on `executionQueue` after the
         // [Float] has been pinned via `withUnsafeBufferPointer`. `count`
@@ -785,6 +816,7 @@ final class ChessNetwork: @unchecked Sendable {
         let entry = batchInputEntry(for: count)
         let policyPtr = ensureBatchPolicyScratch(count: count)
         let valuePtr = ensureBatchValueScratch(count: count)
+        let valueProbsPtr = ensureBatchValueProbsScratch(count: count)
 
         // Same autoreleasepool discipline as `evaluate(board:)` — the
         // self-play batched path is the highest-frequency graph.run
@@ -807,13 +839,18 @@ final class ChessNetwork: @unchecked Sendable {
             guard let valueData = results[valueOutput] else {
                 throw ChessNetworkError.outputMissing("value")
             }
+            guard let valueProbsData = results[valueProbs] else {
+                throw ChessNetworkError.outputMissing("valueProbs")
+            }
 
             Self.readFloats(from: policyData, into: policyPtr, count: count * Self.policySize)
             Self.readFloats(from: valueData, into: valuePtr, count: count)
+            Self.readFloats(from: valueProbsData, into: valueProbsPtr, count: count * Self.valueHeadClasses)
 
             consume(
                 UnsafeBufferPointer(start: policyPtr, count: count * Self.policySize),
-                UnsafeBufferPointer(start: valuePtr, count: count)
+                UnsafeBufferPointer(start: valuePtr, count: count),
+                UnsafeBufferPointer(start: valueProbsPtr, count: count * Self.valueHeadClasses)
             )
         }
     }
@@ -821,7 +858,11 @@ final class ChessNetwork: @unchecked Sendable {
     private func internalEvaluate(
         batchBoards: [Float],
         count: Int,
-        consume: (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+        consume: (
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>
+        ) -> Void
     ) throws {
         try batchBoards.withUnsafeBufferPointer { buf in
             try internalEvaluate(batchBoards: buf, count: count, consume: consume)
@@ -873,6 +914,22 @@ final class ChessNetwork: @unchecked Sendable {
         ptr.initialize(repeating: 0, count: count)
         batchValueScratchPtr = ptr
         batchValueScratchCapacity = count
+        return ptr
+    }
+
+    private func ensureBatchValueProbsScratch(count: Int) -> UnsafeMutablePointer<Float> {
+        let needed = count * Self.valueHeadClasses
+        if let ptr = batchValueProbsScratchPtr, batchValueProbsScratchCapacity >= needed {
+            return ptr
+        }
+        if let old = batchValueProbsScratchPtr {
+            old.deinitialize(count: batchValueProbsScratchCapacity)
+            old.deallocate()
+        }
+        let ptr = UnsafeMutablePointer<Float>.allocate(capacity: needed)
+        ptr.initialize(repeating: 0, count: needed)
+        batchValueProbsScratchPtr = ptr
+        batchValueProbsScratchCapacity = needed
         return ptr
     }
 

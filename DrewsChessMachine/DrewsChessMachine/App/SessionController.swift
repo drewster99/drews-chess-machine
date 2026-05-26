@@ -125,6 +125,18 @@ final class SessionController {
     /// Play-and-Train session.
     var selfPlayDiversityTracker: GameDiversityTracker?
 
+    /// Stealth-mode `pDraw` monitor for self-play games. Fed by the
+    /// batched self-play driver inline on every per-ply forward pass;
+    /// snapshot polled by the heartbeat for the chart tile. `nil`
+    /// outside a Play-and-Train session. See `Training/DrawWatchTracker.swift`
+    /// and `DRAW_WATCH_PLAN.md`.
+    var drawWatchTracker: DrawWatchTracker?
+
+    /// Latest `DrawWatchSnapshot` mirrored off the tracker by the
+    /// heartbeat, for the chart tile and the periodic `[DRAW-WATCH]
+    /// summary` log line. Nil between sessions.
+    var drawWatchSnapshot: DrawWatchSnapshot?
+
     // MARK: - Arena coordination boxes (Stage 4b)
 
     /// Cancellation-aware flag set while an arena tournament is in flight. The

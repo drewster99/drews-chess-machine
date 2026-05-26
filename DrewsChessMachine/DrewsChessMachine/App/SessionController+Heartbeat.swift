@@ -315,6 +315,24 @@ extension SessionController {
             }
         }
         elap("after 11 (awaited + light work)")
+
+        // Draw-watch snapshot mirror. Off-main `asyncSnapshot()` hops
+        // via DispatchQueue so the main actor doesn't wait on the
+        // tracker's lock when a worker holds it. Dirty-checked on the
+        // observed-games counter (the cheapest scalar that increments
+        // on every game completion) so SwiftUI doesn't invalidate the
+        // chart tile every tick for an idle session.
+        if let tracker = drawWatchTracker {
+            let snap = await tracker.asyncSnapshot()
+            let priorGames = drawWatchSnapshot?.totalGamesObserved ?? -1
+            let priorFlags = drawWatchSnapshot?.flags.count ?? -1
+            if snap.totalGamesObserved != priorGames || snap.flags.count != priorFlags {
+                drawWatchSnapshot = snap
+                chartCoordinator?.setDrawWatchSnapshot(snap)
+            }
+        }
+        elap("after 11b (draw-watch mirror)")
+
         // I don't THINK this does anything that's not quick
         refreshChartZoomTick()
         elap("after 12 (did refreshChartZoomTick())")

@@ -621,6 +621,14 @@ extension SessionController {
             selfPlayDiversityTracker = spDiversityTracker
             chartCoordinator?.setDiversityHistogramBars([])
         }
+        let drawWatch: DrawWatchTracker
+        if continueMode, let existing = drawWatchTracker {
+            drawWatch = existing
+        } else {
+            drawWatch = DrawWatchTracker()
+            drawWatchTracker = drawWatch
+            drawWatchSnapshot = nil
+        }
         if !continueMode {
             // Fresh session — wipe every chart-layer field back to a
             // zero state so the new session's chart starts at t=0
@@ -1121,7 +1129,8 @@ extension SessionController {
                 pauseGate: selfPlayGate,
                 gameWatcher: gameWatcher,
                 scheduleBox: scheduleBox,
-                replayRatioController: ratioController
+                replayRatioController: ratioController,
+                drawWatchTracker: drawWatch
             )
 
             // Pin the probe inference network into a local the child
@@ -1346,7 +1355,7 @@ extension SessionController {
                 // classes whose var mutation is otherwise main-actor-
                 // driven.
                 group.addTask(priority: .utility) {
-                    [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox, scheduleBox, recorder,
+                    [trainer, network, box, pStatsBox, buffer, spDiversityTracker, ratioController, countBox, scheduleBox, recorder, drawWatch,
                      sessionTrainingBatchSize, sessionTournamentGames, sessionPromoteThreshold, probeInferenceForProbes] in
                     let sessionStart = Date()
                     // Bootstrap-phase step threshold for the per-step
@@ -1753,6 +1762,21 @@ extension SessionController {
 
                         let line = "[STATS] elapsed=\(elapsedStr) steps=\(trainingSnap.stats.steps) spGames=\(parallelSnap.selfPlayGames) spMoves=\(parallelSnap.selfPlayPositions) spGamesEm=\(parallelSnap.emittedGames) spMovesEm=\(parallelSnap.emittedPositions) \(gameLenStr) buffer=\(bufCount)/\(bufCap) pLoss=\(policyStr) pLossWin=\(pLossWinStr) pLossLoss=\(pLossLossStr) vLoss=\(valueStr) pEnt=\(entropyStr) pIllM=\(illegalPenaltyStr) gNorm=\(gradNormStr) vNorm=\(vNormStr) μ=\(muStr) pwNorm=\(pwNormStr) pLogitAbsMax=\(pLogitMaxStr) playedMoveProb=\(playedProbStr) playedMoveProbPosAdv=\(playedProbPosStr) playedMoveProbNegAdv=\(playedProbNegStr) legalMass=\(legalMassStr) top1Legal=\(top1LegalStr) pEntLegal=\(pEntLegalStr) vMean=\(vMeanStr) vAbs=\(vAbsStr) pW=\(pWStr) pD=\(pDStr) pL=\(pLStr) adv=(\(advStr)) sp.tau=\(spTau) ar.tau=\(arTau) diversity=\(divStr) ratio=(\(ratioStr)) outcomes=(\(outcomeStr)) bufUniq=\(bufUniqStr) comp=(\(compStr)) \(cfgStr) reg=(\(regStr)) timing=(\(timingStr)) mem=(\(memStr)) vm=(\(vmStr)) shapes=(\(shapesStr)) build=\(BuildInfo.buildNumber) trainer=\(trainerID) champion=\(championID)"
                         SessionLogger.shared.log(line)
+
+                        // [DRAW-WATCH] summary — piggyback on the same
+                        // periodic cadence. Cheap snapshot read; no-op
+                        // formatting for empty counters so the line is
+                        // legible from the first emit on. "--" for the
+                        // precision metric until the first non-cap
+                        // flagged game completes (the metric is
+                        // mathematically undefined before then).
+                        let drawSnap = drawWatch.snapshot()
+                        let dwPctG = drawSnap.fractionOfGamesFlagged.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
+                        let dwPctP = drawSnap.fractionOfPliesInFlaggedStreaks.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
+                        let dwAcc = drawSnap.flagDrawAccuracy.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
+                        SessionLogger.shared.log(
+                            "[DRAW-WATCH] summary flags=\(drawSnap.flags.count) games=\(dwPctG) plies=\(dwPctP) →draw=\(dwAcc)"
+                        )
 
                         // CLI `--output` capture: one StatsLine per
                         // `[STATS]` log emit. All values come from the

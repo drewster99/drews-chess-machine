@@ -237,12 +237,20 @@ final class ChessMPSNetwork: @unchecked Sendable {
     ///   - batchBoards: `count * BoardEncoder.tensorLength` floats,
     ///                  NCHW order, positions laid out back-to-back.
     ///   - count: batch size; must be >= 1.
-    ///   - consume: receives `policy` (`count * policySize` logits, position-major)
-    ///              and `values` (`count` scalars in [-1, +1]).
+    ///   - consume: receives `policy` (`count * policySize` logits,
+    ///              position-major), `values` (`count` scalars in
+    ///              [-1, +1]), and `wdlProbs` (`count * 3` softmax
+    ///              probabilities, position-major, slot order
+    ///              `[win, draw, loss]`). Callers that don't need
+    ///              `wdlProbs` ignore it via `{ _, _, _ in ... }`.
     func evaluateBatched(
         batchBoards: [Float],
         count: Int,
-        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+        consume: @Sendable @escaping (
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>
+        ) -> Void
     ) async throws {
         try await network.evaluateBatched(batchBoards: batchBoards, count: count, consume: consume)
     }
@@ -259,7 +267,11 @@ final class ChessMPSNetwork: @unchecked Sendable {
         batchBoardsPointer: UnsafePointer<Float>,
         floatCount: Int,
         count: Int,
-        consume: @Sendable @escaping (UnsafeBufferPointer<Float>, UnsafeBufferPointer<Float>) -> Void
+        consume: @Sendable @escaping (
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>,
+            UnsafeBufferPointer<Float>
+        ) -> Void
     ) async throws {
         try await network.evaluateBatched(
             batchBoardsPointer: batchBoardsPointer,

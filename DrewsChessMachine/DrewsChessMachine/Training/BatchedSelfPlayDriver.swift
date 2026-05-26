@@ -93,6 +93,12 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     let gameWatcher: GameWatcher?
     let scheduleBox: SamplingScheduleBox
     let replayRatioController: ReplayRatioController?
+    /// Stealth-mode per-game `pDraw` monitor. Optional so a session
+    /// can be wired without one (the no-monitor path is a cheap nil
+    /// check per ply inside the consume closure). Set by
+    /// `SessionController` at session start. See
+    /// `Training/DrawWatchTracker.swift` + `DRAW_WATCH_PLAN.md`.
+    let drawWatchTracker: DrawWatchTracker?
 
     // MARK: - Private state (driver-task-owned, no lock needed)
 
@@ -138,7 +144,8 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         pauseGate: WorkerPauseGate,
         gameWatcher: GameWatcher?,
         scheduleBox: SamplingScheduleBox,
-        replayRatioController: ReplayRatioController? = nil
+        replayRatioController: ReplayRatioController? = nil,
+        drawWatchTracker: DrawWatchTracker? = nil
     ) {
         self.network = network
         self.buffer = buffer
@@ -149,6 +156,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         self.gameWatcher = gameWatcher
         self.scheduleBox = scheduleBox
         self.replayRatioController = replayRatioController
+        self.drawWatchTracker = drawWatchTracker
     }
 
     deinit {
@@ -309,21 +317,88 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         //     so they can cross into the `@Sendable` consume closure
         //     without the compiler refusing to capture
         //     `UnsafeMutablePointer<Float>` directly.
+        //
+        //     The third closure argument carries the W/D/L softmax
+        //     (`K * 3` floats, slot order `[win, draw, loss]`). The
+        //     draw-watch monitor reads `pDraw = wdl[i*3 + 1]` for each
+        //     slot inline here, updates the per-game streak counter on
+        //     the slot's `ActiveGame`, and (if the streak just hit
+        //     `flagStreakLength`) submits a flag to the session-wide
+        //     `DrawWatchTracker`. The tracker is the only thing the
+        //     closure touches besides the per-slot games — single
+        //     ownership of each slot keeps the per-game state
+        //     race-free.
         let floatCount = K * boardFloats
         let policyTarget = MutablePointerCarrier(pointer: policyOut)
         let valueTarget = MutablePointerCarrier(pointer: valueOut)
         let policySize = ChessNetwork.policySize
+        let tracker = drawWatchTracker
+        let gamesSnapshot = games
         do {
             try await network.evaluateBatched(
                 batchBoardsPointer: UnsafePointer(scratch),
                 floatCount: floatCount,
                 count: K
-            ) { policyBuf, valueBuf in
+            ) { policyBuf, valueBuf, wdlBuf in
                 guard let pBase = policyBuf.baseAddress, let vBase = valueBuf.baseAddress else {
                     return
                 }
                 policyTarget.pointer.update(from: pBase, count: K * policySize)
                 valueTarget.pointer.update(from: vBase, count: K)
+
+                // Inline draw-watch streak update. Per-slot — game `i`'s
+                // pDraw is wdlBuf[i*3 + 1]. Each slot's `ActiveGame` is
+                // touched by exactly this thread for the duration of
+                // consume, so no aliasing across slots; per-slot
+                // mutation is single-task-owned.
+                guard let tracker, let wdlBase = wdlBuf.baseAddress else { return }
+                let threshold = DrawWatchTracker.flagThresholdPDraw
+                let triggerLen = DrawWatchTracker.flagStreakLength
+                for i in 0..<K {
+                    let game = gamesSnapshot[i]
+                    // Skip games already in a terminal state — those
+                    // get cleaned up in the game-end pass after this
+                    // tick. Their pDraw read would describe a
+                    // terminal position that won't be played from.
+                    if game.engine.result != nil { continue }
+                    let pDraw = wdlBase[i * 3 + 1]
+                    if pDraw >= threshold {
+                        let newStreak = game.drawWatchConsecutivePliesAboveThreshold &+ 1
+                        game.drawWatchConsecutivePliesAboveThreshold = newStreak
+                        if Int(newStreak) == triggerLen && !game.drawWatchFiredThisStreak {
+                            game.drawWatchFiredThisStreak = true
+                            game.drawWatchEverFiredThisGame = true
+                            // The ply currently under consideration is
+                            // the 0-indexed total-plies count BEFORE
+                            // this move is recorded — same convention
+                            // as the per-game-total ply attached to
+                            // recordPly below.
+                            let plyIdx = UInt16(min(game.totalPliesPlayed, Int(UInt16.max)))
+                            let streakStart = plyIdx &- UInt16(triggerLen - 1)
+                            tracker.recordFlag(DrawWatchFlag(
+                                workerId: game.workerId,
+                                intraWorkerGameIndex: game.intraWorkerGameIndex,
+                                plyIndex: plyIdx,
+                                streakStartPly: streakStart,
+                                pDrawAtFire: pDraw,
+                                timestamp: Date()
+                            ))
+                            SessionLogger.shared.log(String(
+                                format: "[DRAW-WATCH] flag worker=%d game=%d ply=%d streakStart=%d pDraw=%.3f",
+                                game.workerId, game.intraWorkerGameIndex,
+                                plyIdx, streakStart, pDraw
+                            ))
+                        }
+                    } else if game.drawWatchConsecutivePliesAboveThreshold > 0 {
+                        // Streak breaks. Tell the tracker the final
+                        // length (only matters when it was at or above
+                        // the trigger length — the tracker filters).
+                        let finalLen = Int(game.drawWatchConsecutivePliesAboveThreshold)
+                        tracker.recordStreakEnded(streakLength: finalLen)
+                        game.drawWatchConsecutivePliesAboveThreshold = 0
+                        game.drawWatchFiredThisStreak = false
+                    }
+                }
             }
         } catch {
             SessionLogger.shared.log("[SP-TICK] network error: \(error); skipping tick")
@@ -512,6 +587,19 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             let gameDurationMs = (CFAbsoluteTimeGetCurrent() - g.gameStartedAt) * 1000
             let positions = g.totalPliesPlayed
 
+            // Draw-watch: tell the tracker about any streak that's
+            // still active at game-end (sub-threshold streaks are
+            // filtered inside `recordStreakEnded`), then submit the
+            // per-game completion observation. The `wasCapTerminated`
+            // flag drives the per-plan exclusion of cap-terminated
+            // games from the flag-precision metric — see
+            // `DRAW_WATCH_PLAN.md` locked decision #5.
+            if let tracker = drawWatchTracker {
+                if g.drawWatchConsecutivePliesAboveThreshold > 0 {
+                    tracker.recordStreakEnded(streakLength: Int(g.drawWatchConsecutivePliesAboveThreshold))
+                }
+            }
+
             if let result = natural {
                 statsBox.recordCompletedGame(
                     moves: positions, durationMs: gameDurationMs, result: result
@@ -556,6 +644,25 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // If !kept: skip flush. The next resetForNewGame zeroes
                 // the per-side fill counters and the recorded scratch
                 // is dropped on the floor (matches legacy behavior).
+
+                // Draw-watch game-completion submission. Outcome
+                // encoding matches `ReplayBuffer.append`'s convention
+                // (`|x| < 0.5` ⇒ draw): we report `0.0` for draws and
+                // `1.0` for decisive results — the tracker only cares
+                // about draw-vs-not, not white-vs-black.
+                drawWatchTracker?.recordGameCompleted(
+                    plyCount: positions,
+                    wasFlagged: g.drawWatchEverFiredThisGame,
+                    wasCapTerminated: false,
+                    outcome: isDraw ? 0.0 : 1.0
+                )
+                if g.drawWatchEverFiredThisGame {
+                    let outcomeLabel = isDraw ? "draw" : "decisive"
+                    SessionLogger.shared.log(String(
+                        format: "[DRAW-WATCH] outcome worker=%d game=%d plies=%d outcome=%@",
+                        g.workerId, g.intraWorkerGameIndex, positions, outcomeLabel
+                    ))
+                }
             } else {
                 // max-plies dropped: stats, diversity, length feed, but
                 // no flush and no emitted-game count.
@@ -564,6 +671,23 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 )
                 diversityTracker.recordGame(moves: g.engine.moveHistory)
                 replayRatioController?.recordSelfPlayGameLength(positions)
+
+                // Draw-watch: cap-terminated. Recorded in
+                // `totalGames` / `flaggedGames` / bucket histogram but
+                // excluded from the flag→draw precision denominator
+                // (locked decision #5).
+                drawWatchTracker?.recordGameCompleted(
+                    plyCount: positions,
+                    wasFlagged: g.drawWatchEverFiredThisGame,
+                    wasCapTerminated: true,
+                    outcome: 0.0   // ignored when wasCapTerminated
+                )
+                if g.drawWatchEverFiredThisGame {
+                    SessionLogger.shared.log(String(
+                        format: "[DRAW-WATCH] outcome worker=%d game=%d plies=%d outcome=cap-terminated",
+                        g.workerId, g.intraWorkerGameIndex, positions
+                    ))
+                }
             }
 
             // Reset slot for the next game using the latest schedule

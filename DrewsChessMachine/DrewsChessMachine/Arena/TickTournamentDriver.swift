@@ -414,7 +414,10 @@ final class TickTournamentDriver: @unchecked Sendable {
                 batchBoardsPointer: UnsafePointer(scratches.candTickScratch),
                 floatCount: candCount * boardFloats,
                 count: candCount
-            ) { policyBuf, valueBuf in
+            ) { policyBuf, valueBuf, _ in
+                // Third arg (wdlProbs) is the W/D/L softmax — consumed
+                // only by self-play's `DrawWatchTracker`. Arena games
+                // are short and not the watch target; ignore it here.
                 guard let pBase = policyBuf.baseAddress, let vBase = valueBuf.baseAddress else {
                     nilFlag.value = true
                     return
@@ -435,7 +438,7 @@ final class TickTournamentDriver: @unchecked Sendable {
                 batchBoardsPointer: UnsafePointer(scratches.champTickScratch),
                 floatCount: champCount * boardFloats,
                 count: champCount
-            ) { policyBuf, valueBuf in
+            ) { policyBuf, valueBuf, _ in
                 guard let pBase = policyBuf.baseAddress, let vBase = valueBuf.baseAddress else {
                     nilFlag.value = true
                     return

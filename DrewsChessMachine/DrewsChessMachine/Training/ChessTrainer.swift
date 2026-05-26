@@ -3719,10 +3719,11 @@ final class ChessTrainer: @unchecked Sendable {
         try await network.evaluateBatched(
             batchBoards: phase1.boardsCopy,
             count: batchSize
-        ) { _, valuesBuf in
+        ) { _, valuesBuf, _ in
             // Policy is discarded (Phase 2 only needs the value
             // scalars); copy the values out before the network's
-            // scratch is reused on the next call.
+            // scratch is reused on the next call. Third arg (WDL
+            // probs) is the self-play draw-watch path; ignored here.
             freshValues = Array(valuesBuf)
         }
         let freshBaselineMs = (CFAbsoluteTimeGetCurrent() - freshBaselineStart) * 1000
@@ -4103,14 +4104,14 @@ final class ChessTrainer: @unchecked Sendable {
             try await inferenceNetwork.evaluateBatched(
                 batchBoards: sampled.boards,
                 count: sampled.count
-            ) { policyBuf, _ in
+            ) { policyBuf, _, _ in
                 policy = Array(policyBuf)
             }
         } else {
             try await network.evaluateBatched(
                 batchBoards: sampled.boards,
                 count: sampled.count
-            ) { policyBuf, _ in
+            ) { policyBuf, _, _ in
                 policy = Array(policyBuf)
             }
         }

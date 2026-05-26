@@ -42,6 +42,7 @@ struct LowerContentView: View {
             TrainingChartGridView(
                 frame: chartCoordinator.decimatedFrame,
                 diversityHistogram: chartCoordinator.currentDiversityHistogramBars,
+                drawWatchSnapshot: chartCoordinator.currentDrawWatchSnapshot,
                 arenaEvents: chartCoordinator.arenaChartEvents,
                 activeArenaStartElapsed: chartCoordinator.activeArenaStartElapsed,
                 promoteThreshold: promoteThreshold,

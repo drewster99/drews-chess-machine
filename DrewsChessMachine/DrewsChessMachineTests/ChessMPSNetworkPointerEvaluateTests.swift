@@ -40,7 +40,7 @@ final class ChessMPSNetworkPointerEvaluateTests: XCTestCase {
         // Path 1: the existing [Float] overload.
         nonisolated(unsafe) var policyArr: [Float] = []
         nonisolated(unsafe) var valueArr: [Float] = []
-        try await net.evaluateBatched(batchBoards: batch, count: count) { policyBuf, valueBuf in
+        try await net.evaluateBatched(batchBoards: batch, count: count) { policyBuf, valueBuf, _ in
             policyArr = Array(policyBuf)
             valueArr = Array(valueBuf)
         }
@@ -65,7 +65,7 @@ final class ChessMPSNetworkPointerEvaluateTests: XCTestCase {
             batchBoardsPointer: UnsafePointer(scratch),
             floatCount: floatCount,
             count: count
-        ) { policyBuf, valueBuf in
+        ) { policyBuf, valueBuf, _ in
             policyPtr = Array(policyBuf)
             valuePtr = Array(valueBuf)
         }

@@ -345,7 +345,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         nonisolated(unsafe) var batchValues: [Float] = []
         try await net.evaluateBatched(
             batchBoards: packed, count: states.count
-        ) { policyBuf, valuesBuf in
+        ) { policyBuf, valuesBuf, _ in
             batchPolicy = Array(policyBuf)
             batchValues = Array(valuesBuf)
         }
@@ -1058,11 +1058,11 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             let states = sampleStates(count: 8)
             for s in states { batchBoards.append(contentsOf: BoardEncoder.encode(s)) }
             nonisolated(unsafe) var infPolicy: [Float] = []
-            try await infNet.evaluateBatched(batchBoards: batchBoards, count: 8) { policyBuf, _ in
+            try await infNet.evaluateBatched(batchBoards: batchBoards, count: 8) { policyBuf, _, _ in
                 infPolicy = Array(policyBuf)
             }
             nonisolated(unsafe) var trnPolicy: [Float] = []
-            try await trnNet.evaluateBatched(batchBoards: batchBoards, count: 8) { policyBuf, _ in
+            try await trnNet.evaluateBatched(batchBoards: batchBoards, count: 8) { policyBuf, _, _ in
                 trnPolicy = Array(policyBuf)
             }
 
@@ -1109,7 +1109,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         var batch: [Float] = []
         for s in states { batch.append(contentsOf: BoardEncoder.encode(s)) }
         nonisolated(unsafe) var policy: [Float] = []
-        try await net.evaluateBatched(batchBoards: batch, count: states.count) { policyBuf, _ in
+        try await net.evaluateBatched(batchBoards: batch, count: states.count) { policyBuf, _, _ in
             policy = Array(policyBuf)
         }
 

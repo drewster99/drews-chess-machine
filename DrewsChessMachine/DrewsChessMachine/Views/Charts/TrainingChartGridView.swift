@@ -20,6 +20,11 @@ import SwiftUIFastCharts
 struct TrainingChartGridView: View {
     let frame: DecimatedChartFrame
     let diversityHistogram: [DiversityHistogramBar]
+    /// Latest `DrawWatchSnapshot` mirrored off `DrawWatchTracker` by
+    /// the heartbeat; nil before the first observation lands. Fed to
+    /// `DrawWatchHistogramChart` which renders an all-zero placeholder
+    /// in the nil case so column alignment stays stable.
+    let drawWatchSnapshot: DrawWatchSnapshot?
     let arenaEvents: [ArenaChartEvent]
     let activeArenaStartElapsed: Double?
     let promoteThreshold: Double
@@ -197,6 +202,7 @@ struct TrainingChartGridView: View {
                     """)
             )
             DiversityHistogramChart(bars: diversityHistogram)
+            DrawWatchHistogramChart(snapshot: drawWatchSnapshot)
             ArenaActivityChart(
                 events: arenaEvents,
                 activeArenaStartElapsed: activeArenaStartElapsed,

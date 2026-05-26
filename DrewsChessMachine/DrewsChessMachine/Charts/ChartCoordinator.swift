@@ -140,6 +140,13 @@ final class ChartCoordinator {
     /// doesn't re-render the chart every tick).
     var currentDiversityHistogramBars: [DiversityHistogramBar] = []
 
+    /// Draw-watch snapshot latched off `DrawWatchTracker` once per
+    /// heartbeat — feeds `DrawWatchHistogramChart`. Nil until the
+    /// first snapshot lands (which is the first heartbeat after the
+    /// first self-play game completes). The heartbeat dirty-checks
+    /// on the observed-games counter + flag count before assigning.
+    var currentDrawWatchSnapshot: DrawWatchSnapshot?
+
     /// Session-wide running maximum of the rolling-legal-mass series.
     /// Drives the tiered Y-axis on `LegalMassChart` so the scale is
     /// keyed off the highest legal-mass value the session has ever
@@ -238,6 +245,7 @@ final class ChartCoordinator {
         arenaChartEvents = []
         activeArenaStartElapsed = nil
         currentDiversityHistogramBars = []
+        currentDrawWatchSnapshot = nil
         legalMassMaxAllTime = 0
     }
 
@@ -493,6 +501,14 @@ final class ChartCoordinator {
     func setDiversityHistogramBars(_ bars: [DiversityHistogramBar]) {
         guard collectionEnabled else { return }
         currentDiversityHistogramBars = bars
+    }
+
+    /// Push a freshly mirrored `DrawWatchSnapshot` from the heartbeat.
+    /// Caller pre-checks the snapshot has actually changed so SwiftUI
+    /// doesn't invalidate on a stable reading.
+    func setDrawWatchSnapshot(_ snap: DrawWatchSnapshot?) {
+        guard collectionEnabled else { return }
+        currentDrawWatchSnapshot = snap
     }
 
     // MARK: - Zoom controls
