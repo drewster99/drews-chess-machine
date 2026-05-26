@@ -334,13 +334,21 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         //     is not touched per-fire (per-game observations land at
         //     game-end in `handleGameEnds`).
         //
-        //     `drawWatchThreshold` is read once per tick from
-        //     `TrainingParameters.shared.drawWatchPDrawThreshold` so
-        //     a live UI edit takes effect on the next tick. The cost
+        //     `drawWatchThreshold` and `drawWatchTerminate` are read
+        //     once per tick from `TrainingParameters.shared` so a
+        //     live UI edit takes effect on the next tick. The cost
         //     is one MainActor hop per tick, matching the pattern
         //     `handleGameEnds` uses for `drawKeepFraction` / `nextMaxPlies`.
-        let drawWatchThreshold: Float = await MainActor.run {
-            Float(TrainingParameters.shared.drawWatchPDrawThreshold)
+        //     When `drawWatchTerminate` is true, the consume closure
+        //     sets `game.drawWatchTerminationRequested = true` the
+        //     instant the streak first completes; sample-and-apply
+        //     skips that slot's move and `handleGameEnds` drops the
+        //     game on the same drop path the ply cap uses.
+        let (drawWatchThreshold, drawWatchTerminate): (Float, Bool) = await MainActor.run {
+            (
+                Float(TrainingParameters.shared.drawWatchPDrawThreshold),
+                TrainingParameters.shared.drawWatchTerminateGames
+            )
         }
         let floatCount = K * boardFloats
         let policyTarget = MutablePointerCarrier(pointer: policyOut)
@@ -389,6 +397,15 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                             // appeared, per the user's spec.
                             let plyIdx = UInt16(min(game.totalPliesPlayed, Int(UInt16.max)))
                             game.drawWatchFirstFlagPlyIndex = plyIdx
+                            if drawWatchTerminate {
+                                // Toggle is ON: drop this game on the
+                                // spot in the next handleGameEnds pass.
+                                // sample-and-apply checks the same flag
+                                // and will skip the slot's about-to-be-
+                                // played move so the game ends right at
+                                // this ply rather than one ply later.
+                                game.drawWatchTerminationRequested = true
+                            }
                         }
                     } else if game.drawWatchConsecutivePliesAboveThreshold > 0 {
                         // Streak breaks. Reset the counter so a new
@@ -434,7 +451,11 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                         // pass clears them but processes them on the
                         // SAME tick (after this one). Skip to avoid
                         // applyMoveAndAdvance throwing gameAlreadyOver.
-                        if g.engine.result != nil {
+                        // Also skip when draw-watch termination was
+                        // requested earlier in THIS tick's consume —
+                        // the game ends right at the flag-firing ply,
+                        // no further move is played.
+                        if g.engine.result != nil || g.drawWatchTerminationRequested {
                             i += P
                             continue
                         }
@@ -580,8 +601,9 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         for i in 0..<K {
             let g = games[i]
             let natural = g.engine.result
-            let droppedMaxPlies = (natural == nil) && (g.totalPliesPlayed >= g.maxPliesCap)
-            guard natural != nil || droppedMaxPlies else { continue }
+            let drawWatchTerminated = g.drawWatchTerminationRequested && natural == nil
+            let droppedMaxPlies = (natural == nil) && !drawWatchTerminated && (g.totalPliesPlayed >= g.maxPliesCap)
+            guard natural != nil || drawWatchTerminated || droppedMaxPlies else { continue }
             finished += 1
 
             let gameDurationMs = (CFAbsoluteTimeGetCurrent() - g.gameStartedAt) * 1000
@@ -643,8 +665,35 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 drawWatchTracker?.recordGameCompleted(
                     plyCount: positions,
                     firstFlagPlyIndex: g.drawWatchFirstFlagPlyIndex,
-                    wasCapTerminated: false,
+                    excludedFromPrecision: false,
                     outcome: isDraw ? 0.0 : 1.0
+                )
+            } else if drawWatchTerminated {
+                // Draw-watch toggle is ON and this game's 8-ply
+                // streak completed during this tick's consume. Drop
+                // it on the same path as a ply-cap drop: stats +
+                // diversity + length feed, NO flush to the replay
+                // buffer, no emitted-game count. The "imposed draw"
+                // is the user's intent — the network had already
+                // decided the position was drawn and they want to
+                // save the GPU/throughput of playing it out.
+                statsBox.recordDroppedGame(
+                    moves: positions, durationMs: gameDurationMs
+                )
+                diversityTracker.recordGame(moves: g.engine.moveHistory)
+                replayRatioController?.recordSelfPlayGameLength(positions)
+
+                // The draw-watch chart bucket histogram still counts
+                // this game (it DID flag — that's the whole point),
+                // but the flag→draw precision denominator excludes
+                // it (excludedFromPrecision=true): we forced the
+                // outcome, so it tells us nothing about how the
+                // network's call would have played out naturally.
+                drawWatchTracker?.recordGameCompleted(
+                    plyCount: positions,
+                    firstFlagPlyIndex: g.drawWatchFirstFlagPlyIndex,
+                    excludedFromPrecision: true,
+                    outcome: 0.0   // ignored when excludedFromPrecision
                 )
             } else {
                 // max-plies dropped: stats, diversity, length feed, but
@@ -662,8 +711,8 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 drawWatchTracker?.recordGameCompleted(
                     plyCount: positions,
                     firstFlagPlyIndex: g.drawWatchFirstFlagPlyIndex,
-                    wasCapTerminated: true,
-                    outcome: 0.0   // ignored when wasCapTerminated
+                    excludedFromPrecision: true,
+                    outcome: 0.0   // ignored when excludedFromPrecision
                 )
             }
 

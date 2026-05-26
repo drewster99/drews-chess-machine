@@ -57,14 +57,16 @@ struct DrawWatchHistogramChart: View {
                 title: "Draw-watch (8-ply pDraw streak)",
                 value: header,
                 titleHelp: AttributedString("""
-                    Stealth-mode monitor of the W/D/L value head during self-play. Each bar = number \
-                    of distinct GAMES in the last 30 min whose 8-ply pDraw streak first completed at \
-                    a ply inside that 40-ply bucket. Hover a bar to see that bucket's draw-precision \
-                    (of those games, excluding ply-cap-terminated, the fraction that ended in a draw). \
-                    Header: games=% of all completed games that flagged at least once · →draw=% of \
-                    those (excluding ply-cap-terminated) that finished as draws. Threshold is the \
-                    "Draw-Watch pDraw Threshold" param in Self-Play Sampling (default 0.95). \
-                    Flagging does NOT terminate the game — purely observational.
+                    Monitor of the W/D/L value head during self-play. Each bar = number of distinct \
+                    GAMES (in the rolling window shown in the header) whose 8-ply pDraw streak first \
+                    completed at a ply inside that 40-ply bucket. Hover a bar to see that bucket's \
+                    draw-precision (of those games, excluding outcome-imposed ones, the fraction \
+                    that ended in a draw). Header: games=% of all completed games that flagged at \
+                    least once · →draw=% of those (excluding outcome-imposed) that finished as \
+                    draws. Threshold is the "Draw-Watch pDraw Threshold" param in Self-Play \
+                    Sampling. When the "Terminate flagged games" toggle in Self-Play Sampling is \
+                    off (default), flagging is purely observational; when on, the game is dropped \
+                    the moment its streak hits 8 plies (same drop path as the ply-cap).
                     """)
             )
             Chart(bars) { bar in
@@ -138,10 +140,23 @@ struct DrawWatchHistogramChart: View {
                 .map { String(format: "%.1f%%", $0 * 100) } ?? "--"
             return "\(bar.label): games=\(bar.count) →draw=\(acc)"
         }
-        guard let s = snapshot, s.totalGames > 0 else { return "-- (last 30 min)" }
+        let windowLabel = Self.windowLabel(snapshot?.windowSec ?? DrawWatchTracker.windowSec)
+        guard let s = snapshot, s.totalGames > 0 else { return "-- (last \(windowLabel))" }
         let pctG = s.fractionOfGamesFlagged.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
         let acc = s.flagDrawAccuracy.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
-        return "games=\(pctG) · →draw=\(acc) (last 30 min, N=\(s.totalGames))"
+        return "games=\(pctG) · →draw=\(acc) (last \(windowLabel), N=\(s.totalGames))"
+    }
+
+    /// Compact label for the rolling window's length. Renders 300 →
+    /// "5 min", 1800 → "30 min", 90 → "90 s" so changes to
+    /// `DrawWatchTracker.windowSec` flow through the header without a
+    /// chart-side edit.
+    private static func windowLabel(_ secs: Double) -> String {
+        if secs >= 60 {
+            let m = Int(secs.rounded() / 60)
+            return "\(m) min"
+        }
+        return "\(Int(secs.rounded())) s"
     }
 }
 

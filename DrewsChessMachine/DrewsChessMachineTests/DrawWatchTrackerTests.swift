@@ -26,7 +26,7 @@ final class DrawWatchTrackerTests: XCTestCase {
         let tracker = DrawWatchTracker()
         for _ in 0..<7 {
             tracker.recordGameCompleted(
-                plyCount: 50, firstFlagPlyIndex: nil, wasCapTerminated: false, outcome: 1.0
+                plyCount: 50, firstFlagPlyIndex: nil, excludedFromPrecision: false, outcome: 1.0
             )
         }
         XCTAssertEqual(tracker.snapshot().totalGames, 7)
@@ -44,11 +44,11 @@ final class DrawWatchTrackerTests: XCTestCase {
         // Expected: totalGames=5, flaggedGames=4, eligible=3, drawn=2,
         // precision = 2/3 ≈ 0.667
         let tracker = DrawWatchTracker()
-        tracker.recordGameCompleted(plyCount: 60, firstFlagPlyIndex: 25, wasCapTerminated: false, outcome: 0.0)
-        tracker.recordGameCompleted(plyCount: 70, firstFlagPlyIndex: 35, wasCapTerminated: false, outcome: 0.0)
-        tracker.recordGameCompleted(plyCount: 80, firstFlagPlyIndex: 45, wasCapTerminated: false, outcome: 1.0)
-        tracker.recordGameCompleted(plyCount: 150, firstFlagPlyIndex: 90, wasCapTerminated: true, outcome: 0.0)
-        tracker.recordGameCompleted(plyCount: 30, firstFlagPlyIndex: nil, wasCapTerminated: false, outcome: 1.0)
+        tracker.recordGameCompleted(plyCount: 60, firstFlagPlyIndex: 25, excludedFromPrecision: false, outcome: 0.0)
+        tracker.recordGameCompleted(plyCount: 70, firstFlagPlyIndex: 35, excludedFromPrecision: false, outcome: 0.0)
+        tracker.recordGameCompleted(plyCount: 80, firstFlagPlyIndex: 45, excludedFromPrecision: false, outcome: 1.0)
+        tracker.recordGameCompleted(plyCount: 150, firstFlagPlyIndex: 90, excludedFromPrecision: true, outcome: 0.0)
+        tracker.recordGameCompleted(plyCount: 30, firstFlagPlyIndex: nil, excludedFromPrecision: false, outcome: 1.0)
         let s = tracker.snapshot()
         XCTAssertEqual(s.totalGames, 5)
         XCTAssertEqual(s.flaggedGames, 4)
@@ -65,16 +65,16 @@ final class DrawWatchTrackerTests: XCTestCase {
         // strict `<`, mirroring the replay buffer's `> 0.5` /
         // `< -0.5` win/loss tests).
         let tracker = DrawWatchTracker()
-        tracker.recordGameCompleted(plyCount: 60, firstFlagPlyIndex: 25, wasCapTerminated: false, outcome: 0.4)
-        tracker.recordGameCompleted(plyCount: 60, firstFlagPlyIndex: 25, wasCapTerminated: false, outcome: 0.6)
-        tracker.recordGameCompleted(plyCount: 60, firstFlagPlyIndex: 25, wasCapTerminated: false, outcome: 0.5)
+        tracker.recordGameCompleted(plyCount: 60, firstFlagPlyIndex: 25, excludedFromPrecision: false, outcome: 0.4)
+        tracker.recordGameCompleted(plyCount: 60, firstFlagPlyIndex: 25, excludedFromPrecision: false, outcome: 0.6)
+        tracker.recordGameCompleted(plyCount: 60, firstFlagPlyIndex: 25, excludedFromPrecision: false, outcome: 0.5)
         let s = tracker.snapshot()
         XCTAssertEqual(s.flaggedGamesDrawn, 1)
     }
 
     func testCapTerminatedExcludedEvenWhenDrawn() {
         let tracker = DrawWatchTracker()
-        tracker.recordGameCompleted(plyCount: 150, firstFlagPlyIndex: 100, wasCapTerminated: true, outcome: 0.0)
+        tracker.recordGameCompleted(plyCount: 150, firstFlagPlyIndex: 100, excludedFromPrecision: true, outcome: 0.0)
         let s = tracker.snapshot()
         XCTAssertEqual(s.flaggedGames, 1)
         XCTAssertEqual(s.flaggedGamesEligible, 0)
@@ -86,7 +86,7 @@ final class DrawWatchTrackerTests: XCTestCase {
         // Even a draw outcome doesn't count as flagged if
         // firstFlagPlyIndex is nil.
         let tracker = DrawWatchTracker()
-        tracker.recordGameCompleted(plyCount: 80, firstFlagPlyIndex: nil, wasCapTerminated: false, outcome: 0.0)
+        tracker.recordGameCompleted(plyCount: 80, firstFlagPlyIndex: nil, excludedFromPrecision: false, outcome: 0.0)
         let s = tracker.snapshot()
         XCTAssertEqual(s.totalGames, 1)
         XCTAssertEqual(s.flaggedGames, 0)
@@ -108,7 +108,7 @@ final class DrawWatchTrackerTests: XCTestCase {
             (999, 0.0, false),   // overflow → bucket 9, draw
         ]
         for (ply, outcome, cap) in pliesAndOutcomes {
-            tracker.recordGameCompleted(plyCount: Int(ply), firstFlagPlyIndex: ply, wasCapTerminated: cap, outcome: outcome)
+            tracker.recordGameCompleted(plyCount: Int(ply), firstFlagPlyIndex: ply, excludedFromPrecision: cap, outcome: outcome)
         }
         let s = tracker.snapshot()
         XCTAssertEqual(s.gamesFlaggedByBucket[0], 2)
@@ -129,7 +129,7 @@ final class DrawWatchTrackerTests: XCTestCase {
     func testResetClearsEverything() {
         let tracker = DrawWatchTracker()
         for _ in 0..<10 {
-            tracker.recordGameCompleted(plyCount: 50, firstFlagPlyIndex: 10, wasCapTerminated: false, outcome: 0.0)
+            tracker.recordGameCompleted(plyCount: 50, firstFlagPlyIndex: 10, excludedFromPrecision: false, outcome: 0.0)
         }
         tracker.reset()
         let s = tracker.snapshot()
@@ -149,6 +149,29 @@ final class DrawWatchTrackerTests: XCTestCase {
 
     // MARK: - Constants surface area
 
+    // MARK: - Imposed-outcome exclusion (cap OR draw-watch-terminated)
+
+    func testImposedOutcomeExcludedRegardlessOfSource() {
+        // The tracker doesn't distinguish "cap-terminated" from
+        // "draw-watch-terminated" — both flow through
+        // `excludedFromPrecision: true` and are excluded from the
+        // precision denominator. The bucket histogram still counts
+        // them (they did flag). Verifies the rename's intent.
+        let tracker = DrawWatchTracker()
+        // Two flagged games, both with imposed outcomes:
+        tracker.recordGameCompleted(plyCount: 175, firstFlagPlyIndex: 100, excludedFromPrecision: true, outcome: 0.0)
+        tracker.recordGameCompleted(plyCount:  45, firstFlagPlyIndex:  40, excludedFromPrecision: true, outcome: 0.0)
+        let s = tracker.snapshot()
+        XCTAssertEqual(s.flaggedGames, 2)
+        XCTAssertEqual(s.flaggedGamesEligible, 0)
+        XCTAssertNil(s.flagDrawAccuracy)
+        // Both bucket counts present:
+        XCTAssertEqual(s.gamesFlaggedByBucket[1], 1) // 40-80
+        XCTAssertEqual(s.gamesFlaggedByBucket[2], 1) // 80-120
+    }
+
+    // MARK: - Constants surface area
+
     func testLockedConstants() {
         // These are the locked decisions documented in DRAW_WATCH_PLAN.md.
         // Changing them is a behavior change worth a deliberate commit.
@@ -156,6 +179,6 @@ final class DrawWatchTrackerTests: XCTestCase {
         XCTAssertEqual(DrawWatchTracker.flagStreakLength, 8)
         XCTAssertEqual(DrawWatchTracker.histogramBucketWidthPlies, 40)
         XCTAssertEqual(DrawWatchTracker.histogramBucketCount, 10)
-        XCTAssertEqual(DrawWatchTracker.windowSec, 30 * 60, accuracy: 1e-9)
+        XCTAssertEqual(DrawWatchTracker.windowSec, 5 * 60, accuracy: 1e-9)
     }
 }

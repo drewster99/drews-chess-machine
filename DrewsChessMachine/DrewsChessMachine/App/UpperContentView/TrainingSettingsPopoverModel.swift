@@ -76,6 +76,7 @@ final class TrainingSettingsPopoverModel {
     var selfPlayDrawKeepFractionText = "" { didSet { selfPlayDrawKeepFractionError = false } }
     var selfPlayMaxPliesPerGameText = "" { didSet { selfPlayMaxPliesPerGameError = false } }
     var drawWatchPDrawThresholdText = "" { didSet { drawWatchPDrawThresholdError = false } }
+    var drawWatchTerminateGames: Bool = false
 
     private(set) var selfPlayConcurrencyError = false
     private(set) var selfPlayStartTauError = false
@@ -124,6 +125,7 @@ final class TrainingSettingsPopoverModel {
     private var originalSelfPlayDrawKeepFraction: Double = 1.0
     private var originalSelfPlayMaxPliesPerGame: Int = 150
     private var originalDrawWatchPDrawThreshold: Double = 0.95
+    private var originalDrawWatchTerminateGames: Bool = false
 
     // MARK: - Injected dependencies
 
@@ -191,6 +193,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayDrawKeepFractionText = String(format: "%.2f", p.selfPlayDrawKeepFraction)
         selfPlayMaxPliesPerGameText = String(p.selfPlayMaxPliesPerGame)
         drawWatchPDrawThresholdText = String(format: "%.2f", p.drawWatchPDrawThreshold)
+        drawWatchTerminateGames = p.drawWatchTerminateGames
         // --- Replay tab ---
         replayBufferCapacityText = String(p.replayBufferCapacity)
         replayBufferMinPositionsText = String(p.replayBufferMinPositionsBeforeTraining)
@@ -221,6 +224,7 @@ final class TrainingSettingsPopoverModel {
         originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
         originalSelfPlayMaxPliesPerGame = p.selfPlayMaxPliesPerGame
         originalDrawWatchPDrawThreshold = p.drawWatchPDrawThreshold
+        originalDrawWatchTerminateGames = p.drawWatchTerminateGames
         // Reset every error flag — a fresh open should never carry red overlays
         // from a previously-cancelled bad input.
         lrError = false
@@ -301,6 +305,9 @@ final class TrainingSettingsPopoverModel {
         }
         if abs(p.drawWatchPDrawThreshold - originalDrawWatchPDrawThreshold) > Double.ulpOfOne {
             p.drawWatchPDrawThreshold = originalDrawWatchPDrawThreshold
+        }
+        if p.drawWatchTerminateGames != originalDrawWatchTerminateGames {
+            p.drawWatchTerminateGames = originalDrawWatchTerminateGames
         }
         isPresented = false
     }
@@ -443,6 +450,19 @@ final class TrainingSettingsPopoverModel {
         let p = TrainingParameters.shared
         if abs(p.drawWatchPDrawThreshold - snapped) > Double.ulpOfOne {
             p.drawWatchPDrawThreshold = snapped
+        }
+    }
+
+    /// Live-propagate the draw-watch terminate-games toggle. The
+    /// self-play driver reads `TrainingParameters.shared.drawWatchTerminateGames`
+    /// alongside the threshold on every tick, so a toggle flip
+    /// takes effect on the next ply. ON: games are dropped the
+    /// instant their 8-ply pDraw streak completes (same drop path
+    /// as ply-cap). OFF (default): purely observational.
+    func applyLiveDrawWatchTerminateGames(_ newValue: Bool) {
+        let p = TrainingParameters.shared
+        if p.drawWatchTerminateGames != newValue {
+            p.drawWatchTerminateGames = newValue
         }
     }
 
@@ -939,6 +959,11 @@ final class TrainingSettingsPopoverModel {
                     )
                 )
             }
+            if p.drawWatchTerminateGames != originalDrawWatchTerminateGames {
+                SessionLogger.shared.log(
+                    "[PARAM] drawWatchTerminateGames: \(originalDrawWatchTerminateGames) -> \(p.drawWatchTerminateGames)"
+                )
+            }
             // On successful save the stash that backs Cancel becomes the new
             // pre-edit baseline — closing the popover with Save commits the
             // live writes. Missing this line for `selfPlayDrawKeepFraction`
@@ -956,6 +981,7 @@ final class TrainingSettingsPopoverModel {
             originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
             originalSelfPlayMaxPliesPerGame = p.selfPlayMaxPliesPerGame
             originalDrawWatchPDrawThreshold = p.drawWatchPDrawThreshold
+            originalDrawWatchTerminateGames = p.drawWatchTerminateGames
             isPresented = false
         }
     }

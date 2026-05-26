@@ -10,16 +10,19 @@ import os
 /// 8-ply streak first completed for this game — i.e. the 8th
 /// consecutive ply meeting the pDraw threshold. `nil` when the game
 /// never reached an 8-ply streak (sub-threshold games never enter the
-/// histogram). `wasCapTerminated` is `true` iff the game ended
-/// because it hit `selfPlayMaxPliesPerGame` rather than via a chess-
-/// rule terminator — cap-terminated games are excluded from the
-/// flag→draw precision denominator (locked decision #5 in
-/// DRAW_WATCH_PLAN.md).
+/// histogram). `excludedFromPrecision` is `true` iff the game's
+/// `outcome` is imposed rather than natural — currently the case for:
+///   * ply-cap-terminated games (`selfPlayMaxPliesPerGame`)
+///   * draw-watch-terminated games (`drawWatchTerminateGames` toggle)
+/// Imposed-outcome games are excluded from the flag→draw precision
+/// denominator (locked decision #5 in DRAW_WATCH_PLAN.md); they still
+/// contribute to `totalGames`, `flaggedGames`, and the bucket
+/// histogram, just not to the precision ratio.
 struct DrawWatchGameObservation: Sendable, Equatable {
     let timestamp: Date
     let plyCount: Int
     let firstFlagPlyIndex: UInt16?
-    let wasCapTerminated: Bool
+    let excludedFromPrecision: Bool
     /// Outcome encoding matches `ReplayBuffer.append`: `|outcome| < 0.5`
     /// ⇒ draw. We only ever distinguish draw vs not-draw downstream
     /// (the W-vs-L split isn't useful for the precision metric), but
@@ -39,9 +42,10 @@ struct DrawWatchSnapshot: Sendable, Equatable {
     /// once.
     let flaggedGames: Int
     /// Subset of `flaggedGames` whose final outcome counts toward the
-    /// precision ratio (i.e. `!wasCapTerminated`). Snapshot denominator
-    /// for `flagDrawAccuracy` and per-bucket precision; reported
-    /// separately so consumers can show the selection-effect.
+    /// precision ratio (i.e. `!excludedFromPrecision`). Snapshot
+    /// denominator for `flagDrawAccuracy` and per-bucket precision;
+    /// reported separately so consumers can show the selection-effect.
+    /// Excluded games: ply-cap-terminated, draw-watch-terminated.
     let flaggedGamesEligible: Int
     /// Subset of `flaggedGamesEligible` whose final outcome was a
     /// draw (`|outcome| < 0.5`).
@@ -136,10 +140,10 @@ final class DrawWatchTracker: @unchecked Sendable {
     static let histogramBucketCount: Int = 10
 
     /// Length of the rolling window the snapshot covers, in seconds.
-    /// 30 minutes is the v1 default — long enough to smooth tick-by-
-    /// tick noise across self-play barrier dynamics, short enough to
-    /// see the impact of a parameter edit within a few snapshots.
-    static let windowSec: TimeInterval = 30 * 60
+    /// 5 minutes — short enough to surface the impact of a parameter
+    /// edit on the next snapshot, long enough to smooth out tick-by-
+    /// tick game-completion noise at typical self-play rates.
+    static let windowSec: TimeInterval = 5 * 60
 
     // MARK: - Locked state
 
@@ -161,22 +165,25 @@ final class DrawWatchTracker: @unchecked Sendable {
     /// Submit a completed game's observability data. `firstFlagPlyIndex`
     /// is the ply at which the game's 8-ply streak first completed
     /// (i.e. the 8th consecutive above-threshold ply); `nil` when
-    /// the game never reached an 8-ply streak. `wasCapTerminated` is
-    /// `true` iff the game ended at the ply cap; per-plan-decision
-    /// #5 those games are counted in the histogram but excluded from
-    /// the flag→draw precision denominator. `outcome` follows
-    /// `ReplayBuffer.append`'s convention (`|x| < 0.5` ⇒ draw).
+    /// the game never reached an 8-ply streak. `excludedFromPrecision`
+    /// is `true` iff the game's outcome was imposed by the driver
+    /// rather than reached naturally — cap-terminated games and
+    /// draw-watch-terminated games both pass `true` here. Those
+    /// games are counted in the histogram but excluded from the
+    /// flag→draw precision denominator (locked plan decision #5).
+    /// `outcome` follows `ReplayBuffer.append`'s convention
+    /// (`|x| < 0.5` ⇒ draw).
     func recordGameCompleted(
         plyCount: Int,
         firstFlagPlyIndex: UInt16?,
-        wasCapTerminated: Bool,
+        excludedFromPrecision: Bool,
         outcome: Float
     ) {
         let obs = DrawWatchGameObservation(
             timestamp: Date(),
             plyCount: plyCount,
             firstFlagPlyIndex: firstFlagPlyIndex,
-            wasCapTerminated: wasCapTerminated,
+            excludedFromPrecision: excludedFromPrecision,
             outcome: outcome
         )
         lock.withLock { _recentGames.append(obs) }
@@ -209,7 +216,7 @@ final class DrawWatchTracker: @unchecked Sendable {
                 flaggedGames += 1
                 let bucket = min(Int(ply) / bucketWidth, bucketCount - 1)
                 flaggedByBucket[bucket] += 1
-                guard !g.wasCapTerminated else { continue }
+                guard !g.excludedFromPrecision else { continue }
                 eligibleFlaggedGames += 1
                 eligibleByBucket[bucket] += 1
                 if abs(g.outcome) < 0.5 {

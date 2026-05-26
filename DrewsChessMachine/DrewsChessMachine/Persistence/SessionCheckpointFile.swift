@@ -272,6 +272,13 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat with sessions saved before this knob
     /// existed; absent → loader falls through to the param's default.
     var drawWatchPDrawThreshold: Double?
+    /// When true, the self-play driver drops a game on the spot the
+    /// moment its 8-ply pDraw streak completes — same drop path as
+    /// the ply-cap. Mirrors
+    /// `TrainingParameters.shared.drawWatchTerminateGames`. Optional
+    /// for back-compat; absent → loader falls through to the param's
+    /// default (`false`, observe-only).
+    var drawWatchTerminateGames: Bool?
     /// Lifetime self-play games that were emitted into the replay
     /// buffer (i.e. survived the draw-keep filter). `<= selfPlayGames`;
     /// equal at default keep-fraction. Optional for back-compat.

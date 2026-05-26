@@ -229,6 +229,7 @@ struct TrainingSettingsPopover: View {
                     selfPlayDrawKeepFractionText: $model.selfPlayDrawKeepFractionText,
                     selfPlayMaxPliesPerGameText: $model.selfPlayMaxPliesPerGameText,
                     drawWatchPDrawThresholdText: $model.drawWatchPDrawThresholdText,
+                    drawWatchTerminateGames: $model.drawWatchTerminateGames,
                     selfPlayConcurrencyError: model.selfPlayConcurrencyError,
                     selfPlayStartTauError: model.selfPlayStartTauError,
                     selfPlayDecayPerPlyError: model.selfPlayDecayPerPlyError,
@@ -239,6 +240,7 @@ struct TrainingSettingsPopover: View {
                     onLiveSelfPlayDrawKeepFractionChange: { model.applyLiveSelfPlayDrawKeepFraction($0) },
                     onLiveMaxPliesPerGameChange: { model.applyLiveMaxPliesPerGame($0) },
                     onLiveDrawWatchPDrawThresholdChange: { model.applyLiveDrawWatchPDrawThreshold($0) },
+                    onLiveDrawWatchTerminateGamesChange: { model.applyLiveDrawWatchTerminateGames($0) },
                     parallelStats: parallelStats
                 )
             case .replay:
@@ -743,6 +745,7 @@ private struct SelfPlayTab: View {
     @Binding var selfPlayDrawKeepFractionText: String
     @Binding var selfPlayMaxPliesPerGameText: String
     @Binding var drawWatchPDrawThresholdText: String
+    @Binding var drawWatchTerminateGames: Bool
 
     let selfPlayConcurrencyError: Bool
     let selfPlayStartTauError: Bool
@@ -775,6 +778,13 @@ private struct SelfPlayTab: View {
     /// per-ply pDraw check on every worker slot. Cancel reverts
     /// via the model's stash; Save updates the stash.
     let onLiveDrawWatchPDrawThresholdChange: (Double) -> Void
+
+    /// Live-propagate handler for the draw-watch terminate-games
+    /// toggle. Same per-tick read pattern as the threshold; flipping
+    /// the toggle ON drops every freshly-flagging game immediately
+    /// from the next tick onward. Cancel reverts via the model's
+    /// stash; Save updates the stash.
+    let onLiveDrawWatchTerminateGamesChange: (Bool) -> Void
 
     /// Live snapshot of the parallel-worker stats box; drives the
     /// "Emitted games" readout's W/L/D + plies-per-hour rows. `nil`
@@ -1009,6 +1019,27 @@ private struct SelfPlayTab: View {
                               v >= 0.5, v <= 1.0, v.isFinite {
                         onLiveDrawWatchPDrawThresholdChange(v)
                     }
+                }
+                // Terminate-on-flag toggle. OFF (default): purely
+                // observational, matches the chart-tile's "calibration"
+                // framing. ON: the moment a game's 8-ply streak
+                // completes the driver drops it on the same path as
+                // the ply-cap (no flush to the replay buffer). When
+                // ON, the chart tile's →draw precision metric loses
+                // its meaning (every flagged game is forced to a
+                // draw → excluded from the precision denominator).
+                HStack(spacing: 8) {
+                    Text("")
+                        .frame(width: 160, alignment: .trailing)
+                    Toggle("Terminate flagged games", isOn: Binding(
+                        get: { drawWatchTerminateGames },
+                        set: { newValue in
+                            drawWatchTerminateGames = newValue
+                            onLiveDrawWatchTerminateGamesChange(newValue)
+                        }
+                    ))
+                    .toggleStyle(.checkbox)
+                    Spacer()
                 }
                 liveEmittedGamesReadout
             }

@@ -168,6 +168,16 @@ final class ActiveGame: @unchecked Sendable {
     /// confident-draw signal first appeared.
     var drawWatchFirstFlagPlyIndex: UInt16?
 
+    /// When true, the driver drops this game on the spot in the
+    /// next `handleGameEnds` pass — same drop path as ply-cap-
+    /// terminated games (no flush to the replay buffer). Set inside
+    /// the consume closure when the 8-ply streak completes AND the
+    /// `drawWatchTerminateGames` parameter toggle is on. Reset to
+    /// false on game start. Sample-and-apply also checks this so
+    /// it skips the slot's about-to-be-played move (the game ends
+    /// HERE, not one ply later).
+    var drawWatchTerminationRequested: Bool = false
+
     // MARK: - Convenience
 
     /// Total plies played in the current game (both sides). Compared
@@ -261,6 +271,7 @@ final class ActiveGame: @unchecked Sendable {
         blackPliesRecorded = 0
         drawWatchConsecutivePliesAboveThreshold = 0
         drawWatchFirstFlagPlyIndex = nil
+        drawWatchTerminationRequested = false
 
         let neededSideCap = (newCap + 1) / 2
         if neededSideCap > perSideCap {
