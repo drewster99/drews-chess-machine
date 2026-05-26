@@ -1125,6 +1125,7 @@ struct UpperContentView: View {
             workerCountBox: workerCountBox,
             trainer: trainer,
             replayRatioController: replayRatioController,
+            replayBuffer: replayBuffer,
             snapDelayToNearestValidRung: { delay in
                 Self.validDelayRungsMs.min(by: { abs($0 - delay) < abs($1 - delay) }) ?? delay
             }

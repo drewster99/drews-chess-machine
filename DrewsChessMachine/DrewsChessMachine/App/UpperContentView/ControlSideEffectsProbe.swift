@@ -32,6 +32,15 @@ struct ControlSideEffectsProbe: View {
     let workerCountBox: WorkerCountBox?
     let trainer: ChessTrainer?
     let replayRatioController: ReplayRatioController?
+    /// Live replay buffer. The three sampling-constraint params
+    /// (`maxPliesFromAnyOneGame`, `targetSampledGameLengthPlies`,
+    /// `maxDrawPercentPerBatch`) are pushed straight through to
+    /// `buf.setSamplingConstraints(.fromCurrentParameters())` from
+    /// the matching `.onChange` handlers below — replaces a
+    /// per-heartbeat no-op push that contended with the trainer's
+    /// `sample(...)` and the workers' `append(...)` for the same
+    /// lock once per tick.
+    let replayBuffer: ReplayBuffer?
     /// Snap-to-rung helper for the shared discrete delay policy.
     /// Forwarded in so the probe doesn't have to duplicate the
     /// parent's valid-delay rung list.
@@ -121,6 +130,18 @@ struct ControlSideEffectsProbe: View {
                 // with this handler but harmless (same value, same lock).
                 SessionLogger.shared.log("[PARAM] trainingStepDelayMs: \(oldValue) -> \(newValue)")
                 replayRatioController?.manualDelayMs = newValue
+            }
+            .onChange(of: trainingParams.maxPliesFromAnyOneGame) { oldValue, newValue in
+                SessionLogger.shared.log("[PARAM] maxPliesFromAnyOneGame: \(oldValue) -> \(newValue)")
+                replayBuffer?.setSamplingConstraints(.fromCurrentParameters())
+            }
+            .onChange(of: trainingParams.targetSampledGameLengthPlies) { oldValue, newValue in
+                SessionLogger.shared.log("[PARAM] targetSampledGameLengthPlies: \(oldValue) -> \(newValue)")
+                replayBuffer?.setSamplingConstraints(.fromCurrentParameters())
+            }
+            .onChange(of: trainingParams.maxDrawPercentPerBatch) { oldValue, newValue in
+                SessionLogger.shared.log("[PARAM] maxDrawPercentPerBatch: \(oldValue) -> \(newValue)")
+                replayBuffer?.setSamplingConstraints(.fromCurrentParameters())
             }
             .onChange(of: trainingParams.replayRatioAutoAdjust) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] replayRatioAutoAdjust: \(oldValue) -> \(newValue)")

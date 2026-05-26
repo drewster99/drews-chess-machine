@@ -133,33 +133,6 @@ final class SessionLogger: @unchecked Sendable {
             guard let fileHandle = self.fileHandle else { return }
             do {
                 try fileHandle.write(contentsOf: data)
-                // Coalesce fsync: cancel any pending idle flush and
-                // schedule a fresh one 0.5 s out. Bursts collapse to a
-                // single sync at burst-tail; idle periods sync once.
-                self.pendingFlush?.cancel()
-                let work = DispatchWorkItem { [weak self] in
-                    guard let self else { return }
-                    do {
-                        try self.fileHandle?.synchronize()
-                    } catch {
-                        // Body runs on `self.queue` (scheduled via
-                        // `queue.asyncAfter` below), so touching the
-                        // flag here is queue-protected identically to
-                        // `didLogStartupFailure`. Write to stderr
-                        // directly rather than back through `self.log`
-                        // — re-entering the write path that might
-                        // itself be the failure source is exactly
-                        // what we don't want.
-                        if !self.didLogFsyncFailure {
-                            self.didLogFsyncFailure = true
-                            FileHandle.standardError.write(
-                                Data("SessionLogger: fsync failed: \(error)\n".utf8)
-                            )
-                        }
-                    }
-                }
-                self.pendingFlush = work
-                self.queue.asyncAfter(deadline: .now() + 0.5, execute: work)
             } catch {
                 // Swallow — a logger that can't write should never bring
                 // down the app. Print once to stderr so there's at least

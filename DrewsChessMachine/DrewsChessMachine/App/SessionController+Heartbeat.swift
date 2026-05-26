@@ -93,7 +93,7 @@ extension SessionController {
         _ = start
         elap("start")
         await onUpdateGameSnapshot()
-        elap("after gameWatcher")
+        elap("after gameWatcher (was only await)")
         // Same heartbeat pulls the sweep's worker-thread progress and
         // any newly-completed rows into @State so the table grows live.
         if sweepRunning, let box = sweepCancelBox {
@@ -108,7 +108,7 @@ extension SessionController {
             if rows.count != sweepResults.count {
                 sweepResults = rows
             }
-            elap("after sweepsom")
+            elap("after sweepsom (everything was awaited)")
         }
         // Same heartbeat pulls live training stats out of the
         // lock-protected box the background training task is writing
@@ -134,7 +134,7 @@ extension SessionController {
             if let err = snap.error, trainingError == nil {
                 trainingError = err
             }
-            elap("after 3")
+            elap("after 3 (everything was awaited)")
         }
         // Mirror the trainer's warmup state into @State so the status
         // chip and the LR Warm-up status cell read from a snapshot
@@ -144,7 +144,7 @@ extension SessionController {
         // surface stale warmup numbers from a prior 
         if let trainer {
             let completedTrainSteps = await trainer.asyncCompletedTrainSteps()
-            elap("after 3.1")
+            elap("after 3.1 (everything was awaited)")
             // Pass the locally-snapshotted step count so the LR uses the
             // same observation rather than re-acquiring the SyncBox; the
             // count and LR in the published snapshot are then guaranteed
@@ -153,18 +153,18 @@ extension SessionController {
                 forBatchSize: TrainingParameters.shared.trainingBatchSize,
                 completedSteps: completedTrainSteps
             )
-            elap("after 3.2")
+            elap("after 3.2 (awaited)")
             let next = SessionController.TrainerWarmupSnapshot(
                 completedSteps: completedTrainSteps,
                 warmupSteps: trainer.lrWarmupSteps,
                 effectiveLR: effectiveLR
             )
-            elap("after 3.3")
+            elap("after 3.3 (everything super fast)")
             if next != trainerWarmupSnap { trainerWarmupSnap = next }
         } else if trainerWarmupSnap != nil {
             trainerWarmupSnap = nil
         }
-        elap("after 4")
+        elap("after 4 (awaited or fast)")
         // Arena progress mirror — cheap lock read, only updates the
         // @State when the game index has advanced (or transitioned
         // between non-running and running), so no redundant view
@@ -176,7 +176,7 @@ extension SessionController {
                 tournamentProgress = snap
             }
         }
-        elap("after 5")
+        elap("after 5 (awaited)")
         // Parallel worker counters mirror — only updates @State when
         // totals have actually advanced so the body isn't re-evaluated
         // when nothing's changed. The sessionStart timestamp is
@@ -200,46 +200,66 @@ extension SessionController {
                 parallelStats = snap
             }
         }
-        elap("after 6")
-        // Replay-buffer composition mirror + per-batch sampling-constraint
-        // push. The buffer owns its `SamplingConstraints` (so the off-main
-        // trainer never reads `TrainingParameters.shared`); we re-push the
-        // current values every tick — cheap (one lock op) and idempotent.
-        // The composition snapshot is dirty-checked so @State only churns
-        // when the resident set actually changed.
+        elap("after 6 (awaited)")
+// MARK: - Something after this mark gets VERY laggy
+
+        // Replay-buffer composition mirror + last-sampled-batch mirror.
+        // The buffer's `SamplingConstraints` are kept in sync reactively
+        // by `ControlSideEffectsProbe.onChange(of: trainingParams.X)` for
+        // the three constraint params; the heartbeat must NOT push them
+        // here — it contends with the trainer's `sample(...)` and the
+        // self-play workers' `append(...)` for `ReplayBuffer.lock` once
+        // per tick to write a value that's almost always unchanged.
+        // Composition + last-sampled-batch are dirty-checked so @State
+        // only churns when the resident set or the achievement report
+        // actually changed.
         if let buf = replayBuffer {
-            buf.setSamplingConstraints(.fromCurrentParameters())
-            let comp = buf.compositionSnapshot()
+            elap("after 6.1 (nothing happened)")
+            // Lock acquired off-main via DispatchQueue + CheckedContinuation
+            // — the main actor yields while a worker `append(...)` or the
+            // trainer `sample(...)` holds `lock`, instead of synchronously
+            // stalling the heartbeat.
+            let comp = await buf.asyncCompositionSnapshot()
+            elap("after 6.3")
             if comp != bufferComposition { bufferComposition = comp }
             // Mirror the latest per-batch achievement report into @State
             // for the popover's "Last sampled batch" readout. The
             // `.uninitialized` sentinel (no batch yet this session) is
             // surfaced as `nil` on the controller so the popover UI can
             // collapse the column to dashes without inspecting fields.
-            let sr = buf.lastSamplingResult()
+            elap("after 6.4")
+            // Same off-main-lock pattern as compositionSnapshot above.
+            let sr = await buf.asyncLastSamplingResult()
+            elap("after 6.5")
             let mirrored: ReplayBuffer.SamplingResult? = sr.didSample ? sr : nil
             if mirrored != lastSamplingResult { lastSamplingResult = mirrored }
+            elap("after 6.6 (nothing really happened)")
         } else {
+            elap("after 6.7.0 (nothing happened)")
             if bufferComposition != nil { bufferComposition = nil }
             if lastSamplingResult != nil { lastSamplingResult = nil }
+            elap("after 6.7.1 (nothing really happened)")
         }
-        elap("after 6b")
+
+// MARK: - Something prior to this mark gets VERY laggy
+
+        elap("after 6b (nothing happened)")
         // Memory stats refresh. Throttled internally to
         // `memoryStatsRefreshSec` so this is a cheap timestamp compare
         // on most heartbeats.
         await refreshMemoryStatsIfNeeded()
-        elap("after 7")
+        elap("after 7 (awaited)")
         // Process %CPU / %GPU refresh — separate (5 s) cadence from
         // memory stats (10 s) so the utilisation line updates twice as
         // often without dragging the heavier Metal property reads
         // along with it.
         await refreshUsagePercentsIfNeeded()
-        elap("after 8")
+        elap("after 8 (awaited)")
         // Progress-rate chart sampler — runs during Play and Train;
         // each sample carries the moves/hr averaged over the last 3
         // minutes of work. No-op outside of realTraining.
         await refreshProgressRateIfNeeded()
-        elap("after 9")
+        elap("after 9 (awaited)")
         // Replay-ratio snapshot for the UI. Persist the auto-computed
         // delay so the next session starts from where the adjuster
         // left off.
@@ -265,9 +285,10 @@ extension SessionController {
             // so the two loops don't fight; bounded so a long-tail
             // noise spike can't drift the controller into a
             // degenerate set-point.
-            updateReplayRatioCompensator(snap: snap)
+            updateReplayRatioCompensator(snap: snap) // @MainActor function
+            elap("after 9.1 (called @MainActor function)")
         }
-        elap("after 10")
+        elap("after 10 (nothing)")
         // Diversity-histogram mirror. Read once per heartbeat off the
         // tracker's thread-safe snapshot. Only push into @State when
         // the bucket totals actually change (or the bar array is
@@ -293,11 +314,12 @@ extension SessionController {
                 chartCoordinator?.setDiversityHistogramBars(newBars)
             }
         }
-        elap("after 11")
+        elap("after 11 (awaited + light work)")
+        // I don't THINK this does anything that's not quick
         refreshChartZoomTick()
-        elap("after 12")
+        elap("after 12 (did refreshChartZoomTick())")
         periodicSaveTick()
-        elap("after LAST")
+        elap("after LAST (did periodicSaveTick())")
     }
 
     /// Per-heartbeat tick that asks the periodic-save scheduler

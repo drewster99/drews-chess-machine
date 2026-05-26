@@ -154,9 +154,11 @@ final class ReplayBuffer: @unchecked Sendable {
     /// Per-batch composition constraints applied by `sample(...)`. Owned
     /// here (rather than passed per call) so the off-main trainer never
     /// needs to read `TrainingParameters.shared`; the main actor pushes
-    /// the current values via `setSamplingConstraints(_:)` (the UI
-    /// heartbeat). Defaults to `.unconstrained` ⇒ `sample` is bit-for-bit
-    /// the legacy uniform-with-replacement sampler until the user opts in.
+    /// the current values via `setSamplingConstraints(_:)` at session
+    /// start and then reactively from `ControlSideEffectsProbe` whenever
+    /// one of the three constraint params changes. Defaults to
+    /// `.unconstrained` ⇒ `sample` is bit-for-bit the legacy
+    /// uniform-with-replacement sampler until the user opts in.
     private var samplingConstraints: SamplingConstraints = .unconstrained
 
     // MARK: - Lifetime
@@ -498,6 +500,19 @@ final class ReplayBuffer: @unchecked Sendable {
         lock.withLock { _lastSamplingResult }
     }
 
+    /// Off-main async variant of `lastSamplingResult()`. The lock
+    /// acquire runs on a global executor so the awaiter (the UI
+    /// heartbeat on the main actor) never synchronously waits for
+    /// `sample(...)` or `append(...)` to release `lock`. Matches
+    /// the pattern used by `ChessTrainer.asyncCompletedTrainSteps()`.
+    func asyncLastSamplingResult() async -> SamplingResult {
+        await withCheckedContinuation { (cont: CheckedContinuation<SamplingResult, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.lock.withLock { self._lastSamplingResult })
+            }
+        }
+    }
+
     /// O(1) snapshot of the resident-set composition, for the UI's
     /// "Replay sampling" readout and the `[STATS]` line.
     public struct CompositionSnapshot: Sendable, Equatable {
@@ -562,10 +577,26 @@ final class ReplayBuffer: @unchecked Sendable {
         }
     }
 
+    /// Off-main async variant of `compositionSnapshot()`. The lock
+    /// acquire + per-length-bucket sum runs on a global executor so
+    /// the awaiter (the UI heartbeat on the main actor) never
+    /// synchronously waits for `sample(...)` or `append(...)` to
+    /// release `lock`. Matches the pattern used by
+    /// `ChessTrainer.asyncCompletedTrainSteps()`.
+    func asyncCompositionSnapshot() async -> CompositionSnapshot {
+        await withCheckedContinuation { (cont: CheckedContinuation<CompositionSnapshot, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: self.compositionSnapshot())
+            }
+        }
+    }
+
     /// Replace the per-batch composition constraints used by `sample(...)`.
-    /// Called from the main actor (the UI heartbeat mirrors the current
-    /// `TrainingParameters` values here every tick). Takes effect on the
-    /// next `sample(...)` call.
+    /// Called from the main actor at session start
+    /// (`SessionController+Training.swift`) and reactively whenever one
+    /// of the three sampling-constraint params changes
+    /// (`ControlSideEffectsProbe`). Takes effect on the next
+    /// `sample(...)` call.
     func setSamplingConstraints(_ constraints: SamplingConstraints) {
         lock.withLock { samplingConstraints = constraints }
     }

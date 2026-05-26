@@ -75,8 +75,10 @@ extension SessionController {
             buffer = ReplayBuffer(capacity: TrainingParameters.shared.replayBufferCapacity)
             replayBuffer = buffer
         }
-        // Seed the buffer's per-batch sampling constraints from the current
-        // parameters immediately (the heartbeat re-pushes every tick).
+        // Seed the buffer's per-batch sampling constraints from the
+        // current parameters. Subsequent updates come reactively from
+        // `ControlSideEffectsProbe.onChange(of: trainingParams.X)` —
+        // not from the heartbeat.
         buffer.setSamplingConstraints(ReplayBuffer.SamplingConstraints.fromCurrentParameters())
         let box: TrainingLiveStatsBox
         if continueMode, let existing = trainingBox {

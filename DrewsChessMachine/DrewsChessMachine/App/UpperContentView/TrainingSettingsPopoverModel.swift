@@ -274,9 +274,10 @@ final class TrainingSettingsPopoverModel {
         if p.replayRatioAutoAdjust != originalReplayRatioAutoAdjust {
             p.replayRatioAutoAdjust = originalReplayRatioAutoAdjust
         }
-        // Sampling-constraint fields: same revert pattern. The heartbeat
-        // pushes the restored value into `ReplayBuffer.setSamplingConstraints`
-        // on its next tick, so no direct buffer call is needed here.
+        // Sampling-constraint fields: same revert pattern.
+        // `ControlSideEffectsProbe`'s `.onChange` handlers push the
+        // restored value into `ReplayBuffer.setSamplingConstraints`
+        // reactively, so no direct buffer call is needed here.
         if p.maxPliesFromAnyOneGame != originalMaxPliesFromAnyOneGame {
             p.maxPliesFromAnyOneGame = originalMaxPliesFromAnyOneGame
         }
@@ -356,11 +357,13 @@ final class TrainingSettingsPopoverModel {
     }
 
     /// Live-propagate the max-plies-per-game edit to
-    /// `trainingParams.maxPliesFromAnyOneGame`. The heartbeat re-reads
-    /// every sampling-constraint param into `ReplayBuffer.setSamplingConstraints`
-    /// on its next tick, so this single write is sufficient — the
-    /// next training batch picks up the new K cap and the popover's
-    /// Composition readout reflects the change on the heartbeat after.
+    /// `trainingParams.maxPliesFromAnyOneGame`.
+    /// `ControlSideEffectsProbe`'s `.onChange(of: maxPliesFromAnyOneGame)`
+    /// handler pushes the new value into
+    /// `ReplayBuffer.setSamplingConstraints(.fromCurrentParameters())`
+    /// reactively, so this single write is sufficient — the next
+    /// training batch picks up the new K cap and the popover's
+    /// Composition readout reflects the change on the next heartbeat.
     /// Snapped to the parameter's `[1, 400]` range.
     func applyLiveMaxPliesFromAnyOneGame(_ newValue: Int) {
         let snapped = max(1, min(400, newValue))
