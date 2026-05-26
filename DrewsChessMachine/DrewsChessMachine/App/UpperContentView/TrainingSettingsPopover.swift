@@ -119,6 +119,7 @@ struct TrainingSettingsPopover: View {
             || model.selfPlayFloorTauError
             || model.selfPlayDrawKeepFractionError
             || model.selfPlayMaxPliesPerGameError
+            || model.drawWatchPDrawThresholdError
     }
 
     private var replayHasError: Bool {
@@ -227,14 +228,17 @@ struct TrainingSettingsPopover: View {
                     selfPlayFloorTauText: $model.selfPlayFloorTauText,
                     selfPlayDrawKeepFractionText: $model.selfPlayDrawKeepFractionText,
                     selfPlayMaxPliesPerGameText: $model.selfPlayMaxPliesPerGameText,
+                    drawWatchPDrawThresholdText: $model.drawWatchPDrawThresholdText,
                     selfPlayConcurrencyError: model.selfPlayConcurrencyError,
                     selfPlayStartTauError: model.selfPlayStartTauError,
                     selfPlayDecayPerPlyError: model.selfPlayDecayPerPlyError,
                     selfPlayFloorTauError: model.selfPlayFloorTauError,
                     selfPlayDrawKeepFractionError: model.selfPlayDrawKeepFractionError,
                     selfPlayMaxPliesPerGameError: model.selfPlayMaxPliesPerGameError,
+                    drawWatchPDrawThresholdError: model.drawWatchPDrawThresholdError,
                     onLiveSelfPlayDrawKeepFractionChange: { model.applyLiveSelfPlayDrawKeepFraction($0) },
                     onLiveMaxPliesPerGameChange: { model.applyLiveMaxPliesPerGame($0) },
+                    onLiveDrawWatchPDrawThresholdChange: { model.applyLiveDrawWatchPDrawThreshold($0) },
                     parallelStats: parallelStats
                 )
             case .replay:
@@ -738,6 +742,7 @@ private struct SelfPlayTab: View {
     @Binding var selfPlayFloorTauText: String
     @Binding var selfPlayDrawKeepFractionText: String
     @Binding var selfPlayMaxPliesPerGameText: String
+    @Binding var drawWatchPDrawThresholdText: String
 
     let selfPlayConcurrencyError: Bool
     let selfPlayStartTauError: Bool
@@ -745,6 +750,7 @@ private struct SelfPlayTab: View {
     let selfPlayFloorTauError: Bool
     let selfPlayDrawKeepFractionError: Bool
     let selfPlayMaxPliesPerGameError: Bool
+    let drawWatchPDrawThresholdError: Bool
 
     /// Live-propagate handler. Fires on every edit-text change that
     /// parses to a valid `[0, 1]` Double — writes through to
@@ -761,6 +767,14 @@ private struct SelfPlayTab: View {
     /// new value at game start. Cancel reverts via the model's
     /// stash; Save updates the stash.
     let onLiveMaxPliesPerGameChange: (Int) -> Void
+
+    /// Live-propagate handler for the draw-watch pDraw threshold.
+    /// The driver re-reads
+    /// `TrainingParameters.shared.drawWatchPDrawThreshold` at the
+    /// start of each tick, so a mid-session edit affects the next
+    /// per-ply pDraw check on every worker slot. Cancel reverts
+    /// via the model's stash; Save updates the stash.
+    let onLiveDrawWatchPDrawThresholdChange: (Double) -> Void
 
     /// Live snapshot of the parallel-worker stats box; drives the
     /// "Emitted games" readout's W/L/D + plies-per-hour rows. `nil`
@@ -961,6 +975,39 @@ private struct SelfPlayTab: View {
                     } else if let v = Double(trimmed),
                               v >= 0.0, v <= 1.0, v.isFinite {
                         onLiveSelfPlayDrawKeepFractionChange(v)
+                    }
+                }
+                // Draw-watch pDraw threshold — observability knob
+                // for the Draw-watch chart tile. Live-propagated to
+                // `TrainingParameters.shared.drawWatchPDrawThreshold`;
+                // the self-play driver re-reads it at the start of
+                // every tick (one MainActor hop per tick). Stealth
+                // monitor — does not change gameplay.
+                PopoverRow(
+                    label: "Draw-watch threshold:",
+                    text: $drawWatchPDrawThresholdText,
+                    error: drawWatchPDrawThresholdError,
+                    placeholder: "0.95"
+                ) {
+                    Stepper(
+                        "",
+                        value: liveDoubleBinding(
+                            text: $drawWatchPDrawThresholdText,
+                            fallback: 0.95,
+                            format: "%.2f",
+                            onChange: onLiveDrawWatchPDrawThresholdChange
+                        ),
+                        in: 0.5...1.0,
+                        step: 0.01
+                    )
+                }
+                .onChange(of: drawWatchPDrawThresholdText) { _, newValue in
+                    let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                    if trimmed.isEmpty {
+                        onLiveDrawWatchPDrawThresholdChange(0.95)
+                    } else if let v = Double(trimmed),
+                              v >= 0.5, v <= 1.0, v.isFinite {
+                        onLiveDrawWatchPDrawThresholdChange(v)
                     }
                 }
                 liveEmittedGamesReadout

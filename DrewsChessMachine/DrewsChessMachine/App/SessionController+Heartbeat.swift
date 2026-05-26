@@ -319,14 +319,15 @@ extension SessionController {
         // Draw-watch snapshot mirror. Off-main `asyncSnapshot()` hops
         // via DispatchQueue so the main actor doesn't wait on the
         // tracker's lock when a worker holds it. Dirty-checked on the
-        // observed-games counter (the cheapest scalar that increments
-        // on every game completion) so SwiftUI doesn't invalidate the
-        // chart tile every tick for an idle session.
+        // rolling-window total-games + flagged-games counters
+        // (cheap scalars; the bucket arrays move in lockstep with
+        // these) so SwiftUI doesn't invalidate the chart tile every
+        // tick for an idle session.
         if let tracker = drawWatchTracker {
             let snap = await tracker.asyncSnapshot()
-            let priorGames = drawWatchSnapshot?.totalGamesObserved ?? -1
-            let priorFlags = drawWatchSnapshot?.flags.count ?? -1
-            if snap.totalGamesObserved != priorGames || snap.flags.count != priorFlags {
+            let priorTotal = drawWatchSnapshot?.totalGames ?? -1
+            let priorFlagged = drawWatchSnapshot?.flaggedGames ?? -1
+            if snap.totalGames != priorTotal || snap.flaggedGames != priorFlagged {
                 drawWatchSnapshot = snap
                 chartCoordinator?.setDrawWatchSnapshot(snap)
             }

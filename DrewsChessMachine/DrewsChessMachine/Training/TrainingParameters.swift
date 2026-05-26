@@ -354,6 +354,16 @@ public enum SelfPlayDrawKeepFraction: TrainingParameterKey {}
 public enum SelfPlayMaxPliesPerGame: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Draw-Watch pDraw Threshold",
+    description: "Per-ply pDraw value (W/D/L softmax draw slot) a self-play position must clear to count toward the draw-watch streak. When 8 consecutive plies in the same game clear this threshold, the game is flagged on the Draw-watch chart tile. Stealth-only — flagging does NOT terminate the game; both sides play it out. Lowering this catches more games (and earlier); raising it tightens the precision-toward-draw calibration.",
+    default: 0.95,
+    range: 0.5...1.0,
+    category: "Self-Play Sampling",
+    liveTunable: true
+)
+public enum DrawWatchPDrawThreshold: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Arena Start Tau",
     description: "Initial sampling temperature for arena games. Tighter than self-play to improve W/L/D signal.",
     default: 0.6,
@@ -635,6 +645,7 @@ public extension TrainingParametersSnapshot {
     var selfPlayTauDecayPerPly: Double { value(for: SelfPlayTauDecayPerPly.self) }
     var selfPlayDrawKeepFraction: Double { value(for: SelfPlayDrawKeepFraction.self) }
     var selfPlayMaxPliesPerGame: Int { value(for: SelfPlayMaxPliesPerGame.self) }
+    var drawWatchPDrawThreshold: Double { value(for: DrawWatchPDrawThreshold.self) }
     var arenaStartTau: Double { value(for: ArenaStartTau.self) }
     var arenaTargetTau: Double { value(for: ArenaTargetTau.self) }
     var arenaTauDecayPerPly: Double { value(for: ArenaTauDecayPerPly.self) }
@@ -688,6 +699,7 @@ public final class TrainingParameters {
     public var selfPlayTauDecayPerPly: Double { didSet { Self.persist(SelfPlayTauDecayPerPly.self, value: selfPlayTauDecayPerPly) } }
     public var selfPlayDrawKeepFraction: Double { didSet { Self.persist(SelfPlayDrawKeepFraction.self, value: selfPlayDrawKeepFraction) } }
     public var selfPlayMaxPliesPerGame: Int { didSet { Self.persist(SelfPlayMaxPliesPerGame.self, value: selfPlayMaxPliesPerGame) } }
+    public var drawWatchPDrawThreshold: Double { didSet { Self.persist(DrawWatchPDrawThreshold.self, value: drawWatchPDrawThreshold) } }
     public var arenaStartTau: Double { didSet { Self.persist(ArenaStartTau.self, value: arenaStartTau) } }
     public var arenaTargetTau: Double { didSet { Self.persist(ArenaTargetTau.self, value: arenaTargetTau) } }
     public var arenaTauDecayPerPly: Double { didSet { Self.persist(ArenaTauDecayPerPly.self, value: arenaTauDecayPerPly) } }
@@ -734,6 +746,7 @@ public final class TrainingParameters {
         self.selfPlayTauDecayPerPly = Self.read(SelfPlayTauDecayPerPly.self)
         self.selfPlayDrawKeepFraction = Self.read(SelfPlayDrawKeepFraction.self)
         self.selfPlayMaxPliesPerGame = Self.read(SelfPlayMaxPliesPerGame.self)
+        self.drawWatchPDrawThreshold = Self.read(DrawWatchPDrawThreshold.self)
         self.arenaStartTau = Self.read(ArenaStartTau.self)
         self.arenaTargetTau = Self.read(ArenaTargetTau.self)
         self.arenaTauDecayPerPly = Self.read(ArenaTauDecayPerPly.self)
@@ -786,6 +799,7 @@ public final class TrainingParameters {
         v[SelfPlayTauDecayPerPly.id] = SelfPlayTauDecayPerPly.encode(selfPlayTauDecayPerPly)
         v[SelfPlayDrawKeepFraction.id] = SelfPlayDrawKeepFraction.encode(selfPlayDrawKeepFraction)
         v[SelfPlayMaxPliesPerGame.id] = SelfPlayMaxPliesPerGame.encode(selfPlayMaxPliesPerGame)
+        v[DrawWatchPDrawThreshold.id] = DrawWatchPDrawThreshold.encode(drawWatchPDrawThreshold)
         v[ArenaStartTau.id] = ArenaStartTau.encode(arenaStartTau)
         v[ArenaTargetTau.id] = ArenaTargetTau.encode(arenaTargetTau)
         v[ArenaTauDecayPerPly.id] = ArenaTauDecayPerPly.encode(arenaTauDecayPerPly)
@@ -863,6 +877,8 @@ public final class TrainingParameters {
             try SelfPlayDrawKeepFraction.definition.validate(raw); selfPlayDrawKeepFraction = try SelfPlayDrawKeepFraction.decode(raw)
         case SelfPlayMaxPliesPerGame.id:
             try SelfPlayMaxPliesPerGame.definition.validate(raw); selfPlayMaxPliesPerGame = try SelfPlayMaxPliesPerGame.decode(raw)
+        case DrawWatchPDrawThreshold.id:
+            try DrawWatchPDrawThreshold.definition.validate(raw); drawWatchPDrawThreshold = try DrawWatchPDrawThreshold.decode(raw)
         case ArenaStartTau.id:
             try ArenaStartTau.definition.validate(raw); arenaStartTau = try ArenaStartTau.decode(raw)
         case ArenaTargetTau.id:
@@ -998,6 +1014,7 @@ public final class TrainingParameters {
         SelfPlayTauDecayPerPly.self,
         SelfPlayDrawKeepFraction.self,
         SelfPlayMaxPliesPerGame.self,
+        DrawWatchPDrawThreshold.self,
         ArenaStartTau.self,
         ArenaTargetTau.self,
         ArenaTauDecayPerPly.self,

@@ -303,6 +303,16 @@ extension SessionController {
                         "[RESUME-PARAM] self_play_max_plies_per_game: saved=nil applied=\(TrainingParameters.shared.selfPlayMaxPliesPerGame) (defaulted)"
                     )
                 }
+                if let v = rs.drawWatchPDrawThreshold {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] draw_watch_p_draw_threshold: \(TrainingParameters.shared.drawWatchPDrawThreshold) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.drawWatchPDrawThreshold = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] draw_watch_p_draw_threshold: saved=nil applied=\(TrainingParameters.shared.drawWatchPDrawThreshold) (defaulted)"
+                    )
+                }
                 // LR warmup length and sqrt-batch LR scaling are now
                 // part of the session schema (Optional, for back-compat
                 // with older `.dcmsession` files that pre-date the
@@ -1764,18 +1774,15 @@ extension SessionController {
                         SessionLogger.shared.log(line)
 
                         // [DRAW-WATCH] summary — piggyback on the same
-                        // periodic cadence. Cheap snapshot read; no-op
-                        // formatting for empty counters so the line is
-                        // legible from the first emit on. "--" for the
+                        // periodic cadence. Rolling 30-min window
+                        // (matches the chart tile). "--" for the
                         // precision metric until the first non-cap
-                        // flagged game completes (the metric is
-                        // mathematically undefined before then).
+                        // flagged game completes inside the window.
                         let drawSnap = drawWatch.snapshot()
                         let dwPctG = drawSnap.fractionOfGamesFlagged.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
-                        let dwPctP = drawSnap.fractionOfPliesInFlaggedStreaks.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
                         let dwAcc = drawSnap.flagDrawAccuracy.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
                         SessionLogger.shared.log(
-                            "[DRAW-WATCH] summary flags=\(drawSnap.flags.count) games=\(dwPctG) plies=\(dwPctP) →draw=\(dwAcc)"
+                            "[DRAW-WATCH] summary window=30min N=\(drawSnap.totalGames) flagged=\(drawSnap.flaggedGames) games=\(dwPctG) →draw=\(dwAcc)"
                         )
 
                         // CLI `--output` capture: one StatsLine per

@@ -1,13 +1,17 @@
 import Charts
 import SwiftUI
 
-/// Stealth-mode `pDraw` watch histogram tile. X axis is fixed-width
-/// 20-ply buckets (`[0,20), [20,40), ..., [(B-1)*20, B*20)`); bars
-/// show count of flag-fires whose `plyIndex` falls in the bucket.
-/// Header summary surfaces session-wide `% games flagged`, `% plies
-/// in flagged streaks`, and the v1 calibration metric `flag→draw
-/// precision` (excluding cap-terminated games from the precision
-/// denominator — see `DRAW_WATCH_PLAN.md` locked decision #5).
+/// Stealth-mode `pDraw` watch histogram tile. Per-game bars: bucket
+/// `i` shows the count of GAMES (in the rolling window) whose 8-ply
+/// streak first completed at a ply in `[i*width, (i+1)*width)`. Hover
+/// a bar to see that bucket's flag→draw precision — of the games in
+/// the bucket, the fraction that actually finished as draws
+/// (excluding ply-cap-terminated games per the locked plan decision).
+///
+/// Header summary surfaces the same two metrics aggregated across all
+/// buckets: `games=A.A%` (of completed games, how many flagged at
+/// least once) and `→draw=B.B%` (of flagged-non-cap-terminated games,
+/// the fraction that drew).
 ///
 /// `snapshot` is nil before the first `DrawWatchSnapshot` has been
 /// mirrored off the tracker by the heartbeat; the tile renders an
@@ -20,8 +24,8 @@ struct DrawWatchHistogramChart: View {
 
     private struct Bar: Identifiable, Equatable {
         let id: Int          // bucket index 0..<histogramBucketCount
-        let label: String    // e.g. "0-20"
-        let count: Int
+        let label: String    // e.g. "0-40"
+        let count: Int       // gamesFlaggedByBucket[id]
     }
 
     private static let barColor: Color = Color(hue: 0.58, saturation: 0.65, brightness: 0.85)
@@ -34,11 +38,11 @@ struct DrawWatchHistogramChart: View {
         for i in 0..<n {
             let low = i * w
             let high = low + w
-            // Last bucket is the "and up" overflow bin — label it so
-            // a future raise of `selfPlayMaxPliesPerGame` past
-            // `n * w` makes the histogram's accumulation point obvious.
+            // Last bucket is the "and up" overflow bin — labeled so a
+            // future raise of `selfPlayMaxPliesPerGame` past `n*w`
+            // makes the accumulation point obvious.
             let label = (i == n - 1) ? "\(low)+" : "\(low)-\(high)"
-            let count = snap?.plyBucketHistogram[safe: i] ?? 0
+            let count = snap?.gamesFlaggedByBucket[safe: i] ?? 0
             out.append(Bar(id: i, label: label, count: count))
         }
         return out
@@ -50,16 +54,17 @@ struct DrawWatchHistogramChart: View {
         let header = headerText(snapshot: snapshot, bars: bars)
         return VStack(alignment: .leading, spacing: 1) {
             ChartTileHeader(
-                title: "Draw-watch (pDraw ≥ 0.95 × 8 plies)",
+                title: "Draw-watch (8-ply pDraw streak)",
                 value: header,
                 titleHelp: AttributedString("""
-                    Stealth-mode monitor of the W/D/L value head during self-play. Each bar is the count \
-                    of "draw-watch flag" events whose firing ply fell in that 20-ply bucket. A flag \
-                    fires when pDraw ≥ 0.95 for 8 consecutive plies on the same game; the game continues \
-                    playing — flagging does NOT terminate it. Header reads: flags total · % of games \
-                    that flagged at least once · % of plies inside flagged streaks · "→draw" = of \
-                    flagged games (excluding ply-cap-terminated), the fraction that actually finished \
-                    as draws (the flag's draw-precision calibration).
+                    Stealth-mode monitor of the W/D/L value head during self-play. Each bar = number \
+                    of distinct GAMES in the last 30 min whose 8-ply pDraw streak first completed at \
+                    a ply inside that 40-ply bucket. Hover a bar to see that bucket's draw-precision \
+                    (of those games, excluding ply-cap-terminated, the fraction that ended in a draw). \
+                    Header: games=% of all completed games that flagged at least once · →draw=% of \
+                    those (excluding ply-cap-terminated) that finished as draws. Threshold is the \
+                    "Draw-Watch pDraw Threshold" param in Self-Play Sampling (default 0.95). \
+                    Flagging does NOT terminate the game — purely observational.
                     """)
             )
             Chart(bars) { bar in
@@ -127,14 +132,16 @@ struct DrawWatchHistogramChart: View {
 
     private func headerText(snapshot: DrawWatchSnapshot?, bars: [Bar]) -> String {
         if let hoveredID = hoveredBucketIndex,
-           let bar = bars.first(where: { $0.id == hoveredID }) {
-            return "\(bar.label) plies: \(bar.count)"
+           let bar = bars.first(where: { $0.id == hoveredID }),
+           let snap = snapshot {
+            let acc = snap.drawAccuracyForBucket(hoveredID)
+                .map { String(format: "%.1f%%", $0 * 100) } ?? "--"
+            return "\(bar.label): games=\(bar.count) →draw=\(acc)"
         }
-        guard let s = snapshot else { return "--" }
+        guard let s = snapshot, s.totalGames > 0 else { return "-- (last 30 min)" }
         let pctG = s.fractionOfGamesFlagged.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
-        let pctP = s.fractionOfPliesInFlaggedStreaks.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
         let acc = s.flagDrawAccuracy.map { String(format: "%.1f%%", $0 * 100) } ?? "--"
-        return "flags=\(s.flags.count) · games=\(pctG) · plies=\(pctP) · →draw=\(acc)"
+        return "games=\(pctG) · →draw=\(acc) (last 30 min, N=\(s.totalGames))"
     }
 }
 

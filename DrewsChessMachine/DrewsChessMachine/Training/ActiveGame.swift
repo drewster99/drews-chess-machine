@@ -150,24 +150,23 @@ final class ActiveGame: @unchecked Sendable {
     // MARK: - Draw-watch (stealth pDraw monitor — does NOT affect gameplay)
 
     /// Running count of consecutive plies (any side) for which the
-    /// network reported `pDraw >= DrawWatchTracker.flagThresholdPDraw`.
+    /// network reported `pDraw >= drawWatchPDrawThreshold` (read once
+    /// per tick by the driver from `TrainingParameters.shared`).
     /// Reset to 0 at game start and on any below-threshold ply. The
     /// driver inspects this counter inline inside the network's
     /// `consume` closure, before recording the ply. **Observation only**
     /// — the value never influences move selection or termination.
     var drawWatchConsecutivePliesAboveThreshold: UInt16 = 0
 
-    /// True iff the current sustained streak already raised one flag
-    /// (i.e. the streak hit `flagStreakLength`). Prevents the same
-    /// streak from re-firing on every subsequent ply that stays above
-    /// threshold. Cleared whenever the streak resets to 0.
-    var drawWatchFiredThisStreak: Bool = false
-
-    /// Sticky-true across the whole game: set true the first time ANY
-    /// streak fires; cleared only at game start. The driver consults
-    /// this at game-end to decide whether to attribute the game's
-    /// eventual outcome to the flag's draw-precision metric.
-    var drawWatchEverFiredThisGame: Bool = false
+    /// 0-indexed game-total ply at which the 8-ply streak FIRST
+    /// completed this game (i.e. the 8th consecutive above-threshold
+    /// ply). `nil` until that happens — and stays at the first value
+    /// for the rest of the game; subsequent streaks within the same
+    /// game do NOT overwrite it. Reset to nil on game start. The
+    /// driver passes this to `DrawWatchTracker.recordGameCompleted`
+    /// at game-end so the tracker can bucket the game by where its
+    /// confident-draw signal first appeared.
+    var drawWatchFirstFlagPlyIndex: UInt16?
 
     // MARK: - Convenience
 
@@ -261,8 +260,7 @@ final class ActiveGame: @unchecked Sendable {
         whitePliesRecorded = 0
         blackPliesRecorded = 0
         drawWatchConsecutivePliesAboveThreshold = 0
-        drawWatchFiredThisStreak = false
-        drawWatchEverFiredThisGame = false
+        drawWatchFirstFlagPlyIndex = nil
 
         let neededSideCap = (newCap + 1) / 2
         if neededSideCap > perSideCap {

@@ -327,17 +327,25 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         //     (`K * 3` floats, slot order `[win, draw, loss]`). The
         //     draw-watch monitor reads `pDraw = wdl[i*3 + 1]` for each
         //     slot inline here, updates the per-game streak counter on
-        //     the slot's `ActiveGame`, and (if the streak just hit
-        //     `flagStreakLength`) submits a flag to the session-wide
-        //     `DrawWatchTracker`. The tracker is the only thing the
-        //     closure touches besides the per-slot games — single
-        //     ownership of each slot keeps the per-game state
-        //     race-free.
+        //     the slot's `ActiveGame`, and (the first time the streak
+        //     completes the trigger length) latches the ply at which
+        //     it happened into `game.drawWatchFirstFlagPlyIndex` for
+        //     the tracker to bucket at game-end. The tracker itself
+        //     is not touched per-fire (per-game observations land at
+        //     game-end in `handleGameEnds`).
+        //
+        //     `drawWatchThreshold` is read once per tick from
+        //     `TrainingParameters.shared.drawWatchPDrawThreshold` so
+        //     a live UI edit takes effect on the next tick. The cost
+        //     is one MainActor hop per tick, matching the pattern
+        //     `handleGameEnds` uses for `drawKeepFraction` / `nextMaxPlies`.
+        let drawWatchThreshold: Float = await MainActor.run {
+            Float(TrainingParameters.shared.drawWatchPDrawThreshold)
+        }
         let floatCount = K * boardFloats
         let policyTarget = MutablePointerCarrier(pointer: policyOut)
         let valueTarget = MutablePointerCarrier(pointer: valueOut)
         let policySize = ChessNetwork.policySize
-        let tracker = drawWatchTracker
         let gamesSnapshot = games
         do {
             try await network.evaluateBatched(
@@ -356,8 +364,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // touched by exactly this thread for the duration of
                 // consume, so no aliasing across slots; per-slot
                 // mutation is single-task-owned.
-                guard let tracker, let wdlBase = wdlBuf.baseAddress else { return }
-                let threshold = DrawWatchTracker.flagThresholdPDraw
+                guard let wdlBase = wdlBuf.baseAddress else { return }
                 let triggerLen = DrawWatchTracker.flagStreakLength
                 for i in 0..<K {
                     let game = gamesSnapshot[i]
@@ -367,41 +374,29 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                     // terminal position that won't be played from.
                     if game.engine.result != nil { continue }
                     let pDraw = wdlBase[i * 3 + 1]
-                    if pDraw >= threshold {
+                    if pDraw >= drawWatchThreshold {
                         let newStreak = game.drawWatchConsecutivePliesAboveThreshold &+ 1
                         game.drawWatchConsecutivePliesAboveThreshold = newStreak
-                        if Int(newStreak) == triggerLen && !game.drawWatchFiredThisStreak {
-                            game.drawWatchFiredThisStreak = true
-                            game.drawWatchEverFiredThisGame = true
-                            // The ply currently under consideration is
-                            // the 0-indexed total-plies count BEFORE
-                            // this move is recorded — same convention
-                            // as the per-game-total ply attached to
-                            // recordPly below.
+                        if Int(newStreak) == triggerLen && game.drawWatchFirstFlagPlyIndex == nil {
+                            // Latch the ply at which the streak first
+                            // completed. The plyIdx is the 0-indexed
+                            // total-plies count BEFORE this move is
+                            // recorded (recordPly fires after sample +
+                            // apply downstream). Subsequent streaks
+                            // within the same game do NOT overwrite
+                            // this — we only care about WHERE the
+                            // network's confident-draw signal first
+                            // appeared, per the user's spec.
                             let plyIdx = UInt16(min(game.totalPliesPlayed, Int(UInt16.max)))
-                            let streakStart = plyIdx &- UInt16(triggerLen - 1)
-                            tracker.recordFlag(DrawWatchFlag(
-                                workerId: game.workerId,
-                                intraWorkerGameIndex: game.intraWorkerGameIndex,
-                                plyIndex: plyIdx,
-                                streakStartPly: streakStart,
-                                pDrawAtFire: pDraw,
-                                timestamp: Date()
-                            ))
-                            SessionLogger.shared.log(String(
-                                format: "[DRAW-WATCH] flag worker=%d game=%d ply=%d streakStart=%d pDraw=%.3f",
-                                game.workerId, game.intraWorkerGameIndex,
-                                plyIdx, streakStart, pDraw
-                            ))
+                            game.drawWatchFirstFlagPlyIndex = plyIdx
                         }
                     } else if game.drawWatchConsecutivePliesAboveThreshold > 0 {
-                        // Streak breaks. Tell the tracker the final
-                        // length (only matters when it was at or above
-                        // the trigger length — the tracker filters).
-                        let finalLen = Int(game.drawWatchConsecutivePliesAboveThreshold)
-                        tracker.recordStreakEnded(streakLength: finalLen)
+                        // Streak breaks. Reset the counter so a new
+                        // streak can form later in the game. (We do
+                        // not track sub-threshold streak lengths in
+                        // this v2 design — the per-game first-flag
+                        // ply is the only thing the chart needs.)
                         game.drawWatchConsecutivePliesAboveThreshold = 0
-                        game.drawWatchFiredThisStreak = false
                     }
                 }
             }
@@ -592,19 +587,6 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
             let gameDurationMs = (CFAbsoluteTimeGetCurrent() - g.gameStartedAt) * 1000
             let positions = g.totalPliesPlayed
 
-            // Draw-watch: tell the tracker about any streak that's
-            // still active at game-end (sub-threshold streaks are
-            // filtered inside `recordStreakEnded`), then submit the
-            // per-game completion observation. The `wasCapTerminated`
-            // flag drives the per-plan exclusion of cap-terminated
-            // games from the flag-precision metric — see
-            // `DRAW_WATCH_PLAN.md` locked decision #5.
-            if let tracker = drawWatchTracker {
-                if g.drawWatchConsecutivePliesAboveThreshold > 0 {
-                    tracker.recordStreakEnded(streakLength: Int(g.drawWatchConsecutivePliesAboveThreshold))
-                }
-            }
-
             if let result = natural {
                 statsBox.recordCompletedGame(
                     moves: positions, durationMs: gameDurationMs, result: result
@@ -654,20 +636,16 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // encoding matches `ReplayBuffer.append`'s convention
                 // (`|x| < 0.5` ⇒ draw): we report `0.0` for draws and
                 // `1.0` for decisive results — the tracker only cares
-                // about draw-vs-not, not white-vs-black.
+                // about draw-vs-not. `firstFlagPlyIndex` is nil for
+                // games that never reached the 8-ply streak; the
+                // tracker treats nil as "not flagged" (excluded from
+                // the bucket histogram and the precision denominator).
                 drawWatchTracker?.recordGameCompleted(
                     plyCount: positions,
-                    wasFlagged: g.drawWatchEverFiredThisGame,
+                    firstFlagPlyIndex: g.drawWatchFirstFlagPlyIndex,
                     wasCapTerminated: false,
                     outcome: isDraw ? 0.0 : 1.0
                 )
-                if g.drawWatchEverFiredThisGame {
-                    let outcomeLabel = isDraw ? "draw" : "decisive"
-                    SessionLogger.shared.log(String(
-                        format: "[DRAW-WATCH] outcome worker=%d game=%d plies=%d outcome=%@",
-                        g.workerId, g.intraWorkerGameIndex, positions, outcomeLabel
-                    ))
-                }
             } else {
                 // max-plies dropped: stats, diversity, length feed, but
                 // no flush and no emitted-game count.
@@ -683,16 +661,10 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // (locked decision #5).
                 drawWatchTracker?.recordGameCompleted(
                     plyCount: positions,
-                    wasFlagged: g.drawWatchEverFiredThisGame,
+                    firstFlagPlyIndex: g.drawWatchFirstFlagPlyIndex,
                     wasCapTerminated: true,
                     outcome: 0.0   // ignored when wasCapTerminated
                 )
-                if g.drawWatchEverFiredThisGame {
-                    SessionLogger.shared.log(String(
-                        format: "[DRAW-WATCH] outcome worker=%d game=%d plies=%d outcome=cap-terminated",
-                        g.workerId, g.intraWorkerGameIndex, positions
-                    ))
-                }
             }
 
             // Reset slot for the next game using the latest schedule

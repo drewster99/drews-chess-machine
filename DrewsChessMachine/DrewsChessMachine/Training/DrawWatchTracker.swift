@@ -1,229 +1,236 @@
 import Foundation
 import os
 
-/// One flag-fire event: emitted when a self-play game's W/D/L head
-/// reports `pDraw ≥ DrawWatchTracker.flagThresholdPDraw` for
-/// `DrawWatchTracker.flagStreakLength` consecutive plies. **Observation
-/// only — does not influence the game in any way; the game continues
-/// playing to its natural conclusion.**
+/// One completed-game observation submitted to `DrawWatchTracker` by
+/// the self-play driver at game-end. Carries everything the rolling
+/// window needs to recompute the chart tile's bars and metrics on
+/// each snapshot.
 ///
-/// `plyIndex` is the 0-indexed half-move count at which the streak
-/// reached its trigger length (i.e. the 8th ply of the streak when
-/// `flagStreakLength == 8`). `streakStartPly = plyIndex - (flagStreakLength - 1)`.
-struct DrawWatchFlag: Sendable, Equatable {
-    let workerId: UInt16
-    let intraWorkerGameIndex: UInt32
-    let plyIndex: UInt16
-    let streakStartPly: UInt16
-    let pDrawAtFire: Float
+/// `firstFlagPlyIndex` is the 0-indexed game-total ply at which the
+/// 8-ply streak first completed for this game — i.e. the 8th
+/// consecutive ply meeting the pDraw threshold. `nil` when the game
+/// never reached an 8-ply streak (sub-threshold games never enter the
+/// histogram). `wasCapTerminated` is `true` iff the game ended
+/// because it hit `selfPlayMaxPliesPerGame` rather than via a chess-
+/// rule terminator — cap-terminated games are excluded from the
+/// flag→draw precision denominator (locked decision #5 in
+/// DRAW_WATCH_PLAN.md).
+struct DrawWatchGameObservation: Sendable, Equatable {
     let timestamp: Date
+    let plyCount: Int
+    let firstFlagPlyIndex: UInt16?
+    let wasCapTerminated: Bool
+    /// Outcome encoding matches `ReplayBuffer.append`: `|outcome| < 0.5`
+    /// ⇒ draw. We only ever distinguish draw vs not-draw downstream
+    /// (the W-vs-L split isn't useful for the precision metric), but
+    /// store the original Float so the rule stays in one place.
+    let outcome: Float
 }
 
-/// Sendable, value-typed snapshot of `DrawWatchTracker`'s state for the
-/// UI heartbeat to mirror into `@State`. Captures both raw counters and
-/// derived metrics so consumers don't have to recompute.
+/// Sendable, value-typed snapshot of `DrawWatchTracker`'s rolling-
+/// window aggregates. Recomputed on every `snapshot()` call from the
+/// current resident observations after pruning anything older than
+/// `DrawWatchTracker.windowSec`.
 struct DrawWatchSnapshot: Sendable, Equatable {
-    let flags: [DrawWatchFlag]
-    let totalGamesObserved: Int
-    let totalPliesObserved: Int
-    let totalPliesInFlaggedStreaks: Int
-    let flaggedGamesObserved: Int
-    /// Subset of `flaggedGamesObserved` that did NOT hit the ply cap
-    /// (cap-terminated games are excluded from precision math — see
-    /// `DRAW_WATCH_PLAN.md` locked decision #5).
-    let flaggedGamesEligibleForPrecision: Int
-    let flaggedGamesEndedInDraw: Int
-    let flaggedGamesEndedInDecisive: Int
-    /// Histogram of flag-fire `plyIndex` values, bucketed into fixed
-    /// 20-ply buckets `[0,20), [20,40), ..., [(B-1)*20, B*20)`. Length
-    /// equals `DrawWatchTracker.histogramBucketCount`. Entries past the
-    /// last bucket's right edge are clamped into the last bucket so a
-    /// future `selfPlayMaxPliesPerGame` raise doesn't silently drop them.
-    let plyBucketHistogram: [Int]
+    /// Total completed games observed in the active window.
+    let totalGames: Int
+    /// Subset of `totalGames` whose `firstFlagPlyIndex != nil` —
+    /// i.e. the game raised a flag (8-ply streak completed) at least
+    /// once.
+    let flaggedGames: Int
+    /// Subset of `flaggedGames` whose final outcome counts toward the
+    /// precision ratio (i.e. `!wasCapTerminated`). Snapshot denominator
+    /// for `flagDrawAccuracy` and per-bucket precision; reported
+    /// separately so consumers can show the selection-effect.
+    let flaggedGamesEligible: Int
+    /// Subset of `flaggedGamesEligible` whose final outcome was a
+    /// draw (`|outcome| < 0.5`).
+    let flaggedGamesDrawn: Int
+    /// Per-bucket flagged-game count. Bucket `i` covers
+    /// `[i * bucketWidth, (i+1) * bucketWidth)` plies; the last
+    /// bucket clamps anything `>= histogramBucketCount * bucketWidth`.
+    /// Length equals `DrawWatchTracker.histogramBucketCount`.
+    let gamesFlaggedByBucket: [Int]
+    /// Per-bucket eligible-game count (the precision denominator for
+    /// that bucket).
+    let gamesEligibleByBucket: [Int]
+    /// Per-bucket drawn-game count. `gamesEligibleByBucket - this` is
+    /// the bucket's decisive-game count.
+    let gamesDrawnByBucket: [Int]
+    /// Length of the active rolling window, in seconds. Surfaced so
+    /// the chart header can label "(last 30 min)" without hard-coding
+    /// the value at the call site.
+    let windowSec: Double
 
-    /// `flaggedGames / totalGames` as a fraction in `[0, 1]`. `nil` when
-    /// no games have completed yet.
+    /// `flaggedGames / totalGames` as a fraction in `[0, 1]`. `nil`
+    /// when the window holds no completed games yet.
     var fractionOfGamesFlagged: Double? {
-        guard totalGamesObserved > 0 else { return nil }
-        return Double(flaggedGamesObserved) / Double(totalGamesObserved)
+        guard totalGames > 0 else { return nil }
+        return Double(flaggedGames) / Double(totalGames)
     }
 
-    /// `pliesInFlaggedStreaks / totalPlies` as a fraction in `[0, 1]`.
-    /// `nil` when no plies have been observed yet.
-    var fractionOfPliesInFlaggedStreaks: Double? {
-        guard totalPliesObserved > 0 else { return nil }
-        return Double(totalPliesInFlaggedStreaks) / Double(totalPliesObserved)
-    }
-
-    /// "Of the games we flagged (excluding cap-terminated), what
-    /// fraction actually ended in a draw?" — the v1 calibration metric.
-    /// `nil` until at least one non-cap flagged game has completed.
+    /// Of the games we flagged (excluding cap-terminated), the
+    /// fraction that actually ended in a draw — the v1 calibration
+    /// metric. `nil` until at least one eligible flagged game has
+    /// completed inside the window.
     var flagDrawAccuracy: Double? {
-        guard flaggedGamesEligibleForPrecision > 0 else { return nil }
-        return Double(flaggedGamesEndedInDraw) / Double(flaggedGamesEligibleForPrecision)
+        guard flaggedGamesEligible > 0 else { return nil }
+        return Double(flaggedGamesDrawn) / Double(flaggedGamesEligible)
+    }
+
+    /// Per-bucket draw-precision fraction. `nil` for buckets whose
+    /// eligible count is zero (rendered as "--" by the chart). Other
+    /// buckets return `gamesDrawnByBucket[i] / gamesEligibleByBucket[i]`.
+    func drawAccuracyForBucket(_ i: Int) -> Double? {
+        guard gamesEligibleByBucket.indices.contains(i),
+              gamesEligibleByBucket[i] > 0 else { return nil }
+        return Double(gamesDrawnByBucket[i]) / Double(gamesEligibleByBucket[i])
     }
 }
 
-/// Session-wide aggregator of `DrawWatchFlag` events emitted by
-/// self-play workers, plus the per-game completion observations needed
-/// to compute the flag's draw-precision metric.
+/// Rolling-window aggregator of self-play game-end observations for
+/// the stealth-mode draw-watch monitor. Designed to be hit from
+/// off-main worker threads — each `BatchedSelfPlayDriver` task calls
+/// `recordGameCompleted` at game-end while the heartbeat reads via
+/// `asyncSnapshot()`. Internal `OSAllocatedUnfairLock` matches the
+/// project's `ParallelWorkerStatsBox` / `GameDiversityTracker`
+/// convention. The snapshot performs the prune + per-bucket
+/// aggregation on each read; the per-game ring stays small enough
+/// (max ~110k games/hr × 30-min window ≈ 55k entries at peak self-
+/// play rates) that the O(N) walk is negligible against the
+/// heartbeat's 5-second cadence.
 ///
-/// Designed to be hit from off-main worker threads — each
-/// `BatchedSelfPlayDriver` task may call `recordFlag`, `recordStreakEnded`,
-/// and `recordGameCompleted` while the heartbeat reads via the off-main
-/// `asyncSnapshot()`. State is protected by an internal
-/// `OSAllocatedUnfairLock`, matching the project's
-/// `ParallelWorkerStatsBox` / `GameDiversityTracker` convention.
-///
-/// **Stealth-mode v1 — no game termination.** Recording a flag does
-/// NOT signal the worker to end the game; the game plays out as normal
-/// and its eventual outcome is later fed back via `recordGameCompleted`.
-/// See `DRAW_WATCH_PLAN.md` for the full design.
+/// **Stealth-mode v1 — no game termination.** Recording an
+/// observation does NOT signal the worker to end the game. Both the
+/// observation submission and the in-flight per-game streak counter
+/// (on `ActiveGame`) are purely diagnostic; the game plays out as
+/// normal and its eventual outcome is reported here at game-end.
+/// See `DRAW_WATCH_PLAN.md`.
 final class DrawWatchTracker: @unchecked Sendable {
 
     // MARK: - Public constants (locked design)
 
-    /// pDraw threshold a single ply must clear to count toward the
-    /// running streak.
-    static let flagThresholdPDraw: Float = 0.95
+    /// Default pDraw threshold a single ply must clear to count
+    /// toward the running streak — overridable per-tick by reading
+    /// `TrainingParameters.shared.drawWatchPDrawThreshold` (which
+    /// `BatchedSelfPlayDriver` does at the top of each tick). This
+    /// constant is the value the parameter ships at and the value
+    /// the tests pin against.
+    static let defaultFlagThresholdPDraw: Float = 0.95
 
     /// Number of consecutive plies above the threshold required to
     /// raise one flag.
     static let flagStreakLength: Int = 8
 
-    /// Fixed bucket width (in plies) for the histogram. 20 plies per
-    /// bucket survives any future raise of `selfPlayMaxPliesPerGame`
-    /// without re-bucketing logic (the last bucket clamps overflow).
-    static let histogramBucketWidthPlies: Int = 20
+    /// Fixed bucket width (in plies) for the histogram. 40 plies per
+    /// bucket; the last bucket clamps anything past
+    /// `histogramBucketCount * 40` so a future raise of
+    /// `selfPlayMaxPliesPerGame` doesn't silently drop overflow.
+    static let histogramBucketWidthPlies: Int = 40
 
-    /// Number of buckets in `plyBucketHistogram`. Covers `0..<(width × count)`
-    /// plies natively; values at or past `width × count` clamp into the
-    /// last bucket. Sized at 10 buckets (0–200 plies) — comfortably
-    /// covers the current 150-ply self-play cap with headroom for a
-    /// future raise.
+    /// Number of buckets in `gamesFlaggedByBucket`. Covers
+    /// `0..<(width × count)` plies natively; values past clamp into
+    /// the last bucket. 10 buckets × 40 plies = 0–400 plies of
+    /// natural coverage with headroom for a longer `maxPliesPerGame`
+    /// down the road.
     static let histogramBucketCount: Int = 10
 
-    /// Per-session cap on retained flag history. Older flags drop
-    /// oldest-first on overflow so a many-hour session doesn't grow
-    /// the snapshot's `flags` array unboundedly.
-    static let maxRetainedFlags: Int = 10_000
+    /// Length of the rolling window the snapshot covers, in seconds.
+    /// 30 minutes is the v1 default — long enough to smooth tick-by-
+    /// tick noise across self-play barrier dynamics, short enough to
+    /// see the impact of a parameter edit within a few snapshots.
+    static let windowSec: TimeInterval = 30 * 60
 
     // MARK: - Locked state
 
     private let lock = OSAllocatedUnfairLock()
-    private var _flags: [DrawWatchFlag] = []
-    private var _flagsHead: Int = 0   // ring head for oldest-drop overflow
-    private var _totalGamesObserved: Int = 0
-    private var _totalPliesObserved: Int = 0
-    private var _totalPliesInFlaggedStreaks: Int = 0
-    private var _flaggedGamesObserved: Int = 0
-    private var _flaggedGamesEligibleForPrecision: Int = 0
-    private var _flaggedGamesEndedInDraw: Int = 0
-    private var _flaggedGamesEndedInDecisive: Int = 0
-    private var _plyBucketHistogram: [Int]
+    /// Ring of completed-game observations within the rolling window.
+    /// `_recentGamesHead` walks forward as the prune pass drops
+    /// out-of-window observations; the underlying Array is compacted
+    /// every so often so it doesn't grow without bound between
+    /// snapshots.
+    private var _recentGames: [DrawWatchGameObservation] = []
+    private var _recentGamesHead: Int = 0
 
     // MARK: - Init
 
-    init() {
-        _plyBucketHistogram = [Int](repeating: 0, count: Self.histogramBucketCount)
-    }
+    init() {}
 
     // MARK: - Mutating API (called from worker threads)
 
-    /// Append a flag-fire event. If the ring is at `maxRetainedFlags`
-    /// capacity, the oldest flag is dropped first so length stays
-    /// bounded. Bucket histogram is updated unconditionally — dropping
-    /// a flag from the ring does NOT decrement its bucket; the
-    /// histogram reflects all flags ever observed this session, not
-    /// just the resident ring.
-    func recordFlag(_ flag: DrawWatchFlag) {
-        lock.withLock {
-            // Bucket update (independent of ring trim — see doc).
-            let raw = Int(flag.plyIndex) / Self.histogramBucketWidthPlies
-            let bucket = min(raw, Self.histogramBucketCount - 1)
-            _plyBucketHistogram[bucket] += 1
-
-            // Ring append + oldest-drop overflow.
-            _flags.append(flag)
-            if _flags.count - _flagsHead > Self.maxRetainedFlags {
-                _flagsHead += 1
-                // Compact occasionally so the underlying Array doesn't
-                // grow without bound while head walks forward.
-                if _flagsHead > Self.maxRetainedFlags {
-                    _flags.removeFirst(_flagsHead)
-                    _flagsHead = 0
-                }
-            }
-        }
-    }
-
-    /// Report that a streak (which already triggered a flag, or never
-    /// did) ended at length `streakLength`. The caller passes the FULL
-    /// streak length, not the threshold. Bumps
-    /// `totalPliesInFlaggedStreaks` only when `streakLength >= flagStreakLength`
-    /// — sub-threshold streaks are not "flagged streaks" and do not
-    /// contribute to the "% of plies in flagged streaks" metric.
-    ///
-    /// Called by the worker whenever:
-    ///   * an above-threshold streak drops below threshold mid-game, OR
-    ///   * the game ends while a streak is still active (call with the
-    ///     streak length at that moment).
-    func recordStreakEnded(streakLength: Int) {
-        guard streakLength >= Self.flagStreakLength else { return }
-        lock.withLock { _totalPliesInFlaggedStreaks += streakLength }
-    }
-
-    /// Submit a completed game's observability data. `wasFlagged` is
-    /// `true` iff the game raised at least one flag during play (sticky
-    /// across multiple streaks within the same game). `wasCapTerminated`
-    /// is `true` iff the game ended because it hit the ply cap (those
-    /// games are excluded from the flag-precision ratio — see
-    /// `DRAW_WATCH_PLAN.md` locked decision #5). `outcome` is the same
-    /// convention as `ReplayBuffer.append`: `+1` win / `0` draw / `-1`
-    /// loss; the project's `|outcome| < 0.5` test classifies draws.
+    /// Submit a completed game's observability data. `firstFlagPlyIndex`
+    /// is the ply at which the game's 8-ply streak first completed
+    /// (i.e. the 8th consecutive above-threshold ply); `nil` when
+    /// the game never reached an 8-ply streak. `wasCapTerminated` is
+    /// `true` iff the game ended at the ply cap; per-plan-decision
+    /// #5 those games are counted in the histogram but excluded from
+    /// the flag→draw precision denominator. `outcome` follows
+    /// `ReplayBuffer.append`'s convention (`|x| < 0.5` ⇒ draw).
     func recordGameCompleted(
         plyCount: Int,
-        wasFlagged: Bool,
+        firstFlagPlyIndex: UInt16?,
         wasCapTerminated: Bool,
         outcome: Float
     ) {
-        lock.withLock {
-            _totalGamesObserved += 1
-            _totalPliesObserved += plyCount
-            guard wasFlagged else { return }
-            _flaggedGamesObserved += 1
-            guard !wasCapTerminated else { return }
-            _flaggedGamesEligibleForPrecision += 1
-            if abs(outcome) < 0.5 {
-                _flaggedGamesEndedInDraw += 1
-            } else {
-                _flaggedGamesEndedInDecisive += 1
-            }
-        }
+        let obs = DrawWatchGameObservation(
+            timestamp: Date(),
+            plyCount: plyCount,
+            firstFlagPlyIndex: firstFlagPlyIndex,
+            wasCapTerminated: wasCapTerminated,
+            outcome: outcome
+        )
+        lock.withLock { _recentGames.append(obs) }
     }
 
     // MARK: - Read API
 
-    /// Synchronous snapshot. Cheap (one lock + array copy) — safe to
-    /// call from anywhere off-main. Use `asyncSnapshot()` from the
-    /// main actor to avoid blocking it.
+    /// Synchronous snapshot. Prunes out-of-window observations,
+    /// recomputes per-bucket counters, and returns a Sendable struct.
+    /// O(window size) per call — at ~55k peak resident this is sub-
+    /// millisecond, well below the heartbeat cadence.
     func snapshot() -> DrawWatchSnapshot {
         lock.withLock {
-            DrawWatchSnapshot(
-                flags: Array(_flags[_flagsHead..<_flags.count]),
-                totalGamesObserved: _totalGamesObserved,
-                totalPliesObserved: _totalPliesObserved,
-                totalPliesInFlaggedStreaks: _totalPliesInFlaggedStreaks,
-                flaggedGamesObserved: _flaggedGamesObserved,
-                flaggedGamesEligibleForPrecision: _flaggedGamesEligibleForPrecision,
-                flaggedGamesEndedInDraw: _flaggedGamesEndedInDraw,
-                flaggedGamesEndedInDecisive: _flaggedGamesEndedInDecisive,
-                plyBucketHistogram: _plyBucketHistogram
+            let now = Date()
+            pruneRecentLocked(now: now)
+
+            let bucketCount = Self.histogramBucketCount
+            let bucketWidth = Self.histogramBucketWidthPlies
+            var totalGames = 0
+            var flaggedGames = 0
+            var eligibleFlaggedGames = 0
+            var drawnFlaggedGames = 0
+            var flaggedByBucket = [Int](repeating: 0, count: bucketCount)
+            var eligibleByBucket = [Int](repeating: 0, count: bucketCount)
+            var drawnByBucket = [Int](repeating: 0, count: bucketCount)
+            for i in _recentGamesHead..<_recentGames.count {
+                let g = _recentGames[i]
+                totalGames += 1
+                guard let ply = g.firstFlagPlyIndex else { continue }
+                flaggedGames += 1
+                let bucket = min(Int(ply) / bucketWidth, bucketCount - 1)
+                flaggedByBucket[bucket] += 1
+                guard !g.wasCapTerminated else { continue }
+                eligibleFlaggedGames += 1
+                eligibleByBucket[bucket] += 1
+                if abs(g.outcome) < 0.5 {
+                    drawnFlaggedGames += 1
+                    drawnByBucket[bucket] += 1
+                }
+            }
+            return DrawWatchSnapshot(
+                totalGames: totalGames,
+                flaggedGames: flaggedGames,
+                flaggedGamesEligible: eligibleFlaggedGames,
+                flaggedGamesDrawn: drawnFlaggedGames,
+                gamesFlaggedByBucket: flaggedByBucket,
+                gamesEligibleByBucket: eligibleByBucket,
+                gamesDrawnByBucket: drawnByBucket,
+                windowSec: Self.windowSec
             )
         }
     }
 
-    /// Off-main snapshot for the UI heartbeat. Hops via
+    /// Off-main snapshot for the UI heartbeat — hops via
     /// `DispatchQueue.global` + `CheckedContinuation` so the main
     /// actor never waits synchronously on `lock` while a worker
     /// holds it. Mirrors `ParallelWorkerStatsBox.asyncSnapshot()` /
@@ -251,16 +258,25 @@ final class DrawWatchTracker: @unchecked Sendable {
     /// Drop all accumulated state. Called only at session start.
     func reset() {
         lock.withLock {
-            _flags.removeAll(keepingCapacity: true)
-            _flagsHead = 0
-            _totalGamesObserved = 0
-            _totalPliesObserved = 0
-            _totalPliesInFlaggedStreaks = 0
-            _flaggedGamesObserved = 0
-            _flaggedGamesEligibleForPrecision = 0
-            _flaggedGamesEndedInDraw = 0
-            _flaggedGamesEndedInDecisive = 0
-            for i in _plyBucketHistogram.indices { _plyBucketHistogram[i] = 0 }
+            _recentGames.removeAll(keepingCapacity: true)
+            _recentGamesHead = 0
+        }
+    }
+
+    // MARK: - Private
+
+    /// Advance `_recentGamesHead` past every observation older than
+    /// `now - windowSec`. Underlying Array is compacted when the head
+    /// has walked past more than half its length to keep memory in
+    /// check for a multi-hour session.
+    private func pruneRecentLocked(now: Date) {
+        let cutoff = now.addingTimeInterval(-Self.windowSec)
+        while _recentGamesHead < _recentGames.count, _recentGames[_recentGamesHead].timestamp < cutoff {
+            _recentGamesHead += 1
+        }
+        if _recentGamesHead > 0 && _recentGamesHead * 2 >= _recentGames.count {
+            _recentGames.removeFirst(_recentGamesHead)
+            _recentGamesHead = 0
         }
     }
 }

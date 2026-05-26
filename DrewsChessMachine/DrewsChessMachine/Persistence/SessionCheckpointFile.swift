@@ -265,6 +265,13 @@ struct SessionCheckpointState: Codable, Equatable {
     /// on-disk JSON key is still `maxPliesPerGame` — keeping the
     /// struct field name preserves loadability of pre-rename sessions.
     var maxPliesPerGame: Int?
+    /// pDraw threshold the self-play draw-watch monitor uses (when a
+    /// position's W/D/L draw probability clears this for 8 consecutive
+    /// plies, the game is flagged on the Draw-watch chart tile).
+    /// Mirrors `TrainingParameters.shared.drawWatchPDrawThreshold`.
+    /// Optional for back-compat with sessions saved before this knob
+    /// existed; absent → loader falls through to the param's default.
+    var drawWatchPDrawThreshold: Double?
     /// Lifetime self-play games that were emitted into the replay
     /// buffer (i.e. survived the draw-keep filter). `<= selfPlayGames`;
     /// equal at default keep-fraction. Optional for back-compat.

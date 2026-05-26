@@ -75,6 +75,7 @@ final class TrainingSettingsPopoverModel {
     var selfPlayFloorTauText = "" { didSet { selfPlayFloorTauError = false } }
     var selfPlayDrawKeepFractionText = "" { didSet { selfPlayDrawKeepFractionError = false } }
     var selfPlayMaxPliesPerGameText = "" { didSet { selfPlayMaxPliesPerGameError = false } }
+    var drawWatchPDrawThresholdText = "" { didSet { drawWatchPDrawThresholdError = false } }
 
     private(set) var selfPlayConcurrencyError = false
     private(set) var selfPlayStartTauError = false
@@ -82,6 +83,7 @@ final class TrainingSettingsPopoverModel {
     private(set) var selfPlayFloorTauError = false
     private(set) var selfPlayDrawKeepFractionError = false
     private(set) var selfPlayMaxPliesPerGameError = false
+    private(set) var drawWatchPDrawThresholdError = false
 
     // MARK: - Replay tab
 
@@ -121,6 +123,7 @@ final class TrainingSettingsPopoverModel {
 
     private var originalSelfPlayDrawKeepFraction: Double = 1.0
     private var originalSelfPlayMaxPliesPerGame: Int = 150
+    private var originalDrawWatchPDrawThreshold: Double = 0.95
 
     // MARK: - Injected dependencies
 
@@ -187,6 +190,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayFloorTauText = String(format: "%.2f", p.selfPlayTargetTau)
         selfPlayDrawKeepFractionText = String(format: "%.2f", p.selfPlayDrawKeepFraction)
         selfPlayMaxPliesPerGameText = String(p.selfPlayMaxPliesPerGame)
+        drawWatchPDrawThresholdText = String(format: "%.2f", p.drawWatchPDrawThreshold)
         // --- Replay tab ---
         replayBufferCapacityText = String(p.replayBufferCapacity)
         replayBufferMinPositionsText = String(p.replayBufferMinPositionsBeforeTraining)
@@ -216,6 +220,7 @@ final class TrainingSettingsPopoverModel {
         originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
         originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
         originalSelfPlayMaxPliesPerGame = p.selfPlayMaxPliesPerGame
+        originalDrawWatchPDrawThreshold = p.drawWatchPDrawThreshold
         // Reset every error flag — a fresh open should never carry red overlays
         // from a previously-cancelled bad input.
         lrError = false
@@ -236,6 +241,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayFloorTauError = false
         selfPlayDrawKeepFractionError = false
         selfPlayMaxPliesPerGameError = false
+        drawWatchPDrawThresholdError = false
         replayBufferCapacityError = false
         replayBufferMinPositionsError = false
         replayRatioTargetError = false
@@ -292,6 +298,9 @@ final class TrainingSettingsPopoverModel {
         }
         if p.selfPlayMaxPliesPerGame != originalSelfPlayMaxPliesPerGame {
             p.selfPlayMaxPliesPerGame = originalSelfPlayMaxPliesPerGame
+        }
+        if abs(p.drawWatchPDrawThreshold - originalDrawWatchPDrawThreshold) > Double.ulpOfOne {
+            p.drawWatchPDrawThreshold = originalDrawWatchPDrawThreshold
         }
         isPresented = false
     }
@@ -419,6 +428,21 @@ final class TrainingSettingsPopoverModel {
         let p = TrainingParameters.shared
         if p.selfPlayMaxPliesPerGame != snapped {
             p.selfPlayMaxPliesPerGame = snapped
+        }
+    }
+
+    /// Live-propagate the draw-watch pDraw threshold edit. The
+    /// self-play driver reads `TrainingParameters.shared.drawWatchPDrawThreshold`
+    /// at the start of every tick (one MainActor hop per tick),
+    /// so a mid-session edit takes effect on the next ply. Snapped
+    /// to the parameter's `[0.5, 1.0]` range; non-finite inputs are
+    /// ignored.
+    func applyLiveDrawWatchPDrawThreshold(_ newValue: Double) {
+        guard newValue.isFinite else { return }
+        let snapped = max(0.5, min(1.0, newValue))
+        let p = TrainingParameters.shared
+        if abs(p.drawWatchPDrawThreshold - snapped) > Double.ulpOfOne {
+            p.drawWatchPDrawThreshold = snapped
         }
     }
 
@@ -733,6 +757,21 @@ final class TrainingSettingsPopoverModel {
             selfPlayMaxPliesPerGameError = true
             anyError = true
         }
+        // Draw-watch pDraw threshold — Double in [0.5, 1.0]. Same
+        // live-propagated pattern: the driver re-reads
+        // `TrainingParameters.shared.drawWatchPDrawThreshold` at the
+        // start of every tick, so save() just validates the current
+        // text and logs a [PARAM] line if the committed value
+        // changed.
+        let drawWatchPDrawThresholdTrimmed = drawWatchPDrawThresholdText.trimmingCharacters(in: .whitespaces)
+        if drawWatchPDrawThresholdTrimmed.isEmpty {
+            drawWatchPDrawThresholdError = false
+        } else if let d = Double(drawWatchPDrawThresholdTrimmed), d >= 0.5, d <= 1.0 {
+            drawWatchPDrawThresholdError = false
+        } else {
+            drawWatchPDrawThresholdError = true
+            anyError = true
+        }
         // Push the freshly-edited self-play schedule into the live
         // `samplingScheduleBox` so the next self-play game on each worker slot
         // picks up the new τ curve. Safe to call unconditionally — the box's
@@ -892,6 +931,14 @@ final class TrainingSettingsPopoverModel {
                     "[PARAM] selfPlayMaxPliesPerGame: \(originalSelfPlayMaxPliesPerGame) -> \(p.selfPlayMaxPliesPerGame)"
                 )
             }
+            if abs(p.drawWatchPDrawThreshold - originalDrawWatchPDrawThreshold) > Double.ulpOfOne {
+                SessionLogger.shared.log(
+                    String(format: "[PARAM] drawWatchPDrawThreshold: %.3f -> %.3f",
+                        originalDrawWatchPDrawThreshold,
+                        p.drawWatchPDrawThreshold
+                    )
+                )
+            }
             // On successful save the stash that backs Cancel becomes the new
             // pre-edit baseline — closing the popover with Save commits the
             // live writes. Missing this line for `selfPlayDrawKeepFraction`
@@ -908,6 +955,7 @@ final class TrainingSettingsPopoverModel {
             originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
             originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
             originalSelfPlayMaxPliesPerGame = p.selfPlayMaxPliesPerGame
+            originalDrawWatchPDrawThreshold = p.drawWatchPDrawThreshold
             isPresented = false
         }
     }
