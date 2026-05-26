@@ -323,6 +323,16 @@ extension SessionController {
                         "[RESUME-PARAM] draw_watch_terminate_games: saved=nil applied=\(TrainingParameters.shared.drawWatchTerminateGames) (defaulted)"
                     )
                 }
+                if let v = rs.drawWatchStreakLength {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] draw_watch_streak_length: \(TrainingParameters.shared.drawWatchStreakLength) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.drawWatchStreakLength = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] draw_watch_streak_length: saved=nil applied=\(TrainingParameters.shared.drawWatchStreakLength) (defaulted)"
+                    )
+                }
                 // LR warmup length and sqrt-batch LR scaling are now
                 // part of the session schema (Optional, for back-compat
                 // with older `.dcmsession` files that pre-date the

@@ -43,6 +43,15 @@ struct HumanPlayBoardView: View {
     /// the slide animation finishes and even after the network has
     /// played its reply. `nil` before any move in the current game.
     let lastMoveDestinationSquare: Int?
+    /// Source square of the most recent move (visual frame). Drawn
+    /// as a slightly more translucent green fill (lower opacity than
+    /// `lastMoveDestinationSquare`) so the move reads as a "trail":
+    /// piece-came-from-here-and-landed-there. Especially valuable
+    /// when the network just moved — the user can immediately see
+    /// which piece the model chose without scanning the whole board.
+    /// `nil` before any move in the current game (matches
+    /// `lastMoveDestinationSquare`).
+    let lastMoveSourceSquare: Int?
     /// Square of the king currently in check (visual frame). Drawn
     /// as a red fill underneath the king sprite. `nil` when neither
     /// side is in check (or when the game has ended).
@@ -100,6 +109,7 @@ struct HumanPlayBoardView: View {
                     Self.drawSquares(
                         ctx: &ctx,
                         cellSize: cellSize,
+                        lastMoveFrom: lastMoveSourceSquare,
                         lastMoveTo: lastMoveDestinationSquare,
                         checkSquare: checkSquare
                     )
@@ -214,6 +224,7 @@ struct HumanPlayBoardView: View {
     private static func drawSquares(
         ctx: inout GraphicsContext,
         cellSize: CGFloat,
+        lastMoveFrom: Int?,
         lastMoveTo: Int?,
         checkSquare: Int?
     ) {
@@ -232,7 +243,20 @@ struct HumanPlayBoardView: View {
                 )
             }
         }
-        // Last-move destination — translucent green fill on the cell.
+        // Last-move SOURCE — slightly more translucent than the
+        // destination so the move reads as a "trail": faded fill
+        // where the piece came from, brighter fill where it landed.
+        if let from = lastMoveFrom {
+            let row = from / 8, col = from % 8
+            let rect = CGRect(
+                x: CGFloat(col) * cellSize,
+                y: CGFloat(row) * cellSize,
+                width: cellSize,
+                height: cellSize
+            )
+            ctx.fill(Path(rect), with: .color(Color.green.opacity(0.26)))
+        }
+        // Last-move DESTINATION — brighter translucent green fill.
         if let to = lastMoveTo {
             let row = to / 8, col = to % 8
             let rect = CGRect(

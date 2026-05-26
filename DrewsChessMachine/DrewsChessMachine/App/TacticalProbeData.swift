@@ -25,7 +25,9 @@ enum TacticalProbeData {
         Self.makeHangingQueenCapture(),
         Self.makeHangingKnightCapture(),
         Self.makeHangingRookCapture(),
-        Self.makeForcedPromotion()
+        Self.makeForcedPromotion(),
+        Self.makeAvoidStalemateQueenMate(),
+        Self.makeDefensiveOnlyKingEscape()
     ]
 
     // MARK: - Square helpers
@@ -244,6 +246,58 @@ enum TacticalProbeData {
             category: .forcedPromotion,
             state: state,
             acceptable: [mv("b7", "b8", promote: .queen)]
+        )
+    }
+
+    /// Stalemate-avoidance probe. White Kf6 + Qg3 vs lone Black Kh8.
+    /// Two visually-attractive Q moves dominate the candidate list:
+    ///   * `Qg7#` — mate (Q defended by Kf6; Black k has no legal
+    ///     reply: g7 occupied/defended, g8 attacked diagonal from Q,
+    ///     h7 attacked diagonal from Q).
+    ///   * `Qg6` — stalemate (Black k's three adjacent squares all
+    ///     covered: g7 by Kf6 + Qg6 file g, g8 by Q file g, h7 by Q
+    ///     diagonal; not in check, so it's stalemate not mate).
+    /// Q does not have a clear path to other mating squares — Qa8+
+    /// is the closest but Kf6 doesn't cover h7 so Black k escapes
+    /// Kh7. So `Qg7#` is the unique mate; a network that picks
+    /// Qg6 traded mate for a half-point. Tests "does the policy
+    /// dome look one move ahead past the obvious-looking Q-jump."
+    private static func makeAvoidStalemateQueenMate() -> TacticalProbe {
+        let state = placement(
+            white: [("f6", .king), ("g3", .queen)],
+            black: [("h8", .king)],
+            toMove: .white
+        )
+        return TacticalProbe(
+            name: "Avoid stalemate, Qg3-g7#",
+            shortDescription: "Avoid stalemate (Qg7#)",
+            category: .avoidStalemate,
+            state: state,
+            acceptable: [mv("g3", "g7")]
+        )
+    }
+
+    /// Defensive must-find probe. White Kh1 is in double-rook
+    /// trouble: BR a1 gives check along rank 1; BR g3 covers file
+    /// g (including g1 and g2). Black king Kh8 sits out of the
+    /// action. White has no defenders, no interpositions, and
+    /// cannot capture either rook. The only legal escape from
+    /// check is `Kh2` — h2 is not attacked by either rook (Ra1
+    /// covers file a + rank 1, Rg3 covers file g + rank 3). Tests
+    /// whether the network can find the single forced defensive
+    /// reply rather than picking any plausible-looking move.
+    private static func makeDefensiveOnlyKingEscape() -> TacticalProbe {
+        let state = placement(
+            white: [("h1", .king)],
+            black: [("h8", .king), ("a1", .rook), ("g3", .rook)],
+            toMove: .white
+        )
+        return TacticalProbe(
+            name: "Defensive only-move, Kh1-h2",
+            shortDescription: "Defensive only-move (Kh2)",
+            category: .defensiveMustFind,
+            state: state,
+            acceptable: [mv("h1", "h2")]
         )
     }
 }

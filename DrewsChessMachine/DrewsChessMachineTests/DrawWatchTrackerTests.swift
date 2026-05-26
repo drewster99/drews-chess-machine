@@ -176,7 +176,7 @@ final class DrawWatchTrackerTests: XCTestCase {
         // These are the locked decisions documented in DRAW_WATCH_PLAN.md.
         // Changing them is a behavior change worth a deliberate commit.
         XCTAssertEqual(DrawWatchTracker.defaultFlagThresholdPDraw, 0.95, accuracy: 1e-9)
-        XCTAssertEqual(DrawWatchTracker.flagStreakLength, 8)
+        XCTAssertEqual(DrawWatchTracker.defaultFlagStreakLength, 8)
         XCTAssertEqual(DrawWatchTracker.histogramBucketWidthPlies, 40)
         XCTAssertEqual(DrawWatchTracker.histogramBucketCount, 10)
         XCTAssertEqual(DrawWatchTracker.windowSec, 5 * 60, accuracy: 1e-9)

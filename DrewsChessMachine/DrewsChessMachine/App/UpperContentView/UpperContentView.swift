@@ -2658,6 +2658,7 @@ struct UpperContentView: View {
             },
             lastPromoteCell: lastPromoteStatusBarCell,
             scoreCell: scoreStatusBarCell,
+            tacticalCell: tacticalStatusBarCell,
             // Right-side chips. Built each parent render. The
             // popovers' bindings / error flags / callbacks remain
             // captured here exactly as before. The chip-side
@@ -2766,6 +2767,41 @@ struct UpperContentView: View {
             label: label,
             value: value,
             action: action,
+            valueColor: color
+        )
+    }
+
+    /// "Tactical" rolling probe score for the upper status bar.
+    /// Reads `TacticalProbeHistory.tacticalRankSumMinusCount` —
+    /// summed expected-move ranks across the latest entry of each
+    /// probe minus the count of contributing probes. 0 = every
+    /// probe ranks its expected move #1 (perfect). Higher = worse;
+    /// each rank-of-2 instead of rank-of-1 adds 1 to the score.
+    /// Renders as "—" before the first watcher tick has landed or
+    /// when every probe errored.
+    private var tacticalStatusBarCell: StatusBarCell {
+        let score = session.tacticalProbeHistory.tacticalRankSumMinusCount
+        let value: String
+        let color: Color
+        if let s = score {
+            value = "\(s)"
+            // Color the value to telegraph health at a glance:
+            //   * 0   → primary (target achieved)
+            //   * 1-3 → secondary (within 1-2 ranks of perfect on
+            //                       a couple of probes)
+            //   * 4+  → orange (multiple probes off the top spot)
+            switch s {
+            case 0: color = .primary
+            case 1...3: color = .secondary
+            default: color = .orange
+            }
+        } else {
+            value = "—"
+            color = .secondary
+        }
+        return StatusBarCell(
+            label: "Tactical",
+            value: value,
             valueColor: color
         )
     }

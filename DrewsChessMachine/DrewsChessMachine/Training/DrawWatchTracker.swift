@@ -7,9 +7,10 @@ import os
 /// each snapshot.
 ///
 /// `firstFlagPlyIndex` is the 0-indexed game-total ply at which the
-/// 8-ply streak first completed for this game — i.e. the 8th
-/// consecutive ply meeting the pDraw threshold. `nil` when the game
-/// never reached an 8-ply streak (sub-threshold games never enter the
+/// N-ply streak first completed for this game — i.e. the Nth
+/// consecutive ply meeting the pDraw threshold (N from
+/// `TrainingParameters.shared.drawWatchStreakLength`, default 8). `nil` when the game
+/// never reached an N-ply streak (sub-threshold games never enter the
 /// histogram). `excludedFromPrecision` is `true` iff the game's
 /// `outcome` is imposed rather than natural — currently the case for:
 ///   * ply-cap-terminated games (`selfPlayMaxPliesPerGame`)
@@ -38,7 +39,7 @@ struct DrawWatchSnapshot: Sendable, Equatable {
     /// Total completed games observed in the active window.
     let totalGames: Int
     /// Subset of `totalGames` whose `firstFlagPlyIndex != nil` —
-    /// i.e. the game raised a flag (8-ply streak completed) at least
+    /// i.e. the game raised a flag (streak completed) at least
     /// once.
     let flaggedGames: Int
     /// Subset of `flaggedGames` whose final outcome counts toward the
@@ -122,9 +123,13 @@ final class DrawWatchTracker: @unchecked Sendable {
     /// the tests pin against.
     static let defaultFlagThresholdPDraw: Float = 0.95
 
-    /// Number of consecutive plies above the threshold required to
-    /// raise one flag.
-    static let flagStreakLength: Int = 8
+    /// Default number of consecutive plies above the threshold
+    /// required to raise one flag — overridable per-tick by reading
+    /// `TrainingParameters.shared.drawWatchStreakLength` (which
+    /// `BatchedSelfPlayDriver` does at the top of each tick). This
+    /// constant is the value the parameter ships at and the value
+    /// the tests pin against.
+    static let defaultFlagStreakLength: Int = 8
 
     /// Fixed bucket width (in plies) for the histogram. 40 plies per
     /// bucket; the last bucket clamps anything past
@@ -163,9 +168,9 @@ final class DrawWatchTracker: @unchecked Sendable {
     // MARK: - Mutating API (called from worker threads)
 
     /// Submit a completed game's observability data. `firstFlagPlyIndex`
-    /// is the ply at which the game's 8-ply streak first completed
-    /// (i.e. the 8th consecutive above-threshold ply); `nil` when
-    /// the game never reached an 8-ply streak. `excludedFromPrecision`
+    /// is the ply at which the game's N-ply streak first completed
+    /// (i.e. the Nth consecutive above-threshold ply); `nil` when
+    /// the game never reached an N-ply streak. `excludedFromPrecision`
     /// is `true` iff the game's outcome was imposed by the driver
     /// rather than reached naturally — cap-terminated games and
     /// draw-watch-terminated games both pass `true` here. Those

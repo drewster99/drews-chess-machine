@@ -221,11 +221,13 @@ fileprivate struct HumanPlayWindowView: View {
 
     // MARK: - Top banner
 
-    /// Centered top banner with two stacked lines: a big primary
-    /// line (game result / CHECK / status) and a small subtitle
-    /// line (who the human is playing as). The big line's content
-    /// changes but its minimum height is fixed so the board doesn't
-    /// jump up/down as the message changes.
+    /// Centered top banner with three stacked lines: a big primary
+    /// line (game result / CHECK / status), a small subtitle line
+    /// (who the human is playing as), and a metadata row showing
+    /// the half-move clock + threefold counter so the user can see
+    /// how close the position is to a 50-move or 3-fold draw. The
+    /// big line's content changes but its minimum height is fixed
+    /// so the board doesn't jump up/down as the message changes.
     private var bannerRow: some View {
         VStack(spacing: 2) {
             bannerPrimaryText
@@ -234,7 +236,45 @@ fileprivate struct HumanPlayWindowView: View {
             Text(humanLabel)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+            drawCountersRow
         }
+    }
+
+    /// One-line row directly under the human-color label. Surfaces the
+    /// half-move clock (toward the 50-move rule's 100-ply limit) and the
+    /// current position's repetition count (toward the 3-fold draw at 3
+    /// visits). Color-coded so the user notices when either approaches
+    /// its draw threshold:
+    ///   * halfmoveClock ≥ 80 → orange ("draw window opening")
+    ///   * halfmoveClock ≥ 95 → red ("imminent")
+    ///   * repetitionCount ≥ 1 → orange ("one visit short of forcing 3-fold")
+    /// `repetitionCount` on `GameState` is occurrences BEFORE the current
+    /// visit, so the displayed "visits" is `repetitionCount + 1` (the +1
+    /// accounts for the current visit being on the board).
+    private var drawCountersRow: some View {
+        let hmc = snapshot.state.halfmoveClock
+        let visits = snapshot.state.repetitionCount + 1
+        let hmcColor: Color = {
+            switch hmc {
+            case 95...: return .red
+            case 80...: return .orange
+            default: return .secondary
+            }
+        }()
+        let visitsColor: Color = visits >= 2 ? .orange : .secondary
+        return HStack(spacing: 12) {
+            Text("Half-move clock: ")
+                .foregroundStyle(.secondary)
+                + Text("\(hmc)/100")
+                .foregroundStyle(hmcColor)
+                .monospacedDigit()
+            Text("Threefold: ")
+                .foregroundStyle(.secondary)
+                + Text("\(visits)/3")
+                .foregroundStyle(visitsColor)
+                .monospacedDigit()
+        }
+        .font(.caption)
     }
 
     @ViewBuilder
@@ -288,10 +328,23 @@ fileprivate struct HumanPlayWindowView: View {
     /// Color of the side that's currently in check, or nil if
     /// neither side is. After `didApplyMove`, `state.currentPlayer`
     /// is the side that just received the move — the one whose
-    /// king might be in check. The game-over case is excluded
-    /// because checkmate already produces a definitive banner.
+    /// king might be in check.
+    ///
+    /// We deliberately do NOT bail out when `snapshot.result` is set:
+    /// for `.checkmate`, the mated side IS still in check (that's the
+    /// definition), and the user wants the red king square to stay
+    /// visible through the result transition so the visual makes
+    /// clear which king got mated. For `.stalemate` and
+    /// `.drawByInsufficientMaterial` the side to move is by
+    /// definition not in check, so `MoveGenerator.isInCheck` returns
+    /// false and this method naturally returns nil → no red square.
+    /// `.drawByFiftyMoveRule` and `.drawByThreefoldRepetition` are
+    /// the edge cases that *can* coincide with a check (the engine
+    /// fires those checks unconditionally — see ChessGameEngine
+    /// lines 242, 247); we still show red in that case, which is
+    /// accurate (the king genuinely IS in check, the rules just say
+    /// the game is drawn anyway).
     private func computeInCheckColor() -> PieceColor? {
-        guard snapshot.result == nil else { return nil }
         let p = snapshot.state.currentPlayer
         return MoveGenerator.isInCheck(snapshot.state, color: p) ? p : nil
     }
@@ -329,12 +382,17 @@ fileprivate struct HumanPlayWindowView: View {
             let logical = mv.toRow * 8 + mv.toCol
             return humanBoardFlipped ? 63 - logical : logical
         }
+        let lastFromVisual: Int? = snapshot.lastMove.map { mv in
+            let logical = mv.fromRow * 8 + mv.fromCol
+            return humanBoardFlipped ? 63 - logical : logical
+        }
         let checkVisual: Int? = inCheckKingVisualSquare(flipped: humanBoardFlipped)
         return HumanPlayBoardView(
             pieces: pieces,
             selectedFromSquare: selectedVisual,
             legalMoveTargets: legalTargetsVisual,
             lastMoveDestinationSquare: lastToVisual,
+            lastMoveSourceSquare: lastFromVisual,
             checkSquare: checkVisual,
             humanMoveActive: humanPlayActive,
             humanColor: playController.isPlayingHuman ? humanColor : nil,

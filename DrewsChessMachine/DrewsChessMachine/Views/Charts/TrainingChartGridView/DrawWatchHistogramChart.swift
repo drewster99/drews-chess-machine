@@ -2,7 +2,7 @@ import Charts
 import SwiftUI
 
 /// Stealth-mode `pDraw` watch histogram tile. Per-game bars: bucket
-/// `i` shows the count of GAMES (in the rolling window) whose 8-ply
+/// `i` shows the count of GAMES (in the rolling window) whose N-ply
 /// streak first completed at a ply in `[i*width, (i+1)*width)`. Hover
 /// a bar to see that bucket's flag→draw precision — of the games in
 /// the bucket, the fraction that actually finished as draws
@@ -54,11 +54,11 @@ struct DrawWatchHistogramChart: View {
         let header = headerText(snapshot: snapshot, bars: bars)
         return VStack(alignment: .leading, spacing: 1) {
             ChartTileHeader(
-                title: "Draw-watch (8-ply pDraw streak)",
+                title: "Draw-watch (N-ply pDraw streak)",
                 value: header,
                 titleHelp: AttributedString("""
                     Monitor of the W/D/L value head during self-play. Each bar = number of distinct \
-                    GAMES (in the rolling window shown in the header) whose 8-ply pDraw streak first \
+                    GAMES (in the rolling window shown in the header) whose N-ply pDraw streak first \
                     completed at a ply inside that 40-ply bucket. Hover a bar to see that bucket's \
                     draw-precision (of those games, excluding outcome-imposed ones, the fraction \
                     that ended in a draw). Header: games=% of all completed games that flagged at \
@@ -66,7 +66,8 @@ struct DrawWatchHistogramChart: View {
                     draws. Threshold is the "Draw-Watch pDraw Threshold" param in Self-Play \
                     Sampling. When the "Terminate flagged games" toggle in Self-Play Sampling is \
                     off (default), flagging is purely observational; when on, the game is dropped \
-                    the moment its streak hits 8 plies (same drop path as the ply-cap).
+                    the moment its streak hits N plies (same drop path as the ply-cap). N is the \
+                    "Draw-Watch Streak Length" param in Self-Play Sampling (default 8).
                     """)
             )
             Chart(bars) { bar in

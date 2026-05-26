@@ -158,8 +158,8 @@ final class ActiveGame: @unchecked Sendable {
     /// — the value never influences move selection or termination.
     var drawWatchConsecutivePliesAboveThreshold: UInt16 = 0
 
-    /// 0-indexed game-total ply at which the 8-ply streak FIRST
-    /// completed this game (i.e. the 8th consecutive above-threshold
+    /// 0-indexed game-total ply at which the N-ply streak FIRST
+    /// completed this game (i.e. the Nth consecutive above-threshold
     /// ply). `nil` until that happens — and stays at the first value
     /// for the rest of the game; subsequent streaks within the same
     /// game do NOT overwrite it. Reset to nil on game start. The
@@ -171,7 +171,7 @@ final class ActiveGame: @unchecked Sendable {
     /// When true, the driver drops this game on the spot in the
     /// next `handleGameEnds` pass — same drop path as ply-cap-
     /// terminated games (no flush to the replay buffer). Set inside
-    /// the consume closure when the 8-ply streak completes AND the
+    /// the consume closure when the N-ply streak completes AND the
     /// `drawWatchTerminateGames` parameter toggle is on. Reset to
     /// false on game start. Sample-and-apply also checks this so
     /// it skips the slot's about-to-be-played move (the game ends

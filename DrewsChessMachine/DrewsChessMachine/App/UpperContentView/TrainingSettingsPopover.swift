@@ -120,6 +120,7 @@ struct TrainingSettingsPopover: View {
             || model.selfPlayDrawKeepFractionError
             || model.selfPlayMaxPliesPerGameError
             || model.drawWatchPDrawThresholdError
+            || model.drawWatchStreakLengthError
     }
 
     private var replayHasError: Bool {
@@ -230,6 +231,7 @@ struct TrainingSettingsPopover: View {
                     selfPlayMaxPliesPerGameText: $model.selfPlayMaxPliesPerGameText,
                     drawWatchPDrawThresholdText: $model.drawWatchPDrawThresholdText,
                     drawWatchTerminateGames: $model.drawWatchTerminateGames,
+                    drawWatchStreakLengthText: $model.drawWatchStreakLengthText,
                     selfPlayConcurrencyError: model.selfPlayConcurrencyError,
                     selfPlayStartTauError: model.selfPlayStartTauError,
                     selfPlayDecayPerPlyError: model.selfPlayDecayPerPlyError,
@@ -237,10 +239,12 @@ struct TrainingSettingsPopover: View {
                     selfPlayDrawKeepFractionError: model.selfPlayDrawKeepFractionError,
                     selfPlayMaxPliesPerGameError: model.selfPlayMaxPliesPerGameError,
                     drawWatchPDrawThresholdError: model.drawWatchPDrawThresholdError,
+                    drawWatchStreakLengthError: model.drawWatchStreakLengthError,
                     onLiveSelfPlayDrawKeepFractionChange: { model.applyLiveSelfPlayDrawKeepFraction($0) },
                     onLiveMaxPliesPerGameChange: { model.applyLiveMaxPliesPerGame($0) },
                     onLiveDrawWatchPDrawThresholdChange: { model.applyLiveDrawWatchPDrawThreshold($0) },
                     onLiveDrawWatchTerminateGamesChange: { model.applyLiveDrawWatchTerminateGames($0) },
+                    onLiveDrawWatchStreakLengthChange: { model.applyLiveDrawWatchStreakLength($0) },
                     parallelStats: parallelStats
                 )
             case .replay:
@@ -746,6 +750,7 @@ private struct SelfPlayTab: View {
     @Binding var selfPlayMaxPliesPerGameText: String
     @Binding var drawWatchPDrawThresholdText: String
     @Binding var drawWatchTerminateGames: Bool
+    @Binding var drawWatchStreakLengthText: String
 
     let selfPlayConcurrencyError: Bool
     let selfPlayStartTauError: Bool
@@ -754,6 +759,7 @@ private struct SelfPlayTab: View {
     let selfPlayDrawKeepFractionError: Bool
     let selfPlayMaxPliesPerGameError: Bool
     let drawWatchPDrawThresholdError: Bool
+    let drawWatchStreakLengthError: Bool
 
     /// Live-propagate handler. Fires on every edit-text change that
     /// parses to a valid `[0, 1]` Double — writes through to
@@ -785,6 +791,13 @@ private struct SelfPlayTab: View {
     /// from the next tick onward. Cancel reverts via the model's
     /// stash; Save updates the stash.
     let onLiveDrawWatchTerminateGamesChange: (Bool) -> Void
+
+    /// Live-propagate handler for the draw-watch streak-length N.
+    /// Same per-tick read pattern as the threshold; lowering N
+    /// makes flags fire after fewer consecutive above-threshold
+    /// plies (more flags), raising N requires longer sustained
+    /// confidence.
+    let onLiveDrawWatchStreakLengthChange: (Int) -> Void
 
     /// Live snapshot of the parallel-worker stats box; drives the
     /// "Emitted games" readout's W/L/D + plies-per-hour rows. `nil`
@@ -1022,7 +1035,7 @@ private struct SelfPlayTab: View {
                 }
                 // Terminate-on-flag toggle. OFF (default): purely
                 // observational, matches the chart-tile's "calibration"
-                // framing. ON: the moment a game's 8-ply streak
+                // framing. ON: the moment a game's N-ply streak
                 // completes the driver drops it on the same path as
                 // the ply-cap (no flush to the replay buffer). When
                 // ON, the chart tile's →draw precision metric loses
@@ -1040,6 +1053,34 @@ private struct SelfPlayTab: View {
                     ))
                     .toggleStyle(.checkbox)
                     Spacer()
+                }
+                // Draw-watch streak length N — how many consecutive
+                // plies must clear the threshold for a flag to fire.
+                // Live-propagated; driver re-reads each tick.
+                PopoverRow(
+                    label: "Draw-watch streak N:",
+                    text: $drawWatchStreakLengthText,
+                    error: drawWatchStreakLengthError,
+                    placeholder: "8"
+                ) {
+                    Stepper(
+                        "",
+                        value: liveIntBinding(
+                            text: $drawWatchStreakLengthText,
+                            fallback: 8,
+                            onChange: onLiveDrawWatchStreakLengthChange
+                        ),
+                        in: 2...32,
+                        step: 1
+                    )
+                }
+                .onChange(of: drawWatchStreakLengthText) { _, newValue in
+                    let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                    if trimmed.isEmpty {
+                        onLiveDrawWatchStreakLengthChange(8)
+                    } else if let n = Int(trimmed), n >= 2, n <= 32 {
+                        onLiveDrawWatchStreakLengthChange(n)
+                    }
                 }
                 liveEmittedGamesReadout
             }

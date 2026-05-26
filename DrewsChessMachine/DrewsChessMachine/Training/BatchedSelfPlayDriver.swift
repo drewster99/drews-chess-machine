@@ -334,20 +334,22 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         //     is not touched per-fire (per-game observations land at
         //     game-end in `handleGameEnds`).
         //
-        //     `drawWatchThreshold` and `drawWatchTerminate` are read
-        //     once per tick from `TrainingParameters.shared` so a
-        //     live UI edit takes effect on the next tick. The cost
-        //     is one MainActor hop per tick, matching the pattern
-        //     `handleGameEnds` uses for `drawKeepFraction` / `nextMaxPlies`.
-        //     When `drawWatchTerminate` is true, the consume closure
-        //     sets `game.drawWatchTerminationRequested = true` the
-        //     instant the streak first completes; sample-and-apply
-        //     skips that slot's move and `handleGameEnds` drops the
-        //     game on the same drop path the ply cap uses.
-        let (drawWatchThreshold, drawWatchTerminate): (Float, Bool) = await MainActor.run {
+        //     `drawWatchThreshold`, `drawWatchTerminate`, and
+        //     `drawWatchStreakLength` are read once per tick from
+        //     `TrainingParameters.shared` so a live UI edit takes
+        //     effect on the next tick. The cost is one MainActor
+        //     hop per tick, matching the pattern `handleGameEnds`
+        //     uses for `drawKeepFraction` / `nextMaxPlies`. When
+        //     `drawWatchTerminate` is true, the consume closure sets
+        //     `game.drawWatchTerminationRequested = true` the instant
+        //     the streak first completes; sample-and-apply skips
+        //     that slot's move and `handleGameEnds` drops the game
+        //     on the same drop path the ply cap uses.
+        let (drawWatchThreshold, drawWatchTerminate, drawWatchStreakLen): (Float, Bool, Int) = await MainActor.run {
             (
                 Float(TrainingParameters.shared.drawWatchPDrawThreshold),
-                TrainingParameters.shared.drawWatchTerminateGames
+                TrainingParameters.shared.drawWatchTerminateGames,
+                TrainingParameters.shared.drawWatchStreakLength
             )
         }
         let floatCount = K * boardFloats
@@ -373,7 +375,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // consume, so no aliasing across slots; per-slot
                 // mutation is single-task-owned.
                 guard let wdlBase = wdlBuf.baseAddress else { return }
-                let triggerLen = DrawWatchTracker.flagStreakLength
+                let triggerLen = drawWatchStreakLen
                 for i in 0..<K {
                     let game = gamesSnapshot[i]
                     // Skip games already in a terminal state — those
@@ -659,7 +661,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // (`|x| < 0.5` ⇒ draw): we report `0.0` for draws and
                 // `1.0` for decisive results — the tracker only cares
                 // about draw-vs-not. `firstFlagPlyIndex` is nil for
-                // games that never reached the 8-ply streak; the
+                // games that never reached the N-ply streak; the
                 // tracker treats nil as "not flagged" (excluded from
                 // the bucket histogram and the precision denominator).
                 drawWatchTracker?.recordGameCompleted(
@@ -669,7 +671,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                     outcome: isDraw ? 0.0 : 1.0
                 )
             } else if drawWatchTerminated {
-                // Draw-watch toggle is ON and this game's 8-ply
+                // Draw-watch toggle is ON and this game's N-ply
                 // streak completed during this tick's consume. Drop
                 // it on the same path as a ply-cap drop: stats +
                 // diversity + length feed, NO flush to the replay

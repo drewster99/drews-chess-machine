@@ -117,4 +117,33 @@ final class TacticalProbeHistory {
     func clearAll() {
         entries.removeAll()
     }
+
+    /// Aggregate "Tactical" score for the upper status bar: sum of
+    /// `expectedRank` across the LATEST entry of each probe, minus
+    /// the count of probes that contributed a valid rank. 0 = every
+    /// probe got its expected move ranked #1 (perfect). Higher =
+    /// worse (each "off-by-one" rank adds 1 to the score).
+    ///
+    /// Probes with `verdict == .error` (forward pass failed) or
+    /// `expectedRank == nil` (fixture bug: no acceptable move was
+    /// legal in the position) are excluded from BOTH the sum and the
+    /// minus-count, so they don't poison the metric. Returns `nil`
+    /// when no probe has produced a valid latest result yet — the
+    /// status-bar cell renders "—" in that case.
+    ///
+    /// Reads from the LATEST per-probe entry only (not averaged
+    /// across the history ring) — the user wants a snapshot of "how
+    /// is the champion doing right now" rather than a smoothed
+    /// trend.
+    var tacticalRankSumMinusCount: Int? {
+        var sum = 0
+        var count = 0
+        for series in entries.values {
+            guard let last = series.last,
+                  let rank = last.result.expectedRank else { continue }
+            sum += rank
+            count += 1
+        }
+        return count > 0 ? sum - count : nil
+    }
 }

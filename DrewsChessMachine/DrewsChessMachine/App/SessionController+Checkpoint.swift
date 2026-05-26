@@ -685,6 +685,7 @@ extension SessionController {
             maxPliesPerGame: params.selfPlayMaxPliesPerGame,
             drawWatchPDrawThreshold: params.drawWatchPDrawThreshold,
             drawWatchTerminateGames: params.drawWatchTerminateGames,
+            drawWatchStreakLength: params.drawWatchStreakLength,
             emittedGames: snap?.emittedGames,
             emittedPositions: snap?.emittedPositions,
             whiteCheckmates: snap?.whiteCheckmates,

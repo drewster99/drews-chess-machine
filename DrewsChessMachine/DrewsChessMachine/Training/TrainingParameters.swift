@@ -355,7 +355,7 @@ public enum SelfPlayMaxPliesPerGame: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Draw-Watch pDraw Threshold",
-    description: "Per-ply pDraw value (W/D/L softmax draw slot) a self-play position must clear to count toward the draw-watch streak. When 8 consecutive plies in the same game clear this threshold, the game is flagged on the Draw-watch chart tile. With the 'Terminate flagged games' toggle off (default) flagging is purely observational; with it on, the game is dropped immediately on flag fire. Lowering this catches more games (and earlier); raising it tightens the precision-toward-draw calibration.",
+    description: "Per-ply pDraw value (W/D/L softmax draw slot) a self-play position must clear to count toward the draw-watch streak. When N consecutive plies in the same game clear this threshold (N from 'Draw-Watch Streak Length', default 8), the game is flagged on the Draw-watch chart tile. With the 'Terminate flagged games' toggle off (default) flagging is purely observational; with it on, the game is dropped immediately on flag fire. Lowering this catches more games (and earlier); raising it tightens the precision-toward-draw calibration.",
     default: 0.95,
     range: 0.5...1.0,
     category: "Self-Play Sampling",
@@ -365,12 +365,22 @@ public enum DrawWatchPDrawThreshold: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Terminate Draw-Watched Games",
-    description: "When ON: self-play games whose 8-ply pDraw streak completes are dropped on the spot — same drop path as ply-cap-terminated games (no flush to the replay buffer, counted as 'dropped' in the [STATS] outcomes). Saves the GPU/throughput cost of playing out games the network has already decided are drawn. When OFF (default): the draw-watch is purely observational; games play to natural termination. Toggling this OFF mid-session lets the calibration metric on the Draw-watch chart tile resume showing flag→draw precision (a meaningless metric when termination is engaged because every flagged game is forced to a draw).",
+    description: "When ON: self-play games whose N-ply pDraw streak completes are dropped on the spot — same drop path as ply-cap-terminated games (no flush to the replay buffer, counted as 'dropped' in the [STATS] outcomes). Saves the GPU/throughput cost of playing out games the network has already decided are drawn. When OFF (default): the draw-watch is purely observational; games play to natural termination. Toggling this OFF mid-session lets the calibration metric on the Draw-watch chart tile resume showing flag→draw precision (a meaningless metric when termination is engaged because every flagged game is forced to a draw).",
     default: false,
     category: "Self-Play Sampling",
     liveTunable: true
 )
 public enum DrawWatchTerminateGames: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Draw-Watch Streak Length",
+    description: "Number of consecutive plies a self-play position must clear the pDraw threshold to count as a draw-watch flag. Lowering this fires flags earlier (catches more games, with looser confidence in their draw nature); raising it requires the network to be sustained-confident for longer (fewer flags but tighter calibration). Default 8 is a reasonable balance — long enough to filter out one-off pDraw spikes, short enough to catch the network's confident-draw signal before games drag on. Lives alongside the threshold + terminate toggle in Self-Play Sampling; all three are re-read by the driver on every tick.",
+    default: 8,
+    range: 2...32,
+    category: "Self-Play Sampling",
+    liveTunable: true
+)
+public enum DrawWatchStreakLength: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Arena Start Tau",
@@ -656,6 +666,7 @@ public extension TrainingParametersSnapshot {
     var selfPlayMaxPliesPerGame: Int { value(for: SelfPlayMaxPliesPerGame.self) }
     var drawWatchPDrawThreshold: Double { value(for: DrawWatchPDrawThreshold.self) }
     var drawWatchTerminateGames: Bool { value(for: DrawWatchTerminateGames.self) }
+    var drawWatchStreakLength: Int { value(for: DrawWatchStreakLength.self) }
     var arenaStartTau: Double { value(for: ArenaStartTau.self) }
     var arenaTargetTau: Double { value(for: ArenaTargetTau.self) }
     var arenaTauDecayPerPly: Double { value(for: ArenaTauDecayPerPly.self) }
@@ -711,6 +722,7 @@ public final class TrainingParameters {
     public var selfPlayMaxPliesPerGame: Int { didSet { Self.persist(SelfPlayMaxPliesPerGame.self, value: selfPlayMaxPliesPerGame) } }
     public var drawWatchPDrawThreshold: Double { didSet { Self.persist(DrawWatchPDrawThreshold.self, value: drawWatchPDrawThreshold) } }
     public var drawWatchTerminateGames: Bool { didSet { Self.persist(DrawWatchTerminateGames.self, value: drawWatchTerminateGames) } }
+    public var drawWatchStreakLength: Int { didSet { Self.persist(DrawWatchStreakLength.self, value: drawWatchStreakLength) } }
     public var arenaStartTau: Double { didSet { Self.persist(ArenaStartTau.self, value: arenaStartTau) } }
     public var arenaTargetTau: Double { didSet { Self.persist(ArenaTargetTau.self, value: arenaTargetTau) } }
     public var arenaTauDecayPerPly: Double { didSet { Self.persist(ArenaTauDecayPerPly.self, value: arenaTauDecayPerPly) } }
@@ -759,6 +771,7 @@ public final class TrainingParameters {
         self.selfPlayMaxPliesPerGame = Self.read(SelfPlayMaxPliesPerGame.self)
         self.drawWatchPDrawThreshold = Self.read(DrawWatchPDrawThreshold.self)
         self.drawWatchTerminateGames = Self.read(DrawWatchTerminateGames.self)
+        self.drawWatchStreakLength = Self.read(DrawWatchStreakLength.self)
         self.arenaStartTau = Self.read(ArenaStartTau.self)
         self.arenaTargetTau = Self.read(ArenaTargetTau.self)
         self.arenaTauDecayPerPly = Self.read(ArenaTauDecayPerPly.self)
@@ -813,6 +826,7 @@ public final class TrainingParameters {
         v[SelfPlayMaxPliesPerGame.id] = SelfPlayMaxPliesPerGame.encode(selfPlayMaxPliesPerGame)
         v[DrawWatchPDrawThreshold.id] = DrawWatchPDrawThreshold.encode(drawWatchPDrawThreshold)
         v[DrawWatchTerminateGames.id] = DrawWatchTerminateGames.encode(drawWatchTerminateGames)
+        v[DrawWatchStreakLength.id] = DrawWatchStreakLength.encode(drawWatchStreakLength)
         v[ArenaStartTau.id] = ArenaStartTau.encode(arenaStartTau)
         v[ArenaTargetTau.id] = ArenaTargetTau.encode(arenaTargetTau)
         v[ArenaTauDecayPerPly.id] = ArenaTauDecayPerPly.encode(arenaTauDecayPerPly)
@@ -894,6 +908,8 @@ public final class TrainingParameters {
             try DrawWatchPDrawThreshold.definition.validate(raw); drawWatchPDrawThreshold = try DrawWatchPDrawThreshold.decode(raw)
         case DrawWatchTerminateGames.id:
             try DrawWatchTerminateGames.definition.validate(raw); drawWatchTerminateGames = try DrawWatchTerminateGames.decode(raw)
+        case DrawWatchStreakLength.id:
+            try DrawWatchStreakLength.definition.validate(raw); drawWatchStreakLength = try DrawWatchStreakLength.decode(raw)
         case ArenaStartTau.id:
             try ArenaStartTau.definition.validate(raw); arenaStartTau = try ArenaStartTau.decode(raw)
         case ArenaTargetTau.id:
@@ -1031,6 +1047,7 @@ public final class TrainingParameters {
         SelfPlayMaxPliesPerGame.self,
         DrawWatchPDrawThreshold.self,
         DrawWatchTerminateGames.self,
+        DrawWatchStreakLength.self,
         ArenaStartTau.self,
         ArenaTargetTau.self,
         ArenaTauDecayPerPly.self,

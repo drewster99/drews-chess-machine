@@ -9,6 +9,18 @@ enum ProbeCategory: String, Sendable {
     case mateInOne
     case hangingPieceCapture
     case forcedPromotion
+    /// A winning position with a tempting move that stalemates the
+    /// opponent. The network must find the non-stalemating winning
+    /// continuation. Different failure mode from `.mateInOne` — it
+    /// tests "does the network look ahead to opponent's reply" in
+    /// addition to "can it find the right move."
+    case avoidStalemate
+    /// Side-to-move is in check with exactly one legal escape. Tests
+    /// defensive reasoning — finding the required defense rather
+    /// than picking from many attacking options. Existing probes are
+    /// all white-attacking; this fills in the "what about when the
+    /// network is on the defensive" gap.
+    case defensiveMustFind
 }
 
 /// A single hand-built tactical position with an unambiguous "right

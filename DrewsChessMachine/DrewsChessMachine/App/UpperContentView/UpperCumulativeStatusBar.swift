@@ -31,6 +31,14 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
     let onShowPromotions: (() -> Void)?
     let lastPromoteCell: StatusBarCell
     let scoreCell: StatusBarCell
+    /// "Tactical" rolling probe score — sum of expected-move ranks
+    /// across the latest entry of each tactical probe, minus the
+    /// number of probes that contributed a valid rank. 0 = every
+    /// probe got its expected move ranked #1 (target). Rendered as
+    /// the right-most history cell so it sits next to the chip
+    /// boundary, making "how is the champion doing on the manual
+    /// tactical battery" an at-a-glance integer.
+    let tacticalCell: StatusBarCell
     @ViewBuilder let rightChips: () -> RightChips
 
     var body: some View {
@@ -51,6 +59,7 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
                 StatusBarCell(label: "Promotions", value: promotions, action: onShowPromotions)
                 lastPromoteCell
                 scoreCell
+                tacticalCell
             },
             rightChips: rightChips
         )

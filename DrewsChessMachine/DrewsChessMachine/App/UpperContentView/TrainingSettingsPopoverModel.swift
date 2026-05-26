@@ -77,6 +77,7 @@ final class TrainingSettingsPopoverModel {
     var selfPlayMaxPliesPerGameText = "" { didSet { selfPlayMaxPliesPerGameError = false } }
     var drawWatchPDrawThresholdText = "" { didSet { drawWatchPDrawThresholdError = false } }
     var drawWatchTerminateGames: Bool = false
+    var drawWatchStreakLengthText = "" { didSet { drawWatchStreakLengthError = false } }
 
     private(set) var selfPlayConcurrencyError = false
     private(set) var selfPlayStartTauError = false
@@ -85,6 +86,7 @@ final class TrainingSettingsPopoverModel {
     private(set) var selfPlayDrawKeepFractionError = false
     private(set) var selfPlayMaxPliesPerGameError = false
     private(set) var drawWatchPDrawThresholdError = false
+    private(set) var drawWatchStreakLengthError = false
 
     // MARK: - Replay tab
 
@@ -126,6 +128,7 @@ final class TrainingSettingsPopoverModel {
     private var originalSelfPlayMaxPliesPerGame: Int = 150
     private var originalDrawWatchPDrawThreshold: Double = 0.95
     private var originalDrawWatchTerminateGames: Bool = false
+    private var originalDrawWatchStreakLength: Int = 8
 
     // MARK: - Injected dependencies
 
@@ -194,6 +197,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayMaxPliesPerGameText = String(p.selfPlayMaxPliesPerGame)
         drawWatchPDrawThresholdText = String(format: "%.2f", p.drawWatchPDrawThreshold)
         drawWatchTerminateGames = p.drawWatchTerminateGames
+        drawWatchStreakLengthText = String(p.drawWatchStreakLength)
         // --- Replay tab ---
         replayBufferCapacityText = String(p.replayBufferCapacity)
         replayBufferMinPositionsText = String(p.replayBufferMinPositionsBeforeTraining)
@@ -225,6 +229,7 @@ final class TrainingSettingsPopoverModel {
         originalSelfPlayMaxPliesPerGame = p.selfPlayMaxPliesPerGame
         originalDrawWatchPDrawThreshold = p.drawWatchPDrawThreshold
         originalDrawWatchTerminateGames = p.drawWatchTerminateGames
+        originalDrawWatchStreakLength = p.drawWatchStreakLength
         // Reset every error flag — a fresh open should never carry red overlays
         // from a previously-cancelled bad input.
         lrError = false
@@ -246,6 +251,7 @@ final class TrainingSettingsPopoverModel {
         selfPlayDrawKeepFractionError = false
         selfPlayMaxPliesPerGameError = false
         drawWatchPDrawThresholdError = false
+        drawWatchStreakLengthError = false
         replayBufferCapacityError = false
         replayBufferMinPositionsError = false
         replayRatioTargetError = false
@@ -308,6 +314,9 @@ final class TrainingSettingsPopoverModel {
         }
         if p.drawWatchTerminateGames != originalDrawWatchTerminateGames {
             p.drawWatchTerminateGames = originalDrawWatchTerminateGames
+        }
+        if p.drawWatchStreakLength != originalDrawWatchStreakLength {
+            p.drawWatchStreakLength = originalDrawWatchStreakLength
         }
         isPresented = false
     }
@@ -457,12 +466,23 @@ final class TrainingSettingsPopoverModel {
     /// self-play driver reads `TrainingParameters.shared.drawWatchTerminateGames`
     /// alongside the threshold on every tick, so a toggle flip
     /// takes effect on the next ply. ON: games are dropped the
-    /// instant their 8-ply pDraw streak completes (same drop path
+    /// instant their N-ply pDraw streak completes (same drop path
     /// as ply-cap). OFF (default): purely observational.
     func applyLiveDrawWatchTerminateGames(_ newValue: Bool) {
         let p = TrainingParameters.shared
         if p.drawWatchTerminateGames != newValue {
             p.drawWatchTerminateGames = newValue
+        }
+    }
+
+    /// Live-propagate the draw-watch streak-length edit. The
+    /// self-play driver reads `TrainingParameters.shared.drawWatchStreakLength`
+    /// every tick. Snapped to the parameter's `[2, 32]` range.
+    func applyLiveDrawWatchStreakLength(_ newValue: Int) {
+        let snapped = max(2, min(32, newValue))
+        let p = TrainingParameters.shared
+        if p.drawWatchStreakLength != snapped {
+            p.drawWatchStreakLength = snapped
         }
     }
 
@@ -792,6 +812,17 @@ final class TrainingSettingsPopoverModel {
             drawWatchPDrawThresholdError = true
             anyError = true
         }
+        // Draw-watch streak length — Int in [2, 32]. Same live-
+        // propagated pattern; driver re-reads each tick.
+        let drawWatchStreakLengthTrimmed = drawWatchStreakLengthText.trimmingCharacters(in: .whitespaces)
+        if drawWatchStreakLengthTrimmed.isEmpty {
+            drawWatchStreakLengthError = false
+        } else if let n = Int(drawWatchStreakLengthTrimmed), n >= 2, n <= 32 {
+            drawWatchStreakLengthError = false
+        } else {
+            drawWatchStreakLengthError = true
+            anyError = true
+        }
         // Push the freshly-edited self-play schedule into the live
         // `samplingScheduleBox` so the next self-play game on each worker slot
         // picks up the new τ curve. Safe to call unconditionally — the box's
@@ -964,6 +995,11 @@ final class TrainingSettingsPopoverModel {
                     "[PARAM] drawWatchTerminateGames: \(originalDrawWatchTerminateGames) -> \(p.drawWatchTerminateGames)"
                 )
             }
+            if p.drawWatchStreakLength != originalDrawWatchStreakLength {
+                SessionLogger.shared.log(
+                    "[PARAM] drawWatchStreakLength: \(originalDrawWatchStreakLength) -> \(p.drawWatchStreakLength)"
+                )
+            }
             // On successful save the stash that backs Cancel becomes the new
             // pre-edit baseline — closing the popover with Save commits the
             // live writes. Missing this line for `selfPlayDrawKeepFraction`
@@ -982,6 +1018,7 @@ final class TrainingSettingsPopoverModel {
             originalSelfPlayMaxPliesPerGame = p.selfPlayMaxPliesPerGame
             originalDrawWatchPDrawThreshold = p.drawWatchPDrawThreshold
             originalDrawWatchTerminateGames = p.drawWatchTerminateGames
+            originalDrawWatchStreakLength = p.drawWatchStreakLength
             isPresented = false
         }
     }

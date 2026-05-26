@@ -266,19 +266,26 @@ struct SessionCheckpointState: Codable, Equatable {
     /// struct field name preserves loadability of pre-rename sessions.
     var maxPliesPerGame: Int?
     /// pDraw threshold the self-play draw-watch monitor uses (when a
-    /// position's W/D/L draw probability clears this for 8 consecutive
-    /// plies, the game is flagged on the Draw-watch chart tile).
+    /// position's W/D/L draw probability clears this for N consecutive
+    /// plies — N from `drawWatchStreakLength`, default 8 — the game
+    /// is flagged on the Draw-watch chart tile).
     /// Mirrors `TrainingParameters.shared.drawWatchPDrawThreshold`.
     /// Optional for back-compat with sessions saved before this knob
     /// existed; absent → loader falls through to the param's default.
     var drawWatchPDrawThreshold: Double?
     /// When true, the self-play driver drops a game on the spot the
-    /// moment its 8-ply pDraw streak completes — same drop path as
+    /// moment its N-ply pDraw streak completes — same drop path as
     /// the ply-cap. Mirrors
     /// `TrainingParameters.shared.drawWatchTerminateGames`. Optional
     /// for back-compat; absent → loader falls through to the param's
     /// default (`false`, observe-only).
     var drawWatchTerminateGames: Bool?
+    /// Number of consecutive plies above the pDraw threshold required
+    /// to fire a draw-watch flag. Mirrors
+    /// `TrainingParameters.shared.drawWatchStreakLength`. Optional
+    /// for back-compat with sessions saved before this knob existed;
+    /// absent → loader falls through to the param's default (8).
+    var drawWatchStreakLength: Int?
     /// Lifetime self-play games that were emitted into the replay
     /// buffer (i.e. survived the draw-keep filter). `<= selfPlayGames`;
     /// equal at default keep-fraction. Optional for back-compat.
