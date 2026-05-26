@@ -3,7 +3,10 @@ import XCTest
 
 /// Verifies the pointer-flavored `evaluateBatched` overload added in
 /// Phase 2 of the self-play tick-driver rework produces byte-identical
-/// policy + value outputs to the legacy `[Float]` overload.
+/// policy + value outputs to the legacy `[Float]` overload. The third
+/// consume arg (W/D/L softmax) is discarded by these tests — its
+/// equivalence between overloads is implicit (both flow through the
+/// same `internalEvaluate`).
 ///
 /// The pointer overload exists so the tick driver can hand its
 /// long-lived `UnsafeMutablePointer<Float>` tick-scratch directly to

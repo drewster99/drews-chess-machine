@@ -384,10 +384,12 @@ final class TickTournamentDriver: @unchecked Sendable {
         // (b) Two batched GPU forwards — one per non-empty sub-batch.
         //     Each consume closure memcpy's the policy + value
         //     readback into the corresponding per-network policy /
-        //     value scratch. Sequential calls (the network's
-        //     `executionQueue` would serialize them anyway). For very
-        //     small sub-batches the GPU pays a per-call overhead;
-        //     skip empty calls.
+        //     value scratch and discards the third arg (W/D/L softmax)
+        //     — the draw-watch monitor is self-play only; arena games
+        //     are short and not the watch target. Sequential calls
+        //     (the network's `executionQueue` would serialize them
+        //     anyway). For very small sub-batches the GPU pays a
+        //     per-call overhead; skip empty calls.
         let candCount = candIndices.count
         let champCount = champIndices.count
         // Candidate and champion forward passes are independent — two

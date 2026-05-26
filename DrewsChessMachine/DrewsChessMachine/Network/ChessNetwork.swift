@@ -701,18 +701,23 @@ final class ChessNetwork: @unchecked Sendable {
     }
 
     /// Evaluate a batch of `count` board positions in one graph execution
-    /// and hand the policy/value readback to `consume` synchronously,
-    /// inside the network's `executionQueue` work block and inside an
-    /// `autoreleasepool`.
+    /// and hand the policy / value / W-D-L readback to `consume`
+    /// synchronously, inside the network's `executionQueue` work block
+    /// and inside an `autoreleasepool`.
     ///
-    /// `consume` receives two `UnsafeBufferPointer<Float>`s that alias
+    /// `consume` receives three `UnsafeBufferPointer<Float>`s that alias
     /// this network's batched readback scratch:
     /// - `policy` holds `count * policySize` raw logits laid out
     ///   position-major (slot `i` starts at `i * policySize`).
-    /// - `values` holds `count` scalars in [-1, +1].
-    /// Both buffers are valid only for the duration of the closure call.
-    /// Callers that need any bytes past the closure must copy them out
-    /// (typically into a caller-owned destination such as
+    /// - `values` holds `count` scalars in [-1, +1] (the derived
+    ///   `p_win - p_loss`).
+    /// - `wdlProbs` holds `count * valueHeadClasses` softmax
+    ///   probabilities in slot order `[win, draw, loss]`, position-
+    ///   major (slot `i` starts at `i * 3`). Consumed by the self-play
+    ///   `DrawWatchTracker`; arena and tests ignore via `_ in`.
+    /// All three buffers are valid only for the duration of the closure
+    /// call. Callers that need any bytes past the closure must copy them
+    /// out (typically into a caller-owned destination such as
     /// `MPSChessPlayer`'s policy scratch).
     ///
     /// `consume` is non-throwing by contract. If `consume` is invoked,

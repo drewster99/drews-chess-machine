@@ -33,10 +33,15 @@ import os
 /// 2. Issue one batched `network.evaluateBatched(...)` call. The
 ///    consume closure memcpy's the full K-position policy slice into
 ///    the driver's `policyResultScratch` and the K value scalars into
-///    `valueResultScratch`, then returns. (Doing the sample inside
-///    `consume` would serialize the K samples on the network's
-///    executionQueue; copying out and resuming the driver task lets
-///    the next step parallelize.)
+///    `valueResultScratch`, reads each slot's pDraw from the W/D/L
+///    softmax (the closure's third arg) inline to update the
+///    per-game draw-watch streak counter on `ActiveGame`, then
+///    returns. (Doing the policy sample inside `consume` would
+///    serialize the K samples on the network's executionQueue;
+///    copying policy/value out and resuming the driver task lets the
+///    next step parallelize. The draw-watch read is O(1) per slot
+///    so it's cheap to do inline here, where the WDL buffer aliases
+///    the network's scratch and isn't valid past the closure.)
 /// 3. Parallel sample + apply: P worker tasks each handle a strided
 ///    slice of K games. For each game: call
 ///    `MoveSampler.sampleMove(...)` on its policy slice (with its

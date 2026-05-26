@@ -227,9 +227,9 @@ final class ChessMPSNetwork: @unchecked Sendable {
         try await network.evaluateValueDistribution(board: board)
     }
 
-    /// Run a batched forward pass and hand the policy/value readback to
-    /// `consume` synchronously, inside the underlying `ChessNetwork`'s
-    /// `executionQueue` work block. See
+    /// Run a batched forward pass and hand the policy / value / W-D-L
+    /// readback to `consume` synchronously, inside the underlying
+    /// `ChessNetwork`'s `executionQueue` work block. See
     /// `ChessNetwork.evaluateBatched(batchBoards:count:consume:)` for
     /// the full contract.
     ///
