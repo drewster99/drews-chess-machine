@@ -17,6 +17,20 @@ import SwiftUI
 struct TacticalProbeMonitorView: View {
     @Bindable var history: TacticalProbeHistory
 
+    /// Fires one tactical-probe cycle on demand. Wired to the header's
+    /// "Probe now" button. The window controller supplies this from
+    /// `SessionController.triggerTacticalProbeNow()`; in tests / previews
+    /// a no-op is fine.
+    let onProbeNow: @MainActor () -> Void
+
+    init(
+        history: TacticalProbeHistory,
+        onProbeNow: @escaping @MainActor () -> Void = {}
+    ) {
+        self.history = history
+        self.onProbeNow = onProbeNow
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -47,14 +61,23 @@ struct TacticalProbeMonitorView: View {
             Text("Tactical Probe Monitor")
                 .font(.system(.title2).weight(.semibold))
             Spacer()
-            Text(totalTicksString)
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
+            // Layout: [Clear history] | [ticks: X / cap Y] | [Probe now]
+            // The Clear button sits on the LEFT of the tick counter and
+            // the Probe-now button on the RIGHT so the destructive action
+            // is visually separated from the constructive one — easier
+            // to fire one accidentally if they're stacked.
             Button("Clear history") {
                 history.clearAll()
             }
             .controlSize(.small)
             .disabled(history.entries.isEmpty)
+            Text(totalTicksString)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+            Button("Probe now") {
+                onProbeNow()
+            }
+            .controlSize(.small)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)

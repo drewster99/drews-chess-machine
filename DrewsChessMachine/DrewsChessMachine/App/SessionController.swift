@@ -627,6 +627,17 @@ final class SessionController {
         w.start()
     }
 
+    /// On-demand fire of a single tactical-probe cycle. Wired to the
+    /// "Probe now" button in the Tactical Probe Monitor window so the
+    /// user can refresh the displayed stats without waiting up to
+    /// `TacticalProbeWatcher.intervalSec` for the next scheduled tick.
+    /// No-op if the watcher hasn't been created yet (e.g. the user
+    /// clicks Probe Now during the brief window between app launch
+    /// and `startTacticalProbeWatcher()`).
+    func triggerTacticalProbeNow() {
+        tacticalProbeWatcher?.triggerOnce()
+    }
+
     // MARK: - Demo training (Train Once / Continuous Training) (Stage 4g)
 
     /// Returns the board state the candidate-test probe should evaluate. Wired

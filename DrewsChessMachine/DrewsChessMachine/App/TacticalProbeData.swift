@@ -19,15 +19,15 @@ enum TacticalProbeData {
     /// "does the network commit to the obviously-right move," not
     /// coverage of every tactical motif.
     static let standardSet: [TacticalProbe] = [
-        Self.makeKingQueenMate(),
-        Self.makeBackRankMate(),
-        Self.makeTwoRookLadderMate(),
+        Self.makeDefensiveOnlyKingEscape(),
+        Self.makeForcedPromotion(),
         Self.makeHangingQueenCapture(),
         Self.makeHangingKnightCapture(),
         Self.makeHangingRookCapture(),
-        Self.makeForcedPromotion(),
-        Self.makeAvoidStalemateQueenMate(),
-        Self.makeDefensiveOnlyKingEscape()
+        Self.makeBackRankMate(),
+        Self.makeKingQueenMate(),
+        Self.makeTwoRookLadderMate(),
+        Self.makeAvoidStalemateQueenMate()
     ]
 
     // MARK: - Square helpers

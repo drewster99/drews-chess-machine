@@ -23,6 +23,12 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
     let legalMass: String
     let runs: String
     let arenas: String
+    /// Click action for the "Arenas" cell. When non-nil the cell
+    /// becomes interactive (hover highlight + pointing-hand cursor)
+    /// and invokes this on tap. Wired by the parent to open the full
+    /// arena history sheet — the same view that the "more history"
+    /// button on the arena config popover surfaces.
+    let onShowArenaHistory: (() -> Void)?
     let promotions: String
     /// Click action for the "Promotions" cell. When non-nil the cell
     /// becomes interactive (hover highlight + pointing-hand cursor)
@@ -31,14 +37,18 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
     let onShowPromotions: (() -> Void)?
     let lastPromoteCell: StatusBarCell
     let scoreCell: StatusBarCell
-    /// "Tactical" rolling probe score — sum of expected-move ranks
-    /// across the latest entry of each tactical probe, minus the
-    /// number of probes that contributed a valid rank. 0 = every
-    /// probe got its expected move ranked #1 (target). Rendered as
-    /// the right-most history cell so it sits next to the chip
-    /// boundary, making "how is the champion doing on the manual
-    /// tactical battery" an at-a-glance integer.
-    let tacticalCell: StatusBarCell
+    /// "Tactical rank" rolling probe score — sum of expected-move
+    /// ranks across the latest entry of each tactical probe, minus
+    /// the number of probes that contributed a valid rank. 0 =
+    /// every probe got its expected move ranked #1 (target). Click
+    /// opens the Tactical Probe Monitor window.
+    let tacticalRankCell: StatusBarCell
+    /// "Tactical prob" companion to `tacticalRankCell` — mean of the
+    /// legal-masked `expectedProb` across the latest entry of each
+    /// probe, rendered as a percentage. 100.0000% = every probe puts
+    /// all of its legal probability mass on the right move. Click
+    /// opens the same Tactical Probe Monitor window.
+    let tacticalProbCell: StatusBarCell
     @ViewBuilder let rightChips: () -> RightChips
 
     var body: some View {
@@ -55,11 +65,12 @@ struct UpperCumulativeStatusBar<RightChips: View>: View {
                 StatusBarCell(label: "Training rate", value: trainingRate)
                 StatusBarCell(label: "Legal mass", value: legalMass)
                 StatusBarCell(label: "Runs", value: runs)
-                StatusBarCell(label: "Arenas", value: arenas)
+                StatusBarCell(label: "Arenas", value: arenas, action: onShowArenaHistory)
                 StatusBarCell(label: "Promotions", value: promotions, action: onShowPromotions)
                 lastPromoteCell
                 scoreCell
-                tacticalCell
+                tacticalRankCell
+                tacticalProbCell
             },
             rightChips: rightChips
         )

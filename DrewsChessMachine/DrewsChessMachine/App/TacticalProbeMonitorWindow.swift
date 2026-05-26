@@ -11,9 +11,9 @@ import SwiftUI
 final class TacticalProbeMonitorWindowController: NSWindowController, NSWindowDelegate {
     let history: TacticalProbeHistory
 
-    init(history: TacticalProbeHistory) {
+    init(history: TacticalProbeHistory, onProbeNow: @escaping @MainActor () -> Void) {
         self.history = history
-        let view = TacticalProbeMonitorView(history: history)
+        let view = TacticalProbeMonitorView(history: history, onProbeNow: onProbeNow)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
         window.setContentSize(NSSize(width: 1220, height: 460))
@@ -55,6 +55,14 @@ final class TacticalProbeMonitorWindowRegistry {
     func unregister(_ controller: TacticalProbeMonitorWindowController) {
         controllers.removeAll { $0 === controller }
     }
+
+    /// First currently-open monitor window, or nil. Used by the
+    /// "click on a Tactical status-bar cell" path so a second click
+    /// brings the existing window to the front rather than creating
+    /// a stacking duplicate.
+    var firstOpen: TacticalProbeMonitorWindowController? {
+        controllers.first
+    }
 }
 
 /// Bridges the Debug menu button to the window launcher. The watcher
@@ -62,12 +70,26 @@ final class TacticalProbeMonitorWindowRegistry {
 /// window with no network yet is fine: the existing history (empty
 /// or otherwise) renders; subsequent ticks fill rows in once a network
 /// is built.
+///
+/// Reuse policy: if a monitor window is already open, just bring it
+/// forward — this is what the user asked for when wiring the
+/// status-bar "Tactical" cells to open the monitor. Multiple windows
+/// are still possible via repeated Debug-menu opens after closing the
+/// reused one; the registry just keeps them all alive.
 @MainActor
 enum TacticalProbeMonitorLauncher {
     static func openWindow(sessionController: SessionController) {
         SessionLogger.shared.log("[BUTTON] Open Tactical Probe Monitor")
+        if let existing = TacticalProbeMonitorWindowRegistry.shared.firstOpen {
+            existing.showWindow(nil)
+            existing.window?.makeKeyAndOrderFront(nil)
+            return
+        }
         let controller = TacticalProbeMonitorWindowController(
-            history: sessionController.tacticalProbeHistory
+            history: sessionController.tacticalProbeHistory,
+            onProbeNow: { [weak sessionController] in
+                sessionController?.triggerTacticalProbeNow()
+            }
         )
         TacticalProbeMonitorWindowRegistry.shared.register(controller)
         controller.showWindow(nil)

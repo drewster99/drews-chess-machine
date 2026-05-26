@@ -2651,6 +2651,10 @@ struct UpperContentView: View {
             legalMass: legalMassStr,
             runs: "\(checkpoint.cumulativeRunCount)",
             arenas: "\(tournamentHistory.count)",
+            onShowArenaHistory: tournamentHistory.isEmpty ? nil : {
+                SessionLogger.shared.log("[BUTTON] Open Arena History (status cell)")
+                showArenaHistorySheet = true
+            },
             promotions: "\(tournamentHistory.lazy.filter { $0.promoted }.count)",
             onShowPromotions: {
                 SessionLogger.shared.log("[BUTTON] Open Promotions list")
@@ -2658,7 +2662,8 @@ struct UpperContentView: View {
             },
             lastPromoteCell: lastPromoteStatusBarCell,
             scoreCell: scoreStatusBarCell,
-            tacticalCell: tacticalStatusBarCell,
+            tacticalRankCell: tacticalRankStatusBarCell,
+            tacticalProbCell: tacticalProbStatusBarCell,
             // Right-side chips. Built each parent render. The
             // popovers' bindings / error flags / callbacks remain
             // captured here exactly as before. The chip-side
@@ -2732,18 +2737,43 @@ struct UpperContentView: View {
     /// promoted, irrespective of how many newer non-promoting arenas
     /// have run since. Dimmed em-dash when no promotion has happened
     /// yet, matching the Score cell's empty-state convention.
+    ///
+    /// Clickable when a promotion exists: opens the same per-arena
+    /// detail window (`ArenaDetailWindowManager.shared.open(...)`)
+    /// that an arena-history row click opens, scoped to that last
+    /// promoting record. The arena number passed to the detail
+    /// window is the 1-based index within `tournamentHistory` so
+    /// it matches what the user sees in the full history view.
     private var lastPromoteStatusBarCell: StatusBarCell {
-        let lastPromotion = tournamentHistory.last(where: { $0.promoted })
+        let promotedIndexOpt = tournamentHistory.lastIndex(where: { $0.promoted })
         let value: String
         let color: Color
-        if let finishedAt = lastPromotion?.finishedAt {
-            value = Self.lastPromoteDateFmt.string(from: finishedAt)
+        let action: (() -> Void)?
+        if let promotedIndex = promotedIndexOpt {
+            let record = tournamentHistory[promotedIndex]
+            value = record.finishedAt.map(Self.lastPromoteDateFmt.string(from:)) ?? "—"
             color = .primary
+            let displayIndex = promotedIndex + 1
+            let configuredGames = trainingParams.arenaGamesPerTournament
+            action = {
+                SessionLogger.shared.log("[BUTTON] Open Last Promotion detail")
+                ArenaDetailWindowManager.shared.open(
+                    record: record,
+                    index: displayIndex,
+                    configuredGamesPerTournament: configuredGames
+                )
+            }
         } else {
             value = "—"
             color = .secondary
+            action = nil
         }
-        return StatusBarCell(label: "Last promote", value: value, valueColor: color)
+        return StatusBarCell(
+            label: "Last promote",
+            value: value,
+            action: action,
+            valueColor: color
+        )
     }
 
     /// The Score / Elo cell for the status bar. Broken out of the
@@ -2771,7 +2801,7 @@ struct UpperContentView: View {
         )
     }
 
-    /// "Tactical" rolling probe score for the upper status bar.
+    /// "Tactical rank" rolling probe score for the upper status bar.
     /// Reads `TacticalProbeHistory.tacticalRankSumMinusCount` —
     /// summed expected-move ranks across the latest entry of each
     /// probe minus the count of contributing probes. 0 = every
@@ -2779,7 +2809,10 @@ struct UpperContentView: View {
     /// each rank-of-2 instead of rank-of-1 adds 1 to the score.
     /// Renders as "—" before the first watcher tick has landed or
     /// when every probe errored.
-    private var tacticalStatusBarCell: StatusBarCell {
+    ///
+    /// Clickable: opens the Tactical Probe Monitor window (reuses an
+    /// existing window if one is already open).
+    private var tacticalRankStatusBarCell: StatusBarCell {
         let score = session.tacticalProbeHistory.tacticalRankSumMinusCount
         let value: String
         let color: Color
@@ -2800,10 +2833,57 @@ struct UpperContentView: View {
             color = .secondary
         }
         return StatusBarCell(
-            label: "Tactical",
+            label: "Tactical rank",
             value: value,
+            action: openTacticalProbeMonitorAction,
             valueColor: color
         )
+    }
+
+    /// "Tactical prob" companion cell. Mean of the legal-masked
+    /// `expectedProb` over the latest entry of each probe series,
+    /// rendered as a percentage with 4 decimal places. 100.0000% =
+    /// every probe puts all of its legal probability mass on the
+    /// right move (target); lower values telegraph the policy
+    /// spreading mass across plausible-but-wrong candidates. "—"
+    /// before the first tick.
+    ///
+    /// Same click target as `tacticalRankStatusBarCell`.
+    private var tacticalProbStatusBarCell: StatusBarCell {
+        let avg = session.tacticalProbeHistory.tacticalAvgExpectedProb
+        let value: String
+        let color: Color
+        if let a = avg {
+            value = String(format: "%.4f%%", a * 100.0)
+            // The percentage gets the same "health" coloring as the
+            // rank cell, but inverted — 100% is best, 0% worst.
+            //   * ≥ 95%  → primary
+            //   * 50-95% → secondary
+            //   * < 50%  → orange
+            switch a {
+            case 0.95...: color = .primary
+            case 0.50..<0.95: color = .secondary
+            default: color = .orange
+            }
+        } else {
+            value = "—"
+            color = .secondary
+        }
+        return StatusBarCell(
+            label: "Tactical prob",
+            value: value,
+            action: openTacticalProbeMonitorAction,
+            valueColor: color
+        )
+    }
+
+    /// Shared click action for both Tactical cells. Routes through
+    /// `commandHub.openTacticalProbeMonitor` so a single launcher
+    /// callsite handles the window-reuse policy.
+    private var openTacticalProbeMonitorAction: () -> Void {
+        { [commandHub] in
+            commandHub.openTacticalProbeMonitor()
+        }
     }
 
     /// Apply attribute-based color highlighting to the multi-line

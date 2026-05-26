@@ -146,4 +146,33 @@ final class TacticalProbeHistory {
         }
         return count > 0 ? sum - count : nil
     }
+
+    /// Aggregate "Tactical prob" companion to `tacticalRankSumMinusCount`:
+    /// arithmetic mean of `expectedProb` across the LATEST entry of each
+    /// probe series. `expectedProb` is the legal-masked renormalized
+    /// probability mass the network puts on that probe's acceptable
+    /// move(s), so the per-probe value is in `[0, 1]` and the mean is
+    /// too. 1.0 (rendered as `100.0000%`) = every probe puts all of its
+    /// legal mass on the right move; 0.0 = nothing right. Returns `nil`
+    /// when no probe has produced a latest entry yet (status-bar cell
+    /// renders "—" in that case).
+    ///
+    /// Unlike `tacticalRankSumMinusCount`, errored probes (verdict
+    /// `.error` or fixture-bug nil rank) are NOT excluded — they
+    /// contribute their `expectedProb` (which is 0 in the error case,
+    /// per `buildProbeResult` / the `.error`-verdict fallback path) and
+    /// count toward the denominator. The reason: an errored probe is a
+    /// real performance failure (forward pass didn't surface a useful
+    /// distribution) and should drag the score down, not silently
+    /// disappear from the average.
+    var tacticalAvgExpectedProb: Double? {
+        var sum: Double = 0
+        var count = 0
+        for series in entries.values {
+            guard let last = series.last else { continue }
+            sum += Double(last.result.expectedProb)
+            count += 1
+        }
+        return count > 0 ? sum / Double(count) : nil
+    }
 }

@@ -75,6 +75,22 @@ final class TacticalProbeWatcher {
         task = nil
     }
 
+    /// Fire a single probe cycle on demand, independent of the
+    /// periodic loop. Used by the "Probe now" button in the monitor
+    /// window header so the user can refresh the displayed stats
+    /// without waiting up to `intervalSec` for the next scheduled
+    /// tick. The on-demand cycle runs concurrently with any
+    /// in-flight scheduled tick — they share the network's
+    /// `executionQueue` so they serialize naturally and there's
+    /// no risk of duplicate batches landing on the same forward
+    /// pass; the displayed sample count just advances by one extra
+    /// entry for each manual fire.
+    func triggerOnce() {
+        Task { [weak self] in
+            await self?.tickOnce()
+        }
+    }
+
     /// One tick: read the live champion, run all probes, append to
     /// history. No-ops cleanly when the network is gone (e.g. the
     /// session has been torn down but the window is still open). Logs
