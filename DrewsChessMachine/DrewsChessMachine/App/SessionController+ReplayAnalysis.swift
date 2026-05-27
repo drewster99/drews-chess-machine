@@ -30,18 +30,48 @@ extension SessionController {
             )
             return
         }
-        let modelLabel = network?.identifier?.description ?? "<no-id>"
+        // Snapshot the network ref alongside the buffer so the detached
+        // task can run the live-network entropy probe (analysis #7).
+        // The network is `@unchecked Sendable` and the ref captured
+        // here outlives the closure regardless of any concurrent
+        // session changes.
+        let netForEntropy = network
+        let modelLabel = netForEntropy?.identifier?.description ?? "<no-id>"
 
         Task.detached(priority: .utility) {
             // Off-main heavy walk + JSON write. Both the analyzer pass
             // and the file I/O are bounded — a sub-second analyzer pass
             // and a ~MB-sized JSON write — but neither belongs on the
             // main actor while it could be driving UI updates from the
-            // training loop.
-            let result = ReplayBufferAnalyzer.run(
-                buffer: buf,
-                modelLabel: modelLabel
-            )
+            // training loop. When a network is available we also run
+            // the stratified policy-entropy probe (a few extra seconds
+            // of forward passes) so analysis #7 lands in the same JSON.
+            let result: ReplayBufferAnalyzer.Result
+            do {
+                if let net = netForEntropy {
+                    result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
+                        buffer: buf,
+                        network: net,
+                        modelLabel: modelLabel
+                    )
+                } else {
+                    result = ReplayBufferAnalyzer.run(
+                        buffer: buf,
+                        modelLabel: modelLabel
+                    )
+                }
+            } catch {
+                // Policy-entropy forward pass failed (e.g., MPSGraph
+                // transient error). Fall back to the pure-buffer
+                // analysis so we still produce a file — the [ANALYSIS]
+                // log will note the entropy failure separately so the
+                // user can see why section (7) is missing.
+                SessionLogger.shared.log("[ANALYSIS] Policy-entropy probe failed: \(error). Falling back to pure-buffer analysis.")
+                result = ReplayBufferAnalyzer.run(
+                    buffer: buf,
+                    modelLabel: modelLabel
+                )
+            }
             let summary = result.textSummary()
             let writeOutcome = Self.writeAnalysisJSON(
                 result: result,

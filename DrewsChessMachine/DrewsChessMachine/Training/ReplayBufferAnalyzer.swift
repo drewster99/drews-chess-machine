@@ -86,6 +86,34 @@ enum ReplayBufferAnalyzer {
             let lossCount: Int
         }
 
+        /// Stratified policy-entropy probe result for one material
+        /// bucket. Produced by `runWithPolicyEntropy(...)`, which
+        /// forward-passes a random sample of positions per bucket
+        /// through a live network. `nil`-entropy fields are not
+        /// reported because the bucket had no positions to sample.
+        struct PolicyEntropyBucketStat: Codable, Sendable {
+            /// Material-bucket label (matches `materialBuckets[i].label`),
+            /// duplicated into the entry so this list is self-describing
+            /// when read in isolation from the JSON.
+            let bucketLabel: String
+            /// Number of positions actually forward-passed for this
+            /// bucket. May be less than `perBucketTarget` when the
+            /// bucket contains fewer positions than the target.
+            let sampleCount: Int
+            /// Mean Shannon entropy (in nats) of the legal-masked
+            /// renormalized policy softmax, averaged over `sampleCount`
+            /// positions in this bucket. Compare to
+            /// `meanUniformEntropyNats` for "how close to uniform."
+            let meanEntropyNats: Double
+            /// Mean number of legal moves across the sampled positions.
+            let meanLegalMoves: Double
+            /// Mean of `ln(legalMoveCount)` across the sampled positions
+            /// — the entropy a uniformly-flat policy would have. The
+            /// ratio `meanEntropyNats / meanUniformEntropyNats` is the
+            /// "% of uniform" reading the tactical-probe panel reports.
+            let meanUniformEntropyNats: Double
+        }
+
         // Header
         let producedAtISO8601: String
         let modelLabel: String
@@ -120,6 +148,13 @@ enum ReplayBufferAnalyzer {
         // 6) Top-N material-signature classes (across games with a complete
         //    final position in the buffer), ranked by game count desc.
         let topMaterialSignatures: [MaterialClassEntry]
+
+        /// Optional 7th analysis — only populated by the
+        /// `runWithPolicyEntropy(...)` entry point (the live-network
+        /// menu path). The CLI flag's pure-buffer pass leaves this
+        /// `nil`. Per-bucket means over a stratified random sample of
+        /// positions forward-passed through the network.
+        let policyEntropyByMaterialBucket: [PolicyEntropyBucketStat]?
     }
 
     // MARK: - Public entry point
@@ -322,9 +357,239 @@ enum ReplayBufferAnalyzer {
                 finalPositionMaterialByOutcome: finalPositionMaterialByOutcome,
                 gameLengthByOutcome: gameLengthByOutcome,
                 gameLengthBucketLabels: gameLengthBucketLabels,
-                topMaterialSignatures: topSigs
+                topMaterialSignatures: topSigs,
+                policyEntropyByMaterialBucket: nil
             )
         }
+    }
+
+    // MARK: - Live-network entropy sampler
+
+    /// Default number of positions to forward-pass per material bucket
+    /// in `runWithPolicyEntropy(...)`. 500 × 5 buckets = 2,500 forward
+    /// passes ≈ 4 seconds on Apple Silicon — enough to get stable per-
+    /// bucket means without turning a sub-second analyzer into a
+    /// multi-minute job.
+    static let defaultPolicyEntropyPerBucketTarget = 500
+
+    /// Run the standard buffer analyzer AND a stratified policy-entropy
+    /// probe against a live `network`. Use this entry point when the
+    /// caller has a network available (i.e. the in-app Debug menu
+    /// path). The CLI flag, which never sets up a network, sticks with
+    /// `run(buffer:modelLabel:)`.
+    ///
+    /// The entropy probe samples up to `perBucketTarget` positions
+    /// per material bucket, copies board tensors out from under the
+    /// buffer's lock (no pointer escape), and forward-passes each
+    /// outside the lock so live training isn't paused for the duration
+    /// of the inference loop.
+    static func runWithPolicyEntropy(
+        buffer: ReplayBuffer,
+        network: ChessMPSNetwork,
+        modelLabel: String,
+        perBucketTarget: Int = defaultPolicyEntropyPerBucketTarget
+    ) async throws -> Result {
+        let base = run(buffer: buffer, modelLabel: modelLabel)
+        let entropyStats = try await samplePolicyEntropyByMaterialBucket(
+            buffer: buffer,
+            network: network,
+            perBucketTarget: perBucketTarget
+        )
+        // Produce a new Result with the optional field replaced. Result
+        // fields are `let` so we can't mutate in-place; rebuild instead.
+        return Result(
+            producedAtISO8601: base.producedAtISO8601,
+            modelLabel: base.modelLabel,
+            bufferCapacity: base.bufferCapacity,
+            bufferStoredCount: base.bufferStoredCount,
+            distinctGameCount: base.distinctGameCount,
+            gamesWithCompleteFinalPosition: base.gamesWithCompleteFinalPosition,
+            channelCounts: base.channelCounts,
+            channelByMaterialBucket: base.channelByMaterialBucket,
+            materialBucketPositionCounts: base.materialBucketPositionCounts,
+            finalMoveChannelByOutcome: base.finalMoveChannelByOutcome,
+            finalPositionMaterialByOutcome: base.finalPositionMaterialByOutcome,
+            gameLengthByOutcome: base.gameLengthByOutcome,
+            gameLengthBucketLabels: base.gameLengthBucketLabels,
+            topMaterialSignatures: base.topMaterialSignatures,
+            policyEntropyByMaterialBucket: entropyStats
+        )
+    }
+
+    /// Stratified random sample of `perBucketTarget` positions per
+    /// material bucket. Returns one entry per non-empty bucket; empty
+    /// buckets are dropped from the result list.
+    ///
+    /// Two-phase: under the buffer lock, copy out per-bucket board
+    /// tensors as Sendable `[Float]` arrays (no escaped pointer);
+    /// outside the lock, forward-pass each through `network` and
+    /// accumulate the legal-masked policy entropy per bucket.
+    static func samplePolicyEntropyByMaterialBucket(
+        buffer: ReplayBuffer,
+        network: ChessMPSNetwork,
+        perBucketTarget: Int
+    ) async throws -> [Result.PolicyEntropyBucketStat] {
+        let materialBucketCount = materialBuckets.count
+
+        // Phase 1: under lock, bucket every slot index, then random-
+        // sample per bucket, copying out board tensors as Sendable
+        // value arrays. The lock is released before any forward pass.
+        struct BucketSamples: Sendable {
+            let bucketIndex: Int
+            let boards: [[Float]]
+        }
+        let allSamples = buffer.withSlotData { slots -> [BucketSamples] in
+            var perBucketIndices: [[Int]] = Array(
+                repeating: [], count: materialBucketCount
+            )
+            for i in 0..<slots.count {
+                let m = Int(slots.materialCount[i])
+                let mb = materialBucketIndex(for: m)
+                perBucketIndices[mb].append(i)
+            }
+
+            var out: [BucketSamples] = []
+            out.reserveCapacity(materialBucketCount)
+            for (bucketIdx, indices) in perBucketIndices.enumerated() {
+                let target = min(perBucketTarget, indices.count)
+                guard target > 0 else {
+                    out.append(BucketSamples(bucketIndex: bucketIdx, boards: []))
+                    continue
+                }
+                // Random sample without replacement. `shuffled()` is
+                // O(n) on the bucket's index list; cheap relative to
+                // the upstream walk.
+                let shuffled = indices.shuffled()
+                var boards: [[Float]] = []
+                boards.reserveCapacity(target)
+                for slotIdx in shuffled.prefix(target) {
+                    let base = slots.boards.advanced(
+                        by: slotIdx * ReplayBuffer.floatsPerBoard
+                    )
+                    let buf = UnsafeBufferPointer(
+                        start: base,
+                        count: ReplayBuffer.floatsPerBoard
+                    )
+                    boards.append(Array(buf))
+                }
+                out.append(BucketSamples(bucketIndex: bucketIdx, boards: boards))
+            }
+            return out
+        }
+
+        // Phase 2: forward-pass each sample, compute legal-masked
+        // entropy, accumulate per bucket. Forward passes serialize on
+        // the network's execution queue.
+        var stats: [Result.PolicyEntropyBucketStat] = []
+        for bucket in allSamples {
+            guard !bucket.boards.isEmpty else { continue }
+            var entropySum: Double = 0
+            var legalSum: Double = 0
+            var uniformSum: Double = 0
+            var counted = 0
+            for board in bucket.boards {
+                let logits = try await forwardLogits(network: network, board: board)
+                let (entropy, legalCount) = legalMaskedEntropy(
+                    rawLogits: logits,
+                    boardTensor: board
+                )
+                // A position with zero legal moves shouldn't normally
+                // land in the buffer (terminal positions aren't stored),
+                // but defend against it by skipping rather than dividing
+                // by zero in `ln(0)`.
+                guard legalCount > 0 else { continue }
+                entropySum += entropy
+                legalSum += Double(legalCount)
+                uniformSum += log(Double(legalCount))
+                counted += 1
+            }
+            guard counted > 0 else { continue }
+            let bucketLabel = materialBuckets[bucket.bucketIndex].label
+            stats.append(Result.PolicyEntropyBucketStat(
+                bucketLabel: bucketLabel,
+                sampleCount: counted,
+                meanEntropyNats: entropySum / Double(counted),
+                meanLegalMoves: legalSum / Double(counted),
+                meanUniformEntropyNats: uniformSum / Double(counted)
+            ))
+        }
+        return stats
+    }
+
+    /// Single forward pass through `network`, returning the raw policy
+    /// logits as a `[Float]` (length `PolicyEncoding.channelCount × 64
+    /// = 4864`). Wraps the existing `evaluate(board:consume:)` API in
+    /// the same `LogitsBox` pattern as the tactical-probe runner.
+    private static func forwardLogits(
+        network: ChessMPSNetwork,
+        board: [Float]
+    ) async throws -> [Float] {
+        let box = LogitsBox()
+        try await network.evaluate(board: board) { logitsBuf, _ in
+            box.set(Array(logitsBuf))
+        }
+        return box.take()
+    }
+
+    /// Compute the legal-masked policy entropy (nats) for a single
+    /// position. Steps:
+    ///   1. Softmax the raw 4864-cell logit vector.
+    ///   2. Decode the board tensor back to a `GameState` via
+    ///      `BoardEncoder.decodeSynthetic`; enumerate legal moves
+    ///      with `MoveGenerator.legalMoves`.
+    ///   3. Pull each legal move's softmax mass via
+    ///      `PolicyEncoding.policyIndex`; renormalize so legal-only
+    ///      mass sums to 1; compute Shannon entropy.
+    ///
+    /// Returns `(entropy, legalMoveCount)`. Entropy is 0 and the
+    /// legal-move count is 0 when no legal moves exist (terminal
+    /// position; caller skips these from the per-bucket mean).
+    private static func legalMaskedEntropy(
+        rawLogits: [Float],
+        boardTensor: [Float]
+    ) -> (entropy: Double, legalCount: Int) {
+        let softmax = ChessRunner.softmax(rawLogits)
+        let state = boardTensor.withUnsafeBufferPointer { buf -> GameState in
+            guard let base = buf.baseAddress else {
+                preconditionFailure(
+                    "ReplayBufferAnalyzer.legalMaskedEntropy: empty boardTensor"
+                )
+            }
+            return BoardEncoder.decodeSynthetic(from: base)
+        }
+        let legals = MoveGenerator.legalMoves(for: state)
+        guard !legals.isEmpty else { return (0, 0) }
+
+        var legalProbs: [Float] = []
+        legalProbs.reserveCapacity(legals.count)
+        var legalSum: Float = 0
+        for move in legals {
+            let idx = PolicyEncoding.policyIndex(move, currentPlayer: state.currentPlayer)
+            let p = softmax[idx]
+            legalProbs.append(p)
+            legalSum += p
+        }
+
+        // Renormalize legal-only mass to sum to 1, falling back to
+        // uniform when the network put essentially zero mass on the
+        // legal set (extreme collapse case; matches the tactical-probe
+        // runner's defensive fallback).
+        var renorm: [Double] = Array(repeating: 0, count: legals.count)
+        if legalSum > 1e-12 {
+            let denom = Double(legalSum)
+            for i in 0..<legals.count {
+                renorm[i] = Double(legalProbs[i]) / denom
+            }
+        } else {
+            let u = 1.0 / Double(legals.count)
+            for i in 0..<legals.count { renorm[i] = u }
+        }
+
+        var ent = 0.0
+        for p in renorm where p > 0 {
+            ent -= p * log(p)
+        }
+        return (ent, legals.count)
     }
 
     // MARK: - Bucket / channel helpers
@@ -597,6 +862,35 @@ extension ReplayBufferAnalyzer.Result {
                 fmt(entry.lossCount).leftPadded(toLength: 6)
             )
         }
+        out += "\n"
+
+        // 7) Live-network policy entropy by material bucket. Only
+        //    present when produced by `runWithPolicyEntropy(...)`. For
+        //    each bucket: mean legal-masked entropy (nats), the matching
+        //    perplexity (`exp(meanEntropy)` — "effective number of
+        //    moves the sampler picks from"), and the % of uniform
+        //    (`meanEntropy / ln(meanLegalMoves)`) for comparison to
+        //    the tactical-probe panel's entropy column.
+        if let entropyStats = policyEntropyByMaterialBucket {
+            out += "(7) Policy entropy by material bucket (live forward-pass sample):\n"
+            out += "    bucket      samples   meanEnt(nats)  perplexity   legal   uniformEnt   % of uniform\n"
+            for stat in entropyStats {
+                let perplexity = exp(stat.meanEntropyNats)
+                let pctOfUniform = stat.meanUniformEntropyNats > 0
+                    ? (stat.meanEntropyNats / stat.meanUniformEntropyNats) * 100.0
+                    : 0
+                out += String(
+                    format: "    %@  %@   %@   %@   %@   %@   %@\n",
+                    stat.bucketLabel.padding(toLength: 8, withPad: " ", startingAt: 0),
+                    fmt(stat.sampleCount).leftPadded(toLength: 6),
+                    String(format: "%6.3f", stat.meanEntropyNats).leftPadded(toLength: 12),
+                    String(format: "%6.2f", perplexity).leftPadded(toLength: 9),
+                    String(format: "%5.1f", stat.meanLegalMoves).leftPadded(toLength: 6),
+                    String(format: "%5.3f", stat.meanUniformEntropyNats).leftPadded(toLength: 10),
+                    String(format: "%5.1f%%", pctOfUniform).leftPadded(toLength: 11)
+                )
+            }
+        }
 
         return out
     }
@@ -607,6 +901,20 @@ extension ReplayBufferAnalyzer.Result {
         f.usesGroupingSeparator = true
         return f
     }()
+}
+
+// MARK: - Logits handoff across the evaluate(consume:) boundary
+
+/// Sendable channel for handing the raw policy logits out of the
+/// `evaluate(board:consume:)` callback into the awaiting caller after
+/// the underlying `MPSGraph.run` completes. Same shape and rationale
+/// as `SessionController+TacticalProbe.swift`'s `LogitsBox`; duplicated
+/// (rather than shared) because that one is `private` to its file and
+/// the value is one stored property of two methods.
+private final class LogitsBox: @unchecked Sendable {
+    nonisolated(unsafe) private var value: [Float] = []
+    func set(_ v: [Float]) { value = v }
+    func take() -> [Float] { value }
 }
 
 // MARK: - Small string padding helper
