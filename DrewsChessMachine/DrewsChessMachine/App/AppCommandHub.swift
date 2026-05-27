@@ -164,6 +164,13 @@ final class AppCommandHub {
     /// reads only the network's weights, doesn't touch the replay
     /// buffer at all.
     var analyzeValueHead: () -> Void = {}
+    /// Whole-network weight diagnostic — per-section L2/init-L2
+    /// summaries plus stem-per-input-channel and policy-per-output-
+    /// channel detail. Same output pattern as the value-head
+    /// analyzer (JSON in Analyses/, [NETW] log block, NSAlert with
+    /// Reveal in Finder). Independent of the buffer / value-head
+    /// analyzers; reads only network weights.
+    var analyzeNetworkWeights: () -> Void = {}
 
     // Chart-zoom actions. Wired to the View menu's ⌘= / ⌘- items
     // and the Auto toggle. A manual in/out press flips auto off

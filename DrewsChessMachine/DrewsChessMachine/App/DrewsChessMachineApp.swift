@@ -506,6 +506,7 @@ struct DrewsChessMachineApp: App {
                 Divider()
                 Button("Analyze Replay Buffer…") { commandHub.analyzeReplayBuffer() }
                 Button("Analyze Value Head Weights…") { commandHub.analyzeValueHead() }
+                Button("Analyze Network Weights…") { commandHub.analyzeNetworkWeights() }
                 Divider()
                 Button("Open Session Log") {
                     if let path = SessionLogger.shared.activeLogPath {
