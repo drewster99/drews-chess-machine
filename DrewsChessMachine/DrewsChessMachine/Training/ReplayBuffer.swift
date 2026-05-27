@@ -267,6 +267,110 @@ final class ReplayBuffer: @unchecked Sendable {
         + MemoryLayout<UInt32>.size      // workerGameId
         + MemoryLayout<UInt8>.size       // materialCount
 
+    /// Typed pointer view of every per-slot column. Lifetime is bounded
+    /// to a single `withSlotData(_:)` block: the analyzer reads from
+    /// these pointers while holding the buffer's lock, so callers MUST
+    /// NOT escape them. `count` is the live `storedCount`; only slots
+    /// `0..<count` carry valid data.
+    struct SlotPointers: @unchecked Sendable {
+        let count: Int
+        let capacity: Int
+        let boards: UnsafePointer<Float>
+        let moves: UnsafePointer<Int32>
+        let outcomes: UnsafePointer<Float>
+        let plyIndex: UnsafePointer<UInt16>
+        let gameLength: UnsafePointer<UInt16>
+        let samplingTau: UnsafePointer<Float>
+        let stateHash: UnsafePointer<UInt64>
+        let workerGameId: UnsafePointer<UInt32>
+        let materialCount: UnsafePointer<UInt8>
+    }
+
+    /// Hold the buffer's lock and hand `block` a `SlotPointers` view of
+    /// every per-slot column. Used by the offline-analyzer paths (CLI
+    /// flag + Debug menu item) that need to walk every slot in one pass
+    /// without acquiring the lock per slot. Appends and samples are
+    /// blocked for the duration of `block` — keep it brief on a live
+    /// buffer; on a 1 M-position buffer the analyzer's single pass
+    /// completes well under a second.
+    ///
+    /// `block` must be `@Sendable` and return a `Sendable` value because
+    /// `OSAllocatedUnfairLock.withLock` enforces both — and that's
+    /// stricter than what the caller actually needs at runtime (the
+    /// closure runs synchronously on the calling thread, never crosses
+    /// an isolation boundary). To stay within the constraint, the
+    /// analyzer is structured so the whole walk + reduction happens
+    /// inside this one closure and the closure returns a self-contained
+    /// `Sendable` result struct.
+    func withSlotData<R: Sendable>(
+        _ block: @Sendable (SlotPointers) throws -> R
+    ) rethrows -> R {
+        try lock.withLock {
+            let view = SlotPointers(
+                count: storedCount,
+                capacity: capacity,
+                boards: UnsafePointer(boardStorage),
+                moves: UnsafePointer(moveStorage),
+                outcomes: UnsafePointer(outcomeStorage),
+                plyIndex: UnsafePointer(plyIndexStorage),
+                gameLength: UnsafePointer(gameLengthStorage),
+                samplingTau: UnsafePointer(samplingTauStorage),
+                stateHash: UnsafePointer(stateHashStorage),
+                workerGameId: UnsafePointer(workerGameIdStorage),
+                materialCount: UnsafePointer(materialCountStorage)
+            )
+            return try block(view)
+        }
+    }
+
+    /// Peek at a saved `replay_buffer.bin` header just far enough to
+    /// read the `capacity` field — used by the CLI analyzer so it can
+    /// allocate a `ReplayBuffer` of the exact size needed to hold every
+    /// stored slot, rather than over-allocating against the
+    /// `maxReasonableCapacity` ceiling. Validates the magic + version
+    /// before returning the parsed value. The full `restore(from:)`
+    /// path repeats every validation step, so a header peek that
+    /// passes here can still be rejected by `restore` if the body or
+    /// trailer is corrupt.
+    static func peekCapacity(at url: URL) throws -> Int {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw PersistenceError.readFailed(error)
+        }
+        // `try?` on FileHandle.close() in a `defer` matches the same
+        // idiom used by `write(to:)` and `restore(from:)` elsewhere in
+        // this file: a close-time error after a successful read can't
+        // invalidate the bytes we already consumed, and on an error
+        // path we want the original `throw` to propagate rather than
+        // be masked by the close failure.
+        defer { try? handle.close() }
+        guard let headerData = try handle.read(upToCount: headerSize),
+              headerData.count == headerSize else {
+            throw PersistenceError.truncatedHeader
+        }
+        let magicMatches = headerData.prefix(8).elementsEqual(fileMagic)
+        guard magicMatches else { throw PersistenceError.badMagic }
+        let version: UInt32 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
+        }
+        guard version == fileVersion else {
+            throw PersistenceError.unsupportedVersion(version)
+        }
+        let cap64: Int64 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 24, as: Int64.self)
+        }
+        guard cap64 > 0 && cap64 <= maxReasonableCapacity else {
+            throw PersistenceError.upperBoundExceeded(
+                field: "capacity",
+                value: cap64,
+                max: maxReasonableCapacity
+            )
+        }
+        return Int(cap64)
+    }
+
     // MARK: - Hash helper (encoded board → stable UInt64 hash)
 
     /// Hash an encoded `[floatsPerBoard]` board tensor into a single

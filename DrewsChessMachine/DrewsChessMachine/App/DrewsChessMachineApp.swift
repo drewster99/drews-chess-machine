@@ -94,6 +94,14 @@ struct DrewsChessMachineApp: App {
         // variant) followed by `_exit(0)`.
         Self.handleDefaultsFlagsIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: handle the offline replay-buffer analyzer flag.
+        // Same pattern as the defaults-emitter flags — exits the process
+        // before any SwiftUI / Metal init. Reads the saved
+        // `replay_buffer.bin` directly via `ReplayBuffer.restore` (no
+        // network state needed), runs `ReplayBufferAnalyzer.run`, prints
+        // JSON to stdout and a human-readable summary to stderr.
+        Self.handleAnalyzeReplayBufferIfPresent(rawArgs: rawArgs)
+
         // Known flags.
         let booleanFlags: Set<String> = ["--train"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit"]
@@ -496,6 +504,8 @@ struct DrewsChessMachineApp: App {
                 Button("Open Tactical Probe Monitor…") { commandHub.openTacticalProbeMonitor() }
                     .disabled(!commandHub.networkReady)
                 Divider()
+                Button("Analyze Replay Buffer…") { commandHub.analyzeReplayBuffer() }
+                Divider()
                 Button("Open Session Log") {
                     if let path = SessionLogger.shared.activeLogPath {
                         NSWorkspace.shared.open(URL(fileURLWithPath: path))
@@ -570,6 +580,111 @@ struct DrewsChessMachineApp: App {
         }
         let path = positional.first ?? "./parameters.json"
         runCreateParametersFileAndExit(path: path, force: force)
+    }
+
+    // MARK: - Replay-buffer analyzer pre-flight (--analyze-replay-buffer)
+
+    /// Inspects `rawArgs` for `--analyze-replay-buffer`. If present,
+    /// validates that the only other argument is one positional path
+    /// (either a session directory containing `replay_buffer.bin`, or
+    /// the binary file itself), runs `ReplayBufferAnalyzer`, prints
+    /// JSON to stdout + a human-readable summary to stderr, and exits.
+    /// Anything else is a usage error → non-zero exit.
+    ///
+    /// Sub-second on a fresh allocation + restore of a 1 M-position
+    /// buffer; never touches the `TrainingParameters` singleton or any
+    /// network/Metal state.
+    private static func handleAnalyzeReplayBufferIfPresent(rawArgs: [String]) {
+        let analyzeFlag = "--analyze-replay-buffer"
+        guard rawArgs.contains(analyzeFlag) else { return }
+
+        // Only allowed companion args are positional (non-`--`-prefixed).
+        // Any other `--`-prefixed flag is a usage error so a typo doesn't
+        // get silently accepted.
+        let allowedFlags: Set<String> = [analyzeFlag]
+        if let badFlag = rawArgs.first(where: {
+            $0.hasPrefix("--") && !allowedFlags.contains($0)
+        }) {
+            FileHandle.standardError.write(Data(
+                "error: \(analyzeFlag) does not accept '\(badFlag)'\n".utf8
+            ))
+            Darwin.exit(8)
+        }
+        let positional = rawArgs.filter { !allowedFlags.contains($0) }
+        guard positional.count == 1 else {
+            FileHandle.standardError.write(Data(
+                "error: \(analyzeFlag) requires exactly one positional argument (path to session dir or replay_buffer.bin); got \(positional.count)\n".utf8
+            ))
+            Darwin.exit(9)
+        }
+        runAnalyzeReplayBufferAndExit(inputPath: positional[0])
+    }
+
+    private static func runAnalyzeReplayBufferAndExit(inputPath: String) -> Never {
+        let expanded = (inputPath as NSString).expandingTildeInPath
+        let inputURL = URL(fileURLWithPath: expanded)
+        let fm = FileManager.default
+
+        // Resolve `inputPath` to the actual `replay_buffer.bin` file. The
+        // caller may pass either the session-dir (containing both the
+        // session JSON and `replay_buffer.bin`) or the bin file itself —
+        // both are accepted so the flag composes naturally with shell
+        // tab-completion either way.
+        var bufferURL = inputURL
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: inputURL.path, isDirectory: &isDir) else {
+            FileHandle.standardError.write(Data(
+                "error: '\(inputURL.path)' does not exist\n".utf8
+            ))
+            Darwin.exit(10)
+        }
+        if isDir.boolValue {
+            bufferURL = SessionCheckpointLayout.replayBufferURL(in: inputURL)
+            guard fm.fileExists(atPath: bufferURL.path) else {
+                FileHandle.standardError.write(Data(
+                    "error: '\(inputURL.path)' is a directory but does not contain replay_buffer.bin\n".utf8
+                ))
+                Darwin.exit(11)
+            }
+        }
+
+        // Allocate a ReplayBuffer of exactly the file's capacity so the
+        // restore neither truncates nor over-allocates.
+        let buffer: ReplayBuffer
+        do {
+            let cap = try ReplayBuffer.peekCapacity(at: bufferURL)
+            let b = ReplayBuffer(capacity: cap)
+            try b.restore(from: bufferURL)
+            buffer = b
+        } catch {
+            FileHandle.standardError.write(Data(
+                "error: failed to load replay buffer at '\(bufferURL.path)': \(error)\n".utf8
+            ))
+            Darwin.exit(12)
+        }
+
+        let modelLabel = "<cli-analysis:\(bufferURL.lastPathComponent)>"
+        let result = ReplayBufferAnalyzer.run(buffer: buffer, modelLabel: modelLabel)
+
+        // JSON to stdout, summary to stderr — matches the
+        // `--show-default-parameters` convention so the same UNIX-pipe
+        // idioms work (`... > out.json` keeps the JSON, the summary
+        // still scrolls past on the terminal).
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+        do {
+            let data = try encoder.encode(result)
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        } catch {
+            FileHandle.standardError.write(Data(
+                "error: JSON encode failed: \(error)\n".utf8
+            ))
+            Darwin.exit(13)
+        }
+
+        FileHandle.standardError.write(Data(result.textSummary().utf8))
+        Darwin.exit(0)
     }
 
     private static func runShowDefaultParametersAndExit() -> Never {

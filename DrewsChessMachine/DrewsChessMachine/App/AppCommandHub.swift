@@ -149,6 +149,13 @@ final class AppCommandHub {
     /// be active simultaneously. Multiple monitor windows can be
     /// opened; each owns its own history store and watcher.
     var openTacticalProbeMonitor: () -> Void = {}
+    /// Run the offline replay-buffer analyzer against the currently-
+    /// loaded buffer. Writes a JSON file under
+    /// `~/Library/Application Support/DrewsChessMachine/Analyses/`,
+    /// logs an `[ANALYSIS]` text summary block to the session log,
+    /// and surfaces an NSAlert with a Reveal-in-Finder action so the
+    /// JSON is one click away. No-op when no buffer is loaded.
+    var analyzeReplayBuffer: () -> Void = {}
 
     // Chart-zoom actions. Wired to the View menu's ⌘= / ⌘- items
     // and the Auto toggle. A manual in/out press flips auto off

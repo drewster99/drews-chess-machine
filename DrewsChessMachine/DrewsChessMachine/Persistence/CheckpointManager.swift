@@ -92,6 +92,15 @@ enum CheckpointPaths {
         rootURL.appendingPathComponent("Models", isDirectory: true)
     }
 
+    /// `~/Library/Application Support/DrewsChessMachine/Analyses/`.
+    /// Output directory for offline replay-buffer analyzer runs (see
+    /// `ReplayBufferAnalyzer` + the `Analyze Replay Buffer…` debug menu).
+    /// Created on-demand by the analyzer's write path; not part of
+    /// `ensureDirectories()` because no normal session flow writes here.
+    static var analysesDir: URL {
+        rootURL.appendingPathComponent("Analyses", isDirectory: true)
+    }
+
     /// Create all checkpoint subdirectories if they don't already
     /// exist. Idempotent and cheap — called from every save path.
     static func ensureDirectories() throws {
