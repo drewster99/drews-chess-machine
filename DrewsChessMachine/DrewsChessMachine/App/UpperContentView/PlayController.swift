@@ -67,6 +67,17 @@ final class PlayController {
     /// game start fails. Cleared on the next popover open.
     var setupErrorText: String?
 
+    /// Human-readable description of the AI opponent the user is
+    /// currently playing against. Surfaced in the play window's
+    /// banner so the user always knows which network is being faced
+    /// (champion snapshot at its ModelID, trainer snapshot at its
+    /// ModelID, live trainer, or filename for a loaded `.dcmmodel`).
+    /// Set during `materializeOpponentSource(...)` once the network
+    /// is built (so the ID reflects the actual game-start snapshot,
+    /// not whatever the live champion has drifted to since), and
+    /// cleared on `stop()`. Nil between games.
+    var currentOpponentDescription: String?
+
     // MARK: - Active game state
 
     /// True once `start(...)` has constructed players and launched
@@ -273,15 +284,40 @@ final class PlayController {
         panel.directoryURL = CheckpointPaths.modelsDir
         panel.canCreateDirectories = false
 
-        let response = panel.runModal()
-        guard response == .OK, let url = panel.url else { return }
-        loadedFileURL = url
-        loadedFileLabel = Self.describeModelFile(url)
-        // Picking a file implies the user wants the loaded-file
-        // option — flip the radio so the popover doesn't require a
-        // separate tap.
-        opponentChoice = .loadedFile
-        setupErrorText = nil
+        // Use the non-modal `begin(_:)` rather than `runModal()` —
+        // `runModal` is a hard modal that blocks the run loop and
+        // dispatches the popover's auto-dismiss-on-focus-loss while
+        // blocking, so by the time the panel returns the popover is
+        // gone. The non-modal form keeps the run loop turning, but
+        // the file panel still takes key-window focus, and SwiftUI
+        // popovers default to `.semitransient` behavior which
+        // dismisses on app-level focus loss. So in addition to the
+        // non-modal call, re-assert `isSetupVisible = true` after
+        // the panel returns to bring the popover back if SwiftUI
+        // dismissed it. Both branches (OK and Cancel) re-show so
+        // the user returns to the same popover they launched the
+        // picker from rather than having to re-open it.
+        //
+        // The completion handler fires on the main thread but is
+        // not actor-isolated; we hop to @MainActor explicitly so
+        // Swift's actor system can verify the writes.
+        panel.begin { [weak self] response in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if response == .OK, let url = panel.url {
+                    self.loadedFileURL = url
+                    self.loadedFileLabel = Self.describeModelFile(url)
+                    // Picking a file implies the user wants the
+                    // loaded-file option — flip the radio so the popover
+                    // doesn't require a separate tap.
+                    self.opponentChoice = .loadedFile
+                    self.setupErrorText = nil
+                }
+                // Re-show regardless of OK/Cancel: the user expects to
+                // return to the setup popover either way.
+                self.isSetupVisible = true
+            }
+        }
     }
 
     private static func describeModelFile(_ url: URL) -> String {
@@ -546,6 +582,7 @@ final class PlayController {
         oldPacer.stop()
         pacer = nil
         opponentSource = nil
+        currentOpponentDescription = nil
         pendingLegalMoves = []
         selectedFromSquare = nil
         pendingPromotion = nil
@@ -598,6 +635,7 @@ final class PlayController {
         opponentSource = nil
         lastOpponentChoice = nil
         lastHumanColor = nil
+        currentOpponentDescription = nil
         // Note: `liveTrainerMirrorNetwork` is intentionally NOT cleared.
         // It persists for the controller's lifetime so subsequent
         // `.liveTrainer` games skip the graph-build cost.
@@ -851,6 +889,8 @@ final class PlayController {
             do {
                 let weights = try await champion.exportWeights()
                 let net = try await Self.buildInferenceNetwork(loading: weights)
+                let idText = champion.identifier.map { "\($0)" } ?? "unnamed"
+                currentOpponentDescription = "Champion snapshot · \(idText)"
                 return .success(DirectMoveEvaluationSource(network: net))
             } catch {
                 return .failure(error)
@@ -863,6 +903,8 @@ final class PlayController {
             do {
                 let weights = try await trainer.network.exportWeights()
                 let net = try await Self.buildInferenceNetwork(loading: weights)
+                let idText = trainer.identifier.map { "\($0)" } ?? "unnamed"
+                currentOpponentDescription = "Trainer snapshot · \(idText)"
                 return .success(DirectMoveEvaluationSource(network: net))
             } catch {
                 return .failure(error)
@@ -879,6 +921,8 @@ final class PlayController {
                 guard let mirror = liveTrainerMirrorNetwork else {
                     return .failure(PlayControllerError.noTrainerAvailable)
                 }
+                let idText = trainer.identifier.map { "\($0)" } ?? "unnamed"
+                currentOpponentDescription = "Live trainer · current weights (at start: \(idText))"
                 return .success(LiveTrainerMoveEvaluationSource(
                     trainer: trainer,
                     mirror: mirror
@@ -894,6 +938,8 @@ final class PlayController {
             do {
                 let file = try CheckpointManager.loadModelFile(at: url)
                 let net = try await Self.buildInferenceNetwork(loading: file.weights)
+                let label = loadedFileLabel ?? url.lastPathComponent
+                currentOpponentDescription = "File · \(label) · \(file.modelID)"
                 return .success(DirectMoveEvaluationSource(network: net))
             } catch {
                 return .failure(error)

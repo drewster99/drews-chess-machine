@@ -236,7 +236,28 @@ fileprivate struct HumanPlayWindowView: View {
             Text(humanLabel)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+            opponentLabelText
             drawCountersRow
+        }
+    }
+
+    /// Single line under the "You play White/Black" subtitle that
+    /// surfaces which network the AI side is using — champion or
+    /// trainer snapshot at its ModelID, live trainer, or the
+    /// filename of a loaded `.dcmmodel`. Sourced from
+    /// `PlayController.currentOpponentDescription`, which is set
+    /// in `materializeOpponentSource(...)` after the inference
+    /// network is built (so the ModelID reflects the actual
+    /// game-start snapshot rather than whatever the live champion
+    /// has drifted to since). Hidden when the controller has no
+    /// description (between games or before the network has
+    /// materialized).
+    @ViewBuilder
+    private var opponentLabelText: some View {
+        if let description = playController.currentOpponentDescription {
+            (Text("vs ") + Text(description).fontDesign(.monospaced))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
