@@ -365,11 +365,12 @@ enum ReplayBufferAnalyzer {
 
     // MARK: - Live-network entropy sampler
 
-    /// Default number of positions to forward-pass per material bucket
-    /// in `runWithPolicyEntropy(...)`. 500 × 5 buckets = 2,500 forward
-    /// passes ≈ 4 seconds on Apple Silicon — enough to get stable per-
-    /// bucket means without turning a sub-second analyzer into a
-    /// multi-minute job.
+    /// Default per-bucket target for `runWithPolicyEntropy(...)`. Sized
+    /// so the cumulative forward-pass cost (target × number of non-empty
+    /// buckets) stays in the few-second range on Apple Silicon — enough
+    /// to get stable per-bucket means without turning a sub-second
+    /// analyzer into a multi-minute job. Buckets with fewer positions
+    /// than the target are sampled exhaustively (the sampler clamps).
     static let defaultPolicyEntropyPerBucketTarget = 500
 
     /// Run the standard buffer analyzer AND a stratified policy-entropy
