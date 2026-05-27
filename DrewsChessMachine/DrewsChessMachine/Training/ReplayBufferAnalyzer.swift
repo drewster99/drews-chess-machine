@@ -128,17 +128,18 @@ enum ReplayBufferAnalyzer {
             let meanUniformEntropyNats: Double
             /// Per-position entropy distribution within the bucket,
             /// reported as values at the percentiles named in
-            /// `ReplayBufferAnalyzer.entropyPercentileLabels`
-            /// (currently p10/p50/p90). Used to tell "uniformly flat
-            /// across positions" apart from "a few sharp positions and
-            /// many flat ones hiding behind a flat-looking mean."
+            /// `ReplayBufferAnalyzer.entropyPercentileLabels`. Used to
+            /// tell "uniformly flat across positions" apart from "a few
+            /// sharp positions and many flat ones hiding behind a
+            /// flat-looking mean."
             let entropyPercentilesNats: [Double]
             /// Mean over sampled positions of the renormalized legal-only
             /// probability mass on the top-`K` moves, for the `K` values
-            /// in `ReplayBufferAnalyzer.topKLabels` (currently 1/3/5).
-            /// A bucket with `meanTopKLegalMass = [0.10, 0.30, 0.45]`
-            /// puts only 10% of mass on the top move and 45% across
-            /// the top 5 — a flat, low-confidence policy.
+            /// in `ReplayBufferAnalyzer.topKLabels`. A low value at the
+            /// largest `K` (e.g. `meanTopKLegalMass.last ≈ 0.5` when
+            /// `topKLabels.last` is `5`) means the network spreads its
+            /// belief broadly across the legal moves instead of
+            /// committing to a handful of top candidates.
             let meanTopKLegalMass: [Double]
             /// Mean over sampled positions of the softmax mass placed on
             /// illegal cells (the `1 - legalSum` before renormalization).
