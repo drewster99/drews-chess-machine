@@ -91,9 +91,9 @@ enum ReplayBufferAnalyzer {
     /// Tau used for the "self-play projection" metrics
     /// (`meanEntropyNatsAtSelfPlayTau`, `meanTopKLegalMassAtSelfPlayTau`).
     /// Matches `SamplingSchedule.selfPlay.floorTau` — the steady-state
-    /// value the self-play sampler decays to after the opening 20-ply
-    /// warmup. Reported into the JSON as `selfPlayTauUsed` per bucket
-    /// so downstream readers know which tau was applied.
+    /// value the self-play sampler decays to once the opening tau decay
+    /// has bottomed out. Reported into the JSON as `selfPlayTauUsed`
+    /// per bucket so downstream readers know which tau was applied.
     static let selfPlayTauForProjection: Double = 0.4
 
     /// Number of equal-size slices the entropy-conditioned channel
