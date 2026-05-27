@@ -156,6 +156,14 @@ final class AppCommandHub {
     /// and surfaces an NSAlert with a Reveal-in-Finder action so the
     /// JSON is one click away. No-op when no buffer is loaded.
     var analyzeReplayBuffer: () -> Void = {}
+    /// Snapshot-time diagnostic of the value-head weights on the
+    /// currently-loaded network. Writes a JSON file under the same
+    /// Analyses/ directory the replay-buffer analyzer uses, logs a
+    /// `[VALHEAD]` text summary block, and surfaces an NSAlert with
+    /// Reveal-in-Finder. Independent of `analyzeReplayBuffer` —
+    /// reads only the network's weights, doesn't touch the replay
+    /// buffer at all.
+    var analyzeValueHead: () -> Void = {}
 
     // Chart-zoom actions. Wired to the View menu's ⌘= / ⌘- items
     // and the Auto toggle. A manual in/out press flips auto off

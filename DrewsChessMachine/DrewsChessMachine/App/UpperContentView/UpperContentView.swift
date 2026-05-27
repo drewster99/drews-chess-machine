@@ -2093,6 +2093,7 @@ struct UpperContentView: View {
             TacticalProbeMonitorLauncher.openWindow(sessionController: session)
         }
         commandHub.analyzeReplayBuffer = { session.analyzeReplayBufferToFile() }
+        commandHub.analyzeValueHead = { session.analyzeValueHeadToFile() }
         commandHub.abortArena = {
             SessionLogger.shared.log("[BUTTON] Abort Arena")
             session.arenaOverrideBox?.abort()
