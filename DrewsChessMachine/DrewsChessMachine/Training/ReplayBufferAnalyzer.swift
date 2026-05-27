@@ -88,6 +88,30 @@ enum ReplayBufferAnalyzer {
     /// of "top-5 mass" in a position with 3 legal moves reads 1.0.
     static let topKLabels: [Int] = [1, 3, 5]
 
+    /// Tau used for the "self-play projection" metrics
+    /// (`meanEntropyNatsAtSelfPlayTau`, `meanTopKLegalMassAtSelfPlayTau`).
+    /// Matches `SamplingSchedule.selfPlay.floorTau` — the steady-state
+    /// value the self-play sampler decays to after the opening 20-ply
+    /// warmup. Reported into the JSON as `selfPlayTauUsed` per bucket
+    /// so downstream readers know which tau was applied.
+    static let selfPlayTauForProjection: Double = 0.4
+
+    /// Number of equal-size slices the entropy-conditioned channel
+    /// histogram splits sampled positions into. Slice 0 is the sharpest
+    /// (lowest entropy), slice `entropySliceLabels.count - 1` is the
+    /// flattest. Labels and slice count must stay in sync.
+    static let entropySliceLabels: [String] = ["sharp", "mid", "flat"]
+
+    /// Percentile boundaries computed from `entropySliceLabels.count`.
+    /// For 3 slices: cut at p33 and p67. For N slices: cuts at p(100·i/N)
+    /// for i in 1..<N. Used internally by the entropy-slice splitter
+    /// to map sorted positions to slice indices.
+    static var entropySliceBoundaryPercentiles: [Double] {
+        let n = entropySliceLabels.count
+        guard n >= 2 else { return [] }
+        return (1..<n).map { 100.0 * Double($0) / Double(n) }
+    }
+
     // MARK: - Result struct
 
     struct Result: Codable, Sendable {
@@ -105,6 +129,21 @@ enum ReplayBufferAnalyzer {
         /// forward-passes a random sample of positions per bucket
         /// through a live network. `nil`-entropy fields are not
         /// reported because the bucket had no positions to sample.
+        /// 76-channel histogram + position count for one entropy slice
+        /// of one material bucket. Produced for analysis (8) "channel
+        /// histogram by entropy slice" — surfaces whether the network's
+        /// argmax move family differs between its sharp-policy positions
+        /// and its flat-policy ones.
+        struct ChannelHistogramSlice: Codable, Sendable {
+            /// Slice label (matches `entropySliceLabels[sliceIndex]`).
+            let sliceLabel: String
+            /// Number of positions falling into this entropy slice.
+            let positionCount: Int
+            /// 76-channel histogram of `arg max p_renorm(legal)` —
+            /// the network's most-favored legal move per position.
+            let topMoveChannelCounts: [Int]
+        }
+
         struct PolicyEntropyBucketStat: Codable, Sendable {
             /// Material-bucket label (matches `materialBuckets[i].label`),
             /// duplicated into the entry so this list is self-describing
@@ -118,6 +157,9 @@ enum ReplayBufferAnalyzer {
             /// renormalized policy softmax, averaged over `sampleCount`
             /// positions in this bucket. Compare to
             /// `meanUniformEntropyNats` for "how close to uniform."
+            /// The value here is the *underlying* policy at tau=1.0;
+            /// see `meanEntropyNatsAtSelfPlayTau` for the post-tau
+            /// self-play sampling projection.
             let meanEntropyNats: Double
             /// Mean number of legal moves across the sampled positions.
             let meanLegalMoves: Double
@@ -139,7 +181,9 @@ enum ReplayBufferAnalyzer {
             /// largest `K` (e.g. `meanTopKLegalMass.last ≈ 0.5` when
             /// `topKLabels.last` is `5`) means the network spreads its
             /// belief broadly across the legal moves instead of
-            /// committing to a handful of top candidates.
+            /// committing to a handful of top candidates. The values
+            /// here are at tau=1.0; see `meanTopKLegalMassAtSelfPlayTau`
+            /// for the post-tau self-play sampling projection.
             let meanTopKLegalMass: [Double]
             /// Mean over sampled positions of the softmax mass placed on
             /// illegal cells (the `1 - legalSum` before renormalization).
@@ -148,6 +192,45 @@ enum ReplayBufferAnalyzer {
             /// independent capacity / training-rate signal from the
             /// flatness numbers.
             let meanIllegalMass: Double
+
+            /// Tau used to derive the `*AtSelfPlayTau` projections.
+            /// Echoed into every per-bucket entry so JSON consumers
+            /// don't need to look elsewhere for the value.
+            let selfPlayTauUsed: Double
+            /// Mean entropy (nats) of the legal-renormalized policy
+            /// after applying `selfPlayTauUsed` temperature — i.e.,
+            /// what self-play actually samples from. Compare directly
+            /// to `meanEntropyNats` to see how much temperature
+            /// concentrates the policy.
+            let meanEntropyNatsAtSelfPlayTau: Double
+            /// Mean top-K legal mass after applying `selfPlayTauUsed`.
+            /// Compare to `meanTopKLegalMass` to see the same
+            /// concentration shift in the top-K view.
+            let meanTopKLegalMassAtSelfPlayTau: [Double]
+
+            /// Mean value-head scalar `v = p_win − p_loss ∈ [−1, +1]`
+            /// across sampled positions in this bucket. For sparse
+            /// material-advantage buckets the well-trained-network
+            /// expectation is `≈ +1.0` on the K+Q side and `≈ −1.0`
+            /// on the K side; values near zero indicate the value
+            /// head hasn't learned to read material imbalance.
+            let meanValueScalar: Double
+            /// Per-position value-scalar distribution at the percentiles
+            /// named in `entropyPercentileLabels` (re-used for layout
+            /// consistency). Wide p10↔p90 spread is healthy — it means
+            /// the value head distinguishes "I'm winning" positions
+            /// from "I'm losing" positions; narrow spread around zero
+            /// is the collapsed-value-head signature.
+            let valueScalarPercentiles: [Double]
+
+            /// Channel histogram of the network's argmax legal move,
+            /// stratified by per-position entropy into
+            /// `entropySliceLabels.count` slices (sharp → flat).
+            /// Surfaces whether the network's confident moves differ
+            /// in move family from its uncertain ones (e.g., are
+            /// sharp positions dominated by distance-1 captures while
+            /// flat positions spread across long-range slides?).
+            let topMoveChannelByEntropySlice: [ChannelHistogramSlice]
         }
 
         // Header
@@ -515,28 +598,39 @@ enum ReplayBufferAnalyzer {
         }
 
         // Phase 2: forward-pass each sample, compute per-position
-        // policy metrics (entropy, top-K legal-mass, illegal mass),
+        // policy metrics (entropy, top-K legal-mass, illegal mass,
+        // post-tau projections, argmax channel, value scalar),
         // accumulate per bucket. Forward passes serialize on the
         // network's execution queue.
         let topKCount = topKLabels.count
+        let channelCount = PolicyEncoding.channelCount
+        let sliceCount = entropySliceLabels.count
         var stats: [Result.PolicyEntropyBucketStat] = []
         for bucket in allSamples {
             guard !bucket.boards.isEmpty else { continue }
-            // Per-position entropy values are collected into an array
-            // so we can compute percentiles after the bucket finishes.
-            // Sums accumulate the per-position metrics that only need
-            // the mean.
-            var entropyValues: [Double] = []
-            entropyValues.reserveCapacity(bucket.boards.count)
+            // Per-position values needed for percentile or per-slice
+            // analysis are collected into arrays. Scalar means just
+            // accumulate as sums to save memory.
+            //
+            // entropyAndChannel: (entropy, topMoveChannel) for the
+            // entropy-slice channel histograms (analysis 8). Sorting
+            // by .0 then iterating gives us the sharp→flat ordering.
+            var entropyAndChannel: [(entropy: Double, channel: Int)] = []
+            entropyAndChannel.reserveCapacity(bucket.boards.count)
+            var valueScalars: [Double] = []
+            valueScalars.reserveCapacity(bucket.boards.count)
             var legalSum: Double = 0
             var uniformSum: Double = 0
-            var topKSums: [Double] = Array(repeating: 0, count: topKCount)
+            var topKSums = [Double](repeating: 0, count: topKCount)
             var illegalSum: Double = 0
+            var entropyAtTauSum: Double = 0
+            var topKAtTauSums = [Double](repeating: 0, count: topKCount)
+            var valueScalarSum: Double = 0
             var counted = 0
             for board in bucket.boards {
-                let logits = try await forwardLogits(network: network, board: board)
+                let pass = try await forwardPass(network: network, board: board)
                 let perPos = legalMaskedPolicyMetrics(
-                    rawLogits: logits,
+                    rawLogits: pass.logits,
                     boardTensor: board
                 )
                 // A position with zero legal moves shouldn't normally
@@ -544,27 +638,67 @@ enum ReplayBufferAnalyzer {
                 // but defend against it by skipping rather than dividing
                 // by zero in `ln(0)`.
                 guard perPos.legalCount > 0 else { continue }
-                entropyValues.append(perPos.entropy)
+                entropyAndChannel.append((perPos.entropy, perPos.topMoveChannel))
+                valueScalars.append(Double(pass.valueScalar))
                 legalSum += Double(perPos.legalCount)
                 uniformSum += log(Double(perPos.legalCount))
                 for i in 0..<topKCount {
                     topKSums[i] += perPos.topKLegalMass[i]
+                    topKAtTauSums[i] += perPos.topKLegalMassAtSelfPlayTau[i]
                 }
                 illegalSum += perPos.illegalMass
+                entropyAtTauSum += perPos.entropyAtSelfPlayTau
+                valueScalarSum += Double(pass.valueScalar)
                 counted += 1
             }
             guard counted > 0 else { continue }
 
             let denom = Double(counted)
-            let meanEntropy = entropyValues.reduce(0, +) / denom
+            let meanEntropy = entropyAndChannel
+                .reduce(0.0) { $0 + $1.entropy } / denom
 
-            // Percentiles: sort once and linearly interpolate at each
-            // requested percentile.
-            let sortedEntropy = entropyValues.sorted()
+            // Entropy percentiles.
+            let sortedEntropy = entropyAndChannel.map(\.entropy).sorted()
             var percentiles: [Double] = []
             percentiles.reserveCapacity(entropyPercentileLabels.count)
             for p in entropyPercentileLabels {
                 percentiles.append(percentile(p: Double(p), sortedValues: sortedEntropy))
+            }
+
+            // Value-scalar percentiles (re-using entropyPercentileLabels
+            // for layout consistency — same indices, different metric).
+            let sortedValue = valueScalars.sorted()
+            var valuePercentiles: [Double] = []
+            valuePercentiles.reserveCapacity(entropyPercentileLabels.count)
+            for p in entropyPercentileLabels {
+                valuePercentiles.append(percentile(p: Double(p), sortedValues: sortedValue))
+            }
+
+            // Entropy-slice channel histograms. Sort `entropyAndChannel`
+            // ascending by entropy, then split into equal-size slices
+            // and tally channels within each slice. Slice boundaries
+            // are computed via integer arithmetic so slice sizes differ
+            // by at most 1 when `counted` doesn't divide evenly.
+            let sortedByEntropy = entropyAndChannel.sorted { $0.entropy < $1.entropy }
+            var slices: [Result.ChannelHistogramSlice] = []
+            slices.reserveCapacity(sliceCount)
+            for s in 0..<sliceCount {
+                let lo = (s * counted) / sliceCount
+                let hi = ((s + 1) * counted) / sliceCount
+                var histogram = [Int](repeating: 0, count: channelCount)
+                var positionsInSlice = 0
+                for i in lo..<hi {
+                    let chan = sortedByEntropy[i].channel
+                    if chan >= 0 && chan < channelCount {
+                        histogram[chan] += 1
+                        positionsInSlice += 1
+                    }
+                }
+                slices.append(Result.ChannelHistogramSlice(
+                    sliceLabel: entropySliceLabels[s],
+                    positionCount: positionsInSlice,
+                    topMoveChannelCounts: histogram
+                ))
             }
 
             let bucketLabel = materialBuckets[bucket.bucketIndex].label
@@ -576,7 +710,13 @@ enum ReplayBufferAnalyzer {
                 meanUniformEntropyNats: uniformSum / denom,
                 entropyPercentilesNats: percentiles,
                 meanTopKLegalMass: topKSums.map { $0 / denom },
-                meanIllegalMass: illegalSum / denom
+                meanIllegalMass: illegalSum / denom,
+                selfPlayTauUsed: selfPlayTauForProjection,
+                meanEntropyNatsAtSelfPlayTau: entropyAtTauSum / denom,
+                meanTopKLegalMassAtSelfPlayTau: topKAtTauSums.map { $0 / denom },
+                meanValueScalar: valueScalarSum / denom,
+                valueScalarPercentiles: valuePercentiles,
+                topMoveChannelByEntropySlice: slices
             ))
         }
         return stats
@@ -599,18 +739,22 @@ enum ReplayBufferAnalyzer {
     }
 
     /// Single forward pass through `network`, returning the raw policy
-    /// logits as a `[Float]` (length `PolicyEncoding.channelCount × 64
-    /// = 4864`). Wraps the existing `evaluate(board:consume:)` API in
-    /// the same `LogitsBox` pattern as the tactical-probe runner.
-    private static func forwardLogits(
+    /// logits as a `[Float]` and the value-head scalar
+    /// `v = p_win − p_loss ∈ [−1, +1]`. Wraps `evaluate(board:consume:)`
+    /// in the same `LogitsBox` pattern as the tactical-probe runner,
+    /// plus a sibling box for the value scalar that the consume
+    /// closure also receives "for free."
+    private static func forwardPass(
         network: ChessMPSNetwork,
         board: [Float]
-    ) async throws -> [Float] {
-        let box = LogitsBox()
-        try await network.evaluate(board: board) { logitsBuf, _ in
-            box.set(Array(logitsBuf))
+    ) async throws -> (logits: [Float], valueScalar: Float) {
+        let logitsBox = LogitsBox()
+        let valueBox = ValueBox()
+        try await network.evaluate(board: board) { logitsBuf, value in
+            logitsBox.set(Array(logitsBuf))
+            valueBox.set(value)
         }
-        return box.take()
+        return (logitsBox.take(), valueBox.take())
     }
 
     /// Per-position policy metrics derived from one forward pass.
@@ -619,15 +763,27 @@ enum ReplayBufferAnalyzer {
     /// legal-move list once.
     struct PerPositionPolicyMetrics: Sendable {
         let legalCount: Int
-        /// Shannon entropy in nats of the legal-renormalized policy.
+        /// Shannon entropy in nats of the legal-renormalized policy
+        /// at tau=1.0 (the network's underlying belief).
         let entropy: Double
         /// Renormalized legal mass on the top-`K` moves for each `K`
-        /// in `ReplayBufferAnalyzer.topKLabels`. A `K` larger than
-        /// `legalCount` reads 1.0 (the full legal mass).
+        /// in `ReplayBufferAnalyzer.topKLabels`, at tau=1.0. A `K`
+        /// larger than `legalCount` reads 1.0 (the full legal mass).
         let topKLegalMass: [Double]
         /// `1 - Σ_{legal} softmax` — fraction of softmax mass placed
         /// on illegal cells before renormalization.
         let illegalMass: Double
+        /// Entropy after applying `selfPlayTauForProjection` to the
+        /// renormalized legal distribution and renormalizing again.
+        /// Equivalent to the entropy of `p_i^{1/tau} / Σ p_j^{1/tau}`.
+        let entropyAtSelfPlayTau: Double
+        /// Top-K legal mass at `selfPlayTauForProjection`. Same shape
+        /// as `topKLegalMass`.
+        let topKLegalMassAtSelfPlayTau: [Double]
+        /// Policy-encoder channel (0..<`PolicyEncoding.channelCount`)
+        /// of the network's argmax legal move at tau=1.0. `-1` for
+        /// terminal positions (no legal moves).
+        let topMoveChannel: Int
     }
 
     /// Compute the per-position legal-masked policy metrics. Steps:
@@ -658,22 +814,36 @@ enum ReplayBufferAnalyzer {
             return BoardEncoder.decodeSynthetic(from: base)
         }
         let legals = MoveGenerator.legalMoves(for: state)
+        let kCount = topKLabels.count
         guard !legals.isEmpty else {
             return PerPositionPolicyMetrics(
                 legalCount: 0,
                 entropy: 0,
-                topKLegalMass: Array(repeating: 0, count: topKLabels.count),
-                illegalMass: 0
+                topKLegalMass: Array(repeating: 0, count: kCount),
+                illegalMass: 0,
+                entropyAtSelfPlayTau: 0,
+                topKLegalMassAtSelfPlayTau: Array(repeating: 0, count: kCount),
+                topMoveChannel: -1
             )
         }
 
+        // Per-legal-move policy probability at tau=1.0 plus the
+        // associated channel — we'll need the channel to record the
+        // argmax for the entropy-slice histogram. Encode once per
+        // move (PolicyEncoding.encode already handles the
+        // mover-perspective row flip) and reuse its (channel, row, col)
+        // for both the flat softmax index and the channel histogram.
         var legalProbs: [Double] = []
         legalProbs.reserveCapacity(legals.count)
+        var legalChannels: [Int] = []
+        legalChannels.reserveCapacity(legals.count)
         var legalSum: Double = 0
         for move in legals {
-            let idx = PolicyEncoding.policyIndex(move, currentPlayer: state.currentPlayer)
-            let p = Double(softmax[idx])
+            let (chan, r, c) = PolicyEncoding.encode(move, currentPlayer: state.currentPlayer)
+            let flatIdx = chan * 64 + r * 8 + c
+            let p = Double(softmax[flatIdx])
             legalProbs.append(p)
+            legalChannels.append(chan)
             legalSum += p
         }
 
@@ -693,16 +863,13 @@ enum ReplayBufferAnalyzer {
             for i in 0..<legals.count { renorm[i] = u }
         }
 
+        // Tau=1.0 entropy + top-K mass.
         var ent = 0.0
         for p in renorm where p > 0 {
             ent -= p * log(p)
         }
-
-        // Top-K legal mass. Sort once descending, then prefix-sum at
-        // each requested `K`. K > legalCount reads the full legal mass
-        // (saturates at 1.0 — the renormalized total).
         let sortedDesc = renorm.sorted(by: >)
-        var topKMass = [Double](repeating: 0, count: topKLabels.count)
+        var topKMass = [Double](repeating: 0, count: kCount)
         for (i, k) in topKLabels.enumerated() {
             let take = min(k, sortedDesc.count)
             var sum: Double = 0
@@ -710,11 +877,62 @@ enum ReplayBufferAnalyzer {
             topKMass[i] = sum
         }
 
+        // Post-tau projection. Raise each renormalized prob to the
+        // power `1/tau` and renormalize. Identical (up to numerical
+        // precision) to applying tau to the raw logits, masking, and
+        // renormalizing — see `runWithPolicyEntropy`'s comment for the
+        // algebraic equivalence.
+        let invTau = 1.0 / selfPlayTauForProjection
+        var pow_renorm = [Double](repeating: 0, count: renorm.count)
+        var powSum: Double = 0
+        for i in 0..<renorm.count {
+            let v = pow(renorm[i], invTau)
+            pow_renorm[i] = v
+            powSum += v
+        }
+        var renormAtTau = [Double](repeating: 0, count: renorm.count)
+        if powSum > 1e-12 {
+            for i in 0..<renorm.count {
+                renormAtTau[i] = pow_renorm[i] / powSum
+            }
+        } else {
+            // Pathological — renorm was all zero, fell back to uniform,
+            // and 0^invTau = 0. Restore uniform.
+            let u = 1.0 / Double(renorm.count)
+            for i in 0..<renorm.count { renormAtTau[i] = u }
+        }
+        var entAtTau = 0.0
+        for p in renormAtTau where p > 0 {
+            entAtTau -= p * log(p)
+        }
+        let sortedDescAtTau = renormAtTau.sorted(by: >)
+        var topKMassAtTau = [Double](repeating: 0, count: kCount)
+        for (i, k) in topKLabels.enumerated() {
+            let take = min(k, sortedDescAtTau.count)
+            var sum: Double = 0
+            for j in 0..<take { sum += sortedDescAtTau[j] }
+            topKMassAtTau[i] = sum
+        }
+
+        // Argmax channel: find the legal move with the highest tau=1.0
+        // renormalized probability. Ties break arbitrarily (first wins),
+        // which is fine for histogram aggregation.
+        var argmaxIdx = 0
+        var argmaxProb = -1.0
+        for i in 0..<renorm.count where renorm[i] > argmaxProb {
+            argmaxProb = renorm[i]
+            argmaxIdx = i
+        }
+        let topMoveChannel = legalChannels[argmaxIdx]
+
         return PerPositionPolicyMetrics(
             legalCount: legals.count,
             entropy: ent,
             topKLegalMass: topKMass,
-            illegalMass: illegalMass
+            illegalMass: illegalMass,
+            entropyAtSelfPlayTau: entAtTau,
+            topKLegalMassAtSelfPlayTau: topKMassAtTau,
+            topMoveChannel: topMoveChannel
         )
     }
 
@@ -1039,6 +1257,73 @@ extension ReplayBufferAnalyzer.Result {
                     format: "      mean illegal mass:         %5.3f\n",
                     stat.meanIllegalMass
                 )
+
+                // Post-tau (self-play projection) row.
+                if stat.meanTopKLegalMassAtSelfPlayTau.count == kLabels.count {
+                    let topKValStr = stat.meanTopKLegalMassAtSelfPlayTau
+                        .map { String(format: "%5.3f", $0) }
+                        .joined(separator: " / ")
+                    out += String(
+                        format: "      tau=%.2f projection: meanEnt=%5.3f  perplex=%6.2f  top-1/3/5 mass: %@\n",
+                        stat.selfPlayTauUsed,
+                        stat.meanEntropyNatsAtSelfPlayTau,
+                        exp(stat.meanEntropyNatsAtSelfPlayTau),
+                        topKValStr
+                    )
+                }
+
+                // Value-head row.
+                let entLabelStr = entLabels.map { "p\($0)" }.joined(separator: "/")
+                if stat.valueScalarPercentiles.count == entLabels.count {
+                    let valStr = stat.valueScalarPercentiles
+                        .map { String(format: "%+5.3f", $0) }
+                        .joined(separator: " / ")
+                    out += String(
+                        format: "      value scalar:  mean %+5.3f   \(entLabelStr): %@\n",
+                        stat.meanValueScalar,
+                        valStr
+                    )
+                }
+
+                // Top-move-channel-by-entropy-slice rows. For each slice,
+                // summarize the channel distribution as queen-distance-band
+                // shares (d1..d7) + knight + promo shares, so the table
+                // stays narrow enough to read in a terminal.
+                if !stat.topMoveChannelByEntropySlice.isEmpty {
+                    out += "      top-move family by entropy slice:\n"
+                    out += "        slice    n      d1      d2      d3      d4      d5      d6      d7    knight   promo\n"
+                    for slice in stat.topMoveChannelByEntropySlice {
+                        let counts = slice.topMoveChannelCounts
+                        let n = slice.positionCount
+                        // Queen-distance band shares (sum over 8 directions).
+                        var distSums = [Int](repeating: 0, count: 7)
+                        for dir in 0..<8 {
+                            for dist in 1...7 {
+                                distSums[dist - 1] += counts[dir * 7 + (dist - 1)]
+                            }
+                        }
+                        // Knight (channels 56..63), underpromotion (64..72),
+                        // queen-promotion (73..75). Group all promotions as
+                        // a single "promo" column for compactness.
+                        var knightSum = 0
+                        for c in 56..<64 { knightSum += counts[c] }
+                        var promoSum = 0
+                        for c in 64..<76 { promoSum += counts[c] }
+
+                        func sharePct(_ k: Int) -> String {
+                            guard n > 0 else { return "  - " }
+                            return String(format: "%5.1f%%", Double(k) * 100.0 / Double(n))
+                        }
+                        var line = String(
+                            format: "        %@ %@",
+                            slice.sliceLabel.padding(toLength: 6, withPad: " ", startingAt: 0),
+                            fmt(n).leftPadded(toLength: 5)
+                        )
+                        for sum in distSums { line += "  \(sharePct(sum))" }
+                        line += "   \(sharePct(knightSum))  \(sharePct(promoSum))"
+                        out += "\(line)\n"
+                    }
+                }
             }
         }
 
@@ -1065,6 +1350,17 @@ private final class LogitsBox: @unchecked Sendable {
     nonisolated(unsafe) private var value: [Float] = []
     func set(_ v: [Float]) { value = v }
     func take() -> [Float] { value }
+}
+
+/// Sendable channel for capturing the value-head scalar
+/// (`p_win − p_loss`) from the same `evaluate(board:consume:)` callback
+/// that `LogitsBox` captures policy logits from. Same lifetime
+/// contract: written inside the consume closure, read once after the
+/// `await` resumes.
+private final class ValueBox: @unchecked Sendable {
+    nonisolated(unsafe) private var value: Float = 0
+    func set(_ v: Float) { value = v }
+    func take() -> Float { value }
 }
 
 // MARK: - Small string padding helper
