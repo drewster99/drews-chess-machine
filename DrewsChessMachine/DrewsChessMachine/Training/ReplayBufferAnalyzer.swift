@@ -74,6 +74,20 @@ enum ReplayBufferAnalyzer {
     /// even on buffers with thousands of distinct signatures.
     static let topMaterialSignatureLimit = 40
 
+    /// Percentiles (in 0..100) reported per bucket in the policy-entropy
+    /// probe's `entropyPercentilesNats` array. JSON consumers and the
+    /// text-summary formatter both rely on `entropyPercentilesNats[i]`
+    /// corresponding to `entropyPercentileLabels[i]`.
+    static let entropyPercentileLabels: [Int] = [10, 50, 90]
+
+    /// `K` values used by the policy-entropy probe's
+    /// `meanTopKLegalMass` array. `meanTopKLegalMass[i]` is the mean,
+    /// over sampled positions in this bucket, of the renormalized
+    /// legal-only probability mass on the top-`topKLabels[i]` moves.
+    /// Bounded by the number of legal moves at the position — a probe
+    /// of "top-5 mass" in a position with 3 legal moves reads 1.0.
+    static let topKLabels: [Int] = [1, 3, 5]
+
     // MARK: - Result struct
 
     struct Result: Codable, Sendable {
@@ -112,6 +126,27 @@ enum ReplayBufferAnalyzer {
             /// ratio `meanEntropyNats / meanUniformEntropyNats` is the
             /// "% of uniform" reading the tactical-probe panel reports.
             let meanUniformEntropyNats: Double
+            /// Per-position entropy distribution within the bucket,
+            /// reported as values at the percentiles named in
+            /// `ReplayBufferAnalyzer.entropyPercentileLabels`
+            /// (currently p10/p50/p90). Used to tell "uniformly flat
+            /// across positions" apart from "a few sharp positions and
+            /// many flat ones hiding behind a flat-looking mean."
+            let entropyPercentilesNats: [Double]
+            /// Mean over sampled positions of the renormalized legal-only
+            /// probability mass on the top-`K` moves, for the `K` values
+            /// in `ReplayBufferAnalyzer.topKLabels` (currently 1/3/5).
+            /// A bucket with `meanTopKLegalMass = [0.10, 0.30, 0.45]`
+            /// puts only 10% of mass on the top move and 45% across
+            /// the top 5 — a flat, low-confidence policy.
+            let meanTopKLegalMass: [Double]
+            /// Mean over sampled positions of the softmax mass placed on
+            /// illegal cells (the `1 - legalSum` before renormalization).
+            /// A non-trivial value (> 0.1, say) signals the network has
+            /// not fully learned legality even after training — an
+            /// independent capacity / training-rate signal from the
+            /// flatness numbers.
+            let meanIllegalMass: Double
         }
 
         // Header
@@ -478,19 +513,28 @@ enum ReplayBufferAnalyzer {
             return out
         }
 
-        // Phase 2: forward-pass each sample, compute legal-masked
-        // entropy, accumulate per bucket. Forward passes serialize on
-        // the network's execution queue.
+        // Phase 2: forward-pass each sample, compute per-position
+        // policy metrics (entropy, top-K legal-mass, illegal mass),
+        // accumulate per bucket. Forward passes serialize on the
+        // network's execution queue.
+        let topKCount = topKLabels.count
         var stats: [Result.PolicyEntropyBucketStat] = []
         for bucket in allSamples {
             guard !bucket.boards.isEmpty else { continue }
-            var entropySum: Double = 0
+            // Per-position entropy values are collected into an array
+            // so we can compute percentiles after the bucket finishes.
+            // Sums accumulate the per-position metrics that only need
+            // the mean.
+            var entropyValues: [Double] = []
+            entropyValues.reserveCapacity(bucket.boards.count)
             var legalSum: Double = 0
             var uniformSum: Double = 0
+            var topKSums: [Double] = Array(repeating: 0, count: topKCount)
+            var illegalSum: Double = 0
             var counted = 0
             for board in bucket.boards {
                 let logits = try await forwardLogits(network: network, board: board)
-                let (entropy, legalCount) = legalMaskedEntropy(
+                let perPos = legalMaskedPolicyMetrics(
                     rawLogits: logits,
                     boardTensor: board
                 )
@@ -498,23 +542,59 @@ enum ReplayBufferAnalyzer {
                 // land in the buffer (terminal positions aren't stored),
                 // but defend against it by skipping rather than dividing
                 // by zero in `ln(0)`.
-                guard legalCount > 0 else { continue }
-                entropySum += entropy
-                legalSum += Double(legalCount)
-                uniformSum += log(Double(legalCount))
+                guard perPos.legalCount > 0 else { continue }
+                entropyValues.append(perPos.entropy)
+                legalSum += Double(perPos.legalCount)
+                uniformSum += log(Double(perPos.legalCount))
+                for i in 0..<topKCount {
+                    topKSums[i] += perPos.topKLegalMass[i]
+                }
+                illegalSum += perPos.illegalMass
                 counted += 1
             }
             guard counted > 0 else { continue }
+
+            let denom = Double(counted)
+            let meanEntropy = entropyValues.reduce(0, +) / denom
+
+            // Percentiles: sort once and linearly interpolate at each
+            // requested percentile.
+            let sortedEntropy = entropyValues.sorted()
+            var percentiles: [Double] = []
+            percentiles.reserveCapacity(entropyPercentileLabels.count)
+            for p in entropyPercentileLabels {
+                percentiles.append(percentile(p: Double(p), sortedValues: sortedEntropy))
+            }
+
             let bucketLabel = materialBuckets[bucket.bucketIndex].label
             stats.append(Result.PolicyEntropyBucketStat(
                 bucketLabel: bucketLabel,
                 sampleCount: counted,
-                meanEntropyNats: entropySum / Double(counted),
-                meanLegalMoves: legalSum / Double(counted),
-                meanUniformEntropyNats: uniformSum / Double(counted)
+                meanEntropyNats: meanEntropy,
+                meanLegalMoves: legalSum / denom,
+                meanUniformEntropyNats: uniformSum / denom,
+                entropyPercentilesNats: percentiles,
+                meanTopKLegalMass: topKSums.map { $0 / denom },
+                meanIllegalMass: illegalSum / denom
             ))
         }
         return stats
+    }
+
+    /// Linear-interpolation percentile for `p` in `0..100` over the
+    /// already-sorted-ascending `sortedValues`. Returns 0 for an empty
+    /// input. Matches NumPy's default `interpolation="linear"` mode so
+    /// downstream notebooks see the same numbers if they recompute
+    /// from `entropyPercentilesNats` source data.
+    static func percentile(p: Double, sortedValues: [Double]) -> Double {
+        guard !sortedValues.isEmpty else { return 0 }
+        if sortedValues.count == 1 { return sortedValues[0] }
+        let pos = (p / 100.0) * Double(sortedValues.count - 1)
+        let lo = Int(floor(pos))
+        let hi = Int(ceil(pos))
+        if lo == hi { return sortedValues[lo] }
+        let weight = pos - Double(lo)
+        return sortedValues[lo] * (1.0 - weight) + sortedValues[hi] * weight
     }
 
     /// Single forward pass through `network`, returning the raw policy
@@ -532,54 +612,80 @@ enum ReplayBufferAnalyzer {
         return box.take()
     }
 
-    /// Compute the legal-masked policy entropy (nats) for a single
-    /// position. Steps:
-    ///   1. Softmax the raw 4864-cell logit vector.
+    /// Per-position policy metrics derived from one forward pass.
+    /// All fields are computed under the same softmax + legal-mask
+    /// pipeline; the caller bundles them so we only sort/walk the
+    /// legal-move list once.
+    struct PerPositionPolicyMetrics: Sendable {
+        let legalCount: Int
+        /// Shannon entropy in nats of the legal-renormalized policy.
+        let entropy: Double
+        /// Renormalized legal mass on the top-`K` moves for each `K`
+        /// in `ReplayBufferAnalyzer.topKLabels`. A `K` larger than
+        /// `legalCount` reads 1.0 (the full legal mass).
+        let topKLegalMass: [Double]
+        /// `1 - Σ_{legal} softmax` — fraction of softmax mass placed
+        /// on illegal cells before renormalization.
+        let illegalMass: Double
+    }
+
+    /// Compute the per-position legal-masked policy metrics. Steps:
+    ///   1. Softmax the raw policy logit vector.
     ///   2. Decode the board tensor back to a `GameState` via
     ///      `BoardEncoder.decodeSynthetic`; enumerate legal moves
     ///      with `MoveGenerator.legalMoves`.
     ///   3. Pull each legal move's softmax mass via
-    ///      `PolicyEncoding.policyIndex`; renormalize so legal-only
-    ///      mass sums to 1; compute Shannon entropy.
+    ///      `PolicyEncoding.policyIndex`; record the pre-renormalization
+    ///      illegal mass; renormalize so legal-only mass sums to 1.
+    ///   4. Compute Shannon entropy on the renormalized distribution.
+    ///   5. Sort legal probs descending once; sum the top-`K` prefix
+    ///      for each `K` in `topKLabels`.
     ///
-    /// Returns `(entropy, legalMoveCount)`. Entropy is 0 and the
-    /// legal-move count is 0 when no legal moves exist (terminal
-    /// position; caller skips these from the per-bucket mean).
-    private static func legalMaskedEntropy(
+    /// Returns a metrics struct with `legalCount = 0` for terminal
+    /// positions; the caller skips those from per-bucket means.
+    private static func legalMaskedPolicyMetrics(
         rawLogits: [Float],
         boardTensor: [Float]
-    ) -> (entropy: Double, legalCount: Int) {
+    ) -> PerPositionPolicyMetrics {
         let softmax = ChessRunner.softmax(rawLogits)
         let state = boardTensor.withUnsafeBufferPointer { buf -> GameState in
             guard let base = buf.baseAddress else {
                 preconditionFailure(
-                    "ReplayBufferAnalyzer.legalMaskedEntropy: empty boardTensor"
+                    "ReplayBufferAnalyzer.legalMaskedPolicyMetrics: empty boardTensor"
                 )
             }
             return BoardEncoder.decodeSynthetic(from: base)
         }
         let legals = MoveGenerator.legalMoves(for: state)
-        guard !legals.isEmpty else { return (0, 0) }
+        guard !legals.isEmpty else {
+            return PerPositionPolicyMetrics(
+                legalCount: 0,
+                entropy: 0,
+                topKLegalMass: Array(repeating: 0, count: topKLabels.count),
+                illegalMass: 0
+            )
+        }
 
-        var legalProbs: [Float] = []
+        var legalProbs: [Double] = []
         legalProbs.reserveCapacity(legals.count)
-        var legalSum: Float = 0
+        var legalSum: Double = 0
         for move in legals {
             let idx = PolicyEncoding.policyIndex(move, currentPlayer: state.currentPlayer)
-            let p = softmax[idx]
+            let p = Double(softmax[idx])
             legalProbs.append(p)
             legalSum += p
         }
+
+        let illegalMass = max(0.0, 1.0 - legalSum)
 
         // Renormalize legal-only mass to sum to 1, falling back to
         // uniform when the network put essentially zero mass on the
         // legal set (extreme collapse case; matches the tactical-probe
         // runner's defensive fallback).
-        var renorm: [Double] = Array(repeating: 0, count: legals.count)
+        var renorm = [Double](repeating: 0, count: legals.count)
         if legalSum > 1e-12 {
-            let denom = Double(legalSum)
             for i in 0..<legals.count {
-                renorm[i] = Double(legalProbs[i]) / denom
+                renorm[i] = legalProbs[i] / legalSum
             }
         } else {
             let u = 1.0 / Double(legals.count)
@@ -590,7 +696,25 @@ enum ReplayBufferAnalyzer {
         for p in renorm where p > 0 {
             ent -= p * log(p)
         }
-        return (ent, legals.count)
+
+        // Top-K legal mass. Sort once descending, then prefix-sum at
+        // each requested `K`. K > legalCount reads the full legal mass
+        // (saturates at 1.0 — the renormalized total).
+        let sortedDesc = renorm.sorted(by: >)
+        var topKMass = [Double](repeating: 0, count: topKLabels.count)
+        for (i, k) in topKLabels.enumerated() {
+            let take = min(k, sortedDesc.count)
+            var sum: Double = 0
+            for j in 0..<take { sum += sortedDesc[j] }
+            topKMass[i] = sum
+        }
+
+        return PerPositionPolicyMetrics(
+            legalCount: legals.count,
+            entropy: ent,
+            topKLegalMass: topKMass,
+            illegalMass: illegalMass
+        )
     }
 
     // MARK: - Bucket / channel helpers
@@ -889,6 +1013,30 @@ extension ReplayBufferAnalyzer.Result {
                     String(format: "%5.1f", stat.meanLegalMoves).leftPadded(toLength: 6),
                     String(format: "%5.3f", stat.meanUniformEntropyNats).leftPadded(toLength: 10),
                     String(format: "%5.1f%%", pctOfUniform).leftPadded(toLength: 11)
+                )
+                // Distributional detail: entropy percentiles, top-K
+                // legal mass, illegal mass. Indented under the bucket
+                // summary line so each bucket reads as one logical
+                // record across four lines.
+                let entLabels = ReplayBufferAnalyzer.entropyPercentileLabels
+                if stat.entropyPercentilesNats.count == entLabels.count {
+                    let labelStr = entLabels.map { "p\($0)" }.joined(separator: "/")
+                    let valStr = stat.entropyPercentilesNats
+                        .map { String(format: "%5.3f", $0) }
+                        .joined(separator: " / ")
+                    out += "      entropy \(labelStr) (nats):  \(valStr)\n"
+                }
+                let kLabels = ReplayBufferAnalyzer.topKLabels
+                if stat.meanTopKLegalMass.count == kLabels.count {
+                    let labelStr = kLabels.map { "top-\($0)" }.joined(separator: "/")
+                    let valStr = stat.meanTopKLegalMass
+                        .map { String(format: "%5.3f", $0) }
+                        .joined(separator: " / ")
+                    out += "      mean \(labelStr) legal mass:  \(valStr)\n"
+                }
+                out += String(
+                    format: "      mean illegal mass:         %5.3f\n",
+                    stat.meanIllegalMass
                 )
             }
         }
