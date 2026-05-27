@@ -164,13 +164,27 @@ final class AppCommandHub {
     /// reads only the network's weights, doesn't touch the replay
     /// buffer at all.
     var analyzeValueHead: () -> Void = {}
-    /// Whole-network weight diagnostic — per-section L2/init-L2
-    /// summaries plus stem-per-input-channel and policy-per-output-
-    /// channel detail. Same output pattern as the value-head
-    /// analyzer (JSON in Analyses/, [NETW] log block, NSAlert with
-    /// Reveal in Finder). Independent of the buffer / value-head
-    /// analyzers; reads only network weights.
+    /// Whole-network weight diagnostic against the champion
+    /// (`self.network`) — per-section L2/init-L2 summaries plus
+    /// stem-per-input-channel, per-conv per-output-channel, BN
+    /// dead-channel, and SE attention baseline details. Same output
+    /// pattern as the value-head analyzer (JSON in Analyses/, [NETW]
+    /// log block, NSAlert with Reveal in Finder). Independent of
+    /// the buffer / value-head analyzers; reads only network weights.
     var analyzeNetworkWeights: () -> Void = {}
+    /// Same analyzer as `analyzeNetworkWeights` but run against the
+    /// trainer's network (`self.trainer?.network`) instead of the
+    /// champion's. Lets the user compare the live trainer's weights
+    /// against the deployed champion's weights without waiting for a
+    /// promotion. No-op when no trainer is initialized.
+    var analyzeNetworkWeightsTrainer: () -> Void = {}
+    /// Combined "Run All Analyses…" — kicks off the buffer + value
+    /// head + network-champion + network-trainer analyzers in
+    /// sequence. Produces up to four JSON files + four log blocks
+    /// and a single final NSAlert summarizing pass/fail per
+    /// analyzer. Skips analyses whose prerequisites are missing
+    /// (e.g. no buffer, no trainer) and notes them in the summary.
+    var runAllAnalyses: () -> Void = {}
 
     // Chart-zoom actions. Wired to the View menu's ⌘= / ⌘- items
     // and the Auto toggle. A manual in/out press flips auto off

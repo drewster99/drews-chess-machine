@@ -2,39 +2,48 @@ import Foundation
 
 // MARK: - Whole-Network Weight Analyzer
 //
-// Snapshot-time diagnostic for the entire network's weight tensors,
-// not just the value head. Answers "is everything doing work, is
-// any layer collapsed, is the stem looking at the planes it should
-// be looking at, and is the policy head's output capacity spread
-// across the 76 channels or concentrated in a few?"
+// Snapshot-time diagnostic for the entire network's weight tensors.
+// Answers: "is everything doing work, is any layer collapsed, is the
+// stem looking at the planes it should be, is the policy head's
+// output capacity spread across the 76 channels or concentrated in a
+// few, are BN channels alive, are SE modules doing real attention?"
 //
-// Per-variable: same stats family `ValueHeadAnalyzer` reports
-// (count, L1/L2, mean|w|, min/max, p10/p50/p90, ratio to He-init L2).
+// Per-variable stats: count, L1/L2 norm, mean|w|, min/max, mean,
+// stdev, p10/p50/p90 percentiles, ratio to He-init L2 reference,
+// drift-from-init L2 (for deterministic-init variables only).
 //
-// Per-section: aggregated L2 + element count for stem / each tower
-// block / policy / value, plus the section's overall L2 ratio to its
-// combined He-init reference. Lets you eyeball "block 5 is unusually
-// quiet compared to its neighbors" at a glance.
+// Per-section aggregates: stem / 8 tower blocks / policy / value
+// each get totalElementCount, totalL2Norm, totalInitL2Norm,
+// totalL2RatioToInit. Lets you eyeball "block 5 is unusually quiet
+// compared to its neighbors" at a glance.
 //
-// Special details:
-//   - Stem per-input-channel L2 over the 30 input planes (with the
-//     human-readable plane labels from BoardEncoder). Tells you
-//     whether the network has learned to attend to, e.g., the
-//     repetition-history planes vs ignored them.
-//   - Policy-conv per-output-channel L2 over the 76 policy channels.
-//     Tells you whether some move-type channels (e.g. long-distance
-//     queen slides) carry essentially zero weight magnitude.
+// Per-conv per-output-channel L2 for every conv weight tensor.
+// Surfaces dead output channels mid-tower (1152 weights per output
+// channel in tower convs; ratio to He-init reference tells you which
+// channels are effectively zeroed out).
+//
+// Per-BN dead-channel summary for every BN layer with >1 channel.
+// Counts channels with |gamma| < threshold (channels effectively
+// zeroed out by BN, since output ≈ beta when gamma ≈ 0).
+//
+// Per-SE-module baseline attention gate distribution. Each block's
+// SE module's bias-only output is `sigmoid(SE_FC2_bias)` — a
+// 128-element vector in [0, 1]. Distribution + counts of channels
+// suppressed (<0.1) / pass-through (>0.9) tell whether SE is doing
+// real attention vs. degenerate.
 //
 // Pure analysis — single `exportWeights()` call + CPU stat-crunching.
+// Takes a `ChessNetwork` (the inner type with `trainableVariables`),
+// so works against both the champion's network and the trainer's
+// network without translation.
 
 enum NetworkWeightAnalyzer {
 
     // MARK: - Section + fanIn helpers
 
-    /// Canonical section ordering used in the JSON and the text
-    /// summary. Unknown variables (none expected from the current
-    /// architecture, but defended against) land in `"other"` so
-    /// nothing is silently dropped.
+    /// Canonical section ordering in the JSON output. Unknown
+    /// variables fall through to `"other"` so nothing is silently
+    /// dropped.
     static let sectionOrder: [String] =
         ["stem"]
         + (1...8).map { "block_\($0)" }
@@ -47,8 +56,6 @@ enum NetworkWeightAnalyzer {
         if name.hasPrefix("policy_") { return "policy" }
         if name.hasPrefix("value_") { return "value" }
         if name.hasPrefix("block") {
-            // Names look like "block1_conv1_weights", "block7_se_fc2_bias", etc.
-            // Pull the digit(s) between "block" and the first underscore.
             let afterPrefix = name.dropFirst("block".count)
             var digits = ""
             for c in afterPrefix {
@@ -59,18 +66,17 @@ enum NetworkWeightAnalyzer {
         return "other"
     }
 
-    /// He-init fan-in for the variable name, or `nil` for tensors
-    /// that don't have a meaningful He-init reference (biases,
-    /// BN gamma/beta, BN running stats). The values here mirror the
-    /// shapes set in `ChessNetwork`'s graph construction; if those
-    /// shapes change the analyzer needs updating in lockstep.
+    /// He-init fan-in for a variable, or `nil` for tensors without a
+    /// He-init reference (biases, BN gamma/beta, BN running stats).
+    /// Mirrors the shapes set in `ChessNetwork`'s graph construction;
+    /// if those shapes change the analyzer needs updating in lockstep.
     static func fanIn(forVariableNamed name: String) -> Int? {
         switch name {
-        case "stem_conv_weights":  return 30 * 3 * 3
+        case "stem_conv_weights":   return 30 * 3 * 3
         case "policy_conv_weights": return 128 * 1 * 1
-        case "value_conv_weights": return 128
-        case "value_fc1_weights":  return 64
-        case "value_fc2_weights":  return 64
+        case "value_conv_weights":  return 128
+        case "value_fc1_weights":   return 64
+        case "value_fc2_weights":   return 64
         default: break
         }
         if name.hasSuffix("_conv1_weights") || name.hasSuffix("_conv2_weights") {
@@ -81,19 +87,72 @@ enum NetworkWeightAnalyzer {
         return nil
     }
 
-    /// He-init L2 reference for a tensor with `n` elements drawn from
-    /// `N(0, sqrt(2/fanIn))`. Expected L2 = sqrt(n) · std. Used as
-    /// the denominator of the `currentL2 / initL2` ratio.
+    /// He-init L2 reference for a tensor of `n` elements drawn from
+    /// `N(0, sqrt(2/fanIn))`. Expected L2 = `sqrt(n) · std`.
     static func heInitL2(elementCount n: Int, fanIn: Int) -> Double {
         guard n > 0, fanIn > 0 else { return 0 }
         let std = sqrt(2.0 / Double(fanIn))
         return sqrt(Double(n)) * std
     }
 
-    /// Human-readable label per input plane. Order matches
-    /// `BoardEncoder.encode`'s plane layout. Kept here rather than
-    /// re-derived because the analyzer is the only place that needs
-    /// per-plane names for display.
+    /// Deterministic initial value for variables that don't use He-init.
+    /// Returns `nil` for He-init weights (their init was random, so
+    /// "drift from init" isn't a meaningful single number). Otherwise
+    /// returns the per-element initial values as a `[Double]` of the
+    /// same length as the variable's element count. Used to compute
+    /// `WeightStats.driftFromInit`.
+    static func deterministicInit(
+        forVariableNamed name: String,
+        elementCount n: Int
+    ) -> [Double]? {
+        guard n > 0 else { return nil }
+        // Special case: value_fc2_bias initializes to [0, ln 6, 0]
+        // — see ChessNetwork.valueHead for the rationale (draw-heavy
+        // prior of a fresh self-play buffer).
+        if name == "value_fc2_bias" && n == 3 {
+            return [0.0, log(6.0), 0.0]
+        }
+        // BN gamma initializes to ones, var initializes to ones —
+        // see ChessNetwork.batchNorm.
+        if name.hasSuffix("_gamma") || name.hasSuffix("_running_var") {
+            return Array(repeating: 1.0, count: n)
+        }
+        // BN beta, running mean, and FC/conv biases all init to zero.
+        if name.hasSuffix("_beta")
+            || name.hasSuffix("_running_mean")
+            || name.hasSuffix("_bias") {
+            return Array(repeating: 0.0, count: n)
+        }
+        // Weight tensors (conv + FC) use He-init — no deterministic
+        // reference. Return nil so the drift field stays nil.
+        return nil
+    }
+
+    /// Threshold for counting BN channels as "dead." Channels where
+    /// `|gamma|` is below this contribute essentially nothing to the
+    /// output of the BN layer (post-BN value ≈ beta independent of
+    /// input). 0.1 is conservative — production-trained channels
+    /// usually have gamma in [0.5, 2.0] range.
+    static let bnDeadGammaThreshold: Double = 0.1
+
+    /// Thresholds for SE baseline-gate channel classification.
+    /// A channel whose `sigmoid(SE_FC2_bias[c])` is below
+    /// `seSuppressedGateThreshold` is approximately zeroed at the
+    /// network's "no-input" baseline. Above `sePassThroughGateThreshold`,
+    /// it's essentially un-attenuated. Between → SE is contributing
+    /// real attention to that channel.
+    static let seSuppressedGateThreshold: Double = 0.1
+    static let sePassThroughGateThreshold: Double = 0.9
+
+    /// Underused / overused thresholds for per-output-channel ratios
+    /// inside conv-detail summaries. A channel with `currentL2 /
+    /// initL2 < 0.25` is "weak" — gradients haven't been pushing on
+    /// it. `< 0.05` is "dead." `> 2.0` is "overactive."
+    static let convDeadRatio: Double = 0.05
+    static let convWeakRatio: Double = 0.25
+
+    /// Human-readable per-input-plane label. Order matches
+    /// `BoardEncoder.encode`. Used in the stem detail.
     static let inputPlaneLabels: [String] = [
         "mover_pawn", "mover_knight", "mover_bishop",
         "mover_rook", "mover_queen", "mover_king",
@@ -126,88 +185,122 @@ enum NetworkWeightAnalyzer {
             let percentiles: [Double]
             let initL2Norm: Double?
             let l2NormRatioToInit: Double?
+            /// L2 norm of `current - initial` for variables with a
+            /// deterministic init (biases → init 0, BN gamma → init 1,
+            /// BN beta / running_mean → init 0, BN running_var → init 1,
+            /// value_fc2_bias → init [0, ln 6, 0]). `nil` for He-init
+            /// weight tensors where "drift from init" isn't meaningful.
+            /// Directly answers "has this parameter moved from where
+            /// the architecture put it?".
+            let driftFromInit: Double?
         }
 
         struct SectionSummary: Codable, Sendable {
-            /// Canonical section name from `sectionOrder` (e.g. "stem",
-            /// "block_3", "policy", "value", "other").
             let sectionName: String
-            /// Sum of element counts across all variables in the section.
             let totalElementCount: Int
-            /// Combined L2 norm `sqrt(Σ w²)` over all variables. Bias /
-            /// BN parameters contribute too; their magnitudes are
-            /// typically small enough that they don't move this number.
             let totalL2Norm: Double
-            /// Combined He-init reference L2 — sum-of-squares of each
-            /// He-initialized variable's init L2, square-rooted. Only
-            /// counts variables with a He-init reference (biases and
-            /// BN params are excluded). `nil` if the section has no
-            /// He-initialized variables.
             let totalInitL2Norm: Double?
-            /// `totalL2Norm / totalInitL2Norm` restricted to the
-            /// He-initialized variables — both numerator and denominator
-            /// are restricted to that subset so the ratio is meaningful.
             let totalL2RatioToInit: Double?
-            /// Per-variable stats inside the section, in graph build
-            /// order (which matches the order `exportWeights()` returns
-            /// them in).
             let variables: [WeightStats]
         }
 
         struct StemInputChannelDetail: Codable, Sendable {
-            /// Per-input-channel L2 norm of `stem_conv_weights`. The
-            /// stem conv is [outC=128, inC=30, kH=3, kW=3] in OIHW
-            /// layout; for input plane `i`, this sums squares of
-            /// `weights[o, i, h, w]` for all `o ∈ 0..<128`, `h, w ∈ 0..<3`
-            /// — 128 × 9 = 1152 weights per input plane. A near-zero
-            /// per-plane L2 means the network has learned to ignore
-            /// that input plane.
             let perInputChannelL2: [Double]
-            /// Plane labels matching `perInputChannelL2[i]`. Same
-            /// length as the array above; mirrors `inputPlaneLabels`.
             let planeLabels: [String]
-            /// He-init reference per-plane L2 — same `heInitL2`
-            /// calculation applied to 1152 weights with fan_in = 270
-            /// (30·3·3). Lets the reader compute "this plane is at X%
-            /// of init" per plane.
             let initPerInputChannelL2: Double
         }
 
-        struct PolicyOutputChannelDetail: Codable, Sendable {
-            /// Per-output-channel L2 norm of `policy_conv_weights`.
-            /// Policy conv is [outC=76, inC=128, kH=1, kW=1]; for
-            /// output channel `c`, this sums squares of
-            /// `weights[c, i, 0, 0]` for all `i ∈ 0..<128` — 128
-            /// weights per output channel. A near-zero per-channel
-            /// L2 means the network can never assign meaningful
-            /// probability to that move-type channel regardless of
-            /// position.
+        /// Per-output-channel L2 norm for one conv weight tensor.
+        /// Computed for every conv variable in the network so dead
+        /// output channels can be spotted regardless of which layer
+        /// they're in.
+        struct ConvOutputChannelDetail: Codable, Sendable {
+            let variableName: String
+            /// Length = outC. Indexed by output channel.
             let perOutputChannelL2: [Double]
-            /// He-init reference per-output-channel L2 — same
-            /// `heInitL2` calculation applied to 128 weights with
-            /// fan_in = 128.
+            /// Per-channel He-init reference. Each output channel of
+            /// the conv has `inC × kH × kW` weights drawn from
+            /// `N(0, sqrt(2/fanIn))`, so the init L2 is
+            /// `sqrt(inC·kH·kW) · sqrt(2/fanIn) = sqrt(2)` for the
+            /// usual case where `fanIn = inC·kH·kW`. Reported here so
+            /// the JSON consumer doesn't have to recompute it.
             let initPerOutputChannelL2: Double
+        }
+
+        /// Dead-channel summary for one BN layer (skips BN layers
+        /// with only one channel — `value_bn` is excluded because the
+        /// "distribution" has no shape).
+        struct BNLayerDetail: Codable, Sendable {
+            /// Layer name without the `_gamma`/`_beta` suffix (e.g.
+            /// "stem_bn", "block_3_bn2").
+            let layerName: String
+            let gammaVariableName: String
+            let betaVariableName: String
+            let channelCount: Int
+            /// Count of channels where `|gamma| < deadThreshold`.
+            let deadChannelCount: Int
+            /// Threshold used (echoed for the JSON reader's benefit).
+            let deadThreshold: Double
+            /// Percentiles of `|gamma|` across the layer's channels.
+            let gammaPercentilesAbs: [Double]
+            /// Percentiles of raw `beta` values across the layer's
+            /// channels. Useful for spotting BN layers whose beta has
+            /// drifted significantly.
+            let betaPercentiles: [Double]
+        }
+
+        /// SE baseline-attention gate distribution for one residual
+        /// block. The gate at "zero input" is `sigmoid(SE_FC2_bias)`,
+        /// a 128-element vector in `[0, 1]`. This struct summarizes
+        /// its distribution.
+        struct SEAttentionDetail: Codable, Sendable {
+            let blockName: String
+            let seBiasVariableName: String
+            let channelCount: Int
+            let baselineGateMin: Double
+            let baselineGateMean: Double
+            let baselineGateMax: Double
+            let baselineGatePercentiles: [Double]
+            /// Channels whose baseline gate is below
+            /// `seSuppressedGateThreshold` — essentially silenced at
+            /// the network's "no-input" baseline.
+            let channelsSuppressedCount: Int
+            let suppressedThreshold: Double
+            /// Channels whose baseline gate is above
+            /// `sePassThroughGateThreshold` — essentially un-attenuated.
+            let channelsPassThroughCount: Int
+            let passThroughThreshold: Double
         }
 
         let producedAtISO8601: String
         let modelLabel: String
         let totalParamCount: Int
         let sections: [SectionSummary]
-        let stemDetail: StemInputChannelDetail?
-        let policyDetail: PolicyOutputChannelDetail?
+        let stemInputChannelDetail: StemInputChannelDetail?
+        /// Per-output-channel L2 detail for every conv weight tensor
+        /// in the network (stem, block_X_conv1, block_X_conv2, policy,
+        /// value). Ordered as they appear in graph build order.
+        let convOutputChannelDetails: [ConvOutputChannelDetail]
+        /// One entry per multi-channel BN layer. `value_bn` (1 channel)
+        /// is excluded.
+        let bnLayerDetails: [BNLayerDetail]
+        /// One entry per residual block's SE module. 8 entries
+        /// (block_1 .. block_8) in build order.
+        let seAttentionDetails: [SEAttentionDetail]
     }
 
     // MARK: - Entry point
 
-    /// Run the analyzer against `network`. Single `exportWeights()`
-    /// call; the rest is CPU stat-crunching.
+    /// Run the analyzer against `network` (a `ChessNetwork` — works
+    /// against both the champion's wrapped network and the trainer's
+    /// network without a wrapper hop). `modelLabel` is opaque metadata
+    /// the caller chooses and is round-tripped into the result header.
     static func run(
-        network: ChessMPSNetwork,
+        network: ChessNetwork,
         modelLabel: String
     ) async throws -> Result {
         let weights = try await network.exportWeights()
-        let allVariables = network.network.trainableVariables
-            + network.network.bnRunningStatsVariables
+        let allVariables = network.trainableVariables + network.bnRunningStatsVariables
 
         guard weights.count == allVariables.count else {
             throw NetworkWeightAnalyzerError.weightCountMismatch(
@@ -216,44 +309,91 @@ enum NetworkWeightAnalyzer {
             )
         }
 
-        // Group (name, values) pairs by section in the order they
-        // appear in `allVariables` so per-section variable lists
-        // preserve graph build order.
+        // Pair (name, values) in build order for downstream lookups.
         var perSection: [String: [(name: String, values: [Float])]] = [:]
+        var allByName: [String: [Float]] = [:]
         for (i, variable) in allVariables.enumerated() {
             let name = variable.operation.name
             let sec = section(forVariableNamed: name)
             perSection[sec, default: []].append((name, weights[i]))
+            allByName[name] = weights[i]
         }
 
-        // Build per-section summaries in canonical order, skipping
-        // sections that don't exist in this particular network.
+        // Per-section summaries.
         var sections: [Result.SectionSummary] = []
         for sec in sectionOrder {
             guard let vars = perSection[sec] else { continue }
             sections.append(makeSectionSummary(sectionName: sec, variables: vars))
         }
 
-        // Stem detail.
-        let stemDetail: Result.StemInputChannelDetail? = {
+        // Stem per-input-channel detail.
+        let stemInputDetail: Result.StemInputChannelDetail? = {
             guard let stemVars = perSection["stem"],
-                  let stemConv = stemVars.first(where: { $0.name == "stem_conv_weights" }) else {
+                  let stem = stemVars.first(where: { $0.name == "stem_conv_weights" }) else {
                 return nil
             }
-            return makeStemDetail(stemConvValues: stemConv.values)
+            return makeStemInputChannelDetail(stemConvValues: stem.values)
         }()
 
-        // Policy detail.
-        let policyDetail: Result.PolicyOutputChannelDetail? = {
-            guard let policyVars = perSection["policy"],
-                  let policyConv = policyVars.first(where: { $0.name == "policy_conv_weights" }) else {
-                return nil
+        // Per-output-channel L2 for every conv weight tensor — stem,
+        // block convs, policy, value. Walk allVariables in original
+        // order so the output list matches graph build order.
+        var convDetails: [Result.ConvOutputChannelDetail] = []
+        for variable in allVariables {
+            let name = variable.operation.name
+            guard let values = allByName[name] else { continue }
+            guard let shape = convShape(forVariableNamed: name) else { continue }
+            if let detail = makeConvOutputChannelDetail(
+                variableName: name,
+                values: values,
+                outC: shape.outC,
+                inC: shape.inC,
+                kH: shape.kH,
+                kW: shape.kW
+            ) {
+                convDetails.append(detail)
             }
-            return makePolicyDetail(policyConvValues: policyConv.values)
-        }()
+        }
+
+        // BN layer details — find every `*_gamma` variable, pair with
+        // its `*_beta` sibling, build the summary. Skip 1-channel BN
+        // layers (value_bn) where the percentile distribution has no
+        // shape.
+        var bnDetails: [Result.BNLayerDetail] = []
+        for variable in allVariables {
+            let name = variable.operation.name
+            guard name.hasSuffix("_gamma") else { continue }
+            // Skip BN running_var (which also ends in _var, but
+            // doesn't match _gamma). Defensive check, just in case.
+            guard let gammaValues = allByName[name] else { continue }
+            let betaName = name.replacingOccurrences(of: "_gamma", with: "_beta")
+            guard let betaValues = allByName[betaName] else { continue }
+            guard gammaValues.count > 1 else { continue } // skip value_bn
+            let layerName = String(name.dropLast("_gamma".count))
+            bnDetails.append(makeBNLayerDetail(
+                layerName: layerName,
+                gammaVariableName: name,
+                gammaValues: gammaValues,
+                betaVariableName: betaName,
+                betaValues: betaValues
+            ))
+        }
+
+        // SE attention detail — one per block, walking blocks 1..8 in
+        // order. The SE FC2 bias for a block is named
+        // "blockN_se_fc2_bias".
+        var seDetails: [Result.SEAttentionDetail] = []
+        for blockIndex in 1...8 {
+            let seBiasName = "block\(blockIndex)_se_fc2_bias"
+            guard let seBiasValues = allByName[seBiasName] else { continue }
+            seDetails.append(makeSEAttentionDetail(
+                blockName: "block_\(blockIndex)",
+                seBiasVariableName: seBiasName,
+                seBiasValues: seBiasValues
+            ))
+        }
 
         let totalParamCount = sections.reduce(0) { $0 + $1.totalElementCount }
-
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime]
         return Result(
@@ -261,8 +401,10 @@ enum NetworkWeightAnalyzer {
             modelLabel: modelLabel,
             totalParamCount: totalParamCount,
             sections: sections,
-            stemDetail: stemDetail,
-            policyDetail: policyDetail
+            stemInputChannelDetail: stemInputDetail,
+            convOutputChannelDetails: convDetails,
+            bnLayerDetails: bnDetails,
+            seAttentionDetails: seDetails
         )
     }
 
@@ -277,13 +419,9 @@ enum NetworkWeightAnalyzer {
         var perVarStats: [Result.WeightStats] = []
         perVarStats.reserveCapacity(variables.count)
         var totalElements = 0
-        var totalSumSq: Double = 0
-        // Section-level "init L2" is restricted to He-initialized
-        // variables — biases / BN params don't have a comparable init
-        // reference. Both numerator and denominator of the ratio use
-        // the same subset.
         var heInitSumSq: Double = 0
         var heCurrentSumSq: Double = 0
+        var totalSumSq: Double = 0
         var anyHeInit = false
 
         for (name, values) in variables {
@@ -327,7 +465,7 @@ enum NetworkWeightAnalyzer {
                 l1Norm: 0, l2Norm: 0, meanAbs: 0,
                 min: 0, max: 0, mean: 0, stdev: 0,
                 percentiles: Array(repeating: 0, count: percentileLabels.count),
-                initL2Norm: nil, l2NormRatioToInit: nil
+                initL2Norm: nil, l2NormRatioToInit: nil, driftFromInit: nil
             )
         }
 
@@ -361,6 +499,20 @@ enum NetworkWeightAnalyzer {
         }
         let ratio = initL2.map { $0 > 0 ? l2 / $0 : 0 }
 
+        // Drift from init — only meaningful for variables with
+        // deterministic initial values.
+        let drift: Double? = {
+            guard let initial = deterministicInit(forVariableNamed: name, elementCount: n) else {
+                return nil
+            }
+            var driftSq: Double = 0
+            for i in 0..<n {
+                let d = Double(values[i]) - initial[i]
+                driftSq += d * d
+            }
+            return sqrt(driftSq)
+        }()
+
         return Result.WeightStats(
             name: name,
             elementCount: n,
@@ -373,21 +525,39 @@ enum NetworkWeightAnalyzer {
             stdev: stdev,
             percentiles: percentiles,
             initL2Norm: initL2,
-            l2NormRatioToInit: ratio
+            l2NormRatioToInit: ratio,
+            driftFromInit: drift
         )
     }
 
     // MARK: - Detail builders
 
-    private static func makeStemDetail(stemConvValues: [Float]) -> Result.StemInputChannelDetail? {
+    /// Shape (OIHW) of a conv weight tensor, looked up by name.
+    /// Returns `nil` for non-conv variables. Used by the per-output-
+    /// channel detail walker so it can iterate every conv tensor
+    /// without needing to inspect the MPSGraphTensor shape directly.
+    private static func convShape(
+        forVariableNamed name: String
+    ) -> (outC: Int, inC: Int, kH: Int, kW: Int)? {
+        switch name {
+        case "stem_conv_weights":   return (128, 30, 3, 3)
+        case "policy_conv_weights": return (76, 128, 1, 1)
+        case "value_conv_weights":  return (1, 128, 1, 1)
+        default: break
+        }
+        if name.hasSuffix("_conv1_weights") || name.hasSuffix("_conv2_weights") {
+            return (128, 128, 3, 3)
+        }
+        return nil
+    }
+
+    private static func makeStemInputChannelDetail(stemConvValues: [Float]) -> Result.StemInputChannelDetail? {
         let outC = 128, inC = 30, kH = 3, kW = 3
         let expected = outC * inC * kH * kW
         guard stemConvValues.count == expected else { return nil }
 
         var perInputSumSq = [Double](repeating: 0, count: inC)
-        // OIHW layout: weights[o, i, h, w] = data[((o * inC + i) * kH + h) * kW + w]
-        // = data[o * inC * kH * kW + i * kH * kW + h * kW + w]
-        let strideO = inC * kH * kW   // 30 * 9 = 270
+        let strideO = inC * kH * kW   // 270
         let strideI = kH * kW         // 9
         for o in 0..<outC {
             for i in 0..<inC {
@@ -401,7 +571,7 @@ enum NetworkWeightAnalyzer {
         let perInputL2 = perInputSumSq.map { sqrt($0) }
         let initPerInputL2 = heInitL2(
             elementCount: outC * kH * kW,
-            fanIn: inC * kH * kW   // stem conv fan-in = 270
+            fanIn: inC * kH * kW
         )
         return Result.StemInputChannelDetail(
             perInputChannelL2: perInputL2,
@@ -410,32 +580,113 @@ enum NetworkWeightAnalyzer {
         )
     }
 
-    private static func makePolicyDetail(policyConvValues: [Float]) -> Result.PolicyOutputChannelDetail? {
-        let outC = 76, inC = 128, kH = 1, kW = 1
+    private static func makeConvOutputChannelDetail(
+        variableName: String,
+        values: [Float],
+        outC: Int,
+        inC: Int,
+        kH: Int,
+        kW: Int
+    ) -> Result.ConvOutputChannelDetail? {
         let expected = outC * inC * kH * kW
-        guard policyConvValues.count == expected else { return nil }
-
+        guard values.count == expected else { return nil }
+        let perOutSize = inC * kH * kW   // weights per output channel
         var perOutputSumSq = [Double](repeating: 0, count: outC)
-        // OIHW layout with kH=kW=1: weights[o, i] = data[o * inC + i]
+        // OIHW: data[o * perOutSize + idx] for idx in 0..<perOutSize
         for o in 0..<outC {
-            let base = o * inC
-            for i in 0..<inC {
-                let v = Double(policyConvValues[base + i])
+            let base = o * perOutSize
+            for k in 0..<perOutSize {
+                let v = Double(values[base + k])
                 perOutputSumSq[o] += v * v
             }
         }
         let perOutputL2 = perOutputSumSq.map { sqrt($0) }
-        let initPerOutputL2 = heInitL2(elementCount: inC, fanIn: inC)
-        return Result.PolicyOutputChannelDetail(
+        // Each output channel has `perOutSize` weights drawn from
+        // N(0, sqrt(2/fanIn)) where fanIn = perOutSize (for stem/
+        // tower convs) or inC (for 1x1 policy/value convs). In the
+        // OIHW conv case fanIn always equals perOutSize anyway.
+        let initPerOutputL2 = heInitL2(elementCount: perOutSize, fanIn: perOutSize)
+        return Result.ConvOutputChannelDetail(
+            variableName: variableName,
             perOutputChannelL2: perOutputL2,
             initPerOutputChannelL2: initPerOutputL2
+        )
+    }
+
+    private static func makeBNLayerDetail(
+        layerName: String,
+        gammaVariableName: String,
+        gammaValues: [Float],
+        betaVariableName: String,
+        betaValues: [Float]
+    ) -> Result.BNLayerDetail {
+        let gammaAbs = gammaValues.map { abs(Double($0)) }
+        let beta = betaValues.map { Double($0) }
+        let sortedGammaAbs = gammaAbs.sorted()
+        let sortedBeta = beta.sorted()
+        let gammaPct = percentileLabels.map {
+            percentile(p: Double($0), sortedAscending: sortedGammaAbs)
+        }
+        let betaPct = percentileLabels.map {
+            percentile(p: Double($0), sortedAscending: sortedBeta)
+        }
+        var deadCount = 0
+        for g in gammaAbs where g < bnDeadGammaThreshold { deadCount += 1 }
+        return Result.BNLayerDetail(
+            layerName: layerName,
+            gammaVariableName: gammaVariableName,
+            betaVariableName: betaVariableName,
+            channelCount: gammaValues.count,
+            deadChannelCount: deadCount,
+            deadThreshold: bnDeadGammaThreshold,
+            gammaPercentilesAbs: gammaPct,
+            betaPercentiles: betaPct
+        )
+    }
+
+    private static func makeSEAttentionDetail(
+        blockName: String,
+        seBiasVariableName: String,
+        seBiasValues: [Float]
+    ) -> Result.SEAttentionDetail {
+        // sigmoid(x) = 1 / (1 + exp(-x))
+        let gates: [Double] = seBiasValues.map { v in
+            let d = Double(v)
+            return 1.0 / (1.0 + exp(-d))
+        }
+        let n = gates.count
+        let sum = gates.reduce(0, +)
+        let mean = n > 0 ? sum / Double(n) : 0
+        let gMin = gates.min() ?? 0
+        let gMax = gates.max() ?? 0
+        let sortedGates = gates.sorted()
+        let pct = percentileLabels.map {
+            percentile(p: Double($0), sortedAscending: sortedGates)
+        }
+        var suppressed = 0
+        var passThrough = 0
+        for g in gates {
+            if g < seSuppressedGateThreshold { suppressed += 1 }
+            if g > sePassThroughGateThreshold { passThrough += 1 }
+        }
+        return Result.SEAttentionDetail(
+            blockName: blockName,
+            seBiasVariableName: seBiasVariableName,
+            channelCount: n,
+            baselineGateMin: gMin,
+            baselineGateMean: mean,
+            baselineGateMax: gMax,
+            baselineGatePercentiles: pct,
+            channelsSuppressedCount: suppressed,
+            suppressedThreshold: seSuppressedGateThreshold,
+            channelsPassThroughCount: passThrough,
+            passThroughThreshold: sePassThroughGateThreshold
         )
     }
 
     // MARK: - Numeric helpers
 
     /// Linear-interpolation percentile over ascending-sorted input.
-    /// Same convention `ValueHeadAnalyzer.percentile` uses.
     static func percentile(p: Double, sortedAscending: [Double]) -> Double {
         guard !sortedAscending.isEmpty else { return 0 }
         if sortedAscending.count == 1 { return sortedAscending[0] }
@@ -465,8 +716,8 @@ enum NetworkWeightAnalyzerError: LocalizedError {
 
 extension NetworkWeightAnalyzer.Result {
 
-    /// Multi-line digest. Mirrors the layout used by
-    /// `ReplayBufferAnalyzer.Result` and `ValueHeadAnalyzer.Result`.
+    /// Multi-line digest of the result. JSON has the full data; this
+    /// is the glanceable form for the session log and the NSAlert.
     func textSummary() -> String {
         var out = ""
 
@@ -491,20 +742,22 @@ extension NetworkWeightAnalyzer.Result {
         }
         out += "\n"
 
-        // Per-variable detail under each section.
+        // Per-variable detail per section.
         for s in sections {
             out += "Section: \(s.sectionName) (\(formatInt(s.totalElementCount)) params)\n"
-            out += "  variable                              count      L2       init_L2  ratio   mean|w|   min       max\n"
+            out += "  variable                              count      L2       init_L2  ratio   drift   mean|w|   min       max\n"
             for v in s.variables {
                 let initStr = v.initL2Norm.map { String(format: "%7.3f", $0) } ?? "  -- "
                 let ratioStr = v.l2NormRatioToInit.map { String(format: "%6.3f", $0) } ?? "  --  "
+                let driftStr = v.driftFromInit.map { String(format: "%6.3f", $0) } ?? "  --  "
                 out += String(
-                    format: "  %@  %@  %@  %@  %@  %@  %@  %@\n",
+                    format: "  %@  %@  %@  %@  %@  %@  %@  %@  %@\n",
                     v.name.padded(38),
                     formatInt(v.elementCount).leftPadded(toLength: 7),
                     String(format: "%8.3f", v.l2Norm).leftPadded(toLength: 8),
                     initStr.leftPadded(toLength: 8),
                     ratioStr.leftPadded(toLength: 7),
+                    driftStr.leftPadded(toLength: 7),
                     String(format: "%7.4f", v.meanAbs).leftPadded(toLength: 8),
                     String(format: "%+7.3f", v.min).leftPadded(toLength: 9),
                     String(format: "%+7.3f", v.max).leftPadded(toLength: 9)
@@ -514,7 +767,7 @@ extension NetworkWeightAnalyzer.Result {
         }
 
         // Stem per-input-channel detail.
-        if let stem = stemDetail {
+        if let stem = stemInputChannelDetail {
             out += "Stem per-input-channel L2 (init ref \(String(format: "%.3f", stem.initPerInputChannelL2)) per plane):\n"
             for (i, l2) in stem.perInputChannelL2.enumerated() {
                 let label = i < stem.planeLabels.count ? stem.planeLabels[i] : "plane_\(i)"
@@ -530,32 +783,77 @@ extension NetworkWeightAnalyzer.Result {
             out += "\n"
         }
 
-        // Policy per-output-channel detail — too many channels (76)
-        // to list inline; summarize as top-5 and bottom-5 by L2.
-        if let policy = policyDetail {
-            out += "Policy per-output-channel L2 (init ref \(String(format: "%.3f", policy.initPerOutputChannelL2)) per channel):\n"
-            let indexed = policy.perOutputChannelL2.enumerated().map { ($0, $1) }
-            let sortedDesc = indexed.sorted { $0.1 > $1.1 }
-            let topN = 5
-            let botN = 5
-            out += "  Top \(topN) by L2:\n"
-            for (idx, l2) in sortedDesc.prefix(topN) {
-                let ratio = policy.initPerOutputChannelL2 > 0 ? l2 / policy.initPerOutputChannelL2 : 0
+        // Per-conv per-output-channel summary: dead/weak channel
+        // counts per conv tensor instead of dumping every channel's
+        // L2 (which would be 24+ × 128 = 3000+ rows for the tower).
+        // JSON has the full per-channel arrays.
+        if !convOutputChannelDetails.isEmpty {
+            out += "Per-conv output-channel health (dead/weak counts vs init ref):\n"
+            out += "  variable                              channels  dead(<\(String(format: "%.2f", NetworkWeightAnalyzer.convDeadRatio)))  weak(<\(String(format: "%.2f", NetworkWeightAnalyzer.convWeakRatio)))  p10ratio  p50ratio  p90ratio  initL2\n"
+            for c in convOutputChannelDetails {
+                let initL2 = c.initPerOutputChannelL2
+                let ratios = c.perOutputChannelL2.map { initL2 > 0 ? $0 / initL2 : 0 }
+                let dead = ratios.filter { $0 < NetworkWeightAnalyzer.convDeadRatio }.count
+                let weak = ratios.filter { $0 < NetworkWeightAnalyzer.convWeakRatio }.count
+                let sortedRatios = ratios.sorted()
+                let p10 = NetworkWeightAnalyzer.percentile(p: 10, sortedAscending: sortedRatios)
+                let p50 = NetworkWeightAnalyzer.percentile(p: 50, sortedAscending: sortedRatios)
+                let p90 = NetworkWeightAnalyzer.percentile(p: 90, sortedAscending: sortedRatios)
                 out += String(
-                    format: "    chan %@  L2=%6.3f  ratio=%6.3f\n",
-                    String(format: "%2d", idx),
-                    l2,
-                    ratio
+                    format: "  %@  %@  %@  %@  %@  %@  %@  %@\n",
+                    c.variableName.padded(38),
+                    formatInt(c.perOutputChannelL2.count).leftPadded(toLength: 8),
+                    formatInt(dead).leftPadded(toLength: 7),
+                    formatInt(weak).leftPadded(toLength: 7),
+                    String(format: "%6.3f", p10).leftPadded(toLength: 8),
+                    String(format: "%6.3f", p50).leftPadded(toLength: 8),
+                    String(format: "%6.3f", p90).leftPadded(toLength: 8),
+                    String(format: "%6.3f", initL2).leftPadded(toLength: 8)
                 )
             }
-            out += "  Bottom \(botN) by L2:\n"
-            for (idx, l2) in sortedDesc.suffix(botN).reversed() {
-                let ratio = policy.initPerOutputChannelL2 > 0 ? l2 / policy.initPerOutputChannelL2 : 0
+            out += "\n"
+        }
+
+        // BN layer dead-channel summary.
+        if !bnLayerDetails.isEmpty {
+            out += "BN layer dead-channel summary (dead = |gamma| < \(String(format: "%.2f", bnLayerDetails.first?.deadThreshold ?? 0))):\n"
+            out += "  layer                  ch   dead   |gamma|p10  |gamma|p50  |gamma|p90  beta p10    beta p50    beta p90\n"
+            for b in bnLayerDetails {
                 out += String(
-                    format: "    chan %@  L2=%6.3f  ratio=%6.3f\n",
-                    String(format: "%2d", idx),
-                    l2,
-                    ratio
+                    format: "  %@  %@  %@  %@  %@  %@  %@  %@  %@\n",
+                    b.layerName.padded(20),
+                    formatInt(b.channelCount).leftPadded(toLength: 4),
+                    formatInt(b.deadChannelCount).leftPadded(toLength: 5),
+                    String(format: "%6.3f", b.gammaPercentilesAbs[safe: 0] ?? 0).leftPadded(toLength: 10),
+                    String(format: "%6.3f", b.gammaPercentilesAbs[safe: 1] ?? 0).leftPadded(toLength: 10),
+                    String(format: "%6.3f", b.gammaPercentilesAbs[safe: 2] ?? 0).leftPadded(toLength: 10),
+                    String(format: "%+6.3f", b.betaPercentiles[safe: 0] ?? 0).leftPadded(toLength: 10),
+                    String(format: "%+6.3f", b.betaPercentiles[safe: 1] ?? 0).leftPadded(toLength: 10),
+                    String(format: "%+6.3f", b.betaPercentiles[safe: 2] ?? 0).leftPadded(toLength: 10)
+                )
+            }
+            out += "\n"
+        }
+
+        // SE attention baseline gate distribution per block.
+        if !seAttentionDetails.isEmpty {
+            let supT = seAttentionDetails.first?.suppressedThreshold ?? 0
+            let passT = seAttentionDetails.first?.passThroughThreshold ?? 0
+            out += "SE attention baseline gates (sigmoid of SE_FC2 bias, channelwise):\n"
+            out += "  block      ch    gate_min  gate_mean  gate_max  gate_p10  gate_p50  gate_p90  suppr(<\(String(format: "%.2f", supT)))  pass(>\(String(format: "%.2f", passT)))\n"
+            for s in seAttentionDetails {
+                out += String(
+                    format: "  %@  %@  %@  %@  %@  %@  %@  %@  %@  %@\n",
+                    s.blockName.padded(8),
+                    formatInt(s.channelCount).leftPadded(toLength: 4),
+                    String(format: "%6.3f", s.baselineGateMin).leftPadded(toLength: 8),
+                    String(format: "%6.3f", s.baselineGateMean).leftPadded(toLength: 9),
+                    String(format: "%6.3f", s.baselineGateMax).leftPadded(toLength: 8),
+                    String(format: "%6.3f", s.baselineGatePercentiles[safe: 0] ?? 0).leftPadded(toLength: 8),
+                    String(format: "%6.3f", s.baselineGatePercentiles[safe: 1] ?? 0).leftPadded(toLength: 8),
+                    String(format: "%6.3f", s.baselineGatePercentiles[safe: 2] ?? 0).leftPadded(toLength: 8),
+                    formatInt(s.channelsSuppressedCount).leftPadded(toLength: 7),
+                    formatInt(s.channelsPassThroughCount).leftPadded(toLength: 6)
                 )
             }
         }
@@ -574,14 +872,23 @@ extension NetworkWeightAnalyzer.Result {
 // MARK: - String padding helpers
 
 private extension String {
-    /// Right-pad to `length` with spaces (left-aligned column).
     func padded(_ length: Int) -> String {
         if count >= length { return self }
         return self + String(repeating: " ", count: length - count)
     }
-    /// Left-pad to `length` with spaces (right-aligned column).
     func leftPadded(toLength length: Int) -> String {
         if count >= length { return self }
         return String(repeating: " ", count: length - count) + self
+    }
+}
+
+private extension Array {
+    /// Safe subscript that returns `nil` for out-of-range indices.
+    /// Used in the text-summary formatter to defensively pull
+    /// percentile values without crashing if the array length is
+    /// somehow off (shouldn't happen, but the formatter is best-effort
+    /// and shouldn't take down the analyzer's log output).
+    subscript(safe index: Int) -> Element? {
+        return (0..<count).contains(index) ? self[index] : nil
     }
 }

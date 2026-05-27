@@ -2095,6 +2095,8 @@ struct UpperContentView: View {
         commandHub.analyzeReplayBuffer = { session.analyzeReplayBufferToFile() }
         commandHub.analyzeValueHead = { session.analyzeValueHeadToFile() }
         commandHub.analyzeNetworkWeights = { session.analyzeNetworkWeightsToFile() }
+        commandHub.analyzeNetworkWeightsTrainer = { session.analyzeNetworkWeightsTrainerToFile() }
+        commandHub.runAllAnalyses = { session.runAllAnalysesToFile() }
         commandHub.abortArena = {
             SessionLogger.shared.log("[BUTTON] Abort Arena")
             session.arenaOverrideBox?.abort()
