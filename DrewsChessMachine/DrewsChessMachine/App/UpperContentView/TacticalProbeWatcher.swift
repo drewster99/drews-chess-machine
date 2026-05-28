@@ -103,10 +103,9 @@ final class TacticalProbeWatcher {
     /// nonsense outputs on a single-position forward pass). Same
     /// snapshot+forward pattern the candidate-test gap-point probe
     /// uses. Each tick gets a fresh snapshot, so the monitor tracks
-    /// the live trainer over time even between promotions — which is
-    /// what makes the 10-min cadence meaningful (otherwise the probe
-    /// shows the same frozen champion until a promotion fires, which
-    /// is rare under the current setup).
+    /// the live trainer's evolving policy between promotions — that
+    /// is what makes the periodic cadence meaningful (otherwise the
+    /// probe shows the same frozen champion until a promotion fires).
     ///
     /// On `.champion`: reads `session.network` directly, same as the
     /// pre-change behavior. Useful for "what is the deployed network
