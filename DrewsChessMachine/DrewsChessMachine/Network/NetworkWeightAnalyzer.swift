@@ -41,12 +41,15 @@ enum NetworkWeightAnalyzer {
 
     // MARK: - Section + fanIn helpers
 
-    /// Canonical section ordering in the JSON output. Unknown
-    /// variables fall through to `"other"` so nothing is silently
-    /// dropped.
+    /// Canonical section ordering in the JSON output. Block indices
+    /// match the code's 0-based numbering — `ChessNetwork` builds
+    /// residual blocks via `for i in 0..<8`, so variable names are
+    /// `block0_conv1_weights` through `block7_conv1_weights` and the
+    /// section names mirror that. Unknown variables fall through to
+    /// `"other"` so nothing is silently dropped.
     static let sectionOrder: [String] =
         ["stem"]
-        + (1...8).map { "block_\($0)" }
+        + (0..<8).map { "block_\($0)" }
         + ["policy", "value", "other"]
 
     /// 0-based section bucket for a variable. Drives both the
@@ -379,11 +382,11 @@ enum NetworkWeightAnalyzer {
             ))
         }
 
-        // SE attention detail — one per block, walking blocks 1..8 in
-        // order. The SE FC2 bias for a block is named
-        // "blockN_se_fc2_bias".
+        // SE attention detail — one per block, walking blocks 0..7 in
+        // order (matching ChessNetwork's `for i in 0..<8` loop). The
+        // SE FC2 bias for a block is named "blockN_se_fc2_bias".
         var seDetails: [Result.SEAttentionDetail] = []
-        for blockIndex in 1...8 {
+        for blockIndex in 0..<8 {
             let seBiasName = "block\(blockIndex)_se_fc2_bias"
             guard let seBiasValues = allByName[seBiasName] else { continue }
             seDetails.append(makeSEAttentionDetail(
