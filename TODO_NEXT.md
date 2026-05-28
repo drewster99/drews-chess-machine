@@ -105,6 +105,85 @@ on smaller batches; bottleneck is more likely self-play GPU
 saturation than trainer GPU saturation at the current scale). Not
 asked for; flagging for possible future work.
 
+### Horizontal-mirror data augmentation
+
+Observation (2026-05-27, Network Weight Analyzer): the policy head's
+queen-style distance-1 channels show a meaningful east-vs-west
+asymmetry: chan 14 (queen E d1) has L2 = 1.341 vs chan 42 (queen W
+d1) at L2 = 1.130 — a 19% gap. Other mirror-pair gaps (NE/NW,
+SE/SW, the knight pairs) are within ~5%. Forward/backward asymmetry
+(N/NE/NW favored over S/SE/SW) is large but expected (forward
+moves matter more in chess); the lateral E-vs-W gap is harder to
+justify from chess principles and likely partly training noise +
+partly accumulated bias from however many self-play games have
+landed in the buffer.
+
+**Color is already normalized in the replay buffer.** `BoardEncoder`
+.encode` always stores the position from the *mover's* perspective:
+piece planes 0–5 hold the mover's pieces, planes 6–11 hold the
+opponent's, and the board is vertically flipped when the original
+side-to-move was black so the mover always "sits at rows 6–7."
+The policy index encoding is also in the mover frame
+(`PolicyEncoding.encode` does its own black→white row flip).
+**So at sample time the trainer never has to ask "was this from
+white or black?"** — every buffer position looks like a white-to-move
+encoded board, and the stored move index already lives in the same
+frame. The mirror augmentation below operates on this already-
+color-normalized representation, so it only needs to worry about
+the genuine left-vs-right symmetry of chess.
+
+Chess is *almost* horizontally symmetric — piece moves, captures,
+en passant, and promotions all are. The two things that break
+left-right symmetry are:
+  1. Castling: kingside castle is on the h-file, queenside on the
+     a-file. Horizontal mirror swaps them (kingside ↔ queenside).
+     Castling moves themselves (e1→g1 kingside, e1→c1 queenside)
+     are not simple mirror images — mirroring e1→g1 gives e1→b1,
+     which isn't a legal castle.
+  2. Anything else tied to specific files (very little in chess).
+
+Two implementation paths:
+
+(A) Mirror only when both castling-right planes are zero on both
+    sides — i.e. positions where castling rights are already gone.
+    Endgames qualify. K+Q-vs-K, K+R-vs-K, etc. all qualify (no
+    castling rights left). The buffer's bucket 0–4 and bucket 5–8
+    (sparse) would mostly qualify; the K+Q-vs-K class specifically
+    is the one we're starving for data on.
+
+    Simplest path: at buffer-append time, with probability 0.5,
+    horizontally flip the board planes (mirror columns within each
+    of planes 0–11), the en-passant plane (16), and the repetition-
+    history planes (20–29), AND mirror the stored move's column
+    coordinate. Castling-rights planes (12–15) must be all zero,
+    or skip the flip. No move-index re-encoding needed for queen-
+    style and knight channels since the direction encoding has
+    full N/NE/E/SE/S/SW/W/NW + 8 knight jumps — mirroring just
+    swaps E↔W, NE↔NW, SE↔SW, knight UR↔UL, RU↔LU, RD↔LD, DR↔DL.
+
+(B) Mirror all positions, including those with castling rights.
+    Mirror swaps kingside ↔ queenside castling rights (planes
+    12 ↔ 13 for mover side; 14 ↔ 15 for opponent side). Castle-
+    move encodings need careful translation. More general but
+    more code to write and test.
+
+Rationale to revisit: (A) is cheap and would 2× the effective
+training data on the very bucket 0–4 / bucket 5–8 positions where
+the network's K+Q-vs-K conversion rate is currently the bottleneck
+(1.5% conversion, ~459 K+Q-vs-K games in a 1M-position buffer).
+Doubling that to ~900 — and presenting both orientations of each
+position — should accelerate the trunk's learning to recognize
+K+Q-vs-K material configurations regardless of which side of the
+board the king is sitting on. (B) is a strictly larger benefit
+but with strictly more implementation work; do (A) first.
+
+Validation: after enabling, check the policy head's E-vs-W channel
+L2 ratios (Analyze Network Weights menu item). The 19% gap should
+shrink substantially within tens of arenas. Also watch the K+Q
+mate tactical probe rank — should improve faster than under no-
+augmentation training as the trunk receives more K+Q-vs-K experience
+per buffer refresh.
+
 ---
 
 ## How this file works
