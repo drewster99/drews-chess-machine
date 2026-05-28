@@ -91,14 +91,60 @@ final class TacticalProbeWatcher {
         }
     }
 
-    /// One tick: read the live champion, run all probes, append to
-    /// history. No-ops cleanly when the network is gone (e.g. the
-    /// session has been torn down but the window is still open). Logs
-    /// nothing here — the monitor window is the visible record; the
-    /// per-error log lines come from `runTacticalProbe` itself on
-    /// forward-pass failures.
+    /// One tick: pick the network to probe based on
+    /// `session.probeNetworkTarget` (default `.candidate`, controlled
+    /// by the existing main-UI Picker), run all probes, append to
+    /// history. No-ops cleanly when the network needed isn't loaded.
+    ///
+    /// On `.candidate`: snapshots the trainer's CURRENT weights into
+    /// the dedicated `probeInferenceNetwork` (an inference-mode
+    /// network — necessary because the trainer's own network uses
+    /// training-mode BN with fresh batch stats, which would give
+    /// nonsense outputs on a single-position forward pass). Same
+    /// snapshot+forward pattern the candidate-test gap-point probe
+    /// uses. Each tick gets a fresh snapshot, so the monitor tracks
+    /// the live trainer over time even between promotions — which is
+    /// what makes the 10-min cadence meaningful (otherwise the probe
+    /// shows the same frozen champion until a promotion fires, which
+    /// is rare under the current setup).
+    ///
+    /// On `.champion`: reads `session.network` directly, same as the
+    /// pre-change behavior. Useful for "what is the deployed network
+    /// actually doing" between promotions; probe values are stable
+    /// (identical every tick) until a promotion overwrites
+    /// `session.network`.
+    ///
+    /// Logs `[TACTICAL]` on the trainer-snapshot failure path only —
+    /// `TacticalProbeRunner.run` swallows per-probe forward-pass
+    /// failures into the result's `.error` verdict so per-probe
+    /// failures are visible in the monitor window directly.
     private func tickOnce() async {
-        guard let session = sessionController, let net = session.network else { return }
+        guard let session = sessionController else { return }
+        let target = session.probeNetworkTarget
+
+        let net: ChessMPSNetwork
+        switch target {
+        case .champion:
+            guard let championNet = session.network else { return }
+            net = championNet
+        case .candidate:
+            guard let trainer = session.trainer,
+                  let probeNet = session.probeInferenceNetwork else { return }
+            do {
+                let weights = try await trainer.network.exportWeights()
+                try await probeNet.loadWeights(weights)
+            } catch {
+                SessionLogger.shared.log(
+                    "[TACTICAL] monitor trainer-snapshot failed: \(error.localizedDescription)"
+                )
+                return
+            }
+            // Inherit the trainer's ID so any future per-tick record
+            // points back to a specific weight snapshot.
+            probeNet.identifier = trainer.identifier
+            net = probeNet
+        }
+
         let probes = TacticalProbeData.standardSet
         var results: [ProbeResult] = []
         results.reserveCapacity(probes.count)
