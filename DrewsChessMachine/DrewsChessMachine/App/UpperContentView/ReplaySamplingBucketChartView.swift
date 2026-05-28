@@ -124,11 +124,9 @@ struct ReplaySamplingBucketChartView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 60, alignment: .trailing)
             let active = activeBucketIndices
-            let activeSum = active.reduce(0) { acc, idx in
-                acc + ((counts.flatMap { $0.indices.contains(idx) ? $0[idx] : 0 }) ?? 0)
-            }
+            let activeSum = active.reduce(0) { acc, idx in acc + Self.countAt(idx, in: counts) }
             ForEach(active, id: \.self) { idx in
-                let count = (counts.flatMap { $0.indices.contains(idx) ? $0[idx] : 0 }) ?? 0
+                let count = Self.countAt(idx, in: counts)
                 let frac = activeSum > 0 ? Double(count) / Double(activeSum) : 0
                 ZStack(alignment: .leading) {
                     // Background slot — always present for view stability.
@@ -178,5 +176,13 @@ struct ReplaySamplingBucketChartView: View {
             return "—"
         }
         return "\(counts[idx])"
+    }
+
+    /// Safe accessor: returns 0 when `counts` is nil OR `idx` is out
+    /// of range. Avoids force-unwraps and an awkward `Optional.flatMap`
+    /// pattern at every read site.
+    private static func countAt(_ idx: Int, in counts: [Int]?) -> Int {
+        guard let counts, counts.indices.contains(idx) else { return 0 }
+        return counts[idx]
     }
 }

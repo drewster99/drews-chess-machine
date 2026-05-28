@@ -218,19 +218,18 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
         XCTAssertLessThan(counts[3], 300)
     }
 
-    /// With stratification on and all 4 active buckets populated, the
-    /// achieved per-bucket counts should be ~equal for a balanced
-    /// target. Sample size large enough that statistical noise is
-    /// below the assertion tolerance.
+    /// With stratification on and every active bucket holding more than
+    /// `batchSize / activeCount` positions, the achieved per-bucket
+    /// counts should be ~equal for a balanced target — no clamping,
+    /// no slack redistribution.
     func testStratifiedSampleReachesBalancedTargetMix() {
         let buf = ReplayBuffer(capacity: 20_000)
-        // Skewed buffer: 1500 positions of each bucket → balanced
-        // *resident* mix; the test is checking that the path produces
-        // a balanced *batch* regardless of resident weight, so we'll
-        // make residency skewed too.
         let mats: [UInt8] = [2, 7, 12, 18]
-        // Unequal residency: 800 / 400 / 200 / 100 of each bucket.
-        let perBucketGames = [8, 4, 2, 1]
+        // Each active bucket holds 400 resident positions — comfortably
+        // above the per-bucket target of 250 for a 1000-position batch,
+        // so the clamp-then-redistribute path doesn't engage and we can
+        // assert the *pure* balanced-target arithmetic.
+        let perBucketGames = [4, 4, 4, 4]
         let gameLen = 100
         var gi: UInt32 = 0
         for (b, n) in perBucketGames.enumerated() {
@@ -264,14 +263,65 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
         XCTAssertNotNil(result.constraints.materialBucketWeights)
         let counts = result.achievedBucketCounts
         XCTAssertEqual(counts.reduce(0, +), batchSize)
-        // Active buckets each get ~250. Allow ±2 (rounding correction
-        // may shift +/-1 between adjacent buckets; combined with
-        // sample-with-replacement bookkeeping that's well under 1%).
+        // Active buckets each get ~250. Allow ±1 for the rounding-
+        // correction step that shifts ±1 into the largest target so the
+        // sum equals batchSize exactly.
         for i in 0..<(n - 1) {
-            XCTAssertEqual(counts[i], 250, accuracy: 2,
+            XCTAssertEqual(counts[i], 250, accuracy: 1,
                 "bucket \(i) achieved \(counts[i]), expected ~250")
         }
         // Unreachable 5th bucket should remain zero.
+        XCTAssertEqual(counts[4], 0)
+    }
+
+    /// When residency forces some active buckets to clamp below their
+    /// balanced share, the deficit reallocates round-robin onto the
+    /// unclamped active buckets — the batch still fills exactly.
+    /// (This is the path the *previous* version of
+    /// `testStratifiedSampleReachesBalancedTargetMix` was accidentally
+    /// exercising; broken out into its own test so the contract is
+    /// explicit.)
+    func testStratifiedSampleClampsAndRedistributesPerResidency() {
+        let buf = ReplayBuffer(capacity: 20_000)
+        let mats: [UInt8] = [2, 7, 12, 18]
+        // Skewed residency: 800 / 400 / 200 / 100. With a 1000-position
+        // balanced-target batch, buckets 2 and 3 clamp at residency
+        // (200 + 100 = 300 < 500 their target sum), the deficit (200)
+        // splits round-robin between the only unclamped active buckets
+        // (0 and 1), giving the achieved mix [350, 350, 200, 100].
+        let perBucketGames = [8, 4, 2, 1]
+        let gameLen = 100
+        var gi: UInt32 = 0
+        for (b, n) in perBucketGames.enumerated() {
+            for _ in 0..<n {
+                appendGame(to: buf, length: gameLen, outcome: 0,
+                    workerId: UInt16(b), gameIndex: gi, materialCount: mats[b])
+                gi &+= 1
+            }
+        }
+        let n = ReplayBufferAnalyzer.materialBuckets.count
+        var weights = [Float](repeating: 0, count: n)
+        for i in 0..<(n - 1) { weights[i] = 1.0 / Float(n - 1) }
+        buf.setSamplingConstraints(
+            ReplayBuffer.SamplingConstraints(
+                maxPerGame: .max, maxDrawPercent: 100,
+                targetMeanGameLengthPlies: 0,
+                materialBucketWeights: weights
+            )
+        )
+        let drawn = drawBatch(buf, count: 1000)
+        XCTAssertTrue(drawn.ok)
+        let counts = buf.lastSamplingResult().achievedBucketCounts
+        XCTAssertEqual(counts.reduce(0, +), 1000,
+            "stratified batch should fill exactly even under clamping")
+        XCTAssertEqual(counts[2], 200, "bucket 2 clamps at residency")
+        XCTAssertEqual(counts[3], 100, "bucket 3 clamps at residency")
+        XCTAssertEqual(counts[0] + counts[1], 700,
+            "unclamped buckets absorb the 200-position deficit")
+        XCTAssertEqual(counts[0], 350, accuracy: 1,
+            "round-robin redistribution should split deficit evenly")
+        XCTAssertEqual(counts[1], 350, accuracy: 1,
+            "round-robin redistribution should split deficit evenly")
         XCTAssertEqual(counts[4], 0)
     }
 
@@ -333,7 +383,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
     /// the V1 balanced target when the singleton toggle is on, and
     /// `nil` when it's off.
     @MainActor
-    func testFromCurrentParametersMapsToggleToWeights() {
+    func testFromCurrentParametersMapsToggleToWeights() throws {
         let p = TrainingParameters.shared
         let originalToggle = p.replayBufferStratifyByMaterial
         defer { p.replayBufferStratifyByMaterial = originalToggle }
@@ -345,7 +395,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
         p.replayBufferStratifyByMaterial = true
         let on = ReplayBuffer.SamplingConstraints.fromCurrentParameters()
         let n = ReplayBufferAnalyzer.materialBuckets.count
-        let weights = try! XCTUnwrap(on.materialBucketWeights,
+        let weights = try XCTUnwrap(on.materialBucketWeights,
             "stratification ON should produce non-nil weights")
         XCTAssertEqual(weights.count, n)
         let expectedShare = Float(1.0) / Float(n - 1)
