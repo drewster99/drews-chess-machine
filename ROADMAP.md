@@ -523,6 +523,26 @@ original rationale is not lost.
   behaviour is bit-identical to the current sampler when all three knobs are at
   their no-op settings (`K ≥ B`, `D = 100`, `T` disabled/∞).
 
+- **Stratified replay-buffer sampling by game phase (non-pawn piece count).**
+  Added 2026-05-28. The 2026-05-28 buffer analysis of champion
+  `20260525-1-sMe9-31` showed the 4 active material-phase buckets are
+  unevenly represented (31 / 34 / 19 / 16% across 0–4 / 5–8 / 9–14 / 15–22
+  non-pawn pieces), and the network's policy/value heads are weakest exactly
+  on the underweighted 15–22 bucket (policy entropy 3.26 nats vs uniform 3.34,
+  value-scalar spread collapsed to ±0.09). The proposed fix is a trainer-side
+  opt-in toggle that draws each minibatch with balanced weight from the four
+  phase buckets, instead of uniformly from the buffer, compensating for the
+  natural skew without changing self-play dynamics. See
+  `STRATIFIED_REPLAY_SAMPLING_PLAN.md` at the repo root for the full plan,
+  including the no-op-on-existing-`.dcmsession`-files design (the on-disk
+  buffer layout is unchanged; only an in-memory bucket index is added and
+  rebuilt from the existing `materialCount` column on restore). V1 ignores
+  the `maxDrawPercent` and per-game K-cap while the toggle is on; the UI
+  grays those out with a one-line explanation banner. Validation is an A/B
+  Play-and-Train pair from the same checkpoint, with success defined as
+  15–22 bucket entropy falling ≥0.10 nats and value-scalar spread at least
+  doubling, without arena promotion rate falling >25%.
+
 ## Code-review remediation roadmap (added 2026-05-11)
 
 Result of an in-depth review of the codebase against Swift / SwiftUI / macOS /

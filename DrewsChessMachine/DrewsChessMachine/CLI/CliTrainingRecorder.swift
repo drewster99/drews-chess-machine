@@ -317,11 +317,19 @@ final class CliTrainingRecorder: @unchecked Sendable {
             let maxPerGame: Int
             let maxDrawPct: Int
             let targetLength: Int
+            /// `true` when material-bucket stratification was active for
+            /// this batch (the trainer drew with a per-bucket target
+            /// distribution rather than uniformly). When this is true
+            /// the W/D/L cap and per-game K cap above were bypassed —
+            /// the `bucket_mix` field on the parent record reflects
+            /// the post-stratification distribution.
+            let stratifyByMaterial: Bool
             enum CodingKeys: String, CodingKey {
                 case applied
                 case maxPerGame = "max_per_game"
                 case maxDrawPct = "max_draw_pct"
                 case targetLength = "target_length"
+                case stratifyByMaterial = "stratify_by_material"
             }
         }
         let step: Int
@@ -355,6 +363,14 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let phaseByPlyXOutcomeHistogramPct: [String: Double]
         let bufferUniquePositions: Int
         let bufferStoredCount: Int
+        /// Per-bucket counts in this batch, keyed by the analyzer's
+        /// material-bucket labels (`"0-4"`, `"5-8"`, …). Sums to
+        /// `batchSize`. Always populated regardless of stratification
+        /// state — when stratification is off, this reflects the
+        /// natural per-phase mix the buffer was holding.
+        let bucketMix: [String: Int]
+        /// Same per-bucket counts as fractions of `batchSize`.
+        let bucketMixPct: [String: Double]
         /// `bufferUniquePositions / bufferStoredCount`. Range [0, 1].
         /// Distinguishes "buffer full of duplicates" (low) from
         /// "sampler happened to draw duplicates from a diverse
@@ -387,6 +403,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case bufferUniquePositions = "buffer_unique_positions"
             case bufferStoredCount = "buffer_stored_count"
             case bufferUniquePct = "buffer_unique_pct"
+            case bucketMix = "bucket_mix"
+            case bucketMixPct = "bucket_mix_pct"
         }
 
         /// Auto-derives all `*_pct` fields from the counts.
@@ -406,7 +424,8 @@ final class CliTrainingRecorder: @unchecked Sendable {
             outcomeHistogram: [String: Int],
             phaseByPlyXOutcomeHistogram: [String: Int],
             bufferUniquePositions: Int,
-            bufferStoredCount: Int
+            bufferStoredCount: Int,
+            bucketMix: [String: Int]
         ) {
             self.step = step
             self.batchSize = batchSize
@@ -424,6 +443,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             self.phaseByPlyXOutcomeHistogram = phaseByPlyXOutcomeHistogram
             self.bufferUniquePositions = bufferUniquePositions
             self.bufferStoredCount = bufferStoredCount
+            self.bucketMix = bucketMix
             let bs = batchSize > 0 ? Double(batchSize) : 1
             let uc = uniqueCount > 0 ? Double(uniqueCount) : 1
             func pct(_ d: [String: Int], denom: Double) -> [String: Double] {
@@ -443,6 +463,7 @@ final class CliTrainingRecorder: @unchecked Sendable {
             self.workerIdHistogramPct = pct(workerIdHistogram, denom: bs)
             self.outcomeHistogramPct = pct(outcomeHistogram, denom: bs)
             self.phaseByPlyXOutcomeHistogramPct = pct(phaseByPlyXOutcomeHistogram, denom: bs)
+            self.bucketMixPct = pct(bucketMix, denom: bs)
             self.bufferUniquePct = bufferStoredCount > 0
                 ? Double(bufferUniquePositions) / Double(bufferStoredCount)
                 : 0

@@ -681,6 +681,7 @@ extension SessionController {
             maxPliesFromAnyOneGame: params.maxPliesFromAnyOneGame,
             targetSampledGameLengthPlies: params.targetSampledGameLengthPlies,
             maxDrawPercentPerBatch: params.maxDrawPercentPerBatch,
+            replayBufferStratifyByMaterial: params.replayBufferStratifyByMaterial,
             selfPlayDrawKeepFraction: params.selfPlayDrawKeepFraction,
             maxPliesPerGame: params.selfPlayMaxPliesPerGame,
             drawWatchPDrawThreshold: params.drawWatchPDrawThreshold,

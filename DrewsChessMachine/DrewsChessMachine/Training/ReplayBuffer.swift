@@ -161,11 +161,105 @@ final class ReplayBuffer: @unchecked Sendable {
     /// uniform-with-replacement sampler until the user opts in.
     private var samplingConstraints: SamplingConstraints = .unconstrained
 
+    // MARK: - Material-bucket index (observability + stratified sampling)
+    //
+    // Per-bucket lists of resident ring-slot indices, maintained in
+    // lock-step with `materialCountStorage`. Buckets follow
+    // `ReplayBufferAnalyzer.materialBuckets` so any downstream display
+    // (UI mini-chart, [BATCH-STATS] `bucket_mix`, CLI recorder) reads
+    // the same partition as the offline analyzer. The 5th bucket
+    // (23–30 non-pawn pieces) is geometrically unreachable in standard
+    // chess but is kept for index alignment with the analyzer.
+    //
+    // `materialBucketSlots[b]` provides O(1) insert, O(1) remove-by-slot,
+    // and O(1) uniform random pick — backed by a contiguous `[Int]`
+    // plus a `[Int: Int]` reverse-index. Updated only while holding
+    // `lock`. Drives:
+    //   - the in-memory bucket distribution surfaced in
+    //     `compositionSnapshot()` (the UI's per-batch mini-chart
+    //     "buffer" row);
+    //   - the bucket-stratified `sample(...)` path enabled when
+    //     `samplingConstraints.materialBucketWeights != nil`.
+    //
+    // No on-disk format change: the index is rebuilt by walking
+    // `materialCountStorage` once at the end of `restore(from:)`,
+    // matching the same pattern used for `hashStats` and the
+    // composition aggregates.
+    private var materialBucketSlots: [IndexedSlotSet]
+
     // MARK: - Lifetime
+
+    /// O(1)-everything container for the per-bucket slot index. Backs
+    /// `materialBucketSlots`. NOT thread-safe on its own — must be
+    /// touched only while the surrounding `ReplayBuffer.lock` is held.
+    ///
+    /// `slots` is the contiguous list of resident ring-slot indices in
+    /// this bucket. `slotPosition[slot]` is the index of `slot` within
+    /// `slots`, so `remove(slot)` does the standard "swap with last,
+    /// pop, fix-up reverse index" trick in O(1).
+    struct IndexedSlotSet {
+        private(set) var slots: [Int] = []
+        private var slotPosition: [Int: Int] = [:]
+
+        var count: Int { slots.count }
+        var isEmpty: Bool { slots.isEmpty }
+
+        mutating func insert(_ slot: Int) {
+            // Guard against double-insert: the bucket index is
+            // maintained alongside materialCountStorage, so a slot
+            // being inserted twice for the same write would mean the
+            // eviction pass was skipped — we want a precondition
+            // failure not silent corruption.
+            precondition(slotPosition[slot] == nil,
+                "IndexedSlotSet.insert: slot \(slot) is already a member")
+            slotPosition[slot] = slots.count
+            slots.append(slot)
+        }
+
+        mutating func remove(_ slot: Int) {
+            guard let idx = slotPosition.removeValue(forKey: slot) else { return }
+            let last = slots.count - 1
+            if idx != last {
+                let moved = slots[last]
+                slots[idx] = moved
+                slotPosition[moved] = idx
+            }
+            slots.removeLast()
+        }
+
+        /// Uniform random pick. Caller must check `!isEmpty` first.
+        func randomSlot() -> Int {
+            slots[Int.random(in: 0..<slots.count)]
+        }
+
+        mutating func removeAll(keepingCapacity: Bool = true) {
+            slots.removeAll(keepingCapacity: keepingCapacity)
+            slotPosition.removeAll(keepingCapacity: keepingCapacity)
+        }
+    }
+
+    /// Resolve a `materialCount` (non-pawn piece count) to its bucket
+    /// index, matching `ReplayBufferAnalyzer.materialBucketIndex(for:)`.
+    /// Single source of truth: read straight from
+    /// `ReplayBufferAnalyzer.materialBuckets` so a future redefinition
+    /// of the boundaries flows through to the buffer and the analyzer
+    /// in lock-step.
+    @inline(__always)
+    static func materialBucketIndex(for materialCount: UInt8) -> Int {
+        ReplayBufferAnalyzer.materialBucketIndex(for: Int(materialCount))
+    }
 
     init(capacity: Int) {
         precondition(capacity > 0, "Replay buffer capacity must be positive")
         self.capacity = capacity
+
+        // Pre-allocate one IndexedSlotSet per analyzer bucket. The 5th
+        // (23–30) is structurally unreachable but kept to keep array
+        // arithmetic 1:1 with the analyzer's outputs.
+        self.materialBucketSlots = Array(
+            repeating: IndexedSlotSet(),
+            count: ReplayBufferAnalyzer.materialBuckets.count
+        )
 
         let boardSlots = capacity * Self.floatsPerBoard
         let boards = UnsafeMutablePointer<Float>.allocate(capacity: boardSlots)
@@ -459,16 +553,44 @@ final class ReplayBuffer: @unchecked Sendable {
         /// sampled batch, enforced by an exponential down-weight on long
         /// games. `0` ⇒ no length tilt.
         public var targetMeanGameLengthPlies: Int
+        /// Per-bucket target weights for material-phase stratification.
+        ///
+        /// `nil` (default) ⇒ no stratification — the sampler uses the
+        /// legacy uniform / constrained path with the three knobs above.
+        ///
+        /// Non-nil ⇒ the sampler draws minibatches with a target
+        /// distribution across the 4 active material buckets defined by
+        /// `ReplayBufferAnalyzer.materialBuckets` (0–4, 5–8, 9–14,
+        /// 15–22 non-pawn pieces; the 5th `23–30` slot is geometrically
+        /// unreachable and stays at weight 0). Array length must equal
+        /// `ReplayBufferAnalyzer.materialBuckets.count`. Weights are
+        /// proportions (not %) and are renormalized internally before
+        /// the per-bucket count is rounded — the convention is to pass
+        /// `[0.25, 0.25, 0.25, 0.25, 0.0]` for a balanced batch.
+        ///
+        /// V1 limitation: when this is non-nil the sampler **bypasses**
+        /// the W/D/L cap and the per-game K cap (`maxPerGame`,
+        /// `maxDrawPercent`). The UI grays those controls out with an
+        /// inline explanation banner while stratification is on. Future
+        /// work could combine bucket stratification with W/D/L tilt.
+        public var materialBucketWeights: [Float]?
 
-        public init(maxPerGame: Int, maxDrawPercent: Int, targetMeanGameLengthPlies: Int) {
+        public init(
+            maxPerGame: Int,
+            maxDrawPercent: Int,
+            targetMeanGameLengthPlies: Int,
+            materialBucketWeights: [Float]? = nil
+        ) {
             self.maxPerGame = maxPerGame
             self.maxDrawPercent = maxDrawPercent
             self.targetMeanGameLengthPlies = targetMeanGameLengthPlies
+            self.materialBucketWeights = materialBucketWeights
         }
 
         /// The legacy uniform-with-replacement sampler.
         public static let unconstrained = SamplingConstraints(
-            maxPerGame: Int.max, maxDrawPercent: 100, targetMeanGameLengthPlies: 0
+            maxPerGame: Int.max, maxDrawPercent: 100, targetMeanGameLengthPlies: 0,
+            materialBucketWeights: nil
         )
 
         /// Build from the current `TrainingParameters` values (the UI
@@ -476,10 +598,28 @@ final class ReplayBuffer: @unchecked Sendable {
         /// live `ReplayBuffer`).
         @MainActor public static func fromCurrentParameters() -> SamplingConstraints {
             let p = TrainingParameters.shared
+            // V1: balanced target across the 4 active buckets when the
+            // toggle is on. Custom weights are future work — see the
+            // `ReplayBufferStratifyByMaterial` parameter description.
+            let bucketWeights: [Float]?
+            if p.replayBufferStratifyByMaterial {
+                let bucketCount = ReplayBufferAnalyzer.materialBuckets.count
+                // The 5th bucket (23–30 non-pawns) is structurally
+                // unreachable, so its weight stays 0. The remaining
+                // active buckets share the budget equally.
+                let activeCount = bucketCount - 1
+                var w = [Float](repeating: 0, count: bucketCount)
+                let share = activeCount > 0 ? Float(1.0) / Float(activeCount) : 0
+                for i in 0..<activeCount { w[i] = share }
+                bucketWeights = w
+            } else {
+                bucketWeights = nil
+            }
             return SamplingConstraints(
                 maxPerGame: p.maxPliesFromAnyOneGame,
                 maxDrawPercent: p.maxDrawPercentPerBatch,
-                targetMeanGameLengthPlies: p.targetSampledGameLengthPlies
+                targetMeanGameLengthPlies: p.targetSampledGameLengthPlies,
+                materialBucketWeights: bucketWeights
             )
         }
 
@@ -487,7 +627,14 @@ final class ReplayBuffer: @unchecked Sendable {
         /// a batch of `sampleCount` positions (so `sample` can take the
         /// bit-for-bit fast path).
         func isNoOp(forBatchSize sampleCount: Int) -> Bool {
-            maxPerGame >= sampleCount && maxDrawPercent >= 100 && targetMeanGameLengthPlies <= 0
+            // Material-bucket stratification is never a no-op: even at
+            // balanced weights matching the natural buffer distribution
+            // the path differs from uniform-with-replacement (per-bucket
+            // draws), so it always takes the dedicated path.
+            materialBucketWeights == nil
+                && maxPerGame >= sampleCount
+                && maxDrawPercent >= 100
+                && targetMeanGameLengthPlies <= 0
         }
     }
 
@@ -551,6 +698,23 @@ final class ReplayBuffer: @unchecked Sendable {
         /// jointly-pathological constraint combination for the current
         /// buffer composition.
         public let attemptBudgetHit: Bool
+        /// Per-material-bucket position counts in the emitted batch,
+        /// indexed by `ReplayBufferAnalyzer.materialBuckets`. Populated
+        /// on all three sampling paths (legacy fast, constrained W/D/L,
+        /// bucket-stratified) so the UI's per-batch mini-chart can show
+        /// the post-sampling phase distribution regardless of which
+        /// path produced the batch. Always `materialBuckets.count`
+        /// entries; the trailing slot (23–30) is structurally
+        /// unreachable in standard chess and stays at 0.
+        public let achievedBucketCounts: [Int]
+        /// Per-bucket *requested* counts when bucket stratification is
+        /// active (`constraints.materialBucketWeights != nil`). The
+        /// renormalized + rounded target distribution that the sampler
+        /// tried to hit, BEFORE the per-bucket deficit reallocation
+        /// that handles empty buckets. Same shape as
+        /// `achievedBucketCounts`. All zeros on the fast / constrained
+        /// paths (no per-bucket request).
+        public let requestedBucketCounts: [Int]
 
         public var achievedWinPercent: Double {
             batchSize > 0 ? Double(achievedWinCount) * 100.0 / Double(batchSize) : 0
@@ -590,7 +754,15 @@ final class ReplayBuffer: @unchecked Sendable {
             achievedMaxPerGame: 0, distinctGamesInBatch: 0,
             achievedSumGameLength: 0,
             lengthTargetInfeasible: false, shortestResidentLength: 0,
-            attemptBudgetHit: false
+            attemptBudgetHit: false,
+            achievedBucketCounts: Array(
+                repeating: 0,
+                count: ReplayBufferAnalyzer.materialBuckets.count
+            ),
+            requestedBucketCounts: Array(
+                repeating: 0,
+                count: ReplayBufferAnalyzer.materialBuckets.count
+            )
         )
     }
 
@@ -647,6 +819,13 @@ final class ReplayBuffer: @unchecked Sendable {
         public let drawPositions: Int
         public let lossPositions: Int
         public let sumGameLengthOverResidentPositions: Int
+        /// Per-material-bucket resident position counts, indexed by
+        /// `ReplayBufferAnalyzer.materialBuckets`. Drives the "buffer"
+        /// row of the popover's bucket mini-chart (the natural skew the
+        /// stratifier is correcting). Always `materialBuckets.count`
+        /// entries; the 5th (23–30) is structurally unreachable in
+        /// standard chess and stays at 0.
+        public let residentPerBucket: [Int]
 
         /// Game-weighted mean game length: simple mean over resident games,
         /// estimated from the resident length histogram as
@@ -674,6 +853,7 @@ final class ReplayBuffer: @unchecked Sendable {
             for (length, positionCount) in residentLengthHistogram where length > 0 {
                 estimatedGameCount += Double(positionCount) / Double(length)
             }
+            let perBucket = materialBucketSlots.map { $0.count }
             return CompositionSnapshot(
                 storedCount: storedCount,
                 distinctResidentGames: residentGames.count,
@@ -682,7 +862,8 @@ final class ReplayBuffer: @unchecked Sendable {
                 winPositions: winPositions,
                 drawPositions: drawPositions,
                 lossPositions: lossPositions,
-                sumGameLengthOverResidentPositions: sumGameLengthOverResidentPositions
+                sumGameLengthOverResidentPositions: sumGameLengthOverResidentPositions,
+                residentPerBucket: perBucket
             )
         }
     }
@@ -837,6 +1018,20 @@ final class ReplayBuffer: @unchecked Sendable {
                     gameLength: gameLength, packedId: packedId,
                     isWin: isWin, isLoss: isLoss, count: chunk
                 )
+                // Material-bucket index insertion. Reads the freshly
+                // written `materialCountStorage[slot]` rather than the
+                // incoming `materialCounts` pointer at the same offset
+                // so the bucket index is provably consistent with the
+                // on-ring data (the same data that `restore`'s rebuild
+                // loop walks). One bucket per slot; the slot is fresh
+                // (the matching eviction pass above just removed any
+                // pre-existing tenant), so `insert` won't trip its
+                // double-insert precondition.
+                for i in 0..<chunk {
+                    let slot = writeIndex + i
+                    let bucket = Self.materialBucketIndex(for: materialCountStorage[slot])
+                    materialBucketSlots[bucket].insert(slot)
+                }
 
                 let newWrite = writeIndex + chunk
                 writeIndex = newWrite == capacity ? 0 : newWrite
@@ -929,6 +1124,12 @@ final class ReplayBuffer: @unchecked Sendable {
         if let c = residentLengthHistogram[len] {
             if c <= 1 { residentLengthHistogram.removeValue(forKey: len) } else { residentLengthHistogram[len] = c - 1 }
         }
+        // Material-bucket index removal. Reads from the still-resident
+        // `materialCountStorage[slot]` BEFORE the caller's bulk write
+        // overwrites it — same ordering invariant the outcome/length/gid
+        // reads above rely on.
+        let oldBucket = Self.materialBucketIndex(for: materialCountStorage[slot])
+        materialBucketSlots[oldBucket].remove(slot)
     }
 
     /// Drop all composition aggregates (used by `restore` before refilling).
@@ -940,6 +1141,9 @@ final class ReplayBuffer: @unchecked Sendable {
         residentGames.removeAll(keepingCapacity: true)
         residentDecisiveGameCount = 0
         residentLengthHistogram.removeAll(keepingCapacity: true)
+        for i in materialBucketSlots.indices {
+            materialBucketSlots[i].removeAll(keepingCapacity: true)
+        }
     }
 
     // MARK: - Hash dict introspection
@@ -1031,6 +1235,228 @@ final class ReplayBuffer: @unchecked Sendable {
             }
 
             let constraints = samplingConstraints
+            let bucketCount = ReplayBufferAnalyzer.materialBuckets.count
+            let zeroBuckets = Array(repeating: 0, count: bucketCount)
+
+            @inline(__always)
+            func bucketOf(_ srcIndex: Int) -> Int {
+                Self.materialBucketIndex(for: materialCountStorage[srcIndex])
+            }
+
+            // ---- Material-bucket stratified path ----
+            //
+            // Active when `constraints.materialBucketWeights != nil`. The
+            // sampler draws `target[b]` positions from each bucket `b`,
+            // where `target` is derived from the user-specified weights
+            // and then deficit-reallocated across non-clamped buckets so
+            // an empty bucket doesn't reduce the batch size.
+            //
+            // V1 limitation: this path **bypasses** the W/D/L cap
+            // (`maxDrawPercent`) and the per-game K cap (`maxPerGame`).
+            // The UI grays those controls out with an explanation banner
+            // while this is on. Future work could add a bucket × W/D/L
+            // joint stratification; the existing two-stratum scaffolding
+            // in the constrained path below would be a natural starting
+            // point.
+            if let weights = constraints.materialBucketWeights, weights.count == bucketCount {
+                // Renormalize and round to integer per-bucket counts.
+                var totalWeight: Float = 0
+                for w in weights where w > 0 { totalWeight += w }
+                // Active buckets — those the user wants AND that have
+                // resident positions. Both gates matter: a 0-weight
+                // bucket should never be sampled (intended behaviour);
+                // a 0-residency bucket can't be sampled (empty).
+                var activeBuckets: [Int] = []
+                activeBuckets.reserveCapacity(bucketCount)
+                if totalWeight > 0 {
+                    for i in 0..<bucketCount where weights[i] > 0 && !materialBucketSlots[i].isEmpty {
+                        activeBuckets.append(i)
+                    }
+                }
+                // Degenerate: all weights zero OR no resident buckets
+                // overlap the user's weight vector. Fall back to uniform
+                // fill of the full buffer rather than emit an undersized
+                // batch — and flag `attemptBudgetHit` so the [SAMPLER]
+                // line surfaces the degraded path.
+                if activeBuckets.isEmpty {
+                    var degWin = 0, degDraw = 0, degLoss = 0
+                    var degSumLen = 0
+                    var degBucketCounts = [Int](repeating: 0, count: bucketCount)
+                    var degPerGame: [UInt32: Int] = [:]
+                    degPerGame.reserveCapacity(min(sampleCount, residentGames.count) + 1)
+                    for i in 0..<sampleCount {
+                        let srcIndex = Int.random(in: 0..<held)
+                        emit(i, srcIndex)
+                        let z = outcomeStorage[srcIndex]
+                        if z > 0 { degWin += 1 }
+                        else if z < 0 { degLoss += 1 }
+                        else { degDraw += 1 }
+                        degSumLen += Int(gameLengthStorage[srcIndex])
+                        degPerGame[workerGameIdStorage[srcIndex], default: 0] += 1
+                        degBucketCounts[bucketOf(srcIndex)] += 1
+                    }
+                    var degMaxPerGame = 0
+                    for (_, c) in degPerGame where c > degMaxPerGame { degMaxPerGame = c }
+                    _lastSamplingResult = SamplingResult(
+                        didSample: true, wasConstrainedPath: true,
+                        constraints: constraints, batchSize: sampleCount,
+                        requestedDrawCount: 0,
+                        achievedWinCount: degWin,
+                        achievedDrawCount: degDraw,
+                        achievedLossCount: degLoss,
+                        achievedMaxPerGame: degMaxPerGame,
+                        distinctGamesInBatch: degPerGame.count,
+                        achievedSumGameLength: degSumLen,
+                        lengthTargetInfeasible: false, shortestResidentLength: 0,
+                        attemptBudgetHit: true,
+                        achievedBucketCounts: degBucketCounts,
+                        requestedBucketCounts: zeroBuckets
+                    )
+                    return true
+                }
+
+                // Initial per-bucket target: round(sampleCount · w / Σw).
+                var targets = [Int](repeating: 0, count: bucketCount)
+                var requestedTargets = [Int](repeating: 0, count: bucketCount)
+                var sumTargets = 0
+                for i in 0..<bucketCount where weights[i] > 0 {
+                    let raw = Double(sampleCount) * Double(weights[i]) / Double(totalWeight)
+                    let t = Int(raw.rounded())
+                    targets[i] = t
+                    requestedTargets[i] = t
+                    sumTargets += t
+                }
+                // Rounding correction — push +/-1 into the largest target
+                // so Σ targets == sampleCount exactly.
+                if sumTargets != sampleCount {
+                    var maxIdx = 0
+                    for i in 0..<bucketCount where targets[i] > targets[maxIdx] { maxIdx = i }
+                    targets[maxIdx] = max(0, targets[maxIdx] + (sampleCount - sumTargets))
+                    requestedTargets[maxIdx] = targets[maxIdx]
+                }
+                // Clamp by residency, accumulate deficit. A bucket whose
+                // weight is 0 but residency is large is still eligible to
+                // absorb deficit *as a last resort* — kept out of the
+                // primary `activeBuckets` candidate list so it only
+                // engages after every weighted bucket is at residency
+                // cap. In V1 (balanced target with the structurally-
+                // empty bucket-4 at weight 0) this never engages because
+                // bucket 4 has 0 residency.
+                var deficit = 0
+                var clamped = [Bool](repeating: false, count: bucketCount)
+                for i in 0..<bucketCount {
+                    let resident = materialBucketSlots[i].count
+                    if targets[i] >= resident {
+                        deficit += targets[i] - resident
+                        targets[i] = resident
+                        clamped[i] = true
+                    }
+                }
+                // Phase 1: reallocate among weighted active buckets that
+                // still have room. Round-robin one slot at a time keeps
+                // the distribution balanced even when buckets fill at
+                // different rates.
+                while deficit > 0 {
+                    var progressed = false
+                    for i in activeBuckets where !clamped[i] {
+                        let cap = materialBucketSlots[i].count - targets[i]
+                        if cap > 0 {
+                            targets[i] += 1
+                            deficit -= 1
+                            progressed = true
+                            if materialBucketSlots[i].count == targets[i] { clamped[i] = true }
+                            if deficit == 0 { break }
+                        } else {
+                            clamped[i] = true
+                        }
+                    }
+                    if !progressed { break }
+                }
+                // Phase 2 (last resort): if every weighted active bucket
+                // is now at residency cap, draw the remaining deficit
+                // from zero-weight buckets that still have residency.
+                // This is the only way to fully fill the batch when the
+                // user's weight vector concentrates mass on buckets that
+                // can't supply enough positions; it preserves the
+                // function's "always fill the dst buffers" contract.
+                if deficit > 0 {
+                    for i in 0..<bucketCount where !clamped[i] {
+                        let cap = materialBucketSlots[i].count - targets[i]
+                        if cap > 0 {
+                            let take = min(deficit, cap)
+                            targets[i] += take
+                            deficit -= take
+                            if deficit == 0 { break }
+                        }
+                    }
+                }
+                // After both phases the residual deficit should be
+                // zero — we already verified `held >= sampleCount`, and
+                // Σ residency across all buckets equals `held`. The
+                // `attemptBudgetHit` flag below catches any remaining
+                // deficit as a defensive guard.
+
+                var stratWin = 0, stratDraw = 0, stratLoss = 0
+                var stratSumLen = 0
+                var stratPerGame: [UInt32: Int] = [:]
+                stratPerGame.reserveCapacity(min(sampleCount, residentGames.count) + 1)
+                var emitted = 0
+                var achievedBucketCounts = [Int](repeating: 0, count: bucketCount)
+                for b in 0..<bucketCount {
+                    let target = targets[b]
+                    if target == 0 || materialBucketSlots[b].isEmpty { continue }
+                    for _ in 0..<target {
+                        let srcIndex = materialBucketSlots[b].randomSlot()
+                        emit(emitted, srcIndex)
+                        let z = outcomeStorage[srcIndex]
+                        if z > 0 { stratWin += 1 }
+                        else if z < 0 { stratLoss += 1 }
+                        else { stratDraw += 1 }
+                        stratSumLen += Int(gameLengthStorage[srcIndex])
+                        stratPerGame[workerGameIdStorage[srcIndex], default: 0] += 1
+                        achievedBucketCounts[b] += 1
+                        emitted += 1
+                    }
+                }
+                // Defensive under-fill guard. Cannot trigger when
+                // `held >= sampleCount` and the residency arithmetic
+                // above is correct; kept so a future refactor can't
+                // silently leak uninitialised dst slots.
+                var stratAttemptBudgetHit = false
+                if emitted < sampleCount {
+                    stratAttemptBudgetHit = true
+                    while emitted < sampleCount {
+                        let srcIndex = Int.random(in: 0..<held)
+                        emit(emitted, srcIndex)
+                        let z = outcomeStorage[srcIndex]
+                        if z > 0 { stratWin += 1 }
+                        else if z < 0 { stratLoss += 1 }
+                        else { stratDraw += 1 }
+                        stratSumLen += Int(gameLengthStorage[srcIndex])
+                        stratPerGame[workerGameIdStorage[srcIndex], default: 0] += 1
+                        achievedBucketCounts[bucketOf(srcIndex)] += 1
+                        emitted += 1
+                    }
+                }
+                var stratMaxPerGame = 0
+                for (_, c) in stratPerGame where c > stratMaxPerGame { stratMaxPerGame = c }
+                _lastSamplingResult = SamplingResult(
+                    didSample: true, wasConstrainedPath: true,
+                    constraints: constraints, batchSize: sampleCount,
+                    requestedDrawCount: 0,
+                    achievedWinCount: stratWin,
+                    achievedDrawCount: stratDraw,
+                    achievedLossCount: stratLoss,
+                    achievedMaxPerGame: stratMaxPerGame,
+                    distinctGamesInBatch: stratPerGame.count,
+                    achievedSumGameLength: stratSumLen,
+                    lengthTargetInfeasible: false, shortestResidentLength: 0,
+                    attemptBudgetHit: stratAttemptBudgetHit,
+                    achievedBucketCounts: achievedBucketCounts,
+                    requestedBucketCounts: requestedTargets
+                )
+                return true
+            }
 
             // Fast path — bit-for-bit the legacy uniform-with-replacement
             // sampler. The emit loop is identical to the legacy
@@ -1044,6 +1470,7 @@ final class ReplayBuffer: @unchecked Sendable {
             if constraints.isNoOp(forBatchSize: sampleCount) {
                 var fastWin = 0, fastDraw = 0, fastLoss = 0
                 var fastSumLen = 0
+                var fastBucketCounts = [Int](repeating: 0, count: bucketCount)
                 // Reuse the buffer-owned dict scratch across calls.
                 fastPerGameScratch.removeAll(keepingCapacity: true)
                 fastPerGameScratch.reserveCapacity(min(sampleCount, residentGames.count) + 1)
@@ -1056,6 +1483,7 @@ final class ReplayBuffer: @unchecked Sendable {
                     else { fastDraw += 1 }
                     fastSumLen += Int(gameLengthStorage[srcIndex])
                     fastPerGameScratch[workerGameIdStorage[srcIndex], default: 0] += 1
+                    fastBucketCounts[bucketOf(srcIndex)] += 1
                 }
                 var fastMaxPerGame = 0
                 for (_, c) in fastPerGameScratch where c > fastMaxPerGame { fastMaxPerGame = c }
@@ -1070,7 +1498,9 @@ final class ReplayBuffer: @unchecked Sendable {
                     distinctGamesInBatch: fastPerGameScratch.count,
                     achievedSumGameLength: fastSumLen,
                     lengthTargetInfeasible: false, shortestResidentLength: 0,
-                    attemptBudgetHit: false
+                    attemptBudgetHit: false,
+                    achievedBucketCounts: fastBucketCounts,
+                    requestedBucketCounts: zeroBuckets
                 )
                 return true
             }
@@ -1240,6 +1670,7 @@ final class ReplayBuffer: @unchecked Sendable {
             var achievedMaxPerGame = 0
             var achievedSumGameLength = 0
             var attemptBudgetHit = false
+            var achievedBucketCounts = [Int](repeating: 0, count: bucketCount)
 
             @inline(__always)
             func tallyOutcome(_ srcIndex: Int) {
@@ -1247,6 +1678,7 @@ final class ReplayBuffer: @unchecked Sendable {
                 if z > 0 { achievedWinCount += 1 }
                 else if z < 0 { achievedLossCount += 1 }
                 else { achievedDrawCount += 1 }
+                achievedBucketCounts[bucketOf(srcIndex)] += 1
             }
 
             var emitted = 0
@@ -1326,7 +1758,9 @@ final class ReplayBuffer: @unchecked Sendable {
                 achievedSumGameLength: achievedSumGameLength,
                 lengthTargetInfeasible: tiltSolve.infeasible,
                 shortestResidentLength: tiltSolve.shortestResidentLength,
-                attemptBudgetHit: attemptBudgetHit
+                attemptBudgetHit: attemptBudgetHit,
+                achievedBucketCounts: achievedBucketCounts,
+                requestedBucketCounts: zeroBuckets
             )
             return true
         }
@@ -1443,6 +1877,16 @@ final class ReplayBuffer: @unchecked Sendable {
         /// (constraints at their no-op settings), `true` when the
         /// composition controls actively shaped the batch.
         public let samplingConstraintsApplied: Bool
+        /// Per-bucket counts in the batch this summary describes,
+        /// indexed by `ReplayBufferAnalyzer.materialBuckets`. Sourced
+        /// from the matching `SamplingResult.achievedBucketCounts`
+        /// captured under the buffer's lock alongside the other
+        /// constraint fields. Surfaced on the `[BATCH-STATS]` JSON
+        /// line as `bucket_mix` / `bucket_mix_pct` so post-run
+        /// analysis can confirm phase-stratification took effect (when
+        /// the toggle was on) or audit the natural per-phase mix
+        /// (when off).
+        public let materialBucketCounts: [Int]
 
         /// Render to a single-line JSON string for the `[BATCH-STATS]`
         /// log entry. Counts AND fractions of every histogram are
@@ -1485,7 +1929,16 @@ final class ReplayBuffer: @unchecked Sendable {
             out += "\"applied\":\(samplingConstraintsApplied ? "true" : "false"),"
             out += "\"max_per_game\":\(samplingConstraints.maxPerGame),"
             out += "\"max_draw_pct\":\(samplingConstraints.maxDrawPercent),"
-            out += "\"target_length\":\(samplingConstraints.targetMeanGameLengthPlies)"
+            out += "\"target_length\":\(samplingConstraints.targetMeanGameLengthPlies),"
+            // Material-bucket stratification flag: `true` means the
+            // batch was drawn with a per-bucket target distribution
+            // (V1: balanced across 0–4 / 5–8 / 9–14 / 15–22 non-pawn
+            // pieces), bypassing the W/D/L cap + per-game K cap. When
+            // both `applied:true` and `stratify_by_material:true`, the
+            // `bucket_mix` field below reflects the bucket-stratified
+            // batch; when `false`, it reflects the natural mix of the
+            // (uniform or W/D/L-tilted) batch.
+            out += "\"stratify_by_material\":\(samplingConstraints.materialBucketWeights != nil ? "true" : "false")"
             out += "},"
             out += "\"unique_count\":\(uniqueCount),"
             out += String(format: "\"unique_pct\":%.4f,", uniquePct)
@@ -1496,6 +1949,23 @@ final class ReplayBuffer: @unchecked Sendable {
             out += "\"phase_by_ply_pct\":\(encodePctDict(phaseByPlyHistogram, denom: bs)),"
             out += "\"phase_by_material\":\(encodeIntDict(phaseByMaterialHistogram)),"
             out += "\"phase_by_material_pct\":\(encodePctDict(phaseByMaterialHistogram, denom: bs)),"
+            // Per-bucket position counts in the analyzer's bucket
+            // partition (0–4 / 5–8 / 9–14 / 15–22 / 23–30 non-pawn
+            // pieces). Keyed by the bucket label string so downstream
+            // analysis joins straight against the analyzer's output
+            // dictionaries. Distinct from `phase_by_material` above,
+            // which uses a coarser open/early/mid/late/end partition
+            // — the analyzer-aligned buckets are the unit the
+            // stratifier targets.
+            do {
+                var bucketCountsDict: [String: Int] = [:]
+                for (i, def) in ReplayBufferAnalyzer.materialBuckets.enumerated()
+                    where i < materialBucketCounts.count {
+                    bucketCountsDict[def.label] = materialBucketCounts[i]
+                }
+                out += "\"bucket_mix\":\(encodeIntDict(bucketCountsDict)),"
+                out += "\"bucket_mix_pct\":\(encodePctDict(bucketCountsDict, denom: bs)),"
+            }
             out += "\"game_length\":\(encodeIntDict(gameLengthHistogram)),"
             out += "\"game_length_pct\":\(encodePctDict(gameLengthHistogram, denom: bs)),"
             out += "\"sampling_tau\":\(encodeIntDict(samplingTauHistogram)),"
@@ -1650,7 +2120,8 @@ final class ReplayBuffer: @unchecked Sendable {
             bufferUniquePositions: uniqBuf,
             bufferStoredCount: storedBuf,
             samplingConstraints: lastResult.constraints,
-            samplingConstraintsApplied: lastResult.wasConstrainedPath
+            samplingConstraintsApplied: lastResult.wasConstrainedPath,
+            materialBucketCounts: lastResult.achievedBucketCounts
         )
     }
 
@@ -2383,8 +2854,11 @@ final class ReplayBuffer: @unchecked Sendable {
             writeIndex = (target == capacity) ? 0 : target
             _totalPositionsAdded = Int(ttlFile)
 
-            // Rebuild the hash dict + composition aggregates from the
-            // restored columns.
+            // Rebuild the hash dict + composition aggregates + material
+            // bucket index from the restored columns. The bucket index
+            // is purely derived from `materialCountStorage`, which v6+
+            // .dcmsession files already carry — so no migration shim is
+            // needed for sessions saved before this feature landed.
             for slot in 0..<target {
                 let h = stateHashStorage[slot]
                 let outcome = outcomeStorage[slot]
@@ -2396,6 +2870,8 @@ final class ReplayBuffer: @unchecked Sendable {
                     packedId: workerGameIdStorage[slot],
                     isWin: isWin, isLoss: isLoss, count: 1
                 )
+                let bucket = Self.materialBucketIndex(for: materialCountStorage[slot])
+                materialBucketSlots[bucket].insert(slot)
             }
         }
     }

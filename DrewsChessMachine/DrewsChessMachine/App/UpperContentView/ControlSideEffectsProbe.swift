@@ -143,6 +143,14 @@ struct ControlSideEffectsProbe: View {
                 SessionLogger.shared.log("[PARAM] maxDrawPercentPerBatch: \(oldValue) -> \(newValue)")
                 replayBuffer?.setSamplingConstraints(.fromCurrentParameters())
             }
+            .onChange(of: trainingParams.replayBufferStratifyByMaterial) { oldValue, newValue in
+                // Same push-through-to-buffer pattern as the other three
+                // sampling-constraint params above. Flipping the toggle
+                // takes effect on the next `sample(...)` call; the UI
+                // gray-out + banner update on this exact `onChange` tick.
+                SessionLogger.shared.log("[PARAM] replayBufferStratifyByMaterial: \(oldValue) -> \(newValue)")
+                replayBuffer?.setSamplingConstraints(.fromCurrentParameters())
+            }
             .onChange(of: trainingParams.replayRatioAutoAdjust) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] replayRatioAutoAdjust: \(oldValue) -> \(newValue)")
                 replayRatioController?.autoAdjust = newValue

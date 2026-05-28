@@ -522,6 +522,15 @@ public enum TargetSampledGameLengthPlies: TrainingParameterKey {}
 public enum MaxDrawPercentPerBatch: TrainingParameterKey {}
 
 @TrainingParameter(
+    name: "Stratify Training Batches By Game Phase",
+    description: "Stratify training minibatches by game phase. When ON, each batch is drawn with roughly equal weight from four game-phase buckets defined by NON-PAWN piece count: 0–4 (deep endgame), 5–8 (late endgame), 9–14 (middlegame), 15–22 (full piece set). This compensates for the replay buffer's natural skew toward late-endgame positions, where the trainer otherwise sees ~2× as many endgame as middlegame samples. The per-batch draw-percent cap and per-game K cap do NOT apply while this is on (V1 limitation) — the UI grays those controls out with an inline banner while stratification is on. Bucket distribution converges to balanced as the buffer fills; the popover's per-batch mini-chart shows the realized mix vs the buffer's natural mix.",
+    default: false,
+    category: "Replay Buffer",
+    liveTunable: true
+)
+public enum ReplayBufferStratifyByMaterial: TrainingParameterKey {}
+
+@TrainingParameter(
     name: "Arena Promote Threshold",
     description: "Minimum candidate score (in [0, 1]) required to promote the candidate over the champion.",
     default: 0.53,
@@ -681,6 +690,7 @@ public extension TrainingParametersSnapshot {
     var maxPliesFromAnyOneGame: Int { value(for: MaxPliesFromAnyOneGame.self) }
     var targetSampledGameLengthPlies: Int { value(for: TargetSampledGameLengthPlies.self) }
     var maxDrawPercentPerBatch: Int { value(for: MaxDrawPercentPerBatch.self) }
+    var replayBufferStratifyByMaterial: Bool { value(for: ReplayBufferStratifyByMaterial.self) }
     var arenaPromoteThreshold: Double { value(for: ArenaPromoteThreshold.self) }
     var arenaGamesPerTournament: Int { value(for: ArenaGamesPerTournament.self) }
     var arenaAutoIntervalSec: Double { value(for: ArenaAutoIntervalSec.self) }
@@ -737,6 +747,7 @@ public final class TrainingParameters {
     public var maxPliesFromAnyOneGame: Int { didSet { Self.persist(MaxPliesFromAnyOneGame.self, value: maxPliesFromAnyOneGame) } }
     public var targetSampledGameLengthPlies: Int { didSet { Self.persist(TargetSampledGameLengthPlies.self, value: targetSampledGameLengthPlies) } }
     public var maxDrawPercentPerBatch: Int { didSet { Self.persist(MaxDrawPercentPerBatch.self, value: maxDrawPercentPerBatch) } }
+    public var replayBufferStratifyByMaterial: Bool { didSet { Self.persist(ReplayBufferStratifyByMaterial.self, value: replayBufferStratifyByMaterial) } }
     public var arenaPromoteThreshold: Double { didSet { Self.persist(ArenaPromoteThreshold.self, value: arenaPromoteThreshold) } }
     public var arenaGamesPerTournament: Int { didSet { Self.persist(ArenaGamesPerTournament.self, value: arenaGamesPerTournament) } }
     public var arenaAutoIntervalSec: Double { didSet { Self.persist(ArenaAutoIntervalSec.self, value: arenaAutoIntervalSec) } }
@@ -786,6 +797,7 @@ public final class TrainingParameters {
         self.maxPliesFromAnyOneGame = Self.read(MaxPliesFromAnyOneGame.self)
         self.targetSampledGameLengthPlies = Self.read(TargetSampledGameLengthPlies.self)
         self.maxDrawPercentPerBatch = Self.read(MaxDrawPercentPerBatch.self)
+        self.replayBufferStratifyByMaterial = Self.read(ReplayBufferStratifyByMaterial.self)
         self.arenaPromoteThreshold = Self.read(ArenaPromoteThreshold.self)
         self.arenaGamesPerTournament = Self.read(ArenaGamesPerTournament.self)
         self.arenaAutoIntervalSec = Self.read(ArenaAutoIntervalSec.self)
@@ -841,6 +853,7 @@ public final class TrainingParameters {
         v[MaxPliesFromAnyOneGame.id] = MaxPliesFromAnyOneGame.encode(maxPliesFromAnyOneGame)
         v[TargetSampledGameLengthPlies.id] = TargetSampledGameLengthPlies.encode(targetSampledGameLengthPlies)
         v[MaxDrawPercentPerBatch.id] = MaxDrawPercentPerBatch.encode(maxDrawPercentPerBatch)
+        v[ReplayBufferStratifyByMaterial.id] = ReplayBufferStratifyByMaterial.encode(replayBufferStratifyByMaterial)
         v[ArenaPromoteThreshold.id] = ArenaPromoteThreshold.encode(arenaPromoteThreshold)
         v[ArenaGamesPerTournament.id] = ArenaGamesPerTournament.encode(arenaGamesPerTournament)
         v[ArenaAutoIntervalSec.id] = ArenaAutoIntervalSec.encode(arenaAutoIntervalSec)
@@ -938,6 +951,8 @@ public final class TrainingParameters {
             try TargetSampledGameLengthPlies.definition.validate(raw); targetSampledGameLengthPlies = try TargetSampledGameLengthPlies.decode(raw)
         case MaxDrawPercentPerBatch.id:
             try MaxDrawPercentPerBatch.definition.validate(raw); maxDrawPercentPerBatch = try MaxDrawPercentPerBatch.decode(raw)
+        case ReplayBufferStratifyByMaterial.id:
+            try ReplayBufferStratifyByMaterial.definition.validate(raw); replayBufferStratifyByMaterial = try ReplayBufferStratifyByMaterial.decode(raw)
         case ArenaPromoteThreshold.id:
             try ArenaPromoteThreshold.definition.validate(raw); arenaPromoteThreshold = try ArenaPromoteThreshold.decode(raw)
         case ArenaGamesPerTournament.id:
@@ -1062,6 +1077,7 @@ public final class TrainingParameters {
         MaxPliesFromAnyOneGame.self,
         TargetSampledGameLengthPlies.self,
         MaxDrawPercentPerBatch.self,
+        ReplayBufferStratifyByMaterial.self,
         ArenaPromoteThreshold.self,
         ArenaGamesPerTournament.self,
         ArenaAutoIntervalSec.self,

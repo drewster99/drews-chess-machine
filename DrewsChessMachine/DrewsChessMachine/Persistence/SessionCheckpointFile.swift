@@ -251,6 +251,15 @@ struct SessionCheckpointState: Codable, Equatable {
     var maxPliesFromAnyOneGame: Int?
     var targetSampledGameLengthPlies: Int?
     var maxDrawPercentPerBatch: Int?
+    /// Whether material-bucket-stratified replay-buffer sampling was on
+    /// at save time (`TrainingParameters.shared.replayBufferStratifyByMaterial`).
+    /// Optional for back-compat with session files written before this
+    /// knob existed; absent → loader falls through to the user's
+    /// current value. The sampler reads this directly off
+    /// `TrainingParameters.shared` per `sample(count:)` call (via
+    /// `SamplingConstraints.fromCurrentParameters()`), so resume just
+    /// needs to write the saved value back onto the singleton.
+    var replayBufferStratifyByMaterial: Bool?
     /// Fraction of drawn self-play games kept in the replay buffer
     /// at game end (the rest are dropped). 1.0 = legacy behaviour
     /// (keep everything). Optional for back-compat with sessions

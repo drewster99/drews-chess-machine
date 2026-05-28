@@ -99,6 +99,13 @@ final class TrainingSettingsPopoverModel {
     var maxPliesFromAnyOneGameText = "" { didSet { maxPliesFromAnyOneGameError = false } }
     var targetSampledGameLengthPliesText = "" { didSet { targetSampledGameLengthPliesError = false } }
     var maxDrawPercentPerBatchText = "" { didSet { maxDrawPercentPerBatchError = false } }
+    /// Bound to the Replay tab's "Stratify training batches by game phase"
+    /// checkbox. Live-propagates to
+    /// `TrainingParameters.shared.replayBufferStratifyByMaterial` and,
+    /// via `ControlSideEffectsProbe`, to the live replay buffer's
+    /// `SamplingConstraints.materialBucketWeights`. Cancel reverts from
+    /// `originalReplayBufferStratifyByMaterial`.
+    var replayBufferStratifyByMaterial = false
 
     private(set) var replayBufferCapacityError = false
     private(set) var replayBufferMinPositionsError = false
@@ -121,6 +128,7 @@ final class TrainingSettingsPopoverModel {
     private var originalMaxPliesFromAnyOneGame: Int = 10
     private var originalTargetSampledGameLengthPlies: Int = 0
     private var originalMaxDrawPercentPerBatch: Int = 100
+    private var originalReplayBufferStratifyByMaterial: Bool = false
 
     // MARK: - Cancel stash (for the live-propagated self-play draw-keep field)
 
@@ -208,6 +216,7 @@ final class TrainingSettingsPopoverModel {
         maxPliesFromAnyOneGameText = String(p.maxPliesFromAnyOneGame)
         targetSampledGameLengthPliesText = String(p.targetSampledGameLengthPlies)
         maxDrawPercentPerBatchText = String(p.maxDrawPercentPerBatch)
+        replayBufferStratifyByMaterial = p.replayBufferStratifyByMaterial
         // Stash pre-edit values for the four replay-ratio control fields. The
         // Replay tab live-propagates changes to those fields; if the user hits
         // Cancel we restore from this stash, matching the standard
@@ -225,6 +234,7 @@ final class TrainingSettingsPopoverModel {
         originalMaxPliesFromAnyOneGame = p.maxPliesFromAnyOneGame
         originalTargetSampledGameLengthPlies = p.targetSampledGameLengthPlies
         originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
+        originalReplayBufferStratifyByMaterial = p.replayBufferStratifyByMaterial
         originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
         originalSelfPlayMaxPliesPerGame = p.selfPlayMaxPliesPerGame
         originalDrawWatchPDrawThreshold = p.drawWatchPDrawThreshold
@@ -302,6 +312,9 @@ final class TrainingSettingsPopoverModel {
         }
         if p.maxDrawPercentPerBatch != originalMaxDrawPercentPerBatch {
             p.maxDrawPercentPerBatch = originalMaxDrawPercentPerBatch
+        }
+        if p.replayBufferStratifyByMaterial != originalReplayBufferStratifyByMaterial {
+            p.replayBufferStratifyByMaterial = originalReplayBufferStratifyByMaterial
         }
         if abs(p.selfPlayDrawKeepFraction - originalSelfPlayDrawKeepFraction) > Double.ulpOfOne {
             p.selfPlayDrawKeepFraction = originalSelfPlayDrawKeepFraction
@@ -415,6 +428,21 @@ final class TrainingSettingsPopoverModel {
         let p = TrainingParameters.shared
         if p.maxDrawPercentPerBatch != snapped {
             p.maxDrawPercentPerBatch = snapped
+        }
+    }
+
+    /// Live-propagate the "Stratify training batches by game phase"
+    /// checkbox edit straight to
+    /// `TrainingParameters.shared.replayBufferStratifyByMaterial`.
+    /// `ControlSideEffectsProbe`'s `.onChange(of: replayBufferStratifyByMaterial)`
+    /// handler pushes the new value into
+    /// `ReplayBuffer.setSamplingConstraints(.fromCurrentParameters())`
+    /// reactively, so a single write here is enough to flip the
+    /// running trainer's sampling path on the next minibatch.
+    func applyLiveReplayBufferStratifyByMaterial(_ newValue: Bool) {
+        let p = TrainingParameters.shared
+        if p.replayBufferStratifyByMaterial != newValue {
+            p.replayBufferStratifyByMaterial = newValue
         }
     }
 
@@ -1014,6 +1042,7 @@ final class TrainingSettingsPopoverModel {
             originalMaxPliesFromAnyOneGame = p.maxPliesFromAnyOneGame
             originalTargetSampledGameLengthPlies = p.targetSampledGameLengthPlies
             originalMaxDrawPercentPerBatch = p.maxDrawPercentPerBatch
+            originalReplayBufferStratifyByMaterial = p.replayBufferStratifyByMaterial
             originalSelfPlayDrawKeepFraction = p.selfPlayDrawKeepFraction
             originalSelfPlayMaxPliesPerGame = p.selfPlayMaxPliesPerGame
             originalDrawWatchPDrawThreshold = p.drawWatchPDrawThreshold

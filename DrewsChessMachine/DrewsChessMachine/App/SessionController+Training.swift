@@ -283,6 +283,16 @@ extension SessionController {
                         "[RESUME-PARAM] max_draw_percent_per_batch: saved=nil applied=\(TrainingParameters.shared.maxDrawPercentPerBatch) (defaulted)"
                     )
                 }
+                if let v = rs.replayBufferStratifyByMaterial {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] replay_buffer_stratify_by_material: \(TrainingParameters.shared.replayBufferStratifyByMaterial) -> \(v) (from session)"
+                    )
+                    TrainingParameters.shared.replayBufferStratifyByMaterial = v
+                } else {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] replay_buffer_stratify_by_material: saved=nil applied=\(TrainingParameters.shared.replayBufferStratifyByMaterial) (defaulted)"
+                    )
+                }
                 if let v = rs.selfPlayDrawKeepFraction {
                     SessionLogger.shared.log(
                         "[RESUME-PARAM] self_play_draw_keep_fraction: \(TrainingParameters.shared.selfPlayDrawKeepFraction) -> \(v) (from session)"
@@ -1846,14 +1856,20 @@ extension SessionController {
                                 policyLossWin: trainingSnap.rollingPolicyLossWin,
                                 policyLossLoss: trainingSnap.rollingPolicyLossLoss,
                                 batchStats: trainer.lastBatchStatsSummary.map { s in
-                                    CliTrainingRecorder.BatchStatsSnapshot(
+                                    var bucketMixDict: [String: Int] = [:]
+                                    for (i, def) in ReplayBufferAnalyzer.materialBuckets.enumerated()
+                                        where i < s.materialBucketCounts.count {
+                                        bucketMixDict[def.label] = s.materialBucketCounts[i]
+                                    }
+                                    return CliTrainingRecorder.BatchStatsSnapshot(
                                         step: s.step,
                                         batchSize: s.batchSize,
                                         samplingConstraints: CliTrainingRecorder.BatchStatsSnapshot.SamplingConstraintsSnapshot(
                                             applied: s.samplingConstraintsApplied,
                                             maxPerGame: s.samplingConstraints.maxPerGame,
                                             maxDrawPct: s.samplingConstraints.maxDrawPercent,
-                                            targetLength: s.samplingConstraints.targetMeanGameLengthPlies
+                                            targetLength: s.samplingConstraints.targetMeanGameLengthPlies,
+                                            stratifyByMaterial: s.samplingConstraints.materialBucketWeights != nil
                                         ),
                                         uniqueCount: s.uniqueCount,
                                         uniquePct: s.uniquePct,
@@ -1869,7 +1885,8 @@ extension SessionController {
                                         outcomeHistogram: s.outcomeHistogram,
                                         phaseByPlyXOutcomeHistogram: s.phaseByPlyXOutcomeHistogram,
                                         bufferUniquePositions: s.bufferUniquePositions,
-                                        bufferStoredCount: s.bufferStoredCount
+                                        bufferStoredCount: s.bufferStoredCount,
+                                        bucketMix: bucketMixDict
                                     )
                                 },
                                 valueMean: trainingSnap.rollingValueMean,

@@ -258,6 +258,7 @@ struct TrainingSettingsPopover: View {
                     maxPliesFromAnyOneGameText: $model.maxPliesFromAnyOneGameText,
                     targetSampledGameLengthPliesText: $model.targetSampledGameLengthPliesText,
                     maxDrawPercentPerBatchText: $model.maxDrawPercentPerBatchText,
+                    replayBufferStratifyByMaterial: $model.replayBufferStratifyByMaterial,
                     replayBufferCapacityError: model.replayBufferCapacityError,
                     replayBufferMinPositionsError: model.replayBufferMinPositionsError,
                     replayRatioTargetError: model.replayRatioTargetError,
@@ -278,7 +279,8 @@ struct TrainingSettingsPopover: View {
                     onLiveReplayRatioAutoAdjustChange: { model.applyLiveReplayRatioAutoAdjust($0) },
                     onLiveMaxPliesFromAnyOneGameChange: { model.applyLiveMaxPliesFromAnyOneGame($0) },
                     onLiveTargetSampledGameLengthPliesChange: { model.applyLiveTargetSampledGameLengthPlies($0) },
-                    onLiveMaxDrawPercentPerBatchChange: { model.applyLiveMaxDrawPercentPerBatch($0) }
+                    onLiveMaxDrawPercentPerBatchChange: { model.applyLiveMaxDrawPercentPerBatch($0) },
+                    onLiveReplayBufferStratifyByMaterialChange: { model.applyLiveReplayBufferStratifyByMaterial($0) }
                 )
             }
             }
@@ -1395,6 +1397,7 @@ private struct ReplayTab: View {
     @Binding var maxPliesFromAnyOneGameText: String
     @Binding var targetSampledGameLengthPliesText: String
     @Binding var maxDrawPercentPerBatchText: String
+    @Binding var replayBufferStratifyByMaterial: Bool
 
     let replayBufferCapacityError: Bool
     let replayBufferMinPositionsError: Bool
@@ -1419,6 +1422,7 @@ private struct ReplayTab: View {
     let onLiveMaxPliesFromAnyOneGameChange: (Int) -> Void
     let onLiveTargetSampledGameLengthPliesChange: (Int) -> Void
     let onLiveMaxDrawPercentPerBatchChange: (Int) -> Void
+    let onLiveReplayBufferStratifyByMaterialChange: (Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1591,6 +1595,68 @@ private struct ReplayTab: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Replay sampling")
                     .font(.subheadline.weight(.semibold))
+                // Material-bucket stratification toggle. When ON, the
+                // trainer draws each minibatch with a balanced target
+                // across 4 game-phase buckets (0–4 / 5–8 / 9–14 / 15–22
+                // non-pawn pieces), bypassing the W/D/L cap and per-game
+                // K cap below.
+                HStack(alignment: .top, spacing: 8) {
+                    Text("")
+                        .frame(width: 160, alignment: .trailing)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Toggle(
+                            "Stratify batches by game phase (non-pawn pieces)",
+                            isOn: Binding(
+                                get: { replayBufferStratifyByMaterial },
+                                set: { newValue in
+                                    replayBufferStratifyByMaterial = newValue
+                                    onLiveReplayBufferStratifyByMaterialChange(newValue)
+                                }
+                            )
+                        )
+                        .toggleStyle(.checkbox)
+                        .help("""
+                        When ON, each training minibatch is drawn with ~equal weight \
+                        from four game-phase buckets defined by non-pawn piece count: \
+                        0–4 (deep endgame), 5–8 (late endgame), 9–14 (middlegame), \
+                        15–22 (full piece set). Compensates for the buffer's natural \
+                        skew toward late-endgame positions. The draw % cap and per-game \
+                        K cap below are bypassed while this is on (V1 limitation).
+                        """)
+                        Text("Bypasses the draw-cap and per-game cap below when on.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                // Per-batch bucket-mix mini-chart. Always present in the
+                // view tree — when no batch has landed yet the bars
+                // render as empty placeholders. The "Buffer" row reads
+                // the resident-set per-bucket distribution; the "Last
+                // batch" row reads the matching post-sampling per-bucket
+                // counts. With stratification OFF the two rows should
+                // look nearly identical (the batch is a uniform draw
+                // from the buffer) — that's the diagnostic that the
+                // bucket index is wired correctly.
+                ReplaySamplingBucketChartView(
+                    bufferCounts: bufferComposition?.residentPerBucket,
+                    batchCounts: lastSamplingResult?.achievedBucketCounts,
+                    stratifyOn: replayBufferStratifyByMaterial
+                )
+                // Inline banner explaining the gray-out. View-stability
+                // rule: rendered unconditionally, opacity + frame
+                // height toggle visibility so the view tree shape
+                // doesn't change when the toggle flips.
+                HStack(spacing: 6) {
+                    Image(systemName: "info.circle.fill")
+                        .foregroundStyle(.secondary)
+                    Text("Draw % cap and per-game cap are disabled while phase stratification is on (V1).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.leading, 168)
+                .opacity(replayBufferStratifyByMaterial ? 1 : 0)
+                .frame(height: replayBufferStratifyByMaterial ? nil : 0)
                 // Three sampling-constraint fields are live-propagated:
                 // each stepper write *and* each direct text edit
                 // (covered by the trailing `.onChange(of:)` handlers)
@@ -1600,6 +1666,17 @@ private struct ReplayTab: View {
                 // heartbeat. Cancel / outside-click reverts to the
                 // snapshot taken at popover open (see
                 // `TrainingSettingsPopoverModel.cancel`).
+                // When stratification is on, the three rows below are
+                // disabled (the sampler bypasses them) but stay
+                // visible so the user sees the values that will
+                // re-engage when they turn the toggle off. View-
+                // stability rule: don't `if`-gate visible content; the
+                // rows always render, just with reduced opacity and
+                // `.disabled`. The constraint values themselves
+                // are NOT cleared — flipping the toggle preserves the
+                // user's prior settings.
+                let disableLegacy = replayBufferStratifyByMaterial
+                let dimOpacity: Double = disableLegacy ? 0.5 : 1.0
                 PopoverRow(
                     label: "Max plies per game:",
                     text: $maxPliesFromAnyOneGameText,
@@ -1618,6 +1695,8 @@ private struct ReplayTab: View {
                         step: 1
                     )
                 }
+                .disabled(disableLegacy)
+                .opacity(dimOpacity)
                 .onChange(of: maxPliesFromAnyOneGameText) { _, newValue in
                     // Empty (or whitespace-only) text is treated as
                     // the parameter's default and live-propagated as
@@ -1650,6 +1729,8 @@ private struct ReplayTab: View {
                         step: 10
                     )
                 }
+                .disabled(disableLegacy)
+                .opacity(dimOpacity)
                 .onChange(of: targetSampledGameLengthPliesText) { _, newValue in
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
@@ -1676,6 +1757,8 @@ private struct ReplayTab: View {
                         step: 5
                     )
                 }
+                .disabled(disableLegacy)
+                .opacity(dimOpacity)
                 .onChange(of: maxDrawPercentPerBatchText) { _, newValue in
                     let trimmed = newValue.trimmingCharacters(in: .whitespaces)
                     if trimmed.isEmpty {
