@@ -143,15 +143,17 @@ final class TacticalProbeWatcher {
     /// history. No-ops cleanly when the network needed isn't loaded.
     ///
     /// On `.candidate`: snapshots the trainer's CURRENT weights into
-    /// the dedicated `probeInferenceNetwork` (an inference-mode
+    /// the dedicated `tacticalProbeInferenceNetwork` (an inference-mode
     /// network — necessary because the trainer's own network uses
     /// training-mode BN with fresh batch stats, which would give
-    /// nonsense outputs on a single-position forward pass). Same
-    /// snapshot+forward pattern the candidate-test gap-point probe
-    /// uses. Each tick gets a fresh snapshot, so the monitor tracks
-    /// the live trainer's evolving policy between promotions — that
-    /// is what makes the periodic cadence meaningful (otherwise the
-    /// probe shows the same frozen champion until a promotion fires).
+    /// nonsense outputs on a single-position forward pass). A
+    /// separate network — not the candidate-test probe's
+    /// `probeInferenceNetwork` — so the two consumers can't overwrite
+    /// each other's weight snapshot mid-cycle. Each tick gets a fresh
+    /// snapshot, so the monitor tracks the live trainer's evolving
+    /// policy between promotions — that is what makes the periodic
+    /// cadence meaningful (otherwise the probe shows the same frozen
+    /// champion until a promotion fires).
     ///
     /// On `.champion`: reads `session.network` directly, same as the
     /// pre-change behavior. Useful for "what is the deployed network
