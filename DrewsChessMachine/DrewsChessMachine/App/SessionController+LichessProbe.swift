@@ -57,7 +57,15 @@ extension SessionController {
             var argmax = 0
             var top5 = 0
             var errs = 0
+            var sumProb: Float = 0
+            var sumRank = 0
+            var countRank = 0
             for r in results {
+                sumProb += r.expectedProb
+                if let rank = r.expectedRank {
+                    sumRank += rank
+                    countRank += 1
+                }
                 switch r.verdict {
                 case .correctAndConfident, .correctButFlat:
                     argmax += 1
@@ -75,9 +83,16 @@ extension SessionController {
             let pct = results.count > 0
                 ? String(format: "%.1f", 100.0 * Double(argmax) / Double(results.count))
                 : "0.0"
+            let avgProb = results.count > 0
+                ? String(format: "%.3f", sumProb / Float(results.count))
+                : "—"
+            let avgRank = countRank > 0
+                ? String(format: "%.2f", Float(sumRank) / Float(countRank))
+                : "—"
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS]   \(cat.rawValue): argmax=\(argmax)/\(results.count) "
-                + "(\(pct)%) top5=\(top5)/\(results.count) errors=\(errs)"
+                + "(\(pct)%) top5=\(top5)/\(results.count) "
+                + "avgProb=\(avgProb) avgRank=\(avgRank) errors=\(errs)"
             )
         }
 

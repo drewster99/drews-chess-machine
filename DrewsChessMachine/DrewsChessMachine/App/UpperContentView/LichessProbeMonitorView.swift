@@ -106,17 +106,21 @@ struct LichessProbeMonitorView: View {
     private var headerRow: some View {
         HStack(spacing: 8) {
             Text("THEME")
-                .frame(width: 160, alignment: .leading)
+                .frame(width: 140, alignment: .leading)
             Text("ARGMAX")
-                .frame(width: 100, alignment: .trailing)
+                .frame(width: 80, alignment: .trailing)
             Text("ARGMAX %")
-                .frame(width: 80, alignment: .trailing)
+                .frame(width: 72, alignment: .trailing)
             Text("TOP-5 %")
-                .frame(width: 80, alignment: .trailing)
+                .frame(width: 64, alignment: .trailing)
+            Text("AVG PROB")
+                .frame(width: 72, alignment: .trailing)
+            Text("AVG RANK")
+                .frame(width: 72, alignment: .trailing)
             Text("trend (argmax %)")
-                .frame(width: 180, alignment: .leading)
+                .frame(width: 150, alignment: .leading)
             Text("ERR")
-                .frame(width: 40, alignment: .trailing)
+                .frame(width: 36, alignment: .trailing)
         }
         .font(.system(.caption2, design: .monospaced).weight(.semibold))
         .foregroundStyle(.secondary)
@@ -143,32 +147,60 @@ struct LichessProbeMonitorView: View {
         let argmaxStr = "\(agg.argmaxCorrect) / \(agg.total)"
         let argmaxPct = String(format: "%.1f%%", 100.0 * Double(agg.argmaxCorrectFraction))
         let top5Pct = String(format: "%.1f%%", 100.0 * Double(agg.top5CorrectFraction))
+        let avgProbStr = String(format: "%.3f", agg.avgExpectedProb)
+        let avgRankStr: String = {
+            if let r = agg.avgExpectedRank {
+                return String(format: "%.2f", r)
+            } else {
+                return "—"
+            }
+        }()
         let series = history.argmaxFractionSeries(theme)
         let trendColor = deltaColor(
             current: agg.argmaxCorrectFraction,
             previous: previous?.aggregate.argmaxCorrectFraction
         )
+        // AVG PROB up = good; AVG RANK down = good (closer to 1).
+        // Color each independently so the user can read which one
+        // moved without checking both.
+        let avgProbColor = deltaColor(
+            current: agg.avgExpectedProb,
+            previous: previous?.aggregate.avgExpectedProb
+        )
+        let avgRankColor = deltaColor(
+            // Negate so "lower rank = better" reads as "up = green".
+            current: -(agg.avgExpectedRank ?? 0),
+            previous: previous?.aggregate.avgExpectedRank.map { -$0 }
+        )
 
         HStack(spacing: 8) {
             Text(themeLabel(theme))
                 .font(.system(.body))
-                .frame(width: 160, alignment: .leading)
+                .frame(width: 140, alignment: .leading)
             Text(argmaxStr)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(trendColor)
-                .frame(width: 100, alignment: .trailing)
+                .frame(width: 80, alignment: .trailing)
             Text(argmaxPct)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(trendColor)
-                .frame(width: 80, alignment: .trailing)
+                .frame(width: 72, alignment: .trailing)
             Text(top5Pct)
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .frame(width: 80, alignment: .trailing)
+                .frame(width: 64, alignment: .trailing)
+            Text(avgProbStr)
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(avgProbColor)
+                .frame(width: 72, alignment: .trailing)
+            Text(avgRankStr)
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(avgRankColor)
+                .frame(width: 72, alignment: .trailing)
             TacticalProbeSparkView(values: series, stroke: trendColor)
-                .frame(width: 180, height: 24)
+                .frame(width: 150, height: 24)
             errorCell(count: agg.errored)
-                .frame(width: 40, alignment: .trailing)
+                .frame(width: 36, alignment: .trailing)
         }
         .padding(.vertical, 4)
     }
@@ -179,11 +211,7 @@ struct LichessProbeMonitorView: View {
             Text(themeLabel(theme))
                 .font(.system(.body))
                 .foregroundStyle(.secondary)
-                .frame(width: 160, alignment: .leading)
-            Text("—")
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 100, alignment: .trailing)
+                .frame(width: 140, alignment: .leading)
             Text("—")
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
@@ -191,13 +219,25 @@ struct LichessProbeMonitorView: View {
             Text("—")
                 .font(.system(.body, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .frame(width: 80, alignment: .trailing)
+                .frame(width: 72, alignment: .trailing)
+            Text("—")
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 64, alignment: .trailing)
+            Text("—")
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 72, alignment: .trailing)
+            Text("—")
+                .font(.system(.body, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 72, alignment: .trailing)
             TacticalProbeSparkView(values: [], stroke: .secondary)
-                .frame(width: 180, height: 24)
+                .frame(width: 150, height: 24)
             Text("—")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .frame(width: 40, alignment: .trailing)
+                .frame(width: 36, alignment: .trailing)
         }
         .padding(.vertical, 4)
     }
@@ -211,9 +251,11 @@ struct LichessProbeMonitorView: View {
             HStack {
                 Text(
                     "Each row aggregates 25 Lichess puzzles in that theme bucket. "
-                    + "ARGMAX = network's #1 legal move matches the bookmove. "
-                    + "TOP-5 = bookmove is among the network's top-5. "
-                    + "Green/red = direction since prior tick."
+                    + "ARGMAX = #1 legal move matches the bookmove (quantized to 4% / probe). "
+                    + "TOP-5 = bookmove is among the top-5. "
+                    + "AVG PROB = mean legal-masked mass the network put on the bookmove (continuous in [0, 1]). "
+                    + "AVG RANK = mean 1-indexed rank of the bookmove among legals (lower = better). "
+                    + "Green/red on AVG PROB = up since prior tick; on AVG RANK = rank fell (improvement)."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)

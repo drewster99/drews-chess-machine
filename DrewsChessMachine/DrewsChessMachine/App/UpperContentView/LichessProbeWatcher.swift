@@ -130,6 +130,12 @@ final class LichessProbeWatcher {
     ///   - `top5Correct`   adds `.correctInTop5` on top
     ///   - `errored`       counts `.error`
     /// `.wrong` falls in none.
+    ///
+    /// Also accumulates `sumExpectedProb` over every probe (errored
+    /// probes have `expectedProb = 0` by construction) and
+    /// `sumExpectedRank` / `countWithRank` over probes that produced a
+    /// non-nil rank — the source of the monitor's continuous-valued
+    /// AVG PROB and AVG RANK columns.
     private func foldAggregates(
         _ resultsByCategory: [ProbeCategory: [ProbeResult]]
     ) -> [LichessProbeHistory.Aggregate] {
@@ -139,7 +145,15 @@ final class LichessProbeWatcher {
             var argmaxCorrect = 0
             var top5Correct = 0
             var errored = 0
+            var sumProb: Float = 0
+            var sumRank = 0
+            var countRank = 0
             for r in results {
+                sumProb += r.expectedProb
+                if let rank = r.expectedRank {
+                    sumRank += rank
+                    countRank += 1
+                }
                 switch r.verdict {
                 case .correctAndConfident, .correctButFlat:
                     argmaxCorrect += 1
@@ -157,7 +171,10 @@ final class LichessProbeWatcher {
                 total: results.count,
                 argmaxCorrect: argmaxCorrect,
                 top5Correct: top5Correct,
-                errored: errored
+                errored: errored,
+                sumExpectedProb: sumProb,
+                sumExpectedRank: sumRank,
+                countWithRank: countRank
             ))
         }
         return out

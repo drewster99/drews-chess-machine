@@ -15,8 +15,8 @@ final class LichessProbeMonitorWindowController: NSWindowController, NSWindowDel
         let view = LichessProbeMonitorView(history: history, onProbeNow: onProbeNow)
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.setContentSize(NSSize(width: 880, height: 380))
-        window.minSize = NSSize(width: 760, height: 280)
+        window.setContentSize(NSSize(width: 1000, height: 380))
+        window.minSize = NSSize(width: 880, height: 280)
         window.title = "Lichess Probe Monitor"
         window.isReleasedWhenClosed = false
         window.center()

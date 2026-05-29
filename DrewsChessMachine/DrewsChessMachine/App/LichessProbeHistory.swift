@@ -36,6 +36,24 @@ final class LichessProbeHistory {
         /// shown only as an at-a-glance counter so a tick with N>0
         /// errors stands out.
         let errored: Int
+        /// Sum of `expectedProb` (legal-masked mass on the bookmove)
+        /// across all probes in this tick. Continuous-valued so the
+        /// average can sit anywhere in `[0, 1]` and read as a smooth
+        /// trend, not a 25-step quantized one. Errored probes have
+        /// `expectedProb = 0` by construction and contribute 0 to the
+        /// sum but DO count in `total` — they correctly drag the avg
+        /// down rather than being silently excluded.
+        let sumExpectedProb: Float
+        /// Sum of `expectedRank` (1-indexed) across probes that
+        /// produced a valid (non-nil) rank. Errored probes and any
+        /// fixture where no acceptable move was legal are excluded
+        /// from BOTH the sum and `countWithRank` so the avg reads as
+        /// "of the probes that gave a meaningful number, what was the
+        /// typical rank?"
+        let sumExpectedRank: Int
+        /// Denominator for `avgExpectedRank` — number of probes whose
+        /// `expectedRank` was non-nil.
+        let countWithRank: Int
 
         /// `argmaxCorrect / total` in `[0, 1]`, or 0 when `total == 0`.
         var argmaxCorrectFraction: Float {
@@ -44,6 +62,20 @@ final class LichessProbeHistory {
         /// `top5Correct / total` in `[0, 1]`.
         var top5CorrectFraction: Float {
             total > 0 ? Float(top5Correct) / Float(total) : 0
+        }
+        /// Mean legal-masked mass on the bookmove across the 25 probes.
+        /// Continuous in `[0, 1]`. Same intuition as the `PROB` column
+        /// of the small-set monitor, averaged.
+        var avgExpectedProb: Float {
+            total > 0 ? sumExpectedProb / Float(total) : 0
+        }
+        /// Mean rank of the bookmove among legal moves, restricted to
+        /// probes that gave a valid rank. `nil` when every probe in
+        /// this tick errored or had nil rank (transient — would only
+        /// happen if the network is entirely unbuilt).
+        var avgExpectedRank: Float? {
+            guard countWithRank > 0 else { return nil }
+            return Float(sumExpectedRank) / Float(countWithRank)
         }
     }
 
