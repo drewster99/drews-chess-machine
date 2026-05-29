@@ -21,6 +21,14 @@ struct LichessProbeDetailView: View {
     /// reserved for the board popover.
     @State private var showRatingExplanation = false
 
+    /// Loaded comparison snapshot from a previously-exported JSON.
+    /// `nil` when no comparison is active. When set, each row grows
+    /// 5 extra columns on the right (Actual #1, Prob, Rank, Verdict,
+    /// W/D/L for the comparison entry), and the live row's rank /
+    /// prob delta against the comparison is color-coded in the
+    /// comparison cell.
+    @State private var comparison: LichessProbeComparison?
+
     init(
         history: LichessProbeHistory,
         onProbeNow: @escaping @MainActor () -> Void = {},
@@ -42,8 +50,17 @@ struct LichessProbeDetailView: View {
     /// not on `LichessProbeDetailView` itself — otherwise every row
     /// would share the same toggle and clicking one would open them
     /// all. Each row instantiates its own.
+    ///
+    /// `comparisonActive` flags whether ANY comparison is loaded; the
+    /// 5 right-hand columns are rendered iff it's true. `comparison`
+    /// carries the matched-by-puzzle-id entry from the loaded snapshot
+    /// — `nil` when comparison is loaded but the puzzle isn't present
+    /// in it (the row's right-hand columns render blank to keep the
+    /// table aligned).
     fileprivate struct DetailRowView: View {
         let result: ProbeResult
+        let comparisonActive: Bool
+        let comparison: LichessProbeComparison.LoadedPuzzleEntry?
         @State private var isShowingBoardPopover = false
 
         var body: some View {
@@ -90,6 +107,10 @@ struct LichessProbeDetailView: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(width: 130, alignment: .trailing)
+                if comparisonActive {
+                    Divider().frame(height: 18)
+                    comparisonCells(currentResult: result)
+                }
             }
             .padding(.vertical, 2)
             .contentShape(Rectangle())
@@ -99,6 +120,80 @@ struct LichessProbeDetailView: View {
             .popover(isPresented: $isShowingBoardPopover, arrowEdge: .leading) {
                 TacticalProbeBoardPopover(result: result)
             }
+        }
+
+        /// Right-hand comparison cells. Rendered in two shapes:
+        ///  * matched entry exists → 5 colored cells with the
+        ///    comparison values, with PROB and RANK tinted vs the
+        ///    current row (green = comparison was better, red =
+        ///    comparison was worse, primary = same).
+        ///  * matched entry missing → 5 blank "—" cells of the same
+        ///    widths so the table stays aligned across rows.
+        @ViewBuilder
+        private func comparisonCells(currentResult: ProbeResult) -> some View {
+            if let cmp = comparison {
+                let cmpProbeResult = cmp.probeResult
+                let cmpActual = cmpProbeResult.topMoves.first?.notation ?? "—"
+                let cmpProbStr = String(format: "%.3f", cmpProbeResult.expectedProb)
+                let cmpRankStr = cmpProbeResult.expectedRank.map(String.init) ?? "—"
+                let cmpWdl = cmpProbeResult.valueWdl
+                let cmpW = cmpWdl.map { String(format: "%.2f", $0.win) } ?? "—"
+                let cmpD = cmpWdl.map { String(format: "%.2f", $0.draw) } ?? "—"
+                let cmpL = cmpWdl.map { String(format: "%.2f", $0.loss) } ?? "—"
+
+                Text(cmpActual)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 90, alignment: .leading)
+                Text(cmpProbStr)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(
+                        LichessProbeDetailView.comparisonProbDeltaColor(
+                            cmp: cmpProbeResult.expectedProb,
+                            current: currentResult.expectedProb
+                        )
+                    )
+                    .frame(width: 64, alignment: .trailing)
+                Text(cmpRankStr)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(
+                        LichessProbeDetailView.comparisonRankDeltaColor(
+                            cmp: cmpProbeResult.expectedRank,
+                            current: currentResult.expectedRank
+                        )
+                    )
+                    .frame(width: 48, alignment: .trailing)
+                LichessProbeDetailView.verdictBadge(
+                    verdictFromRawValue(cmpProbeResult.verdict)
+                )
+                .frame(width: 100, alignment: .center)
+                Text("\(cmpW)/\(cmpD)/\(cmpL)")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 130, alignment: .trailing)
+            } else {
+                Text("—").font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 90, alignment: .leading)
+                Text("—").font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 64, alignment: .trailing)
+                Text("—").font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 48, alignment: .trailing)
+                Text("—").font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 100, alignment: .center)
+                Text("—").font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 130, alignment: .trailing)
+            }
+        }
+
+        /// Map the comparison's stored verdict string back to a
+        /// `ProbeVerdict` so the shared `verdictBadge` helper can
+        /// render it. Unknown strings fall through to `.error`.
+        private func verdictFromRawValue(_ raw: String) -> ProbeVerdict {
+            ProbeVerdict(rawValue: raw) ?? .error
         }
     }
 
@@ -117,7 +212,13 @@ struct LichessProbeDetailView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            ScrollView(.vertical, showsIndicators: true) {
+            // ScrollView covers both axes so the optional 5 comparison
+            // columns (which push total row width well past the
+            // default window) can be reached by horizontal scrolling
+            // without resizing the window first. Vertical is the
+            // primary scroll; horizontal only kicks in when content
+            // exceeds the viewport width.
+            ScrollView([.vertical, .horizontal], showsIndicators: true) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     columnHeader
                         .padding(.vertical, 4)
@@ -131,8 +232,12 @@ struct LichessProbeDetailView: View {
                             .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
                         Divider()
                         ForEach(group.results, id: \.probe.name) { result in
-                            DetailRowView(result: result)
-                                .padding(.horizontal, 12)
+                            DetailRowView(
+                                result: result,
+                                comparisonActive: comparison != nil,
+                                comparison: comparisonEntry(for: result)
+                            )
+                            .padding(.horizontal, 12)
                             Divider()
                         }
                     }
@@ -147,6 +252,20 @@ struct LichessProbeDetailView: View {
         }
     }
 
+    /// Look up the comparison's matched entry for a live row by puzzle
+    /// id. Returns nil when no comparison is loaded OR when the loaded
+    /// comparison doesn't include this puzzle (regenerated bundle,
+    /// older curation snapshot, etc.).
+    private func comparisonEntry(
+        for result: ProbeResult
+    ) -> LichessProbeComparison.LoadedPuzzleEntry? {
+        guard let comparison else { return nil }
+        guard let meta = LichessProbeData.metadata[result.probe.name] else {
+            return nil
+        }
+        return comparison.byPuzzleId[meta.id]
+    }
+
     // MARK: Header
 
     @ViewBuilder
@@ -156,10 +275,24 @@ struct LichessProbeDetailView: View {
                 .font(.system(.title2).weight(.semibold))
             Spacer()
             tickMetadataText
+            comparisonMetadataText
             Button("Probe now") {
                 onProbeNow()
             }
             .controlSize(.small)
+            Button("Compare…") {
+                if let loaded = LichessProbeComparisonLoader.loadFromFile() {
+                    comparison = loaded
+                }
+            }
+            .controlSize(.small)
+            if comparison != nil {
+                Button("Clear compare") {
+                    SessionLogger.shared.log("[TACTICAL-LICHESS] compare cleared")
+                    comparison = nil
+                }
+                .controlSize(.small)
+            }
             Button("Export latest…") {
                 onExport()
             }
@@ -168,6 +301,27 @@ struct LichessProbeDetailView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    /// Right-aligned metadata block describing the currently-loaded
+    /// comparison snapshot — filename, model label, tick timestamp.
+    /// Renders nothing when no comparison is active.
+    @ViewBuilder
+    private var comparisonMetadataText: some View {
+        if let cmp = comparison {
+            VStack(alignment: .trailing, spacing: 1) {
+                Text("cmp: \(cmp.sourceURL.lastPathComponent)")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 300, alignment: .trailing)
+                Text("cmp model: \(cmp.payload.modelLabel ?? "<unknown>")")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
     }
 
     @ViewBuilder
@@ -209,6 +363,19 @@ struct LichessProbeDetailView: View {
                 .frame(width: 100, alignment: .center)
             Text("W / D / L")
                 .frame(width: 130, alignment: .trailing)
+            if comparison != nil {
+                Divider().frame(height: 14)
+                Text("CMP ACTUAL #1")
+                    .frame(width: 90, alignment: .leading)
+                Text("CMP PROB")
+                    .frame(width: 64, alignment: .trailing)
+                Text("CMP RANK")
+                    .frame(width: 48, alignment: .trailing)
+                Text("CMP VERDICT")
+                    .frame(width: 100, alignment: .center)
+                Text("CMP W / D / L")
+                    .frame(width: 130, alignment: .trailing)
+            }
         }
         .font(.system(.caption2, design: .monospaced).weight(.semibold))
         .foregroundStyle(.secondary)
@@ -305,6 +472,41 @@ struct LichessProbeDetailView: View {
         return .red
     }
 
+    /// Color for the comparison's PROB cell. Higher prob = better
+    /// (more mass on the bookmove). Comparison higher than current
+    /// reads as "the snapshot was already better than current here"
+    /// — green; comparison lower reads as "we've improved since the
+    /// snapshot" — red. Tied (within a small epsilon) renders
+    /// primary so visual noise is suppressed when the difference is
+    /// not meaningful.
+    fileprivate static func comparisonProbDeltaColor(
+        cmp: Float,
+        current: Float
+    ) -> Color {
+        let epsilon: Float = 0.001
+        if cmp > current + epsilon { return .green }
+        if cmp < current - epsilon { return .red }
+        return .primary
+    }
+
+    /// Color for the comparison's RANK cell. Lower rank = better
+    /// (bookmove higher in the legal-masked ranking). Same delta
+    /// semantic as PROB: comparison lower rank = comparison was
+    /// better = green; comparison higher rank = comparison was
+    /// worse = red; equal = primary. nil-rank either side renders
+    /// secondary so missing data doesn't masquerade as a delta.
+    fileprivate static func comparisonRankDeltaColor(
+        cmp: Int?,
+        current: Int?
+    ) -> Color {
+        guard let cmpRank = cmp, let currentRank = current else {
+            return .secondary
+        }
+        if cmpRank < currentRank { return .green }
+        if cmpRank > currentRank { return .red }
+        return .primary
+    }
+
     // MARK: Empty state
 
     @ViewBuilder
@@ -333,7 +535,10 @@ struct LichessProbeDetailView: View {
                     + "ACTUAL #1 turns green when it matches EXPECTED. "
                     + "RANK colored green=#1, blue=top-5, red=#6+. "
                     + "PROB is legal-masked mass on the bookmove. "
-                    + "Export writes the full per-puzzle JSON."
+                    + "Export writes the full per-puzzle JSON. "
+                    + "Compare loads a previously-exported JSON into 5 right-hand columns; "
+                    + "CMP PROB / CMP RANK turn green when the comparison was better "
+                    + "than current, red when worse."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
