@@ -457,6 +457,17 @@ struct DrewsChessMachineApp: App {
                     .disabled(!commandHub.humanGameInFlight)
             }
 
+            // Performance metrics for the training network: the two
+            // always-on probe monitors. "Probe now" / "Open detail" /
+            // "Export…" all live inside the monitor windows themselves,
+            // so the menu only needs the entry points.
+            CommandMenu("Performance") {
+                Button("Open Tactical Probe Monitor…") { commandHub.openTacticalProbeMonitor() }
+                    .disabled(!commandHub.networkReady)
+                Button("Open Lichess Probe Monitor…") { commandHub.openLichessProbeMonitor() }
+                    .disabled(!commandHub.networkReady)
+            }
+
             CommandMenu("Debug") {
                 Button("Run Forward Pass") { commandHub.runForwardPass() }
                     .keyboardShortcut(.return, modifiers: [])
@@ -499,18 +510,6 @@ struct DrewsChessMachineApp: App {
                     .disabled(commandHub.isBusy)
                 Button("Run Policy-Conditioning Probe") { commandHub.runPolicyConditioningDiagnostic() }
                     .disabled(commandHub.isBusy)
-                Button("Run Tactical Probe") { commandHub.runTacticalProbe() }
-                    .disabled(!commandHub.networkReady)
-                Button("Open Tactical Probe Monitor…") { commandHub.openTacticalProbeMonitor() }
-                    .disabled(!commandHub.networkReady)
-                Button("Run Lichess Probe (200)") { commandHub.runLichessProbe() }
-                    .disabled(!commandHub.networkReady)
-                Button("Open Lichess Probe Monitor…") { commandHub.openLichessProbeMonitor() }
-                    .disabled(!commandHub.networkReady)
-                Button("Open Lichess Probe Detail…") { commandHub.openLichessProbeDetail() }
-                    .disabled(!commandHub.networkReady)
-                Button("Export Latest Lichess Probe Results…") { commandHub.exportLichessProbeResults() }
-                    .disabled(!commandHub.networkReady)
                 Divider()
                 Button("Analyze Replay Buffer…") { commandHub.analyzeReplayBuffer() }
                 Button("Analyze Value Head Weights…") { commandHub.analyzeValueHead() }
