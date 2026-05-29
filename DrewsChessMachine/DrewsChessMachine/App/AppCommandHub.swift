@@ -149,6 +149,16 @@ final class AppCommandHub {
     /// be active simultaneously. Multiple monitor windows can be
     /// opened; each owns its own history store and watcher.
     var openTacticalProbeMonitor: () -> Void = {}
+    /// Fire the 200-puzzle Lichess probe battery against the champion
+    /// once and log a per-theme breakdown under `[TACTICAL-LICHESS]`.
+    /// Companion of `runTacticalProbe` — same one-click trigger model,
+    /// heavier battery sourced from the bundled Lichess CC0 puzzle set.
+    var runLichessProbe: () -> Void = {}
+    /// Open the standalone Lichess Probe Monitor window. Shows one
+    /// row per theme bucket with current argmax/total + spark line of
+    /// argmax-fraction over time. Independent of the periodic watcher
+    /// — opening/closing doesn't start/stop ticking.
+    var openLichessProbeMonitor: () -> Void = {}
     /// Run the offline replay-buffer analyzer against the currently-
     /// loaded buffer. Writes a JSON file under
     /// `~/Library/Application Support/DrewsChessMachine/Analyses/`,

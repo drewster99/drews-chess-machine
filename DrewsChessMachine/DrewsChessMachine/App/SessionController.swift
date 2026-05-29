@@ -66,6 +66,18 @@ final class SessionController {
     /// build / load).
     private var tacticalProbeWatcher: TacticalProbeWatcher?
 
+    /// Per-theme history backing the 200-puzzle Lichess monitor window.
+    /// Populated by `lichessProbeWatcher` on its 30-minute cadence and
+    /// read by any open Lichess Probe Monitor window. Lifetime = lifetime
+    /// of the session controller, same as `tacticalProbeHistory`.
+    let lichessProbeHistory = LichessProbeHistory()
+
+    /// Periodic driver behind `lichessProbeHistory`. Parallel to
+    /// `tacticalProbeWatcher` — lazily created on first
+    /// `startLichessProbeWatcher()`, runs for the life of the session,
+    /// no-ops cleanly when the chosen probe network isn't ready.
+    private var lichessProbeWatcher: LichessProbeWatcher?
+
     // MARK: - Inference networks (life-of-app caches)
 
     /// Inference-mode network used as the arena's "candidate side" player. The
@@ -636,6 +648,27 @@ final class SessionController {
     /// and `startTacticalProbeWatcher()`).
     func triggerTacticalProbeNow() {
         tacticalProbeWatcher?.triggerOnce()
+    }
+
+    /// Idempotent. Mirror of `startTacticalProbeWatcher()` for the
+    /// 200-puzzle Lichess set. Wired into `handleBodyOnAppear` so the
+    /// watcher begins right after the main view mounts.
+    func startLichessProbeWatcher() {
+        guard lichessProbeWatcher == nil else { return }
+        let w = LichessProbeWatcher(
+            sessionController: self,
+            history: lichessProbeHistory
+        )
+        lichessProbeWatcher = w
+        w.start()
+    }
+
+    /// On-demand fire of a single Lichess-probe cycle. Wired to the
+    /// "Probe now" button in the Lichess Probe Monitor window so the
+    /// user can refresh the displayed stats without waiting up to
+    /// `LichessProbeWatcher.intervalSec` for the next scheduled tick.
+    func triggerLichessProbeNow() {
+        lichessProbeWatcher?.triggerOnce()
     }
 
     // MARK: - Demo training (Train Once / Continuous Training) (Stage 4g)

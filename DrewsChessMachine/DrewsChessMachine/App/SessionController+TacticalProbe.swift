@@ -399,9 +399,10 @@ private final class LogitsBox: @unchecked Sendable {
 
 // MARK: - Verdict ordering for report
 
-private extension ProbeVerdict {
+extension ProbeVerdict {
     /// Stable order for the per-battery summary line so the verdict
-    /// histogram reads "best → worst" left to right.
+    /// histogram reads "best → worst" left to right. Internal so the
+    /// Lichess probe runner can produce the same-shape summary.
     static let allOrderedForReport: [ProbeVerdict] = [
         .correctAndConfident,
         .correctButFlat,

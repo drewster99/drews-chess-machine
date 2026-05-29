@@ -1610,6 +1610,10 @@ struct UpperContentView: View {
         // Begin the always-on tactical-probe watcher. Idempotent so
         // a transient .onAppear re-fire doesn't double-start.
         session.startTacticalProbeWatcher()
+        // Same shape for the heavier 200-puzzle Lichess probe watcher
+        // — fires once on view mount and then every 30 min for the
+        // life of the session.
+        session.startLichessProbeWatcher()
         // Wire the popover models' side-effect hooks. The Arena popover pushes
         // the new τ schedule into the live `samplingScheduleBox` after a Save;
         // the Training popover does the same for its self-play schedule and
@@ -2091,6 +2095,10 @@ struct UpperContentView: View {
         commandHub.runTacticalProbe = { session.runTacticalProbe() }
         commandHub.openTacticalProbeMonitor = {
             TacticalProbeMonitorLauncher.openWindow(sessionController: session)
+        }
+        commandHub.runLichessProbe = { session.runLichessProbe() }
+        commandHub.openLichessProbeMonitor = {
+            LichessProbeMonitorLauncher.openWindow(sessionController: session)
         }
         commandHub.analyzeReplayBuffer = { session.analyzeReplayBufferToFile() }
         commandHub.analyzeValueHead = { session.analyzeValueHeadToFile() }
