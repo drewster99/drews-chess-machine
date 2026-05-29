@@ -54,10 +54,60 @@ enum LichessProbeExporter {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export wrote \(data.count) bytes to \(url.path)"
             )
+            presentExportAlert(
+                title: "Export complete",
+                message: """
+                    Wrote \(history.latestPerPuzzleResults.count) puzzles \
+                    (\(formattedSize(data.count))) to
+                    \(url.path)
+
+                    Click Reveal in Finder to open the containing folder \
+                    with the file selected.
+                    """,
+                revealURL: url
+            )
         } catch {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export failed: \(error.localizedDescription)"
             )
+            presentExportAlert(
+                title: "Export failed",
+                message: "Could not write the JSON file:\n\n\(error.localizedDescription)",
+                revealURL: nil
+            )
+        }
+    }
+
+    // MARK: - NSAlert with Reveal in Finder
+
+    /// Modal alert mirroring the `presentAnalyzeAlert` pattern used by
+    /// the existing analyzer commands. Two-button flow: OK and Reveal
+    /// in Finder; Reveal is only added when `revealURL` is non-nil.
+    private static func presentExportAlert(
+        title: String,
+        message: String,
+        revealURL: URL?
+    ) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        if revealURL != nil {
+            alert.addButton(withTitle: "Reveal in Finder")
+        }
+        let response = alert.runModal()
+        if let url = revealURL, response == .alertSecondButtonReturn {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
+    }
+
+    private static func formattedSize(_ bytes: Int) -> String {
+        let kb = Double(bytes) / 1024.0
+        if kb < 1024 {
+            return String(format: "%.1f KB", kb)
+        } else {
+            return String(format: "%.2f MB", kb / 1024.0)
         }
     }
 

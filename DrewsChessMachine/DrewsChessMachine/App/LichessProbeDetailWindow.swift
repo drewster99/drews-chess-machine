@@ -42,25 +42,28 @@ final class LichessProbeDetailWindowController: NSWindowController, NSWindowDele
     }
 }
 
-/// Strong-ref registry so menu-driven opens survive past the launcher
-/// closure. Mirrors the existing `LichessProbeMonitorWindowRegistry`.
+/// Single-instance registry for the Lichess Probe Detail window. Same
+/// shape as `LichessProbeMonitorWindowRegistry` — at most one
+/// controller at a time, double-register is a precondition failure.
 @MainActor
 final class LichessProbeDetailWindowRegistry {
     static let shared = LichessProbeDetailWindowRegistry()
-    private var controllers: [LichessProbeDetailWindowController] = []
+    private(set) var controller: LichessProbeDetailWindowController?
 
     private init() {}
 
     func register(_ controller: LichessProbeDetailWindowController) {
-        controllers.append(controller)
+        precondition(
+            self.controller == nil,
+            "LichessProbeDetailWindowRegistry: a window is already registered"
+        )
+        self.controller = controller
     }
 
     func unregister(_ controller: LichessProbeDetailWindowController) {
-        controllers.removeAll { $0 === controller }
-    }
-
-    var firstOpen: LichessProbeDetailWindowController? {
-        controllers.first
+        if self.controller === controller {
+            self.controller = nil
+        }
     }
 }
 
@@ -68,7 +71,7 @@ final class LichessProbeDetailWindowRegistry {
 enum LichessProbeDetailLauncher {
     static func openWindow(sessionController: SessionController) {
         SessionLogger.shared.log("[BUTTON] Open Lichess Probe Detail")
-        if let existing = LichessProbeDetailWindowRegistry.shared.firstOpen {
+        if let existing = LichessProbeDetailWindowRegistry.shared.controller {
             existing.showWindow(nil)
             existing.window?.makeKeyAndOrderFront(nil)
             return

@@ -93,8 +93,17 @@ final class LichessProbeWatcher {
             guard let championNet = session.network else { return }
             net = championNet
         case .candidate:
+            // Use the dedicated `lichessProbeInferenceNetwork`, not the
+            // shared `probeInferenceNetwork`. Two periodic watchers
+            // (Tactical + Lichess) plus `fireCandidateProbeIfNeeded`
+            // would otherwise contend for the same network's weights:
+            // one tick's snapshot can land mid-loadWeights of another
+            // tick's snapshot, leaving the wrong weights in place for
+            // the remainder of the first tick's probe loop. Separating
+            // the network means Lichess only races with itself, and
+            // a single watcher's tickOnce is serial.
             guard let trainer = session.trainer,
-                  let probeNet = session.probeInferenceNetwork else { return }
+                  let probeNet = session.lichessProbeInferenceNetwork else { return }
             do {
                 let weights = try await trainer.network.exportWeights()
                 try await probeNet.loadWeights(weights)

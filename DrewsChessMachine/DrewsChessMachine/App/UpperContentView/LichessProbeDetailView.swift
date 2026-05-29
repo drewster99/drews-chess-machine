@@ -26,6 +26,69 @@ struct LichessProbeDetailView: View {
         self.onExport = onExport
     }
 
+    /// Tap-to-toggle popover state must live on a row-scoped struct,
+    /// not on `LichessProbeDetailView` itself — otherwise every row
+    /// would share the same toggle and clicking one would open them
+    /// all. Each row instantiates its own.
+    fileprivate struct DetailRowView: View {
+        let result: ProbeResult
+        @State private var isShowingBoardPopover = false
+
+        var body: some View {
+            let meta = LichessProbeData.metadata[result.probe.name]
+            let expectedNotation = result.probe.acceptable
+                .sorted(by: { $0.notation < $1.notation })
+                .first?.notation ?? "—"
+            let actualNotation = result.topMoves.first?.move.notation ?? "—"
+            let actualMatchesExpected = result.topMoves.first.map { top in
+                result.probe.acceptable.contains(top.move)
+            } ?? false
+            let probStr = String(format: "%.3f", result.expectedProb)
+            let rankStr = result.expectedRank.map(String.init) ?? "—"
+            let w = String(format: "%.2f", result.valueWDL.win)
+            let d = String(format: "%.2f", result.valueWDL.draw)
+            let l = String(format: "%.2f", result.valueWDL.loss)
+
+            HStack(spacing: 8) {
+                Text(meta?.id ?? "—")
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(width: 60, alignment: .leading)
+                Text(meta.map { "\($0.rating)" } ?? "—")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 56, alignment: .trailing)
+                Text(expectedNotation)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 90, alignment: .leading)
+                Text(actualNotation)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(actualMatchesExpected ? Color.green : Color.primary)
+                    .frame(width: 90, alignment: .leading)
+                Text(probStr)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 64, alignment: .trailing)
+                Text(rankStr)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(LichessProbeDetailView.rankColor(result.expectedRank))
+                    .frame(width: 48, alignment: .trailing)
+                LichessProbeDetailView.verdictBadge(result.verdict)
+                    .frame(width: 100, alignment: .center)
+                Text("\(w)/\(d)/\(l)")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 130, alignment: .trailing)
+            }
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                isShowingBoardPopover.toggle()
+            }
+            .popover(isPresented: $isShowingBoardPopover, arrowEdge: .leading) {
+                TacticalProbeBoardPopover(result: result)
+            }
+        }
+    }
+
     private let themeOrder: [ProbeCategory] = [
         .lichessMateIn1,
         .lichessHangingPiece,
@@ -55,7 +118,7 @@ struct LichessProbeDetailView: View {
                             .background(Color(NSColor.controlBackgroundColor).opacity(0.3))
                         Divider()
                         ForEach(group.results, id: \.probe.name) { result in
-                            row(result)
+                            DetailRowView(result: result)
                                 .padding(.horizontal, 12)
                             Divider()
                         }
@@ -119,8 +182,8 @@ struct LichessProbeDetailView: View {
         HStack(spacing: 8) {
             Text("ID")
                 .frame(width: 60, alignment: .leading)
-            Text("RTG")
-                .frame(width: 44, alignment: .trailing)
+            Text("RATING")
+                .frame(width: 56, alignment: .trailing)
             Text("EXPECTED")
                 .frame(width: 90, alignment: .leading)
             Text("ACTUAL #1")
@@ -150,58 +213,10 @@ struct LichessProbeDetailView: View {
         }
     }
 
-    // MARK: Per-row layout
+    // MARK: Per-row styling (shared with DetailRowView via static fns)
 
     @ViewBuilder
-    private func row(_ result: ProbeResult) -> some View {
-        let meta = LichessProbeData.metadata[result.probe.name]
-        let expectedNotation = result.probe.acceptable
-            .sorted(by: { $0.notation < $1.notation })
-            .first?.notation ?? "—"
-        let actualNotation = result.topMoves.first?.move.notation ?? "—"
-        let actualMatchesExpected = result.topMoves.first.map { top in
-            result.probe.acceptable.contains(top.move)
-        } ?? false
-        let probStr = String(format: "%.3f", result.expectedProb)
-        let rankStr = result.expectedRank.map(String.init) ?? "—"
-        let w = String(format: "%.2f", result.valueWDL.win)
-        let d = String(format: "%.2f", result.valueWDL.draw)
-        let l = String(format: "%.2f", result.valueWDL.loss)
-
-        HStack(spacing: 8) {
-            Text(meta?.id ?? "—")
-                .font(.system(.caption, design: .monospaced))
-                .frame(width: 60, alignment: .leading)
-            Text(meta.map { "\($0.rating)" } ?? "—")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 44, alignment: .trailing)
-            Text(expectedNotation)
-                .font(.system(.body, design: .monospaced))
-                .frame(width: 90, alignment: .leading)
-            Text(actualNotation)
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(actualMatchesExpected ? Color.green : Color.primary)
-                .frame(width: 90, alignment: .leading)
-            Text(probStr)
-                .font(.system(.body, design: .monospaced))
-                .frame(width: 64, alignment: .trailing)
-            Text(rankStr)
-                .font(.system(.body, design: .monospaced))
-                .foregroundStyle(rankColor(result.expectedRank))
-                .frame(width: 48, alignment: .trailing)
-            verdictBadge(result.verdict)
-                .frame(width: 100, alignment: .center)
-            Text("\(w)/\(d)/\(l)")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 130, alignment: .trailing)
-        }
-        .padding(.vertical, 2)
-    }
-
-    @ViewBuilder
-    private func verdictBadge(_ verdict: ProbeVerdict) -> some View {
+    fileprivate static func verdictBadge(_ verdict: ProbeVerdict) -> some View {
         let (label, fill, fg) = verdictStyle(verdict)
         Text(label)
             .font(.system(.caption2, design: .monospaced).weight(.semibold))
@@ -212,7 +227,7 @@ struct LichessProbeDetailView: View {
             .clipShape(RoundedRectangle(cornerRadius: 4))
     }
 
-    private func verdictStyle(_ v: ProbeVerdict) -> (String, Color, Color) {
+    fileprivate static func verdictStyle(_ v: ProbeVerdict) -> (String, Color, Color) {
         switch v {
         case .correctAndConfident: return ("TOP·CONF", .green, .green)
         case .correctButFlat:      return ("TOP·FLAT", .yellow, .orange)
@@ -222,7 +237,7 @@ struct LichessProbeDetailView: View {
         }
     }
 
-    private func rankColor(_ rank: Int?) -> Color {
+    fileprivate static func rankColor(_ rank: Int?) -> Color {
         guard let rank else { return .secondary }
         if rank == 1 { return .green }
         if rank <= 5 { return .blue }
@@ -293,8 +308,15 @@ struct LichessProbeDetailView: View {
         }
         return themeOrder.compactMap { theme in
             guard let results = grouped[theme] else { return nil }
-            // Sort within theme by puzzle id for deterministic display.
+            // Sort within theme by expected-move rank ascending (best
+            // matches first), nil ranks at the end (errored / fixture
+            // bugs), with puzzle id as the stable tie-breaker so the
+            // order is reproducible across ticks even when the network
+            // ranks many puzzles identically.
             let sorted = results.sorted { a, b in
+                let ra = a.expectedRank ?? Int.max
+                let rb = b.expectedRank ?? Int.max
+                if ra != rb { return ra < rb }
                 let aid = LichessProbeData.metadata[a.probe.name]?.id ?? a.probe.name
                 let bid = LichessProbeData.metadata[b.probe.name]?.id ?? b.probe.name
                 return aid < bid

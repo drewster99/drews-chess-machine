@@ -10,9 +10,17 @@ import SwiftUI
 final class LichessProbeMonitorWindowController: NSWindowController, NSWindowDelegate {
     let history: LichessProbeHistory
 
-    init(history: LichessProbeHistory, onProbeNow: @escaping @MainActor () -> Void) {
+    init(
+        history: LichessProbeHistory,
+        onProbeNow: @escaping @MainActor () -> Void,
+        onOpenDetail: @escaping @MainActor () -> Void
+    ) {
         self.history = history
-        let view = LichessProbeMonitorView(history: history, onProbeNow: onProbeNow)
+        let view = LichessProbeMonitorView(
+            history: history,
+            onProbeNow: onProbeNow,
+            onOpenDetail: onOpenDetail
+        )
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
         window.setContentSize(NSSize(width: 1000, height: 380))
@@ -35,31 +43,30 @@ final class LichessProbeMonitorWindowController: NSWindowController, NSWindowDel
     }
 }
 
-/// Keeps `LichessProbeMonitorWindowController` instances alive for as
-/// long as their window is on-screen. Without this, a menu-driven
-/// `showWindow(nil)` would let ARC tear down the controller as soon as
-/// the launching closure returned. Mirrors the existing
-/// `TacticalProbeMonitorWindowRegistry`.
+/// Single-instance registry for the Lichess Probe Monitor window. Holds
+/// at most one controller so menu-driven opens never stack duplicate
+/// windows — a `register` call when a window is already alive is a
+/// programmer-error precondition. The launcher's `firstOpen` check
+/// upstream guarantees the precondition holds in normal flow.
 @MainActor
 final class LichessProbeMonitorWindowRegistry {
     static let shared = LichessProbeMonitorWindowRegistry()
-    private var controllers: [LichessProbeMonitorWindowController] = []
+    private(set) var controller: LichessProbeMonitorWindowController?
 
     private init() {}
 
     func register(_ controller: LichessProbeMonitorWindowController) {
-        controllers.append(controller)
+        precondition(
+            self.controller == nil,
+            "LichessProbeMonitorWindowRegistry: a window is already registered"
+        )
+        self.controller = controller
     }
 
     func unregister(_ controller: LichessProbeMonitorWindowController) {
-        controllers.removeAll { $0 === controller }
-    }
-
-    /// First currently-open monitor window. Used by the menu launcher
-    /// so a second click brings the existing window to the front
-    /// rather than stacking a duplicate.
-    var firstOpen: LichessProbeMonitorWindowController? {
-        controllers.first
+        if self.controller === controller {
+            self.controller = nil
+        }
     }
 }
 
@@ -68,7 +75,7 @@ final class LichessProbeMonitorWindowRegistry {
 enum LichessProbeMonitorLauncher {
     static func openWindow(sessionController: SessionController) {
         SessionLogger.shared.log("[BUTTON] Open Lichess Probe Monitor")
-        if let existing = LichessProbeMonitorWindowRegistry.shared.firstOpen {
+        if let existing = LichessProbeMonitorWindowRegistry.shared.controller {
             existing.showWindow(nil)
             existing.window?.makeKeyAndOrderFront(nil)
             return
@@ -77,6 +84,10 @@ enum LichessProbeMonitorLauncher {
             history: sessionController.lichessProbeHistory,
             onProbeNow: { [weak sessionController] in
                 sessionController?.triggerLichessProbeNow()
+            },
+            onOpenDetail: { [weak sessionController] in
+                guard let session = sessionController else { return }
+                LichessProbeDetailLauncher.openWindow(sessionController: session)
             }
         )
         LichessProbeMonitorWindowRegistry.shared.register(controller)

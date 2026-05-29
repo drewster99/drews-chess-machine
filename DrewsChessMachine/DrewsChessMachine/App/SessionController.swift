@@ -93,6 +93,17 @@ final class SessionController {
     /// lazily, cached for the app's life.
     var probeInferenceNetwork: ChessMPSNetwork?
 
+    /// Inference-mode network owned solely by `LichessProbeWatcher` so its
+    /// 200-puzzle battery snapshot+probe cycle cannot race against the other
+    /// consumers of `probeInferenceNetwork` (`TacticalProbeWatcher` and
+    /// `fireCandidateProbeIfNeeded`). Two concurrent ticks sharing one inference
+    /// network can overwrite each other's weight snapshot mid-battery; giving
+    /// Lichess its own network sidesteps the race entirely at the cost of one
+    /// extra `ChessMPSNetwork` instance. Built lazily next to
+    /// `probeInferenceNetwork` on the first Play-and-Train start, cached for
+    /// the app's life.
+    var lichessProbeInferenceNetwork: ChessMPSNetwork?
+
     /// `ChessRunner` wrapping `probeInferenceNetwork`, used by
     /// `fireCandidateProbeIfNeeded` via the same `performInference` path as the
     /// forward-pass demo.

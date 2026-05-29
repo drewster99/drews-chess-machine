@@ -14,13 +14,16 @@ import SwiftUI
 struct LichessProbeMonitorView: View {
     @Bindable var history: LichessProbeHistory
     let onProbeNow: @MainActor () -> Void
+    let onOpenDetail: @MainActor () -> Void
 
     init(
         history: LichessProbeHistory,
-        onProbeNow: @escaping @MainActor () -> Void = {}
+        onProbeNow: @escaping @MainActor () -> Void = {},
+        onOpenDetail: @escaping @MainActor () -> Void = {}
     ) {
         self.history = history
         self.onProbeNow = onProbeNow
+        self.onOpenDetail = onOpenDetail
     }
 
     /// Stable display order — tactical themes first, phase themes
@@ -80,6 +83,10 @@ struct LichessProbeMonitorView: View {
                 .foregroundStyle(.primary)
             Button("Probe now") {
                 onProbeNow()
+            }
+            .controlSize(.small)
+            Button("Open detail…") {
+                onOpenDetail()
             }
             .controlSize(.small)
         }

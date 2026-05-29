@@ -923,6 +923,34 @@ extension SessionController {
                 }
             }
 
+            // Dedicated Lichess-probe inference network. Built once and
+            // cached for the app's life, same as `probeInferenceNetwork`
+            // above. Owning a separate `ChessMPSNetwork` here is what
+            // keeps `LichessProbeWatcher`'s 200-puzzle ticks from
+            // racing against `TacticalProbeWatcher` /
+            // `fireCandidateProbeIfNeeded`, which both snapshot into
+            // `probeInferenceNetwork`. Cost: one extra network instance
+            // (~2.4M params worth of MPSGraph state).
+            let needsLichessProbeBuild = await MainActor.run { lichessProbeInferenceNetwork == nil }
+            if needsLichessProbeBuild {
+                do {
+                    let built = try await Task.detached(priority: .userInitiated) {
+                        try ChessMPSNetwork(.randomWeights)
+                    }.value
+                    built.network.commandQueue.label = "startrealTraining lichess probe Inference"
+                    await MainActor.run {
+                        lichessProbeInferenceNetwork = built
+                    }
+                } catch {
+                    box.recordError("Lichess probe network init failed: \(error.localizedDescription)")
+                    await MainActor.run {
+                        realTraining = false
+                        realTrainingTask = nil
+                    }
+                    return
+                }
+            }
+
             // Reset the trainer's graph AND initialize its weights,
             // branched by `mode`:
             //

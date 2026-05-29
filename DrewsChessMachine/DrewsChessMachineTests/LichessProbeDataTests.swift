@@ -67,6 +67,82 @@ final class LichessProbeDataTests: XCTestCase {
         }
     }
 
+    // MARK: - Metadata sidecar
+
+    func testMetadataCountMatchesProbeCount() {
+        XCTAssertEqual(
+            LichessProbeData.metadata.count,
+            LichessProbeData.largeSet.count,
+            "metadata dict size must match largeSet length"
+        )
+    }
+
+    func testEveryProbeHasMetadata() {
+        for probe in LichessProbeData.largeSet {
+            XCTAssertNotNil(
+                LichessProbeData.metadata[probe.name],
+                "missing metadata for probe '\(probe.name)'"
+            )
+        }
+    }
+
+    func testMetadataFieldsAreNonEmpty() {
+        for probe in LichessProbeData.largeSet {
+            guard let meta = LichessProbeData.metadata[probe.name] else {
+                XCTFail("missing metadata for \(probe.name)")
+                continue
+            }
+            XCTAssertFalse(meta.id.isEmpty, "empty id for \(probe.name)")
+            XCTAssertFalse(meta.theme.isEmpty, "empty theme for \(probe.name)")
+            XCTAssertFalse(meta.fen.isEmpty, "empty fen for \(probe.name)")
+            XCTAssertFalse(meta.bestMoveUci.isEmpty, "empty bestMoveUci for \(probe.name)")
+            XCTAssertGreaterThan(meta.rating, 0, "non-positive rating for \(probe.name)")
+        }
+    }
+
+    func testMetadataFenParsesToSameStateAsProbe() throws {
+        // The probe's GameState is the result of parsing the metadata
+        // FEN at load time. Re-parsing the stored FEN must give the
+        // exact same board occupancy + side-to-move + castling + EP
+        // + halfmove clock. Guards against silent metadata/probe drift.
+        for probe in LichessProbeData.largeSet {
+            guard let meta = LichessProbeData.metadata[probe.name] else {
+                XCTFail("missing metadata for \(probe.name)")
+                continue
+            }
+            let reparsed = try FENParser.parse(meta.fen)
+            XCTAssertEqual(reparsed.currentPlayer, probe.state.currentPlayer)
+            XCTAssertEqual(reparsed.halfmoveClock, probe.state.halfmoveClock)
+            XCTAssertEqual(reparsed.whiteKingsideCastle, probe.state.whiteKingsideCastle)
+            XCTAssertEqual(reparsed.whiteQueensideCastle, probe.state.whiteQueensideCastle)
+            XCTAssertEqual(reparsed.blackKingsideCastle, probe.state.blackKingsideCastle)
+            XCTAssertEqual(reparsed.blackQueensideCastle, probe.state.blackQueensideCastle)
+            XCTAssertEqual(reparsed.board.count, 64)
+            XCTAssertEqual(reparsed.board, probe.state.board)
+        }
+    }
+
+    func testMetadataBestMoveUciMatchesProbeAcceptable() {
+        // The probe's acceptable Set has exactly one element produced
+        // by parsing metadata.bestMoveUci through `LichessProbeData.parseUCI`.
+        // Re-parsing and comparing catches any drift in either the
+        // metadata sidecar or the UCI->ChessMove path.
+        for probe in LichessProbeData.largeSet {
+            guard let meta = LichessProbeData.metadata[probe.name] else {
+                XCTFail("missing metadata for \(probe.name)")
+                continue
+            }
+            guard let reparsed = LichessProbeData.parseUCI(meta.bestMoveUci) else {
+                XCTFail("metadata bestMoveUci '\(meta.bestMoveUci)' didn't parse for \(probe.name)")
+                continue
+            }
+            XCTAssertTrue(
+                probe.acceptable.contains(reparsed),
+                "metadata move \(meta.bestMoveUci) not in probe.acceptable for \(probe.name)"
+            )
+        }
+    }
+
     // MARK: - UCI parser
 
     func testParseUCIBasicMove() {
