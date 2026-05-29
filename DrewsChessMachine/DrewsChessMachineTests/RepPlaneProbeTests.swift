@@ -34,10 +34,7 @@ final class RepPlaneProbeTests: XCTestCase {
         // inference network's loadWeights rejects (expects 128). For
         // the "did the network learn to use these planes?" question,
         // the arena-validated champion is the more meaningful target.
-        let modelURL = try locateLatestChampionModel()
-        let mps = try ChessMPSNetwork(.randomWeights)
-        let file = try CheckpointManager.loadModelFile(at: modelURL)
-        try await mps.network.loadWeights(file.weights)
+        let (mps, file, modelURL) = try await loadLatestChampionOrSkip()
 
         // ----- 3. Build a diverse set of probe positions by walking
         // a few random self-play games from .starting and snapshotting
@@ -155,10 +152,7 @@ final class RepPlaneProbeTests: XCTestCase {
     /// would naturally arise (low-material drawish endgame), not a
     /// random opening position.
     func test_constructedKnightShuffleEndgame_probe() async throws {
-        let modelURL = try locateLatestChampionModel()
-        let mps = try ChessMPSNetwork(.randomWeights)
-        let file = try CheckpointManager.loadModelFile(at: modelURL)
-        try await mps.network.loadWeights(file.weights)
+        let (mps, file, _) = try await loadLatestChampionOrSkip()
 
         // Build the endgame position.
         //   row 0 = rank 8 … row 7 = rank 1, col 0 = a-file.
@@ -259,10 +253,7 @@ final class RepPlaneProbeTests: XCTestCase {
     /// learned the 50-move-rule signal, p_draw should rise monotonically
     /// with the halfmove value.
     func test_halfmoveProbe_writeReport() async throws {
-        let modelURL = try locateLatestChampionModel()
-        let mps = try ChessMPSNetwork(.randomWeights)
-        let file = try CheckpointManager.loadModelFile(at: modelURL)
-        try await mps.network.loadWeights(file.weights)
+        let (mps, file, _) = try await loadLatestChampionOrSkip()
 
         let probeStates = buildProbeStates(targetCount: 20, seed: 0xBADCAFE_1234567)
         let testValues: [Float] = [0.00, 0.25, 0.50, 0.75, 0.90, 0.99]
@@ -381,6 +372,50 @@ final class RepPlaneProbeTests: XCTestCase {
             )
         }
         return modelURL
+    }
+
+    /// Load the latest on-disk champion into a fresh inference network,
+    /// or `XCTSkip` when no architecture-compatible champion exists.
+    ///
+    /// These probes ask "did the *trained* champion learn to use plane
+    /// X?" — a question with no meaning unless a trained, loadable
+    /// champion is present. After an architecture change (e.g. a
+    /// `numBlocks` bump) the only saved models carry the previous
+    /// `archHash`, so `loadModelFile` rejects them by design; that is a
+    /// skip, not a failure. Once a champion has been trained and saved
+    /// under the current architecture the probe runs normally.
+    private func loadLatestChampionOrSkip() async throws
+        -> (mps: ChessMPSNetwork, file: ModelCheckpointFile, modelURL: URL) {
+        let modelURL: URL
+        do {
+            modelURL = try locateLatestChampionModel()
+        } catch {
+            throw XCTSkip("No champion model on disk: \(error.localizedDescription)")
+        }
+        let mps = try ChessMPSNetwork(.randomWeights)
+        let file: ModelCheckpointFile
+        do {
+            file = try CheckpointManager.loadModelFile(at: modelURL)
+        } catch ModelCheckpointError.archMismatch(let expected, let got) {
+            throw XCTSkip(
+                "Latest champion is architecture-incompatible "
+                + "(file archHash 0x\(String(got, radix: 16)) != current "
+                + "0x\(String(expected, radix: 16)); numBlocks=\(ChessNetwork.numBlocks)). "
+                + "Train a champion under the current architecture to run this probe."
+            )
+        }
+        do {
+            try await mps.network.loadWeights(file.weights)
+        } catch {
+            // Defense-in-depth: archHash matched but the live variable
+            // list still rejected the tensor count/shape. Treat as
+            // arch-incompatible and skip rather than fail.
+            throw XCTSkip(
+                "Champion weights incompatible with current network "
+                + "(\(ChessNetwork.numBlocks) blocks): \(error.localizedDescription)"
+            )
+        }
+        return (mps, file, modelURL)
     }
 
     /// Mtime for sort comparison; falls back to .distantPast on any

@@ -76,8 +76,9 @@ enum NetworkWeightAnalyzer {
     /// if those shapes change the analyzer needs updating in lockstep.
     static func fanIn(forVariableNamed name: String) -> Int? {
         switch name {
-        case "stem_conv_weights":   return 30 * 3 * 3
-        case "policy_conv_weights": return 128 * 1 * 1
+        case "stem_conv_weights":      return 30 * 3 * 3
+        case "policy_pre_conv_weights": return 128 * 1 * 1
+        case "policy_conv_weights":    return 128 * 1 * 1
         case "value_conv_weights":  return 128
         case "value_fc1_weights":   return 64
         case "value_fc2_weights":   return 64
@@ -115,6 +116,13 @@ enum NetworkWeightAnalyzer {
         // prior of a fresh self-play buffer).
         if name == "value_fc2_bias" && n == 3 {
             return [0.0, log(6.0), 0.0]
+        }
+        // The last BN in each residual block (bn2) uses zero-γ init so
+        // the block starts as identity — see ChessNetwork.batchNorm. Its
+        // drift-from-init reference is 0, not the usual 1. Checked before
+        // the general gamma rule below.
+        if name.hasSuffix("_bn2_gamma") {
+            return Array(repeating: 0.0, count: n)
         }
         // BN gamma initializes to ones, var initializes to ones —
         // see ChessNetwork.batchNorm.

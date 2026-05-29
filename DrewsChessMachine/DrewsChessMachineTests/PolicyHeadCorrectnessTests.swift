@@ -512,7 +512,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
     //   - A perpetually-zero gradient (stuck channel; less likely but
     //     would still warrant investigation).
 
-    func testEveryTrainableVariableUpdatesAfterOneStep() async throws {
+    func testEveryTrainableVariableUpdatesWithinTwoSteps() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
@@ -526,9 +526,20 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         // `lrWarmupSteps: 0` short-circuits the warmup branch in
         // `buildFeeds` (ChessTrainer.swift:2591) to `warmupMul = 1.0`,
         // so the first step uses the full base learning rate.
+        // TWO steps, not one: each residual block's `bn2` uses zero-γ
+        // init (identity-init — see ChessNetwork.batchNorm), so on the
+        // FIRST step the branch's upstream weights (conv1/conv2, bn1, the
+        // SE FCs) receive exactly zero gradient — the zeroed γ kills
+        // d(bn2_out)/d(conv2_out), and the SE gate multiplies a zero
+        // branch so its FCs get no gradient either. That first step lifts
+        // each `bn2` γ off zero; the SECOND step then propagates gradient
+        // through the now-nonzero γ to every branch weight. A genuinely
+        // disconnected variable still receives zero gradient on BOTH
+        // steps, so this remains a valid "build-time disconnect" gate.
         let trainer = try ChessTrainer(lrWarmupSteps: 0)
         let weightsBefore = try await trainer.network.exportWeights()
-        // Run one step on synthetic random data via the public path.
+        // Run two steps on synthetic random data via the public path.
+        _ = try await trainer.trainStep(batchSize: 32)
         _ = try await trainer.trainStep(batchSize: 32)
         let weightsAfter = try await trainer.network.exportWeights()
 
@@ -554,7 +565,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         }
         XCTAssertEqual(
             unchangedNames, [],
-            "After one trainStep, the following trainable indices did NOT change at all: \(unchangedNames). " +
+            "After two trainSteps, the following trainable indices did NOT change at all: \(unchangedNames). " +
             "These variables receive no gradient — likely a build-time disconnect between the loss and the variable."
         )
     }

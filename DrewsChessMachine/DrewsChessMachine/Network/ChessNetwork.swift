@@ -69,8 +69,11 @@ enum BNMode {
 ///   The SE module is squeeze (global avg pool) -> FC(128 -> 32) ->
 ///   ReLU -> FC(32 -> 128) -> sigmoid -> channel-wise scale, providing
 ///   per-position dynamic channel attention (lc0-style).
-/// - Policy head: 1x1 conv (128 -> 76) → reshape to [B, 4864] (logits).
-///   76 channels = 56 queen-style + 8 knight + 9 underpromotion +
+/// - Policy head: 1x1 conv (128 -> 128) -> BN -> ReLU -> 1x1 conv
+///   (128 -> 76) → reshape to [B, 4864] (logits). The intermediate
+///   conv->BN->ReLU mirrors the value head / lc0 and renormalizes the
+///   tower output so the deep tower's activation scale can't inflate the
+///   logits. 76 channels = 56 queen-style + 8 knight + 9 underpromotion +
 ///   3 queen-promotion. See `PolicyEncoding` for the layout.
 /// - Value head: 1x1 conv (128 -> 1) -> BN -> ReLU -> flatten -> FC(64 -> 64) -> ReLU -> FC(64 -> 3) -> 3 raw W/D/L logits.
 ///   Exposed three ways: `valueLogits` (the [B, 3] logits, for the
@@ -171,8 +174,12 @@ final class ChessNetwork: @unchecked Sendable {
 
         // Stem: 3×3 conv (inputPlanes→channels) + one BN layer.
         let stem = (inputPlanes * channels * 9) + (4 * channels)
-        // Policy head: 1×1 conv (channels→policyChannels) + bias.
-        let policy = (channels * policyChannels) + policyChannels
+        // Policy head: 1×1 conv (channels→channels, no bias) → BN(channels)
+        // → ReLU → 1×1 conv (channels→policyChannels) + bias.
+        let policyPreConv = channels * channels
+        let policyPreBN = 4 * channels
+        let policyProj = (channels * policyChannels) + policyChannels
+        let policy = policyPreConv + policyPreBN + policyProj
         // Value head: 1×1 conv (channels→1) → BN(1) → flatten(boardSize²)
         // → FC(flat→hidden) → FC(hidden→valueHeadClasses).
         let valueFlatten = boardSize * boardSize
@@ -474,7 +481,9 @@ final class ChessNetwork: @unchecked Sendable {
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
-            runningStatsAssignOps: &runningStatsAssigns
+            runningStatsAssignOps: &runningStatsAssigns,
+            batchMeans: &batchMeans,
+            batchVars: &batchVars
         )
         policyOutput = policy.output
         policyHeadFinalWeights = policy.finalWeights
@@ -1350,6 +1359,7 @@ final class ChessNetwork: @unchecked Sendable {
         channels: Int,
         name: String,
         bnMode: BNMode,
+        zeroInitGamma: Bool = false,
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool],
         runningStats: inout [MPSGraphTensor],
@@ -1359,9 +1369,18 @@ final class ChessNetwork: @unchecked Sendable {
     ) -> MPSGraphTensor {
         let ch = NSNumber(value: channels)
 
-        // gamma and beta are trainable in both modes.
+        // gamma and beta are trainable in both modes. `zeroInitGamma`
+        // initializes gamma to 0 instead of 1 — used for the *last* BN
+        // in each residual block so the block's residual branch starts
+        // at zero and the whole block is identity at init (standard
+        // deep-ResNet "zero-γ" init). With a 16-block tower this keeps
+        // the skip-sum from accumulating variance across depth, which
+        // otherwise leaves the inference-mode init policy degenerate.
+        // The conv weights underneath stay random He-init — they simply
+        // contribute nothing to the forward pass until gamma trains away
+        // from 0.
         let gamma = graph.variable(
-            with: onesData(count: channels),
+            with: zeroInitGamma ? zerosData(count: channels) : onesData(count: channels),
             shape: [1, ch, 1, 1],
             dataType: Self.dataType,
             name: "\(name)_gamma"
@@ -1524,6 +1543,7 @@ final class ChessNetwork: @unchecked Sendable {
         )
         x = batchNorm(
             graph: graph, input: x, channels: 128, name: "\(prefix)_bn2", bnMode: bnMode,
+            zeroInitGamma: true,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -1596,25 +1616,26 @@ final class ChessNetwork: @unchecked Sendable {
         return x
     }
 
-    /// Policy head: 1×1 conv (128 → policyChannels=76) → reshape to flat
-    /// `[batch, policySize=4864]` logits.
+    /// Policy head: 1×1 conv (128 → 128) → BN → ReLU → 1×1 conv
+    /// (128 → policyChannels=76) → reshape to flat `[batch,
+    /// policySize=4864]` logits.
     ///
-    /// Fully convolutional — no BN, no activation, no FC. The 1×1 conv's
-    /// weights are shared across all 64 spatial positions (translation
-    /// equivariance), so each output cell at `(channel, row, col)` is
-    /// the logit for "move of type `channel` from square `(row, col)`"
-    /// in the current player's encoder frame. See `PolicyEncoding` for
-    /// the channel layout (76 = 56 queen-style + 8 knight + 9 underpromo
-    /// + 3 queen-promo).
+    /// Fully convolutional. The intermediate `conv → BN → ReLU` mirrors
+    /// the value head (and lc0's convolutional policy head): the BN
+    /// renormalizes the residual tower's output before the logit
+    /// projection, so the deep (16-block) tower's accumulated activation
+    /// scale can't inflate the raw logits and collapse the init softmax.
+    /// The final 1×1 conv emits logits directly — no BN/activation after
+    /// it, since logits need free scale for the downstream softmax. Both
+    /// convs' weights are shared across all 64 spatial positions
+    /// (translation equivariance), so each output cell at
+    /// `(channel, row, col)` is the logit for "move of type `channel`
+    /// from square `(row, col)`" in the current player's encoder frame.
+    /// See `PolicyEncoding` for the channel layout (76 = 56 queen-style
+    /// + 8 knight + 9 underpromo + 3 queen-promo).
     ///
-    /// Replaced the prior FC head (1×1 → 2 ch → flatten 128 → FC 128→4096)
-    /// which collapsed all spatial structure through a 128-float bottleneck
-    /// before scoring 4096 moves. The new head preserves spatial structure
-    /// end-to-end and uses ~50× fewer parameters (~9.8 K vs ~528 K).
-    ///
-    /// `bnMode` parameter retained for signature consistency with
-    /// `valueHead`; the new policy head has no BN so the parameter is
-    /// unused.
+    /// `finalWeights` is the *final* logit-projection conv (128→76), not
+    /// the intermediate one — that is what `policyHeadFinalWeights` feeds.
     private static func policyHead(
         graph: MPSGraph,
         input: MPSGraphTensor,
@@ -1623,13 +1644,36 @@ final class ChessNetwork: @unchecked Sendable {
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool],
         runningStats: inout [MPSGraphTensor],
-        runningStatsAssignOps: inout [MPSGraphOperation]
+        runningStatsAssignOps: inout [MPSGraphOperation],
+        batchMeans: inout [MPSGraphTensor],
+        batchVars: inout [MPSGraphTensor]
     ) -> (output: MPSGraphTensor, finalWeights: MPSGraphTensor) {
-        _ = bnMode  // intentionally unused — see doc above
-        _ = runningStats
-        _ = runningStatsAssignOps
+        // Intermediate 1×1 conv (128 → 128) → BN → ReLU. No bias on the
+        // conv — the BN's beta subsumes it (same convention as the value
+        // head's conv).
+        let preConvW = graph.variable(
+            with: heInitDataConvOIHW(shape: [128, 128, 1, 1]),
+            shape: [128, 128, 1, 1],
+            dataType: Self.dataType,
+            name: "policy_pre_conv_weights"
+        )
+        trainables.append(preConvW); shouldDecay.append(true)
+        var x = graph.convolution2D(
+            input, weights: preConvW, descriptor: descriptor, name: "policy_pre_conv"
+        )
+        x = batchNorm(
+            graph: graph, input: x, channels: 128, name: "policy_pre_bn", bnMode: bnMode,
+            trainables: &trainables,
+            shouldDecay: &shouldDecay,
+            runningStats: &runningStats,
+            runningStatsAssignOps: &runningStatsAssignOps,
+            batchMeans: &batchMeans,
+            batchVars: &batchVars
+        )
+        x = graph.reLU(with: x, name: "policy_pre_relu")
 
-        // 1×1 conv: 128 channels → policyChannels (76).
+        // Final 1×1 conv: 128 channels → policyChannels (76). Emits raw
+        // logits — bias retained, no BN/activation after.
         let convW = graph.variable(
             with: heInitDataConvOIHW(shape: [Self.policyChannels, 128, 1, 1]),
             shape: [NSNumber(value: Self.policyChannels), 128, 1, 1],
@@ -1644,8 +1688,8 @@ final class ChessNetwork: @unchecked Sendable {
         )
         trainables.append(convW);    shouldDecay.append(true)
         trainables.append(convBias); shouldDecay.append(false)
-        var x = graph.convolution2D(
-            input, weights: convW, descriptor: descriptor, name: "policy_conv"
+        x = graph.convolution2D(
+            x, weights: convW, descriptor: descriptor, name: "policy_conv"
         )
         x = graph.addition(x, convBias, name: "policy_conv_bias_add")
 

@@ -677,34 +677,52 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
     /// Symmetric coverage for the rare draw-scarce case: a decisive-
     /// dominated buffer where the K cap is the binding ceiling on the
     /// *draw* stratum. Confirms the K-aware reflow is bidirectional.
-    func testKAwareStratumSizingHandlesDecisiveSkewedBuffer() {
-        // Buffer: 100 decisive × 80-ply + 5 draw × 40-ply.
-        // 8000 decisive positions, 200 draw positions ⇒ ~2.4% draws.
-        // With K=2: drawReachable = 2·5 = 10; decisiveReachable = 2·100 = 200.
+    func testKAwareStratumSizingHandlesScarceDecisiveBuffer() {
+        // Buffer skewed so DECISIVE material is scarce: 100 draw × 40-ply
+        // + 2 decisive × 80-ply. 4000 draw positions, 160 decisive
+        // positions. With K (maxPerGame) = 2:
+        //   drawReachable     = min(4000, 2·100) = 200
+        //   decisiveReachable = min(160,  2·2)   = 4
+        //
+        // We request only 10% draws — far BELOW the natural draw rate —
+        // so the requested draw stratum is tiny (cap-allowed = round(10%
+        // · 128) = 13, vs natural ≈ 125, so requestedDrawCount = 13).
+        // But the decisive stratum can supply at most 4 positions under
+        // K, so it cannot fill its 115-slot quota; the 111-slot deficit
+        // reflows into draws (true-ceiling sampler — ReplayBuffer.sample).
+        // The draw stratum therefore OVERSHOOTS its request, which is
+        // exactly what `wasDegraded` flags.
+        //
+        // This is the genuine degradation path under true-ceiling
+        // semantics. The symmetric "request more draws than reachable"
+        // case (decisive-heavy buffer) no longer degrades — it just
+        // samples at the natural rate — which is why the scenario is
+        // inverted here vs. the pre-true-ceiling test.
         let buf = ReplayBuffer(capacity: 50_000)
         var gi: UInt32 = 0
-        for k in 0..<100 {
-            appendGame(to: buf, length: 80, outcome: k % 2 == 0 ? 1 : -1, workerId: 0, gameIndex: gi)
+        for _ in 0..<100 {
+            appendGame(to: buf, length: 40, outcome: 0, workerId: 0, gameIndex: gi)
             gi += 1
         }
-        for _ in 0..<5 {
-            appendGame(to: buf, length: 40, outcome: 0, workerId: 1, gameIndex: gi)
+        for k in 0..<2 {
+            appendGame(to: buf, length: 80, outcome: k % 2 == 0 ? 1 : -1, workerId: 1, gameIndex: gi)
             gi += 1
         }
         let batchSize = 128
-        // Request 70% draws (89 positions) — far above the reachable
-        // draw ceiling of 10. Decisive stratum absorbs the deficit.
-        buf.setSamplingConstraints(constraints(maxPerGame: 2, maxDrawPercent: 70, targetLen: 0))
+        buf.setSamplingConstraints(constraints(maxPerGame: 2, maxDrawPercent: 10, targetLen: 0))
         let b = drawBatch(buf, count: batchSize)
         XCTAssertTrue(b.ok)
         let sr = buf.lastSamplingResult()
 
         XCTAssertFalse(sr.attemptBudgetHit)
         XCTAssertLessThanOrEqual(sr.achievedMaxPerGame, 2)
-        XCTAssertEqual(sr.achievedDrawCount, 10,
-            "draw stratum should hit exactly K · residentDrawGameCount = 10")
-        XCTAssertEqual((sr.achievedWinCount + sr.achievedLossCount), batchSize - 10)
+        // Decisive stratum clamps to K · residentDecisiveGameCount = 4.
+        XCTAssertEqual(sr.achievedWinCount + sr.achievedLossCount, 4,
+            "decisive stratum should hit exactly K · residentDecisiveGameCount = 4")
+        // The decisive deficit reflows into draws → the rest of the batch.
+        XCTAssertEqual(sr.achievedDrawCount, batchSize - 4)
         XCTAssertTrue(sr.wasDegraded)
-        XCTAssertLessThan(sr.achievedDrawCount, sr.requestedDrawCount)
+        // Draws OVERSHOT the requested ceiling because decisive couldn't fill.
+        XCTAssertGreaterThan(sr.achievedDrawCount, sr.requestedDrawCount)
     }
 }
