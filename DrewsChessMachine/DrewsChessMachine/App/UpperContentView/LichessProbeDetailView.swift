@@ -221,6 +221,11 @@ struct LichessProbeDetailView: View {
             // rightmost columns rather than scrolling horizontally.
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    overallSummaryBand
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 12)
+                        .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
+                    Divider()
                     columnHeader
                         .padding(.vertical, 4)
                         .padding(.horizontal, 12)
@@ -432,13 +437,217 @@ struct LichessProbeDetailView: View {
 
     @ViewBuilder
     private func themeSectionHeader(_ group: ThemeGroup) -> some View {
-        HStack(spacing: 12) {
-            Text(themeLabel(group.theme))
-                .font(.system(.body).weight(.semibold))
-            Text("\(group.correctCount) / \(group.results.count) argmax-correct")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-            Spacer()
+        let liveAgg = liveAggregate(for: group)
+        let cmpAgg = comparison?.aggregatesByCategory[group.theme]
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 12) {
+                Text(themeLabel(group.theme))
+                    .font(.system(.body).weight(.semibold))
+                    .frame(width: 180, alignment: .leading)
+                aggregateMetricCells(
+                    total: liveAgg.total,
+                    argmax: liveAgg.argmaxCorrect,
+                    top5: liveAgg.top5Correct,
+                    avgProb: liveAgg.avgExpectedProb,
+                    avgRank: liveAgg.avgExpectedRank,
+                    showLabels: true,
+                    vsProb: nil,
+                    vsRank: nil
+                )
+            }
+            if comparison != nil {
+                HStack(spacing: 12) {
+                    Text("cmp")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 180, alignment: .leading)
+                    if let c = cmpAgg {
+                        aggregateMetricCells(
+                            total: c.total,
+                            argmax: c.argmaxCorrect,
+                            top5: c.top5Correct,
+                            avgProb: c.avgExpectedProb,
+                            avgRank: c.avgExpectedRank,
+                            showLabels: false,
+                            vsProb: liveAgg.avgExpectedProb,
+                            vsRank: liveAgg.avgExpectedRank
+                        )
+                    } else {
+                        // Comparison loaded but no entries for this
+                        // theme — render placeholder cells of matching
+                        // widths so the row stays aligned with above.
+                        Text("—").font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 180, alignment: .leading)
+                        Text("—").font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 180, alignment: .leading)
+                        Text("—").font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 150, alignment: .leading)
+                        Text("—").font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 150, alignment: .leading)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Build the live per-theme `LichessProbeHistory.Aggregate` for a
+    /// rendered theme group on the fly. The live history exposes only
+    /// the time-series of `Aggregate`s per theme; the section header
+    /// wants the latest tick's value, which is just the last entry.
+    /// Falls back to a zero aggregate if the series for this theme
+    /// hasn't ticked yet — keeps the layout stable while early.
+    private func liveAggregate(for group: ThemeGroup) -> LichessProbeHistory.Aggregate {
+        if let latest = history.latest(group.theme)?.aggregate {
+            return latest
+        }
+        return LichessProbeHistory.Aggregate(
+            theme: group.theme,
+            total: group.results.count,
+            argmaxCorrect: 0,
+            top5Correct: 0,
+            errored: 0,
+            sumExpectedProb: 0,
+            sumExpectedRank: 0,
+            countWithRank: 0
+        )
+    }
+
+    /// 4 fixed-width metric cells (argmax/top-5/avg prob/avg rank) for
+    /// either a per-theme aggregate or the all-200 overall summary.
+    /// `showLabels = true` prefixes the metric labels ("argmax …"); the
+    /// cmp sub-row passes `false` so its values align under the live
+    /// row's values without label repetition.
+    ///
+    /// When `vsProb` / `vsRank` are non-nil, the avg-prob / avg-rank
+    /// cells are color-coded against those baselines (the cmp row
+    /// passes the live row's avg as the baseline so green = comparison
+    /// better, red = comparison worse — matching the per-row CMP cell
+    /// logic).
+    @ViewBuilder
+    private func aggregateMetricCells(
+        total: Int,
+        argmax: Int,
+        top5: Int,
+        avgProb: Float,
+        avgRank: Float?,
+        showLabels: Bool,
+        vsProb: Float?,
+        vsRank: Float?
+    ) -> some View {
+        let argmaxPct = total > 0
+            ? String(format: "%.1f%%", 100.0 * Double(argmax) / Double(total))
+            : "—"
+        let top5Pct = total > 0
+            ? String(format: "%.1f%%", 100.0 * Double(top5) / Double(total))
+            : "—"
+        let argmaxText = showLabels
+            ? "argmax \(argmax)/\(total) (\(argmaxPct))"
+            : "\(argmax)/\(total) (\(argmaxPct))"
+        let top5Text = showLabels
+            ? "top-5 \(top5)/\(total) (\(top5Pct))"
+            : "\(top5)/\(total) (\(top5Pct))"
+        let probText = showLabels
+            ? "avg prob \(String(format: "%.3f", avgProb))"
+            : String(format: "%.3f", avgProb)
+        let rankText: String = {
+            if let r = avgRank {
+                return showLabels
+                    ? "avg rank \(String(format: "%.2f", r))"
+                    : String(format: "%.2f", r)
+            } else {
+                return showLabels ? "avg rank —" : "—"
+            }
+        }()
+
+        Text(argmaxText)
+            .font(.system(.caption, design: .monospaced))
+            .frame(width: 180, alignment: .leading)
+        Text(top5Text)
+            .font(.system(.caption, design: .monospaced))
+            .frame(width: 180, alignment: .leading)
+        Text(probText)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(Self.summaryProbColor(value: avgProb, vs: vsProb))
+            .frame(width: 150, alignment: .leading)
+        Text(rankText)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(Self.summaryRankColor(value: avgRank, vs: vsRank))
+            .frame(width: 150, alignment: .leading)
+    }
+
+    /// Color for an avg-prob cell that's possibly a cmp value:
+    /// `value > vs + epsilon` is "this side is better" → green;
+    /// `value < vs - epsilon` is "this side is worse" → red.
+    /// `vs == nil` (live row) → primary.
+    fileprivate static func summaryProbColor(value: Float, vs: Float?) -> Color {
+        guard let vs else { return .primary }
+        let epsilon: Float = 0.001
+        if value > vs + epsilon { return .green }
+        if value < vs - epsilon { return .red }
+        return .primary
+    }
+
+    /// Color for an avg-rank cell. Lower rank = better, so:
+    /// `value < vs` → green (this side better); `value > vs` → red.
+    fileprivate static func summaryRankColor(value: Float?, vs: Float?) -> Color {
+        guard let value, let vs else { return .secondary }
+        if value < vs - 0.05 { return .green }
+        if value > vs + 0.05 { return .red }
+        return .primary
+    }
+
+    // MARK: Overall summary band
+
+    /// Top "OVERALL" summary band — same metric layout as the per-theme
+    /// section header but folded across all 200 puzzles. Renders one
+    /// row for live data and (when a comparison is loaded) a second
+    /// "cmp" row aligned under it with avg-prob / avg-rank color-coded
+    /// against the live row.
+    @ViewBuilder
+    private var overallSummaryBand: some View {
+        let liveAggregates = themeOrder.compactMap {
+            history.latest($0)?.aggregate
+        }
+        let liveSummary = LichessProbeOverallSummary(folding: liveAggregates)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 12) {
+                Text("OVERALL")
+                    .font(.system(.caption, design: .monospaced).weight(.bold))
+                    .frame(width: 180, alignment: .leading)
+                aggregateMetricCells(
+                    total: liveSummary.totalProbes,
+                    argmax: liveSummary.argmaxCorrect,
+                    top5: liveSummary.top5Correct,
+                    avgProb: liveSummary.avgExpectedProb,
+                    avgRank: liveSummary.avgExpectedRank,
+                    showLabels: true,
+                    vsProb: nil,
+                    vsRank: nil
+                )
+            }
+            if let cmp = comparison {
+                let cmpSummary = cmp.overallSummary
+                HStack(spacing: 12) {
+                    Text("cmp")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 180, alignment: .leading)
+                    aggregateMetricCells(
+                        total: cmpSummary.totalProbes,
+                        argmax: cmpSummary.argmaxCorrect,
+                        top5: cmpSummary.top5Correct,
+                        avgProb: cmpSummary.avgExpectedProb,
+                        avgRank: cmpSummary.avgExpectedRank,
+                        showLabels: false,
+                        vsProb: liveSummary.avgExpectedProb,
+                        vsRank: liveSummary.avgExpectedRank
+                    )
+                }
+            }
         }
     }
 
