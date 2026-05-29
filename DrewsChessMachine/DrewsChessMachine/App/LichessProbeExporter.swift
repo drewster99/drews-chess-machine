@@ -1,23 +1,30 @@
 import AppKit
 import Foundation
-import UniformTypeIdentifiers
 
 /// JSON exporter for the latest tick of the Lichess Probe set.
 ///
-/// Writes a single file containing the snapshot timestamp, the model
-/// id of the network the tick ran against, and a per-puzzle array with
-/// the raw bundle metadata (id, theme, rating, FEN, bookmove UCI) plus
-/// every observed field from the corresponding `ProbeResult`
-/// (verdict, expected rank/prob, masked-entropy, value W/D/L, full top-5
-/// move list). Designed to round-trip with the curation pipeline:
-/// re-running the script would regenerate the same source bundle, and
-/// the exported entries cross-reference back via puzzle id.
+/// Writes a single timestamped file under
+/// `~/Library/Application Support/DrewsChessMachine/Performance/LichessProbes/`
+/// (the canonical destination — no NSSavePanel; one place to look for
+/// every exported probe snapshot). Filename shape:
+/// `LichessProbe_yyyy-MM-dd_HH-mm-ss_<hash>.json`, where `<hash>` is the
+/// first 8 hex chars of a per-export UUID. The full UUID is also
+/// embedded in the JSON under `export_id`, so filename ↔ content
+/// identity is checkable.
 ///
-/// User flow: menu item "Export Latest Lichess Probe Results…" or
-/// the "Export latest…" button in the Detail window opens an
-/// `NSSavePanel`; on confirmation the JSON is written and a success
-/// `[TACTICAL-LICHESS]` line is logged. Cancel / write failure logs
-/// an error and surfaces nothing on screen.
+/// Schema v2 — each `puzzles[]` entry is `{ puzzle: {...}, probe_result: {...} }`
+/// for readability and to keep the "what the puzzle is" data lexically
+/// separated from "how the network performed on it." Top-level metadata
+/// includes the export UUID, the tick timestamp, the model label, and
+/// the build that produced the data so an exported file can stand
+/// alone for analysis later.
+///
+/// User flow: the Lichess Probe Detail window's "Export latest…"
+/// button calls `exportLatest`. On success an NSAlert with Reveal in
+/// Finder pops; on failure an error alert pops with the underlying
+/// error message. Cancel doesn't exist — there's no save panel any
+/// more, so the only "cancel" branch is "no tick recorded yet" which
+/// logs + beeps without writing anything.
 @MainActor
 enum LichessProbeExporter {
 
@@ -33,22 +40,34 @@ enum LichessProbeExporter {
             return
         }
 
-        let panel = NSSavePanel()
-        panel.title = "Export Latest Lichess Probe Results"
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = defaultFilename(tickTimestamp: tickTimestamp)
-        panel.isExtensionHidden = false
+        let exportID = UUID()
+        let filename = filename(for: tickTimestamp, exportID: exportID)
 
-        let response = panel.runModal()
-        guard response == .OK, let url = panel.url else {
-            SessionLogger.shared.log("[TACTICAL-LICHESS] export cancelled")
+        let dir = performanceLichessProbesDir
+        do {
+            try FileManager.default.createDirectory(
+                at: dir,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            SessionLogger.shared.log(
+                "[TACTICAL-LICHESS] export failed: could not create \(dir.path): \(error.localizedDescription)"
+            )
+            presentExportAlert(
+                title: "Export failed",
+                message: "Could not create the export folder:\n\n\(dir.path)\n\n\(error.localizedDescription)",
+                revealURL: nil
+            )
             return
         }
+
+        let url = dir.appendingPathComponent(filename)
 
         do {
             let data = try buildJSON(
                 history: history,
-                tickTimestamp: tickTimestamp
+                tickTimestamp: tickTimestamp,
+                exportID: exportID
             )
             try data.write(to: url, options: .atomic)
             SessionLogger.shared.log(
@@ -59,6 +78,7 @@ enum LichessProbeExporter {
                 message: """
                     Wrote \(history.latestPerPuzzleResults.count) puzzles \
                     (\(formattedSize(data.count))) to
+
                     \(url.path)
 
                     Click Reveal in Finder to open the containing folder \
@@ -72,17 +92,53 @@ enum LichessProbeExporter {
             )
             presentExportAlert(
                 title: "Export failed",
-                message: "Could not write the JSON file:\n\n\(error.localizedDescription)",
+                message: "Could not write the JSON file:\n\n\(url.path)\n\n\(error.localizedDescription)",
                 revealURL: nil
             )
         }
     }
 
+    // MARK: - Destination directory
+
+    /// `~/Library/Application Support/DrewsChessMachine/Performance/LichessProbes/`.
+    /// Created on demand at first export. Sibling of the existing
+    /// `Sessions/` / `Models/` / `Analyses/` folders used by
+    /// CheckpointManager and the analyzer commands.
+    static var performanceLichessProbesDir: URL {
+        let fm = FileManager.default
+        let support = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+                .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return support
+            .appendingPathComponent("DrewsChessMachine", isDirectory: true)
+            .appendingPathComponent("Performance", isDirectory: true)
+            .appendingPathComponent("LichessProbes", isDirectory: true)
+    }
+
+    // MARK: - Filename
+
+    private static func filename(for tickTimestamp: Date, exportID: UUID) -> String {
+        let stamp = filenameTimestampFormatter.string(from: tickTimestamp)
+        let shortHash = exportID.uuidString.lowercased()
+            .replacingOccurrences(of: "-", with: "")
+            .prefix(8)
+        return "LichessProbe_\(stamp)_\(shortHash).json"
+    }
+
+    private static let filenameTimestampFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return df
+    }()
+
+    private static let isoTimestampFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
     // MARK: - NSAlert with Reveal in Finder
 
-    /// Modal alert mirroring the `presentAnalyzeAlert` pattern used by
-    /// the existing analyzer commands. Two-button flow: OK and Reveal
-    /// in Finder; Reveal is only added when `revealURL` is non-nil.
     private static func presentExportAlert(
         title: String,
         message: String,
@@ -111,37 +167,21 @@ enum LichessProbeExporter {
         }
     }
 
-    // MARK: - Filename
-
-    private static func defaultFilename(tickTimestamp: Date) -> String {
-        let stamp = filenameTimestampFormatter.string(from: tickTimestamp)
-        return "lichess-probe-\(stamp).json"
-    }
-
-    private static let filenameTimestampFormatter: DateFormatter = {
-        let df = DateFormatter()
-        df.dateFormat = "yyyyMMdd-HHmmss"
-        return df
-    }()
-
-    private static let isoTimestampFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
-    // MARK: - JSON shape
+    // MARK: - JSON build
 
     private static func buildJSON(
         history: LichessProbeHistory,
-        tickTimestamp: Date
+        tickTimestamp: Date,
+        exportID: UUID
     ) throws -> Data {
-        let entries = history.latestPerPuzzleResults.map(buildEntry(_:))
+        let entries = history.latestPerPuzzleResults.map(buildPuzzleEntry(_:))
         let payload = ExportPayload(
-            schemaVersion: 1,
+            schemaVersion: 2,
+            exportId: exportID.uuidString.lowercased(),
             generatedAt: isoTimestampFormatter.string(from: Date()),
             tickTimestamp: isoTimestampFormatter.string(from: tickTimestamp),
             modelLabel: history.latestTickModelLabel,
+            appBuild: AppBuildBlock.current,
             probeCount: entries.count,
             puzzles: entries
         )
@@ -150,23 +190,29 @@ enum LichessProbeExporter {
         return try encoder.encode(payload)
     }
 
-    private static func buildEntry(_ result: ProbeResult) -> ExportEntry {
+    private static func buildPuzzleEntry(_ result: ProbeResult) -> PuzzleEntry {
         let probe = result.probe
         let meta = LichessProbeData.metadata[probe.name]
         let expectedNotation = probe.acceptable
             .sorted(by: { $0.notation < $1.notation })
             .first?.notation
         let topMoves = result.topMoves.map { entry in
-            ExportTopMove(uci: uciString(entry.move), notation: entry.move.notation, prob: entry.prob)
+            TopMoveBlock(
+                uci: uciString(entry.move),
+                notation: entry.move.notation,
+                prob: entry.prob
+            )
         }
-        return ExportEntry(
-            puzzleId: meta?.id ?? probe.name,
+        let puzzle = PuzzleBlock(
+            id: meta?.id ?? probe.name,
             theme: meta?.theme ?? probe.shortDescription,
             themeCategory: probe.category.rawValue,
-            rating: meta?.rating,
+            ratingGlicko2: meta?.rating,
             fen: meta?.fen,
             expectedMoveUci: meta?.bestMoveUci,
-            expectedMoveNotation: expectedNotation,
+            expectedMoveNotation: expectedNotation
+        )
+        let probeResult = ProbeResultBlock(
             verdict: result.verdict.rawValue,
             expectedRank: result.expectedRank,
             expectedProb: result.expectedProb,
@@ -174,15 +220,19 @@ enum LichessProbeExporter {
             illegalMass: result.illegalMass,
             legalEntropyNats: result.legalEntropyNats,
             uniformLegalEntropy: result.uniformLegalEntropy,
-            valueWin: result.valueWDL.win,
-            valueDraw: result.valueWDL.draw,
-            valueLoss: result.valueWDL.loss,
+            valueWdl: ValueWDLBlock(
+                win: result.valueWDL.win,
+                draw: result.valueWDL.draw,
+                loss: result.valueWDL.loss
+            ),
             topMoves: topMoves
         )
+        return PuzzleEntry(puzzle: puzzle, probeResult: probeResult)
     }
 
-    /// Reconstruct UCI long-algebraic from a `ChessMove`. Mirror of the
-    /// loader's `parseUCI`: `<from-square><to-square>[promotion]`.
+    /// Reconstruct UCI long-algebraic from a `ChessMove`. Same shape as
+    /// `LichessProbeData.parseUCI`'s inverse:
+    /// `<from-square><to-square>[promotion]`.
     private static func uciString(_ move: ChessMove) -> String {
         let from = squareName(row: move.fromRow, col: move.fromCol)
         let to = squareName(row: move.toRow, col: move.toCol)
@@ -198,9 +248,6 @@ enum LichessProbeExporter {
     }
 
     private static func squareName(row: Int, col: Int) -> String {
-        // row 0 = rank 8, row 7 = rank 1 — same convention as
-        // `BoardEncoder.squareName`. Reimplemented here to avoid
-        // pulling in BoardEncoder for one helper.
         let file = Character(UnicodeScalar(UInt8(97 + col)))
         let rank = 8 - row
         return "\(file)\(rank)"
@@ -210,50 +257,125 @@ enum LichessProbeExporter {
 
     private struct ExportPayload: Encodable {
         let schemaVersion: Int
+        let exportId: String
         let generatedAt: String
         let tickTimestamp: String
         let modelLabel: String?
+        let appBuild: AppBuildBlock
         let probeCount: Int
-        let puzzles: [ExportEntry]
+        let puzzles: [PuzzleEntry]
 
         enum CodingKeys: String, CodingKey {
             case schemaVersion = "schema_version"
+            case exportId = "export_id"
             case generatedAt = "generated_at"
             case tickTimestamp = "tick_timestamp"
             case modelLabel = "model_label"
+            case appBuild = "app_build"
             case probeCount = "probe_count"
             case puzzles
         }
     }
 
-    private struct ExportEntry: Encodable {
-        let puzzleId: String
+    /// Top-level "what app built this snapshot" block — passes through
+    /// the static `BuildInfo` fields the auto-generated build script
+    /// produces so an exported file is reproducible without consulting
+    /// the live app.
+    private struct AppBuildBlock: Encodable {
+        let buildNumber: Int
+        let buildDate: String
+        let buildTimestamp: String
+        let gitHash: String
+        let gitBranch: String
+        let gitDirty: Bool
+        let summary: String
+
+        enum CodingKeys: String, CodingKey {
+            case buildNumber = "build_number"
+            case buildDate = "build_date"
+            case buildTimestamp = "build_timestamp"
+            case gitHash = "git_hash"
+            case gitBranch = "git_branch"
+            case gitDirty = "git_dirty"
+            case summary
+        }
+
+        static var current: AppBuildBlock {
+            AppBuildBlock(
+                buildNumber: BuildInfo.buildNumber,
+                buildDate: BuildInfo.buildDate,
+                buildTimestamp: BuildInfo.buildTimestamp,
+                gitHash: BuildInfo.gitHash,
+                gitBranch: BuildInfo.gitBranch,
+                gitDirty: BuildInfo.gitDirty,
+                summary: BuildInfo.summary
+            )
+        }
+    }
+
+    /// One per row in `puzzles[]`. Hierarchical: a `puzzle` sub-object
+    /// describes the position + bookmove, a `probe_result` sub-object
+    /// describes the network's behavior on it.
+    private struct PuzzleEntry: Encodable {
+        let puzzle: PuzzleBlock
+        let probeResult: ProbeResultBlock
+
+        enum CodingKeys: String, CodingKey {
+            case puzzle
+            case probeResult = "probe_result"
+        }
+    }
+
+    private struct PuzzleBlock: Encodable {
+        /// Original Lichess `PuzzleId` from the puzzle DB CSV — an
+        /// opaque ~5-char alphanumeric assigned by Lichess; we don't
+        /// generate these. The Lichess URL for the puzzle is
+        /// `https://lichess.org/training/<id>`.
+        let id: String
+        /// Lichess theme tag (e.g. `mateIn1`, `hangingPiece`).
         let theme: String
+        /// In-app `ProbeCategory` rawValue (e.g. `lichessMateIn1`) —
+        /// the bucket the curation script assigned the puzzle to.
         let themeCategory: String
-        let rating: Int?
+        /// Lichess puzzle rating (Glicko-2 family — Elo-like number).
+        let ratingGlicko2: Int?
         let fen: String?
         let expectedMoveUci: String?
         let expectedMoveNotation: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case theme
+            case themeCategory = "theme_category"
+            case ratingGlicko2 = "rating_glicko2"
+            case fen
+            case expectedMoveUci = "expected_move_uci"
+            case expectedMoveNotation = "expected_move_notation"
+        }
+    }
+
+    private struct ProbeResultBlock: Encodable {
         let verdict: String
         let expectedRank: Int?
         let expectedProb: Float
         let legalCount: Int
         let illegalMass: Float
+        /// Shannon entropy (in nats) of the legal-masked-and-
+        /// renormalized policy distribution. Measures how spread the
+        /// network's probability is across legal moves: 0 = totally
+        /// committed, higher = flatter.
         let legalEntropyNats: Float
+        /// `ln(legal_count)` — the entropy a uniformly-flat policy
+        /// would have over this position's legal set. Theoretical
+        /// max for `legal_entropy_nats`; the ratio
+        /// `legal_entropy_nats / uniform_legal_entropy` reads as
+        /// "fraction of uniform," with 1.0 = totally flat and 0
+        /// = perfect commitment.
         let uniformLegalEntropy: Float
-        let valueWin: Float
-        let valueDraw: Float
-        let valueLoss: Float
-        let topMoves: [ExportTopMove]
+        let valueWdl: ValueWDLBlock
+        let topMoves: [TopMoveBlock]
 
         enum CodingKeys: String, CodingKey {
-            case puzzleId = "puzzle_id"
-            case theme
-            case themeCategory = "theme_category"
-            case rating
-            case fen
-            case expectedMoveUci = "expected_move_uci"
-            case expectedMoveNotation = "expected_move_notation"
             case verdict
             case expectedRank = "expected_rank"
             case expectedProb = "expected_prob"
@@ -261,14 +383,18 @@ enum LichessProbeExporter {
             case illegalMass = "illegal_mass"
             case legalEntropyNats = "legal_entropy_nats"
             case uniformLegalEntropy = "uniform_legal_entropy"
-            case valueWin = "value_win"
-            case valueDraw = "value_draw"
-            case valueLoss = "value_loss"
+            case valueWdl = "value_wdl"
             case topMoves = "top_moves"
         }
     }
 
-    private struct ExportTopMove: Encodable {
+    private struct ValueWDLBlock: Encodable {
+        let win: Float
+        let draw: Float
+        let loss: Float
+    }
+
+    private struct TopMoveBlock: Encodable {
         let uci: String
         let notation: String
         let prob: Float
