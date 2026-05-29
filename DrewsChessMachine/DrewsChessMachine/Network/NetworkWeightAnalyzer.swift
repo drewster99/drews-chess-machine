@@ -12,7 +12,7 @@ import Foundation
 // stdev, p10/p50/p90 percentiles, ratio to He-init L2 reference,
 // drift-from-init L2 (for deterministic-init variables only).
 //
-// Per-section aggregates: stem / 8 tower blocks / policy / value
+// Per-section aggregates: stem / tower blocks / policy / value
 // each get totalElementCount, totalL2Norm, totalInitL2Norm,
 // totalL2RatioToInit. Lets you eyeball "block 5 is unusually quiet
 // compared to its neighbors" at a glance.
@@ -43,13 +43,14 @@ enum NetworkWeightAnalyzer {
 
     /// Canonical section ordering in the JSON output. Block indices
     /// match the code's 0-based numbering — `ChessNetwork` builds
-    /// residual blocks via `for i in 0..<8`, so variable names are
-    /// `block0_conv1_weights` through `block7_conv1_weights` and the
-    /// section names mirror that. Unknown variables fall through to
-    /// `"other"` so nothing is silently dropped.
+    /// residual blocks via `for i in 0..<ChessNetwork.numBlocks`, so
+    /// variable names are `block0_conv1_weights` through
+    /// `block<numBlocks-1>_conv1_weights` and the section names mirror
+    /// that. Unknown variables fall through to `"other"` so nothing is
+    /// silently dropped.
     static let sectionOrder: [String] =
         ["stem"]
-        + (0..<8).map { "block_\($0)" }
+        + (0..<ChessNetwork.numBlocks).map { "block_\($0)" }
         + ["policy", "value", "other"]
 
     /// 0-based section bucket for a variable. Drives both the
@@ -287,8 +288,8 @@ enum NetworkWeightAnalyzer {
         /// One entry per multi-channel BN layer. `value_bn` (1 channel)
         /// is excluded.
         let bnLayerDetails: [BNLayerDetail]
-        /// One entry per residual block's SE module. 8 entries
-        /// (block_1 .. block_8) in build order.
+        /// One entry per residual block's SE module — `numBlocks`
+        /// entries (block_0 .. block_<numBlocks-1>) in build order.
         let seAttentionDetails: [SEAttentionDetail]
     }
 
@@ -382,11 +383,11 @@ enum NetworkWeightAnalyzer {
             ))
         }
 
-        // SE attention detail — one per block, walking blocks 0..7 in
-        // order (matching ChessNetwork's `for i in 0..<8` loop). The
-        // SE FC2 bias for a block is named "blockN_se_fc2_bias".
+        // SE attention detail — one per block, walking blocks in order
+        // (matching ChessNetwork's `for i in 0..<ChessNetwork.numBlocks`
+        // loop). The SE FC2 bias for a block is named "blockN_se_fc2_bias".
         var seDetails: [Result.SEAttentionDetail] = []
-        for blockIndex in 0..<8 {
+        for blockIndex in 0..<ChessNetwork.numBlocks {
             let seBiasName = "block\(blockIndex)_se_fc2_bias"
             guard let seBiasValues = allByName[seBiasName] else { continue }
             seDetails.append(makeSEAttentionDetail(

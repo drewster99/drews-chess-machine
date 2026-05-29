@@ -64,7 +64,7 @@ enum BNMode {
 ///   `BoardEncoder` and the `inputPlanes` doc below for the full
 ///   plane table.
 /// - Stem: 3x3 conv (`inputPlanes` -> 128 channels), batch norm, ReLU
-/// - Tower: 8 residual blocks. Each block:
+/// - Tower: `numBlocks` residual blocks. Each block:
 ///     conv -> BN -> ReLU -> conv -> BN -> [SE module] -> skip add -> ReLU
 ///   The SE module is squeeze (global avg pool) -> FC(128 -> 32) ->
 ///   ReLU -> FC(32 -> 128) -> sigmoid -> channel-wise scale, providing
@@ -127,7 +127,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// fail to load with a clear shape mismatch at startup.
     static let inputPlanes = 30
     static let boardSize = 8
-    static let numBlocks = 8
+    static let numBlocks = 16
     /// Number of policy output channels: 56 queen-style (8 dirs × 7 dists)
     /// + 8 knight + 9 underpromotion (3 pieces × 3 dirs) + 3 queen-promotion
     /// (3 dirs) = 76. See `PolicyEncoding` for the full layout.
@@ -145,6 +145,45 @@ final class ChessNetwork: @unchecked Sendable {
     /// `archHash` mixes this so files saved against the scalar head are
     /// cleanly rejected.
     static let valueHeadClasses = 3
+
+    /// Total persistent-tensor element count for the current architecture
+    /// — trainable weights plus BN running mean/var, matching what
+    /// `exportWeights()` emits and what the analyzer reports as
+    /// `totalParamCount`. Derived purely from the arch constants above so
+    /// it auto-tracks any change to `numBlocks`, `channels`, `inputPlanes`,
+    /// `policyChannels`, or `valueHeadClasses`.
+    ///
+    /// Mirrors the shapes built in graph construction (`residualBlock`,
+    /// `stem`, `policyHead`, `valueHead`); if any of those layer shapes
+    /// change, update this in lockstep — same caveat as
+    /// `NetworkWeightAnalyzer.fanIn`. Used for display only (the About
+    /// popover); the load path never trusts it, validating instead against
+    /// the live variable list.
+    static var parameterCount: Int {
+        let seReduced = channels / seReductionRatio
+        // Per residual block: two 3×3 convs, two BN layers
+        // (gamma+beta+mean+var each), and the SE fc1/fc2 weights+biases.
+        let convPerBlock = 2 * (channels * channels * 9)
+        let bnPerBlock = 2 * (4 * channels)
+        let seFC1 = (channels * seReduced) + seReduced
+        let seFC2 = (seReduced * channels) + channels
+        let perBlock = convPerBlock + bnPerBlock + seFC1 + seFC2
+
+        // Stem: 3×3 conv (inputPlanes→channels) + one BN layer.
+        let stem = (inputPlanes * channels * 9) + (4 * channels)
+        // Policy head: 1×1 conv (channels→policyChannels) + bias.
+        let policy = (channels * policyChannels) + policyChannels
+        // Value head: 1×1 conv (channels→1) → BN(1) → flatten(boardSize²)
+        // → FC(flat→hidden) → FC(hidden→valueHeadClasses).
+        let valueFlatten = boardSize * boardSize
+        let valueHidden = 64
+        let valueConvBN = channels + 4
+        let valueFC1 = (valueFlatten * valueHidden) + valueHidden
+        let valueFC2 = (valueHidden * valueHeadClasses) + valueHeadClasses
+        let value = valueConvBN + valueFC1 + valueFC2
+
+        return (numBlocks * perBlock) + stem + policy + value
+    }
 
     // MARK: Graph Tensors
 
@@ -414,9 +453,9 @@ final class ChessNetwork: @unchecked Sendable {
         )
         x = g.reLU(with: x, name: "stem_relu")
 
-        // --- Tower: 8 residual blocks ---
+        // --- Tower: residual blocks (count = `numBlocks`) ---
 
-        for i in 0..<8 {
+        for i in 0..<Self.numBlocks {
             x = Self.residualBlock(
                 graph: g, input: x, descriptor: conv3x3, blockIndex: i, bnMode: bnMode,
                 trainables: &trainables,

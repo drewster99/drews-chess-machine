@@ -11,12 +11,12 @@ struct AboutPopoverContent: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("About Drew's Chess Machine")
                 .font(.headline)
-            Text("Forward pass through a ~2.4M parameter convolutional network using MPSGraph on the GPU. Weights are randomly initialized (He initialization) — no training has occurred.")
+            Text("Forward pass through a ~\(Self.parameterCountMillionsText) parameter convolutional network using MPSGraph on the GPU. Weights are randomly initialized (He initialization) — no training has occurred.")
                 .font(.callout)
             Divider()
-            Text("Architecture: 20×8×8 input → stem(128) → 8 res+SE blocks → policy(4864) + value(1)")
+            Text("Architecture: \(ChessNetwork.inputPlanes)×\(ChessNetwork.boardSize)×\(ChessNetwork.boardSize) input → stem(\(ChessNetwork.channels)) → \(ChessNetwork.numBlocks) res+SE blocks → policy(\(ChessNetwork.policySize)) + value(\(ChessNetwork.valueHeadClasses))")
                 .font(.system(.callout, design: .monospaced))
-            Text("Parameters: ~2,400,000 (~2.4M)")
+            Text("Parameters: \(Self.parameterCountText)")
                 .font(.system(.callout, design: .monospaced))
             if let net = network {
                 Text("Network ID: \(net.identifier?.description ?? "–")")
@@ -27,5 +27,20 @@ struct AboutPopoverContent: View {
         }
         .padding(16)
         .frame(width: 500)
+    }
+
+    /// Exact persistent-tensor count with thousands separators plus a
+    /// rounded-millions tag, e.g. "4,917,971 (~4.9M)". Derived from
+    /// `ChessNetwork.parameterCount` so it tracks the architecture.
+    private static var parameterCountText: String {
+        let count = ChessNetwork.parameterCount
+        let grouped = count.formatted(.number.grouping(.automatic))
+        return "\(grouped) (~\(parameterCountMillionsText))"
+    }
+
+    /// Rounded-millions form of `ChessNetwork.parameterCount`, e.g. "4.9M".
+    private static var parameterCountMillionsText: String {
+        let millions = Double(ChessNetwork.parameterCount) / 1_000_000
+        return String(format: "%.1fM", millions)
     }
 }

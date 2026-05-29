@@ -51,7 +51,7 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// **`.randomWeights` includes a one-shot BN warmup pass.** A
     /// freshly-He-init `ChessNetwork(bnMode: .inference)` has BN
     /// running stats at (0, 1), which makes the BN op effectively
-    /// identity — and that is *not* what an 8-block residual+SE tower
+    /// identity — and that is *not* what a deep residual+SE tower
     /// needs to keep activation variance bounded. Without the warmup
     /// the first inference pass produces a softmax dominated by a
     /// single randomly-chosen channel, sending self-play games into
