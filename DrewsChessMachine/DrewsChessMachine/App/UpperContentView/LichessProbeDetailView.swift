@@ -16,6 +16,11 @@ struct LichessProbeDetailView: View {
     let onProbeNow: @MainActor () -> Void
     let onExport: @MainActor () -> Void
 
+    /// Click-toggled popover that explains what the RATING column
+    /// actually measures. Hosted on the column header — row taps are
+    /// reserved for the board popover.
+    @State private var showRatingExplanation = false
+
     init(
         history: LichessProbeHistory,
         onProbeNow: @escaping @MainActor () -> Void = {},
@@ -25,6 +30,13 @@ struct LichessProbeDetailView: View {
         self.onProbeNow = onProbeNow
         self.onExport = onExport
     }
+
+    /// One-line summary used as both the hover tooltip (via `.help()`)
+    /// on the column header and on each row's rating value cell.
+    /// Short enough to fit a single tooltip line but specific enough to
+    /// distinguish from any other "rating" the project might use.
+    fileprivate static let ratingTooltip =
+        "Lichess Glicko-2 puzzle rating (Elo-like; higher = harder)"
 
     /// Tap-to-toggle popover state must live on a row-scoped struct,
     /// not on `LichessProbeDetailView` itself — otherwise every row
@@ -57,6 +69,7 @@ struct LichessProbeDetailView: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .frame(width: 56, alignment: .trailing)
+                    .help(LichessProbeDetailView.ratingTooltip)
                 Text(expectedNotation)
                     .font(.system(.body, design: .monospaced))
                     .frame(width: 90, alignment: .leading)
@@ -182,7 +195,7 @@ struct LichessProbeDetailView: View {
         HStack(spacing: 8) {
             Text("ID")
                 .frame(width: 60, alignment: .leading)
-            Text("RATING")
+            ratingColumnHeaderCell
                 .frame(width: 56, alignment: .trailing)
             Text("EXPECTED")
                 .frame(width: 90, alignment: .leading)
@@ -199,6 +212,54 @@ struct LichessProbeDetailView: View {
         }
         .font(.system(.caption2, design: .monospaced).weight(.semibold))
         .foregroundStyle(.secondary)
+    }
+
+    /// "RATING" column header rendered as a clickable label. Hover
+    /// shows the short tooltip via `.help()`; click toggles a popover
+    /// with a longer explanation. The text is underlined with a dotted
+    /// pattern so the user has a visual cue this header is interactive
+    /// — without that, the popover affordance is invisible.
+    @ViewBuilder
+    private var ratingColumnHeaderCell: some View {
+        Text("RATING")
+            .underline(true, pattern: .dot)
+            .help(Self.ratingTooltip)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                showRatingExplanation.toggle()
+            }
+            .popover(isPresented: $showRatingExplanation, arrowEdge: .top) {
+                ratingExplanationPopover
+            }
+    }
+
+    /// Expanded explanation of the RATING column, shown when the user
+    /// clicks the "RATING" header. Wider tooltip-equivalent — covers
+    /// the rating family, the curation filter range, and the "higher =
+    /// harder" interpretation in a single read.
+    @ViewBuilder
+    private var ratingExplanationPopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Lichess puzzle rating")
+                .font(.headline)
+            Text(
+                "Each Lichess puzzle is rated with the Glicko-2 system — "
+                + "the same family as chess Elo, with a reliability deviation "
+                + "tracked alongside the number. The rating moves based on how "
+                + "often users at known ratings solve the puzzle."
+            )
+            .font(.body)
+            Text(
+                "This probe set was filtered to ratings 800–1800 during "
+                + "curation, with rating deviation ≤ 90 and ≥ 200 plays, "
+                + "so the rating is well-stabilised for the puzzles you see here."
+            )
+            .font(.body)
+            Text("Higher = harder.")
+                .font(.body).bold()
+        }
+        .padding(16)
+        .frame(width: 360)
     }
 
     @ViewBuilder
