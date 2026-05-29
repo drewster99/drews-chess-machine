@@ -512,7 +512,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
     //   - A perpetually-zero gradient (stuck channel; less likely but
     //     would still warrant investigation).
 
-    func testEveryTrainableVariableUpdatesWithinTwoSteps() async throws {
+    func testEveryTrainableVariableReceivesGradient() async throws {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
@@ -526,20 +526,30 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         // `lrWarmupSteps: 0` short-circuits the warmup branch in
         // `buildFeeds` (ChessTrainer.swift:2591) to `warmupMul = 1.0`,
         // so the first step uses the full base learning rate.
-        // TWO steps, not one: each residual block's `bn2` uses zero-γ
-        // init (identity-init — see ChessNetwork.batchNorm), so on the
-        // FIRST step the branch's upstream weights (conv1/conv2, bn1, the
-        // SE FCs) receive exactly zero gradient — the zeroed γ kills
-        // d(bn2_out)/d(conv2_out), and the SE gate multiplies a zero
-        // branch so its FCs get no gradient either. That first step lifts
-        // each `bn2` γ off zero; the SECOND step then propagates gradient
-        // through the now-nonzero γ to every branch weight. A genuinely
-        // disconnected variable still receives zero gradient on BOTH
-        // steps, so this remains a valid "build-time disconnect" gate.
+        // Each residual block's `bn2` uses zero-γ init (identity init —
+        // see ChessNetwork.batchNorm). That makes the residual-branch
+        // weights' gradient scale with γ, which starts at 0 and grows
+        // slowly: for the first several steps their updates fall below
+        // fp32 ULP and an exact value-change probe can't see them. That's
+        // a property of the init, NOT a wiring bug (the additive params —
+        // betas/biases — get order-1 gradients and do move, but the
+        // multiplicative weights don't visibly budge). To test what this
+        // gate is actually for — every trainable is wired into the loss
+        // graph — prime every `bn2` γ to 1.0 first so full-magnitude
+        // gradient flows through every branch on a single step. A
+        // genuinely disconnected variable still receives exactly zero
+        // gradient and is caught.
         let trainer = try ChessTrainer(lrWarmupSteps: 0)
+        var primed = try await trainer.network.exportWeights()
+        let trainableVars = trainer.network.trainableVariables
+        for (i, v) in trainableVars.enumerated()
+        where v.operation.name.hasSuffix("_bn2_gamma") {
+            primed[i] = [Float](repeating: 1.0, count: primed[i].count)
+        }
+        try await trainer.network.loadWeights(primed)
+
         let weightsBefore = try await trainer.network.exportWeights()
-        // Run two steps on synthetic random data via the public path.
-        _ = try await trainer.trainStep(batchSize: 32)
+        // Run one step on synthetic random data via the public path.
         _ = try await trainer.trainStep(batchSize: 32)
         let weightsAfter = try await trainer.network.exportWeights()
 
@@ -565,7 +575,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         }
         XCTAssertEqual(
             unchangedNames, [],
-            "After two trainSteps, the following trainable indices did NOT change at all: \(unchangedNames). " +
+            "After one trainStep (with every bn2 γ primed to 1.0), the following trainable indices did NOT change at all: \(unchangedNames). " +
             "These variables receive no gradient — likely a build-time disconnect between the loss and the variable."
         )
     }
