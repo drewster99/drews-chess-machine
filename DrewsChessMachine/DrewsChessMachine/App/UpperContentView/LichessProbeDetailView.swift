@@ -212,13 +212,14 @@ struct LichessProbeDetailView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             Divider()
-            // ScrollView covers both axes so the optional 5 comparison
-            // columns (which push total row width well past the
-            // default window) can be reached by horizontal scrolling
-            // without resizing the window first. Vertical is the
-            // primary scroll; horizontal only kicks in when content
-            // exceeds the viewport width.
-            ScrollView([.vertical, .horizontal], showsIndicators: true) {
+            // ScrollView is vertical-only — the earlier two-axis form
+            // (`[.vertical, .horizontal]`) caused SwiftUI to center the
+            // table horizontally when the content was narrower than
+            // the viewport, breaking the table's leading alignment.
+            // With comparison loaded the row width grows past the
+            // default window; resize the window wider to reach the
+            // rightmost columns rather than scrolling horizontally.
+            ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     columnHeader
                         .padding(.vertical, 4)
