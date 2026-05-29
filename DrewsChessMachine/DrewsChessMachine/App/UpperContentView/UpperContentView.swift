@@ -2100,6 +2100,12 @@ struct UpperContentView: View {
         commandHub.openLichessProbeMonitor = {
             LichessProbeMonitorLauncher.openWindow(sessionController: session)
         }
+        commandHub.openLichessProbeDetail = {
+            LichessProbeDetailLauncher.openWindow(sessionController: session)
+        }
+        commandHub.exportLichessProbeResults = {
+            LichessProbeExporter.exportLatest(history: session.lichessProbeHistory)
+        }
         commandHub.analyzeReplayBuffer = { session.analyzeReplayBufferToFile() }
         commandHub.analyzeValueHead = { session.analyzeValueHeadToFile() }
         commandHub.analyzeNetworkWeights = { session.analyzeNetworkWeightsToFile() }

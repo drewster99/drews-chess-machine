@@ -29,7 +29,33 @@ import Foundation
 enum LichessProbeData {
 
     /// Bundled 200-puzzle set, parsed at first access.
-    static let largeSet: [TacticalProbe] = loadFromBundle()
+    static var largeSet: [TacticalProbe] { loaded.probes }
+
+    /// Sidecar metadata keyed by `TacticalProbe.name` so the detail
+    /// window and the JSON exporter can surface the original Lichess
+    /// puzzle id, rating, theme, FEN, and bookmove UCI without
+    /// re-parsing the bundle JSON or trying to recover those fields
+    /// from `probe.name` by regex.
+    static var metadata: [String: PuzzleMetadata] { loaded.metadata }
+
+    /// Per-puzzle metadata. Stored verbatim from the bundle JSON so
+    /// exports round-trip cleanly back to the source.
+    struct PuzzleMetadata: Sendable {
+        let id: String
+        let theme: String              // raw Lichess theme string
+        let rating: Int
+        let fen: String                // post-setup-move FEN
+        let bestMoveUci: String
+    }
+
+    /// Single one-shot bundle load. Computed lazily on first access of
+    /// `largeSet` or `metadata`; subsequent accesses are O(1).
+    private struct Loaded: Sendable {
+        let probes: [TacticalProbe]
+        let metadata: [String: PuzzleMetadata]
+    }
+
+    private static let loaded: Loaded = loadFromBundle()
 
     // MARK: - JSON shape
 
@@ -55,7 +81,7 @@ enum LichessProbeData {
 
     // MARK: - Bundle load
 
-    private static func loadFromBundle() -> [TacticalProbe] {
+    private static func loadFromBundle() -> Loaded {
         guard let url = Bundle.main.url(
             forResource: "lichess_probes_200",
             withExtension: "json"
@@ -84,7 +110,9 @@ enum LichessProbeData {
         }
 
         var probes: [TacticalProbe] = []
+        var metadata: [String: PuzzleMetadata] = [:]
         probes.reserveCapacity(decoded.puzzles.count)
+        metadata.reserveCapacity(decoded.puzzles.count)
 
         for entry in decoded.puzzles {
             let state: GameState
@@ -120,9 +148,16 @@ enum LichessProbeData {
                 state: state,
                 acceptable: [move]
             ))
+            metadata[name] = PuzzleMetadata(
+                id: entry.id,
+                theme: entry.theme,
+                rating: entry.rating,
+                fen: entry.fen,
+                bestMoveUci: entry.bestMoveUci
+            )
         }
 
-        return probes
+        return Loaded(probes: probes, metadata: metadata)
     }
 
     // MARK: - UCI move parsing

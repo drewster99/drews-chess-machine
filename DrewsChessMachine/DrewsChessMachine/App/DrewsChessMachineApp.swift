@@ -507,6 +507,10 @@ struct DrewsChessMachineApp: App {
                     .disabled(!commandHub.networkReady)
                 Button("Open Lichess Probe Monitor…") { commandHub.openLichessProbeMonitor() }
                     .disabled(!commandHub.networkReady)
+                Button("Open Lichess Probe Detail…") { commandHub.openLichessProbeDetail() }
+                    .disabled(!commandHub.networkReady)
+                Button("Export Latest Lichess Probe Results…") { commandHub.exportLichessProbeResults() }
+                    .disabled(!commandHub.networkReady)
                 Divider()
                 Button("Analyze Replay Buffer…") { commandHub.analyzeReplayBuffer() }
                 Button("Analyze Value Head Weights…") { commandHub.analyzeValueHead() }

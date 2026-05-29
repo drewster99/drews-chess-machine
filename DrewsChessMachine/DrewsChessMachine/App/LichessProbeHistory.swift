@@ -90,6 +90,22 @@ final class LichessProbeHistory {
     /// `lichess*` cases reaches every site that compiles.
     private(set) var entries: [ProbeCategory: [Entry]] = [:]
 
+    /// Full per-puzzle results from the most recent tick. 200 entries
+    /// once the first tick lands, empty otherwise. The detail window
+    /// reads this directly; the JSON exporter writes a snapshot of
+    /// this array to disk. Replaced wholesale on each tick so the
+    /// "latest" semantic is unambiguous.
+    private(set) var latestPerPuzzleResults: [ProbeResult] = []
+
+    /// Timestamp of `latestPerPuzzleResults`. nil before the first
+    /// tick.
+    private(set) var latestTickTimestamp: Date?
+
+    /// ModelID-style label of the network the latest tick ran against.
+    /// Surfaced in the detail window header and the JSON export so the
+    /// user can tell which weight snapshot produced which numbers.
+    private(set) var latestTickModelLabel: String?
+
     /// Cap per series so a long-running monitor doesn't grow without
     /// bound. 120 ticks × 30 min/tick = 60 hours of visible history —
     /// matches the 9-probe monitor's window (120 × 10 min = 20 hours)
@@ -100,9 +116,15 @@ final class LichessProbeHistory {
         self.maxEntriesPerTheme = maxEntriesPerTheme
     }
 
-    /// Append one tick's eight aggregates (one per theme). Each theme's
-    /// series is trimmed to the cap independently.
-    func record(_ aggregates: [Aggregate]) {
+    /// Append one tick's eight aggregates (one per theme) and replace
+    /// the latest per-puzzle snapshot in one shot. Aggregate series are
+    /// trimmed to the cap; the per-puzzle snapshot is unconditional —
+    /// callers see the freshest 200 results.
+    func record(
+        _ aggregates: [Aggregate],
+        allResults: [ProbeResult],
+        modelLabel: String?
+    ) {
         let now = Date()
         for agg in aggregates {
             var series = entries[agg.theme] ?? []
@@ -112,6 +134,9 @@ final class LichessProbeHistory {
             }
             entries[agg.theme] = series
         }
+        latestPerPuzzleResults = allResults
+        latestTickTimestamp = now
+        latestTickModelLabel = modelLabel
     }
 
     /// Most recent aggregate for one theme, or nil before the first
@@ -146,8 +171,14 @@ final class LichessProbeHistory {
     }
 
     /// Drop all series. Wired to the monitor's "Clear history" button.
+    /// Clears both the per-theme aggregates and the latest per-puzzle
+    /// snapshot — leaving the snapshot around would falsely imply a
+    /// "current" tick exists.
     func clearAll() {
         entries.removeAll()
+        latestPerPuzzleResults = []
+        latestTickTimestamp = nil
+        latestTickModelLabel = nil
     }
 
     /// Sum of `argmaxCorrect` across all themes' latest entries, or

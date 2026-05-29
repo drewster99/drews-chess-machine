@@ -114,14 +114,18 @@ final class LichessProbeWatcher {
         // logits per position rather than a folded batch result.
         let probes = LichessProbeData.largeSet
         var resultsByCategory: [ProbeCategory: [ProbeResult]] = [:]
+        var allResults: [ProbeResult] = []
+        allResults.reserveCapacity(probes.count)
         for probe in probes {
             let r = await TacticalProbeRunner.run(probe, against: net)
             resultsByCategory[probe.category, default: []].append(r)
+            allResults.append(r)
         }
 
         let aggregates = foldAggregates(resultsByCategory)
-        history.record(aggregates)
-        logTickSummary(aggregates, modelLabel: net.identifier?.description ?? "<no-id>")
+        let modelLabel = net.identifier?.description ?? "<no-id>"
+        history.record(aggregates, allResults: allResults, modelLabel: modelLabel)
+        logTickSummary(aggregates, modelLabel: modelLabel)
     }
 
     /// Fold per-category arrays of `ProbeResult` into one

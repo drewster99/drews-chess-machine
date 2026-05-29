@@ -159,6 +159,15 @@ final class AppCommandHub {
     /// argmax-fraction over time. Independent of the periodic watcher
     /// — opening/closing doesn't start/stop ticking.
     var openLichessProbeMonitor: () -> Void = {}
+    /// Open the standalone Lichess Probe Detail window — the per-
+    /// puzzle drill-down companion of the aggregate monitor. Shows all
+    /// 200 puzzles with id, rating, expected move, actual top-1,
+    /// prob, rank, verdict, W/D/L. Also hosts the JSON export button.
+    var openLichessProbeDetail: () -> Void = {}
+    /// Write the latest Lichess Probe tick (200 puzzles × full per-
+    /// puzzle detail) to a user-chosen JSON file. No-op with a beep
+    /// if no tick has landed yet.
+    var exportLichessProbeResults: () -> Void = {}
     /// Run the offline replay-buffer analyzer against the currently-
     /// loaded buffer. Writes a JSON file under
     /// `~/Library/Application Support/DrewsChessMachine/Analyses/`,
