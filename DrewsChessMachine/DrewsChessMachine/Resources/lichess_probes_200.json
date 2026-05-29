@@ -1,0 +1,2030 @@
+{
+  "metadata": {
+    "source": "Lichess puzzle DB (CC0) \u2014 database.lichess.org/lichess_db_puzzle.csv.zst",
+    "rating_range": [
+      800,
+      1800
+    ],
+    "filters": {
+      "min_popularity": 80,
+      "min_nb_plays": 200,
+      "max_rating_deviation": 90
+    },
+    "themes": [
+      "mateIn1",
+      "hangingPiece",
+      "fork",
+      "pin",
+      "skewer",
+      "endgame",
+      "middlegame",
+      "opening"
+    ],
+    "per_theme": 25,
+    "total": 200,
+    "sampling": "deterministic: sort eligible by puzzle id, take 25 evenly-spaced",
+    "fen_convention": "position AFTER Lichess setup move; best_move_uci is the solver's first move"
+  },
+  "puzzles": [
+    {
+      "id": "0000D",
+      "theme": "endgame",
+      "rating": 1491,
+      "popularity": 96,
+      "nb_plays": 36366,
+      "fen": "5rk1/1p3ppp/pq1Q1b2/8/8/1P3N2/P4PPP/3R2K1 b - - 3 27",
+      "best_move_uci": "f8d8",
+      "all_themes": "advantage endgame short"
+    },
+    {
+      "id": "2SXyZ",
+      "theme": "endgame",
+      "rating": 1477,
+      "popularity": 82,
+      "nb_plays": 237,
+      "fen": "4r3/1p5k/p1b1q2p/4pNp1/4P3/1P4QP/1PPR3K/8 w - - 6 34",
+      "best_move_uci": "d2d6",
+      "all_themes": "crushing endgame short"
+    },
+    {
+      "id": "4xSVi",
+      "theme": "endgame",
+      "rating": 1043,
+      "popularity": 94,
+      "nb_plays": 874,
+      "fen": "3r2k1/1p3p2/pq2bQp1/3p3p/7P/P3PBP1/1P3PK1/3R4 b - - 5 25",
+      "best_move_uci": "e6h3",
+      "all_themes": "crushing discoveredAttack endgame master short"
+    },
+    {
+      "id": "7SS5F",
+      "theme": "endgame",
+      "rating": 1597,
+      "popularity": 91,
+      "nb_plays": 947,
+      "fen": "6k1/8/p1p1p3/2N2p2/1P2p2P/P3K1p1/8/8 b - - 1 38",
+      "best_move_uci": "f5f4",
+      "all_themes": "advancedPawn crushing endgame knightEndgame master short"
+    },
+    {
+      "id": "9wOhE",
+      "theme": "endgame",
+      "rating": 1279,
+      "popularity": 92,
+      "nb_plays": 996,
+      "fen": "8/6p1/1p2pp1p/3k4/p1P5/PP2KPP1/7P/8 b - - 0 35",
+      "best_move_uci": "d5c5",
+      "all_themes": "crushing defensiveMove endgame long pawnEndgame"
+    },
+    {
+      "id": "CQ5zH",
+      "theme": "endgame",
+      "rating": 1793,
+      "popularity": 91,
+      "nb_plays": 657,
+      "fen": "8/2b5/2P3B1/8/p6P/1k6/4Kp2/8 w - - 0 46",
+      "best_move_uci": "h4h5",
+      "all_themes": "bishopEndgame crushing endgame quietMove short"
+    },
+    {
+      "id": "EuHk6",
+      "theme": "endgame",
+      "rating": 1169,
+      "popularity": 100,
+      "nb_plays": 340,
+      "fen": "8/6pk/R7/6PK/8/p1r5/8/8 w - - 1 42",
+      "best_move_uci": "g5g6",
+      "all_themes": "endgame long mate mateIn3 rookEndgame"
+    },
+    {
+      "id": "HNVuG",
+      "theme": "endgame",
+      "rating": 1619,
+      "popularity": 98,
+      "nb_plays": 7851,
+      "fen": "3r4/p4R1p/1p6/6kr/P7/8/3p1K2/3R4 w - - 0 38",
+      "best_move_uci": "d1g1",
+      "all_themes": "endgame long mate mateIn3 rookEndgame"
+    },
+    {
+      "id": "JrdyY",
+      "theme": "endgame",
+      "rating": 1387,
+      "popularity": 95,
+      "nb_plays": 1977,
+      "fen": "3n4/8/1Pk5/4P1K1/5p1p/8/5B2/8 b - - 0 71",
+      "best_move_uci": "h4h3",
+      "all_themes": "crushing endgame short"
+    },
+    {
+      "id": "MKySm",
+      "theme": "endgame",
+      "rating": 1155,
+      "popularity": 83,
+      "nb_plays": 462,
+      "fen": "8/3q1pk1/p7/2p1Rp1p/2Pr1Pb1/P1QB2P1/7P/2K5 b - - 4 36",
+      "best_move_uci": "d4d3",
+      "all_themes": "crushing endgame queensideAttack short"
+    },
+    {
+      "id": "Opx54",
+      "theme": "endgame",
+      "rating": 1117,
+      "popularity": 94,
+      "nb_plays": 3743,
+      "fen": "1r5k/p3RQbp/1p1p2p1/3B4/2Pq4/6PP/8/7K w - - 6 35",
+      "best_move_uci": "e7e8",
+      "all_themes": "endgame long mate mateIn3"
+    },
+    {
+      "id": "RJ319",
+      "theme": "endgame",
+      "rating": 1372,
+      "popularity": 87,
+      "nb_plays": 525,
+      "fen": "8/8/1P6/7k/8/5p1b/7K/8 w - - 0 55",
+      "best_move_uci": "h2h3",
+      "all_themes": "crushing endgame long"
+    },
+    {
+      "id": "Tm9bU",
+      "theme": "endgame",
+      "rating": 1733,
+      "popularity": 94,
+      "nb_plays": 334,
+      "fen": "8/1p6/1br2p2/p4Pk1/P5P1/3p1K2/8/1R6 w - - 0 43",
+      "best_move_uci": "b1h1",
+      "all_themes": "endgame mate mateIn2 quietMove short"
+    },
+    {
+      "id": "WH163",
+      "theme": "endgame",
+      "rating": 1783,
+      "popularity": 96,
+      "nb_plays": 3013,
+      "fen": "8/7k/1p3qpp/1P6/3p4/P1PQp2P/5rP1/4R1K1 b - - 0 43",
+      "best_move_uci": "f2g2",
+      "all_themes": "attraction crushing endgame master sacrifice short"
+    },
+    {
+      "id": "YkzmP",
+      "theme": "endgame",
+      "rating": 1258,
+      "popularity": 88,
+      "nb_plays": 898,
+      "fen": "8/1p3p2/p3q2k/P1R3p1/4n2p/4Q2P/1P4P1/7K b - - 9 40",
+      "best_move_uci": "e4g3",
+      "all_themes": "crushing endgame master short"
+    },
+    {
+      "id": "bEbTY",
+      "theme": "endgame",
+      "rating": 1271,
+      "popularity": 93,
+      "nb_plays": 1270,
+      "fen": "1k1r4/2p1B1pp/1pQ5/8/2P5/1K6/P4rPP/8 b - - 1 29",
+      "best_move_uci": "d8d3",
+      "all_themes": "advantage endgame long"
+    },
+    {
+      "id": "di9n5",
+      "theme": "endgame",
+      "rating": 1345,
+      "popularity": 95,
+      "nb_plays": 10295,
+      "fen": "2r4k/pp1qPQ1p/6p1/8/8/7P/PP1r1PP1/5RK1 w - - 1 24",
+      "best_move_uci": "f7f8",
+      "all_themes": "advancedPawn endgame mate mateIn2 promotion short"
+    },
+    {
+      "id": "gBjJQ",
+      "theme": "endgame",
+      "rating": 957,
+      "popularity": 89,
+      "nb_plays": 384,
+      "fen": "8/8/3k1p2/1p2P1p1/1P1K1pP1/5P2/8/8 b - - 0 48",
+      "best_move_uci": "f6e5",
+      "all_themes": "crushing defensiveMove endgame pawnEndgame short"
+    },
+    {
+      "id": "if4Jv",
+      "theme": "endgame",
+      "rating": 1226,
+      "popularity": 95,
+      "nb_plays": 601,
+      "fen": "5b2/2k2B2/4PP1p/1pp5/8/2PN2P1/p2K4/5b2 w - - 0 44",
+      "best_move_uci": "e6e7",
+      "all_themes": "advancedPawn crushing endgame long promotion trappedPiece"
+    },
+    {
+      "id": "l8K58",
+      "theme": "endgame",
+      "rating": 969,
+      "popularity": 95,
+      "nb_plays": 1056,
+      "fen": "8/R7/1p6/4n3/P7/3Bk3/1PP4r/2K5 b - - 0 39",
+      "best_move_uci": "h2h1",
+      "all_themes": "endgame mate mateIn2 short"
+    },
+    {
+      "id": "ncAfu",
+      "theme": "endgame",
+      "rating": 1269,
+      "popularity": 87,
+      "nb_plays": 1357,
+      "fen": "2r1r2k/2qR2p1/7p/3Q4/5P2/1P4PP/1KP1R3/8 b - - 2 35",
+      "best_move_uci": "c7c3",
+      "all_themes": "crushing endgame master short"
+    },
+    {
+      "id": "q5oT7",
+      "theme": "endgame",
+      "rating": 1051,
+      "popularity": 87,
+      "nb_plays": 865,
+      "fen": "8/6pB/p7/1p6/1k2Pb1P/1P3P2/r4P2/5K1R b - - 0 33",
+      "best_move_uci": "a2a1",
+      "all_themes": "crushing endgame long master"
+    },
+    {
+      "id": "sZtAL",
+      "theme": "endgame",
+      "rating": 1709,
+      "popularity": 95,
+      "nb_plays": 14950,
+      "fen": "7r/5B2/p3K2k/8/rp3p2/8/8/6R1 w - - 0 47",
+      "best_move_uci": "e6f6",
+      "all_themes": "endgame exposedKing long mate mateIn3"
+    },
+    {
+      "id": "v26f8",
+      "theme": "endgame",
+      "rating": 1622,
+      "popularity": 88,
+      "nb_plays": 813,
+      "fen": "8/8/8/5PK1/1p2p3/8/P2k4/8 w - - 1 55",
+      "best_move_uci": "f5f6",
+      "all_themes": "advancedPawn crushing endgame pawnEndgame promotion veryLong"
+    },
+    {
+      "id": "xWced",
+      "theme": "endgame",
+      "rating": 917,
+      "popularity": 100,
+      "nb_plays": 398,
+      "fen": "8/5kp1/R7/3p1K2/3P1P2/2P4P/p7/r7 b - - 1 41",
+      "best_move_uci": "g7g6",
+      "all_themes": "crushing endgame master rookEndgame short"
+    },
+    {
+      "id": "000Pw",
+      "theme": "fork",
+      "rating": 1550,
+      "popularity": 92,
+      "nb_plays": 625,
+      "fen": "6k1/5p1p/4p3/4q3/3n4/2Q3P1/PP1N1P1P/6K1 b - - 3 37",
+      "best_move_uci": "d4e2",
+      "all_themes": "crushing endgame fork short"
+    },
+    {
+      "id": "2Ts9V",
+      "theme": "fork",
+      "rating": 1529,
+      "popularity": 92,
+      "nb_plays": 1694,
+      "fen": "8/6k1/PR6/1N4p1/5n1p/1P2K2P/r7/8 b - - 4 46",
+      "best_move_uci": "f4d5",
+      "all_themes": "crushing endgame fork master masterVsMaster short"
+    },
+    {
+      "id": "4ywuV",
+      "theme": "fork",
+      "rating": 1698,
+      "popularity": 96,
+      "nb_plays": 10367,
+      "fen": "3r1r1k/1bp2p1p/p1q1p1p1/1p2n3/6NB/5P2/P1P3PP/4R1K1 w - - 0 27",
+      "best_move_uci": "h4f6",
+      "all_themes": "fork mate mateIn2 middlegame short"
+    },
+    {
+      "id": "7V6K8",
+      "theme": "fork",
+      "rating": 1631,
+      "popularity": 88,
+      "nb_plays": 281,
+      "fen": "5Q2/p2k1pp1/7p/4q3/3pP3/BPnP2Pb/P4K2/R1R5 b - - 1 32",
+      "best_move_uci": "e5f6",
+      "all_themes": "fork mate mateIn4 middlegame sacrifice veryLong"
+    },
+    {
+      "id": "9zv8P",
+      "theme": "fork",
+      "rating": 1191,
+      "popularity": 91,
+      "nb_plays": 675,
+      "fen": "4Q3/p4pkp/6p1/8/2Bb4/q5P1/P4P1P/6K1 w - - 2 28",
+      "best_move_uci": "e8f7",
+      "all_themes": "crushing endgame fork long"
+    },
+    {
+      "id": "CUVw0",
+      "theme": "fork",
+      "rating": 1713,
+      "popularity": 93,
+      "nb_plays": 9495,
+      "fen": "3r2k1/ppp2nP1/5R1B/8/2q5/2P5/2PQ4/3K4 w - - 1 31",
+      "best_move_uci": "d2d8",
+      "all_themes": "crushing endgame exposedKing fork long sacrifice"
+    },
+    {
+      "id": "ExSzo",
+      "theme": "fork",
+      "rating": 1793,
+      "popularity": 97,
+      "nb_plays": 2457,
+      "fen": "R7/5rkq/5p2/1Q6/3P2p1/2P1P1P1/5PK1/8 b - - 0 45",
+      "best_move_uci": "h7e4",
+      "all_themes": "advantage endgame fork short"
+    },
+    {
+      "id": "HQTtU",
+      "theme": "fork",
+      "rating": 1053,
+      "popularity": 94,
+      "nb_plays": 2175,
+      "fen": "2kr1bnr/pp3ppp/4p3/3P4/3n1P1q/1QN5/PP2BP1P/R1B1K2R w KQ - 3 13",
+      "best_move_uci": "b3c4",
+      "all_themes": "crushing fork middlegame short"
+    },
+    {
+      "id": "JuOGO",
+      "theme": "fork",
+      "rating": 1394,
+      "popularity": 94,
+      "nb_plays": 6028,
+      "fen": "r2qk2r/1b2bppp/p2p1n2/1p1Pp3/2P5/P2BBN1P/1P1Q1PP1/R4RK1 b kq - 0 16",
+      "best_move_uci": "e5e4",
+      "all_themes": "advantage fork middlegame short"
+    },
+    {
+      "id": "MO00V",
+      "theme": "fork",
+      "rating": 1136,
+      "popularity": 97,
+      "nb_plays": 2475,
+      "fen": "r1b1k1nr/ppp2ppp/2p2q2/8/1b2P3/2N2P2/PPP1Q1PP/R1B1KB1R b KQkq - 3 8",
+      "best_move_uci": "b4c3",
+      "all_themes": "crushing exposedKing fork long opening"
+    },
+    {
+      "id": "Orp8X",
+      "theme": "fork",
+      "rating": 949,
+      "popularity": 86,
+      "nb_plays": 267,
+      "fen": "3rr1k1/1b3pP1/p2p3q/1p2n2N/2p5/1BPn2QP/PP4PK/R4R2 w - - 1 33",
+      "best_move_uci": "h5f6",
+      "all_themes": "crushing fork middlegame short"
+    },
+    {
+      "id": "RMedD",
+      "theme": "fork",
+      "rating": 1276,
+      "popularity": 95,
+      "nb_plays": 6874,
+      "fen": "r3r1k1/2p3pp/2p1b3/p1Pn2q1/8/P1PB4/1BQ3PP/R4R1K b - - 3 24",
+      "best_move_uci": "d5e3",
+      "all_themes": "crushing fork long middlegame"
+    },
+    {
+      "id": "TqWNs",
+      "theme": "fork",
+      "rating": 1141,
+      "popularity": 94,
+      "nb_plays": 5424,
+      "fen": "8/3q1k2/Q4p1p/1p1p4/7P/3p3P/PPb3r1/2K2R2 w - - 0 35",
+      "best_move_uci": "a6f6",
+      "all_themes": "crushing endgame fork veryLong"
+    },
+    {
+      "id": "WKUpb",
+      "theme": "fork",
+      "rating": 1287,
+      "popularity": 93,
+      "nb_plays": 3343,
+      "fen": "1kr1r3/pp5p/1q6/5N2/P2Q1Pp1/1P6/4pKPP/4R3 w - - 2 37",
+      "best_move_uci": "d4b6",
+      "all_themes": "advantage endgame fork long"
+    },
+    {
+      "id": "YoqP4",
+      "theme": "fork",
+      "rating": 1095,
+      "popularity": 92,
+      "nb_plays": 942,
+      "fen": "1kr5/1p6/1R6/6p1/P3Q3/5P2/1PP3Pq/1K6 b - - 2 31",
+      "best_move_uci": "h2g1",
+      "all_themes": "advantage endgame fork short"
+    },
+    {
+      "id": "bIeC3",
+      "theme": "fork",
+      "rating": 1348,
+      "popularity": 85,
+      "nb_plays": 1144,
+      "fen": "b5kr/p3b1pp/1pp2q2/3p1B1Q/2P5/8/PP3PPP/5RK1 w - - 2 18",
+      "best_move_uci": "h5e8",
+      "all_themes": "fork long mate mateIn3 middlegame"
+    },
+    {
+      "id": "dmYD4",
+      "theme": "fork",
+      "rating": 1059,
+      "popularity": 86,
+      "nb_plays": 827,
+      "fen": "1k6/1pp1r3/8/P3N2R/2P1nP1p/8/6P1/5K2 b - - 0 40",
+      "best_move_uci": "e4g3",
+      "all_themes": "crushing endgame fork short"
+    },
+    {
+      "id": "gHS6i",
+      "theme": "fork",
+      "rating": 1413,
+      "popularity": 82,
+      "nb_plays": 269,
+      "fen": "r1bqk2r/ppp2ppp/5nn1/3Pp3/1bB1P3/2N2N2/PP3PPP/R1BQK2R w KQkq - 5 9",
+      "best_move_uci": "d1a4",
+      "all_themes": "crushing fork opening short"
+    },
+    {
+      "id": "ijr3v",
+      "theme": "fork",
+      "rating": 1357,
+      "popularity": 96,
+      "nb_plays": 9688,
+      "fen": "5Q2/p1P2ppk/4p2p/3p4/4bRP1/4R1KP/5P2/q7 b - - 0 30",
+      "best_move_uci": "a1g1",
+      "all_themes": "endgame fork long mate mateIn3"
+    },
+    {
+      "id": "lE5GA",
+      "theme": "fork",
+      "rating": 1782,
+      "popularity": 85,
+      "nb_plays": 229,
+      "fen": "8/r4pk1/2b1p1p1/1pN3r1/1P1p3p/3P2P1/2P2R1P/5RK1 w - - 2 33",
+      "best_move_uci": "f2f7",
+      "all_themes": "advantage deflection endgame fork long sacrifice"
+    },
+    {
+      "id": "ngWB8",
+      "theme": "fork",
+      "rating": 1276,
+      "popularity": 93,
+      "nb_plays": 2780,
+      "fen": "3r4/p1k2Bpp/2p5/rp6/4p3/qPQPP3/P1K2PPP/2R3R1 b - - 2 23",
+      "best_move_uci": "a3a2",
+      "all_themes": "crushing deflection fork long middlegame"
+    },
+    {
+      "id": "q9ZyH",
+      "theme": "fork",
+      "rating": 1604,
+      "popularity": 92,
+      "nb_plays": 370,
+      "fen": "r1bqkr2/ppp1b1pn/2n5/8/2Bp4/8/PPP2PPP/RN1QR1K1 w q - 0 12",
+      "best_move_uci": "d1h5",
+      "all_themes": "crushing fork opening short"
+    },
+    {
+      "id": "seA1w",
+      "theme": "fork",
+      "rating": 1724,
+      "popularity": 98,
+      "nb_plays": 993,
+      "fen": "6rk/1p3p2/4p2p/1p4q1/4PN2/P7/5QPP/2rB1K1R w - - 5 36",
+      "best_move_uci": "f2b2",
+      "all_themes": "advantage fork middlegame short"
+    },
+    {
+      "id": "v7rT8",
+      "theme": "fork",
+      "rating": 1255,
+      "popularity": 96,
+      "nb_plays": 8992,
+      "fen": "1k6/p5p1/3R4/8/3b2B1/7P/6PK/4r3 b - - 1 36",
+      "best_move_uci": "d4e5",
+      "all_themes": "crushing endgame fork short"
+    },
+    {
+      "id": "xYgvr",
+      "theme": "fork",
+      "rating": 978,
+      "popularity": 86,
+      "nb_plays": 368,
+      "fen": "5k2/8/4p1pp/1p1bNp2/p1p2P1b/2P2P2/PP2N1P1/3K4 w - - 2 28",
+      "best_move_uci": "e5g6",
+      "all_themes": "crushing endgame fork short"
+    },
+    {
+      "id": "000lC",
+      "theme": "hangingPiece",
+      "rating": 1402,
+      "popularity": 94,
+      "nb_plays": 4595,
+      "fen": "3r3r/pQNk1ppp/1qnR1n2/1B6/8/8/PPP3PP/5R1K b - - 0 19",
+      "best_move_uci": "d7d6",
+      "all_themes": "advantage hangingPiece middlegame short"
+    },
+    {
+      "id": "2RndZ",
+      "theme": "hangingPiece",
+      "rating": 1356,
+      "popularity": 97,
+      "nb_plays": 11520,
+      "fen": "4r3/5pk1/3Np1p1/1p1b4/3P3p/5P2/1P5P/2r2RK1 w - - 0 38",
+      "best_move_uci": "d6e8",
+      "all_themes": "advantage endgame hangingPiece intermezzo short"
+    },
+    {
+      "id": "4rIIl",
+      "theme": "hangingPiece",
+      "rating": 861,
+      "popularity": 95,
+      "nb_plays": 1554,
+      "fen": "r2qk2r/pp3Bpp/5b2/4p3/3pP1b1/3P1N2/PPP3PP/R2QK2R b KQkq - 0 12",
+      "best_move_uci": "e8f7",
+      "all_themes": "advantage hangingPiece middlegame short"
+    },
+    {
+      "id": "7KhdG",
+      "theme": "hangingPiece",
+      "rating": 1441,
+      "popularity": 94,
+      "nb_plays": 3494,
+      "fen": "r1q1kb1r/1p3pp1/p1n1p1p1/3p4/3P2n1/1QP2NNP/PP3P2/R1B1K2R w KQkq - 0 14",
+      "best_move_uci": "h3g4",
+      "all_themes": "advantage hangingPiece middlegame short"
+    },
+    {
+      "id": "9qvLA",
+      "theme": "hangingPiece",
+      "rating": 1271,
+      "popularity": 92,
+      "nb_plays": 606,
+      "fen": "4r2k/1p2R2p/p2p1rp1/q4p1N/2Pn4/1P6/P4PPP/1R4K1 w - - 0 27",
+      "best_move_uci": "e7e8",
+      "all_themes": "hangingPiece kingsideAttack mate mateIn2 middlegame short"
+    },
+    {
+      "id": "COQoy",
+      "theme": "hangingPiece",
+      "rating": 1320,
+      "popularity": 92,
+      "nb_plays": 2586,
+      "fen": "r4rk1/pppqb1pp/2n1b3/3n4/1P2Q3/P1N1PN2/4BPPP/R1BR2K1 b - - 2 14",
+      "best_move_uci": "d5c3",
+      "all_themes": "advantage fork hangingPiece long middlegame"
+    },
+    {
+      "id": "El3Yd",
+      "theme": "hangingPiece",
+      "rating": 1488,
+      "popularity": 93,
+      "nb_plays": 5614,
+      "fen": "r5k1/2q2pp1/pp2p2p/4P3/2PrQ3/8/PP4PP/1K1R4 w - - 0 23",
+      "best_move_uci": "e4a8",
+      "all_themes": "crushing endgame hangingPiece intermezzo short"
+    },
+    {
+      "id": "HFuT7",
+      "theme": "hangingPiece",
+      "rating": 1618,
+      "popularity": 94,
+      "nb_plays": 23204,
+      "fen": "2k4r/pp3pp1/2p2q2/2b1p3/4Q1b1/1B3N1p/PP1r1P2/3R1K1R w - - 0 24",
+      "best_move_uci": "e4g4",
+      "all_themes": "crushing hangingPiece intermezzo middlegame short"
+    },
+    {
+      "id": "Jk5v7",
+      "theme": "hangingPiece",
+      "rating": 1717,
+      "popularity": 93,
+      "nb_plays": 871,
+      "fen": "r2q1rk1/pp1nbppB/2p1p3/7b/2PP1B2/5N2/PP3PPP/R2QR1K1 b - - 0 13",
+      "best_move_uci": "g8h7",
+      "all_themes": "advantage hangingPiece long opening"
+    },
+    {
+      "id": "MFN1B",
+      "theme": "hangingPiece",
+      "rating": 1242,
+      "popularity": 94,
+      "nb_plays": 269,
+      "fen": "r3k1Qq/1ppb1p2/p7/3P4/4N1n1/3B4/PPP2PPb/R1B2R1K b q - 0 16",
+      "best_move_uci": "h8g8",
+      "all_themes": "crushing hangingPiece master middlegame short"
+    },
+    {
+      "id": "OiQUi",
+      "theme": "hangingPiece",
+      "rating": 1224,
+      "popularity": 97,
+      "nb_plays": 2742,
+      "fen": "2R1b1k1/6bp/1q4p1/p4n2/Q7/5P2/P4P1P/6K1 w - - 0 31",
+      "best_move_uci": "a4e8",
+      "all_themes": "endgame hangingPiece mate mateIn2 short"
+    },
+    {
+      "id": "RCodh",
+      "theme": "hangingPiece",
+      "rating": 1598,
+      "popularity": 96,
+      "nb_plays": 6941,
+      "fen": "1r5k/p5b1/3Qp3/1p5q/7P/5b2/PPP2PP1/1K1R4 w - - 0 28",
+      "best_move_uci": "d6b8",
+      "all_themes": "crushing endgame hangingPiece intermezzo master short"
+    },
+    {
+      "id": "TcPfY",
+      "theme": "hangingPiece",
+      "rating": 1140,
+      "popularity": 88,
+      "nb_plays": 600,
+      "fen": "r2q2rk/ppp1n2p/7p/4P3/3PN1Nb/2P2R2/PP4P1/R2Q2K1 b - - 4 21",
+      "best_move_uci": "g8g4",
+      "all_themes": "advantage hangingPiece middlegame short"
+    },
+    {
+      "id": "W9kIC",
+      "theme": "hangingPiece",
+      "rating": 1303,
+      "popularity": 95,
+      "nb_plays": 1384,
+      "fen": "1r1q1rk1/pb1n1pp1/1p1ppn1p/7N/3P1Q1B/2PB4/P1P2PPP/R3K2R b KQ - 3 14",
+      "best_move_uci": "f6h5",
+      "all_themes": "advantage hangingPiece middlegame short"
+    },
+    {
+      "id": "YeEnf",
+      "theme": "hangingPiece",
+      "rating": 1067,
+      "popularity": 100,
+      "nb_plays": 756,
+      "fen": "8/8/3p2p1/1r1Pp1k1/2K1P1P1/5P2/8/8 w - - 0 45",
+      "best_move_uci": "c4b5",
+      "all_themes": "crushing endgame hangingPiece long"
+    },
+    {
+      "id": "bAHaH",
+      "theme": "hangingPiece",
+      "rating": 1723,
+      "popularity": 92,
+      "nb_plays": 1464,
+      "fen": "r1b4r/p3kppp/2n1p3/1p1n4/1PNb4/P5P1/1B2PPBP/RN3RK1 b - - 2 13",
+      "best_move_uci": "b5c4",
+      "all_themes": "advantage hangingPiece middlegame short"
+    },
+    {
+      "id": "ddsVy",
+      "theme": "hangingPiece",
+      "rating": 1597,
+      "popularity": 88,
+      "nb_plays": 902,
+      "fen": "B4rk1/p2bpp1p/p3qbp1/8/1Q1P4/P3BP2/1PP3PP/2KR3R b - - 0 19",
+      "best_move_uci": "e6e3",
+      "all_themes": "advantage defensiveMove hangingPiece intermezzo master middlegame quietMove veryLong"
+    },
+    {
+      "id": "g7z9d",
+      "theme": "hangingPiece",
+      "rating": 1254,
+      "popularity": 90,
+      "nb_plays": 3873,
+      "fen": "Q4rk1/3n1ppp/2p1p3/2Pp1b2/3P4/1Nn1PN2/4BPPP/5RK1 b - - 0 20",
+      "best_move_uci": "c3e2",
+      "all_themes": "advantage hangingPiece intermezzo middlegame short"
+    },
+    {
+      "id": "iehlK",
+      "theme": "hangingPiece",
+      "rating": 1107,
+      "popularity": 94,
+      "nb_plays": 265,
+      "fen": "r3r1k1/1p2qpbp/2p3p1/p1nPp3/2P1B3/BP5P/P2Q1PP1/R2R2K1 b - - 2 18",
+      "best_move_uci": "c5e4",
+      "all_themes": "advantage hangingPiece middlegame short"
+    },
+    {
+      "id": "l6Ipn",
+      "theme": "hangingPiece",
+      "rating": 1517,
+      "popularity": 88,
+      "nb_plays": 1181,
+      "fen": "r4rk1/p1R1n1pp/1p2pp2/3p2B1/3P4/Q6P/P1PK1PP1/1q6 w - - 2 20",
+      "best_move_uci": "a3e7",
+      "all_themes": "advantage hangingPiece middlegame short"
+    },
+    {
+      "id": "nbMCT",
+      "theme": "hangingPiece",
+      "rating": 1504,
+      "popularity": 84,
+      "nb_plays": 1867,
+      "fen": "2r2rk1/p1pnqpbp/bp1N2p1/7n/PP1PP3/4BN1P/2Q1BPP1/2RR2K1 b - - 0 18",
+      "best_move_uci": "c7d6",
+      "all_themes": "advantage discoveredAttack hangingPiece middlegame short"
+    },
+    {
+      "id": "q32aB",
+      "theme": "hangingPiece",
+      "rating": 1696,
+      "popularity": 86,
+      "nb_plays": 276,
+      "fen": "4r3/pkr4p/1p2qp2/1b1R2p1/8/PB3PQ1/1PPR3P/1K6 w - - 7 40",
+      "best_move_uci": "d5b5",
+      "all_themes": "crushing hangingPiece long middlegame"
+    },
+    {
+      "id": "sUCrH",
+      "theme": "hangingPiece",
+      "rating": 806,
+      "popularity": 92,
+      "nb_plays": 429,
+      "fen": "8/8/8/6KP/8/pBk5/8/8 b - - 0 55",
+      "best_move_uci": "c3b3",
+      "all_themes": "advancedPawn crushing endgame hangingPiece master short"
+    },
+    {
+      "id": "v3PA8",
+      "theme": "hangingPiece",
+      "rating": 1540,
+      "popularity": 93,
+      "nb_plays": 2941,
+      "fen": "r4rk1/p3b2R/4p1p1/qpnpP1P1/2p2B2/2P1PB2/PPQ2P2/1K1R4 b - - 0 24",
+      "best_move_uci": "g8h7",
+      "all_themes": "advantage hangingPiece middlegame short"
+    },
+    {
+      "id": "xUYFK",
+      "theme": "hangingPiece",
+      "rating": 1565,
+      "popularity": 95,
+      "nb_plays": 13291,
+      "fen": "8/7p/4P3/3k4/4b2P/2p2N2/8/2K5 b - - 0 48",
+      "best_move_uci": "e4f3",
+      "all_themes": "crushing endgame hangingPiece long quietMove"
+    },
+    {
+      "id": "001cr",
+      "theme": "mateIn1",
+      "rating": 1679,
+      "popularity": 93,
+      "nb_plays": 2799,
+      "fen": "8/3B2pp/p5k1/6P1/1ppp1K2/8/1P6/8 w - - 0 39",
+      "best_move_uci": "d7e8",
+      "all_themes": "bishopEndgame endgame mate mateIn1 oneMove"
+    },
+    {
+      "id": "2SGBh",
+      "theme": "mateIn1",
+      "rating": 1112,
+      "popularity": 80,
+      "nb_plays": 288,
+      "fen": "8/6p1/4R3/8/4P3/5k2/1r6/5K2 b - - 0 46",
+      "best_move_uci": "b2b1",
+      "all_themes": "endgame master mate mateIn1 oneMove rookEndgame"
+    },
+    {
+      "id": "4v4Zw",
+      "theme": "mateIn1",
+      "rating": 1023,
+      "popularity": 93,
+      "nb_plays": 1048,
+      "fen": "1r3r1k/5Ppp/2p5/p2n4/3P2R1/P1NB2P1/QPKR3P/6q1 b - - 0 27",
+      "best_move_uci": "d5e3",
+      "all_themes": "mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "7Q7mL",
+      "theme": "mateIn1",
+      "rating": 1671,
+      "popularity": 89,
+      "nb_plays": 4470,
+      "fen": "2r4k/6pB/p3p3/2b1q1NP/1p3N2/8/PPP5/3K3b w - - 0 28",
+      "best_move_uci": "f4g6",
+      "all_themes": "mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "9vTx0",
+      "theme": "mateIn1",
+      "rating": 886,
+      "popularity": 88,
+      "nb_plays": 287,
+      "fen": "r4rk1/pp1n2p1/2pN2qp/3p4/3P1n2/1B2B2P/PPP2PP1/R2QR1K1 b - - 0 18",
+      "best_move_uci": "g6g2",
+      "all_themes": "kingsideAttack mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "CLS2c",
+      "theme": "mateIn1",
+      "rating": 1551,
+      "popularity": 89,
+      "nb_plays": 2665,
+      "fen": "4r3/1p2kppp/pNp5/8/5B2/2q5/P5PP/3Q3K w - - 1 27",
+      "best_move_uci": "d1d6",
+      "all_themes": "endgame mate mateIn1 oneMove"
+    },
+    {
+      "id": "ErQ3g",
+      "theme": "mateIn1",
+      "rating": 990,
+      "popularity": 89,
+      "nb_plays": 479,
+      "fen": "r1bqk2r/pp1n1pb1/2pQ3p/4N1p1/2B1n3/4B3/PPP1NPPP/2KR3R w kq - 0 13",
+      "best_move_uci": "c4f7",
+      "all_themes": "attackingF2F7 balestraMate mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "HMWyI",
+      "theme": "mateIn1",
+      "rating": 867,
+      "popularity": 96,
+      "nb_plays": 1269,
+      "fen": "r1bq1k1r/ppp1npb1/5N1p/4P1p1/2B2p2/8/PPP3PP/R1BQR1K1 w - - 3 15",
+      "best_move_uci": "d1d8",
+      "all_themes": "hangingPiece mate mateIn1 oneMove opening"
+    },
+    {
+      "id": "Jrn9I",
+      "theme": "mateIn1",
+      "rating": 800,
+      "popularity": 98,
+      "nb_plays": 1261,
+      "fen": "3Q1bk1/1p6/p5pp/8/1P1Rb1q1/P1P5/6NP/6K1 b - - 0 32",
+      "best_move_uci": "g4g2",
+      "all_themes": "endgame mate mateIn1 oneMove"
+    },
+    {
+      "id": "MKb3z",
+      "theme": "mateIn1",
+      "rating": 1383,
+      "popularity": 85,
+      "nb_plays": 576,
+      "fen": "rnb2rk1/pp3ppp/8/8/3qPPn1/P1N5/1BP3PP/R2QKB1R b KQ - 0 13",
+      "best_move_uci": "d4f2",
+      "all_themes": "mate mateIn1 oneMove opening"
+    },
+    {
+      "id": "OnDdg",
+      "theme": "mateIn1",
+      "rating": 1746,
+      "popularity": 94,
+      "nb_plays": 6701,
+      "fen": "5k1r/p1Q2ppp/4b3/8/6r1/2PKB3/PP3q1P/RN4NR b - - 11 25",
+      "best_move_uci": "e6f5",
+      "all_themes": "mate mateIn1 middlegame morphysMate oneMove"
+    },
+    {
+      "id": "RKZ2k",
+      "theme": "mateIn1",
+      "rating": 1108,
+      "popularity": 92,
+      "nb_plays": 731,
+      "fen": "rn2r3/ppp1k1p1/4pn1p/4N1N1/1b6/8/PB3PPP/2KR3R w - - 0 15",
+      "best_move_uci": "e5g6",
+      "all_themes": "mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "TpBbx",
+      "theme": "mateIn1",
+      "rating": 1052,
+      "popularity": 100,
+      "nb_plays": 389,
+      "fen": "3r1rk1/pb3pp1/1p5p/1Pn3q1/2B2R1B/2QPP3/6PP/4R1K1 b - - 6 23",
+      "best_move_uci": "g5g2",
+      "all_themes": "kingsideAttack mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "WM1dt",
+      "theme": "mateIn1",
+      "rating": 823,
+      "popularity": 99,
+      "nb_plays": 1247,
+      "fen": "r4rk1/5p1p/p2pbqpQ/1pp3N1/2P1P3/2N5/PPP3PP/R5K1 w - - 0 17",
+      "best_move_uci": "h6h7",
+      "all_themes": "kingsideAttack mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "YpmL2",
+      "theme": "mateIn1",
+      "rating": 1195,
+      "popularity": 100,
+      "nb_plays": 369,
+      "fen": "4rr1k/3Q3p/5npP/8/3B4/b1P1pq2/3R1P2/N3K3 w - - 0 40",
+      "best_move_uci": "d7g7",
+      "all_themes": "mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "bM1qw",
+      "theme": "mateIn1",
+      "rating": 1214,
+      "popularity": 87,
+      "nb_plays": 1846,
+      "fen": "1k1r2r1/1pp2pP1/7p/4q3/6QP/1P6/2P1BP2/2KR3R b - - 0 32",
+      "best_move_uci": "e5a1",
+      "all_themes": "mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "dn8tk",
+      "theme": "mateIn1",
+      "rating": 1387,
+      "popularity": 93,
+      "nb_plays": 5653,
+      "fen": "3rk1r1/4Pp2/2b2Qp1/2p1p2p/8/8/P5PP/q1B3K1 w - - 0 34",
+      "best_move_uci": "e7d8q",
+      "all_themes": "advancedPawn endgame mate mateIn1 oneMove promotion"
+    },
+    {
+      "id": "gGWX4",
+      "theme": "mateIn1",
+      "rating": 940,
+      "popularity": 93,
+      "nb_plays": 309,
+      "fen": "2k4r/Qppr1ppp/4p3/8/8/2N1nq1P/PP3P2/3R1RK1 w - - 0 19",
+      "best_move_uci": "a7a8",
+      "all_themes": "mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "ihuTq",
+      "theme": "mateIn1",
+      "rating": 1360,
+      "popularity": 95,
+      "nb_plays": 6931,
+      "fen": "r2q3r/2Nbkp1p/p1Q1pp2/2b5/4p3/2P5/Pn3PPP/R4RK1 w - - 4 17",
+      "best_move_uci": "c6c5",
+      "all_themes": "hangingPiece mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "lAlDN",
+      "theme": "mateIn1",
+      "rating": 886,
+      "popularity": 100,
+      "nb_plays": 361,
+      "fen": "7Q/2r1kpp1/4pN2/p3Pn2/8/7P/2q2P1K/6R1 w - - 10 38",
+      "best_move_uci": "h8e8",
+      "all_themes": "endgame mate mateIn1 oneMove"
+    },
+    {
+      "id": "nfayD",
+      "theme": "mateIn1",
+      "rating": 943,
+      "popularity": 91,
+      "nb_plays": 907,
+      "fen": "r2qr1k1/pppn1pP1/8/2bp2PQ/3n4/8/PPP1NP1P/R1B1K2R w KQ - 3 16",
+      "best_move_uci": "h5h8",
+      "all_themes": "mate mateIn1 oneMove opening"
+    },
+    {
+      "id": "qC9av",
+      "theme": "mateIn1",
+      "rating": 1280,
+      "popularity": 92,
+      "nb_plays": 2884,
+      "fen": "5rk1/1Q4pp/8/3bpN2/p4P1P/6P1/7K/q7 w - - 0 32",
+      "best_move_uci": "b7g7",
+      "all_themes": "endgame mate mateIn1 oneMove"
+    },
+    {
+      "id": "sediu",
+      "theme": "mateIn1",
+      "rating": 911,
+      "popularity": 84,
+      "nb_plays": 211,
+      "fen": "r2q1rk1/p2n1ppp/1p2p3/8/3pQP2/P1B4R/1PP3PP/R5K1 w - - 0 17",
+      "best_move_uci": "e4h7",
+      "all_themes": "kingsideAttack mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "v4yGX",
+      "theme": "mateIn1",
+      "rating": 1077,
+      "popularity": 100,
+      "nb_plays": 343,
+      "fen": "6k1/1p3ppp/2p5/p3P3/3N1Q2/PbP1P3/4KPPP/1q6 b - - 3 30",
+      "best_move_uci": "b1d1",
+      "all_themes": "dovetailMate endgame mate mateIn1 oneMove"
+    },
+    {
+      "id": "xXJBA",
+      "theme": "mateIn1",
+      "rating": 944,
+      "popularity": 96,
+      "nb_plays": 1505,
+      "fen": "2kr2r1/Qp2R2p/p1p5/3p4/q1P5/3b2P1/PP1B2BP/2KR4 b - - 1 24",
+      "best_move_uci": "a4c2",
+      "all_themes": "mate mateIn1 middlegame oneMove"
+    },
+    {
+      "id": "0009B",
+      "theme": "middlegame",
+      "rating": 1084,
+      "popularity": 88,
+      "nb_plays": 606,
+      "fen": "r2qr1k1/b1p2ppp/p5n1/P1p1p3/4P1n1/B2P2Pb/3NBP1P/RN1QR1K1 w - - 0 17",
+      "best_move_uci": "e2g4",
+      "all_themes": "advantage middlegame short"
+    },
+    {
+      "id": "2SInp",
+      "theme": "middlegame",
+      "rating": 1246,
+      "popularity": 94,
+      "nb_plays": 8904,
+      "fen": "3r4/3n1rk1/Q6p/4N3/3PRp2/2P3P1/P1P4P/3q1bK1 w - - 0 32",
+      "best_move_uci": "a6g6",
+      "all_themes": "cornerMate mate mateIn2 middlegame short"
+    },
+    {
+      "id": "4v1DL",
+      "theme": "middlegame",
+      "rating": 1453,
+      "popularity": 94,
+      "nb_plays": 10890,
+      "fen": "r4k1r/ppp3pp/8/2b1p3/3n4/1bPP4/PP3PPP/RNB2RK1 w - - 0 14",
+      "best_move_uci": "c3d4",
+      "all_themes": "crushing intermezzo middlegame short"
+    },
+    {
+      "id": "7Oln2",
+      "theme": "middlegame",
+      "rating": 1335,
+      "popularity": 94,
+      "nb_plays": 21792,
+      "fen": "2r2rk1/1p1nbbpp/p2p1n2/P2Ppp2/1Pq1N3/4P1P1/1B1QNPBP/R1R3K1 b - - 5 18",
+      "best_move_uci": "f6e4",
+      "all_themes": "crushing middlegame short"
+    },
+    {
+      "id": "9qU2I",
+      "theme": "middlegame",
+      "rating": 1713,
+      "popularity": 87,
+      "nb_plays": 877,
+      "fen": "r5k1/5ppp/p2r4/8/1P2qN2/1Q4P1/1P3P1K/4RR2 b - - 3 27",
+      "best_move_uci": "d6h6",
+      "all_themes": "crushing long middlegame"
+    },
+    {
+      "id": "CKH9I",
+      "theme": "middlegame",
+      "rating": 1455,
+      "popularity": 95,
+      "nb_plays": 25515,
+      "fen": "2kr3B/p3pp1p/2pP2p1/6q1/6PP/1P6/P1Pb2P1/R2Q1BKn b - - 1 17",
+      "best_move_uci": "d2e3",
+      "all_themes": "kingsideAttack master mate mateIn2 middlegame sacrifice short"
+    },
+    {
+      "id": "Eoo7t",
+      "theme": "middlegame",
+      "rating": 1111,
+      "popularity": 94,
+      "nb_plays": 2159,
+      "fen": "5bk1/5ppp/2R5/2pP4/1pq5/6RP/1P2r1QK/3r2B1 w - - 2 35",
+      "best_move_uci": "g3g7",
+      "all_themes": "long mate mateIn3 middlegame sacrifice"
+    },
+    {
+      "id": "HIJ1N",
+      "theme": "middlegame",
+      "rating": 1319,
+      "popularity": 97,
+      "nb_plays": 5182,
+      "fen": "3rr1k1/pp4p1/2p1p2p/2P4P/3bQN2/Pq6/1P6/1K1R3R w - - 0 28",
+      "best_move_uci": "d1d4",
+      "all_themes": "advantage middlegame short"
+    },
+    {
+      "id": "JlVIx",
+      "theme": "middlegame",
+      "rating": 1759,
+      "popularity": 94,
+      "nb_plays": 10701,
+      "fen": "r2n3k/R2bq1pp/4p3/Q2p1p2/3PnP2/4PN1P/P1rN1PB1/5R1K b - - 0 24",
+      "best_move_uci": "a8a7",
+      "all_themes": "advantage long middlegame"
+    },
+    {
+      "id": "MFbbM",
+      "theme": "middlegame",
+      "rating": 1029,
+      "popularity": 93,
+      "nb_plays": 2763,
+      "fen": "r4r1k/pppn1ppp/4p1b1/8/2BPP3/2N2P1q/PP3K2/R2Q1R2 w - - 4 18",
+      "best_move_uci": "f1h1",
+      "all_themes": "advantage middlegame short trappedPiece"
+    },
+    {
+      "id": "OhzB7",
+      "theme": "middlegame",
+      "rating": 1299,
+      "popularity": 96,
+      "nb_plays": 33539,
+      "fen": "r1b2r1k/pppp2pp/2n3p1/8/2B5/2q1P3/P1P1QPP1/2KR3R w - - 0 15",
+      "best_move_uci": "h1h7",
+      "all_themes": "attraction kingsideAttack mate mateIn2 middlegame pillsburysMate sacrifice short"
+    },
+    {
+      "id": "RC4Ps",
+      "theme": "middlegame",
+      "rating": 958,
+      "popularity": 85,
+      "nb_plays": 381,
+      "fen": "r3r1k1/3q1p1p/2nb2pB/1p1Q4/p7/2P5/PPB2PPP/R4RK1 b - - 0 20",
+      "best_move_uci": "d6h2",
+      "all_themes": "advantage discoveredAttack kingsideAttack middlegame short"
+    },
+    {
+      "id": "TgO7b",
+      "theme": "middlegame",
+      "rating": 1725,
+      "popularity": 96,
+      "nb_plays": 4893,
+      "fen": "3r1rBk/1p1q2pp/p6Q/2R5/P2B4/7P/5RK1/8 b - - 6 34",
+      "best_move_uci": "f8f2",
+      "all_themes": "advantage attraction master middlegame short"
+    },
+    {
+      "id": "WCG2d",
+      "theme": "middlegame",
+      "rating": 1789,
+      "popularity": 93,
+      "nb_plays": 2684,
+      "fen": "r3qr1k/pp2n2p/4bnp1/2p1P1B1/7P/3B1N2/P7/Q4RK1 w - - 0 23",
+      "best_move_uci": "e5f6",
+      "all_themes": "advancedPawn crushing middlegame short"
+    },
+    {
+      "id": "YfK42",
+      "theme": "middlegame",
+      "rating": 890,
+      "popularity": 98,
+      "nb_plays": 1527,
+      "fen": "7k/3n2rp/2p4R/1p2p1q1/p3P3/P2P3Q/BPP2r2/3K3R w - - 7 30",
+      "best_move_uci": "h6h7",
+      "all_themes": "kingsideAttack mate mateIn2 middlegame short"
+    },
+    {
+      "id": "b9gZs",
+      "theme": "middlegame",
+      "rating": 1082,
+      "popularity": 85,
+      "nb_plays": 205,
+      "fen": "r4rk1/1b3pp1/p1q1p2p/1p2P3/4N1Pn/3Q1P2/PPB4P/3R1RK1 w - - 1 21",
+      "best_move_uci": "e4f6",
+      "all_themes": "clearance kingsideAttack mate mateIn2 middlegame sacrifice short"
+    },
+    {
+      "id": "deFmo",
+      "theme": "middlegame",
+      "rating": 968,
+      "popularity": 88,
+      "nb_plays": 208,
+      "fen": "4r1k1/1pp1q1p1/p2b3p/3p1p2/1nPP4/1Q5P/PP1B1PP1/1B2R1K1 b - - 0 22",
+      "best_move_uci": "e7e1",
+      "all_themes": "kingsideAttack mate mateIn2 middlegame pillsburysMate short"
+    },
+    {
+      "id": "g7TI8",
+      "theme": "middlegame",
+      "rating": 1105,
+      "popularity": 93,
+      "nb_plays": 608,
+      "fen": "r2qr1k1/2p2pp1/p2p3p/1p1P4/3p3b/P2P4/1PPBQPP1/2K1R2R w - - 2 17",
+      "best_move_uci": "e2e8",
+      "all_themes": "crushing kingsideAttack long middlegame"
+    },
+    {
+      "id": "ib7wv",
+      "theme": "middlegame",
+      "rating": 1208,
+      "popularity": 93,
+      "nb_plays": 223,
+      "fen": "1r1q2k1/1p4p1/4p3/2NpPrP1/1P3nQ1/2R5/2R2P2/6K1 w - - 1 35",
+      "best_move_uci": "c5e6",
+      "all_themes": "advantage capturingDefender long middlegame"
+    },
+    {
+      "id": "l5h9W",
+      "theme": "middlegame",
+      "rating": 1371,
+      "popularity": 93,
+      "nb_plays": 1058,
+      "fen": "2r2rk1/ppq2p1p/2n2Qp1/1B2B3/8/8/P4PP1/2RR3K b - - 0 26",
+      "best_move_uci": "c7e5",
+      "all_themes": "advantage middlegame short"
+    },
+    {
+      "id": "nYaRh",
+      "theme": "middlegame",
+      "rating": 889,
+      "popularity": 98,
+      "nb_plays": 541,
+      "fen": "5rk1/1p4p1/pbb1pr2/3p3N/1P1P1q2/P3R3/1BPQ2PP/R5K1 b - - 0 22",
+      "best_move_uci": "f4f1",
+      "all_themes": "kingsideAttack mate mateIn2 middlegame sacrifice short"
+    },
+    {
+      "id": "q2bKD",
+      "theme": "middlegame",
+      "rating": 1296,
+      "popularity": 93,
+      "nb_plays": 1902,
+      "fen": "r2qk2n/1pp2p1p/8/pPbp1b2/P5P1/1R2P3/2PP3P/1N1QKBNR b Kq - 0 16",
+      "best_move_uci": "d8h4",
+      "all_themes": "advantage interference intermezzo long middlegame"
+    },
+    {
+      "id": "sXZYi",
+      "theme": "middlegame",
+      "rating": 1299,
+      "popularity": 94,
+      "nb_plays": 6593,
+      "fen": "3r2k1/p1q2p1p/2pb1Pp1/4n3/p3PB2/6QP/PPP3P1/2KR4 w - - 0 24",
+      "best_move_uci": "f4e5",
+      "all_themes": "advantage kingsideAttack long middlegame"
+    },
+    {
+      "id": "v3QCt",
+      "theme": "middlegame",
+      "rating": 1589,
+      "popularity": 95,
+      "nb_plays": 22413,
+      "fen": "3q1rk1/2p2pp1/2Nbp2p/8/1PQPbB2/8/5PPP/R5K1 b - - 3 21",
+      "best_move_uci": "e4c6",
+      "all_themes": "crushing middlegame short"
+    },
+    {
+      "id": "xXer1",
+      "theme": "middlegame",
+      "rating": 1729,
+      "popularity": 98,
+      "nb_plays": 1395,
+      "fen": "r1bq1rk1/1ppp1pp1/6P1/p1bPn1p1/2P1P3/P1N5/1P3PP1/R2QKB1R w KQ - 0 13",
+      "best_move_uci": "h1h8",
+      "all_themes": "attraction kingsideAttack long mate mateIn3 middlegame sacrifice"
+    },
+    {
+      "id": "009FP",
+      "theme": "opening",
+      "rating": 1234,
+      "popularity": 97,
+      "nb_plays": 2831,
+      "fen": "r1b1k1nr/ppp2pbp/3p1qp1/4p3/2BnP3/N2P2QP/PPP2PP1/R1B1K2R w KQkq - 0 10",
+      "best_move_uci": "c1g5",
+      "all_themes": "advantage opening short trappedPiece"
+    },
+    {
+      "id": "2Ru3v",
+      "theme": "opening",
+      "rating": 1162,
+      "popularity": 94,
+      "nb_plays": 4029,
+      "fen": "r1bq1r2/pppp1Bk1/7p/4P3/1b1nQ3/8/P4PPP/RN3K1R w - - 2 16",
+      "best_move_uci": "e4g6",
+      "all_themes": "deflection mate mateIn2 opening short"
+    },
+    {
+      "id": "50SSl",
+      "theme": "opening",
+      "rating": 1192,
+      "popularity": 87,
+      "nb_plays": 804,
+      "fen": "r1b1kb1r/pp4pp/2n2p2/q2np3/7B/2N2N2/PP3PPP/R2QKB1R w KQkq - 1 11",
+      "best_move_uci": "d1d5",
+      "all_themes": "advantage opening short"
+    },
+    {
+      "id": "7SKnI",
+      "theme": "opening",
+      "rating": 1043,
+      "popularity": 88,
+      "nb_plays": 378,
+      "fen": "2kr2nr/pppb1ppp/3bq3/1Q2p3/P2nN1P1/7P/1P1PPPB1/R1B1K1NR w KQ - 1 11",
+      "best_move_uci": "e4d6",
+      "all_themes": "mate mateIn2 opening queensideAttack short"
+    },
+    {
+      "id": "9xfkW",
+      "theme": "opening",
+      "rating": 1034,
+      "popularity": 100,
+      "nb_plays": 436,
+      "fen": "r1b1k2r/pp1p1qpp/8/4N1B1/4n3/Q1P1P3/PP3PPP/R3KB1R b KQkq - 0 13",
+      "best_move_uci": "f7f2",
+      "all_themes": "attackingF2F7 mate mateIn2 opening short"
+    },
+    {
+      "id": "CRhMn",
+      "theme": "opening",
+      "rating": 1333,
+      "popularity": 87,
+      "nb_plays": 235,
+      "fen": "rnb2rk1/pp2qppp/4p3/2npP3/8/2PB3N/PP3PPP/RN1QK2R w KQ - 0 10",
+      "best_move_uci": "d3h7",
+      "all_themes": "advantage attraction kingsideAttack long opening sacrifice"
+    },
+    {
+      "id": "EsPzK",
+      "theme": "opening",
+      "rating": 1163,
+      "popularity": 91,
+      "nb_plays": 4217,
+      "fen": "rn2kbnr/1ppqpppp/p3b3/8/Q1BP4/2N1P3/PP3PPP/R1B1K1NR b KQkq - 0 6",
+      "best_move_uci": "d7a4",
+      "all_themes": "advantage capturingDefender intermezzo opening short"
+    },
+    {
+      "id": "HNOZy",
+      "theme": "opening",
+      "rating": 1566,
+      "popularity": 92,
+      "nb_plays": 1721,
+      "fen": "r1bqk2r/pp3ppp/2n1pn2/2b3B1/2B1N3/2P2N2/PP3PPP/R2QK2R b KQkq - 1 10",
+      "best_move_uci": "d8d1",
+      "all_themes": "advantage opening short"
+    },
+    {
+      "id": "Jq4FK",
+      "theme": "opening",
+      "rating": 934,
+      "popularity": 98,
+      "nb_plays": 1844,
+      "fen": "rn1qkb1r/pbpnp3/1p6/6pp/8/2N4P/PPP1BPP1/R1BQK2R w KQkq - 0 11",
+      "best_move_uci": "e2h5",
+      "all_themes": "mate mateIn2 opening short"
+    },
+    {
+      "id": "MG3Uu",
+      "theme": "opening",
+      "rating": 1777,
+      "popularity": 93,
+      "nb_plays": 3289,
+      "fen": "r1bqr1k1/pp1nbpp1/7p/2pp4/4N3/3B4/PPP1QPPP/R1B1R1K1 w - - 0 16",
+      "best_move_uci": "e4d6",
+      "all_themes": "advantage discoveredAttack kingsideAttack long opening"
+    },
+    {
+      "id": "OkpYo",
+      "theme": "opening",
+      "rating": 1418,
+      "popularity": 97,
+      "nb_plays": 5944,
+      "fen": "r2q1b1r/pp2pkp1/1np2n1p/8/3P2b1/1P1B1N2/P1P2PPP/R1BQK2R w KQ - 2 10",
+      "best_move_uci": "f3e5",
+      "all_themes": "advantage opening short"
+    },
+    {
+      "id": "REUcK",
+      "theme": "opening",
+      "rating": 1439,
+      "popularity": 92,
+      "nb_plays": 982,
+      "fen": "r1b2rk1/1pqppp1p/p5pQ/7P/1n6/1NN5/PPP2nP1/2KR1B1R w - - 0 15",
+      "best_move_uci": "h5g6",
+      "all_themes": "crushing opening short"
+    },
+    {
+      "id": "Tgrk4",
+      "theme": "opening",
+      "rating": 1581,
+      "popularity": 94,
+      "nb_plays": 882,
+      "fen": "r1b1k1nr/p1p2ppp/2p5/2bq4/4P3/2P5/PP3PPP/RNBQKB1R b KQkq - 0 8",
+      "best_move_uci": "c5f2",
+      "all_themes": "attackingF2F7 crushing deflection opening short"
+    },
+    {
+      "id": "WEA1e",
+      "theme": "opening",
+      "rating": 1339,
+      "popularity": 94,
+      "nb_plays": 12757,
+      "fen": "r2q1rk1/3nbppp/b1p1pn2/p6N/2pPN3/3QB3/PP3PPP/1BR2RK1 w - - 0 16",
+      "best_move_uci": "e4f6",
+      "all_themes": "kingsideAttack long mate mateIn3 opening"
+    },
+    {
+      "id": "YhdrG",
+      "theme": "opening",
+      "rating": 1557,
+      "popularity": 95,
+      "nb_plays": 10362,
+      "fen": "r2q1rk1/1Qp1b1pp/p1n2n2/3p4/3P4/P4N1P/1P3PP1/RNB1R1K1 b - - 0 16",
+      "best_move_uci": "c6a5",
+      "all_themes": "advantage opening short trappedPiece"
+    },
+    {
+      "id": "b9gBn",
+      "theme": "opening",
+      "rating": 1205,
+      "popularity": 93,
+      "nb_plays": 280,
+      "fen": "r1b1k2r/pp1p1p1p/5p1b/3Pp3/3nP3/PqN5/1P2NPPP/1Q1RKB1R b Kkq - 8 13",
+      "best_move_uci": "d4c2",
+      "all_themes": "crushing opening short"
+    },
+    {
+      "id": "ddZLY",
+      "theme": "opening",
+      "rating": 1627,
+      "popularity": 95,
+      "nb_plays": 13000,
+      "fen": "2k1rbnr/pppq1ppp/2n5/3p4/3P2b1/2PB1N1P/PP3P2/RNBQR1K1 w - - 0 12",
+      "best_move_uci": "e1e8",
+      "all_themes": "advantage opening short"
+    },
+    {
+      "id": "g6nbm",
+      "theme": "opening",
+      "rating": 1385,
+      "popularity": 96,
+      "nb_plays": 955,
+      "fen": "r2qkbnr/ppp3pp/2np1p2/4N3/2B1Pp2/2N5/PPPP2PP/R1Bb1RK1 w kq - 0 8",
+      "best_move_uci": "c4f7",
+      "all_themes": "mate mateIn2 opening short"
+    },
+    {
+      "id": "ia75e",
+      "theme": "opening",
+      "rating": 1395,
+      "popularity": 93,
+      "nb_plays": 6839,
+      "fen": "2kr1b1r/1pp2ppp/p1nq1n2/4p3/3P4/2P1BB2/PP2NPPP/R2Q1RK1 b - - 0 11",
+      "best_move_uci": "e5e4",
+      "all_themes": "advantage opening short trappedPiece"
+    },
+    {
+      "id": "l0cZG",
+      "theme": "opening",
+      "rating": 1516,
+      "popularity": 89,
+      "nb_plays": 1312,
+      "fen": "r2q1rk1/pbpn1ppp/1p2pn2/3pN3/1b6/4P1P1/PBPP1PBP/RN1Q1RK1 w - - 1 9",
+      "best_move_uci": "e5d7",
+      "all_themes": "advantage opening short"
+    },
+    {
+      "id": "naEy2",
+      "theme": "opening",
+      "rating": 1348,
+      "popularity": 98,
+      "nb_plays": 10104,
+      "fen": "rnbq1b1r/ppN2kp1/4p2p/8/8/8/PPQ2PPP/R1B1KB1R b KQ - 0 11",
+      "best_move_uci": "f8b4",
+      "all_themes": "crushing long opening"
+    },
+    {
+      "id": "qBa30",
+      "theme": "opening",
+      "rating": 1393,
+      "popularity": 98,
+      "nb_plays": 2632,
+      "fen": "r1bqk2r/ppp1ppbp/6p1/3N2nn/8/4PP2/PPPQ2PP/2KR1BNR w kq - 0 10",
+      "best_move_uci": "d5f6",
+      "all_themes": "discoveredAttack mate mateIn2 opening short"
+    },
+    {
+      "id": "seq4Y",
+      "theme": "opening",
+      "rating": 1254,
+      "popularity": 84,
+      "nb_plays": 483,
+      "fen": "r1b1kbnr/p5pp/2pqpp2/3pN3/3P4/8/PPP2PPP/RNBQK2R w KQkq - 0 9",
+      "best_move_uci": "d1h5",
+      "all_themes": "advantage long opening trappedPiece"
+    },
+    {
+      "id": "v3FLX",
+      "theme": "opening",
+      "rating": 1794,
+      "popularity": 93,
+      "nb_plays": 1028,
+      "fen": "rnbqkb1r/pp1p1pp1/4P2p/2p4n/8/5P2/PPPBP1PP/RN1QKBNR b KQkq - 0 8",
+      "best_move_uci": "d8h4",
+      "all_themes": "crushing long master opening"
+    },
+    {
+      "id": "xVIH2",
+      "theme": "opening",
+      "rating": 1685,
+      "popularity": 96,
+      "nb_plays": 16707,
+      "fen": "r1b1r1k1/2p2pp1/p1nb1n1p/1p1qp3/8/2PP1N1P/PPB2PP1/R1BQRNK1 w - - 4 14",
+      "best_move_uci": "c2b3",
+      "all_themes": "crushing opening short"
+    },
+    {
+      "id": "003S3",
+      "theme": "pin",
+      "rating": 1405,
+      "popularity": 95,
+      "nb_plays": 13979,
+      "fen": "1r3k1r/pNqnppb1/6pn/2p3Np/7P/2P2Q2/PP3PP1/R1B1K2R w KQ - 3 16",
+      "best_move_uci": "g5e6",
+      "all_themes": "advantage middlegame pin short"
+    },
+    {
+      "id": "2TXMf",
+      "theme": "pin",
+      "rating": 1082,
+      "popularity": 89,
+      "nb_plays": 820,
+      "fen": "8/8/2pb4/3p1Q1K/4r1P1/1Pk4P/P7/8 b - - 5 40",
+      "best_move_uci": "e4e5",
+      "all_themes": "crushing endgame master pin short"
+    },
+    {
+      "id": "4zu7t",
+      "theme": "pin",
+      "rating": 1612,
+      "popularity": 82,
+      "nb_plays": 208,
+      "fen": "2r4k/6bp/p2pb3/q3pp2/2Pn1P2/1B1QN3/P2R2PP/5RK1 b - - 1 27",
+      "best_move_uci": "e5e4",
+      "all_themes": "advantage master middlegame pin short"
+    },
+    {
+      "id": "7S5px",
+      "theme": "pin",
+      "rating": 1429,
+      "popularity": 84,
+      "nb_plays": 372,
+      "fen": "5r1k/1p4p1/p1p2B1p/7Q/2q5/6P1/5r1P/5R1K w - - 0 33",
+      "best_move_uci": "h5h6",
+      "all_themes": "endgame mate mateIn2 pin short"
+    },
+    {
+      "id": "9xfIU",
+      "theme": "pin",
+      "rating": 1634,
+      "popularity": 92,
+      "nb_plays": 1862,
+      "fen": "r1b2rk1/5ppp/2p2b2/p7/P1Q5/1Bn4P/1B1q1PP1/R3R1K1 w - - 0 19",
+      "best_move_uci": "c4f7",
+      "all_themes": "kingsideAttack mate mateIn2 middlegame pin sacrifice short"
+    },
+    {
+      "id": "CPadL",
+      "theme": "pin",
+      "rating": 1003,
+      "popularity": 89,
+      "nb_plays": 343,
+      "fen": "2kr1b1r/pppq2pb/3p2p1/4nP1p/2B1P3/2P4P/PP2Q3/RNB2RK1 w - - 0 17",
+      "best_move_uci": "c4e6",
+      "all_themes": "advantage middlegame pin short"
+    },
+    {
+      "id": "Eso0h",
+      "theme": "pin",
+      "rating": 985,
+      "popularity": 92,
+      "nb_plays": 1108,
+      "fen": "2k2r2/ppp3p1/6q1/2N1n3/3Q3B/8/PPP2PPP/R5K1 b - - 0 22",
+      "best_move_uci": "e5f3",
+      "all_themes": "advantage middlegame pin short"
+    },
+    {
+      "id": "HOPRB",
+      "theme": "pin",
+      "rating": 1489,
+      "popularity": 89,
+      "nb_plays": 573,
+      "fen": "8/6pk/7p/3QNpb1/8/1P6/r1q2PPP/5RK1 b - - 1 35",
+      "best_move_uci": "c2f2",
+      "all_themes": "backRankMate deflection endgame mate mateIn5 pin sacrifice veryLong"
+    },
+    {
+      "id": "Jt6Nw",
+      "theme": "pin",
+      "rating": 1082,
+      "popularity": 93,
+      "nb_plays": 489,
+      "fen": "3r4/p1N1Rpk1/5p1p/2p5/3p2P1/1P3P2/P1b3P1/6K1 w - - 0 31",
+      "best_move_uci": "c7e6",
+      "all_themes": "crushing endgame pin short"
+    },
+    {
+      "id": "MMmOj",
+      "theme": "pin",
+      "rating": 1631,
+      "popularity": 86,
+      "nb_plays": 476,
+      "fen": "2r1r1k1/1pqb1ppp/3Q4/pPP1Pp2/P4n2/5N2/1B3PPP/2R1K2R b K - 2 20",
+      "best_move_uci": "c7d6",
+      "all_themes": "crushing middlegame pin short"
+    },
+    {
+      "id": "Oq4wO",
+      "theme": "pin",
+      "rating": 1301,
+      "popularity": 88,
+      "nb_plays": 2218,
+      "fen": "r4rk1/1bq1bp1n/p2pp2Q/1pp1n3/4P3/P1PPRN2/BP3PPP/RN4K1 w - - 3 16",
+      "best_move_uci": "f3e5",
+      "all_themes": "advantage clearance middlegame pin short"
+    },
+    {
+      "id": "RFq1V",
+      "theme": "pin",
+      "rating": 1610,
+      "popularity": 96,
+      "nb_plays": 219,
+      "fen": "3r1qk1/2R1Rp1p/5Qp1/pp3b2/8/1P2P1P1/P4PBP/6K1 b - - 4 31",
+      "best_move_uci": "d8d1",
+      "all_themes": "crushing long middlegame pin"
+    },
+    {
+      "id": "Thrj3",
+      "theme": "pin",
+      "rating": 1664,
+      "popularity": 91,
+      "nb_plays": 2320,
+      "fen": "1r4k1/4qp2/1pQ3pp/2p1P1n1/8/1BP2N1P/1P4P1/7K w - - 2 34",
+      "best_move_uci": "c6g6",
+      "all_themes": "crushing endgame pin short"
+    },
+    {
+      "id": "WAwKa",
+      "theme": "pin",
+      "rating": 1152,
+      "popularity": 95,
+      "nb_plays": 11539,
+      "fen": "6k1/2q3p1/2PRN1p1/p6p/3Q4/P4P1P/1P4PK/4r3 b - - 0 37",
+      "best_move_uci": "e1e6",
+      "all_themes": "crushing endgame pin veryLong"
+    },
+    {
+      "id": "YlEtD",
+      "theme": "pin",
+      "rating": 1581,
+      "popularity": 89,
+      "nb_plays": 1787,
+      "fen": "1r3k1r/R1pB1pp1/2Pp2n1/1N1Pp1q1/1P2P2p/3Q2P1/5PK1/7R b - - 1 28",
+      "best_move_uci": "g6f4",
+      "all_themes": "crushing middlegame pin short"
+    },
+    {
+      "id": "bDa55",
+      "theme": "pin",
+      "rating": 1535,
+      "popularity": 94,
+      "nb_plays": 16744,
+      "fen": "r3k2r/pp3p1p/3p4/q2Bp3/3bP3/3P3P/PP1Q1P2/R3K1R1 b Qkq - 2 16",
+      "best_move_uci": "d4f2",
+      "all_themes": "attackingF2F7 crushing long middlegame pin"
+    },
+    {
+      "id": "disL9",
+      "theme": "pin",
+      "rating": 1455,
+      "popularity": 93,
+      "nb_plays": 689,
+      "fen": "8/2b2k2/3qpPp1/p2r2B1/1PpP3P/5Q2/PP4P1/2R3K1 b - - 2 29",
+      "best_move_uci": "d6h2",
+      "all_themes": "advantage endgame pin short"
+    },
+    {
+      "id": "gAvtb",
+      "theme": "pin",
+      "rating": 1412,
+      "popularity": 86,
+      "nb_plays": 301,
+      "fen": "6k1/6pp/4b1r1/1P6/2p1Q3/P5PP/4R1K1/3r4 b - - 0 42",
+      "best_move_uci": "e6d5",
+      "all_themes": "crushing endgame pin short"
+    },
+    {
+      "id": "igrmp",
+      "theme": "pin",
+      "rating": 1216,
+      "popularity": 87,
+      "nb_plays": 482,
+      "fen": "r3q1k1/ppp2rp1/2n1Np1p/8/3PN1Q1/8/PP3PPP/R5K1 w - - 4 21",
+      "best_move_uci": "e4f6",
+      "all_themes": "advantage kingsideAttack middlegame pin short"
+    },
+    {
+      "id": "lIBeK",
+      "theme": "pin",
+      "rating": 1656,
+      "popularity": 84,
+      "nb_plays": 245,
+      "fen": "1R6/6k1/3pq2b/p3p2p/P1n1Np1P/5P2/5QPK/2r5 w - - 5 40",
+      "best_move_uci": "f2a7",
+      "all_themes": "crushing long middlegame pin"
+    },
+    {
+      "id": "nj7g8",
+      "theme": "pin",
+      "rating": 1591,
+      "popularity": 87,
+      "nb_plays": 903,
+      "fen": "3rr3/pkn3Qp/1p6/8/7P/3b1N2/PP1P1PP1/1RB1n1KR b - - 0 25",
+      "best_move_uci": "e1f3",
+      "all_themes": "advantage middlegame pin short"
+    },
+    {
+      "id": "q9l2e",
+      "theme": "pin",
+      "rating": 1564,
+      "popularity": 93,
+      "nb_plays": 2683,
+      "fen": "r3kb1r/2p3pp/p4p2/3pqP2/4P2n/NP6/P1P3PP/R2QR1K1 w kq - 0 18",
+      "best_move_uci": "e4d5",
+      "all_themes": "advantage long middlegame pin"
+    },
+    {
+      "id": "sbofX",
+      "theme": "pin",
+      "rating": 1249,
+      "popularity": 92,
+      "nb_plays": 3548,
+      "fen": "4r3/p4k1p/5np1/8/3N4/1Prp3P/P4PP1/2RR2K1 b - - 2 25",
+      "best_move_uci": "c3c1",
+      "all_themes": "advancedPawn advantage endgame long pin"
+    },
+    {
+      "id": "v2iWb",
+      "theme": "pin",
+      "rating": 1300,
+      "popularity": 91,
+      "nb_plays": 309,
+      "fen": "rnbq1k1r/4b1pp/p1p1Qn2/1p2P3/P2P4/6PB/5P1P/RNB2RK1 w - - 1 16",
+      "best_move_uci": "e6c8",
+      "all_themes": "advantage master opening pin short"
+    },
+    {
+      "id": "xVnDW",
+      "theme": "pin",
+      "rating": 1289,
+      "popularity": 95,
+      "nb_plays": 11272,
+      "fen": "2r1r3/p3p2k/1q1pNpp1/3b3p/8/7R/P1Q2PPP/2R3K1 w - - 0 32",
+      "best_move_uci": "h3h5",
+      "all_themes": "deflection mate mateIn2 middlegame pin short"
+    },
+    {
+      "id": "001m3",
+      "theme": "skewer",
+      "rating": 1459,
+      "popularity": 87,
+      "nb_plays": 278,
+      "fen": "7r/6k1/2b1Rp2/8/P1N3p1/5nP1/5P2/Q4K2 b - - 0 38",
+      "best_move_uci": "h8h1",
+      "all_themes": "advantage endgame short skewer"
+    },
+    {
+      "id": "2Xl0W",
+      "theme": "skewer",
+      "rating": 1570,
+      "popularity": 94,
+      "nb_plays": 720,
+      "fen": "8/5QP1/p1k5/8/P1K1pP2/2P1P3/5q2/8 b - - 0 40",
+      "best_move_uci": "f2a2",
+      "all_themes": "crushing endgame long queenEndgame skewer"
+    },
+    {
+      "id": "4wz4Q",
+      "theme": "skewer",
+      "rating": 990,
+      "popularity": 97,
+      "nb_plays": 1757,
+      "fen": "r2k4/pp4pp/5n2/2p5/2Q3q1/2PP4/P1P4P/5RK1 w - - 0 21",
+      "best_move_uci": "c4g4",
+      "all_themes": "advantage endgame exposedKing long skewer"
+    },
+    {
+      "id": "7Rbjq",
+      "theme": "skewer",
+      "rating": 963,
+      "popularity": 100,
+      "nb_plays": 398,
+      "fen": "8/8/8/k3r3/PR6/1K6/8/8 b - - 33 62",
+      "best_move_uci": "e5e3",
+      "all_themes": "crushing deflection endgame long rookEndgame skewer"
+    },
+    {
+      "id": "9t8b1",
+      "theme": "skewer",
+      "rating": 1730,
+      "popularity": 100,
+      "nb_plays": 333,
+      "fen": "4qk2/6pp/pR6/P2QPp2/5P2/6P1/4K2P/2r5 b - - 8 38",
+      "best_move_uci": "e8h5",
+      "all_themes": "advantage endgame exposedKing skewer veryLong"
+    },
+    {
+      "id": "CObEM",
+      "theme": "skewer",
+      "rating": 1032,
+      "popularity": 97,
+      "nb_plays": 634,
+      "fen": "8/p2r3p/8/1p6/3k4/8/7R/1K6 w - - 3 77",
+      "best_move_uci": "h2d2",
+      "all_themes": "crushing endgame rookEndgame short skewer"
+    },
+    {
+      "id": "EugCb",
+      "theme": "skewer",
+      "rating": 1631,
+      "popularity": 94,
+      "nb_plays": 12399,
+      "fen": "r4rk1/1p3ppp/p3pnb1/3p2B1/1b1P4/2qB1NPP/2P2P2/R2Q1RK1 w - - 0 17",
+      "best_move_uci": "g5d2",
+      "all_themes": "advantage middlegame short skewer"
+    },
+    {
+      "id": "HMT0w",
+      "theme": "skewer",
+      "rating": 1340,
+      "popularity": 95,
+      "nb_plays": 39816,
+      "fen": "r1b1r1k1/p5p1/2q1pp1p/2Pp4/3PnP2/1R1BP3/P5PP/3Q1RK1 w - - 0 20",
+      "best_move_uci": "d3b5",
+      "all_themes": "advantage middlegame short skewer"
+    },
+    {
+      "id": "JrVRP",
+      "theme": "skewer",
+      "rating": 933,
+      "popularity": 89,
+      "nb_plays": 285,
+      "fen": "8/8/1pk1pp2/8/3P1P2/1R2K3/4N2r/8 b - - 3 35",
+      "best_move_uci": "h2h3",
+      "all_themes": "crushing endgame short skewer"
+    },
+    {
+      "id": "MKV3D",
+      "theme": "skewer",
+      "rating": 1458,
+      "popularity": 98,
+      "nb_plays": 3552,
+      "fen": "8/1p4r1/5k2/1P3r2/2P1K3/3Q1P2/8/8 b - - 4 52",
+      "best_move_uci": "g7e7",
+      "all_themes": "crushing endgame long queenRookEndgame skewer"
+    },
+    {
+      "id": "OmA1b",
+      "theme": "skewer",
+      "rating": 1242,
+      "popularity": 92,
+      "nb_plays": 231,
+      "fen": "6k1/6p1/R6p/5K2/P3PR2/3r1P1P/8/6r1 b - - 6 37",
+      "best_move_uci": "g1g5",
+      "all_themes": "crushing endgame long rookEndgame skewer"
+    },
+    {
+      "id": "RDH5k",
+      "theme": "skewer",
+      "rating": 1213,
+      "popularity": 95,
+      "nb_plays": 9396,
+      "fen": "8/8/8/2R5/p7/P7/7r/1K1k4 w - - 0 54",
+      "best_move_uci": "c5c1",
+      "all_themes": "crushing endgame long rookEndgame skewer"
+    },
+    {
+      "id": "TiKK4",
+      "theme": "skewer",
+      "rating": 1037,
+      "popularity": 100,
+      "nb_plays": 353,
+      "fen": "8/p3k1p1/1pb1p2p/4P3/4B3/4K1P1/PP1R3P/7r b - - 13 33",
+      "best_move_uci": "h1e1",
+      "all_themes": "crushing deflection endgame short skewer"
+    },
+    {
+      "id": "WEiMe",
+      "theme": "skewer",
+      "rating": 1150,
+      "popularity": 92,
+      "nb_plays": 1757,
+      "fen": "8/5p1p/5Kp1/r2k4/2p3R1/8/6PP/8 w - - 0 42",
+      "best_move_uci": "g4g5",
+      "all_themes": "crushing endgame rookEndgame short skewer"
+    },
+    {
+      "id": "YkKCH",
+      "theme": "skewer",
+      "rating": 1357,
+      "popularity": 97,
+      "nb_plays": 621,
+      "fen": "7k/p6p/2p5/8/2Bp4/3Kb2P/PP4q1/5R1R w - - 8 35",
+      "best_move_uci": "f1f8",
+      "all_themes": "crushing endgame long skewer"
+    },
+    {
+      "id": "bDIeu",
+      "theme": "skewer",
+      "rating": 1143,
+      "popularity": 86,
+      "nb_plays": 336,
+      "fen": "6R1/8/p1B5/5k2/2p3p1/2K1P1n1/5r2/8 w - - 2 48",
+      "best_move_uci": "g8f8",
+      "all_themes": "crushing endgame master masterVsMaster short skewer"
+    },
+    {
+      "id": "dhcTX",
+      "theme": "skewer",
+      "rating": 959,
+      "popularity": 100,
+      "nb_plays": 318,
+      "fen": "8/3R4/7p/1p2pkp1/8/3pK1P1/7P/5b2 w - - 0 47",
+      "best_move_uci": "d7f7",
+      "all_themes": "crushing endgame short skewer"
+    },
+    {
+      "id": "gDdpJ",
+      "theme": "skewer",
+      "rating": 992,
+      "popularity": 89,
+      "nb_plays": 469,
+      "fen": "6rk/7p/R2K4/P7/8/8/8/8 b - - 0 61",
+      "best_move_uci": "g8g6",
+      "all_themes": "crushing endgame master rookEndgame short skewer"
+    },
+    {
+      "id": "ihYsO",
+      "theme": "skewer",
+      "rating": 1429,
+      "popularity": 97,
+      "nb_plays": 322,
+      "fen": "3r4/1p3kp1/p2P1p1p/8/3rNN2/4K3/P5PP/4R3 b - - 9 32",
+      "best_move_uci": "d4e4",
+      "all_themes": "advantage attraction endgame exposedKing long sacrifice skewer"
+    },
+    {
+      "id": "lE59w",
+      "theme": "skewer",
+      "rating": 1488,
+      "popularity": 94,
+      "nb_plays": 2732,
+      "fen": "1rr3k1/5p2/7R/2P3p1/2Q5/P5P1/2R2PPK/4q3 b - - 2 40",
+      "best_move_uci": "b8b1",
+      "all_themes": "crushing endgame long quietMove skewer"
+    },
+    {
+      "id": "nhy1o",
+      "theme": "skewer",
+      "rating": 1212,
+      "popularity": 94,
+      "nb_plays": 552,
+      "fen": "6Q1/8/8/5k1p/6p1/8/6PK/1q6 w - - 4 67",
+      "best_move_uci": "g8h7",
+      "all_themes": "crushing endgame queenEndgame short skewer"
+    },
+    {
+      "id": "qBbLS",
+      "theme": "skewer",
+      "rating": 1293,
+      "popularity": 88,
+      "nb_plays": 365,
+      "fen": "8/8/R1p5/2Pp4/3k3r/P7/8/6K1 w - - 0 46",
+      "best_move_uci": "a6a4",
+      "all_themes": "crushing endgame master rookEndgame short skewer"
+    },
+    {
+      "id": "seDnh",
+      "theme": "skewer",
+      "rating": 1575,
+      "popularity": 89,
+      "nb_plays": 466,
+      "fen": "r5k1/1p4n1/p2pP2Q/2pP2P1/8/1P4q1/P2BB3/b2K4 w - - 0 33",
+      "best_move_uci": "g5g6",
+      "all_themes": "advantage exposedKing middlegame skewer veryLong"
+    },
+    {
+      "id": "v3ONB",
+      "theme": "skewer",
+      "rating": 925,
+      "popularity": 100,
+      "nb_plays": 344,
+      "fen": "4K3/4R3/1r2pk2/5p2/3P1P2/4PP2/8/8 b - - 33 58",
+      "best_move_uci": "b6b8",
+      "all_themes": "crushing deflection endgame long rookEndgame skewer"
+    },
+    {
+      "id": "xRGas",
+      "theme": "skewer",
+      "rating": 1186,
+      "popularity": 100,
+      "nb_plays": 338,
+      "fen": "r4k2/1p3rp1/p3p3/1b1pP3/3P3Q/7R/q4PPP/5RK1 w - - 5 23",
+      "best_move_uci": "h4h8",
+      "all_themes": "crushing long middlegame skewer"
+    }
+  ]
+}

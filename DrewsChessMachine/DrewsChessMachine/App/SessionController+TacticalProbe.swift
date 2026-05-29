@@ -5,6 +5,14 @@ import Foundation
 /// Coarse buckets for the starter probe set. Used only to label log
 /// lines so a grep can pull out, e.g., "how do mate-in-1 verdicts
 /// look across the last N probes?"
+///
+/// The `lichess*` cases tag positions from the bundled 200-puzzle
+/// Lichess set (`LichessProbeData.largeSet`). They keep the rawValue
+/// string distinct from the hand-built starter set so a grep on
+/// `[TACTICAL] mateInOne` vs `[TACTICAL] lichessMateIn1` separates the
+/// two scoreboards. The eight Lichess buckets are the theme names from
+/// the Lichess puzzle DB the curation script filters on, in the same
+/// priority order the Python-side bucketing uses.
 enum ProbeCategory: String, Sendable {
     case mateInOne
     case hangingPieceCapture
@@ -21,6 +29,16 @@ enum ProbeCategory: String, Sendable {
     /// all white-attacking; this fills in the "what about when the
     /// network is on the defensive" gap.
     case defensiveMustFind
+
+    // Lichess large-set buckets (200 puzzles, 25 per category).
+    case lichessMateIn1
+    case lichessHangingPiece
+    case lichessFork
+    case lichessPin
+    case lichessSkewer
+    case lichessOpening
+    case lichessMiddlegame
+    case lichessEndgame
 }
 
 /// A single hand-built tactical position with an unambiguous "right
