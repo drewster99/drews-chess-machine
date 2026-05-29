@@ -43,11 +43,25 @@ extension SessionController {
 
         var resultsByCategory: [ProbeCategory: [ProbeResult]] = [:]
         var verdictCounts: [ProbeVerdict: Int] = [:]
+        var allResults: [ProbeResult] = []
+        allResults.reserveCapacity(probes.count)
         for probe in probes {
             let r = await TacticalProbeRunner.run(probe, against: net)
             resultsByCategory[probe.category, default: []].append(r)
             verdictCounts[r.verdict, default: 0] += 1
+            allResults.append(r)
         }
+
+        // Mirror the periodic watcher: a manual run also refreshes the
+        // shared `lichessProbeHistory` so any open Monitor / Detail
+        // window updates immediately, and the JSON exporter can dump
+        // the manual-run snapshot.
+        let aggregates = LichessProbeHistory.aggregates(from: allResults)
+        lichessProbeHistory.record(
+            aggregates,
+            allResults: allResults,
+            modelLabel: modelLabel
+        )
 
         // Per-theme breakdown lines, stable order by raw value.
         var totalArgmaxCorrect = 0

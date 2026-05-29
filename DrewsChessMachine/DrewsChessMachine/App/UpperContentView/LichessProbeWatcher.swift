@@ -38,14 +38,20 @@ final class LichessProbeWatcher {
         self.intervalSec = intervalSec
     }
 
-    /// Begin the periodic loop. Runs an immediate first tick so the
-    /// monitor populates within a couple of seconds of opening (200
-    /// probes take a few seconds total, not the few-hundred-ms of the
-    /// 9-probe set). Re-entrant: a second `start()` while running is
-    /// a no-op.
+    /// Begin the periodic loop. Two-phase startup:
+    ///  1. Poll every 5 seconds until the network needed by the current
+    ///     `probeNetworkTarget` is built (training has started).
+    ///  2. Sleep 60 seconds — a warm-up so the first tick lands well
+    ///     into training rather than right at the launch instant when
+    ///     the network is still random / tunable.
+    /// After the first tick, the regular `intervalSec` cadence kicks in.
+    /// Re-entrant: a second `start()` while running is a no-op.
     func start() {
         guard task == nil else { return }
         task = Task { [weak self, intervalSec] in
+            await self?.waitForFirstTickConditions()
+            if Task.isCancelled { return }
+
             await self?.tickOnce()
             while !Task.isCancelled {
                 let nanos = UInt64(intervalSec * 1_000_000_000)
@@ -57,6 +63,41 @@ final class LichessProbeWatcher {
                 if Task.isCancelled { return }
                 await self?.tickOnce()
             }
+        }
+    }
+
+    /// Poll-until-ready + 60s warm-up before the first tick. Same
+    /// shape as `TacticalProbeWatcher.waitForFirstTickConditions`,
+    /// just keyed on the Lichess-dedicated inference network.
+    @MainActor
+    private func waitForFirstTickConditions() async {
+        while !Task.isCancelled {
+            if canTickNow() { break }
+            do {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+            } catch {
+                return
+            }
+        }
+        if Task.isCancelled { return }
+        do {
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+        } catch {
+            return
+        }
+    }
+
+    /// Whether `tickOnce` would currently be able to run a probe.
+    /// Mirrors the guards inside `tickOnce`.
+    @MainActor
+    private func canTickNow() -> Bool {
+        guard let session = sessionController else { return false }
+        switch session.probeNetworkTarget {
+        case .champion:
+            return session.network != nil
+        case .candidate:
+            return session.trainer != nil
+                && session.lichessProbeInferenceNetwork != nil
         }
     }
 
@@ -122,75 +163,17 @@ final class LichessProbeWatcher {
         // because per-probe top-5 / entropy bookkeeping wants the raw
         // logits per position rather than a folded batch result.
         let probes = LichessProbeData.largeSet
-        var resultsByCategory: [ProbeCategory: [ProbeResult]] = [:]
         var allResults: [ProbeResult] = []
         allResults.reserveCapacity(probes.count)
         for probe in probes {
             let r = await TacticalProbeRunner.run(probe, against: net)
-            resultsByCategory[probe.category, default: []].append(r)
             allResults.append(r)
         }
 
-        let aggregates = foldAggregates(resultsByCategory)
+        let aggregates = LichessProbeHistory.aggregates(from: allResults)
         let modelLabel = net.identifier?.description ?? "<no-id>"
         history.record(aggregates, allResults: allResults, modelLabel: modelLabel)
         logTickSummary(aggregates, modelLabel: modelLabel)
-    }
-
-    /// Fold per-category arrays of `ProbeResult` into one
-    /// `LichessProbeHistory.Aggregate` per category. Verdicts:
-    ///   - `argmaxCorrect` counts `.correctAndConfident` + `.correctButFlat`
-    ///   - `top5Correct`   adds `.correctInTop5` on top
-    ///   - `errored`       counts `.error`
-    /// `.wrong` falls in none.
-    ///
-    /// Also accumulates `sumExpectedProb` over every probe (errored
-    /// probes have `expectedProb = 0` by construction) and
-    /// `sumExpectedRank` / `countWithRank` over probes that produced a
-    /// non-nil rank — the source of the monitor's continuous-valued
-    /// AVG PROB and AVG RANK columns.
-    private func foldAggregates(
-        _ resultsByCategory: [ProbeCategory: [ProbeResult]]
-    ) -> [LichessProbeHistory.Aggregate] {
-        var out: [LichessProbeHistory.Aggregate] = []
-        out.reserveCapacity(resultsByCategory.count)
-        for (cat, results) in resultsByCategory {
-            var argmaxCorrect = 0
-            var top5Correct = 0
-            var errored = 0
-            var sumProb: Float = 0
-            var sumRank = 0
-            var countRank = 0
-            for r in results {
-                sumProb += r.expectedProb
-                if let rank = r.expectedRank {
-                    sumRank += rank
-                    countRank += 1
-                }
-                switch r.verdict {
-                case .correctAndConfident, .correctButFlat:
-                    argmaxCorrect += 1
-                    top5Correct += 1
-                case .correctInTop5:
-                    top5Correct += 1
-                case .wrong:
-                    break
-                case .error:
-                    errored += 1
-                }
-            }
-            out.append(LichessProbeHistory.Aggregate(
-                theme: cat,
-                total: results.count,
-                argmaxCorrect: argmaxCorrect,
-                top5Correct: top5Correct,
-                errored: errored,
-                sumExpectedProb: sumProb,
-                sumExpectedRank: sumRank,
-                countWithRank: countRank
-            ))
-        }
-        return out
     }
 
     /// One `[TACTICAL-LICHESS]` summary line per tick — total score

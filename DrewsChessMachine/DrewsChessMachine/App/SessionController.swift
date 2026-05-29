@@ -104,6 +104,17 @@ final class SessionController {
     /// the app's life.
     var lichessProbeInferenceNetwork: ChessMPSNetwork?
 
+    /// Inference-mode network owned solely by `TacticalProbeWatcher`, mirroring
+    /// `lichessProbeInferenceNetwork`. Eliminates the race between the
+    /// tactical 9-probe periodic watcher and `fireCandidateProbeIfNeeded`,
+    /// which both used to snapshot trainer weights into `probeInferenceNetwork`
+    /// and could overwrite each other mid-tick. With Tactical on its own
+    /// network, `probeInferenceNetwork` is reserved for the candidate-test
+    /// gap-point probe and no two consumers share weights anywhere.
+    /// Built lazily next to `probeInferenceNetwork` on the first
+    /// Play-and-Train start, cached for the app's life.
+    var tacticalProbeInferenceNetwork: ChessMPSNetwork?
+
     /// `ChessRunner` wrapping `probeInferenceNetwork`, used by
     /// `fireCandidateProbeIfNeeded` via the same `performInference` path as the
     /// forward-pass demo.

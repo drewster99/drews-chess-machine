@@ -951,6 +951,33 @@ extension SessionController {
                 }
             }
 
+            // Dedicated Tactical-probe inference network. Mirrors the
+            // Lichess block above for the same reason: the 9-probe
+            // periodic watcher used to share `probeInferenceNetwork`
+            // with `fireCandidateProbeIfNeeded` and could race on
+            // weight snapshots. With its own network, neither consumer
+            // can overwrite the other mid-cycle. Memory cost is the
+            // same ~2.4M-param network instance.
+            let needsTacticalProbeBuild = await MainActor.run { tacticalProbeInferenceNetwork == nil }
+            if needsTacticalProbeBuild {
+                do {
+                    let built = try await Task.detached(priority: .userInitiated) {
+                        try ChessMPSNetwork(.randomWeights)
+                    }.value
+                    built.network.commandQueue.label = "startrealTraining tactical probe Inference"
+                    await MainActor.run {
+                        tacticalProbeInferenceNetwork = built
+                    }
+                } catch {
+                    box.recordError("Tactical probe network init failed: \(error.localizedDescription)")
+                    await MainActor.run {
+                        realTraining = false
+                        realTrainingTask = nil
+                    }
+                    return
+                }
+            }
+
             // Reset the trainer's graph AND initialize its weights,
             // branched by `mode`:
             //

@@ -216,4 +216,56 @@ final class LichessProbeHistory {
     var tickCount: Int {
         entries.values.map(\.count).max() ?? 0
     }
+
+    /// Fold a tick's worth of `ProbeResult`s into per-theme aggregates.
+    /// Shared between the periodic `LichessProbeWatcher` and the manual
+    /// "Run Lichess Probe" handler in `SessionController+LichessProbe`
+    /// so both produce identical bookkeeping and write identically
+    /// shaped rows into history. Pure function — exposed as `static`
+    /// so callers don't need a history instance to fold.
+    nonisolated static func aggregates(from results: [ProbeResult]) -> [Aggregate] {
+        var byCategory: [ProbeCategory: [ProbeResult]] = [:]
+        for r in results {
+            byCategory[r.probe.category, default: []].append(r)
+        }
+        var out: [Aggregate] = []
+        out.reserveCapacity(byCategory.count)
+        for (cat, perThemeResults) in byCategory {
+            var argmaxCorrect = 0
+            var top5Correct = 0
+            var errored = 0
+            var sumProb: Float = 0
+            var sumRank = 0
+            var countRank = 0
+            for r in perThemeResults {
+                sumProb += r.expectedProb
+                if let rank = r.expectedRank {
+                    sumRank += rank
+                    countRank += 1
+                }
+                switch r.verdict {
+                case .correctAndConfident, .correctButFlat:
+                    argmaxCorrect += 1
+                    top5Correct += 1
+                case .correctInTop5:
+                    top5Correct += 1
+                case .wrong:
+                    break
+                case .error:
+                    errored += 1
+                }
+            }
+            out.append(Aggregate(
+                theme: cat,
+                total: perThemeResults.count,
+                argmaxCorrect: argmaxCorrect,
+                top5Correct: top5Correct,
+                errored: errored,
+                sumExpectedProb: sumProb,
+                sumExpectedRank: sumRank,
+                countWithRank: countRank
+            ))
+        }
+        return out
+    }
 }

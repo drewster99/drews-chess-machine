@@ -44,14 +44,21 @@ final class TacticalProbeWatcher {
         self.intervalSec = intervalSec
     }
 
-    /// Begin the periodic loop. Runs an immediate first tick (so the
-    /// window populates within a few hundred ms of opening) and then
-    /// sleeps `intervalSec` between subsequent ticks. Re-entrant: a
-    /// second `start()` while running returns without doing anything.
+    /// Begin the periodic loop. Two-phase startup:
+    ///  1. Poll every 5 seconds until the network needed by the current
+    ///     `probeNetworkTarget` is ready (training has started).
+    ///  2. Sleep 60 seconds — a warm-up so the first tick lands well
+    ///     into training rather than right at the launch instant when
+    ///     the network is still random / tunable.
+    /// After the first tick, the regular `intervalSec` cadence kicks in.
+    /// Re-entrant: a second `start()` while running is a no-op.
     func start() {
         guard task == nil else { return }
         task = Task { [weak self, intervalSec] in
-            // Fire immediately on open.
+            // Phase 1+2: wait for training, then warm up.
+            await self?.waitForFirstTickConditions()
+            if Task.isCancelled { return }
+
             await self?.tickOnce()
             while !Task.isCancelled {
                 let nanos = UInt64(intervalSec * 1_000_000_000)
@@ -64,6 +71,45 @@ final class TacticalProbeWatcher {
                 if Task.isCancelled { return }
                 await self?.tickOnce()
             }
+        }
+    }
+
+    /// Poll-until-ready + 60s warm-up before the first tick.
+    /// "Ready" means the network the current `probeNetworkTarget`
+    /// would consume is built — `network` (the champion) for
+    /// `.champion`, `tacticalProbeInferenceNetwork` plus a non-nil
+    /// trainer for `.candidate`. Once ready, sleeps 60s and returns.
+    /// One-time per watcher: if training is stopped after the first
+    /// tick, the periodic loop continues without re-running this gate.
+    @MainActor
+    private func waitForFirstTickConditions() async {
+        while !Task.isCancelled {
+            if canTickNow() { break }
+            do {
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+            } catch {
+                return
+            }
+        }
+        if Task.isCancelled { return }
+        do {
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+        } catch {
+            return
+        }
+    }
+
+    /// Whether `tickOnce` would currently be able to run a probe
+    /// against a valid network. Mirrors the guards inside `tickOnce`.
+    @MainActor
+    private func canTickNow() -> Bool {
+        guard let session = sessionController else { return false }
+        switch session.probeNetworkTarget {
+        case .champion:
+            return session.network != nil
+        case .candidate:
+            return session.trainer != nil
+                && session.tacticalProbeInferenceNetwork != nil
         }
     }
 
@@ -127,8 +173,15 @@ final class TacticalProbeWatcher {
             guard let championNet = session.network else { return }
             net = championNet
         case .candidate:
+            // Use the dedicated `tacticalProbeInferenceNetwork`, not
+            // the shared `probeInferenceNetwork`. Snapshotting trainer
+            // weights into the shared net while
+            // `fireCandidateProbeIfNeeded` is doing the same can leave
+            // the wrong weights in place mid-cycle. Owning a separate
+            // network here costs one extra `ChessMPSNetwork` instance
+            // but eliminates the race for good.
             guard let trainer = session.trainer,
-                  let probeNet = session.probeInferenceNetwork else { return }
+                  let probeNet = session.tacticalProbeInferenceNetwork else { return }
             do {
                 let weights = try await trainer.network.exportWeights()
                 try await probeNet.loadWeights(weights)

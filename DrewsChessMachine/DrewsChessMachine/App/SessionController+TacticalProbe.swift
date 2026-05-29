@@ -327,11 +327,21 @@ extension SessionController {
         )
 
         var verdictCounts: [ProbeVerdict: Int] = [:]
+        var collected: [ProbeResult] = []
+        collected.reserveCapacity(probes.count)
         for (i, probe) in probes.enumerated() {
             let result = await TacticalProbeRunner.run(probe, against: net)
             verdictCounts[result.verdict, default: 0] += 1
+            collected.append(result)
             logProbeResult(index: i + 1, total: probes.count, result: result)
         }
+
+        // Mirror the periodic watcher's behavior: a manual run also
+        // refreshes the always-on `tacticalProbeHistory` so the open
+        // Tactical Probe Monitor window updates immediately rather
+        // than waiting up to the watcher's interval for the next
+        // scheduled tick.
+        tacticalProbeHistory.record(collected)
 
         let summary = ProbeVerdict.allOrderedForReport
             .map { v in "\(v.rawValue)=\(verdictCounts[v] ?? 0)" }
