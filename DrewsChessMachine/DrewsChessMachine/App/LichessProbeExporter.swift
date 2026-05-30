@@ -12,12 +12,13 @@ import Foundation
 /// embedded in the JSON under `export_id`, so filename ↔ content
 /// identity is checkable.
 ///
-/// Schema v2 — each `puzzles[]` entry is `{ puzzle: {...}, probe_result: {...} }`
+/// Schema v3 — each `puzzles[]` entry is `{ puzzle: {...}, probe_result: {...} }`
 /// for readability and to keep the "what the puzzle is" data lexically
 /// separated from "how the network performed on it." Top-level metadata
-/// includes the export UUID, the tick timestamp, the model label, and
-/// the build that produced the data so an exported file can stand
-/// alone for analysis later.
+/// includes the export UUID, the tick timestamp, the model label, the
+/// trainer step the tick was taken at (`training_step`, added in v3; nil
+/// when the tick predates any trainer), and the build that produced the
+/// data so an exported file can stand alone for analysis later.
 ///
 /// User flow: the Lichess Probe Detail window's "Export latest…"
 /// button calls `exportLatest`. On success an NSAlert with Reveal in
@@ -176,11 +177,12 @@ enum LichessProbeExporter {
     ) throws -> Data {
         let entries = history.latestPerPuzzleResults.map(buildPuzzleEntry(_:))
         let payload = ExportPayload(
-            schemaVersion: 2,
+            schemaVersion: 3,
             exportId: exportID.uuidString.lowercased(),
             generatedAt: isoTimestampFormatter.string(from: Date()),
             tickTimestamp: isoTimestampFormatter.string(from: tickTimestamp),
             modelLabel: history.latestTickModelLabel,
+            trainingStep: history.latestTickTrainingStep,
             appBuild: AppBuildBlock.current,
             probeCount: entries.count,
             puzzles: entries
@@ -261,6 +263,9 @@ enum LichessProbeExporter {
         let generatedAt: String
         let tickTimestamp: String
         let modelLabel: String?
+        /// Trainer step count at the moment the exported tick was
+        /// recorded. nil when the tick ran before a trainer existed.
+        let trainingStep: Int?
         let appBuild: AppBuildBlock
         let probeCount: Int
         let puzzles: [PuzzleEntry]
@@ -271,6 +276,7 @@ enum LichessProbeExporter {
             case generatedAt = "generated_at"
             case tickTimestamp = "tick_timestamp"
             case modelLabel = "model_label"
+            case trainingStep = "training_step"
             case appBuild = "app_build"
             case probeCount = "probe_count"
             case puzzles

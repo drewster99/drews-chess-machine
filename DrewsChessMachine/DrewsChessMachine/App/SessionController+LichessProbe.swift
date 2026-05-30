@@ -56,11 +56,17 @@ extension SessionController {
         // shared `lichessProbeHistory` so any open Monitor / Detail
         // window updates immediately, and the JSON exporter can dump
         // the manual-run snapshot.
+        // Step the probed weights came from. nil before a trainer exists
+        // (champion probed pre-Play-and-Train); the history snapshots it so
+        // the JSON export reports the step at tick time, not at export time.
+        let trainingStep = trainer?.completedTrainSteps
+
         let aggregates = LichessProbeHistory.aggregates(from: allResults)
         lichessProbeHistory.record(
             aggregates,
             allResults: allResults,
-            modelLabel: modelLabel
+            modelLabel: modelLabel,
+            trainingStep: trainingStep
         )
 
         // Per-theme breakdown lines, stable order by raw value.

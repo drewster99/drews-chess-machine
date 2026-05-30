@@ -133,12 +133,22 @@ struct ReplaySamplingBucketChartView: View {
                     RoundedRectangle(cornerRadius: 2)
                         .fill(Color.secondary.opacity(0.10))
                         .frame(height: 16)
-                    // Filled portion.
+                    // Filled portion + percentage label. Wrapped in one
+                    // HStack so the label sits flush against the right
+                    // edge of the colored bar; the Spacer claims the
+                    // remaining gray-slot width without affecting bar
+                    // geometry.
                     GeometryReader { geo in
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(Self.bucketColors[idx].opacity(0.7))
-                            .frame(width: max(0, geo.size.width * CGFloat(frac)),
-                                   height: 16)
+                        let filledWidth = max(0, geo.size.width * CGFloat(frac))
+                        HStack(spacing: 3) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Self.bucketColors[idx].opacity(0.7))
+                                .frame(width: filledWidth, height: 16)
+                            Text(percentLabel(frac: frac, counts: counts))
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.primary)
+                            Spacer(minLength: 0)
+                        }
                     }
                     .frame(height: 16)
                     // Target reference line — dashed vertical at the
@@ -176,6 +186,18 @@ struct ReplaySamplingBucketChartView: View {
             return "—"
         }
         return "\(counts[idx])"
+    }
+
+    /// Percentage label rendered alongside each bar. Returns a dash
+    /// when the source counts array is missing (no buffer composition
+    /// snapshot yet / no batch landed yet), so empty rows don't
+    /// render misleading "0%" — distinguishes "row has no data" from
+    /// "this bucket genuinely got 0 of the row's total."
+    private func percentLabel(frac: Double, counts: [Int]?) -> String {
+        guard counts != nil else { return "—" }
+        // One decimal — enough to distinguish 24.8 from 25.2 around the
+        // balanced target without taking the width of "100.00%".
+        return String(format: "%.1f%%", frac * 100.0)
     }
 
     /// Safe accessor: returns 0 when `counts` is nil OR `idx` is out

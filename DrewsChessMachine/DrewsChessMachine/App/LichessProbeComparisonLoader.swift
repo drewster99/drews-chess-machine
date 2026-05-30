@@ -63,12 +63,15 @@ enum LichessProbeComparisonLoader {
             return nil
         }
 
-        guard decoded.schemaVersion == 2 else {
+        // v3 only adds the optional top-level `training_step`, which
+        // `LoadedPayload` doesn't decode — so v2 and v3 files are read
+        // identically here. Accept both.
+        guard (2...3).contains(decoded.schemaVersion) else {
             presentLoaderError(
                 title: "Unsupported schema",
                 message: """
                     \(url.lastPathComponent) uses schema version \(decoded.schemaVersion).
-                    Only version 2 is supported.
+                    Only versions 2-3 are supported.
                     """
             )
             return nil
