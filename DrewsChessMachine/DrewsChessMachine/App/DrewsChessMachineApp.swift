@@ -102,6 +102,15 @@ struct DrewsChessMachineApp: App {
         // JSON to stdout and a human-readable summary to stderr.
         Self.handleAnalyzeReplayBufferIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: handle UCI mode. When `--uci` is present, hand
+        // control to `UCIEngine.runAndExit` and never return — the
+        // process behaves as a pure stdin/stdout chess engine for
+        // cutechess and friends. Critically, this exits BEFORE the
+        // SwiftUI `WindowGroup` is created, so no window appears and
+        // the launch-time auto-resume countdown sheet (which would
+        // otherwise re-start training automatically) never runs.
+        Self.handleUciIfPresent(rawArgs: rawArgs)
+
         // Known flags.
         let booleanFlags: Set<String> = ["--train"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit"]
@@ -591,6 +600,84 @@ struct DrewsChessMachineApp: App {
         }
         let path = positional.first ?? "./parameters.json"
         runCreateParametersFileAndExit(path: path, force: force)
+    }
+
+    // MARK: - UCI mode pre-flight (--uci [--model <path.dcmmodel>])
+
+    /// Inspects `rawArgs` for `--uci`. If present, validates the
+    /// allowed companion flag set (`--model <path>` is the only one),
+    /// hands control to `UCIEngine.runAndExit`, and never returns.
+    ///
+    /// `--uci` deliberately runs before the strict-CLI parser below
+    /// (which would reject it as unknown) AND before the SwiftUI
+    /// `WindowGroup` is created — so the cutechess-launched process
+    /// behaves as a pure stdin/stdout engine. No window, no menu bar,
+    /// no `AutoResumeController` countdown sheet auto-resuming a
+    /// training session under us.
+    ///
+    /// Model resolution lives in `UCIModelLoader`:
+    /// - `--model <path>` loads that `.dcmmodel` file directly.
+    /// - no `--model` ⇒ most recently saved session's
+    ///   `trainer.dcmmodel` via `LastSessionPointer`.
+    private static func handleUciIfPresent(rawArgs: [String]) {
+        let uciFlag = "--uci"
+        let modelFlag = "--model"
+        guard rawArgs.contains(uciFlag) else { return }
+
+        // Any other `--`-prefixed flag besides `--uci` / `--model` is
+        // a usage error — a typo in `--mode` would otherwise silently
+        // launch the GUI with a confusing model-load failure.
+        let allowedFlags: Set<String> = [uciFlag, modelFlag]
+        if let badFlag = rawArgs.first(where: {
+            $0.hasPrefix("--") && !allowedFlags.contains($0)
+        }) {
+            FileHandle.standardError.write(Data(
+                "error: \(uciFlag) does not accept '\(badFlag)' (only \(modelFlag) <path.dcmmodel> is allowed alongside)\n".utf8
+            ))
+            Darwin.exit(20)
+        }
+
+        // Extract `--model <path>` if present. Exactly zero or one
+        // occurrence allowed; if present, the immediately following
+        // token is the path.
+        var modelPath: String? = nil
+        let modelIndices = rawArgs.indices.filter { rawArgs[$0] == modelFlag }
+        if modelIndices.count > 1 {
+            FileHandle.standardError.write(Data(
+                "error: \(modelFlag) specified \(modelIndices.count) times; only one allowed\n".utf8
+            ))
+            Darwin.exit(21)
+        }
+        if let idx = modelIndices.first {
+            let valueIdx = idx + 1
+            guard valueIdx < rawArgs.count, !rawArgs[valueIdx].hasPrefix("--") else {
+                FileHandle.standardError.write(Data(
+                    "error: \(modelFlag) requires a path value\n".utf8
+                ))
+                Darwin.exit(22)
+            }
+            modelPath = rawArgs[valueIdx]
+        }
+
+        // Anything in rawArgs that isn't `--uci`, `--model`, or
+        // `--model`'s value is a stray positional we don't want to
+        // silently accept.
+        var consumed = Set<Int>()
+        for (i, arg) in rawArgs.enumerated() where arg == uciFlag {
+            consumed.insert(i)
+        }
+        if let idx = modelIndices.first {
+            consumed.insert(idx)
+            consumed.insert(idx + 1)
+        }
+        for (i, arg) in rawArgs.enumerated() where !consumed.contains(i) {
+            FileHandle.standardError.write(Data(
+                "error: \(uciFlag) does not accept positional argument '\(arg)'\n".utf8
+            ))
+            Darwin.exit(23)
+        }
+
+        UCIEngine.runAndExit(modelPath: modelPath)
     }
 
     // MARK: - Replay-buffer analyzer pre-flight (--analyze-replay-buffer)
