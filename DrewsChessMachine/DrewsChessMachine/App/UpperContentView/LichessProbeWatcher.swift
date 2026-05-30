@@ -1,9 +1,9 @@
 import Foundation
 
-/// Periodic driver for the 200-puzzle Lichess probe set. Same
+/// Step-triggered driver for the 200-puzzle Lichess probe set. Same
 /// life-of-session shape as `TacticalProbeWatcher` — one task that
-/// fires `intervalSec` apart, plus an on-demand `triggerOnce()` for the
-/// monitor's "Probe now" button.
+/// fires every `triggerEverySteps` trainer SGD steps, plus an
+/// on-demand `triggerOnce()` for the monitor's "Probe now" button.
 ///
 /// Per tick: snapshot the trainer's current weights into the dedicated
 /// probe-inference network (or read the live champion, depending on
@@ -11,59 +11,119 @@ import Foundation
 /// through `TacticalProbeRunner.run` and fold the 200 results into 8
 /// per-theme aggregates that get appended to `LichessProbeHistory`.
 ///
+/// Cadence rationale: 30-minute time-based ticks decoupled the probe
+/// from training progress — at fast-warmup early steps the probe
+/// would lag the rapidly-shifting weights, and during slow / paused
+/// training it would fire on a stale snapshot. Tying the cadence to
+/// trainer steps (default 200) keeps probe density tracking actual
+/// learning progress, so each chart point represents a fixed amount
+/// of gradient applied rather than a fixed amount of wall-clock time.
+///
 /// Cost note: 200 probes × 2 forward passes each = 400 forward passes
-/// per tick. At the 30-minute default cadence that's ~13 single-position
-/// forward passes per minute — well under the per-ply rate the batched
-/// self-play evaluator already sustains. We deliberately do NOT log
-/// per-probe lines for the periodic ticks (only a one-line `[TACTICAL-
-/// LICHESS]` summary), to keep the session log readable; the manual
-/// "Run Lichess Probe" menu item produces a denser per-theme breakdown
-/// instead, see `SessionController.runLichessProbe()`.
+/// per tick. At the default 200-step cadence and ~2.5 trainer steps/s
+/// that's a tick every ~80 s (roughly 1100 ticks/day at sustained
+/// training, vs. 48 ticks/day under the prior 30-minute time-based
+/// cadence — about 22× denser sampling, which is the whole point of
+/// switching to step-based triggering). Forward-pass load is still
+/// well under the per-ply rate the batched self-play evaluator
+/// already sustains. We deliberately do NOT log per-probe lines for
+/// the periodic ticks (only a one-line `[TACTICAL-LICHESS]` summary)
+/// to keep the session log readable; the manual "Run Lichess Probe"
+/// menu item produces a denser per-theme breakdown instead — see
+/// `SessionController.runLichessProbe()`.
 ///
 /// @MainActor isolated — same pattern as the small-set watcher.
 @MainActor
 final class LichessProbeWatcher {
     private weak var sessionController: SessionController?
     private let history: LichessProbeHistory
-    private let intervalSec: TimeInterval
+    /// Fire one tick every time the trainer's `completedTrainSteps`
+    /// has advanced by this many steps since the last tick.
+    private let triggerEverySteps: Int
+    /// Polling cadence for the step-watch loop. Faster than the
+    /// expected tick interval (~80s at 200 steps and ~2.5 steps/s)
+    /// so a crossing is detected within a few seconds. Smaller
+    /// values are wasted CPU on a sleeping task; larger values
+    /// would smear the tick boundary across multiple chart points.
+    private let pollIntervalSec: TimeInterval = 2.0
     private var task: Task<Void, Never>?
 
     init(
         sessionController: SessionController,
         history: LichessProbeHistory,
-        intervalSec: TimeInterval = 30.0 * 60.0
+        triggerEverySteps: Int = 200
     ) {
         self.sessionController = sessionController
         self.history = history
-        self.intervalSec = intervalSec
+        self.triggerEverySteps = max(1, triggerEverySteps)
     }
 
-    /// Begin the periodic loop. Two-phase startup:
-    ///  1. Poll every 5 seconds until the network needed by the current
-    ///     `probeNetworkTarget` is built (training has started).
-    ///  2. Sleep 60 seconds — a warm-up so the first tick lands well
-    ///     into training rather than right at the launch instant when
-    ///     the network is still random / tunable.
-    /// After the first tick, the regular `intervalSec` cadence kicks in.
+    /// Begin the step-watching loop. Three-phase startup:
+    ///  1. Poll every 5 seconds until the network needed by the
+    ///     current `probeNetworkTarget` is built (training has
+    ///     started).
+    ///  2. Sleep 60 seconds — a warm-up so the first tick lands
+    ///     past the launch instant when the network is still
+    ///     random / tunable.
+    ///  3. Fire one baseline tick so the chart has a first data
+    ///     point, then enter the step-watch loop: every
+    ///     `pollIntervalSec` seconds, read the trainer step count
+    ///     and fire when it's advanced by `triggerEverySteps`.
     /// Re-entrant: a second `start()` while running is a no-op.
     func start() {
         guard task == nil else { return }
-        task = Task { [weak self, intervalSec] in
+        task = Task { [weak self] in
             await self?.waitForFirstTickConditions()
             if Task.isCancelled { return }
 
+            // Baseline tick + record the step the first tick was
+            // anchored at, so the cadence stays "every N steps from
+            // first tick" rather than "every N steps from 0" (which
+            // could spam several initial ticks if startup conditions
+            // delay the watcher past N steps).
             await self?.tickOnce()
+            var lastTriggeredStep = await self?.currentTrainerStep() ?? 0
+
             while !Task.isCancelled {
-                let nanos = UInt64(intervalSec * 1_000_000_000)
                 do {
+                    let nanos = UInt64(
+                        (self?.pollIntervalSec ?? 2.0) * 1_000_000_000
+                    )
                     try await Task.sleep(nanoseconds: nanos)
                 } catch {
                     return
                 }
                 if Task.isCancelled { return }
-                await self?.tickOnce()
+                guard let self else { return }
+                guard let step = await self.currentTrainerStep() else { continue }
+                // Trainer rebuild / fresh session can roll step back —
+                // re-anchor so we don't lock out probes by holding a
+                // historical high-water mark.
+                if step < lastTriggeredStep {
+                    lastTriggeredStep = step
+                    continue
+                }
+                if step - lastTriggeredStep >= self.triggerEverySteps {
+                    await self.tickOnce()
+                    // Snap to the most recent multiple-of-N boundary
+                    // at or below `step`, so a slow tick (the 200
+                    // forward passes block the loop for a few seconds)
+                    // doesn't accumulate "missed" boundaries and
+                    // double-fire. Worst case the chart point's step
+                    // anchor is N-1 steps behind the snap; that's
+                    // already implicit in the cadence quantization.
+                    lastTriggeredStep = step - (step % self.triggerEverySteps)
+                }
             }
         }
+    }
+
+    /// Convenience accessor used by the step-watch loop. Returns nil
+    /// when no trainer is yet attached to the session (e.g. between
+    /// Play-and-Train stop and restart).
+    @MainActor
+    private func currentTrainerStep() -> Int? {
+        sessionController?.trainer?.completedTrainSteps
     }
 
     /// Poll-until-ready + 60s warm-up before the first tick. Same
@@ -172,7 +232,17 @@ final class LichessProbeWatcher {
 
         let aggregates = LichessProbeHistory.aggregates(from: allResults)
         let modelLabel = net.identifier?.description ?? "<no-id>"
-        history.record(aggregates, allResults: allResults, modelLabel: modelLabel)
+        // Trainer step at tick time — snapshotted into history so the JSON
+        // export reports the step the probed weights came from regardless
+        // of when the user clicks "Export latest…". nil before a trainer
+        // exists (champion-target probe pre-Play-and-Train).
+        let trainingStep = session.trainer?.completedTrainSteps
+        history.record(
+            aggregates,
+            allResults: allResults,
+            modelLabel: modelLabel,
+            trainingStep: trainingStep
+        )
         logTickSummary(aggregates, modelLabel: modelLabel)
     }
 

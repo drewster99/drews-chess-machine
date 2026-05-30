@@ -54,6 +54,18 @@ final class LichessProbeHistory {
         /// Denominator for `avgExpectedRank` — number of probes whose
         /// `expectedRank` was non-nil.
         let countWithRank: Int
+        /// Sum of `−log(max(expectedProb, ε))` across all probes in
+        /// this tick, in nats. Floor `ε = 1e-8` keeps an `expectedProb
+        /// = 0` (errored probe / illegal bookmove from the network's
+        /// POV) from producing `+∞` — those probes contribute
+        /// `−log(1e-8) ≈ 18.4` instead, a heavy but finite penalty.
+        /// Averaging this over `total` is the legal-masked
+        /// cross-entropy of the bookmove — the same loss the trainer
+        /// minimizes, evaluated on these 200 held-out positions. Use
+        /// `Double` because logs are exponentially-scaled values that
+        /// can accumulate small fractional differences across 200
+        /// probes that `Float` would round away.
+        let sumNegLogProb: Double
 
         /// `argmaxCorrect / total` in `[0, 1]`, or 0 when `total == 0`.
         var argmaxCorrectFraction: Float {
@@ -77,6 +89,61 @@ final class LichessProbeHistory {
             guard countWithRank > 0 else { return nil }
             return Float(sumExpectedRank) / Float(countWithRank)
         }
+        /// Mean per-probe `−log(p_bookmove)` in nats — the
+        /// legal-masked cross-entropy of the bookmove. Lower is
+        /// better. Reference points: 0 = perfect (prob 1 on
+        /// bookmove); ≈ log(30) ≈ 3.4 = uniform over ~30 legal
+        /// moves; the `1e-8` floor caps any single probe's
+        /// contribution at ≈ 18.4 nats so a few errored probes can't
+        /// dominate the mean.
+        var meanNegLogProb: Double {
+            total > 0 ? sumNegLogProb / Double(total) : 0
+        }
+    }
+
+
+    /// Maximum-likelihood engine rating fitted by Bradley-Terry on
+    /// per-puzzle (rating, correct) pairs — i.e. "what single Elo
+    /// best explains the observed solve pattern given Lichess's
+    /// per-puzzle Glicko-2 ratings?" Model:
+    ///
+    ///   P(solve puzzle of rating R | engine = E) = 1 / (1 + 10^((R − E)/400))
+    ///
+    /// The log-likelihood is concave in E with derivative
+    /// `(ln 10 / 400) · Σ_i (correct_i − p_i(E))`, monotone-decreasing
+    /// in E (because each `p_i` is increasing in E). Bisection on
+    /// `Σ p_i = Σ correct_i` finds the zero of the derivative — 60
+    /// iterations over `E ∈ [−1000, 4000]` shrinks the bracket to
+    /// `5e-15`, far below display precision.
+    ///
+    /// Edge cases: all-wrong gives `−.infinity` (no finite MLE — the
+    /// likelihood is monotone in E, peaking at `E → −∞`); all-correct
+    /// gives `+.infinity`. Callers should clamp / sentinel for
+    /// display. Empty input returns `.nan` — a "no data" signal.
+    nonisolated static func mlePuzzleElo(pairs: [(rating: Int, correct: Bool)]) -> Double {
+        guard !pairs.isEmpty else { return .nan }
+        let target = Double(pairs.reduce(0) { $0 + ($1.correct ? 1 : 0) })
+        if target == 0 { return -.infinity }
+        if target == Double(pairs.count) { return .infinity }
+
+        var lo: Double = -1000
+        var hi: Double = 4000
+        for _ in 0..<60 {
+            let mid = (lo + hi) / 2
+            // `expSpread` is unbounded for very negative `R - mid`, so
+            // compute as `1 / (1 + 10^x)` directly — `Foundation.pow`
+            // on Double handles the full range without overflow at
+            // these magnitudes (|R - E| ≤ 5000 → |x| ≤ 12.5).
+            let sumP = pairs.reduce(0.0) { running, pair in
+                running + 1.0 / (1.0 + pow(10.0, (Double(pair.rating) - mid) / 400.0))
+            }
+            if sumP < target {
+                lo = mid
+            } else {
+                hi = mid
+            }
+        }
+        return (lo + hi) / 2
     }
 
     /// One timestamped tick: 8 aggregates, one per theme bucket.
@@ -89,6 +156,24 @@ final class LichessProbeHistory {
     /// rather than by raw string so a future rename of one of the
     /// `lichess*` cases reaches every site that compiles.
     private(set) var entries: [ProbeCategory: [Entry]] = [:]
+
+    /// One overall-summary sample per tick — the OVERALL row's
+    /// `meanNegLogProb` and MLE puzzle-Elo, evaluated against the
+    /// full 200-puzzle batch at that tick. Populated by `record(...)`
+    /// alongside the per-theme `entries` so the chart can plot the
+    /// across-the-board test-loss trajectory without re-folding eight
+    /// per-theme series at every render. Trimmed in lockstep with
+    /// `entries` to `maxEntriesPerTheme`.
+    struct OverallTickSample: Sendable {
+        let timestamp: Date
+        let meanNegLogProb: Double
+        /// MLE puzzle-Elo for this tick. Stored as Double for the same
+        /// reasons as the live cell formatter: NaN if the tick had no
+        /// rated puzzles, ±∞ for all-wrong / all-correct edges. Chart
+        /// renderers should filter to `.isFinite` before plotting.
+        let puzzleElo: Double
+    }
+    private(set) var overallSeries: [OverallTickSample] = []
 
     /// Full per-puzzle results from the most recent tick. 200 entries
     /// once the first tick lands, empty otherwise. The detail window
@@ -105,6 +190,15 @@ final class LichessProbeHistory {
     /// Surfaced in the detail window header and the JSON export so the
     /// user can tell which weight snapshot produced which numbers.
     private(set) var latestTickModelLabel: String?
+
+    /// Trainer step count (`ChessTrainer.completedTrainSteps`) at the
+    /// moment the latest tick was recorded. Captured here — rather than
+    /// read live at export time — so the number in an exported snapshot
+    /// is the step that actually produced the probed weights, even if the
+    /// user clicks "Export latest…" long after the tick landed. nil when
+    /// no trainer existed at tick time (e.g. probing a freshly built
+    /// champion before Play-and-Train has started).
+    private(set) var latestTickTrainingStep: Int?
 
     /// Cap per series so a long-running monitor doesn't grow without
     /// bound. 120 ticks × 30 min/tick = 60 hours of visible history —
@@ -123,7 +217,8 @@ final class LichessProbeHistory {
     func record(
         _ aggregates: [Aggregate],
         allResults: [ProbeResult],
-        modelLabel: String?
+        modelLabel: String?,
+        trainingStep: Int?
     ) {
         let now = Date()
         for agg in aggregates {
@@ -137,6 +232,28 @@ final class LichessProbeHistory {
         latestPerPuzzleResults = allResults
         latestTickTimestamp = now
         latestTickModelLabel = modelLabel
+        latestTickTrainingStep = trainingStep
+
+        // Append the overall (200-puzzle) summary sample. Folded from the
+        // per-theme aggregates we just recorded; pElo needs per-puzzle
+        // ratings which only `allResults` carries, so it's computed here
+        // rather than recoverable later.
+        let overall = LichessProbeOverallSummary(folding: aggregates)
+        let pairs: [(rating: Int, correct: Bool)] = allResults.compactMap {
+            guard let meta = LichessProbeData.metadata[$0.probe.name] else { return nil }
+            let isArgmaxCorrect = $0.verdict == .correctAndConfident
+                || $0.verdict == .correctButFlat
+            return (rating: meta.rating, correct: isArgmaxCorrect)
+        }
+        let elo = Self.mlePuzzleElo(pairs: pairs)
+        overallSeries.append(OverallTickSample(
+            timestamp: now,
+            meanNegLogProb: overall.meanNegLogProb,
+            puzzleElo: elo
+        ))
+        if overallSeries.count > maxEntriesPerTheme {
+            overallSeries.removeFirst(overallSeries.count - maxEntriesPerTheme)
+        }
     }
 
     /// Most recent aggregate for one theme, or nil before the first
@@ -176,9 +293,11 @@ final class LichessProbeHistory {
     /// "current" tick exists.
     func clearAll() {
         entries.removeAll()
+        overallSeries.removeAll()
         latestPerPuzzleResults = []
         latestTickTimestamp = nil
         latestTickModelLabel = nil
+        latestTickTrainingStep = nil
     }
 
     /// Sum of `argmaxCorrect` across all themes' latest entries, or
@@ -237,12 +356,18 @@ final class LichessProbeHistory {
             var sumProb: Float = 0
             var sumRank = 0
             var countRank = 0
+            var sumNegLog: Double = 0
             for r in perThemeResults {
                 sumProb += r.expectedProb
                 if let rank = r.expectedRank {
                     sumRank += rank
                     countRank += 1
                 }
+                // 1e-8 floor: an errored probe / strict-illegal bookmove
+                // would otherwise contribute +∞. Floor matches the one in
+                // `LichessProbeComparison`'s analogous accumulator so live
+                // and snapshot NLL stay byte-identical at equal inputs.
+                sumNegLog += -log(Double(max(r.expectedProb, 1e-8)))
                 switch r.verdict {
                 case .correctAndConfident, .correctButFlat:
                     argmaxCorrect += 1
@@ -263,7 +388,8 @@ final class LichessProbeHistory {
                 errored: errored,
                 sumExpectedProb: sumProb,
                 sumExpectedRank: sumRank,
-                countWithRank: countRank
+                countWithRank: countRank,
+                sumNegLogProb: sumNegLog
             ))
         }
         return out

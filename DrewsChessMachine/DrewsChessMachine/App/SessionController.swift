@@ -663,8 +663,9 @@ final class SessionController {
 
     /// On-demand fire of a single tactical-probe cycle. Wired to the
     /// "Probe now" button in the Tactical Probe Monitor window so the
-    /// user can refresh the displayed stats without waiting up to
-    /// `TacticalProbeWatcher.intervalSec` for the next scheduled tick.
+    /// user can refresh the displayed stats without waiting for the
+    /// watcher's next step-trigger boundary (see
+    /// `TacticalProbeWatcher.triggerEverySteps`, default 100).
     /// No-op if the watcher hasn't been created yet (e.g. the user
     /// clicks Probe Now during the brief window between app launch
     /// and `startTacticalProbeWatcher()`).
@@ -687,8 +688,9 @@ final class SessionController {
 
     /// On-demand fire of a single Lichess-probe cycle. Wired to the
     /// "Probe now" button in the Lichess Probe Monitor window so the
-    /// user can refresh the displayed stats without waiting up to
-    /// `LichessProbeWatcher.intervalSec` for the next scheduled tick.
+    /// user can refresh the displayed stats without waiting for the
+    /// watcher's next step-trigger boundary (see
+    /// `LichessProbeWatcher.triggerEverySteps`, default 200).
     func triggerLichessProbeNow() {
         lichessProbeWatcher?.triggerOnce()
     }

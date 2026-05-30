@@ -226,6 +226,15 @@ struct LichessProbeDetailView: View {
                         .padding(.horizontal, 12)
                         .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
                     Divider()
+                    LichessProbeOverallTrendChart(
+                        history: history,
+                        cmpNll: comparison?.overallSummary.meanNegLogProb,
+                        cmpElo: comparison.map(Self.cmpMlePuzzleElo)
+                    )
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 12)
+                    .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
+                    Divider()
                     columnHeader
                         .padding(.vertical, 4)
                         .padding(.horizontal, 12)
@@ -450,9 +459,11 @@ struct LichessProbeDetailView: View {
                     top5: liveAgg.top5Correct,
                     avgProb: liveAgg.avgExpectedProb,
                     avgRank: liveAgg.avgExpectedRank,
+                    meanNll: liveAgg.meanNegLogProb,
                     showLabels: true,
                     vsProb: nil,
-                    vsRank: nil
+                    vsRank: nil,
+                    vsNll: nil
                 )
             }
             if comparison != nil {
@@ -468,9 +479,11 @@ struct LichessProbeDetailView: View {
                             top5: c.top5Correct,
                             avgProb: c.avgExpectedProb,
                             avgRank: c.avgExpectedRank,
+                            meanNll: c.meanNegLogProb,
                             showLabels: false,
                             vsProb: liveAgg.avgExpectedProb,
-                            vsRank: liveAgg.avgExpectedRank
+                            vsRank: liveAgg.avgExpectedRank,
+                            vsNll: liveAgg.meanNegLogProb
                         )
                     } else {
                         // Comparison loaded but no entries for this
@@ -488,7 +501,30 @@ struct LichessProbeDetailView: View {
                         Text("—").font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(width: 150, alignment: .leading)
+                        Text("—").font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 130, alignment: .leading)
                     }
+                }
+                HStack(spacing: 12) {
+                    Text("Δ live − cmp")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 180, alignment: .leading)
+                    diffMetricCells(
+                        liveTotal: liveAgg.total,
+                        liveArgmax: liveAgg.argmaxCorrect,
+                        liveTop5: liveAgg.top5Correct,
+                        liveProb: liveAgg.avgExpectedProb,
+                        liveRank: liveAgg.avgExpectedRank,
+                        liveNll: liveAgg.meanNegLogProb,
+                        cmpTotal: cmpAgg?.total,
+                        cmpArgmax: cmpAgg?.argmaxCorrect,
+                        cmpTop5: cmpAgg?.top5Correct,
+                        cmpProb: cmpAgg?.avgExpectedProb,
+                        cmpRank: cmpAgg?.avgExpectedRank,
+                        cmpNll: cmpAgg?.meanNegLogProb
+                    )
                 }
             }
         }
@@ -512,7 +548,8 @@ struct LichessProbeDetailView: View {
             errored: 0,
             sumExpectedProb: 0,
             sumExpectedRank: 0,
-            countWithRank: 0
+            countWithRank: 0,
+            sumNegLogProb: 0
         )
     }
 
@@ -534,9 +571,11 @@ struct LichessProbeDetailView: View {
         top5: Int,
         avgProb: Float,
         avgRank: Float?,
+        meanNll: Double,
         showLabels: Bool,
         vsProb: Float?,
-        vsRank: Float?
+        vsRank: Float?,
+        vsNll: Double?
     ) -> some View {
         let argmaxPct = total > 0
             ? String(format: "%.1f%%", 100.0 * Double(argmax) / Double(total))
@@ -562,6 +601,9 @@ struct LichessProbeDetailView: View {
                 return showLabels ? "avg rank —" : "—"
             }
         }()
+        let nllText = showLabels
+            ? "NLL \(String(format: "%.3f", meanNll))"
+            : String(format: "%.3f", meanNll)
 
         Text(argmaxText)
             .font(.system(.caption, design: .monospaced))
@@ -577,6 +619,121 @@ struct LichessProbeDetailView: View {
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(Self.summaryRankColor(value: avgRank, vs: vsRank))
             .frame(width: 150, alignment: .leading)
+        Text(nllText)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(Self.summaryNllColor(value: meanNll, vs: vsNll))
+            .frame(width: 130, alignment: .leading)
+    }
+
+    /// Color for an NLL cell. Lower is better (closer to 0 = perfect
+    /// prediction), so `value < vs - epsilon` → green (this side
+    /// better); `value > vs + epsilon` → red. Tied within ±0.005
+    /// renders primary (NLL changes of less than ~0.005 nats over
+    /// 200 probes are dominated by sampling noise on a single
+    /// errored probe).
+    fileprivate static func summaryNllColor(value: Double, vs: Double?) -> Color {
+        guard let vs else { return .primary }
+        if value < vs - 0.005 { return .green }
+        if value > vs + 0.005 { return .red }
+        return .primary
+    }
+
+    /// One cell rendering the MLE puzzle-Elo: `pElo 845`, or the
+    /// floor / ceiling / no-data sentinels. Width matches the NLL
+    /// cell so the OVERALL band's metric grid stays uniform.
+    @ViewBuilder
+    private func puzzleEloCell(elo: Double, showLabel: Bool, vsElo: Double?) -> some View {
+        Text(Self.formatPuzzleElo(elo, showLabel: showLabel))
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(Self.summaryEloColor(value: elo, vs: vsElo))
+            .frame(width: 130, alignment: .leading)
+    }
+
+    /// "pElo 845" / "pElo <floor" / "pElo >ceil" / "pElo —"
+    /// (NaN). The floor / ceiling sentinels render when MLE
+    /// goes unbounded — all-wrong or all-correct over the
+    /// probe set. Without a label prefix, the cmp/diff rows
+    /// drop "pElo " to align under the live row.
+    fileprivate static func formatPuzzleElo(_ elo: Double, showLabel: Bool) -> String {
+        let prefix = showLabel ? "pElo " : ""
+        if elo.isNaN { return "\(prefix)—" }
+        if elo == -.infinity { return "\(prefix)<floor" }
+        if elo == .infinity { return "\(prefix)>ceil" }
+        return "\(prefix)\(String(format: "%.0f", elo))"
+    }
+
+    /// Color for a pElo cell. Higher is better. `±5` Elo threshold
+    /// is wider than typical Elo noise on small probe sets — keeps
+    /// the cell from flickering on sub-significant moves.
+    fileprivate static func summaryEloColor(value: Double, vs: Double?) -> Color {
+        guard let vs, value.isFinite, vs.isFinite else { return .primary }
+        if value > vs + 5 { return .green }
+        if value < vs - 5 { return .red }
+        return .primary
+    }
+
+    /// "Δ +12" / "Δ -34" / "Δ —" pElo diff cell. Both sides must
+    /// be finite for a numeric delta — sentinel-vs-sentinel (e.g.
+    /// both "<floor") renders "Δ 0" if they match, "Δ —" otherwise.
+    @ViewBuilder
+    private func puzzleEloDiffCell(live: Double, cmp: Double) -> some View {
+        let cell = Self.diffCellForElo(live: live, cmp: cmp)
+        Text(cell.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(cell.color)
+            .frame(width: 130, alignment: .leading)
+    }
+
+    /// Pure-data helper for `puzzleEloDiffCell` — `(text, color)`
+    /// the renderer can drop into a single `Text` cell without
+    /// branching inside the ViewBuilder (which chokes on
+    /// deferred-init `let` patterns).
+    private static func diffCellForElo(live: Double, cmp: Double) -> DiffCell {
+        if live.isFinite && cmp.isFinite {
+            let d = live - cmp
+            let signed = signedInt(Int(d.rounded()))
+            let color: Color = {
+                if d > 5 { return .green }
+                if d < -5 { return .red }
+                return .primary
+            }()
+            return DiffCell(text: "Δ \(signed)", color: color)
+        }
+        if live == cmp {
+            return DiffCell(text: "Δ 0", color: .primary)
+        }
+        return DiffCell(text: "Δ —", color: .secondary)
+    }
+
+    /// Build the per-puzzle (rating, correct) pairs needed by
+    /// `mlePuzzleElo`. Falls back to skipping any puzzle whose
+    /// metadata lookup fails (defensive — the 200-puzzle bundle is
+    /// stable but the lookup is by `probe.name`, which is a constructed
+    /// string).
+    private func liveMlePuzzleElo() -> Double {
+        let pairs: [(rating: Int, correct: Bool)] = history.latestPerPuzzleResults.compactMap {
+            guard let meta = LichessProbeData.metadata[$0.probe.name] else { return nil }
+            let isArgmaxCorrect = $0.verdict == .correctAndConfident
+                || $0.verdict == .correctButFlat
+            return (rating: meta.rating, correct: isArgmaxCorrect)
+        }
+        return LichessProbeHistory.mlePuzzleElo(pairs: pairs)
+    }
+
+    /// Comparison-side pElo, computed from the loaded snapshot's
+    /// own `rating_glicko2` field (NOT the live bundle's metadata —
+    /// the snapshot's ratings are what the network was scored
+    /// against at export time, even if the bundle has since
+    /// changed). Returns NaN if the snapshot is missing the rating
+    /// field on every puzzle (older schema-v2 exports).
+    private static func cmpMlePuzzleElo(_ cmp: LichessProbeComparison) -> Double {
+        let pairs: [(rating: Int, correct: Bool)] = cmp.payload.puzzles.compactMap {
+            guard let rating = $0.puzzle.ratingGlicko2 else { return nil }
+            let isArgmaxCorrect = $0.probeResult.verdict == "correctAndConfident"
+                || $0.probeResult.verdict == "correctButFlat"
+            return (rating: rating, correct: isArgmaxCorrect)
+        }
+        return LichessProbeHistory.mlePuzzleElo(pairs: pairs)
     }
 
     /// Color for an avg-prob cell that's possibly a cmp value:
@@ -600,6 +757,177 @@ struct LichessProbeDetailView: View {
         return .primary
     }
 
+    /// 4 fixed-width cells aligned under the live/cmp rows showing the
+    /// `live - cmp` delta for each metric. Sign + value with a "Δ"
+    /// prefix. Color follows the same "live-better = green" semantic as
+    /// the per-row CMP cell: positive delta on argmax/top-5/prob is
+    /// live-better-than-cmp = green; positive delta on rank is
+    /// live-worse-than-cmp (rank lower = better) = red.
+    ///
+    /// `cmp == nil` (per-theme cmp aggregate missing for a theme that
+    /// exists live) renders four "—" placeholders so the row stays
+    /// dimensionally aligned with the live / cmp rows above.
+    /// Three-string view-model for one diff cell. Built ahead-of-time
+    /// so `diffMetricCells` can stay a pure tuple-of-`Text` ViewBuilder
+    /// (which is the only shape SwiftUI's result builder reliably
+    /// composes across multiple sibling cells without choking on opaque
+    /// return types).
+    private struct DiffCell {
+        let text: String
+        let color: Color
+    }
+
+    private static func diffCellForCount(
+        liveTotal: Int,
+        liveCount: Int,
+        cmpTotal: Int?,
+        cmpCount: Int?
+    ) -> DiffCell {
+        guard let cmpCount, let cmpTotal else {
+            return DiffCell(text: "Δ —", color: .secondary)
+        }
+        let dCount = liveCount - cmpCount
+        let livePct = liveTotal > 0 ? 100.0 * Double(liveCount) / Double(liveTotal) : 0
+        let cmpPct = cmpTotal > 0 ? 100.0 * Double(cmpCount) / Double(cmpTotal) : 0
+        let dPp = livePct - cmpPct
+        return DiffCell(
+            text: "Δ \(signedInt(dCount)) (\(signedPp(dPp)))",
+            color: countBetterColor(delta: dCount)
+        )
+    }
+
+    private static func diffCellForProb(live: Float, cmp: Float?) -> DiffCell {
+        guard let cmp else { return DiffCell(text: "Δ —", color: .secondary) }
+        let d = live - cmp
+        return DiffCell(
+            text: "Δ \(signedFloat(d, decimals: 3))",
+            color: probBetterColor(delta: d)
+        )
+    }
+
+    private static func diffCellForRank(live: Float?, cmp: Float?) -> DiffCell {
+        guard let live, let cmp else { return DiffCell(text: "Δ —", color: .secondary) }
+        let d = live - cmp
+        return DiffCell(
+            text: "Δ \(signedFloat(d, decimals: 2))",
+            color: rankBetterColor(delta: d)
+        )
+    }
+
+    private static func diffCellForNll(live: Double, cmp: Double?) -> DiffCell {
+        guard let cmp else { return DiffCell(text: "Δ —", color: .secondary) }
+        let d = live - cmp
+        // Lower NLL = better, so positive delta = live worse = red.
+        let color: Color
+        if d < -0.005 { color = .green }
+        else if d > 0.005 { color = .red }
+        else { color = .primary }
+        let signed: String = {
+            let abs = String(format: "%.3f", abs(d))
+            if d > 0 { return "+\(abs)" }
+            if d < 0 { return "-\(abs)" }
+            return abs
+        }()
+        return DiffCell(text: "Δ \(signed)", color: color)
+    }
+
+    @ViewBuilder
+    private func diffMetricCells(
+        liveTotal: Int,
+        liveArgmax: Int,
+        liveTop5: Int,
+        liveProb: Float,
+        liveRank: Float?,
+        liveNll: Double,
+        cmpTotal: Int?,
+        cmpArgmax: Int?,
+        cmpTop5: Int?,
+        cmpProb: Float?,
+        cmpRank: Float?,
+        cmpNll: Double?
+    ) -> some View {
+        let argmax = Self.diffCellForCount(
+            liveTotal: liveTotal, liveCount: liveArgmax,
+            cmpTotal: cmpTotal, cmpCount: cmpArgmax
+        )
+        let top5 = Self.diffCellForCount(
+            liveTotal: liveTotal, liveCount: liveTop5,
+            cmpTotal: cmpTotal, cmpCount: cmpTop5
+        )
+        let prob = Self.diffCellForProb(live: liveProb, cmp: cmpProb)
+        let rank = Self.diffCellForRank(live: liveRank, cmp: cmpRank)
+        let nll = Self.diffCellForNll(live: liveNll, cmp: cmpNll)
+
+        Text(argmax.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(argmax.color)
+            .frame(width: 180, alignment: .leading)
+        Text(top5.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(top5.color)
+            .frame(width: 180, alignment: .leading)
+        Text(prob.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(prob.color)
+            .frame(width: 150, alignment: .leading)
+        Text(rank.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(rank.color)
+            .frame(width: 150, alignment: .leading)
+        Text(nll.text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(nll.color)
+            .frame(width: 130, alignment: .leading)
+    }
+
+    /// "+3" / "0" / "-2" with an explicit sign on positives.
+    fileprivate static func signedInt(_ v: Int) -> String {
+        v > 0 ? "+\(v)" : "\(v)"
+    }
+
+    /// "+1.0pp" / "0.0pp" / "-2.5pp" — percentage-points formatter with
+    /// an explicit sign on positives.
+    fileprivate static func signedPp(_ v: Double) -> String {
+        let abs = String(format: "%.1f", abs(v))
+        if v > 0 { return "+\(abs)pp" }
+        if v < 0 { return "-\(abs)pp" }
+        return "0.0pp"
+    }
+
+    /// "+0.123" / "0.000" / "-0.045" — float formatter with an explicit
+    /// sign on positives.
+    fileprivate static func signedFloat(_ v: Float, decimals: Int) -> String {
+        let format = "%.\(decimals)f"
+        let abs = String(format: format, abs(v))
+        if v > 0 { return "+\(abs)" }
+        if v < 0 { return "-\(abs)" }
+        return abs
+    }
+
+    /// For argmax/top-5 deltas: positive count = live improved = green.
+    fileprivate static func countBetterColor(delta: Int) -> Color {
+        if delta > 0 { return .green }
+        if delta < 0 { return .red }
+        return .primary
+    }
+
+    /// For avg-prob delta: positive = live more confident in bookmove
+    /// = better = green. Tied within ±0.001 renders primary.
+    fileprivate static func probBetterColor(delta: Float) -> Color {
+        let epsilon: Float = 0.001
+        if delta > epsilon { return .green }
+        if delta < -epsilon { return .red }
+        return .primary
+    }
+
+    /// For avg-rank delta: positive = live higher rank = worse = red
+    /// (lower rank is better). Tied within ±0.05 renders primary.
+    fileprivate static func rankBetterColor(delta: Float) -> Color {
+        if delta < -0.05 { return .green }
+        if delta > 0.05 { return .red }
+        return .primary
+    }
+
     // MARK: Overall summary band
 
     /// Top "OVERALL" summary band — same metric layout as the per-theme
@@ -613,6 +941,7 @@ struct LichessProbeDetailView: View {
             history.latest($0)?.aggregate
         }
         let liveSummary = LichessProbeOverallSummary(folding: liveAggregates)
+        let liveElo = liveMlePuzzleElo()
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
                 Text("OVERALL")
@@ -624,13 +953,17 @@ struct LichessProbeDetailView: View {
                     top5: liveSummary.top5Correct,
                     avgProb: liveSummary.avgExpectedProb,
                     avgRank: liveSummary.avgExpectedRank,
+                    meanNll: liveSummary.meanNegLogProb,
                     showLabels: true,
                     vsProb: nil,
-                    vsRank: nil
+                    vsRank: nil,
+                    vsNll: nil
                 )
+                puzzleEloCell(elo: liveElo, showLabel: true, vsElo: nil)
             }
             if let cmp = comparison {
                 let cmpSummary = cmp.overallSummary
+                let cmpElo = Self.cmpMlePuzzleElo(cmp)
                 HStack(spacing: 12) {
                     Text("cmp")
                         .font(.system(.caption, design: .monospaced))
@@ -642,10 +975,34 @@ struct LichessProbeDetailView: View {
                         top5: cmpSummary.top5Correct,
                         avgProb: cmpSummary.avgExpectedProb,
                         avgRank: cmpSummary.avgExpectedRank,
+                        meanNll: cmpSummary.meanNegLogProb,
                         showLabels: false,
                         vsProb: liveSummary.avgExpectedProb,
-                        vsRank: liveSummary.avgExpectedRank
+                        vsRank: liveSummary.avgExpectedRank,
+                        vsNll: liveSummary.meanNegLogProb
                     )
+                    puzzleEloCell(elo: cmpElo, showLabel: false, vsElo: liveElo)
+                }
+                HStack(spacing: 12) {
+                    Text("Δ live − cmp")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 180, alignment: .leading)
+                    diffMetricCells(
+                        liveTotal: liveSummary.totalProbes,
+                        liveArgmax: liveSummary.argmaxCorrect,
+                        liveTop5: liveSummary.top5Correct,
+                        liveProb: liveSummary.avgExpectedProb,
+                        liveRank: liveSummary.avgExpectedRank,
+                        liveNll: liveSummary.meanNegLogProb,
+                        cmpTotal: cmpSummary.totalProbes,
+                        cmpArgmax: cmpSummary.argmaxCorrect,
+                        cmpTop5: cmpSummary.top5Correct,
+                        cmpProb: cmpSummary.avgExpectedProb,
+                        cmpRank: cmpSummary.avgExpectedRank,
+                        cmpNll: cmpSummary.meanNegLogProb
+                    )
+                    puzzleEloDiffCell(live: liveElo, cmp: cmpElo)
                 }
             }
         }

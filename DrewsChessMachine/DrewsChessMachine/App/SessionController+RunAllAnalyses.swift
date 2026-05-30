@@ -51,13 +51,23 @@ extension SessionController {
 
             // 1. Replay buffer (champion is what generates self-play,
             //    so the buffer is "champion's" data and its label
-            //    reflects that).
+            //    reflects that). The per-bucket policy-entropy probe,
+            //    however, is most useful against the *trainer* — the
+            //    champion's policy is frozen between promotions, so
+            //    probing it produces bit-identical entropy stats
+            //    across snapshots and obscures the "is illegal mass
+            //    falling?" signal that's the whole point of the
+            //    probe. When a trainer is available, snapshot its
+            //    current weights into a fresh inference-mode network
+            //    and probe that.
             if let buf = bufferRef {
                 let modelLabel = "champion:\(championRef?.identifier?.description ?? "<no-id>")"
+                let entropyProbe = await Self.buildTrainerEntropyProbeNetwork(trainer: trainerRef)
                 let step = await Self.runReplayBufferStep(
                     buffer: buf,
                     network: championRef,
-                    modelLabel: modelLabel
+                    modelLabel: modelLabel,
+                    entropyProbe: entropyProbe
                 )
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
@@ -123,18 +133,73 @@ extension SessionController {
 
     // MARK: - Per-analysis runners
 
+    /// Build a fresh inference-mode `ChessMPSNetwork`, load the
+    /// trainer's current weights into it, and return it paired with a
+    /// "trainer:<id>" label, for use as the replay analyzer's entropy
+    /// probe. Returns `nil` if no trainer is available, or if the
+    /// snapshot path fails (logged; falls through to "no entropy
+    /// probe" in the caller — the analyzer's own fallback then picks
+    /// the champion).
+    ///
+    /// The network is short-lived — allocated for one Run All
+    /// Analyses pass and dropped when the closure exits. The build
+    /// includes the `.randomWeights` BN warmup whose stats are then
+    /// overwritten by `loadWeights`; that's wasted work but ~10s of
+    /// ms, negligible for a manual menu action.
+    nonisolated static func buildTrainerEntropyProbeNetwork(
+        trainer: ChessTrainer?
+    ) async -> (network: ChessMPSNetwork, label: String)? {
+        guard let trainer else { return nil }
+        do {
+            let weights = try await trainer.network.exportWeights()
+            let probe = try ChessMPSNetwork(.randomWeights)
+            try await probe.loadWeights(weights)
+            // Inherit the trainer's id so logs / JSON record exactly
+            // whose weights are being probed — same pattern as
+            // `fireCandidateProbeIfNeeded` uses for the candidate-test
+            // probe inference network.
+            probe.identifier = trainer.identifier
+            let label = "trainer:\(trainer.identifier?.description ?? "<no-id>")"
+            return (probe, label)
+        } catch {
+            SessionLogger.shared.log(
+                "[ANALYSIS] Trainer entropy-probe snapshot failed: \(error.localizedDescription)"
+                + " — replay analyzer will fall back to champion for the entropy probe."
+            )
+            return nil
+        }
+    }
+
     /// Runs the replay-buffer analyzer (with the optional live-network
     /// entropy probe when a network is available), writes the JSON,
     /// logs an `[ANALYSIS]` block. Returns the summary line + first
     /// success URL.
+    ///
+    /// `entropyProbe`, when non-nil, is the network the analyzer should
+    /// probe for per-bucket policy entropy / illegal mass. **It is
+    /// deliberately distinct from the champion** — the champion's
+    /// policy is frozen between promotions, so probing it produces
+    /// bit-identical entropy stats across snapshots and the "is
+    /// illegal mass falling?" training-progress signal is invisible.
+    /// Run All Analyses passes a fresh inference network freshly
+    /// loaded with the trainer's current weights so the entropy
+    /// section reflects the trainee's actual learning trajectory.
     nonisolated private static func runReplayBufferStep(
         buffer: ReplayBuffer,
         network: ChessMPSNetwork?,
-        modelLabel: String
+        modelLabel: String,
+        entropyProbe: (network: ChessMPSNetwork, label: String)? = nil
     ) async -> AnalysisStepResult {
         let result: ReplayBufferAnalyzer.Result
         do {
-            if let net = network {
+            if let probe = entropyProbe {
+                result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
+                    buffer: buffer,
+                    network: probe.network,
+                    modelLabel: modelLabel,
+                    entropyModelLabel: probe.label
+                )
+            } else if let net = network {
                 result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
                     buffer: buffer,
                     network: net,

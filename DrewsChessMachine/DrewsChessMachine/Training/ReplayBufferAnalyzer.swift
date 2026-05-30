@@ -274,6 +274,15 @@ enum ReplayBufferAnalyzer {
         /// `nil`. Per-bucket means over a stratified random sample of
         /// positions forward-passed through the network.
         let policyEntropyByMaterialBucket: [PolicyEntropyBucketStat]?
+
+        /// Label of the network used to compute
+        /// `policyEntropyByMaterialBucket` — recorded separately from
+        /// `modelLabel` (which always identifies the buffer's source,
+        /// i.e. the champion that played the games) because the probe
+        /// is most meaningful when run against the trainer, whose
+        /// policy is actually evolving. Nil iff
+        /// `policyEntropyByMaterialBucket` is nil.
+        let policyEntropyModelLabel: String?
     }
 
     // MARK: - Public entry point
@@ -477,7 +486,8 @@ enum ReplayBufferAnalyzer {
                 gameLengthByOutcome: gameLengthByOutcome,
                 gameLengthBucketLabels: gameLengthBucketLabels,
                 topMaterialSignatures: topSigs,
-                policyEntropyByMaterialBucket: nil
+                policyEntropyByMaterialBucket: nil,
+                policyEntropyModelLabel: nil
             )
         }
     }
@@ -498,6 +508,15 @@ enum ReplayBufferAnalyzer {
     /// path). The CLI flag, which never sets up a network, sticks with
     /// `run(buffer:modelLabel:)`.
     ///
+    /// `modelLabel` always identifies the buffer's source (the
+    /// champion that played the games). `entropyModelLabel` records
+    /// which network ran the entropy probe — typically the trainer,
+    /// since the champion's policy is frozen between promotions and
+    /// the meaningful "is illegal mass falling?" signal lives on the
+    /// trainer. When `nil`, `modelLabel` is reused (the historical
+    /// behavior, kept for callers that probe with the same network
+    /// that filled the buffer).
+    ///
     /// The entropy probe samples up to `perBucketTarget` positions
     /// per material bucket, copies board tensors out from under the
     /// buffer's lock (no pointer escape), and forward-passes each
@@ -507,6 +526,7 @@ enum ReplayBufferAnalyzer {
         buffer: ReplayBuffer,
         network: ChessMPSNetwork,
         modelLabel: String,
+        entropyModelLabel: String? = nil,
         perBucketTarget: Int = defaultPolicyEntropyPerBucketTarget
     ) async throws -> Result {
         let base = run(buffer: buffer, modelLabel: modelLabel)
@@ -532,7 +552,8 @@ enum ReplayBufferAnalyzer {
             gameLengthByOutcome: base.gameLengthByOutcome,
             gameLengthBucketLabels: base.gameLengthBucketLabels,
             topMaterialSignatures: base.topMaterialSignatures,
-            policyEntropyByMaterialBucket: entropyStats
+            policyEntropyByMaterialBucket: entropyStats,
+            policyEntropyModelLabel: entropyModelLabel ?? modelLabel
         )
     }
 
@@ -1216,7 +1237,9 @@ extension ReplayBufferAnalyzer.Result {
         //    (`meanEntropy / ln(meanLegalMoves)`) for comparison to
         //    the tactical-probe panel's entropy column.
         if let entropyStats = policyEntropyByMaterialBucket {
-            out += "(7) Policy entropy by material bucket (live forward-pass sample):\n"
+            let probeLabel = policyEntropyModelLabel ?? modelLabel
+            out += "(7) Policy entropy by material bucket"
+                + " (live forward-pass sample, network: \(probeLabel)):\n"
             out += "    bucket      samples   meanEnt(nats)  perplexity   legal   uniformEnt   % of uniform\n"
             for stat in entropyStats {
                 let perplexity = exp(stat.meanEntropyNats)

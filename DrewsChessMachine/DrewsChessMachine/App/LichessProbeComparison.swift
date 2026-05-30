@@ -1,7 +1,7 @@
 import Foundation
 
 /// Loaded comparison snapshot read from a previously-exported Lichess
-/// Probe JSON (schema v2). Lives on the `LichessProbeDetailView` as
+/// Probe JSON (schema v2 or v3). Lives on the `LichessProbeDetailView` as
 /// optional state — `nil` when no comparison is active, populated when
 /// the user clicks Compare and picks a file.
 ///
@@ -67,6 +67,7 @@ struct LichessProbeComparison: Sendable {
             var sumProb: Float = 0
             var sumRank = 0
             var countRank = 0
+            var sumNegLog: Double = 0
             for entry in entries {
                 let pr = entry.probeResult
                 sumProb += pr.expectedProb
@@ -74,6 +75,10 @@ struct LichessProbeComparison: Sendable {
                     sumRank += rank
                     countRank += 1
                 }
+                // 1e-8 floor matches the live-side accumulator in
+                // `LichessProbeHistory.aggregates(from:)` so live and
+                // snapshot NLL are byte-identical at equal inputs.
+                sumNegLog += -log(Double(max(pr.expectedProb, 1e-8)))
                 switch pr.verdict {
                 case "correctAndConfident", "correctButFlat":
                     argmaxCorrect += 1
@@ -94,13 +99,14 @@ struct LichessProbeComparison: Sendable {
                 errored: errored,
                 sumExpectedProb: sumProb,
                 sumExpectedRank: sumRank,
-                countWithRank: countRank
+                countWithRank: countRank,
+                sumNegLogProb: sumNegLog
             )
         }
         return out
     }
 
-    // MARK: - Decodable payloads (schema v2)
+    // MARK: - Decodable payloads (schema v2 / v3)
 
     struct LoadedPayload: Decodable, Sendable {
         let schemaVersion: Int
@@ -161,10 +167,17 @@ struct LichessProbeComparison: Sendable {
     struct LoadedPuzzle: Decodable, Sendable {
         let id: String
         let themeCategory: String
+        /// Lichess Glicko-2 puzzle rating. Optional only because
+        /// older schema-v2 JSONs (pre-rating_glicko2 emit) might
+        /// still be loaded; current exports always include it.
+        /// Required for the MLE puzzle-Elo metric — comparison
+        /// snapshots that are missing it just report Elo as `.nan`.
+        let ratingGlicko2: Int?
 
         enum CodingKeys: String, CodingKey {
             case id
             case themeCategory = "theme_category"
+            case ratingGlicko2 = "rating_glicko2"
         }
     }
 
@@ -210,6 +223,7 @@ struct LichessProbeOverallSummary: Sendable {
     let sumExpectedProb: Float
     let sumExpectedRank: Int
     let countWithRank: Int
+    let sumNegLogProb: Double
 
     init(folding aggregates: [LichessProbeHistory.Aggregate]) {
         var total = 0
@@ -219,6 +233,7 @@ struct LichessProbeOverallSummary: Sendable {
         var sumProb: Float = 0
         var sumRank = 0
         var countRank = 0
+        var sumNeg: Double = 0
         for a in aggregates {
             total += a.total
             argmax += a.argmaxCorrect
@@ -227,6 +242,7 @@ struct LichessProbeOverallSummary: Sendable {
             sumProb += a.sumExpectedProb
             sumRank += a.sumExpectedRank
             countRank += a.countWithRank
+            sumNeg += a.sumNegLogProb
         }
         self.totalProbes = total
         self.argmaxCorrect = argmax
@@ -235,6 +251,7 @@ struct LichessProbeOverallSummary: Sendable {
         self.sumExpectedProb = sumProb
         self.sumExpectedRank = sumRank
         self.countWithRank = countRank
+        self.sumNegLogProb = sumNeg
     }
 
     var argmaxFraction: Float {
@@ -249,5 +266,11 @@ struct LichessProbeOverallSummary: Sendable {
     var avgExpectedRank: Float? {
         guard countWithRank > 0 else { return nil }
         return Float(sumExpectedRank) / Float(countWithRank)
+    }
+    /// Mean per-probe `−log(p_bookmove)` across all 200 probes —
+    /// the cross-entropy of the bookmove, in nats. Same semantic as
+    /// `Aggregate.meanNegLogProb` but at the overall level.
+    var meanNegLogProb: Double {
+        totalProbes > 0 ? sumNegLogProb / Double(totalProbes) : 0
     }
 }

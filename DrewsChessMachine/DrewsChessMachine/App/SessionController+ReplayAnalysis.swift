@@ -34,8 +34,13 @@ extension SessionController {
         // task can run the live-network entropy probe (analysis #7).
         // The network is `@unchecked Sendable` and the ref captured
         // here outlives the closure regardless of any concurrent
-        // session changes.
+        // session changes. The trainer ref is captured for the same
+        // reason — the entropy probe runs against a fresh inference
+        // network loaded with trainer weights when one is available,
+        // since the champion's policy is frozen between promotions
+        // and would produce a misleading bit-stable entropy section.
         let netForEntropy = network
+        let trainerForEntropy = trainer
         let modelLabel = netForEntropy?.identifier?.description ?? "<no-id>"
 
         Task.detached(priority: .utility) {
@@ -46,9 +51,19 @@ extension SessionController {
             // training loop. When a network is available we also run
             // the stratified policy-entropy probe (a few extra seconds
             // of forward passes) so analysis #7 lands in the same JSON.
+            let entropyProbe = await Self.buildTrainerEntropyProbeNetwork(
+                trainer: trainerForEntropy
+            )
             let result: ReplayBufferAnalyzer.Result
             do {
-                if let net = netForEntropy {
+                if let probe = entropyProbe {
+                    result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
+                        buffer: buf,
+                        network: probe.network,
+                        modelLabel: modelLabel,
+                        entropyModelLabel: probe.label
+                    )
+                } else if let net = netForEntropy {
                     result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
                         buffer: buf,
                         network: net,
