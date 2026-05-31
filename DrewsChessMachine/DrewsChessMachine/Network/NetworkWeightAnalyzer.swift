@@ -26,11 +26,12 @@ import Foundation
 // Counts channels with |gamma| < threshold (channels effectively
 // zeroed out by BN, since output ≈ beta when gamma ≈ 0).
 //
-// Per-SE-module baseline attention gate distribution. Each block's
-// SE module's bias-only output is `sigmoid(SE_FC2_bias)` — a
-// 128-element vector in [0, 1]. Distribution + counts of channels
-// suppressed (<0.1) / pass-through (>0.9) tell whether SE is doing
-// real attention vs. degenerate.
+// Per-SE-module baseline attention gate distribution. The scale-and-bias
+// SE module's bias-only gate is `sigmoid(gammas_bias)` — the gammas
+// (scale) half of the 2·channels-wide FC2 bias, a 128-element vector in
+// [0, 1]. Distribution + counts of channels suppressed (<0.1) /
+// pass-through (>0.9) tell whether SE is doing real attention vs.
+// degenerate. (The betas bias half is a linear offset, not a gate.)
 //
 // Pure analysis — single `exportWeights()` call + CPU stat-crunching.
 // Takes a `ChessNetwork` (the inner type with `trainableVariables`),
@@ -51,12 +52,13 @@ enum NetworkWeightAnalyzer {
     static let sectionOrder: [String] =
         ["stem"]
         + (0..<ChessNetwork.numBlocks).map { "block_\($0)" }
-        + ["policy", "value", "other"]
+        + ["tower_final", "policy", "value", "other"]
 
     /// 0-based section bucket for a variable. Drives both the
     /// per-section summaries and the text-summary grouping.
     static func section(forVariableNamed name: String) -> String {
         if name.hasPrefix("stem_") { return "stem" }
+        if name.hasPrefix("tower_final_") { return "tower_final" }
         if name.hasPrefix("policy_") { return "policy" }
         if name.hasPrefix("value_") { return "value" }
         if name.hasPrefix("block") {
@@ -79,16 +81,17 @@ enum NetworkWeightAnalyzer {
         case "stem_conv_weights":      return 30 * 3 * 3
         case "policy_pre_conv_weights": return 128 * 1 * 1
         case "policy_conv_weights":    return 128 * 1 * 1
-        case "value_conv_weights":  return 128
-        case "value_fc1_weights":   return 64
-        case "value_fc2_weights":   return 64
+        case "value_conv_weights":  return ChessNetwork.channels   // 1×1 conv: inC = channels
+        case "value_fc1_weights":   return ChessNetwork.boardSize * ChessNetwork.boardSize * ChessNetwork.valueHeadConvChannels  // FC [flatten, hidden], fan_in = flatten
+        case "value_fc2_weights":   return ChessNetwork.valueHeadHiddenUnits  // FC [hidden, classes], fan_in = hidden
         default: break
         }
         if name.hasSuffix("_conv1_weights") || name.hasSuffix("_conv2_weights") {
             return 128 * 3 * 3
         }
         if name.hasSuffix("_se_fc1_weights") { return 128 }
-        if name.hasSuffix("_se_fc2_weights") { return 32 }
+        // se_fc2 is Glorot-init, handled by `expectedInitL2` before `fanIn`
+        // is ever consulted — so no He fan-in entry here.
         return nil
     }
 
@@ -98,6 +101,25 @@ enum NetworkWeightAnalyzer {
         guard n > 0, fanIn > 0 else { return 0 }
         let std = sqrt(2.0 / Double(fanIn))
         return sqrt(Double(n)) * std
+    }
+
+    /// Glorot (Xavier) init L2 reference: `sqrt(n) · sqrt(2/(fanIn+fanOut))`.
+    static func glorotInitL2(elementCount n: Int, fanIn: Int, fanOut: Int) -> Double {
+        guard n > 0, fanIn + fanOut > 0 else { return 0 }
+        let std = sqrt(2.0 / Double(fanIn + fanOut))
+        return sqrt(Double(n)) * std
+    }
+
+    /// Expected initial L2 norm for a weight tensor, or `nil` for tensors
+    /// with no random-init reference. The SE FC2 weight uses Glorot (it
+    /// feeds the sigmoid gate — see `ChessNetwork.glorotInitDataFCInOut`),
+    /// so it gets the Glorot reference; everything else uses He.
+    static func expectedInitL2(forVariableNamed name: String, elementCount n: Int) -> Double? {
+        if name.hasSuffix("_se_fc2_weights") {
+            // `[in, out]` = [channels/r, 2·channels] = [32, 256].
+            return glorotInitL2(elementCount: n, fanIn: 32, fanOut: 256)
+        }
+        return fanIn(forVariableNamed: name).map { heInitL2(elementCount: n, fanIn: $0) }
     }
 
     /// Deterministic initial value for variables that don't use He-init.
@@ -117,12 +139,12 @@ enum NetworkWeightAnalyzer {
         if name == "value_fc2_bias" && n == 3 {
             return [0.0, log(6.0), 0.0]
         }
-        // The last BN in each residual block (bn2) uses zero-γ init so
-        // the block starts as identity — see ChessNetwork.batchNorm. Its
-        // drift-from-init reference is 0, not the usual 1. Checked before
-        // the general gamma rule below.
-        if name.hasSuffix("_bn2_gamma") {
-            return Array(repeating: 0.0, count: n)
+        // Per-block ReZero branch scalar α initializes to 1/√numBlocks
+        // — see ChessNetwork.residualBlock. Its drift-from-init reference
+        // is that value, so the analyzer reports how far each block has
+        // grown or shrunk its residual contribution.
+        if name.hasSuffix("_res_scale") {
+            return Array(repeating: 1.0 / Double(ChessNetwork.numBlocks).squareRoot(), count: n)
         }
         // BN gamma initializes to ones, var initializes to ones —
         // see ChessNetwork.batchNorm.
@@ -239,9 +261,10 @@ enum NetworkWeightAnalyzer {
             let initPerOutputChannelL2: Double
         }
 
-        /// Dead-channel summary for one BN layer (skips BN layers
-        /// with only one channel — `value_bn` is excluded because the
-        /// "distribution" has no shape).
+        /// Dead-channel summary for one BN layer. Genuinely single-channel
+        /// BN layers are skipped (a one-element "distribution" has no
+        /// shape); every multi-channel BN — including the widened
+        /// `value_bn` — is summarized.
         struct BNLayerDetail: Codable, Sendable {
             /// Layer name without the `_gamma`/`_beta` suffix (e.g.
             /// "stem_bn", "block_3_bn2").
@@ -262,8 +285,9 @@ enum NetworkWeightAnalyzer {
         }
 
         /// SE baseline-attention gate distribution for one residual
-        /// block. The gate at "zero input" is `sigmoid(SE_FC2_bias)`,
-        /// a 128-element vector in `[0, 1]`. This struct summarizes
+        /// block. The gate at "zero input" is `sigmoid(gammas_bias)` —
+        /// the scale half of the scale-and-bias FC2 bias — a
+        /// 128-element vector in `[0, 1]`. This struct summarizes
         /// its distribution.
         struct SEAttentionDetail: Codable, Sendable {
             let blockName: String
@@ -290,11 +314,12 @@ enum NetworkWeightAnalyzer {
         let sections: [SectionSummary]
         let stemInputChannelDetail: StemInputChannelDetail?
         /// Per-output-channel L2 detail for every conv weight tensor
-        /// in the network (stem, block_X_conv1, block_X_conv2, policy,
-        /// value). Ordered as they appear in graph build order.
+        /// in the network (stem, block_X_conv1, block_X_conv2,
+        /// policy_pre_conv, policy_conv, value_conv). Ordered as they
+        /// appear in graph build order.
         let convOutputChannelDetails: [ConvOutputChannelDetail]
-        /// One entry per multi-channel BN layer. `value_bn` (1 channel)
-        /// is excluded.
+        /// One entry per multi-channel BN layer (only genuinely
+        /// single-channel BN layers are excluded).
         let bnLayerDetails: [BNLayerDetail]
         /// One entry per residual block's SE module — `numBlocks`
         /// entries (block_0 .. block_<numBlocks-1>) in build order.
@@ -368,9 +393,9 @@ enum NetworkWeightAnalyzer {
         }
 
         // BN layer details — find every `*_gamma` variable, pair with
-        // its `*_beta` sibling, build the summary. Skip 1-channel BN
-        // layers (value_bn) where the percentile distribution has no
-        // shape.
+        // its `*_beta` sibling, build the summary. Skip genuinely
+        // single-channel BN layers, where the percentile distribution
+        // has no shape (the widened `value_bn` no longer falls here).
         var bnDetails: [Result.BNLayerDetail] = []
         for variable in allVariables {
             let name = variable.operation.name
@@ -380,7 +405,7 @@ enum NetworkWeightAnalyzer {
             guard let gammaValues = allByName[name] else { continue }
             let betaName = name.replacingOccurrences(of: "_gamma", with: "_beta")
             guard let betaValues = allByName[betaName] else { continue }
-            guard gammaValues.count > 1 else { continue } // skip value_bn
+            guard gammaValues.count > 1 else { continue } // skip single-channel BN
             let layerName = String(name.dropLast("_gamma".count))
             bnDetails.append(makeBNLayerDetail(
                 layerName: layerName,
@@ -506,9 +531,7 @@ enum NetworkWeightAnalyzer {
             percentile(p: Double(p), sortedAscending: sorted)
         }
 
-        let initL2 = fanIn(forVariableNamed: name).map {
-            heInitL2(elementCount: n, fanIn: $0)
-        }
+        let initL2 = expectedInitL2(forVariableNamed: name, elementCount: n)
         let ratio = initL2.map { $0 > 0 ? l2 / $0 : 0 }
 
         // Drift from init — only meaningful for variables with
@@ -552,9 +575,10 @@ enum NetworkWeightAnalyzer {
         forVariableNamed name: String
     ) -> (outC: Int, inC: Int, kH: Int, kW: Int)? {
         switch name {
-        case "stem_conv_weights":   return (128, 30, 3, 3)
-        case "policy_conv_weights": return (76, 128, 1, 1)
-        case "value_conv_weights":  return (1, 128, 1, 1)
+        case "stem_conv_weights":       return (128, 30, 3, 3)
+        case "policy_pre_conv_weights": return (128, 128, 1, 1)
+        case "policy_conv_weights":     return (76, 128, 1, 1)
+        case "value_conv_weights":      return (ChessNetwork.valueHeadConvChannels, 128, 1, 1)
         default: break
         }
         if name.hasSuffix("_conv1_weights") || name.hasSuffix("_conv2_weights") {
@@ -661,8 +685,14 @@ enum NetworkWeightAnalyzer {
         seBiasVariableName: String,
         seBiasValues: [Float]
     ) -> Result.SEAttentionDetail {
+        // The scale-and-bias SE FC2 bias is `2·channels` wide: the first
+        // `channels` entries are the `gammas` (scale) half that feeds the
+        // sigmoid gate; the rest are the `betas` (linear bias) half. The
+        // baseline gate is `sigmoid(gammas_bias)`, so slice the first half.
+        let half = seBiasValues.count / 2
+        let gammaBias = half > 0 ? Array(seBiasValues.prefix(half)) : seBiasValues
         // sigmoid(x) = 1 / (1 + exp(-x))
-        let gates: [Double] = seBiasValues.map { v in
+        let gates: [Double] = gammaBias.map { v in
             let d = Double(v)
             return 1.0 / (1.0 + exp(-d))
         }

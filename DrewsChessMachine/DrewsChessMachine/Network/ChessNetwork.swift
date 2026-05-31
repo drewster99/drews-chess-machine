@@ -56,19 +56,31 @@ enum BNMode {
 
 /// Chess engine neural network forward pass implemented with MPSGraph.
 ///
-/// Architecture v3:
+/// Architecture v4 (pre-activation / ResNet v2 tower):
 /// - Input: 30x8x8 board tensor (NCHW layout). 20 baseline planes
 ///   (pieces + castling + EP + halfmove clock + 2 repetition-count
 ///   planes — planes 18/19 are ≥1× before / ≥2× before signals) plus
 ///   10 binary temporal-repetition-history planes (20–29). See
 ///   `BoardEncoder` and the `inputPlanes` doc below for the full
 ///   plane table.
-/// - Stem: 3x3 conv (`inputPlanes` -> 128 channels), batch norm, ReLU
-/// - Tower: `numBlocks` residual blocks. Each block:
-///     conv -> BN -> ReLU -> conv -> BN -> [SE module] -> skip add -> ReLU
-///   The SE module is squeeze (global avg pool) -> FC(128 -> 32) ->
-///   ReLU -> FC(32 -> 128) -> sigmoid -> channel-wise scale, providing
-///   per-position dynamic channel attention (lc0-style).
+/// - Stem: 3x3 conv (`inputPlanes` -> 128 channels) -> BN. **No stem
+///   ReLU** — the first nonlinearity is deferred to block0's
+///   pre-activation. The stem BN bounds `x_0`, the skip highway's
+///   starting value.
+/// - Tower: `numBlocks` pre-activation residual blocks. Each block is a
+///   clean identity skip `out = input + α·F(input)` (**no activation on
+///   the sum**), where the residual function is
+///     BN -> ReLU -> conv -> BN -> ReLU -> conv -> [SE module]
+///   and α is a per-block trainable ReZero scalar (init `1/√numBlocks`)
+///   that bounds depth variance without a dead start. The SE module is a
+///   *scale-and-bias* gate: squeeze (global avg pool) -> FC(128 -> 32)
+///   -> ReLU -> FC(32 -> 256) -> split into (gammas, betas) ->
+///   `sigmoid(gammas)·z + betas` (sigmoid on the scale half only; the
+///   bias half is added linearly). FC1 is He-init; FC2 is Glorot-init
+///   (it feeds the sigmoid). lc0-style per-position channel attention.
+/// - Tower end: `BN -> ReLU` before the heads (pre-activation blocks end
+///   in a bare conv-add, so the tower output is an un-normalized linear
+///   accumulation — this normalizes + activates it for the heads).
 /// - Policy head: 1x1 conv (128 -> 128) -> BN -> ReLU -> 1x1 conv
 ///   (128 -> 76) → reshape to [B, 4864] (logits). The intermediate
 ///   conv->BN->ReLU mirrors the value head / lc0 and renormalizes the
@@ -143,6 +155,21 @@ final class ChessNetwork: @unchecked Sendable {
     static let inputPlanes = 30
     static let boardSize = 8
     static let numBlocks = 12
+    /// Bumped whenever the forward-graph *topology* changes in a way the
+    /// shape-only `archHash` can't see (activation swaps, block reordering,
+    /// init scheme). Mixed into `ModelCheckpointFile.currentArchHash` so an
+    /// incompatible-topology checkpoint is rejected up front with a clear
+    /// "architecture mismatch" rather than a deep tensor-count error. The
+    /// value-head dims (`valueHeadConvChannels`, `valueHeadHiddenUnits`) are
+    /// also invisible to that scalar mix — bump this when changing them if
+    /// older checkpoints must be rejected. (Left at v4 across the value-head
+    /// widening on this branch: the in-development v4 checkpoints are
+    /// rebuilt, not loaded.)
+    /// v4: pre-activation (ResNet v2) tower, scale-and-bias SE, per-block
+    /// ReZero scalar, `conv→BN` stem (no stem ReLU), tower-end `BN→ReLU`;
+    /// multi-channel value head (1×1 conv + FC stack — see
+    /// `valueHeadConvChannels` / `valueHeadHiddenUnits` for the dims).
+    static let architectureVersion = 4
     /// Number of policy output channels: 56 queen-style (8 dirs × 7 dists)
     /// + 8 knight + 9 underpromotion (3 pieces × 3 dirs) + 3 queen-promotion
     /// (3 dirs) = 76. See `PolicyEncoding` for the full layout.
@@ -161,6 +188,30 @@ final class ChessNetwork: @unchecked Sendable {
     /// cleanly rejected.
     static let valueHeadClasses = 3
 
+    /// Value head: number of channels the 1×1 conv compresses the
+    /// `channels`-wide trunk down to before flattening into the FC stack.
+    /// Each output channel is an independent learned scoring map over the
+    /// 64 squares (king-zone pressure, material-on-square, pawn structure,
+    /// …). A single channel — the prior design — forced the entire spatial
+    /// value representation through one 8×8 map, starving the FC stack and
+    /// rendering `value_bn` a near-no-op (per-channel norm over one channel).
+    /// 16 maps is a deliberate middle ground between that bottleneck and
+    /// lc0's 32-channel head, sized to keep the value head a modest fraction
+    /// of the net. The flatten width is `boardSize² × valueHeadConvChannels`.
+    ///
+    /// Not mixed into `ModelCheckpointFile.currentArchHash` (which hashes
+    /// only scalar arch constants, not tensor shapes), so changing this —
+    /// or `valueHeadHiddenUnits` — requires bumping `architectureVersion`
+    /// to reject older checkpoints built against a different value head.
+    static let valueHeadConvChannels = 16
+
+    /// Value head: hidden width of the first FC layer (flatten → hidden →
+    /// W/D/L logits). Sized to consume the widened flatten with real mixing
+    /// capacity; the prior 64 was matched to the old 64-wide flatten and
+    /// would re-bottleneck a `boardSize² × valueHeadConvChannels`-wide one.
+    /// See `valueHeadConvChannels` re: `architectureVersion`.
+    static let valueHeadHiddenUnits = 128
+
     /// Total persistent-tensor element count for the current architecture
     /// — trainable weights plus BN running mean/var, matching what
     /// `exportWeights()` emits and what the analyzer reports as
@@ -177,31 +228,38 @@ final class ChessNetwork: @unchecked Sendable {
     static var parameterCount: Int {
         let seReduced = channels / seReductionRatio
         // Per residual block: two 3×3 convs, two BN layers
-        // (gamma+beta+mean+var each), and the SE fc1/fc2 weights+biases.
+        // (gamma+beta+mean+var each), the SE fc1/fc2 weights+biases (FC2
+        // now emits 2×channels = gammas‖betas), and the per-block ReZero
+        // scalar α.
         let convPerBlock = 2 * (channels * channels * 9)
         let bnPerBlock = 2 * (4 * channels)
         let seFC1 = (channels * seReduced) + seReduced
-        let seFC2 = (seReduced * channels) + channels
-        let perBlock = convPerBlock + bnPerBlock + seFC1 + seFC2
+        let seFC2 = (seReduced * 2 * channels) + (2 * channels)
+        let resScale = 1
+        let perBlock = convPerBlock + bnPerBlock + seFC1 + seFC2 + resScale
 
-        // Stem: 3×3 conv (inputPlanes→channels) + one BN layer.
+        // Stem: 3×3 conv (inputPlanes→channels) + one BN layer (no ReLU).
         let stem = (inputPlanes * channels * 9) + (4 * channels)
+        // Tower-end BN (γ+β+mean+var) before the heads.
+        let towerFinalBN = 4 * channels
         // Policy head: 1×1 conv (channels→channels, no bias) → BN(channels)
         // → ReLU → 1×1 conv (channels→policyChannels) + bias.
         let policyPreConv = channels * channels
         let policyPreBN = 4 * channels
         let policyProj = (channels * policyChannels) + policyChannels
         let policy = policyPreConv + policyPreBN + policyProj
-        // Value head: 1×1 conv (channels→1) → BN(1) → flatten(boardSize²)
+        // Value head: 1×1 conv (channels→valueHeadConvChannels)
+        // → BN(valueHeadConvChannels) → flatten(boardSize² × convChannels)
         // → FC(flat→hidden) → FC(hidden→valueHeadClasses).
-        let valueFlatten = boardSize * boardSize
-        let valueHidden = 64
-        let valueConvBN = channels + 4
+        let valueConvChannels = valueHeadConvChannels
+        let valueFlatten = boardSize * boardSize * valueConvChannels
+        let valueHidden = valueHeadHiddenUnits
+        let valueConvBN = (channels * valueConvChannels) + (4 * valueConvChannels)
         let valueFC1 = (valueFlatten * valueHidden) + valueHidden
         let valueFC2 = (valueHidden * valueHeadClasses) + valueHeadClasses
         let value = valueConvBN + valueFC1 + valueFC2
 
-        return (numBlocks * perBlock) + stem + policy + value
+        return (numBlocks * perBlock) + stem + towerFinalBN + policy + value
     }
 
     // MARK: Graph Tensors
@@ -470,9 +528,11 @@ final class ChessNetwork: @unchecked Sendable {
             batchMeans: &batchMeans,
             batchVars: &batchVars
         )
-        x = g.reLU(with: x, name: "stem_relu")
+        // No stem ReLU: in the pre-activation tower the first nonlinearity
+        // is block0's `BN → ReLU`. The stem BN above still bounds `x_0`,
+        // the skip highway's starting value.
 
-        // --- Tower: residual blocks (count = `numBlocks`) ---
+        // --- Tower: pre-activation residual blocks (count = `numBlocks`) ---
 
         for i in 0..<Self.numBlocks {
             x = Self.residualBlock(
@@ -485,6 +545,24 @@ final class ChessNetwork: @unchecked Sendable {
                 batchVars: &batchVars
             )
         }
+
+        // --- Tower-end normalization ---
+        //
+        // Each pre-activation block ends in a bare conv-add on a clean
+        // identity skip, so the tower output `x` is an un-normalized,
+        // never-activated linear accumulation. Normalize + activate it
+        // here (the canonical v2 "post-activation at the very end") so the
+        // policy/value heads receive a clean, conditioned feature map.
+        x = Self.batchNorm(
+            graph: g, input: x, channels: 128, name: "tower_final_bn", bnMode: bnMode,
+            trainables: &trainables,
+            shouldDecay: &shouldDecay,
+            runningStats: &runningStats,
+            runningStatsAssignOps: &runningStatsAssigns,
+            batchMeans: &batchMeans,
+            batchVars: &batchVars
+        )
+        x = g.reLU(with: x, name: "tower_final_relu")
 
         // --- Policy head ---
 
@@ -1371,7 +1449,6 @@ final class ChessNetwork: @unchecked Sendable {
         channels: Int,
         name: String,
         bnMode: BNMode,
-        zeroInitGamma: Bool = false,
         trainables: inout [MPSGraphTensor],
         shouldDecay: inout [Bool],
         runningStats: inout [MPSGraphTensor],
@@ -1381,18 +1458,14 @@ final class ChessNetwork: @unchecked Sendable {
     ) -> MPSGraphTensor {
         let ch = NSNumber(value: channels)
 
-        // gamma and beta are trainable in both modes. `zeroInitGamma`
-        // initializes gamma to 0 instead of 1 — used for the *last* BN
-        // in each residual block so the block's residual branch starts
-        // at zero and the whole block is identity at init (standard
-        // deep-ResNet "zero-γ" init). With a 16-block tower this keeps
-        // the skip-sum from accumulating variance across depth, which
-        // otherwise leaves the inference-mode init policy degenerate.
-        // The conv weights underneath stay random He-init — they simply
-        // contribute nothing to the forward pass until gamma trains away
-        // from 0.
+        // gamma and beta are trainable in both modes. All BN layers init
+        // γ=1, β=0 (standard). The old zero-γ "identity block" init is
+        // gone — in the pre-activation tower the per-block ReZero scalar α
+        // (init `1/√numBlocks`) owns depth-variance control instead, and
+        // unlike zero-γ it lets every block contribute signal *and*
+        // gradient from step 1. See `residualBlock`.
         let gamma = graph.variable(
-            with: zeroInitGamma ? zerosData(count: channels) : onesData(count: channels),
+            with: onesData(count: channels),
             shape: [1, ch, 1, 1],
             dataType: Self.dataType,
             name: "\(name)_gamma"
@@ -1492,17 +1565,25 @@ final class ChessNetwork: @unchecked Sendable {
         )
     }
 
-    /// One residual block (with SE channel-attention module):
-    ///   conv1 -> BN -> ReLU -> conv2 -> BN -> [SE] -> skip add -> ReLU
+    /// One pre-activation (ResNet v2) residual block with a scale-and-bias
+    /// SE module and a ReZero branch scalar:
+    ///   out = input + α · F(input),   F = BN→ReLU→conv→BN→ReLU→conv→SE
+    /// The skip is a **clean identity** — no activation on the sum — so the
+    /// tower is an additive highway with un-gated gradient flow to depth.
     ///
-    /// SE module sits between BN2 and the skip-add so the channel
-    /// attention reweights only the residual contribution, leaving the
-    /// skip path at full strength. This preserves the identity-mapping
-    /// behavior at init when sigmoid output sits near 0.5 — block
-    /// initially propagates 0.5 × residual + 1.0 × skip, then learns to
-    /// push relevant channels toward 1.0 and tamp down others.
-    /// Reduction ratio = `seReductionRatio` (default 4): squeeze
-    /// 128 → 32 → 128 in the per-block MLP.
+    /// SE is *scale-and-bias*: squeeze (global avg pool) → FC1 128→32
+    /// (He, ReLU) → FC2 32→256 (Glorot) → split into `gammas` and `betas`
+    /// → `SE_out = sigmoid(gammas)·z + betas`. The sigmoid gates only the
+    /// scale half (so attention stays bounded); the bias half is added
+    /// linearly, letting the globally-pooled signal also inject a learned
+    /// per-channel offset, not just attenuate. `z` is the raw conv2 output.
+    ///
+    /// `α` (`*_res_scale`) is a per-block trainable scalar, init
+    /// `1/√numBlocks`. With L additive branches of ~unit variance the tower
+    /// variance grows ~L; the `1/√L` init holds it ~O(1) while still letting
+    /// every block contribute signal *and* gradient from step 1 (unlike the
+    /// old zero-γ init, whose branch was dead until gradient woke it). It is
+    /// excluded from weight decay. Reduction ratio = `seReductionRatio`.
     private static func residualBlock(
         graph: MPSGraph,
         input: MPSGraphTensor,
@@ -1518,20 +1599,30 @@ final class ChessNetwork: @unchecked Sendable {
     ) -> MPSGraphTensor {
         let prefix = "block\(blockIndex)"
 
-        // First path: conv -> BN -> ReLU
+        // --- Pre-activation residual function F(input) ---
+        // BN1 → ReLU → conv1  (conv bias-free, He-init)
+        var h = batchNorm(
+            graph: graph, input: input, channels: 128, name: "\(prefix)_bn1", bnMode: bnMode,
+            trainables: &trainables,
+            shouldDecay: &shouldDecay,
+            runningStats: &runningStats,
+            runningStatsAssignOps: &runningStatsAssignOps,
+            batchMeans: &batchMeans,
+            batchVars: &batchVars
+        )
+        h = graph.reLU(with: h, name: "\(prefix)_relu1")
         let conv1W = graph.variable(
             with: heInitDataConvOIHW(shape: [128, 128, 3, 3]),
             shape: [128, 128, 3, 3],
             dataType: Self.dataType,
             name: "\(prefix)_conv1_weights"
         )
-        trainables.append(conv1W)
-        shouldDecay.append(true)
-        var x = graph.convolution2D(
-            input, weights: conv1W, descriptor: descriptor, name: "\(prefix)_conv1"
-        )
-        x = batchNorm(
-            graph: graph, input: x, channels: 128, name: "\(prefix)_bn1", bnMode: bnMode,
+        trainables.append(conv1W); shouldDecay.append(true)
+        h = graph.convolution2D(h, weights: conv1W, descriptor: descriptor, name: "\(prefix)_conv1")
+
+        // BN2 → ReLU → conv2
+        h = batchNorm(
+            graph: graph, input: h, channels: 128, name: "\(prefix)_bn2", bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -1539,42 +1630,25 @@ final class ChessNetwork: @unchecked Sendable {
             batchMeans: &batchMeans,
             batchVars: &batchVars
         )
-        x = graph.reLU(with: x, name: "\(prefix)_relu1")
-
-        // Second path: conv -> BN (no ReLU yet — applied after skip add)
+        h = graph.reLU(with: h, name: "\(prefix)_relu2")
         let conv2W = graph.variable(
             with: heInitDataConvOIHW(shape: [128, 128, 3, 3]),
             shape: [128, 128, 3, 3],
             dataType: Self.dataType,
             name: "\(prefix)_conv2_weights"
         )
-        trainables.append(conv2W)
-        shouldDecay.append(true)
-        x = graph.convolution2D(
-            x, weights: conv2W, descriptor: descriptor, name: "\(prefix)_conv2"
-        )
-        x = batchNorm(
-            graph: graph, input: x, channels: 128, name: "\(prefix)_bn2", bnMode: bnMode,
-            zeroInitGamma: true,
-            trainables: &trainables,
-            shouldDecay: &shouldDecay,
-            runningStats: &runningStats,
-            runningStatsAssignOps: &runningStatsAssignOps,
-            batchMeans: &batchMeans,
-            batchVars: &batchVars
-        )
+        trainables.append(conv2W); shouldDecay.append(true)
+        // z = raw conv2 output — no BN/ReLU after it in pre-activation.
+        let z = graph.convolution2D(h, weights: conv2W, descriptor: descriptor, name: "\(prefix)_conv2")
 
-        // === SE module: channel attention ===========================
+        // === SE module: scale-and-bias channel attention ============
         //
-        // Squeeze: global average pool over spatial dims [H, W].
-        // graph.mean(of:axes:) keeps the reduced dims, so
-        // [B, 128, 8, 8] → [B, 128, 1, 1].
-        var s = graph.mean(of: x, axes: [2, 3], name: "\(prefix)_se_squeeze")
-
-        // Flatten to [B, 128] for the FC layers.
+        // Squeeze: global average pool over [H, W]; graph.mean keeps the
+        // reduced dims, so [B, 128, 8, 8] → [B, 128, 1, 1].
+        var s = graph.mean(of: z, axes: [2, 3], name: "\(prefix)_se_squeeze")
         s = graph.reshape(s, shape: [-1, 128], name: "\(prefix)_se_squeeze_flatten")
 
-        // Excite FC1: 128 → (128 / r) + ReLU.
+        // Excite FC1: 128 → (128 / r), He-init, + ReLU.
         let reduced = 128 / Self.seReductionRatio
         let seFC1W = graph.variable(
             with: heInitDataFCInOut(shape: [128, reduced]),
@@ -1594,16 +1668,18 @@ final class ChessNetwork: @unchecked Sendable {
         s = graph.addition(s, seFC1Bias, name: "\(prefix)_se_fc1_bias_add")
         s = graph.reLU(with: s, name: "\(prefix)_se_fc1_relu")
 
-        // Excite FC2: (128 / r) → 128 + sigmoid.
+        // Excite FC2: (128 / r) → 2·128 = 256, Glorot-init (feeds the
+        // sigmoid gate). Output splits into a `gammas` (scale) half and a
+        // `betas` (bias) half.
         let seFC2W = graph.variable(
-            with: heInitDataFCInOut(shape: [reduced, 128]),
-            shape: [NSNumber(value: reduced), 128],
+            with: glorotInitDataFCInOut(shape: [reduced, 256]),
+            shape: [NSNumber(value: reduced), 256],
             dataType: Self.dataType,
             name: "\(prefix)_se_fc2_weights"
         )
         let seFC2Bias = graph.variable(
-            with: zerosData(count: 128),
-            shape: [1, 128],
+            with: zerosData(count: 256),
+            shape: [1, 256],
             dataType: Self.dataType,
             name: "\(prefix)_se_fc2_bias"
         )
@@ -1611,21 +1687,37 @@ final class ChessNetwork: @unchecked Sendable {
         trainables.append(seFC2Bias); shouldDecay.append(false)
         s = graph.matrixMultiplication(primary: s, secondary: seFC2W, name: "\(prefix)_se_fc2")
         s = graph.addition(s, seFC2Bias, name: "\(prefix)_se_fc2_bias_add")
-        s = graph.sigmoid(with: s, name: "\(prefix)_se_fc2_sigmoid")
 
-        // Reshape back to [B, 128, 1, 1] for broadcast-multiply.
-        s = graph.reshape(s, shape: [-1, 128, 1, 1], name: "\(prefix)_se_scale_reshape")
+        // Split [B, 256] → gammas [B, 128] (scale) and betas [B, 128] (bias).
+        let gammas = graph.sliceTensor(s, dimension: 1, start: 0, length: 128, name: "\(prefix)_se_gammas")
+        let betas = graph.sliceTensor(s, dimension: 1, start: 128, length: 128, name: "\(prefix)_se_betas")
 
-        // Apply channel attention. MPSGraph multiplication broadcasts
-        // [B, 128, 1, 1] across the H=8, W=8 axes of [B, 128, 8, 8].
-        x = graph.multiplication(x, s, name: "\(prefix)_se_scale")
+        // Sigmoid on the scale half only; the bias half is linear.
+        var scale = graph.sigmoid(with: gammas, name: "\(prefix)_se_gate")
+        scale = graph.reshape(scale, shape: [-1, 128, 1, 1], name: "\(prefix)_se_scale_reshape")
+        let bias = graph.reshape(betas, shape: [-1, 128, 1, 1], name: "\(prefix)_se_bias_reshape")
+
+        // SE_out = sigmoid(gammas)·z + betas. The [B, 128, 1, 1] tensors
+        // broadcast across the H=8, W=8 axes of z = [B, 128, 8, 8].
+        var seOut = graph.multiplication(z, scale, name: "\(prefix)_se_scaled")
+        seOut = graph.addition(seOut, bias, name: "\(prefix)_se_biased")
         // ============================================================
 
-        // Skip connection: add original input, then ReLU
-        x = graph.addition(input, x, name: "\(prefix)_skip")
-        x = graph.reLU(with: x, name: "\(prefix)_relu2")
+        // ReZero / SkipInit branch scalar α (init 1/√numBlocks), trainable,
+        // no weight decay.
+        let alphaInit: Float = 1.0 / Float(Self.numBlocks).squareRoot()
+        let alpha = graph.variable(
+            with: makeWeightData([alphaInit]),
+            shape: [1],
+            dataType: Self.dataType,
+            name: "\(prefix)_res_scale"
+        )
+        trainables.append(alpha); shouldDecay.append(false)
+        let branch = graph.multiplication(seOut, alpha, name: "\(prefix)_res_scaled")
 
-        return x
+        // Clean identity skip: out = input + α·F(input). No activation on
+        // the sum — the v2 information highway.
+        return graph.addition(input, branch, name: "\(prefix)_skip")
     }
 
     /// Policy head: 1×1 conv (128 → 128) → BN → ReLU → 1×1 conv
@@ -1735,10 +1827,12 @@ final class ChessNetwork: @unchecked Sendable {
         batchMeans: inout [MPSGraphTensor],
         batchVars: inout [MPSGraphTensor]
     ) -> (scalar: MPSGraphTensor, logits: MPSGraphTensor, probs: MPSGraphTensor) {
-        // 1x1 conv: compress 128 channels to 1
+        // 1×1 conv: compress the `channels`-wide trunk to
+        // `valueHeadConvChannels` learned scoring maps over the 64 squares.
+        let convChannels = Self.valueHeadConvChannels
         let convW = graph.variable(
-            with: heInitDataConvOIHW(shape: [1, 128, 1, 1]),
-            shape: [1, 128, 1, 1],
+            with: heInitDataConvOIHW(shape: [convChannels, Self.channels, 1, 1]),
+            shape: [NSNumber(value: convChannels), NSNumber(value: Self.channels), 1, 1],
             dataType: Self.dataType,
             name: "value_conv_weights"
         )
@@ -1748,7 +1842,7 @@ final class ChessNetwork: @unchecked Sendable {
             input, weights: convW, descriptor: descriptor, name: "value_conv"
         )
         x = batchNorm(
-            graph: graph, input: x, channels: 1, name: "value_bn", bnMode: bnMode,
+            graph: graph, input: x, channels: convChannels, name: "value_bn", bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -1758,19 +1852,21 @@ final class ChessNetwork: @unchecked Sendable {
         )
         x = graph.reLU(with: x, name: "value_relu")
 
-        // Flatten: [batch, 1, 8, 8] -> [batch, 64]
-        x = graph.reshape(x, shape: [-1, 64], name: "value_flatten")
+        // Flatten: [batch, convChannels, 8, 8] -> [batch, convChannels·64]
+        let flattenSize = Self.boardSize * Self.boardSize * convChannels
+        x = graph.reshape(x, shape: [-1, NSNumber(value: flattenSize)], name: "value_flatten")
 
-        // FC1: 64 -> 64
+        // FC1: flattenSize -> valueHeadHiddenUnits
+        let hidden = Self.valueHeadHiddenUnits
         let fc1W = graph.variable(
-            with: heInitDataFCInOut(shape: [64, 64]),
-            shape: [64, 64],
+            with: heInitDataFCInOut(shape: [flattenSize, hidden]),
+            shape: [NSNumber(value: flattenSize), NSNumber(value: hidden)],
             dataType: Self.dataType,
             name: "value_fc1_weights"
         )
         let fc1Bias = graph.variable(
-            with: zerosData(count: 64),
-            shape: [1, 64],
+            with: zerosData(count: hidden),
+            shape: [1, NSNumber(value: hidden)],
             dataType: Self.dataType,
             name: "value_fc1_bias"
         )
@@ -1782,10 +1878,11 @@ final class ChessNetwork: @unchecked Sendable {
         x = graph.addition(x, fc1Bias, name: "value_fc1_bias_add")
         x = graph.reLU(with: x, name: "value_fc1_relu")
 
-        // FC2: 64 -> 3  (W/D/L logits, slot order [win, draw, loss])
+        // FC2: valueHeadHiddenUnits -> valueHeadClasses
+        // (W/D/L logits, slot order [win, draw, loss])
         let fc2W = graph.variable(
-            with: heInitDataFCInOut(shape: [64, 3]),
-            shape: [64, 3],
+            with: heInitDataFCInOut(shape: [hidden, Self.valueHeadClasses]),
+            shape: [NSNumber(value: hidden), NSNumber(value: Self.valueHeadClasses)],
             dataType: Self.dataType,
             name: "value_fc2_weights"
         )
@@ -1841,10 +1938,11 @@ final class ChessNetwork: @unchecked Sendable {
     /// `matrixMultiplication(primary: x, secondary: W)`), fan_in = in,
     /// i.e. the first dimension — the opposite of the conv case. A
     /// previous implementation that always used `shape.dropFirst()` was
-    /// silently 8× too generous for `value_fc2` ([64, 1]) and 5.7× too
-    /// stingy for the prior FC policy head's `policy_fc` ([128, 4096])
-    /// — that FC head has since been replaced with a 1×1 conv, but the
-    /// fan_in fix remains correct for the value head's FC layers.
+    /// silently 8× too generous for the then-scalar `value_fc2` ([64, 1])
+    /// and 5.7× too stingy for the prior FC policy head's `policy_fc`
+    /// ([128, 4096]) — both shapes are historical (the value head is now
+    /// W/D/L and the FC policy head became a 1×1 conv), but the fan_in fix
+    /// remains correct for the value head's current FC layers.
     ///
     /// Implementation note: this used to be a per-element scalar Box-Muller
     /// loop. With ~2.9M weights to initialize, that dominated build time. The
@@ -1873,6 +1971,19 @@ final class ChessNetwork: @unchecked Sendable {
     static func heInitDataFCInOut(shape: [Int]) -> Data {
         precondition(shape.count == 2, "FC [in, out] shape must be 2D (got \(shape))")
         return heInitData(shape: shape, fanIn: shape[0])
+    }
+
+    /// Glorot (Xavier) normal init for an FC weight stored as `[in, out]`:
+    /// random normal with `std = sqrt(2 / (fan_in + fan_out))`. Used for
+    /// the SE FC2 weight, whose output feeds the sigmoid gate — Glorot
+    /// targets the activation variance a symmetric saturating nonlinearity
+    /// wants, unlike He (which compensates for ReLU's half-rectification).
+    static func glorotInitDataFCInOut(shape: [Int]) -> Data {
+        precondition(shape.count == 2, "FC [in, out] shape must be 2D (got \(shape))")
+        let std = sqrt(2.0 / Float(shape[0] + shape[1]))
+        let count = shape.reduce(1, *)
+        let values = heInitFloats(count: count, std: std)
+        return makeWeightData(values)
     }
 
     /// Vectorized He initialization producing `count` random normals with
@@ -2067,6 +2178,70 @@ final class ChessNetwork: @unchecked Sendable {
     @inline(__always)
     static func bFloat16BitsToFloat32(_ half: UInt16) -> Float {
         return Float(bitPattern: UInt32(half) << 16)
+    }
+
+    /// Bytes per weight/activation element in `dataType`: Float32 → 4,
+    /// Float16 / bFloat16 → 2. Single source of truth for any byte ↔
+    /// element-count conversion (so callers never hardcode `MemoryLayout
+    /// <Float>.size` and silently halve the count under a 16-bit dtype).
+    static var bytesPerWeightElement: Int {
+        switch dataType {
+        case .float32: return MemoryLayout<Float>.size
+        case .float16, .bFloat16: return MemoryLayout<UInt16>.size
+        default: fatalError("Unsupported ChessNetwork.dataType: \(dataType)")
+        }
+    }
+
+    /// Relative machine epsilon (the ULP of 1.0) for `dataType` —
+    /// `2^-mantissaBits`: Float32 ≈ 1.19e-7, Float16 ≈ 9.77e-4, bFloat16
+    /// ≈ 7.81e-3. The correct scale for a *relative* numerical tolerance:
+    /// an absolute tolerance of `weightRelativeEpsilon · |x|` is one ULP at
+    /// magnitude `|x|`. Lets numeric tests derive accuracy bounds from the
+    /// active dtype instead of hardcoding fp32-era constants.
+    static var weightRelativeEpsilon: Float {
+        switch dataType {
+        case .float32: return Float.ulpOfOne   // 2^-23
+        case .float16: return 0x1p-10          // 2^-10
+        case .bFloat16: return 0x1p-7          // 2^-7
+        default: fatalError("Unsupported ChessNetwork.dataType: \(dataType)")
+        }
+    }
+
+    /// Decode raw `dataType` weight bytes (as produced by `makeWeightData`)
+    /// back into Float32 — the exact inverse of `makeWeightData`. Element
+    /// count is inferred as `data.count / bytesPerWeightElement`.
+    static func decodeWeightData(_ data: Data) -> [Float] {
+        let count = data.count / bytesPerWeightElement
+        switch dataType {
+        case .float32:
+            return data.withUnsafeBytes { raw in
+                Array(raw.bindMemory(to: Float.self).prefix(count))
+            }
+        case .bFloat16:
+            return data.withUnsafeBytes { raw in
+                let half = raw.bindMemory(to: UInt16.self)
+                return (0..<count).map { bFloat16BitsToFloat32(half[$0]) }
+            }
+        case .float16:
+            var floats = [Float](repeating: 0, count: count)
+            data.withUnsafeBytes { raw in
+                let srcBase = UnsafeMutableRawPointer(mutating: raw.baseAddress!)
+                floats.withUnsafeMutableBufferPointer { dst in
+                    var src = vImage_Buffer(
+                        data: srcBase, height: 1, width: vImagePixelCount(count),
+                        rowBytes: count * MemoryLayout<UInt16>.size
+                    )
+                    var dstB = vImage_Buffer(
+                        data: dst.baseAddress, height: 1, width: vImagePixelCount(count),
+                        rowBytes: count * MemoryLayout<Float>.size
+                    )
+                    _ = vImageConvert_Planar16FtoPlanarF(&src, &dstB, 0)
+                }
+            }
+            return floats
+        default:
+            fatalError("Unsupported ChessNetwork.dataType: \(dataType)")
+        }
     }
 
     /// Convert a Float32 array into bytes laid out in `Self.dataType`.

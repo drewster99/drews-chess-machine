@@ -133,6 +133,10 @@ struct ModelCheckpointFile {
         mix(ChessNetwork.boardSize)
         mix(ChessNetwork.policySize)
         mix(ChessNetwork.valueHeadClasses)
+        // Topology version — distinguishes forward-graph changes the
+        // shape-only mixes above can't see (e.g. the v3→v4 pre-activation
+        // rebuild), so an incompatible-topology checkpoint is rejected.
+        mix(ChessNetwork.architectureVersion)
         return h
     }
 
