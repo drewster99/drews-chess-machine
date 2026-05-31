@@ -148,18 +148,11 @@ enum LichessProbeExporter {
         message: String,
         revealURL: URL?
     ) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        if revealURL != nil {
-            alert.addButton(withTitle: "Reveal in Finder")
-        }
-        let response = alert.runModal()
-        if let url = revealURL, response == .alertSecondButtonReturn {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        }
+        NonBlockingAlert.presentInformational(
+            title: title,
+            message: message,
+            revealURL: revealURL
+        )
     }
 
     private static func formattedSize(_ bytes: Int) -> String {

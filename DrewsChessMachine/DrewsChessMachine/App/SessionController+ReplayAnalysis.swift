@@ -185,28 +185,20 @@ extension SessionController {
 
     // MARK: - Alert + Reveal in Finder
 
-    /// Present a modal NSAlert. If `revealURL` is non-nil, adds a
-    /// "Reveal in Finder" button that opens Finder with the file
-    /// selected; otherwise only the default OK button is shown.
-    /// Must be called on the main actor (NSAlert is an AppKit type).
+    /// Present a non-blocking result sheet. If `revealURL` is non-nil,
+    /// adds a "Reveal in Finder" button that selects the file. Routed
+    /// through `NonBlockingAlert` so a left-open dialog can never stall
+    /// the training pipeline — see that type's doc comment.
     @MainActor
     private static func presentAnalyzeAlert(
         title: String,
         message: String,
         revealURL: URL?
     ) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        if revealURL != nil {
-            alert.addButton(withTitle: "Reveal in Finder")
-        }
-        let response = alert.runModal()
-        if let url = revealURL,
-           response == .alertSecondButtonReturn {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
-        }
+        NonBlockingAlert.presentInformational(
+            title: title,
+            message: message,
+            revealURL: revealURL
+        )
     }
 }

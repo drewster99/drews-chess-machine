@@ -97,11 +97,6 @@ enum LichessProbeComparisonLoader {
         SessionLogger.shared.log(
             "[TACTICAL-LICHESS] compare error: \(title) — \(message.replacingOccurrences(of: "\n", with: " | "))"
         )
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
-        _ = alert.runModal()
+        NonBlockingAlert.presentWarning(title: title, message: message)
     }
 }

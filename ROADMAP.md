@@ -910,6 +910,43 @@ experiment artifacts (`results.json` ~6.8 MB, `experiment_results.js` ~921 KB, t
 
 ## Tech debt / migrations to remove
 
+- **Fully decouple training from the main thread / UI run loop** *(added
+  2026-05-31)*. The training pipeline is supposed to be almost completely
+  separated from the UI — emitting telemetry the user can read or ignore
+  — but several main-thread couplings let UI events silently stall it.
+  The concrete trigger: every analysis result dialog used a blocking
+  `NSAlert.runModal()`, which owns the main thread until dismissed. Both
+  the trainer step loop (`SessionController+Training.swift` —
+  `await fireCandidateProbeIfNeeded()` and
+  `await TrainingParameters.shared.snapshot()` per step) and the
+  self-play driver (`BatchedSelfPlayDriver` — per-cycle
+  `await MainActor.run { TrainingParameters.shared… }`) hop to the
+  MainActor every iteration, so a left-open modal starved the MainActor
+  job queue and halted ALL training. Observed in the field: a "Run All
+  Analyses" result dialog left open ~4 hours advanced the trainer by 11
+  steps total (`dcm_log_20260531-020125.txt`, steps 49632→49643 over
+  09:25→13:39), resuming the instant it was dismissed.
+  - **Done (point fix):** all analysis/result `NSAlert.runModal()` sites
+    now route through `Utils/NonBlockingAlert.swift`, which presents a
+    window-attached sheet via `beginSheetModal(for:)` and returns
+    immediately. File-picker `NSOpenPanel.runModal()` sites
+    (`LichessProbeComparisonLoader`) were deliberately left blocking —
+    they only block while the user is actively interacting, never
+    walked-away.
+  - **Remaining refactor (deferred):** the deeper issue is that the
+    training loops *read live-tunable parameters by hopping to the
+    MainActor every iteration*. Any future main-thread stall (a modal we
+    forget to make non-blocking, a long synchronous UI redraw, a
+    spinning event-tracking loop) can therefore throttle training. The
+    durable fix is to remove the per-iteration MainActor dependency:
+    have the live-tunable parameters pushed into a `Sendable`,
+    lock-protected snapshot box (`SyncBox`-style) that the loops read
+    without touching the MainActor, updated on the existing reconcile
+    cadence. Then training progress is structurally independent of the
+    main run loop. Also worth a lightweight guard: a check (test or
+    lint) that no new `NSAlert.runModal()` / blocking modal creeps into
+    the training-adjacent code paths.
+
 - **Drop v1 trainer.dcmmodel zero-pad migration** *(added 2026-05-04;
   remove after 2026-06-04)*. Trainer state persistence (Polyak momentum
   velocity) was added with `ModelCheckpointFile` format version 2,
