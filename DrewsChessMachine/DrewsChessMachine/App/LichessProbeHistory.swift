@@ -200,6 +200,30 @@ final class LichessProbeHistory {
     /// champion before Play-and-Train has started).
     private(set) var latestTickTrainingStep: Int?
 
+    /// Total positions the trainer has consumed at tick time
+    /// (`completedTrainSteps × trainingBatchSize`). Matches the
+    /// "Positions trained" status bar cell. nil iff
+    /// `latestTickTrainingStep` is nil.
+    private(set) var latestTickPositionsTrained: Int?
+
+    /// Cumulative active training wall-time in seconds at tick time
+    /// (sum of `TrainingSegment.durationSec` plus the in-progress
+    /// segment if any). Matches the "Active training time" status
+    /// bar cell. nil when no checkpoint controller was available at
+    /// tick time.
+    private(set) var latestTickActiveTrainingSec: Double?
+
+    /// Count of arena tournaments in `SessionController.tournamentHistory`
+    /// at tick time — matches the "Arenas" status bar cell. nil when
+    /// no session was available at tick time.
+    private(set) var latestTickArenaCount: Int?
+
+    /// Count of arena tournaments where the candidate was promoted
+    /// (`TournamentRecord.promoted == true`) at tick time — matches
+    /// the "Promotions" status bar cell. nil when no session was
+    /// available at tick time.
+    private(set) var latestTickPromotionCount: Int?
+
     /// Cap per series so a long-running monitor doesn't grow without
     /// bound. The watcher is now step-triggered (default 400 trainer
     /// steps per tick), so 120 ticks = 120 × 400 = 48,000 steps of
@@ -221,7 +245,11 @@ final class LichessProbeHistory {
         _ aggregates: [Aggregate],
         allResults: [ProbeResult],
         modelLabel: String?,
-        trainingStep: Int?
+        trainingStep: Int?,
+        positionsTrained: Int?,
+        activeTrainingSec: Double?,
+        arenaCount: Int?,
+        promotionCount: Int?
     ) {
         let now = Date()
         for agg in aggregates {
@@ -236,6 +264,10 @@ final class LichessProbeHistory {
         latestTickTimestamp = now
         latestTickModelLabel = modelLabel
         latestTickTrainingStep = trainingStep
+        latestTickPositionsTrained = positionsTrained
+        latestTickActiveTrainingSec = activeTrainingSec
+        latestTickArenaCount = arenaCount
+        latestTickPromotionCount = promotionCount
 
         // Append the overall (200-puzzle) summary sample. Folded from the
         // per-theme aggregates we just recorded; pElo needs per-puzzle
@@ -301,6 +333,10 @@ final class LichessProbeHistory {
         latestTickTimestamp = nil
         latestTickModelLabel = nil
         latestTickTrainingStep = nil
+        latestTickPositionsTrained = nil
+        latestTickActiveTrainingSec = nil
+        latestTickArenaCount = nil
+        latestTickPromotionCount = nil
     }
 
     /// Sum of `argmaxCorrect` across all themes' latest entries, or

@@ -232,44 +232,93 @@ final class LichessProbeWatcher {
 
         let aggregates = LichessProbeHistory.aggregates(from: allResults)
         let modelLabel = net.identifier?.description ?? "<no-id>"
-        // Trainer step at tick time — snapshotted into history so the JSON
-        // export reports the step the probed weights came from regardless
-        // of when the user clicks "Export latest…". nil before a trainer
-        // exists (champion-target probe pre-Play-and-Train).
+        // Snapshot the four progress fields the JSON export carries —
+        // captured at tick time (not export time) so a later
+        // "Export latest…" reports values consistent with the probed
+        // weights even if many minutes of training have happened
+        // since. Each is nil-safe at its own scope: trainer-step needs
+        // a live trainer, positions-trained derives from it, the
+        // checkpoint-controller fields need an attached controller.
         let trainingStep = session.trainer?.completedTrainSteps
+        let positionsTrained = trainingStep.map {
+            $0 * TrainingParameters.shared.trainingBatchSize
+        }
+        let activeTrainingSec = session.checkpoint?.cumulativeActiveTrainingSec
+        let arenaCount = session.tournamentHistory.count
+        let promotionCount = session.tournamentHistory.lazy.filter { $0.promoted }.count
         history.record(
+            aggregates,
+            allResults: allResults,
+            modelLabel: modelLabel,
+            trainingStep: trainingStep,
+            positionsTrained: positionsTrained,
+            activeTrainingSec: activeTrainingSec,
+            arenaCount: arenaCount,
+            promotionCount: promotionCount
+        )
+        logTickSummary(
             aggregates,
             allResults: allResults,
             modelLabel: modelLabel,
             trainingStep: trainingStep
         )
-        logTickSummary(aggregates, modelLabel: modelLabel)
     }
 
-    /// One `[TACTICAL-LICHESS]` summary line per tick — total score
-    /// plus per-theme `correct/total` so the log is grep-friendly.
+    /// One `[TACTICAL-LICHESS]` summary line per tick — overall
+    /// argmax / top-5 / avg-prob / avg-rank / NLL / puzzle-Elo, then
+    /// the per-theme `correct/total` breakdown. Grep-friendly,
+    /// reproducible across ticks (themes sorted alphabetically by
+    /// rawValue). Mirrors the OVERALL band of the Detail window so
+    /// the session log carries the same metrics the UI shows.
     private func logTickSummary(
         _ aggregates: [LichessProbeHistory.Aggregate],
-        modelLabel: String
+        allResults: [ProbeResult],
+        modelLabel: String,
+        trainingStep: Int?
     ) {
-        var totalCorrect = 0
-        var totalProbes = 0
-        var perThemeParts: [String] = []
+        let overall = LichessProbeOverallSummary(folding: aggregates)
+        let totalCorrect = overall.argmaxCorrect
+        let top5Correct = overall.top5Correct
+        let totalProbes = overall.totalProbes
+        let pct: (Int) -> String = { num in
+            totalProbes > 0
+                ? String(format: "%.1f", 100.0 * Double(num) / Double(totalProbes))
+                : "0.0"
+        }
+        let avgProbStr = String(format: "%.3f", overall.avgExpectedProb)
+        let avgRankStr = overall.avgExpectedRank.map { String(format: "%.2f", $0) }
+            ?? "--"
+        let nllStr = String(format: "%.3f", overall.meanNegLogProb)
+        let pairs: [(rating: Int, correct: Bool)] = allResults.compactMap {
+            guard let meta = LichessProbeData.metadata[$0.probe.name] else { return nil }
+            let isArgmaxCorrect = $0.verdict == .correctAndConfident
+                || $0.verdict == .correctButFlat
+            return (rating: meta.rating, correct: isArgmaxCorrect)
+        }
+        let elo = LichessProbeHistory.mlePuzzleElo(pairs: pairs)
+        let eloStr: String = {
+            if elo.isNaN { return "--" }
+            if elo == -.infinity { return "<floor" }
+            if elo == .infinity { return ">ceil" }
+            return String(format: "%.0f", elo)
+        }()
+        let stepStr = trainingStep.map(String.init) ?? "--"
 
-        // Iterate in a stable order (rawValue alphabetical) so the
-        // log line is reproducible across ticks.
+        var perThemeParts: [String] = []
         for agg in aggregates.sorted(by: { $0.theme.rawValue < $1.theme.rawValue }) {
-            totalCorrect += agg.argmaxCorrect
-            totalProbes += agg.total
             perThemeParts.append(
                 "\(agg.theme.rawValue)=\(agg.argmaxCorrect)/\(agg.total)"
             )
         }
-        let pct = totalProbes > 0
-            ? String(format: "%.1f", 100.0 * Double(totalCorrect) / Double(totalProbes))
-            : "0.0"
+
         SessionLogger.shared.log(
-            "[TACTICAL-LICHESS] tick \(totalCorrect)/\(totalProbes) (\(pct)%) model=\(modelLabel) "
+            "[TACTICAL-LICHESS] tick"
+            + " step=\(stepStr)"
+            + " argmax=\(totalCorrect)/\(totalProbes)(\(pct(totalCorrect))%)"
+            + " top5=\(top5Correct)/\(totalProbes)(\(pct(top5Correct))%)"
+            + " avgProb=\(avgProbStr) avgRank=\(avgRankStr)"
+            + " NLL=\(nllStr) pElo=\(eloStr)"
+            + " model=\(modelLabel) "
             + perThemeParts.joined(separator: " ")
         )
     }

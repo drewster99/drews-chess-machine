@@ -12,13 +12,16 @@ import Foundation
 /// embedded in the JSON under `export_id`, so filename ↔ content
 /// identity is checkable.
 ///
-/// Schema v3 — each `puzzles[]` entry is `{ puzzle: {...}, probe_result: {...} }`
+/// Schema v4 — each `puzzles[]` entry is `{ puzzle: {...}, probe_result: {...} }`
 /// for readability and to keep the "what the puzzle is" data lexically
 /// separated from "how the network performed on it." Top-level metadata
 /// includes the export UUID, the tick timestamp, the model label, the
 /// trainer step the tick was taken at (`training_step`, added in v3; nil
-/// when the tick predates any trainer), and the build that produced the
-/// data so an exported file can stand alone for analysis later.
+/// when the tick predates any trainer), four training-progress fields
+/// added in v4 (`positions_trained`, `active_training_sec`, `arena_count`,
+/// `promotion_count` — mirroring the status-bar cells of the same name
+/// at tick time), and the build that produced the data so an exported
+/// file can stand alone for analysis later.
 ///
 /// User flow: the Lichess Probe Detail window's "Export latest…"
 /// button calls `exportLatest`. On success an NSAlert with Reveal in
@@ -177,12 +180,16 @@ enum LichessProbeExporter {
     ) throws -> Data {
         let entries = history.latestPerPuzzleResults.map(buildPuzzleEntry(_:))
         let payload = ExportPayload(
-            schemaVersion: 3,
+            schemaVersion: 4,
             exportId: exportID.uuidString.lowercased(),
             generatedAt: isoTimestampFormatter.string(from: Date()),
             tickTimestamp: isoTimestampFormatter.string(from: tickTimestamp),
             modelLabel: history.latestTickModelLabel,
             trainingStep: history.latestTickTrainingStep,
+            positionsTrained: history.latestTickPositionsTrained,
+            activeTrainingSec: history.latestTickActiveTrainingSec,
+            arenaCount: history.latestTickArenaCount,
+            promotionCount: history.latestTickPromotionCount,
             appBuild: AppBuildBlock.current,
             probeCount: entries.count,
             puzzles: entries
@@ -266,6 +273,20 @@ enum LichessProbeExporter {
         /// Trainer step count at the moment the exported tick was
         /// recorded. nil when the tick ran before a trainer existed.
         let trainingStep: Int?
+        /// Total positions consumed by the trainer at tick time —
+        /// `training_step × trainingBatchSize`. Added in schema v4.
+        /// nil if `training_step` is nil.
+        let positionsTrained: Int?
+        /// Cumulative active training wall-time in seconds at tick
+        /// time. Added in schema v4. nil if no checkpoint controller
+        /// was attached at tick time.
+        let activeTrainingSec: Double?
+        /// Total arena tournaments completed at tick time. Added in
+        /// schema v4.
+        let arenaCount: Int?
+        /// Subset of `arena_count` where the candidate was promoted.
+        /// Added in schema v4.
+        let promotionCount: Int?
         let appBuild: AppBuildBlock
         let probeCount: Int
         let puzzles: [PuzzleEntry]
@@ -277,6 +298,10 @@ enum LichessProbeExporter {
             case tickTimestamp = "tick_timestamp"
             case modelLabel = "model_label"
             case trainingStep = "training_step"
+            case positionsTrained = "positions_trained"
+            case activeTrainingSec = "active_training_sec"
+            case arenaCount = "arena_count"
+            case promotionCount = "promotion_count"
             case appBuild = "app_build"
             case probeCount = "probe_count"
             case puzzles

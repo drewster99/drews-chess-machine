@@ -106,7 +106,14 @@ struct LichessProbeComparison: Sendable {
         return out
     }
 
-    // MARK: - Decodable payloads (schema v2 / v3)
+    // MARK: - Decodable payloads (schema v2 / v3 / v4)
+
+    // Extra fields the loader doesn't currently surface (e.g. v3's
+    // `training_step`, v4's `positions_trained` / `active_training_sec`
+    // / `arena_count` / `promotion_count`) are silently ignored by the
+    // default `JSONDecoder` and remain available in the file for
+    // downstream tools; add their keys here when the Detail view
+    // starts rendering them.
 
     struct LoadedPayload: Decodable, Sendable {
         let schemaVersion: Int

@@ -349,12 +349,59 @@ struct LichessProbeDetailView: View {
                 Text("model: \(history.latestTickModelLabel ?? "<unknown>")")
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
+                // Step + cumulative-progress line. Mirrors the status
+                // bar cells so the Detail window stands alone as a
+                // record of "where in training was this tick taken."
+                // Each part is "—" when nil (champion-target probes
+                // before Play-and-Train, or pre-checkpoint-controller
+                // session boot).
+                Text(progressMetadataLine)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
             }
         } else {
             Text("no tick yet")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// "step: 10451 positions: 42.8M active: 2:14:07 arenas: 15 (0 promoted)"
+    /// — composed inline so each nil-typed field is handled with a
+    /// short "—" sentinel rather than dropping the whole row.
+    private var progressMetadataLine: String {
+        let stepStr = history.latestTickTrainingStep.map(String.init) ?? "—"
+        let posStr = history.latestTickPositionsTrained
+            .map { Self.compactCount($0) } ?? "—"
+        let activeStr = history.latestTickActiveTrainingSec
+            .map { Self.formatHMS(seconds: $0) } ?? "—"
+        let arenaStr = history.latestTickArenaCount.map(String.init) ?? "—"
+        let promoStr = history.latestTickPromotionCount.map(String.init) ?? "—"
+        return "step: \(stepStr)  positions: \(posStr)"
+            + "  active: \(activeStr)  arenas: \(arenaStr) (\(promoStr) promoted)"
+    }
+
+    /// "1,234,567" → "1.2M", "42,000" → "42.0K", "789" → "789".
+    /// Matches the compact formatter the status bar uses so the
+    /// Detail window's progress line reads the same as the bar.
+    fileprivate static func compactCount(_ n: Int) -> String {
+        let d = Double(n)
+        if abs(d) >= 1e9 { return String(format: "%.2fB", d / 1e9) }
+        if abs(d) >= 1e6 { return String(format: "%.1fM", d / 1e6) }
+        if abs(d) >= 1e3 { return String(format: "%.1fK", d / 1e3) }
+        return "\(n)"
+    }
+
+    /// Seconds → "H:MM:SS" (or "MM:SS" under one hour). Mirrors the
+    /// status bar's `GameWatcher.Snapshot.formatHMS` shape without
+    /// dragging that type into the Detail view's link surface.
+    fileprivate static func formatHMS(seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        let s = total % 60
+        if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
+        return String(format: "%d:%02d", m, s)
     }
 
     // MARK: Column header row

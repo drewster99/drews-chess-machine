@@ -55,18 +55,29 @@ extension SessionController {
         // Mirror the periodic watcher: a manual run also refreshes the
         // shared `lichessProbeHistory` so any open Monitor / Detail
         // window updates immediately, and the JSON exporter can dump
-        // the manual-run snapshot.
-        // Step the probed weights came from. nil before a trainer exists
-        // (champion probed pre-Play-and-Train); the history snapshots it so
-        // the JSON export reports the step at tick time, not at export time.
+        // the manual-run snapshot. Capture the four progress fields the
+        // export schema carries (training step + derived positions
+        // trained + cumulative active training time + arena/promotion
+        // counts) at tick time so the snapshot is consistent with the
+        // probed weights regardless of when the export is invoked.
         let trainingStep = trainer?.completedTrainSteps
+        let positionsTrained = trainingStep.map {
+            $0 * TrainingParameters.shared.trainingBatchSize
+        }
+        let activeTrainingSec = checkpoint?.cumulativeActiveTrainingSec
+        let arenaCount = tournamentHistory.count
+        let promotionCount = tournamentHistory.lazy.filter { $0.promoted }.count
 
         let aggregates = LichessProbeHistory.aggregates(from: allResults)
         lichessProbeHistory.record(
             aggregates,
             allResults: allResults,
             modelLabel: modelLabel,
-            trainingStep: trainingStep
+            trainingStep: trainingStep,
+            positionsTrained: positionsTrained,
+            activeTrainingSec: activeTrainingSec,
+            arenaCount: arenaCount,
+            promotionCount: promotionCount
         )
 
         // Per-theme breakdown lines, stable order by raw value.

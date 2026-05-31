@@ -9,10 +9,15 @@ import UniformTypeIdentifiers
 /// so the user can re-load a snapshot they exported earlier without
 /// hunting through Finder.
 ///
-/// Only schema v2 files are accepted — the JSON shape changed enough
-/// between v1 and v2 that supporting both would mean two parsers, and
-/// nobody has v1 files in the wild yet. Other versions surface a
-/// friendly error alert rather than a Codable decoding crash.
+/// Schema versions 2 through 4 are accepted — the JSON shape changed
+/// enough between v1 and v2 that supporting both would mean two
+/// parsers, and nobody has v1 files in the wild yet. v3 added the
+/// top-level `training_step`; v4 added `positions_trained`,
+/// `active_training_sec`, `arena_count`, and `promotion_count`. All
+/// of v3/v4's additions are top-level scalars that `LoadedPayload`
+/// silently ignores, so v2/v3/v4 decode identically here. Other
+/// versions surface a friendly error alert rather than a Codable
+/// decoding crash.
 @MainActor
 enum LichessProbeComparisonLoader {
 
@@ -63,15 +68,16 @@ enum LichessProbeComparisonLoader {
             return nil
         }
 
-        // v3 only adds the optional top-level `training_step`, which
-        // `LoadedPayload` doesn't decode — so v2 and v3 files are read
-        // identically here. Accept both.
-        guard (2...3).contains(decoded.schemaVersion) else {
+        // v3 adds the optional top-level `training_step`; v4 adds four
+        // more progress fields. None of those are decoded by
+        // `LoadedPayload`, so v2/v3/v4 files are read identically here.
+        // Accept all three.
+        guard (2...4).contains(decoded.schemaVersion) else {
             presentLoaderError(
                 title: "Unsupported schema",
                 message: """
                     \(url.lastPathComponent) uses schema version \(decoded.schemaVersion).
-                    Only versions 2-3 are supported.
+                    Only versions 2-4 are supported.
                     """
             )
             return nil
