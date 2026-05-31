@@ -1553,7 +1553,12 @@ final class ChessTrainer: @unchecked Sendable {
     // MARK: Init
 
     init(
-        learningRate: Float = 5e-5,
+        // Mirrors the `LearningRate` TrainingParameter default; 1e-3 is a
+        // bf16-appropriate floor (smaller LRs produce sub-ULP, no-op weight
+        // updates under the bf16 weight path). The live session always
+        // passes an explicit value from TrainingParameters, so this is only
+        // a test / fallback default.
+        learningRate: Float = 1e-3,
         entropyRegularizationCoeff: Float = 0.0,
         drawPenalty: Float = 0.1,
         weightDecayC: Float = ChessTrainer.weightDecayCDefault,
@@ -1946,6 +1951,34 @@ final class ChessTrainer: @unchecked Sendable {
     ) {
         let graph = network.graph
         let dtype = ChessNetwork.dataType
+
+        // --- fp32-accumulation guards for batch reductions ---
+        //
+        // Under a narrow `dtype` (bf16) every tensor in this graph,
+        // including gradients and per-position losses, carries an 8-bit
+        // mantissa. A `reductionSum` / `mean` over thousands of such
+        // elements accumulates in that same narrow type, and once the
+        // running total dwarfs an individual addend by more than half a
+        // bf16 ULP the addend is silently dropped — so a sum over the
+        // batch (or over a 147K-element weight gradient) loses its tail
+        // and comes out biased low. That directly corrupts the global
+        // gradient norm that gates clipping, and skews every reported
+        // batch-mean loss / health scalar.
+        //
+        // `widenForReduction` lifts a tensor to fp32 *before* the reduce
+        // so the accumulator is fp32; `narrowReductionResult` brings the
+        // resulting scalar back to `dtype` so it rejoins the bf16 graph
+        // and matches the dtype the host readback path assumes. The
+        // matmuls/convs themselves stay bf16 — their hardware
+        // accumulators are already fp32, so only these CPU-visible
+        // reductions need the guard. Both are identity on `.float32`, so
+        // flipping `dtype` back stays byte-identical to the fp32 graph.
+        let widenForReduction: (MPSGraphTensor) -> MPSGraphTensor = { t in
+            dtype == .float32 ? t : graph.cast(t, to: .float32, name: nil)
+        }
+        let narrowReductionResult: (MPSGraphTensor, String) -> MPSGraphTensor = { t, name in
+            dtype == .float32 ? t : graph.cast(t, to: dtype, name: name)
+        }
 
         // --- Placeholders for training targets ---
 
@@ -2420,10 +2453,13 @@ final class ChessTrainer: @unchecked Sendable {
             policyTermNegative,
             name: "adv_weighted_ce"
         )
-        let policyLoss = graph.mean(
-            of: weightedCE,
-            axes: [0, 1],
-            name: "policy_loss"
+        let policyLoss = narrowReductionResult(
+            graph.mean(
+                of: widenForReduction(weightedCE),
+                axes: [0, 1],
+                name: "policy_loss_f32"
+            ),
+            "policy_loss"
         )
 
         // --- Outcome-partitioned policy loss (diagnostic only) ---
@@ -2570,7 +2606,10 @@ final class ChessTrainer: @unchecked Sendable {
         // ([batch]); reshape to [batch, 1] so the mean lines up with
         // the rest of the scalar reductions.
         let valueCEPerPosReshaped = graph.reshape(valueCEPerPos, shape: [-1, 1], name: "value_ce_per_pos")
-        let valueLoss = graph.mean(of: valueCEPerPosReshaped, axes: [0, 1], name: "value_loss")
+        let valueLoss = narrowReductionResult(
+            graph.mean(of: widenForReduction(valueCEPerPosReshaped), axes: [0, 1], name: "value_loss_f32"),
+            "value_loss"
+        )
 
         // --- Value-head output diagnostics ---
         //
@@ -2668,19 +2707,27 @@ final class ChessTrainer: @unchecked Sendable {
             logSoftmaxLegal,
             name: "p_log_p_legal"
         )
+        // Accumulate the per-position entropy (a sum over 4864 p·log p
+        // terms) and the batch mean in fp32 — under bf16 the small tail
+        // terms would otherwise be lost. Narrow the final scalar back to
+        // `dtype` so it rejoins the bf16 graph (it feeds `total_loss` via
+        // the entropy regularizer and is read back as `pEnt`).
         let negEntropyPerPos = graph.reductionSum(
-            with: pLogPLegal,
+            with: widenForReduction(pLogPLegal),
             axis: 1,
-            name: "neg_entropy_per_pos"
+            name: "neg_entropy_per_pos_f32"
         )
         let entropyPerPos = graph.negative(
             with: negEntropyPerPos,
-            name: "entropy_per_pos"
+            name: "entropy_per_pos_f32"
         )
-        let policyEntropy = graph.mean(
-            of: entropyPerPos,
-            axes: [0, 1],
-            name: "policy_entropy"
+        let policyEntropy = narrowReductionResult(
+            graph.mean(
+                of: entropyPerPos,
+                axes: [0, 1],
+                name: "policy_entropy_f32"
+            ),
+            "policy_entropy"
         )
 
         // --- Illegal mass penalty ---
@@ -2693,19 +2740,26 @@ final class ChessTrainer: @unchecked Sendable {
             axis: 1,
             name: "policy_softmax_unmasked"
         )
+        // fp32-accumulate the per-position illegal-mass sum (over 4864
+        // classes) and the batch mean; this term joins `total_loss` and
+        // is the `[STATS]` illegal-mass signal, so its tail must survive
+        // the bf16 narrowing. Narrow the final scalar back to `dtype`.
         let illegalMassPerPos = graph.reductionSum(
-            with: graph.multiplication(
+            with: widenForReduction(graph.multiplication(
                 unmaskedSoftmax,
                 illegalMask,
                 name: "policy_illegal_mass_per_pos_masked"
-            ),
+            )),
             axis: 1,
-            name: "policy_illegal_mass_per_pos"
+            name: "policy_illegal_mass_per_pos_f32"
         )
-        let illegalMassPenalty = graph.mean(
-            of: illegalMassPerPos,
-            axes: [0, 1],
-            name: "illegal_mass_penalty"
+        let illegalMassPenalty = narrowReductionResult(
+            graph.mean(
+                of: illegalMassPerPos,
+                axes: [0, 1],
+                name: "illegal_mass_penalty_f32"
+            ),
+            "illegal_mass_penalty"
         )
 
         // --- Policy non-negligible count (diagnostic) ---
@@ -3150,8 +3204,12 @@ final class ChessTrainer: @unchecked Sendable {
             if firstGradVariableName == nil {
                 firstGradVariableName = variable.operation.name
             }
+            // Square + sum-of-squares in fp32: a single conv gradient is
+            // ~147K elements, and bf16 accumulation drops every addend
+            // that falls below half an ULP of the running total — biasing
+            // the global norm low and weakening the clip it gates.
             let flat = graph.reshape(grad, shape: [-1], name: nil)
-            let sq = graph.square(with: flat, name: nil)
+            let sq = graph.square(with: widenForReduction(flat), name: nil)
             let scalar = graph.reductionSum(with: sq, axis: 0, name: nil)
             if let accum = gradSumOfSquares {
                 gradSumOfSquares = graph.addition(accum, scalar, name: nil)
@@ -3174,9 +3232,17 @@ final class ChessTrainer: @unchecked Sendable {
         // least shape `[1]` after flatten-then-square, and
         // reductionSum over axis 0 gives shape `[1]`. The global
         // accumulator has the same shape.
-        let gradGlobalNorm = graph.squareRoot(
-            with: gradSumOfSquaresTensor,
-            name: "grad_global_norm"
+        // Narrow back to `dtype` so the norm rejoins the bf16 clip math
+        // (`maximum`/`division` with the bf16 `gradClipMaxNorm`) and the
+        // host readback, which both assume `ChessNetwork.dataType`. The
+        // fp32 accumulation above is what mattered; the final scalar's
+        // bf16 rounding is negligible against a clip threshold.
+        let gradGlobalNorm = narrowReductionResult(
+            graph.squareRoot(
+                with: gradSumOfSquaresTensor,
+                name: "grad_global_norm_f32"
+            ),
+            "grad_global_norm"
         )
 
         // --- Policy head final-conv weight L2 norm (diagnostic) ---
@@ -3204,8 +3270,11 @@ final class ChessTrainer: @unchecked Sendable {
             shape: [-1],
             name: "policy_weight_flat"
         )
+        // fp32-accumulate the sum-of-squares (same bf16-tail rationale as
+        // the gradient norm) and narrow the scalar back to `dtype` for the
+        // host readback.
         let policyWeightSq = graph.square(
-            with: policyWeightFlat,
+            with: widenForReduction(policyWeightFlat),
             name: "policy_weight_sq"
         )
         let policyWeightSqSum = graph.reductionSum(
@@ -3213,9 +3282,12 @@ final class ChessTrainer: @unchecked Sendable {
             axis: 0,
             name: "policy_weight_sq_sum"
         )
-        let policyHeadWeightNormTensor = graph.squareRoot(
-            with: policyWeightSqSum,
-            name: "policy_weight_norm"
+        let policyHeadWeightNormTensor = narrowReductionResult(
+            graph.squareRoot(
+                with: policyWeightSqSum,
+                name: "policy_weight_norm_f32"
+            ),
+            "policy_weight_norm"
         )
 
         // --- Gradient clip scale: maxNorm / max(norm, maxNorm) ---
@@ -3363,8 +3435,9 @@ final class ChessTrainer: @unchecked Sendable {
             // Uses the symbolic newVelocity (matching the reasoning at the
             // weight-update site below: assigning a variable does not
             // invalidate value-typed references to the assigned tensor).
+            // fp32 sum-of-squares (bf16-tail rationale as the grad norm).
             let velFlat = graph.reshape(newVelocity, shape: [-1], name: nil)
-            let velSq = graph.square(with: velFlat, name: nil)
+            let velSq = graph.square(with: widenForReduction(velFlat), name: nil)
             let velScalar = graph.reductionSum(with: velSq, axis: 0, name: nil)
             if let accum = velSumOfSquares {
                 velSumOfSquares = graph.addition(accum, velScalar, name: nil)
@@ -3412,9 +3485,12 @@ final class ChessTrainer: @unchecked Sendable {
                 "(no trainable variables for velocity-norm)"
             )
         }
-        let velocityGlobalNormTensor = graph.squareRoot(
-            with: velSumOfSquaresTensor,
-            name: "velocity_global_norm"
+        let velocityGlobalNormTensor = narrowReductionResult(
+            graph.squareRoot(
+                with: velSumOfSquaresTensor,
+                name: "velocity_global_norm_f32"
+            ),
+            "velocity_global_norm"
         )
 
         return (

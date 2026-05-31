@@ -89,7 +89,8 @@ original rationale is not lost.
 
 - **Adaptive learning-rate schedule.** Still open, with important corrections.
   Current implementation is not a full schedule. `TrainingParameters.LearningRate`
-  defaults to `5e-5` and is live-tunable/persisted. `ChessTrainer.buildFeeds`
+  defaults to `1e-3` (raised for the bf16 weight path — see CHANGELOG) and is
+  live-tunable/persisted. `ChessTrainer.buildFeeds`
   feeds the effective LR each step after applying two local multipliers: optional
   `sqrtBatchScalingForLR` and linear warmup over `lrWarmupSteps`. The UI lets the
   user edit learning rate and warmup; `[PARAM] learningRate` and
@@ -182,8 +183,9 @@ original rationale is not lost.
   Batches cluster at 2,048 (AGZ, lc0, MuZero), with AZ doubling to
   4,096 and KataGo going small at 256. Outliers: KataGo in *shape*
   (mostly flat + late drop + EMA), MuZero in *mechanism* (continuous
-  exponential vs. discrete drops). At current `learningRate = 5e-5`,
-  the project is roughly at KataGo's paper per-sample scale before any
+  exponential vs. discrete drops). The default `learningRate` is now `1e-3`
+  (raised from `5e-5`/`5e-4` for the bf16 weight path), above KataGo's paper
+  per-sample scale before any
   future schedule overlay.
 
   ### Chosen design (not yet implemented)

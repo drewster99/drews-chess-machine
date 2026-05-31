@@ -9,6 +9,40 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-05-31 CDT — Value head widened: 16-channel conv + `1024→128→3` FC
+
+Part of the same architecture-v4 fresh start (rides the existing v4 `archHash` — no separate version bump; v4 already refuses every pre-existing `.dcmmodel`/`.dcmsession`, and the value-head dims aren't in `archHash`'s scalar mix anyway). Addresses a structural bottleneck in the value head's spatial path.
+
+**The change.** The value head's `1×1 conv` compressed the 128-channel trunk to a **single** channel before flattening, forcing the entire spatial value representation through one 8×8 scoring map and starving the downstream FC stack (the 1-channel BN was also a near-no-op). It now compresses to **16** channels — 16 independent learned scoring maps over the board — so the flatten widens `64 → 1024` and the FC stack goes `64→64→3` → `1024→128→3`. 16/128 is a deliberate middle ground between the old bottleneck and lc0's 32-channel value head, sized to stay a modest fraction of the net (value-head params ≈ 4.5K → 134K). Only *capacity* changed: the W/D/L head, the `[0, ln 6, 0]` bias init, and the derived scalar `p_win − p_loss` are untouched, as are the output shapes (`valueLogits`/`valueProbs` `[B,3]`, derived scalar `[B,1]`) — so every inference readback and the trainer's categorical-CE value loss are unchanged.
+
+**Single source of truth.** New `ChessNetwork.valueHeadConvChannels = 16` / `valueHeadHiddenUnits = 128`; the `valueHead` builder, `parameterCount`, `NetworkWeightAnalyzer` (fanIn + convShape), `ValueHeadAnalyzer` (fanIn + FC2-column walk), and the init-std test all derive their dims from these two constants. The conv's input width now reads `Self.channels` instead of a hardcoded 128. The widened `value_bn` (now 16-channel) is now included in `NetworkWeightAnalyzer`'s dead-channel summary — the dynamic `gammaValues.count > 1` guard adapts automatically, and the stale "`value_bn` is 1-channel / excluded" comments were corrected. No optimizer/weight-transfer/BN-warmup change: those paths are generic over the live variable arrays, so the wider tensors flow through with no hardcoded counts.
+
+---
+
+## 2026-05-31 CDT — Default learning rate 5e-4 → 1e-3 (bf16 ULP floor)
+
+Raised the default learning rate to `1e-3` and aligned the previously-divergent fallbacks to the same value. Motivation is the bf16 weight path (this branch): bf16 weight storage has a relative ULP of ~2⁻⁷ ≈ 0.8% of a weight's magnitude, so a single-step update smaller than that rounds away to a bit-identical weight. Learning rates in the `5e-5`–`5e-4` range produce largely sub-ULP — i.e. no-op — updates for normal gradient magnitudes, so `1e-3` is the sounder floor (still live-tunable up to 1.0; the running session already uses 0.01). This matches the `5e-4 → 1e-3` change already noted in `chess-engine-design.md` (sqrt-batch-scaling rationale for the 4× batch growth).
+
+Four spots, previously a mix of `5e-4` / `5e-5`, now all `1e-3` (single source of truth): the `LearningRate` TrainingParameter default (the operative default a fresh install / `--show-default-parameters` reports), `ChessTrainer.init(learningRate:)` (test/fallback default), `SessionController.trainerLearningRateDefault` (resume fallback), and the LR text-field parse fallback in `TrainingSettingsPopover`. The `LearningRate` parameter description now notes the bf16 ULP floor. The proper long-term fix for bf16 trainability — an fp32 master copy of weights so sub-ULP updates accumulate instead of vanishing — is deferred (the branch is deliberately bf16-native).
+
+---
+
+## 2026-05-31 CDT — Architecture v4: pre-activation (ResNet v2) tower, scale-and-bias SE, ReZero
+
+A from-scratch rebuild of the residual tower's internals. This is a fresh-start architecture — `ChessNetwork.architectureVersion` (new constant) is now mixed into `archHash`, so every pre-existing `.dcmmodel`/`.dcmsession` cleanly refuses to load (tensor shapes/counts also change: SE FC2 widens, a per-block scalar and a tower-end BN are added). No migration. Trainer-session resume across the boundary is intentionally impossible (the optimizer's velocity buffers are parallel to `trainableVariables`, whose count changed).
+
+**1. Pre-activation residual blocks (ResNet v2).** Each block changed from post-activation `conv→BN→ReLU→conv→BN→[SE]→add→ReLU` to pre-activation `BN→ReLU→conv→BN→ReLU→conv→[SE]`, with a **clean identity skip** — `out = input + α·F(input)`, no activation on the sum. In v1 the skip passed through a ReLU every block, so the "identity" path was gated at each of the (now 12) blocks; v2 leaves the skip a bare add, creating an uninterrupted additive highway with un-gated gradient flow to depth.
+
+**2. ReZero branch scalar replaces zero-γ.** Each block gets a trainable scalar α (`*_res_scale`, init `1/√numBlocks`) multiplying the residual branch before the add. This takes over depth-variance control from the old zero-γ `bn2` init (now removed — all BN init γ=1, and the `zeroInitGamma` flag on `ChessNetwork.batchNorm` is gone). Unlike zero-γ (branch dead at init, woken only by gradient), α≈0.29 lets every block contribute signal *and* gradient from step 1 while still holding the tower's accumulated variance ~O(1).
+
+**3. Scale-and-bias SE.** The SE excite FC2 widened `32→128` to `32→256`, its output split into a `gammas` (scale) half and a `betas` (bias) half: `SE_out = sigmoid(gammas)·z + betas`. Sigmoid gates only the scale half (attention stays bounded in (0,1)); the bias half is added linearly, letting the globally-pooled signal also *inject* a per-channel offset rather than only attenuate. FC2 is now **Glorot**-init (it feeds the sigmoid — new `ChessNetwork.glorotInitDataFCInOut`); FC1 stays He (it feeds ReLU).
+
+**4. Stem and tower-end boundaries.** The stem dropped its ReLU (now `conv→BN`): in a pre-activation tower the first nonlinearity belongs to block0's `BN→ReLU`, and the stem BN still bounds `x_0`, the skip highway's starting value. Because each block now ends in a bare conv-add, the tower output is an un-normalized linear accumulation, so a closing `tower_final_bn → ReLU` was added before the heads (the canonical v2 "post-activation at the very end").
+
+Supporting/bookkeeping: `ChessNetwork.parameterCount` updated (wider SE FC2, +1 α/block, +`tower_final_bn`). `NetworkWeightAnalyzer` updated — Glorot init-L2 reference for `*_se_fc2_weights` (new `glorotInitL2`/`expectedInitL2`), `*_res_scale` drift-from-init reference = `1/√numBlocks` (replacing the removed `*_bn2_gamma`=0 case), a `tower_final` section, and the baseline-gate analysis now reads only the gammas half of the 256-wide FC2 bias. Stale comments in `PolicyHeadCorrectnessTests` (Test 3 init-legalmass, Test 7 gradient-connectivity) rewritten to reflect ReZero + the BN warmup; no assertions or test logic changed. Gradient/optimizer/weight-transfer/BN-warmup paths are all generic over the live variable arrays, so the new tensors flow through with no hardcoded counts. (Note: this lands on top of the earlier same-cycle `numBlocks` 16 → 12 reduction.)
+
+---
+
 ## 2026-05-29 15:26 CDT — 16-block tower: depth doubling + zero-γ identity init + policy-head BN
 
 Three architectural changes, taken together to make a deeper network train cleanly from scratch. This is a fresh-start architecture — `archHash` mixes `numBlocks`, so every pre-existing `.dcmmodel`/`.dcmsession` cleanly refuses to load; no migration.

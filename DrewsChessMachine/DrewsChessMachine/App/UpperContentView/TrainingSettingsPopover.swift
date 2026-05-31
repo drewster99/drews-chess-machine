@@ -734,7 +734,7 @@ private struct OptimizerTab: View {
     /// two presses move exactly one order of magnitude.
     private func stepLRBy(factor: Double) {
         let trimmed = lrText.trimmingCharacters(in: .whitespaces)
-        let current = Double(trimmed) ?? 5e-5
+        let current = Double(trimmed) ?? 1e-3
         let next = max(1e-7, min(1.0, current * factor))
         lrText = String(format: "%.2e", next)
     }

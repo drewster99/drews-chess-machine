@@ -247,8 +247,8 @@ public enum ValueLossWeight: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Learning Rate",
-    description: "SGD-with-momentum optimizer learning rate. Lower is slower but more stable. Pairs with sqrt_batch_scaling_lr.",
-    default: 5.0e-4,
+    description: "SGD-with-momentum optimizer learning rate. Lower is slower but more stable. Pairs with sqrt_batch_scaling_lr. Note: under the bf16 weight path, updates below the bf16 weight ULP (~0.8% of a weight's magnitude) round away, so LRs much below ~1e-3 are largely no-ops.",
+    default: 1.0e-3,
     range: 1.0e-7...1.0,
     category: "Optimizer",
     liveTunable: true

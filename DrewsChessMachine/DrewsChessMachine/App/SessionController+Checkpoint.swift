@@ -573,7 +573,7 @@ extension SessionController {
 
     // MARK: - Session-state snapshot (Stage 4m)
 
-    nonisolated static let trainerLearningRateDefault: Float = 5e-5
+    nonisolated static let trainerLearningRateDefault: Float = 1e-3
     nonisolated static let entropyRegularizationCoeffDefault: Float = 1e-3
 
     /// Build the Codable snapshot of the current session state (counters,
