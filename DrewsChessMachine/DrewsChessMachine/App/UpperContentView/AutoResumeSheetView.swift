@@ -60,6 +60,7 @@ struct AutoResumeSheetView: View {
             }
             if let summary {
                 AutoResumeProgressBlockView(summary: summary)
+                AutoResumeModelBlockView(summary: summary)
                 AutoResumeBuildBlockView(summary: summary)
             }
             Button {

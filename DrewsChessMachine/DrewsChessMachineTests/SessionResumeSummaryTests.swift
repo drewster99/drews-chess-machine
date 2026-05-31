@@ -48,7 +48,17 @@ final class SessionResumeSummaryTests: XCTestCase {
             "buildNumber": 420,
             "buildGitHash": "abc1234",
             "buildGitDirty": false,
-            "buildTimestamp": "2026-04-30T17:36:30-0500"
+            "buildTimestamp": "2026-04-30T17:36:30-0500",
+            "architecture": {
+              "architectureVersion": 4,
+              "channels": 128,
+              "numBlocks": 12,
+              "inputPlanes": 30,
+              "policySize": 4864,
+              "valueHeadClasses": 3,
+              "seReductionRatio": 4,
+              "parameterCount": 3900000
+            }
             """
         )
         let summary = SessionResumeSummary(state: state)
@@ -64,6 +74,18 @@ final class SessionResumeSummaryTests: XCTestCase {
         XCTAssertEqual(summary.arenaCount, 3)
         XCTAssertEqual(summary.promotionCount, 2,
             "two of three arena entries have promoted=true")
+        XCTAssertEqual(summary.championID, "CHAMP")
+        XCTAssertEqual(summary.trainerID, "TRAIN")
+        XCTAssertEqual(summary.architecture, ArchitectureMetadata(
+            architectureVersion: 4,
+            channels: 128,
+            numBlocks: 12,
+            inputPlanes: 30,
+            policySize: 4864,
+            valueHeadClasses: 3,
+            seReductionRatio: 4,
+            parameterCount: 3_900_000
+        ))
         XCTAssertEqual(summary.buildNumber, 420)
         XCTAssertEqual(summary.buildGitHash, "abc1234")
         XCTAssertEqual(summary.buildGitDirty, false)
@@ -87,6 +109,8 @@ final class SessionResumeSummaryTests: XCTestCase {
         XCTAssertNil(summary.buildGitDirty)
         XCTAssertNil(summary.buildTimestamp)
         XCTAssertNil(summary.replayBufferTotalPositionsAdded)
+        XCTAssertNil(summary.architecture,
+            "session.json without an architecture block decodes to nil so the resume sheet renders 'unknown'")
     }
 
     // MARK: - Disk peek

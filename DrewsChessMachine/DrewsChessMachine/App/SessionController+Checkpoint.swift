@@ -716,7 +716,20 @@ extension SessionController {
             championID: championID,
             trainerID: trainerID,
             arenaHistory: history
-        ).withTrainingSegments(segments)
+        )
+        .withTrainingSegments(segments)
+        .withArchitecture(
+            ArchitectureMetadata(
+                architectureVersion: ChessNetwork.architectureVersion,
+                channels: ChessNetwork.channels,
+                numBlocks: ChessNetwork.numBlocks,
+                inputPlanes: ChessNetwork.inputPlanes,
+                policySize: ChessNetwork.policySize,
+                valueHeadClasses: ChessNetwork.valueHeadClasses,
+                seReductionRatio: ChessNetwork.seReductionRatio,
+                parameterCount: ChessNetwork.parameterCount
+            )
+        )
     }
 
     // MARK: - Session resume (Stage 4k)

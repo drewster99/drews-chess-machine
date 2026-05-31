@@ -112,6 +112,37 @@ struct ArenaHistoryEntryCodable: Codable, Equatable {
     var extendedSummary: ArenaExtendedSummary?
 }
 
+/// Network-architecture snapshot captured at save time so the
+/// resume sheet can show what shape of network produced the
+/// session — e.g. `v4 · 12 blocks · 128 channels · 3.9M params`.
+/// These numbers are build-time constants on `ChessNetwork`, but
+/// they can change across architecture-version bumps; persisting
+/// them lets the resume sheet describe the *saved* session even
+/// when the user is now running a build with a different arch
+/// (which the build-mismatch warning also flags). All fields are
+/// non-Optional inside the struct, but the struct as a whole is
+/// Optional on `SessionCheckpointState` for back-compat with
+/// sessions saved before the field landed.
+struct ArchitectureMetadata: Codable, Equatable {
+    /// `ChessNetwork.architectureVersion` — distinguishes topology
+    /// changes (e.g. the v3 → v4 pre-activation rebuild) that pure
+    /// shape constants don't capture.
+    let architectureVersion: Int
+    let channels: Int
+    let numBlocks: Int
+    let inputPlanes: Int
+    let policySize: Int
+    let valueHeadClasses: Int
+    /// Squeeze-and-Excitation FC reduction ratio
+    /// (`ChessNetwork.seReductionRatio`). Surfaced because changing
+    /// the SE width without changing channels still produces a
+    /// distinct architecture for the model loader's arch hash.
+    let seReductionRatio: Int
+    /// Trainable + BN parameter count, computed via
+    /// `ChessNetwork.parameterCount` at save time.
+    let parameterCount: Int
+}
+
 // MARK: - Session State
 
 /// Serialized form of a paused training session. Stored at
@@ -384,6 +415,12 @@ struct SessionCheckpointState: Codable, Equatable {
     let championID: String
     let trainerID: String
 
+    /// Architecture-shape snapshot captured at save time. Optional for
+    /// back-compat with session files written before the field landed;
+    /// absent → resume sheet renders the architecture line as "unknown
+    /// (session predates architecture metadata)".
+    var architecture: ArchitectureMetadata?
+
     // Arena history (audit log — displayed in the UI on resume)
     let arenaHistory: [ArenaHistoryEntryCodable]
 
@@ -462,6 +499,15 @@ struct SessionCheckpointState: Codable, Equatable {
     /// reason as `withTrainingSegments`: keeps the memberwise init
     /// call site lean. Pass `nil` for `hasChartData` when no chart
     /// snapshot is being saved (no companion files written).
+    /// Return a copy with `architecture` populated. Same builder-helper
+    /// pattern as `withTrainingSegments` / `withChartData` — keeps the
+    /// memberwise init call site lean.
+    func withArchitecture(_ architecture: ArchitectureMetadata?) -> SessionCheckpointState {
+        var copy = self
+        copy.architecture = architecture
+        return copy
+    }
+
     func withChartData(
         hasChartData: Bool?,
         trainingChartSampleCount: Int?,

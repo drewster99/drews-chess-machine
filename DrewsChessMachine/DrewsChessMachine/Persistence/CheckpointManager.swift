@@ -256,6 +256,19 @@ struct SessionResumeSummary: Sendable, Equatable {
     let trainingChartSampleCount: Int?
     let arenaCount: Int
     let promotionCount: Int
+    /// Champion `ModelID` description (`yyyymmdd-N-XXXX`) at save time —
+    /// the live champion the session would resume into. Surfaced in the
+    /// resume sheet's Models block so the user can verify the lineage
+    /// before confirming the resume.
+    let championID: String
+    /// Trainer `ModelID` description at save time. Distinct from
+    /// `championID` between promotions (every promotion forks a fresh
+    /// next-generation trainer ID off the promoted champion).
+    let trainerID: String
+    /// Architecture snapshot persisted in `session.json`. nil on
+    /// sessions saved before the field landed; the resume sheet
+    /// renders "unknown" in that case.
+    let architecture: ArchitectureMetadata?
     let buildNumber: Int?
     let buildGitHash: String?
     let buildGitDirty: Bool?
@@ -274,6 +287,9 @@ struct SessionResumeSummary: Sendable, Equatable {
         self.trainingChartSampleCount = state.trainingChartSampleCount
         self.arenaCount = state.arenaHistory.count
         self.promotionCount = state.arenaHistory.lazy.filter { $0.promoted }.count
+        self.championID = state.championID
+        self.trainerID = state.trainerID
+        self.architecture = state.architecture
         self.buildNumber = state.buildNumber
         self.buildGitHash = state.buildGitHash
         self.buildGitDirty = state.buildGitDirty
