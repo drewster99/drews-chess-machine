@@ -55,29 +55,33 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
         return (driver, countBox, pauseGate)
     }
 
-    /// Drive the loop for `seconds` then cancel and await exit. The
-    /// driver self-cancels on `Task.isCancelled` between ticks, so
-    /// cancel + a brief `await` is the clean shutdown.
-    private func runDriver(_ driver: BatchedSelfPlayDriver, forSeconds seconds: Double) async {
-        let task = Task(priority: .high) {
-            await driver.run()
-        }
-        try? await Task.sleep(for: .seconds(seconds))
-        task.cancel()
-        // Give the cancel a few ms to propagate through the loop's
-        // top-of-iteration check.
-        try? await Task.sleep(for: .milliseconds(50))
-    }
-
     // MARK: - Smoke: driver runs and produces positions
 
     func test_drivesK2_producesPositionsInReplayBuffer() async {
         let buffer = ReplayBuffer(capacity: 100_000)
         let (driver, _, _) = makeDriver(initialK: 2, buffer: buffer)
-        await runDriver(driver, forSeconds: 5.0)
+        let task = Task(priority: .high) {
+            await driver.run()
+        }
+        // Poll until the first finished game's positions land in the buffer,
+        // rather than sleeping a fixed window and hoping a full game completed
+        // within it. The buffer fills only on game *completion*, and under
+        // `.uniform` sampling a game is hundreds of random plies — so a full
+        // game at K=2 takes a few seconds, and longer on a loaded machine,
+        // which made a fixed 5s window flaky. Polling returns as soon as data
+        // appears (usually within a few seconds) and only fails if no game
+        // completes within a generous ~30s deadline.
+        var waited = 0
+        while buffer.count == 0 && waited < 300 {
+            try? await Task.sleep(for: .milliseconds(100))
+            waited += 1
+        }
+        task.cancel()
+        // Let the cancel propagate through the loop's top-of-iteration check.
+        try? await Task.sleep(for: .milliseconds(50))
         XCTAssertGreaterThan(
             buffer.count, 0,
-            "Driver should have produced at least one finished game's worth of positions in 5s at K=2"
+            "Driver should have produced at least one finished game's worth of positions at K=2 within the deadline"
         )
     }
 
