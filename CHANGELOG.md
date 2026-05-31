@@ -9,6 +9,16 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-05-31 CDT — Canonical bf16 trainer = fp32 master weights (mixed precision)
+
+The bf16 trainer path is now standard mixed precision: forward/backward still compute in bf16 (the speed), but the optimizer keeps an **fp32 master** of every persistent tensor and accumulates into it, re-deriving the bf16 working copy as `cast(master)` each step. This fixes the bf16 weight-ULP freeze — updates below ~0.8% of a weight's magnitude no longer round away — without giving up the bf16 matmul speed. No toggle / no enum: it's gated purely on `ChessNetwork.dataType != .float32` (under `.float32` the working weights *are* the master, so it collapses to the prior plain path).
+
+**fp32 now (canonical bf16 path):** master weights (all trainables) + master BN running stats + the velocity buffer; the full optimizer update (grad cast→fp32, clip scale, momentum, decoupled weight decay, master accumulate) and the BN running-stat EMA (`0.99·m + 0.01·batch`); and the four optimizer-update scalars `lr` / `weightDecayC` / `μ` / `gradClipMaxNorm` (fp32 placeholders fed the raw `Float`, so e.g. `lr=1e-3` is exact rather than the bf16-narrowed `0.0009766`). The fp32 masters are **persisted** in the trainer session and restored on resume. **Stays bf16:** the working weights/BN-stats the forward graph multiplies, all activations, and gradients as first computed (cast→fp32 only at the optimizer boundary).
+
+Contained to `ChessTrainer` (BN running stats handled trainer-side via the already-exposed `bnBatchMean/VarTensors`), plus one `syncMastersFromWorking()` call on the promotion path in `SessionController+Arena`. New fp32 IO helpers `ChessNetwork.readFloatsFP32` / `writeFloatsFP32`. **No checkpoint format/version bump:** masters are parallel to the existing `base` (`trainables + bnRunningStatsVariables`, same count) and the trainer payload is already fp32-on-disk, so `exportTrainerWeights` emits masters in place of `base` and `loadTrainerWeights` restores them and rounds them into the working weights; an old bf16-native trainer session still loads (its values seed the master, with no precision lost that the bf16-native run ever had). Full design: `HYBRID_FP32_MASTER_WEIGHTS_PLAN.md`.
+
+**Status:** compile-verified (0 errors); **not yet runtime-tested** — landed while a training run held the machine (no app/test runs during training). Pending runtime validation: the "money test" (weights move at a tiny LR where pure bf16 froze), the `MomentumOptimizerTests` round-trip/velocity assertions under the master path, and a step-time/RSS comparison vs bf16-native.
+
 ## 2026-05-31 CDT — Value head widened: 16-channel conv + `1024→128→3` FC
 
 Part of the same architecture-v4 fresh start (rides the existing v4 `archHash` — no separate version bump; v4 already refuses every pre-existing `.dcmmodel`/`.dcmsession`, and the value-head dims aren't in `archHash`'s scalar mix anyway). Addresses a structural bottleneck in the value head's spatial path.

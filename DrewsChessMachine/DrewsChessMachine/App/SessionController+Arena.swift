@@ -284,6 +284,13 @@ extension SessionController {
                         let weights = try await candidateInference.exportWeights()
                         try await champion.loadWeights(weights)
                         try await trainer.network.loadWeights(weights)
+                        // The trainer's working weights were just replaced by
+                        // the promoted candidate's. Re-seed the fp32 masters
+                        // from them so the optimizer accumulates from the
+                        // validated weights, not stale master values. No-op
+                        // under `.float32`. Gates are paused — safe to drive
+                        // the trainer's graph directly here.
+                        try await trainer.syncMastersFromWorking()
                         // The trainer's CURRENT velocity was built up
                         // against the post-arena weight surface (which
                         // we just discarded by overwriting with the

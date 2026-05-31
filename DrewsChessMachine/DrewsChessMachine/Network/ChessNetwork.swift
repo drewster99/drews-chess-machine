@@ -122,26 +122,37 @@ final class ChessNetwork: @unchecked Sendable {
 
     /// Numeric precision for all weights and activations.
     ///
-    /// **This branch (`bf16-trainer`) runs `.bFloat16`** to measure whether
-    /// MPSGraph + the GPU give an accelerated bfloat16 training path. bf16
-    /// keeps fp32's full 8-bit exponent (same dynamic range), so it avoids
-    /// the gradient-underflow / overflow / loss-scaling headaches of IEEE
-    /// `.float16`; it trades mantissa precision (~7 → ~2-3 sig digits),
-    /// which SGD tolerates. The win — if MPSGraph actually accelerates bf16
-    /// rather than silently upcasting to fp32 — shows up in the trainer's
-    /// per-step `gpu=` time (the batch-4096 conv matmuls dominate it).
+    /// **Currently `.float32`** after a bf16 experiment (commit `bb70ab8`,
+    /// branch `bf16-trainer`) measured that pure-bf16 weights+updates
+    /// stall training within ~10k steps. The bf16 trap: with weights
+    /// stored in bf16 and the SGD step `w -= lr · grad` done in bf16
+    /// too, an update smaller than the bf16 ULP at `|w|` rounds to a
+    /// no-op. For BN gamma at value 1.0 the ULP is `2^-7 ≈ 7.8e-3`,
+    /// so `lr=1e-3 · grad≈0.05` is 3 orders of magnitude below the
+    /// threshold and every gamma update rounds to zero. Confirmed
+    /// in the KXvb-1 snapshot: all 3,712 BN gamma channels bit-exact
+    /// at 1.0 after 49k steps; `value_fc2_bias[D]` stuck at one bf16
+    /// ULP from `ln 6`; tower L2 norms within 1% of init. The fix is
+    /// either (a) mixed precision with an fp32 master copy LC0-style,
+    /// or (b) just stay in fp32. We're doing (b) for now; bf16 +
+    /// mixed-precision is on the table if MPSGraph's bf16 matmuls
+    /// turn out to be meaningfully faster than fp32 on Apple Silicon
+    /// (initial measurements suggest the gap is small).
     ///
     /// All weight/activation byte conversion is centralized in
     /// `makeWeightData` (Float32 → dataType) and the two `readFloats`
     /// overloads (dataType → Float32), which branch on this. Saved
     /// `.dcmmodel` files always speak `Float` (conversion happens only at
-    /// the GPU boundary), so bf16-trained models stay portable. `.float16`
-    /// uses the vImage half path; `.bFloat16` uses the bit-shift helpers
-    /// `float32ToBFloat16Bits` / `bFloat16BitsToFloat32` (vImage has no
-    /// bfloat16 primitive). Switch to `.float32` to fall back to fp32.
+    /// the GPU boundary), so a model trained under one dataType reloads
+    /// cleanly under another (modulo rounding at the GPU-boundary
+    /// re-cast). `.float16` uses the vImage half path; `.bFloat16` uses
+    /// the bit-shift helpers `float32ToBFloat16Bits` /
+    /// `bFloat16BitsToFloat32` (vImage has no bfloat16 primitive). The
+    /// `.bFloat16` and `.float16` paths are preserved so the experiment
+    /// can be re-run without re-implementing the conversion plumbing.
     ///
     /// `inputPlanes` etc. are independent of this.
-    static let dataType: MPSDataType = .bFloat16
+    static let dataType: MPSDataType = .float32
 
     static let channels = 128
     /// Input plane count. v3 architecture: 20 baseline planes (pieces +
@@ -2148,6 +2159,36 @@ final class ChessNetwork: @unchecked Sendable {
                 UnsafeMutableRawPointer(mutating: base),
                 strideBytes: nil
             )
+        }
+    }
+
+    /// Read an MPSGraphTensorData backed by an **fp32** ND array as Float32
+    /// (raw bytes, no dtype conversion). For optimizer state — the fp32
+    /// velocity buffers and fp32 master weights — which are fp32 regardless
+    /// of `dataType`; the dtype-branching `readFloats` would mis-decode them.
+    static func readFloatsFP32(from data: MPSGraphTensorData, count: Int) -> [Float] {
+        var out = [Float](repeating: 0, count: count)
+        out.withUnsafeMutableBytes { buf in
+            if let ptr = buf.baseAddress {
+                data.mpsndarray().readBytes(ptr, strideBytes: nil)
+            }
+        }
+        return out
+    }
+
+    /// Write a Float32 array into an **fp32** ND array (raw bytes). Counterpart
+    /// to `readFloatsFP32` for fp32 optimizer-state load.
+    static func writeFloatsFP32(_ floats: [Float], into array: MPSNDArray) {
+        precondition(
+            !floats.isEmpty,
+            "writeFloatsFP32: empty input would silently skip the MPSNDArray write"
+        )
+        var local = floats
+        local.withUnsafeMutableBytes { buf in
+            guard let base = buf.baseAddress else {
+                preconditionFailure("writeFloatsFP32: baseAddress nil despite non-empty input")
+            }
+            array.writeBytes(base, strideBytes: nil)
         }
     }
 

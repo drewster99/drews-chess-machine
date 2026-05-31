@@ -1304,6 +1304,21 @@ final class ChessTrainer: @unchecked Sendable {
     private var velocityLoadAssignOps: [MPSGraphOperation] = []
     private var velocityLoadNDArrays: [MPSNDArray] = []
     private var velocityLoadTensorData: [MPSGraphTensorData] = []
+    /// fp32 master weights + master running stats (canonical mixed-precision
+    /// path; empty under `.float32`). Parallel to `trainableVariables +
+    /// bnRunningStatsVariables`. Persisted in the trainer session; the bf16
+    /// working copies are re-derived as `cast(master)` each step.
+    private var masterVariables: [MPSGraphTensor] = []
+    /// Per-master load infra (fp32), parallel to `masterVariables`, for
+    /// restoring persisted masters on resume.
+    private var masterLoadPlaceholders: [MPSGraphTensor] = []
+    private var masterLoadAssignOps: [MPSGraphOperation] = []
+    private var masterLoadNDArrays: [MPSNDArray] = []
+    private var masterLoadTensorData: [MPSGraphTensorData] = []
+    /// `master = cast(working, fp32)` assigns. Run once at construction and
+    /// after any wholesale working-weight replacement (fresh fork / promotion)
+    /// to seed the masters from the working copies.
+    private var syncMastersOps: [MPSGraphOperation] = []
     private var totalLoss: MPSGraphTensor               // scalar
     private var policyLossTensor: MPSGraphTensor        // scalar
     private var valueLossTensor: MPSGraphTensor         // scalar
@@ -1611,6 +1626,12 @@ final class ChessTrainer: @unchecked Sendable {
         self.velocityLoadAssignOps = built.velocityLoadAssignOps
         self.velocityLoadNDArrays = built.velocityLoadNDArrays
         self.velocityLoadTensorData = built.velocityLoadTensorData
+        self.masterVariables = built.masterVariables
+        self.masterLoadPlaceholders = built.masterLoadPlaceholders
+        self.masterLoadAssignOps = built.masterLoadAssignOps
+        self.masterLoadNDArrays = built.masterLoadNDArrays
+        self.masterLoadTensorData = built.masterLoadTensorData
+        self.syncMastersOps = built.syncMastersOps
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
@@ -1656,7 +1677,15 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: ChessNetwork.dataType,
             shape: [1]
         )
-        let lrND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        // The four optimizer-update scalars feed fp32 placeholders (see
+        // buildTrainingOps) regardless of `dataType`, so their ND arrays are
+        // fp32. `writeScalarFeed` branches on the ND array's own dtype, so it
+        // writes the raw `Float` into these and narrows the rest.
+        let optScalarDesc = MPSNDArrayDescriptor(
+            dataType: .float32,
+            shape: [1]
+        )
+        let lrND = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
         lrND.label = "lrND"
         self.lrNDArray = lrND
         self.lrTensorData = MPSGraphTensorData(lrND)
@@ -1664,11 +1693,11 @@ final class ChessTrainer: @unchecked Sendable {
         entropyND.label = "entropyND"
         self.entropyCoeffNDArray = entropyND
         self.entropyCoeffTensorData = MPSGraphTensorData(entropyND)
-        let weightDecayND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        let weightDecayND = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
         weightDecayND.label = "weightDecayND"
         self.weightDecayNDArray = weightDecayND
         self.weightDecayTensorData = MPSGraphTensorData(weightDecayND)
-        let gradClipND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        let gradClipND = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
         gradClipND.label = "gradClipND"
         self.gradClipMaxNormNDArray = gradClipND
         self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipND)
@@ -1692,7 +1721,7 @@ final class ChessTrainer: @unchecked Sendable {
         valueLabelSmoothingND.label = "valueLabelSmoothingEpsilonND"
         self.valueLabelSmoothingEpsilonNDArray = valueLabelSmoothingND
         self.valueLabelSmoothingEpsilonTensorData = MPSGraphTensorData(valueLabelSmoothingND)
-        let momentumND = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        let momentumND = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
         momentumND.label = "momentumND"
         self.momentumNDArray = momentumND
         self.momentumTensorData = MPSGraphTensorData(momentumND)
@@ -1706,6 +1735,12 @@ final class ChessTrainer: @unchecked Sendable {
         )
         lossPtr.initialize(repeating: 0, count: Self.lossReadbackSlotCount)
         self.lossReadbackScratchPtr = lossPtr
+
+        // Seed the fp32 masters from the freshly-built (He/Glorot-init) bf16
+        // working weights so the first trainStep accumulates from the real
+        // init, not from zero. No-op under `.float32`. Not yet on
+        // `executionQueue`, so wrap in a sync hop.
+        executionQueue.sync { self.runSyncMastersOnQueue() }
     }
 
     deinit {
@@ -1798,6 +1833,12 @@ final class ChessTrainer: @unchecked Sendable {
         self.velocityLoadAssignOps = built.velocityLoadAssignOps
         self.velocityLoadNDArrays = built.velocityLoadNDArrays
         self.velocityLoadTensorData = built.velocityLoadTensorData
+        self.masterVariables = built.masterVariables
+        self.masterLoadPlaceholders = built.masterLoadPlaceholders
+        self.masterLoadAssignOps = built.masterLoadAssignOps
+        self.masterLoadNDArrays = built.masterLoadNDArrays
+        self.masterLoadTensorData = built.masterLoadTensorData
+        self.syncMastersOps = built.syncMastersOps
         self.totalLoss = built.totalLoss
         self.policyLossTensor = built.policyLoss
         self.valueLossTensor = built.valueLoss
@@ -1837,16 +1878,22 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: ChessNetwork.dataType,
             shape: [1]
         )
-        self.lrNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        // fp32 ND arrays for the four optimizer-update scalars (see the
+        // designated init for the rationale).
+        let optScalarDesc = MPSNDArrayDescriptor(
+            dataType: .float32,
+            shape: [1]
+        )
+        self.lrNDArray = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
         self.lrNDArray.label = "trainer.scalar.lr (reset)"
         self.lrTensorData = MPSGraphTensorData(lrNDArray)
         self.entropyCoeffNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.entropyCoeffNDArray.label = "trainer.scalar.entropyCoeff (reset)"
         self.entropyCoeffTensorData = MPSGraphTensorData(entropyCoeffNDArray)
-        self.weightDecayNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.weightDecayNDArray = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
         self.weightDecayNDArray.label = "trainer.scalar.weightDecay (reset)"
         self.weightDecayTensorData = MPSGraphTensorData(weightDecayNDArray)
-        self.gradClipMaxNormNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.gradClipMaxNormNDArray = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
         self.gradClipMaxNormNDArray.label = "trainer.scalar.gradClipMaxNorm (reset)"
         self.gradClipMaxNormTensorData = MPSGraphTensorData(gradClipMaxNormNDArray)
         self.policyLossWeightNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
@@ -1864,7 +1911,7 @@ final class ChessTrainer: @unchecked Sendable {
         self.valueLabelSmoothingEpsilonNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
         self.valueLabelSmoothingEpsilonNDArray.label = "trainer.scalar.valueLabelSmoothingEpsilon (reset)"
         self.valueLabelSmoothingEpsilonTensorData = MPSGraphTensorData(valueLabelSmoothingEpsilonNDArray)
-        self.momentumNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
+        self.momentumNDArray = MPSNDArray(device: net.metalDevice, descriptor: optScalarDesc)
         self.momentumNDArray.label = "trainer.scalar.momentum (reset)"
         self.momentumTensorData = MPSGraphTensorData(momentumNDArray)
         self.complementCEEnableNDArray = MPSNDArray(device: net.metalDevice, descriptor: lrDesc)
@@ -1887,6 +1934,11 @@ final class ChessTrainer: @unchecked Sendable {
         // `_completedTrainSteps / lrWarmupSteps`) jumps ahead of the
         // immature network and drives oversized first-step updates.
         _completedTrainSteps.value = 0
+
+        // Seed the fp32 masters from the new network's freshly-built working
+        // weights. Already on `executionQueue` (via `enqueue`), so run
+        // directly. No-op under `.float32`.
+        runSyncMastersOnQueue()
     }
 
     /// Build the training subgraph (loss + gradients + SGD assigns) on top
@@ -1919,6 +1971,12 @@ final class ChessTrainer: @unchecked Sendable {
         velocityLoadAssignOps: [MPSGraphOperation],
         velocityLoadNDArrays: [MPSNDArray],
         velocityLoadTensorData: [MPSGraphTensorData],
+        masterVariables: [MPSGraphTensor],
+        masterLoadPlaceholders: [MPSGraphTensor],
+        masterLoadAssignOps: [MPSGraphOperation],
+        masterLoadNDArrays: [MPSNDArray],
+        masterLoadTensorData: [MPSGraphTensorData],
+        syncMastersOps: [MPSGraphOperation],
         totalLoss: MPSGraphTensor,
         policyLoss: MPSGraphTensor,
         valueLoss: MPSGraphTensor,
@@ -3091,9 +3149,20 @@ final class ChessTrainer: @unchecked Sendable {
         // the `policyLossWeight` placeholder so the user can dial it
         // down if the amplified policy gradient is the source of
         // gradient-clip saturation.
+        // The four optimizer-update scalars (lr, weight decay, grad-clip
+        // max-norm, momentum below) are declared **fp32 regardless of
+        // `dtype`**. They are consumed only by the optimizer update, which
+        // runs in fp32 in the canonical bf16 path (fp32 master weights — see
+        // the SGD/EMA construction below). Feeding them as bf16 and casting
+        // up would only recover the bf16-narrowed value (e.g. lr=1e-3 →
+        // 0.0009766); an fp32 placeholder fed the raw `Float` keeps them
+        // exact. Their feed NDArrays are sized fp32 in `init` and
+        // `buildFeeds` writes the raw `Float`. Under `dataType == .float32`
+        // this matches the rest of the graph; the loss-side scalars stay
+        // `dtype` (they shape the bf16 loss, whose gradient is bf16 anyway).
         let lrTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: .float32,
             name: "learning_rate"
         )
         let entropyCoeffTensor = graph.placeholder(
@@ -3103,12 +3172,12 @@ final class ChessTrainer: @unchecked Sendable {
         )
         let weightDecayTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: .float32,
             name: "weight_decay_coeff"
         )
         let gradClipMaxNormTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: .float32,
             name: "grad_clip_max_norm"
         )
         let policyLossWeightTensor = graph.placeholder(
@@ -3137,7 +3206,7 @@ final class ChessTrainer: @unchecked Sendable {
         // the graph.
         let momentumTensor = graph.placeholder(
             shape: [1],
-            dataType: dtype,
+            dataType: .float32,
             name: "momentum_coeff"
         )
         let weightedPolicy = graph.multiplication(
@@ -3237,13 +3306,14 @@ final class ChessTrainer: @unchecked Sendable {
         // host readback, which both assume `ChessNetwork.dataType`. The
         // fp32 accumulation above is what mattered; the final scalar's
         // bf16 rounding is negligible against a clip threshold.
-        let gradGlobalNorm = narrowReductionResult(
-            graph.squareRoot(
-                with: gradSumOfSquaresTensor,
-                name: "grad_global_norm_f32"
-            ),
-            "grad_global_norm"
+        // Keep the fp32 norm for the clip math (the clip scalars are fp32),
+        // and narrow a separate copy to `dtype` only for the host readback
+        // (`readFloats` assumes `ChessNetwork.dataType`).
+        let gradGlobalNormF32 = graph.squareRoot(
+            with: gradSumOfSquaresTensor,
+            name: "grad_global_norm_f32"
         )
+        let gradGlobalNorm = narrowReductionResult(gradGlobalNormF32, "grad_global_norm")
 
         // --- Policy head final-conv weight L2 norm (diagnostic) ---
         //
@@ -3297,8 +3367,11 @@ final class ChessTrainer: @unchecked Sendable {
         // shrinks so the resulting update has L2 norm exactly
         // `maxNorm`. No epsilon needed because `max(norm, maxNorm)`
         // is always ≥ maxNorm > 0.
+        // Computed in fp32 (both operands fp32): the fp32 grad norm and the
+        // fp32 `gradClipMaxNorm` scalar. `clipScale` is therefore fp32 and is
+        // applied to the fp32 gradient in the update loop below.
         let clipDenom = graph.maximum(
-            gradGlobalNorm,
+            gradGlobalNormF32,
             gradClipMaxNormTensor,
             name: "grad_clip_denom"
         )
@@ -3345,10 +3418,21 @@ final class ChessTrainer: @unchecked Sendable {
         // steps without rebuilding the graph. Each training step feeds
         // the current values via the pre-allocated NDArrays.
 
-        // Allocate parallel velocity tensors, one per trainable variable.
-        // Variables created via `graph.variable(with:shape:dataType:name:)`
-        // have reliably-set `.shape`; we read it back to size each velocity
-        // buffer's zero-init data buffer.
+        // Optimizer state is fp32 (the canonical mixed-precision path). Under
+        // a reduced-precision `dtype` (bf16) the working weights the forward
+        // graph multiplies stay bf16, but the optimizer keeps an fp32 *master*
+        // of every persistent tensor and accumulates updates into it, so a
+        // per-step step below a bf16 ULP isn't rounded away; the bf16 working
+        // copy is re-derived each step as `cast(master)`. Under `.float32`
+        // there is no separate master (working weights are the master) and
+        // this collapses to the prior plain path.
+        let useMaster = (dtype != .float32)
+        // fp32 zero-init bytes for an fp32 variable of `count` elements.
+        func fp32Zeros(_ count: Int) -> Data { Data(count: count * MemoryLayout<Float>.size) }
+
+        // Velocity buffers — always fp32 (momentum accumulates gradients; bf16
+        // here would suffer the same ULP loss as the weight update). One per
+        // trainable, parallel to `network.trainableVariables`.
         var velocities: [MPSGraphTensor] = []
         velocities.reserveCapacity(network.trainableVariables.count)
         // Per-velocity load infrastructure built in lockstep with
@@ -3372,9 +3456,9 @@ final class ChessTrainer: @unchecked Sendable {
                 ? "trainable_\(i)"
                 : variable.operation.name
             let velocity = graph.variable(
-                with: ChessNetwork.zerosData(count: elementCount),
+                with: fp32Zeros(elementCount),
                 shape: shape,
-                dataType: dtype,
+                dataType: .float32,
                 name: "\(varName)_velocity"
             )
             velocities.append(velocity)
@@ -3385,17 +3469,65 @@ final class ChessTrainer: @unchecked Sendable {
             // out-of-band from the SGD update path.
             let loadPh = graph.placeholder(
                 shape: shape,
-                dataType: dtype,
+                dataType: .float32,
                 name: "\(varName)_velocity_load"
             )
             let loadAssign = graph.assign(velocity, tensor: loadPh, name: "\(varName)_velocity_load_assign")
             velLoadPlaceholders.append(loadPh)
             velLoadAssignOps.append(loadAssign)
 
-            let desc = MPSNDArrayDescriptor(dataType: dtype, shape: shape)
+            let desc = MPSNDArrayDescriptor(dataType: .float32, shape: shape)
             let nda = MPSNDArray(device: network.metalDevice, descriptor: desc)
             velLoadNDArrays.append(nda)
             velLoadTensorData.append(MPSGraphTensorData(nda))
+        }
+
+        // fp32 master weights + master running stats (only under reduced
+        // precision). Built parallel to the network's full persistent state —
+        // `trainableVariables` first, then `bnRunningStatsVariables` — so the
+        // index space matches `exportTrainerWeights`'s base ordering and one
+        // load-infra set covers both. Indices [0, nTrainable) are SGD-updated
+        // weight masters; [nTrainable, …) are EMA-updated running-stat
+        // masters. `syncMastersOps` seeds each master from its current working
+        // value (`master = cast(working, fp32)`); run once at construction and
+        // after any wholesale weight replacement.
+        let allPersistent = network.trainableVariables + network.bnRunningStatsVariables
+        var masterVariables: [MPSGraphTensor] = []
+        var masterLoadPlaceholders: [MPSGraphTensor] = []
+        var masterLoadAssignOps: [MPSGraphOperation] = []
+        var masterLoadNDArrays: [MPSNDArray] = []
+        var masterLoadTensorData: [MPSGraphTensorData] = []
+        var syncMastersOps: [MPSGraphOperation] = []
+        if useMaster {
+            masterVariables.reserveCapacity(allPersistent.count)
+            for (i, working) in allPersistent.enumerated() {
+                guard let shape = working.shape else {
+                    throw ChessTrainerError.gradientMissing(
+                        "persistent[\(i)] has no static shape; cannot allocate fp32 master"
+                    )
+                }
+                let elementCount = shape.reduce(1) { $0 * $1.intValue }
+                let baseName = working.operation.name.isEmpty ? "persistent_\(i)" : working.operation.name
+                let master = graph.variable(
+                    with: fp32Zeros(elementCount),
+                    shape: shape,
+                    dataType: .float32,
+                    name: "\(baseName)_master"
+                )
+                masterVariables.append(master)
+                // master <- cast(working, fp32): seeds the master from the
+                // working copy at init / after a weight replacement.
+                let synced = graph.cast(working, to: .float32, name: nil)
+                syncMastersOps.append(graph.assign(master, tensor: synced, name: "\(baseName)_master_sync"))
+                // fp32 load infra for restoring a persisted master.
+                let loadPh = graph.placeholder(shape: shape, dataType: .float32, name: "\(baseName)_master_load")
+                masterLoadPlaceholders.append(loadPh)
+                masterLoadAssignOps.append(graph.assign(master, tensor: loadPh, name: "\(baseName)_master_load_assign"))
+                let mdesc = MPSNDArrayDescriptor(dataType: .float32, shape: shape)
+                let mnda = MPSNDArray(device: network.metalDevice, descriptor: mdesc)
+                masterLoadNDArrays.append(mnda)
+                masterLoadTensorData.append(MPSGraphTensorData(mnda))
+            }
         }
 
         var ops: [MPSGraphOperation] = []
@@ -3423,8 +3555,12 @@ final class ChessTrainer: @unchecked Sendable {
                 )
             }
             let velocity = velocities[i]
+            // All optimizer math runs in fp32. Under bf16 the gradient is
+            // bf16; cast it up. `clipScale` / `lrTensor` / `momentumTensor` /
+            // `weightDecayTensor` are fp32 already (see above).
+            let gradF = useMaster ? graph.cast(grad, to: .float32, name: nil) : grad
             // Apply the global L2 clip scale to this gradient.
-            let clippedGrad = graph.multiplication(grad, clipScale, name: nil)
+            let clippedGrad = graph.multiplication(gradF, clipScale, name: nil)
             // Polyak momentum: v_new = μ · v_old + clippedGrad.
             // Weight decay does NOT enter the velocity (decoupled form).
             let scaledOldVelocity = graph.multiplication(velocity, momentumTensor, name: nil)
@@ -3435,25 +3571,25 @@ final class ChessTrainer: @unchecked Sendable {
             // Uses the symbolic newVelocity (matching the reasoning at the
             // weight-update site below: assigning a variable does not
             // invalidate value-typed references to the assigned tensor).
-            // fp32 sum-of-squares (bf16-tail rationale as the grad norm).
+            // newVelocity is already fp32 (velocity is fp32), so no widen.
             let velFlat = graph.reshape(newVelocity, shape: [-1], name: nil)
-            let velSq = graph.square(with: widenForReduction(velFlat), name: nil)
+            let velSq = graph.square(with: velFlat, name: nil)
             let velScalar = graph.reductionSum(with: velSq, axis: 0, name: nil)
             if let accum = velSumOfSquares {
                 velSumOfSquares = graph.addition(accum, velScalar, name: nil)
             } else {
                 velSumOfSquares = velScalar
             }
-            // Weight update uses the FRESH velocity (read back as the
-            // newVelocity tensor we just computed — assigning to it does
-            // not invalidate the value-typed reference we still hold).
-            // Decoupled decay step (skipped for biases / BN affine):
-            //   step = lr · v_new + lr · decayC · weight
+            // Update target: the fp32 master under bf16, else the (fp32)
+            // weight variable itself. The step (lr · v_new + decoupled decay)
+            // is computed in fp32 and accumulated into it; under bf16 the
+            // working weight is then re-synced as cast(master).
+            let optWeight = useMaster ? masterVariables[i] : variable
             let momentumStep = graph.multiplication(lrTensor, newVelocity, name: nil)
             let totalStep: MPSGraphTensor
             if network.trainableShouldDecay[i] {
                 let decayScaled = graph.multiplication(
-                    variable,
+                    optWeight,
                     weightDecayTensor,
                     name: nil
                 )
@@ -3462,20 +3598,49 @@ final class ChessTrainer: @unchecked Sendable {
             } else {
                 totalStep = momentumStep
             }
-            let updated = graph.subtraction(variable, totalStep, name: nil)
-            let weightAssign = graph.assign(variable, tensor: updated, name: nil)
-            ops.append(weightAssign)
+            let updated = graph.subtraction(optWeight, totalStep, name: nil)
+            ops.append(graph.assign(optWeight, tensor: updated, name: nil))
+            if useMaster {
+                // Re-derive the bf16 working weight the forward graph reads.
+                ops.append(graph.assign(variable, tensor: graph.cast(updated, to: dtype, name: nil), name: nil))
+            }
         }
 
-        // Include BN running-stat EMA updates from ChessNetwork's
-        // training-mode BN layers. These run as targetOperations on
-        // every trainStep alongside the SGD assigns, so the running
-        // stats converge toward typical per-channel activation
-        // statistics as training progresses — giving a sibling
-        // inference network the calibration data it needs to produce
-        // outputs matching training-time forward passes after
-        // loadWeights().
-        ops.append(contentsOf: network.bnRunningStatsAssignOps)
+        // BN running-stat EMA. Under bf16 the trainer owns it in fp32 — an
+        // fp32 master running stat per BN mean/var, EMA-accumulated from the
+        // freshly-computed batch stats (`network.bnBatchMean/VarTensors`,
+        // available in training mode), then re-synced to the bf16 working
+        // running-stat variable the inference-mode normalize / champions read.
+        // The network's own bf16 EMA assigns are skipped in this mode. Under
+        // `.float32` we use the network's EMA assigns directly (already fp32).
+        if useMaster {
+            let nTrainable = network.trainableVariables.count
+            let layerCount = network.bnBatchMeanTensors.count
+            precondition(
+                network.bnRunningStatsVariables.count == layerCount * 2,
+                "bnRunningStatsVariables must be mean,var-interleaved (2 per BN layer)"
+            )
+            // EMA: running = 0.99 · running + 0.01 · batch (matches
+            // ChessNetwork.batchNorm), accumulated in fp32.
+            let emaMomentum = graph.constant(0.99, dataType: .float32)
+            let emaComplement = graph.constant(0.01, dataType: .float32)
+            for layer in 0..<layerCount {
+                let batchStat = [network.bnBatchMeanTensors[layer], network.bnBatchVarTensors[layer]]
+                for half in 0..<2 {
+                    let runIdx = layer * 2 + half
+                    let workingStat = network.bnRunningStatsVariables[runIdx]
+                    let statMaster = masterVariables[nTrainable + runIdx]
+                    let batchF = graph.cast(batchStat[half], to: .float32, name: nil)
+                    let scaledOld = graph.multiplication(statMaster, emaMomentum, name: nil)
+                    let scaledNew = graph.multiplication(batchF, emaComplement, name: nil)
+                    let updatedStat = graph.addition(scaledOld, scaledNew, name: nil)
+                    ops.append(graph.assign(statMaster, tensor: updatedStat, name: nil))
+                    ops.append(graph.assign(workingStat, tensor: graph.cast(updatedStat, to: dtype, name: nil), name: nil))
+                }
+            }
+        } else {
+            ops.append(contentsOf: network.bnRunningStatsAssignOps)
+        }
 
         // Finalize the velocity-norm scalar. Same precondition as
         // gradGlobalNorm: trainableVariables is non-empty so the
@@ -3504,6 +3669,7 @@ final class ChessTrainer: @unchecked Sendable {
             complementCEEnableTensor,
             velocities,
             velLoadPlaceholders, velLoadAssignOps, velLoadNDArrays, velLoadTensorData,
+            masterVariables, masterLoadPlaceholders, masterLoadAssignOps, masterLoadNDArrays, masterLoadTensorData, syncMastersOps,
             totalLossTensor, policyLoss, valueLoss,
             policyEntropy, illegalMassPenalty, policyNonNegCount, policyNonNegIllegalCount, gradGlobalNorm, valueMean, valueAbsMean,
             valueProbWin, valueProbDraw, valueProbLoss,
@@ -4521,9 +4687,18 @@ final class ChessTrainer: @unchecked Sendable {
     /// Caller MUST have paused training (and ideally self-play) before
     /// calling. See class comment for thread-safety contract.
     func exportTrainerWeights() async throws -> [[Float]] {
-        // Base weights via the network's existing serialized export
-        // path (uses network.executionQueue + network.commandQueue).
-        let baseWeights = try await network.exportWeights()
+        // Base portion: under the canonical mixed-precision path emit the
+        // fp32 *masters* (full precision — that's the whole point of
+        // persisting them) in place of the bf16 working weights; they're
+        // parallel to `trainableVariables + bnRunningStatsVariables`, so the
+        // count and on-disk layout are identical to the bf16-native export.
+        // Under `.float32` (no masters) fall back to the working weights.
+        let baseWeights: [[Float]]
+        if masterVariables.isEmpty {
+            baseWeights = try await network.exportWeights()
+        } else {
+            baseWeights = try await readMasterValues()
+        }
         // Velocities via a separate small graph.run on the same graph.
         // No race because the caller has paused training.
         let velocityWeights = try await readVelocityValues()
@@ -4546,6 +4721,14 @@ final class ChessTrainer: @unchecked Sendable {
 
         let baseWeights = Array(weights.prefix(v1Count))
         let velocityWeights = Array(weights.suffix(velocityVariables.count))
+        // The base portion is the fp32 masters under the mixed-precision path.
+        // Restore them, then load the bf16 working weights as the rounded
+        // masters (`loadWeights` narrows fp32→bf16), so the working/master
+        // invariant holds without a separate master→working sync. Under
+        // `.float32` (no masters) this is just the working-weight load.
+        if !masterVariables.isEmpty {
+            try await writeMasterValues(baseWeights)
+        }
         try await network.loadWeights(baseWeights)
         try await writeVelocityValues(velocityWeights)
     }
@@ -4564,6 +4747,10 @@ final class ChessTrainer: @unchecked Sendable {
             )
         }
         try await network.loadWeights(weights)
+        // Working weights were replaced wholesale — re-seed the fp32 masters
+        // from them so the optimizer doesn't keep accumulating from stale
+        // master values. No-op under `.float32`.
+        try await syncMastersFromWorking()
         try await resetVelocitiesToZero()
     }
 
@@ -4630,7 +4817,8 @@ final class ChessTrainer: @unchecked Sendable {
                                 throw ChessTrainerError.velocityReadbackMissing(v.operation.name)
                             }
                             let count = try ChessNetwork.elementCount(of: v)
-                            out.append(ChessNetwork.readFloats(from: data, count: count))
+                            // Velocity is fp32 (canonical mixed-precision path).
+                            out.append(ChessNetwork.readFloatsFP32(from: data, count: count))
                         }
                         return out
                     }
@@ -4673,7 +4861,8 @@ final class ChessTrainer: @unchecked Sendable {
                         ]
                         feeds.reserveCapacity(velocityVariables.count + 1)
                         for i in 0..<velocityVariables.count {
-                            ChessNetwork.writeFloats(weights[i], into: velocityLoadNDArrays[i])
+                            // Velocity is fp32 (canonical mixed-precision path).
+                            ChessNetwork.writeFloatsFP32(weights[i], into: velocityLoadNDArrays[i])
                             feeds[velocityLoadPlaceholders[i]] = velocityLoadTensorData[i]
                         }
                         // graph.run requires at least one target tensor.
@@ -4700,6 +4889,137 @@ final class ChessTrainer: @unchecked Sendable {
                     continuation.resume(throwing: error)
                 }
             }
+        }
+    }
+
+    /// Read the fp32 master values (weights + running stats), parallel to
+    /// `trainableVariables + bnRunningStatsVariables`. Empty under `.float32`
+    /// (no masters). Caller must have paused training.
+    private func readMasterValues() async throws -> [[Float]] {
+        guard !masterVariables.isEmpty else { return [] }
+        return try await withCheckedThrowingContinuation { continuation in
+            executionQueue.async { [self] in
+                do {
+                    let result: [[Float]] = try autoreleasepool {
+                        let results = network.graph.run(
+                            with: network.commandQueue,
+                            feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                            targetTensors: masterVariables,
+                            targetOperations: nil
+                        )
+                        var out: [[Float]] = []
+                        out.reserveCapacity(masterVariables.count)
+                        for v in masterVariables {
+                            guard let data = results[v] else {
+                                throw ChessTrainerError.velocityReadbackMissing(v.operation.name)
+                            }
+                            let count = try ChessNetwork.elementCount(of: v)
+                            out.append(ChessNetwork.readFloatsFP32(from: data, count: count))
+                        }
+                        return out
+                    }
+                    continuation.resume(returning: result)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Write fp32 master values via the master-load assign ops. Caller must
+    /// have paused training. After this, sync the working weights with
+    /// `syncWorkingFromMasters` is NOT needed — `loadTrainerWeights` loads the
+    /// base working weights separately; this only restores the masters.
+    private func writeMasterValues(_ weights: [[Float]]) async throws {
+        guard weights.count == masterVariables.count else {
+            throw ChessTrainerError.trainerWeightCountMismatch(
+                expected: "\(masterVariables.count) master tensors",
+                got: weights.count
+            )
+        }
+        for (i, v) in masterVariables.enumerated() {
+            let expected = try ChessNetwork.elementCount(of: v)
+            guard weights[i].count == expected else {
+                throw ChessTrainerError.trainerWeightCountMismatch(
+                    expected: "master[\(i)] (\(v.operation.name)): \(expected) floats",
+                    got: weights[i].count
+                )
+            }
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            executionQueue.async { [self] in
+                do {
+                    try autoreleasepool {
+                        var feeds: [MPSGraphTensor: MPSGraphTensorData] = [
+                            network.inputPlaceholder: network.dummyInferenceInputTensorData
+                        ]
+                        feeds.reserveCapacity(masterVariables.count + 1)
+                        for i in 0..<masterVariables.count {
+                            ChessNetwork.writeFloatsFP32(weights[i], into: masterLoadNDArrays[i])
+                            feeds[masterLoadPlaceholders[i]] = masterLoadTensorData[i]
+                        }
+                        let results = network.graph.run(
+                            with: network.commandQueue,
+                            feeds: feeds,
+                            targetTensors: [masterVariables[0]],
+                            targetOperations: masterLoadAssignOps
+                        )
+                        guard results[masterVariables[0]] != nil else {
+                            throw ChessTrainerError.velocityLoadGraphFailed(masterVariables[0].operation.name)
+                        }
+                    }
+                    continuation.resume(returning: ())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Seed the fp32 masters from the current bf16 working weights/stats
+    /// (`master = cast(working, fp32)`). No-op under `.float32`. Run after any
+    /// wholesale working-weight replacement (fresh fork / promotion) so the
+    /// masters don't keep training from stale values. Caller must have paused
+    /// training. (Init uses the synchronous `runSyncMastersAtInit`.)
+    func syncMastersFromWorking() async throws {
+        guard !syncMastersOps.isEmpty, let first = masterVariables.first else { return }
+        return try await withCheckedThrowingContinuation { continuation in
+            executionQueue.async { [self] in
+                do {
+                    try autoreleasepool {
+                        let results = network.graph.run(
+                            with: network.commandQueue,
+                            feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                            targetTensors: [first],
+                            targetOperations: syncMastersOps
+                        )
+                        guard results[first] != nil else {
+                            throw ChessTrainerError.velocityLoadGraphFailed("master_sync")
+                        }
+                    }
+                    continuation.resume(returning: ())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Run the master-seed ops on the **current** thread (caller owns the
+    /// queue): masters are built zero-initialized, so they must equal the
+    /// working weights before the first trainStep or the first update would
+    /// overwrite the He-init weights with `cast(0 − lr·v)`. No-op under
+    /// `.float32`. `init` wraps this in `executionQueue.sync`;
+    /// `internalResetNetwork` (already on `executionQueue`) calls it directly.
+    private func runSyncMastersOnQueue() {
+        guard !syncMastersOps.isEmpty, let first = masterVariables.first else { return }
+        autoreleasepool {
+            _ = network.graph.run(
+                with: network.commandQueue,
+                feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
+                targetTensors: [first],
+                targetOperations: syncMastersOps
+            )
         }
     }
 
@@ -4860,7 +5180,12 @@ final class ChessTrainer: @unchecked Sendable {
     /// single `UInt16` on the stack and that is written. No reusable
     /// staging is needed — one element fits in a local.
     private func writeScalarFeed(_ ndArray: MPSNDArray, value: Float) {
-        switch ChessNetwork.dataType {
+        // Branch on the ND array's *own* dtype, not the static network
+        // dtype: the four optimizer-update scalars (lr / weight decay /
+        // grad-clip / momentum) are fp32 arrays even under bf16 (they feed
+        // the fp32 master update — see buildTrainingOps), so they must get
+        // the raw 4-byte `Float`; the loss-side scalars are `dataType`.
+        switch ndArray.dataType {
         case .float32:
             var v = value
             ndArray.writeBytes(&v, strideBytes: nil)
@@ -4868,7 +5193,7 @@ final class ChessTrainer: @unchecked Sendable {
             var bits = ChessNetwork.float32ToBFloat16Bits(value)
             ndArray.writeBytes(&bits, strideBytes: nil)
         default:
-            fatalError("ChessTrainer.writeScalarFeed: no host-side converter for dtype \(ChessNetwork.dataType)")
+            fatalError("ChessTrainer.writeScalarFeed: no host-side converter for dtype \(ndArray.dataType)")
         }
     }
 
