@@ -110,14 +110,26 @@ final class ChessNetwork: @unchecked Sendable {
 
     /// Numeric precision for all weights and activations.
     ///
-    /// Switching this between `.float32` and `.float16` should Just Work —
-    /// the data helpers (`heInitData`, `onesData`, `zerosData`) and the
-    /// inference output reader (`readFloats(from:count:)`) both consult
-    /// `dataType` and convert via Accelerate as needed. The graph's
-    /// `placeholder` and `variable` calls all pass `Self.dataType`, and
-    /// `evaluate(board:)` writes the input tensor in the configured
-    /// precision before passing it to the graph.
-    static let dataType: MPSDataType = .float32
+    /// **This branch (`bf16-trainer`) runs `.bFloat16`** to measure whether
+    /// MPSGraph + the GPU give an accelerated bfloat16 training path. bf16
+    /// keeps fp32's full 8-bit exponent (same dynamic range), so it avoids
+    /// the gradient-underflow / overflow / loss-scaling headaches of IEEE
+    /// `.float16`; it trades mantissa precision (~7 → ~2-3 sig digits),
+    /// which SGD tolerates. The win — if MPSGraph actually accelerates bf16
+    /// rather than silently upcasting to fp32 — shows up in the trainer's
+    /// per-step `gpu=` time (the batch-4096 conv matmuls dominate it).
+    ///
+    /// All weight/activation byte conversion is centralized in
+    /// `makeWeightData` (Float32 → dataType) and the two `readFloats`
+    /// overloads (dataType → Float32), which branch on this. Saved
+    /// `.dcmmodel` files always speak `Float` (conversion happens only at
+    /// the GPU boundary), so bf16-trained models stay portable. `.float16`
+    /// uses the vImage half path; `.bFloat16` uses the bit-shift helpers
+    /// `float32ToBFloat16Bits` / `bFloat16BitsToFloat32` (vImage has no
+    /// bfloat16 primitive). Switch to `.float32` to fall back to fp32.
+    ///
+    /// `inputPlanes` etc. are independent of this.
+    static let dataType: MPSDataType = .bFloat16
 
     static let channels = 128
     /// Input plane count. v3 architecture: 20 baseline planes (pieces +
@@ -1973,6 +1985,22 @@ final class ChessNetwork: @unchecked Sendable {
                 UnsafeMutableRawPointer(mutating: base),
                 strideBytes: nil
             )
+        case .bFloat16:
+            // Narrow the Float32 input plane buffer to bf16 bytes, then
+            // write. Transient allocation per call — see the note in
+            // `readFloats(from:into:count:)`; the GPU `gpu=` metric is
+            // unaffected. A reused [UInt16] scratch is the follow-up if
+            // bf16 proves out.
+            var halfBuf = [UInt16](repeating: 0, count: buffer.count)
+            for i in 0..<buffer.count {
+                halfBuf[i] = float32ToBFloat16Bits(buffer[i])
+            }
+            halfBuf.withUnsafeMutableBytes { buf in
+                guard let base = buf.baseAddress else {
+                    preconditionFailure("writeInferenceInput: bf16 staging baseAddress nil")
+                }
+                array.writeBytes(base, strideBytes: nil)
+            }
         default:
             fatalError("writeInferenceInput: unsupported dataType \(dataType). "
                 + "Implement a reused half-scratch buffer before flipping to .float16.")
@@ -2012,12 +2040,49 @@ final class ChessNetwork: @unchecked Sendable {
         }
     }
 
+    /// Narrow a Float32 to bfloat16, returned as raw 16 bits.
+    ///
+    /// bfloat16 is literally the high 16 bits of an IEEE float32 — same
+    /// sign, same 8-bit exponent, top 7 of the 23 mantissa bits — so the
+    /// conversion is a shift with round-to-nearest-ties-to-even on the
+    /// discarded low 16 bits. NaN is preserved explicitly so a near-NaN
+    /// payload can't round up into an infinity. (vImage has no bfloat16
+    /// primitive, unlike IEEE half, so this is done by hand.)
+    @inline(__always)
+    static func float32ToBFloat16Bits(_ value: Float) -> UInt16 {
+        let bits = value.bitPattern
+        let isNaN = (bits & 0x7F80_0000) == 0x7F80_0000
+            && (bits & 0x007F_FFFF) != 0
+        if isNaN {
+            return UInt16(truncatingIfNeeded: (bits >> 16) | 0x0040)
+        }
+        let keptLSB = (bits >> 16) & 1
+        let roundingBias = UInt32(0x7FFF) &+ keptLSB
+        let rounded = bits &+ roundingBias          // wrapping add — never traps
+        return UInt16(truncatingIfNeeded: rounded >> 16)
+    }
+
+    /// Widen a raw bfloat16 (16 bits) back to Float32 — exact, just a left
+    /// shift into the high half of the float32 bit pattern.
+    @inline(__always)
+    static func bFloat16BitsToFloat32(_ half: UInt16) -> Float {
+        return Float(bitPattern: UInt32(half) << 16)
+    }
+
     /// Convert a Float32 array into bytes laid out in `Self.dataType`.
-    /// Float32 → passthrough; Float16 → conversion via vImage.
+    /// Float32 → passthrough; Float16 → conversion via vImage; bFloat16 →
+    /// bit-shift narrowing.
     static func makeWeightData(_ floats: [Float]) -> Data {
         switch dataType {
         case .float32:
             return floats.withUnsafeBytes { Data($0) }
+
+        case .bFloat16:
+            var halfBuf = [UInt16](repeating: 0, count: floats.count)
+            for i in 0..<floats.count {
+                halfBuf[i] = float32ToBFloat16Bits(floats[i])
+            }
+            return halfBuf.withUnsafeBytes { Data($0) }
 
         case .float16:
             let count = floats.count
@@ -2055,6 +2120,19 @@ final class ChessNetwork: @unchecked Sendable {
                 if let ptr = buf.baseAddress {
                     data.mpsndarray().readBytes(ptr, strideBytes: nil)
                 }
+            }
+            return out
+
+        case .bFloat16:
+            var halfBuf = [UInt16](repeating: 0, count: count)
+            halfBuf.withUnsafeMutableBytes { buf in
+                if let ptr = buf.baseAddress {
+                    data.mpsndarray().readBytes(ptr, strideBytes: nil)
+                }
+            }
+            var out = [Float](repeating: 0, count: count)
+            for i in 0..<count {
+                out[i] = bFloat16BitsToFloat32(halfBuf[i])
             }
             return out
 
@@ -2111,6 +2189,22 @@ final class ChessNetwork: @unchecked Sendable {
                 UnsafeMutableRawPointer(pointer),
                 strideBytes: nil
             )
+        case .bFloat16:
+            // Read the bf16 bytes into a transient [UInt16] then widen
+            // into the caller's Float buffer. This allocates per call; the
+            // GPU `gpu=` timing is unaffected (CPU-side widen only), so it's
+            // adequate for the bf16 speed experiment. If bf16 proves out,
+            // replace with a reused [UInt16] scratch buffer (the same
+            // optimization the .float16 hot path was always going to need).
+            var halfBuf = [UInt16](repeating: 0, count: count)
+            halfBuf.withUnsafeMutableBytes { buf in
+                if let base = buf.baseAddress {
+                    data.mpsndarray().readBytes(base, strideBytes: nil)
+                }
+            }
+            for i in 0..<count {
+                pointer[i] = bFloat16BitsToFloat32(halfBuf[i])
+            }
         default:
             fatalError("readFloats(from:into:count:): unsupported dataType \(dataType). "
                 + "Implement a reused half-scratch buffer before flipping to .float16.")

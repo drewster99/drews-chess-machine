@@ -1394,6 +1394,45 @@ final class ChessTrainer: @unchecked Sendable {
         let legalMaskND: MPSNDArray
         let legalMaskTD: MPSGraphTensorData
         let feedsDict: [MPSGraphTensor: MPSGraphTensorData]
+
+        /// Reusable host-side bf16 staging for the four real-valued
+        /// feeds (board, z, vBaseline, legalMask) when the network dtype
+        /// is narrower than Float32 (bf16/fp16). The per-ply self-play
+        /// and replay paths always produce these as Float32, but every
+        /// one of their graph placeholders is declared at
+        /// `ChessNetwork.dataType` — so the matching ND array storage is
+        /// that same width, and each step must narrow Float32 → dtype
+        /// bits before `writeBytes`. Each buffer is allocated once per
+        /// batch size, sized to its tensor's element count, and reused
+        /// every step so the timed training loop stays allocation-free,
+        /// exactly like the ND arrays themselves.
+        ///
+        /// All four are `nil` when `ChessNetwork.dataType == .float32`:
+        /// there each ND array is Float32 too, so the host hands its raw
+        /// Float32 bytes straight through with no conversion or scratch.
+        ///
+        /// The move feed never needs staging — it is int32 on both the
+        /// host and the placeholder, so its Int32 bytes are always fed
+        /// raw regardless of `ChessNetwork.dataType`.
+        let boardStaging: UnsafeMutableBufferPointer<UInt16>?
+        let zStaging: UnsafeMutableBufferPointer<UInt16>?
+        let vBaselineStaging: UnsafeMutableBufferPointer<UInt16>?
+        let legalMaskStaging: UnsafeMutableBufferPointer<UInt16>?
+    }
+
+    /// Deallocate the four bf16 staging buffers a `BatchFeeds` owns.
+    /// Each `UnsafeMutableBufferPointer` was hand-allocated in
+    /// `feedsForBatch` (and is nil on `.float32`), so it must be
+    /// explicitly freed when the owning `BatchFeeds` leaves the cache —
+    /// on `resetNetwork`'s cache drop and on `deinit`. The ND arrays /
+    /// tensor-data wrappers are ARC-managed and need no manual free.
+    private static func freeBatchFeedsStaging(_ feeds: BatchFeeds) {
+        for staging in [feeds.boardStaging, feeds.zStaging, feeds.vBaselineStaging, feeds.legalMaskStaging] {
+            if let staging {
+                staging.deinitialize()
+                staging.deallocate()
+            }
+        }
     }
     private var feedCache: [Int: BatchFeeds] = [:]
     /// Mirror of `feedCache.count` updated on every cache mutation so a
@@ -1598,6 +1637,16 @@ final class ChessTrainer: @unchecked Sendable {
         self.assignOps = built.assignOps
 
         // Scalar ND array for the learning rate feed, reused every step.
+        // Every scalar hyperparameter placeholder (lr, entropyCoeff,
+        // weightDecay, gradClipMaxNorm, the policy/value/illegal loss
+        // weights, the label-smoothing epsilons, momentum,
+        // complementCEEnable) is declared `dataType: dtype` in the graph
+        // build — i.e. the network dtype (bf16 here) — so the ND array
+        // storage they feed must be the same width. The host narrows
+        // the Swift `Float` value into bf16 bits before each
+        // `writeBytes` in `buildFeeds`; on `.float32` it writes the raw
+        // `Float`. A `.float32` descriptor here would byte-mismatch the
+        // bf16 placeholder under bf16.
         let lrDesc = MPSNDArrayDescriptor(
             dataType: ChessNetwork.dataType,
             shape: [1]
@@ -1655,6 +1704,11 @@ final class ChessTrainer: @unchecked Sendable {
     }
 
     deinit {
+        // Free the bf16 staging each cached BatchFeeds owns (nil on
+        // .float32). The ND arrays themselves are ARC-managed.
+        for (_, feeds) in feedCache {
+            Self.freeBatchFeedsStaging(feeds)
+        }
         lossReadbackScratchPtr.deinitialize(count: Self.lossReadbackSlotCount)
         lossReadbackScratchPtr.deallocate()
         if let ptr = replayBatchBoards {
@@ -1769,7 +1823,11 @@ final class ChessTrainer: @unchecked Sendable {
         self.velocityGlobalNormTensor = built.velocityGlobalNorm
         self.assignOps = built.assignOps
         // Rebuild the LR scalar feed against the new network's device
-        // so the new graph's placeholder maps to a fresh wrapper.
+        // so the new graph's placeholder maps to a fresh wrapper. As in
+        // the designated init, these scalar feeds match the network
+        // dtype (`dtype` placeholders in the graph build); the host
+        // narrows each scalar to bf16 before `writeBytes` in
+        // `buildFeeds` (raw `Float` on `.float32`).
         let lrDesc = MPSNDArrayDescriptor(
             dataType: ChessNetwork.dataType,
             shape: [1]
@@ -1810,7 +1868,13 @@ final class ChessTrainer: @unchecked Sendable {
         // The cached ND arrays were allocated against the old network's
         // device and are keyed by batch size against the old graph's
         // placeholders. Drop the cache so the first trainStep after
-        // reset rebuilds against the fresh network.
+        // reset rebuilds against the fresh network. Free the manually-
+        // allocated bf16 staging buffers each cached BatchFeeds owns
+        // first, since `removeAll` only drops the struct references and
+        // would otherwise leak the raw allocations.
+        for (_, feeds) in feedCache {
+            Self.freeBatchFeedsStaging(feeds)
+        }
         feedCache.removeAll()
         _feedCacheCount.value = 0
         // Fresh weights ⇒ the LR-warmup schedule must restart from
@@ -4610,33 +4674,26 @@ final class ChessTrainer: @unchecked Sendable {
     private func buildFeeds(_ input: BatchFeedsInput) -> [MPSGraphTensor: MPSGraphTensorData] {
         let cached = feedsForBatch(input.batchSize)
 
-        // Float32-only hot path. The ND array's element type matches
-        // ChessNetwork.dataType, so on .float32 we can hand it the raw
-        // bytes directly. A .float16 flip would need a reused
-        // [UInt16] scratch buffer here and in ChessNetwork's
-        // inference writer — fail loud until that exists.
-        guard ChessNetwork.dataType == .float32 else {
-            fatalError("ChessTrainer.buildFeeds: only .float32 is currently supported; got \(ChessNetwork.dataType)")
-        }
-
-        cached.boardND.writeBytes(
-            UnsafeMutableRawPointer(mutating: input.boards),
-            strideBytes: nil
-        )
+        // The four real-valued feeds (board, z, vBaseline, legalMask)
+        // each have a graph placeholder declared at
+        // `ChessNetwork.dataType`, so their ND-array storage is that
+        // width. On `.float32` the host's Float32 source bytes go
+        // straight through, zero-copy. On a narrower dtype (bf16) the
+        // Float32 source is the wrong width, so narrow it into the
+        // per-batch-size staging buffer first and feed that. The staging
+        // width matches the ND array's dtype, so the `writeBytes` byte
+        // count lines up. `writeRealValuedFeed` branches once on dtype.
+        let boardElementCount = input.batchSize
+            * ChessNetwork.inputPlanes
+            * ChessNetwork.boardSize
+            * ChessNetwork.boardSize
+        writeRealValuedFeed(cached.boardND, from: input.boards, count: boardElementCount, staging: cached.boardStaging)
+        writeRealValuedFeed(cached.zND, from: input.zs, count: input.batchSize, staging: cached.zStaging)
+        writeRealValuedFeed(cached.vBaselineND, from: input.vBaselines, count: input.batchSize, staging: cached.vBaselineStaging)
+        writeRealValuedFeed(cached.legalMaskND, from: input.legalMasks, count: input.batchSize * ChessNetwork.policySize, staging: cached.legalMaskStaging)
+        // move is int32 on both host and placeholder — always raw.
         cached.moveND.writeBytes(
             UnsafeMutableRawPointer(mutating: input.moves),
-            strideBytes: nil
-        )
-        cached.zND.writeBytes(
-            UnsafeMutableRawPointer(mutating: input.zs),
-            strideBytes: nil
-        )
-        cached.vBaselineND.writeBytes(
-            UnsafeMutableRawPointer(mutating: input.vBaselines),
-            strideBytes: nil
-        )
-        cached.legalMaskND.writeBytes(
-            UnsafeMutableRawPointer(mutating: input.legalMasks),
             strideBytes: nil
         )
         // Write the current learning rate and weight decay into the
@@ -4669,29 +4726,74 @@ final class ChessTrainer: @unchecked Sendable {
             lr = learningRate
         }
         lr *= warmupMul
-        lrNDArray.writeBytes(&lr, strideBytes: nil)
-        var entropyCoeff = entropyRegularizationCoeff
-        entropyCoeffNDArray.writeBytes(&entropyCoeff, strideBytes: nil)
-        var weightDecay = weightDecayC
-        weightDecayNDArray.writeBytes(&weightDecay, strideBytes: nil)
-        var gradClip = gradClipMaxNorm
-        gradClipMaxNormNDArray.writeBytes(&gradClip, strideBytes: nil)
-        var policyLossW = policyLossWeight
-        policyLossWeightNDArray.writeBytes(&policyLossW, strideBytes: nil)
-        var valueLossW = valueLossWeight
-        valueLossWeightNDArray.writeBytes(&valueLossW, strideBytes: nil)
-        var illegalMassW = illegalMassPenaltyWeight
-        illegalMassWeightNDArray.writeBytes(&illegalMassW, strideBytes: nil)
-        var labelSmoothEps = policyLabelSmoothingEpsilon
-        labelSmoothingEpsilonNDArray.writeBytes(&labelSmoothEps, strideBytes: nil)
-        var valueLabelSmoothEps = valueLabelSmoothingEpsilon
-        valueLabelSmoothingEpsilonNDArray.writeBytes(&valueLabelSmoothEps, strideBytes: nil)
-        var momentum = momentumCoeff
-        momentumNDArray.writeBytes(&momentum, strideBytes: nil)
-        var complementCEEnableScalar: Float = useSignedAdvantageComplementCE ? 1.0 : 0.0
-        complementCEEnableNDArray.writeBytes(&complementCEEnableScalar, strideBytes: nil)
+        // Each scalar hyperparameter ND array is declared at
+        // `ChessNetwork.dataType` (its graph placeholder is `dtype`), so
+        // `writeScalarFeed` narrows the Swift `Float` to bf16 before
+        // `writeBytes` on a narrow dtype, or writes the raw `Float` on
+        // `.float32`. A raw `writeBytes(&lr, …)` of a 4-byte Float into
+        // a 2-byte bf16 ND array would otherwise byte-mismatch.
+        writeScalarFeed(lrNDArray, value: lr)
+        writeScalarFeed(entropyCoeffNDArray, value: entropyRegularizationCoeff)
+        writeScalarFeed(weightDecayNDArray, value: weightDecayC)
+        writeScalarFeed(gradClipMaxNormNDArray, value: gradClipMaxNorm)
+        writeScalarFeed(policyLossWeightNDArray, value: policyLossWeight)
+        writeScalarFeed(valueLossWeightNDArray, value: valueLossWeight)
+        writeScalarFeed(illegalMassWeightNDArray, value: illegalMassPenaltyWeight)
+        writeScalarFeed(labelSmoothingEpsilonNDArray, value: policyLabelSmoothingEpsilon)
+        writeScalarFeed(valueLabelSmoothingEpsilonNDArray, value: valueLabelSmoothingEpsilon)
+        writeScalarFeed(momentumNDArray, value: momentumCoeff)
+        writeScalarFeed(complementCEEnableNDArray, value: useSignedAdvantageComplementCE ? 1.0 : 0.0)
 
         return cached.feedsDict
+    }
+
+    /// Write a Float32 host buffer into an ND array whose storage is
+    /// `ChessNetwork.dataType`. On `.float32` this is a zero-copy raw
+    /// `writeBytes` of the Float32 source. On a narrower dtype (bf16)
+    /// the source is narrowed element-by-element into the supplied
+    /// reusable `staging` buffer first, then `staging`'s bytes are fed —
+    /// the staging width matches the ND array, so the byte count lines
+    /// up. `staging` must be non-nil and sized to `count` on a narrow
+    /// dtype (allocated once per batch size in `feedsForBatch`); it is
+    /// `nil` on `.float32`.
+    private func writeRealValuedFeed(
+        _ ndArray: MPSNDArray,
+        from floatPtr: UnsafePointer<Float>,
+        count: Int,
+        staging: UnsafeMutableBufferPointer<UInt16>?
+    ) {
+        switch ChessNetwork.dataType {
+        case .float32:
+            ndArray.writeBytes(UnsafeMutableRawPointer(mutating: floatPtr), strideBytes: nil)
+        case .bFloat16:
+            guard let staging, let stagingBase = staging.baseAddress, staging.count >= count else {
+                fatalError("ChessTrainer.writeRealValuedFeed: bf16 staging missing or undersized (have \(staging?.count ?? -1), need \(count))")
+            }
+            for elementIndex in 0..<count {
+                stagingBase[elementIndex] = ChessNetwork.float32ToBFloat16Bits(floatPtr[elementIndex])
+            }
+            ndArray.writeBytes(UnsafeMutableRawPointer(stagingBase), strideBytes: nil)
+        default:
+            fatalError("ChessTrainer.writeRealValuedFeed: no host-side converter for dtype \(ChessNetwork.dataType)")
+        }
+    }
+
+    /// Write a single Float32 scalar into a 1-element ND array whose
+    /// storage is `ChessNetwork.dataType`. On `.float32` the raw `Float`
+    /// bytes are written directly; on bf16 the value is narrowed to a
+    /// single `UInt16` on the stack and that is written. No reusable
+    /// staging is needed — one element fits in a local.
+    private func writeScalarFeed(_ ndArray: MPSNDArray, value: Float) {
+        switch ChessNetwork.dataType {
+        case .float32:
+            var v = value
+            ndArray.writeBytes(&v, strideBytes: nil)
+        case .bFloat16:
+            var bits = ChessNetwork.float32ToBFloat16Bits(value)
+            ndArray.writeBytes(&bits, strideBytes: nil)
+        default:
+            fatalError("ChessTrainer.writeScalarFeed: no host-side converter for dtype \(ChessNetwork.dataType)")
+        }
     }
 
     /// Return the cached `BatchFeeds` for `batchSize`, allocating it
@@ -4732,6 +4834,13 @@ final class ChessTrainer: @unchecked Sendable {
         moveND.label = "trainer.feed.movePlayed[\(batchSize)] (reset)"
         let moveTD = MPSGraphTensorData(moveND)
 
+        // z / vBaseline / legalMask ND arrays match the network dtype:
+        // their graph placeholders are declared `dataType: dtype` (the
+        // network dtype, bf16 here), so the ND array storage they feed
+        // must be the same width. The Float32 host source is narrowed
+        // into per-batch-size bf16 staging in `buildFeeds` before each
+        // `writeBytes` (mirroring the board feed); on `.float32` the
+        // staging is nil and the raw Float32 bytes go straight through.
         let zDesc = MPSNDArrayDescriptor(
             dataType: dtype,
             shape: [NSNumber(value: batchSize), 1]
@@ -4782,6 +4891,30 @@ final class ChessTrainer: @unchecked Sendable {
             complementCEEnablePlaceholder: complementCEEnableTensorData
         ]
 
+        // Allocate the host-side bf16 staging for the four real-valued
+        // feeds once per batch size, each sized to its tensor's element
+        // count. Only needed when the network dtype is narrower than
+        // Float32; on `.float32` each ND array is Float32 and the host
+        // feeds raw Float32 with no conversion, so leave all four nil.
+        // `makeStaging` returns nil on `.float32` and a zero-filled
+        // buffer of the requested element count otherwise. These are
+        // freed in `freeStaging(_:)` on `feedCache` eviction
+        // (`resetNetwork` / `deinit`).
+        func makeStaging(_ elementCount: Int) -> UnsafeMutableBufferPointer<UInt16>? {
+            guard dtype != .float32 else { return nil }
+            let buffer = UnsafeMutableBufferPointer<UInt16>.allocate(capacity: elementCount)
+            buffer.initialize(repeating: 0)
+            return buffer
+        }
+        let boardElementCount = batchSize
+            * ChessNetwork.inputPlanes
+            * ChessNetwork.boardSize
+            * ChessNetwork.boardSize
+        let boardStaging = makeStaging(boardElementCount)
+        let zStaging = makeStaging(batchSize)
+        let vBaselineStaging = makeStaging(batchSize)
+        let legalMaskStaging = makeStaging(batchSize * ChessNetwork.policySize)
+
         let feeds = BatchFeeds(
             boardND: boardND,
             boardTD: boardTD,
@@ -4793,7 +4926,11 @@ final class ChessTrainer: @unchecked Sendable {
             vBaselineTD: vBaselineTD,
             legalMaskND: legalMaskND,
             legalMaskTD: legalMaskTD,
-            feedsDict: feedsDict
+            feedsDict: feedsDict,
+            boardStaging: boardStaging,
+            zStaging: zStaging,
+            vBaselineStaging: vBaselineStaging,
+            legalMaskStaging: legalMaskStaging
         )
         feedCache[batchSize] = feeds
         _feedCacheCount.value = feedCache.count
