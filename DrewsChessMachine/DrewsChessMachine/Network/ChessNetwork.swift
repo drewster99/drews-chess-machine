@@ -142,7 +142,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// fail to load with a clear shape mismatch at startup.
     static let inputPlanes = 30
     static let boardSize = 8
-    static let numBlocks = 16
+    static let numBlocks = 12
     /// Number of policy output channels: 56 queen-style (8 dirs × 7 dists)
     /// + 8 knight + 9 underpromotion (3 pieces × 3 dirs) + 3 queen-promotion
     /// (3 dirs) = 76. See `PolicyEncoding` for the full layout.
