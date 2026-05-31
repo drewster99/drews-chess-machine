@@ -15,15 +15,15 @@ import Foundation
 /// from training progress — at fast-warmup early steps the probe
 /// would lag the rapidly-shifting weights, and during slow / paused
 /// training it would fire on a stale snapshot. Tying the cadence to
-/// trainer steps (default 200) keeps probe density tracking actual
+/// trainer steps (default 400) keeps probe density tracking actual
 /// learning progress, so each chart point represents a fixed amount
 /// of gradient applied rather than a fixed amount of wall-clock time.
 ///
 /// Cost note: 200 probes × 2 forward passes each = 400 forward passes
-/// per tick. At the default 200-step cadence and ~2.5 trainer steps/s
-/// that's a tick every ~80 s (roughly 1100 ticks/day at sustained
+/// per tick. At the default 400-step cadence and ~2.5 trainer steps/s
+/// that's a tick every ~160 s (roughly 540 ticks/day at sustained
 /// training, vs. 48 ticks/day under the prior 30-minute time-based
-/// cadence — about 22× denser sampling, which is the whole point of
+/// cadence — about 11× denser sampling, which is the whole point of
 /// switching to step-based triggering). Forward-pass load is still
 /// well under the per-ply rate the batched self-play evaluator
 /// already sustains. We deliberately do NOT log per-probe lines for
@@ -41,7 +41,7 @@ final class LichessProbeWatcher {
     /// has advanced by this many steps since the last tick.
     private let triggerEverySteps: Int
     /// Polling cadence for the step-watch loop. Faster than the
-    /// expected tick interval (~80s at 200 steps and ~2.5 steps/s)
+    /// expected tick interval (~160s at 400 steps and ~2.5 steps/s)
     /// so a crossing is detected within a few seconds. Smaller
     /// values are wasted CPU on a sleeping task; larger values
     /// would smear the tick boundary across multiple chart points.
@@ -51,7 +51,7 @@ final class LichessProbeWatcher {
     init(
         sessionController: SessionController,
         history: LichessProbeHistory,
-        triggerEverySteps: Int = 200
+        triggerEverySteps: Int = 400
     ) {
         self.sessionController = sessionController
         self.history = history

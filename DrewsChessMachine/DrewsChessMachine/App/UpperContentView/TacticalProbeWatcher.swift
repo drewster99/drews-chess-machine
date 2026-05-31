@@ -1,7 +1,7 @@
 import Foundation
 
 /// Driver that runs the full 7-probe battery every
-/// `triggerEverySteps` trainer SGD steps (default 100) for the life
+/// `triggerEverySteps` trainer SGD steps (default 200) for the life
 /// of the session. Each tick reads the live champion (or trainer
 /// snapshot, depending on `session.probeNetworkTarget`) and appends
 /// one snapshot to the shared `TacticalProbeHistory`. Gracefully
@@ -15,9 +15,9 @@ import Foundation
 /// a fixed amount of gradient applied, which is what we actually
 /// want to compare across runs.
 ///
-/// At ~2.5 trainer steps/s and the 100-step default, this fires
-/// roughly every 40 seconds during sustained training — faster than
-/// the Lichess watcher (200 steps, ~80 s) so the smaller probe set
+/// At ~2.5 trainer steps/s and the 200-step default, this fires
+/// roughly every 80 seconds during sustained training — faster than
+/// the Lichess watcher (400 steps, ~160 s) so the smaller probe set
 /// gets denser sampling for the spark trends. Probe cost is a small
 /// fraction of one tick's interval at this cadence.
 ///
@@ -42,7 +42,7 @@ final class TacticalProbeWatcher {
     /// cheaper and benefits more from dense sampling.
     private let triggerEverySteps: Int
     /// Polling cadence for the step-watch loop. 2.0s is faster than
-    /// the expected tick interval (~40s at 100 steps and ~2.5 steps/s)
+    /// the expected tick interval (~80s at 200 steps and ~2.5 steps/s)
     /// so a crossing is detected within a few seconds. Mirrors the
     /// Lichess watcher's choice so both monitors share latency
     /// characteristics.
@@ -52,7 +52,7 @@ final class TacticalProbeWatcher {
     init(
         sessionController: SessionController,
         history: TacticalProbeHistory,
-        triggerEverySteps: Int = 100
+        triggerEverySteps: Int = 200
     ) {
         self.sessionController = sessionController
         self.history = history

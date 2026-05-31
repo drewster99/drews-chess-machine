@@ -201,9 +201,12 @@ final class LichessProbeHistory {
     private(set) var latestTickTrainingStep: Int?
 
     /// Cap per series so a long-running monitor doesn't grow without
-    /// bound. 120 ticks × 30 min/tick = 60 hours of visible history —
-    /// matches the 9-probe monitor's window (120 × 10 min = 20 hours)
-    /// scaled up by the slower cadence.
+    /// bound. The watcher is now step-triggered (default 400 trainer
+    /// steps per tick), so 120 ticks = 120 × 400 = 48,000 steps of
+    /// visible history — roughly 5 hours at a sustained ~2.5 steps/s.
+    /// Unlike the old time-based cadence the window stretches or
+    /// shrinks with the actual step rate rather than being a fixed span
+    /// of wall-clock time.
     let maxEntriesPerTheme: Int
 
     init(maxEntriesPerTheme: Int = 120) {
