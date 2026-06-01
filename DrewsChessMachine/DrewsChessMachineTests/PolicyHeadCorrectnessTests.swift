@@ -541,33 +541,29 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         guard MTLCreateSystemDefaultDevice() != nil else {
             throw XCTSkip("Metal not available")
         }
-        // This probes *connectivity* — every trainable must receive nonzero
-        // loss-gradient — using a one-step weight-delta as the proxy. Three
-        // things make that proxy work, all of which matter under the bf16
-        // weight storage on this branch (bf16's ULP is ~2⁻⁷ relative, ~100×
-        // coarser than fp32's, so a normal-magnitude update can round away
-        // to a bit-identical weight):
+        // This probes *connectivity* — every trainable must receive a nonzero
+        // loss-gradient. Under the canonical bf16 path the optimizer updates an
+        // fp32 *master* of each weight (the bf16 working copy is re-derived as
+        // `cast(master)` each step), so connectivity is read off the **master**,
+        // not the working copy: any nonzero gradient moves the fp32 master
+        // (relative ULP ~2⁻²³), whereas the bf16 working copy is ULP-limited
+        // (~2⁻⁷) and a small-but-nonzero gradient can leave it bit-identical
+        // for a step — which made a working-copy probe flaky (a single random
+        // weight would intermittently look "disconnected"). `exportTrainerWeights()`'s
+        // base portion is the masters under bf16 and the working weights under
+        // `.float32`, so this is unambiguous in both modes.
         //
-        //  • `lrWarmupSteps: 0` — the default 100-step warmup forces
-        //    `warmupMul = 0/100 = 0` ⇒ lr = 0 on step 0, freezing every
-        //    weight regardless of wiring.
-        //  • `weightDecayC: 0` — removes the `wd·v` term from the update
-        //    `v − lr·(grad + wd·v)`. With weight decay on, a large lr would
-        //    move *every* decayed weight via `wd·v` even at zero gradient,
-        //    masking a genuine disconnection. With wd = 0 a disconnected
-        //    variable's update is *exactly* zero and is caught.
-        //  • A large lr with sqrt-batch-scaling off — production LRs (even
-        //    the ~1e-3 default, further shrunk by sqrt-scaling at batch 32)
-        //    don't guarantee every connected weight's `lr·grad` clears a
-        //    bf16 weight ULP in a single step, so small-gradient weights look
-        //    frozen. A large lr pushes connected vars above the ULP while
-        //    wd = 0 keeps disconnected vars at exactly zero.
+        //  • `lrWarmupSteps: 0` — the default warmup forces lr = 0 on step 0,
+        //    freezing every weight regardless of wiring.
+        //  • `weightDecayC: 0` — removes the decoupled `wd·weight` term; with
+        //    decay on, a large lr would move *every* decayed weight even at
+        //    zero gradient, masking a genuine disconnection. With wd = 0 a
+        //    disconnected variable's master update is *exactly* zero and caught.
         //
         // Priming each block's residual gain (ReZero α and bn2 γ) to 1.0
-        // additionally restores full-magnitude branch gradient (α inits to
-        // 1/√numBlocks ≈ 0.29 and the SE gate sits near 0.5, so branch
-        // weights otherwise see only ≈ 0.14× gradient). Probes connectivity,
-        // not update magnitude.
+        // restores full-magnitude branch gradient (α inits to 1/√numBlocks ≈
+        // 0.29 and the SE gate sits near 0.5, so branch weights otherwise see
+        // only ≈ 0.14× gradient), keeping every gradient comfortably nonzero.
         let trainer = try ChessTrainer(
             learningRate: 10.0,
             weightDecayC: 0,
@@ -583,21 +579,24 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         }
         try await trainer.network.loadWeights(primed)
 
-        let weightsBefore = try await trainer.network.exportWeights()
+        // Read the fp32 master (exportTrainerWeights' base portion; the working
+        // weights under .float32), where any nonzero gradient is unambiguously
+        // visible — no bf16-ULP rounding.
+        let masterBefore = try await trainer.exportTrainerWeights()
         // Run one step on synthetic random data via the public path.
         _ = try await trainer.trainStep(batchSize: 32)
-        let weightsAfter = try await trainer.network.exportWeights()
+        let masterAfter = try await trainer.exportTrainerWeights()
 
-        XCTAssertEqual(weightsBefore.count, weightsAfter.count)
-        // Trainables come first (then BN running stats). Use the
-        // network's internal split — we only care about trainables here.
+        XCTAssertEqual(masterBefore.count, masterAfter.count)
+        // Trainables come first (then BN running stats, then velocity). We
+        // only check the trainable masters.
         let nTrainables = trainer.network.trainableVariables.count
         XCTAssertGreaterThan(nTrainables, 0)
 
         var unchangedNames: [Int] = []
         for i in 0..<nTrainables {
-            let before = weightsBefore[i]
-            let after = weightsAfter[i]
+            let before = masterBefore[i]
+            let after = masterAfter[i]
             XCTAssertEqual(before.count, after.count, "Tensor \(i) shape changed")
             var anyDiff: Float = 0
             for k in 0..<before.count {
@@ -610,8 +609,8 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         }
         XCTAssertEqual(
             unchangedNames, [],
-            "After one trainStep (with every bn2 γ primed to 1.0), the following trainable indices did NOT change at all: \(unchangedNames). " +
-            "These variables receive no gradient — likely a build-time disconnect between the loss and the variable."
+            "After one trainStep, these trainable indices' fp32 master did NOT change at all: \(unchangedNames). " +
+            "They receive no gradient — likely a build-time disconnect between the loss and the variable."
         )
     }
 

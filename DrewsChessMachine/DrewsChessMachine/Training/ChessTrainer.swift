@@ -4747,10 +4747,15 @@ final class ChessTrainer: @unchecked Sendable {
             )
         }
         try await network.loadWeights(weights)
-        // Working weights were replaced wholesale — re-seed the fp32 masters
-        // from them so the optimizer doesn't keep accumulating from stale
-        // master values. No-op under `.float32`.
-        try await syncMastersFromWorking()
+        // Seed the fp32 masters directly from the loaded values, not by
+        // re-deriving from the bf16-rounded working copy — lossless, so any
+        // fp32 precision in `weights` survives (for a bf16 champion fork the
+        // input is already bf16-aligned, so it's identical). The working copy
+        // is the bf16-rounded `weights`; the master is `weights` exactly.
+        // No-op under `.float32` (no masters).
+        if !masterVariables.isEmpty {
+            try await writeMasterValues(weights)
+        }
         try await resetVelocitiesToZero()
     }
 
