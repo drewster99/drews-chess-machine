@@ -47,8 +47,24 @@ struct ControlSideEffectsProbe: View {
     let snapDelayToNearestValidRung: (Int) -> Int
 
     var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
+        // The side-effect modifiers are split across three helper
+        // functions purely so each is a small expression for the Swift
+        // type-checker — as one ~12-deep `.onChange` chain this `body`
+        // took >2s to type-check (well over the 100ms limit). No
+        // behavioral grouping is implied: `.onChange` handlers are
+        // independent and order-insensitive, so the split is invisible
+        // at runtime.
+        samplingChanges(
+            ratioAndTrainerChanges(
+                modeAndConcurrencyChanges(
+                    Color.clear.frame(width: 0, height: 0)
+                )
+            )
+        )
+    }
+
+    private func modeAndConcurrencyChanges(_ content: some View) -> some View {
+        content
             .onChange(of: playAndTrainBoardMode) { _, newValue in
                 // Flipping to Candidate-test marks the probe dirty so
                 // the driver fires an immediate forward pass on the
@@ -84,6 +100,10 @@ struct ControlSideEffectsProbe: View {
                     playAndTrainBoardMode = .candidateTest
                 }
             }
+    }
+
+    private func ratioAndTrainerChanges(_ content: some View) -> some View {
+        content
             .onChange(of: trainingParams.replayRatioTarget) { oldValue, newValue in
                 SessionLogger.shared.log(
                     String(format: "[PARAM] replayRatioTarget: %.2f -> %.2f", oldValue, newValue)
@@ -131,6 +151,10 @@ struct ControlSideEffectsProbe: View {
                 SessionLogger.shared.log("[PARAM] trainingStepDelayMs: \(oldValue) -> \(newValue)")
                 replayRatioController?.manualDelayMs = newValue
             }
+    }
+
+    private func samplingChanges(_ content: some View) -> some View {
+        content
             .onChange(of: trainingParams.maxPliesFromAnyOneGame) { oldValue, newValue in
                 SessionLogger.shared.log("[PARAM] maxPliesFromAnyOneGame: \(oldValue) -> \(newValue)")
                 replayBuffer?.setSamplingConstraints(.fromCurrentParameters())
