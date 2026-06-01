@@ -5157,13 +5157,20 @@ final class ChessTrainer: @unchecked Sendable {
     /// up. `staging` must be non-nil and sized to `count` on a narrow
     /// dtype (allocated once per batch size in `feedsForBatch`); it is
     /// `nil` on `.float32`.
+    /// Branches on the **ND array's own** dtype, not `ChessNetwork.dataType`,
+    /// because the feeds are no longer uniform: the board ND is fp32 (it feeds
+    /// the network's fp32 input placeholder, narrowed on the GPU) while
+    /// z / vBaseline / legalMask are the compute dtype (their placeholders are
+    /// declared at that width). An fp32 ND gets a raw passthrough (no
+    /// staging); a bf16 ND narrows through its staging buffer. Same dtype-of-
+    /// the-array discipline as `writeScalarFeed`.
     private func writeRealValuedFeed(
         _ ndArray: MPSNDArray,
         from floatPtr: UnsafePointer<Float>,
         count: Int,
         staging: UnsafeMutableBufferPointer<UInt16>?
     ) {
-        switch ChessNetwork.dataType {
+        switch ndArray.dataType {
         case .float32:
             ndArray.writeBytes(UnsafeMutableRawPointer(mutating: floatPtr), strideBytes: nil)
         case .bFloat16:
@@ -5175,7 +5182,7 @@ final class ChessTrainer: @unchecked Sendable {
             }
             ndArray.writeBytes(UnsafeMutableRawPointer(stagingBase), strideBytes: nil)
         default:
-            fatalError("ChessTrainer.writeRealValuedFeed: no host-side converter for dtype \(ChessNetwork.dataType)")
+            fatalError("ChessTrainer.writeRealValuedFeed: no host-side converter for ND array dtype \(ndArray.dataType)")
         }
     }
 
@@ -5214,8 +5221,14 @@ final class ChessTrainer: @unchecked Sendable {
         let mtlDevice = network.metalDevice
         let dtype = ChessNetwork.dataType
 
+        // The board feed is always fp32: it feeds the network's fp32
+        // `inputPlaceholder`, which narrows to the compute dtype on the GPU
+        // (`board_input_cast`). So the board ND is Float32 regardless of the
+        // network dtype, and its host write is a raw passthrough — no bf16
+        // staging (unlike z / vBaseline / legalMask below, whose placeholders
+        // are the compute dtype).
         let boardDesc = MPSNDArrayDescriptor(
-            dataType: dtype,
+            dataType: .float32,
             shape: [
                 NSNumber(value: batchSize),
                 NSNumber(value: ChessNetwork.inputPlanes),
@@ -5245,8 +5258,9 @@ final class ChessTrainer: @unchecked Sendable {
         // network dtype, bf16 here), so the ND array storage they feed
         // must be the same width. The Float32 host source is narrowed
         // into per-batch-size bf16 staging in `buildFeeds` before each
-        // `writeBytes` (mirroring the board feed); on `.float32` the
-        // staging is nil and the raw Float32 bytes go straight through.
+        // `writeBytes`; on `.float32` the staging is nil and the raw
+        // Float32 bytes go straight through. (The board feed no longer
+        // mirrors this — it is fp32 and narrowed on the GPU; see above.)
         let zDesc = MPSNDArrayDescriptor(
             dataType: dtype,
             shape: [NSNumber(value: batchSize), 1]
@@ -5297,14 +5311,15 @@ final class ChessTrainer: @unchecked Sendable {
             complementCEEnablePlaceholder: complementCEEnableTensorData
         ]
 
-        // Allocate the host-side bf16 staging for the four real-valued
-        // feeds once per batch size, each sized to its tensor's element
-        // count. Only needed when the network dtype is narrower than
-        // Float32; on `.float32` each ND array is Float32 and the host
-        // feeds raw Float32 with no conversion, so leave all four nil.
-        // `makeStaging` returns nil on `.float32` and a zero-filled
-        // buffer of the requested element count otherwise. These are
-        // freed in `freeStaging(_:)` on `feedCache` eviction
+        // Allocate the host-side bf16 staging for the three compute-dtype
+        // real-valued feeds (z / vBaseline / legalMask) once per batch size,
+        // each sized to its tensor's element count. (The board feed is fp32
+        // and needs no staging — see boardStaging below.) Only needed when
+        // the network dtype is narrower than Float32; on `.float32` each ND
+        // array is Float32 and the host feeds raw Float32 with no conversion,
+        // so leave them nil. `makeStaging` returns nil on `.float32` and a
+        // zero-filled buffer of the requested element count otherwise. These
+        // are freed in `freeStaging(_:)` on `feedCache` eviction
         // (`resetNetwork` / `deinit`).
         func makeStaging(_ elementCount: Int) -> UnsafeMutableBufferPointer<UInt16>? {
             guard dtype != .float32 else { return nil }
@@ -5312,11 +5327,9 @@ final class ChessTrainer: @unchecked Sendable {
             buffer.initialize(repeating: 0)
             return buffer
         }
-        let boardElementCount = batchSize
-            * ChessNetwork.inputPlanes
-            * ChessNetwork.boardSize
-            * ChessNetwork.boardSize
-        let boardStaging = makeStaging(boardElementCount)
+        // Board feed is fp32 (the GPU narrows it) — no host-side bf16
+        // staging, regardless of the network dtype.
+        let boardStaging: UnsafeMutableBufferPointer<UInt16>? = nil
         let zStaging = makeStaging(batchSize)
         let vBaselineStaging = makeStaging(batchSize)
         let legalMaskStaging = makeStaging(batchSize * ChessNetwork.policySize)

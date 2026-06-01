@@ -278,6 +278,13 @@ final class ChessNetwork: @unchecked Sendable {
     let graph: MPSGraph
     let inputPlaceholder: MPSGraphTensor
     let policyOutput: MPSGraphTensor
+    /// fp32 cast of `policyOutput`, used only as the inference readback
+    /// target so the CPU reads raw fp32 bytes (the bf16→fp32 widen of the
+    /// wide policy output happens on the GPU, not in a host loop). Identical
+    /// to `policyOutput` on a `.float32` build. The training graph never
+    /// targets this tensor — the trainer reads `policyOutput` (compute
+    /// dtype) for its loss — so it costs nothing during training.
+    private let policyOutputReadback: MPSGraphTensor
     /// Derived scalar value, shape `[batch, 1]` = `p_win − p_loss`
     /// (= E[outcome] ∈ [−1, +1], no tanh). This is what every inference
     /// consumer reads and what the policy-gradient baseline is fed; the
@@ -488,13 +495,22 @@ final class ChessNetwork: @unchecked Sendable {
         let conv3x3 = try Self.makeConv3x3Descriptor()
         let conv1x1 = try Self.makeConv1x1Descriptor()
 
-        // Input: [batch, inputPlanes, 8, 8]
+        // Input: [batch, inputPlanes, 8, 8]. The placeholder is fp32 — the
+        // CPU feeds raw fp32 board planes (no host-side bf16 narrowing) and
+        // the narrowing to the compute dtype runs on the GPU via the cast
+        // below, the graph's first op. On a `.float32` build the cast is the
+        // identity and is elided. This same placeholder is fed by the
+        // self-play / arena inference paths *and* by the trainer's board
+        // feed, so both write fp32 (see ChessTrainer.feedsForBatch).
         let input = g.placeholder(
             shape: [-1, NSNumber(value: Self.inputPlanes), 8, 8],
-            dataType: Self.dataType,
+            dataType: .float32,
             name: "board_input"
         )
         inputPlaceholder = input
+        let computeInput = (Self.dataType == .float32)
+            ? input
+            : g.cast(input, to: Self.dataType, name: "board_input_cast")
 
         // Build the forward graph into local arrays and assign to
         // `self.*` after everything is set. We can't use `self` methods
@@ -525,7 +541,7 @@ final class ChessNetwork: @unchecked Sendable {
         trainables.append(stemWeights)
         shouldDecay.append(true)
         var x = g.convolution2D(
-            input,
+            computeInput,
             weights: stemWeights,
             descriptor: conv3x3,
             name: "stem_conv"
@@ -587,6 +603,9 @@ final class ChessNetwork: @unchecked Sendable {
             batchVars: &batchVars
         )
         policyOutput = policy.output
+        policyOutputReadback = (Self.dataType == .float32)
+            ? policy.output
+            : g.cast(policy.output, to: .float32, name: "policy_output_f32")
         policyHeadFinalWeights = policy.finalWeights
 
         // --- Value head ---
@@ -654,8 +673,10 @@ final class ChessNetwork: @unchecked Sendable {
         // `evaluate(board:)` writes new floats directly into this
         // array's storage each call and feeds the same wrapper — no
         // per-move MPS allocations.
+        // fp32 storage — the input boundary is always fp32 (the GPU cast
+        // narrows to the compute dtype). Feeds the fp32 `inputPlaceholder`.
         let inputDesc = MPSNDArrayDescriptor(
-            dataType: Self.dataType,
+            dataType: .float32,
             shape: [1, NSNumber(value: Self.inputPlanes), 8, 8]
         )
         let inputND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
@@ -664,9 +685,13 @@ final class ChessNetwork: @unchecked Sendable {
         inferenceInputTensorData = MPSGraphTensorData(inputND)
 
         // Zero-filled dummy input shared by exportWeights / loadWeights.
+        // `inputDesc` is fp32 (the input boundary), so this must write fp32
+        // bytes — `writeFloats` would narrow to the compute dtype via
+        // `makeWeightData` and then over-read that narrower buffer when
+        // `writeBytes` copies the fp32 array's full size.
         let dummyND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
         dummyND.label = "dummyND"
-        Self.writeFloats(
+        Self.writeFloatsFP32(
             [Float](repeating: 0, count: 1 * Self.inputPlanes * Self.boardSize * Self.boardSize),
             into: dummyND
         )
@@ -678,7 +703,10 @@ final class ChessNetwork: @unchecked Sendable {
         // through `writeBytes` on the same underlying storage every
         // call.
         inferenceFeeds = [inputPlaceholder: inferenceInputTensorData]
-        inferenceTargets = [policyOutput, valueOutput, valueProbs]
+        // Policy is read back as fp32 (GPU-cast); the value scalar and WDL
+        // probs stay compute-dtype and are widened on the host — far too
+        // small to be worth a GPU cast + its readback dispatch.
+        inferenceTargets = [policyOutputReadback, valueOutput, valueProbs]
 
         // Raw-pointer readback scratches for the policy logits and
         // value scalar. UnsafeMutablePointer avoids Swift array CoW so
@@ -781,14 +809,14 @@ final class ChessNetwork: @unchecked Sendable {
                 targetOperations: nil
             )
 
-            guard let policyData = results[policyOutput] else {
+            guard let policyData = results[policyOutputReadback] else {
                 throw ChessNetworkError.outputMissing("policy")
             }
             guard let valueData = results[valueOutput] else {
                 throw ChessNetworkError.outputMissing("value")
             }
 
-            Self.readFloats(from: policyData, into: inferencePolicyScratchPtr, count: Self.policySize)
+            Self.readFloatsFP32(from: policyData, into: inferencePolicyScratchPtr, count: Self.policySize)
             Self.readFloats(from: valueData, into: inferenceValueScratchPtr, count: 1)
 
             consume(
@@ -987,7 +1015,7 @@ final class ChessNetwork: @unchecked Sendable {
                 targetOperations: nil
             )
 
-            guard let policyData = results[policyOutput] else {
+            guard let policyData = results[policyOutputReadback] else {
                 throw ChessNetworkError.outputMissing("policy")
             }
             guard let valueData = results[valueOutput] else {
@@ -997,7 +1025,7 @@ final class ChessNetwork: @unchecked Sendable {
                 throw ChessNetworkError.outputMissing("valueProbs")
             }
 
-            Self.readFloats(from: policyData, into: policyPtr, count: count * Self.policySize)
+            Self.readFloatsFP32(from: policyData, into: policyPtr, count: count * Self.policySize)
             Self.readFloats(from: valueData, into: valuePtr, count: count)
             Self.readFloats(from: valueProbsData, into: valueProbsPtr, count: count * Self.valueHeadClasses)
 
@@ -1027,8 +1055,10 @@ final class ChessNetwork: @unchecked Sendable {
         if let cached = batchInputCache[count] {
             return cached
         }
+        // fp32 storage — feeds the fp32 `inputPlaceholder`; the GPU cast
+        // narrows to the compute dtype.
         let desc = MPSNDArrayDescriptor(
-            dataType: Self.dataType,
+            dataType: .float32,
             shape: [NSNumber(value: count), NSNumber(value: Self.inputPlanes), 8, 8]
         )
         let nda = MPSNDArray(device: metalDevice, descriptor: desc)
@@ -2079,14 +2109,17 @@ final class ChessNetwork: @unchecked Sendable {
         makeWeightData([Float](repeating: 0.0, count: count))
     }
 
-    /// Write raw float bytes from `buffer` directly into `array`'s
+    /// Write raw fp32 board planes from `buffer` directly into `array`'s
     /// storage. Primary inference-hot-path writer: the caller passes a
-    /// pre-encoded `UnsafeBufferPointer<Float>` (e.g. a slice of a
-    /// per-game scratch) and the bytes flow straight into the MPSNDArray
-    /// with zero intermediate copies. On `.float32` the data is handed
-    /// unchanged to `writeBytes`; `.float16` would need a reused
-    /// `[UInt16]` scratch buffer (not yet implemented because dataType
-    /// is currently `.float32`).
+    /// pre-encoded `UnsafeBufferPointer<Float>` (e.g. a slice of a per-game
+    /// scratch) and the bytes flow straight into the MPSNDArray with zero
+    /// intermediate copies and **no host-side conversion**.
+    ///
+    /// The inference input boundary is always fp32 — `inputPlaceholder` is an
+    /// fp32 placeholder and the narrowing to the compute dtype runs on the GPU
+    /// (the `board_input_cast` op). Before that GPU-cast offload this method
+    /// narrowed fp32→bf16 in a profiled host-side hot loop; that work now
+    /// happens in the graph, so this is an unconditional passthrough.
     static func writeInferenceInput(
         _ buffer: UnsafeBufferPointer<Float>,
         into array: MPSNDArray
@@ -2095,38 +2128,18 @@ final class ChessNetwork: @unchecked Sendable {
             !buffer.isEmpty,
             "writeInferenceInput: empty buffer would leave MPSNDArray with stale bytes"
         )
-        switch dataType {
-        case .float32:
-            guard let base = buffer.baseAddress else {
-                preconditionFailure(
-                    "writeInferenceInput: buffer baseAddress is nil (count=\(buffer.count)); "
-                    + "upstream invariant violated."
-                )
-            }
-            array.writeBytes(
-                UnsafeMutableRawPointer(mutating: base),
-                strideBytes: nil
+        precondition(
+            array.dataType == .float32,
+            "writeInferenceInput: input ND array must be fp32 (got \(array.dataType)); "
+            + "the GPU board_input_cast handles narrowing to the compute dtype."
+        )
+        guard let base = buffer.baseAddress else {
+            preconditionFailure(
+                "writeInferenceInput: buffer baseAddress is nil (count=\(buffer.count)); "
+                + "upstream invariant violated."
             )
-        case .bFloat16:
-            // Narrow the Float32 input plane buffer to bf16 bytes, then
-            // write. Transient allocation per call — see the note in
-            // `readFloats(from:into:count:)`; the GPU `gpu=` metric is
-            // unaffected. A reused [UInt16] scratch is the follow-up if
-            // bf16 proves out.
-            var halfBuf = [UInt16](repeating: 0, count: buffer.count)
-            for i in 0..<buffer.count {
-                halfBuf[i] = float32ToBFloat16Bits(buffer[i])
-            }
-            halfBuf.withUnsafeMutableBytes { buf in
-                guard let base = buf.baseAddress else {
-                    preconditionFailure("writeInferenceInput: bf16 staging baseAddress nil")
-                }
-                array.writeBytes(base, strideBytes: nil)
-            }
-        default:
-            fatalError("writeInferenceInput: unsupported dataType \(dataType). "
-                + "Implement a reused half-scratch buffer before flipping to .float16.")
         }
+        array.writeBytes(UnsafeMutableRawPointer(mutating: base), strideBytes: nil)
     }
 
     /// `[Float]`-input overload for callers outside the hot path. Wraps
@@ -2174,6 +2187,20 @@ final class ChessNetwork: @unchecked Sendable {
             }
         }
         return out
+    }
+
+    /// Read an **already-fp32** graph output straight into the caller's Float
+    /// buffer — raw `readBytes`, no conversion. Inference-hot-path policy
+    /// readback: `policyOutputReadback` is cast to fp32 on the GPU, so the
+    /// host side is a plain memcpy (the bf16→fp32 widen of the wide policy
+    /// output no longer runs in a host loop). The caller is responsible for
+    /// `pointer` having capacity `count`.
+    static func readFloatsFP32(
+        from data: MPSGraphTensorData,
+        into pointer: UnsafeMutablePointer<Float>,
+        count: Int
+    ) {
+        data.mpsndarray().readBytes(UnsafeMutableRawPointer(pointer), strideBytes: nil)
     }
 
     /// Write a Float32 array into an **fp32** ND array (raw bytes). Counterpart
@@ -2341,14 +2368,25 @@ final class ChessNetwork: @unchecked Sendable {
 
         case .bFloat16:
             var halfBuf = [UInt16](repeating: 0, count: count)
-            halfBuf.withUnsafeMutableBytes { buf in
-                if let ptr = buf.baseAddress {
-                    data.mpsndarray().readBytes(ptr, strideBytes: nil)
-                }
-            }
             var out = [Float](repeating: 0, count: count)
-            for i in 0..<count {
-                out[i] = bFloat16BitsToFloat32(halfBuf[i])
+            halfBuf.withUnsafeMutableBufferPointer { hb in
+                guard let src = hb.baseAddress else {
+                    preconditionFailure("readFloats: bf16 staging baseAddress nil (count=\(count))")
+                }
+                data.mpsndarray().readBytes(UnsafeMutableRawPointer(src), strideBytes: nil)
+                out.withUnsafeMutableBufferPointer { ob in
+                    guard let dst = ob.baseAddress else {
+                        preconditionFailure("readFloats: out baseAddress nil (count=\(count))")
+                    }
+                    // Bare-pointer `while` widen — bit-identical to the old
+                    // `for i in 0..<count` over Array subscripts, minus the
+                    // iterator/bounds-check overhead that dominated the path.
+                    var i = 0
+                    while i < count {
+                        dst[i] = bFloat16BitsToFloat32(src[i])
+                        i += 1
+                    }
+                }
             }
             return out
 
@@ -2406,20 +2444,24 @@ final class ChessNetwork: @unchecked Sendable {
                 strideBytes: nil
             )
         case .bFloat16:
-            // Read the bf16 bytes into a transient [UInt16] then widen
-            // into the caller's Float buffer. This allocates per call; the
-            // GPU `gpu=` timing is unaffected (CPU-side widen only), so it's
-            // adequate for the bf16 speed experiment. If bf16 proves out,
-            // replace with a reused [UInt16] scratch buffer (the same
-            // optimization the .float16 hot path was always going to need).
+            // Read the bf16 bytes into a transient [UInt16] then widen into
+            // the caller's Float buffer. The widen runs as a bare-pointer
+            // `while` loop: profiling this exact site showed the per-element
+            // Array subscript + `IndexingIterator`/`Int.==` range machinery —
+            // not the `bFloat16BitsToFloat32` shift — was the cost. Output is
+            // bit-identical to the old `for` loop. The transient alloc is a
+            // negligible fraction of the profile and is left as-is.
             var halfBuf = [UInt16](repeating: 0, count: count)
-            halfBuf.withUnsafeMutableBytes { buf in
-                if let base = buf.baseAddress {
-                    data.mpsndarray().readBytes(base, strideBytes: nil)
+            halfBuf.withUnsafeMutableBufferPointer { hb in
+                guard let src = hb.baseAddress else {
+                    preconditionFailure("readFloats(into:): bf16 staging baseAddress nil (count=\(count))")
                 }
-            }
-            for i in 0..<count {
-                pointer[i] = bFloat16BitsToFloat32(halfBuf[i])
+                data.mpsndarray().readBytes(UnsafeMutableRawPointer(src), strideBytes: nil)
+                var i = 0
+                while i < count {
+                    pointer[i] = bFloat16BitsToFloat32(src[i])
+                    i += 1
+                }
             }
         default:
             fatalError("readFloats(from:into:count:): unsupported dataType \(dataType). "
