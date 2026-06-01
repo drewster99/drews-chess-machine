@@ -656,7 +656,14 @@ final class SessionController {
     /// ticks no-op while `network == nil`).
     func startTacticalProbeWatcher() {
         guard tacticalProbeWatcher == nil else { return }
-        let w = TacticalProbeWatcher(sessionController: self, history: tacticalProbeHistory)
+        // Match the Lichess probe's cadence (vs. this watcher's 200-step
+        // default) so both forward-metric traces are sampled at the same
+        // density. Cheap relative to Lichess: 9 probes, no weight snapshot.
+        let w = TacticalProbeWatcher(
+            sessionController: self,
+            history: tacticalProbeHistory,
+            triggerEverySteps: 100
+        )
         tacticalProbeWatcher = w
         w.start()
     }
@@ -680,7 +687,11 @@ final class SessionController {
         guard lichessProbeWatcher == nil else { return }
         let w = LichessProbeWatcher(
             sessionController: self,
-            history: lichessProbeHistory
+            history: lichessProbeHistory,
+            // Denser-than-default cadence (vs. the 400-step default) for a
+            // closer forward-metric trace. Each tick is a trainer weight
+            // snapshot + 200-puzzle battery, so ~4x the default's tick load.
+            triggerEverySteps: 100
         )
         lichessProbeWatcher = w
         w.start()
