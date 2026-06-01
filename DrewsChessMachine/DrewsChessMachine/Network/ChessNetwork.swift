@@ -152,7 +152,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// can be re-run without re-implementing the conversion plumbing.
     ///
     /// `inputPlanes` etc. are independent of this.
-    static let dataType: MPSDataType = .float32
+    static let dataType: MPSDataType = .bFloat16
 
     static let channels = 128
     /// Input plane count. v3 architecture: 20 baseline planes (pieces +
