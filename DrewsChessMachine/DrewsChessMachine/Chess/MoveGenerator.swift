@@ -176,7 +176,8 @@ enum MoveGenerator {
         }
 
         // Knight attacks
-        for (dr, dc) in knightOffsets {
+        for o in knightOffsets {
+            let dr = o.dr, dc = o.dc
             let r = row + dr, c = col + dc
             if r >= 0, r < 8, c >= 0, c < 8,
                let p = state.board[r * 8 + c],
@@ -186,7 +187,8 @@ enum MoveGenerator {
         }
 
         // King attacks
-        for (dr, dc) in allDirections {
+        for o in allDirections {
+            let dr = o.dr, dc = o.dc
             let r = row + dr, c = col + dc
             if r >= 0, r < 8, c >= 0, c < 8,
                let p = state.board[r * 8 + c],
@@ -196,7 +198,8 @@ enum MoveGenerator {
         }
 
         // Sliding: bishop or queen on diagonals
-        for (dr, dc) in diagonals {
+        for o in diagonals {
+            let dr = o.dr, dc = o.dc
             if let p = firstPieceAlong(state: state, row: row, col: col, dr: dr, dc: dc) {
                 if p.color == attackerColor, p.type == .bishop || p.type == .queen {
                     return true
@@ -205,7 +208,8 @@ enum MoveGenerator {
         }
 
         // Sliding: rook or queen on straights
-        for (dr, dc) in straights {
+        for o in straights {
+            let dr = o.dr, dc = o.dc
             if let p = firstPieceAlong(state: state, row: row, col: col, dr: dr, dc: dc) {
                 if p.color == attackerColor, p.type == .rook || p.type == .queen {
                     return true
@@ -231,7 +235,7 @@ enum MoveGenerator {
 
         // Forward one
         if state.board[oneForwardBase + col] == nil {
-            appendPawnMove(&moves, from: (row, col), to: (oneForward, col), promoRank: promoRank)
+            appendPawnMove(&moves, fromRow: row, fromCol: col, toRow: oneForward, toCol: col, promoRank: promoRank)
 
             // Forward two from starting rank
             let twoForward = row + 2 * dir
@@ -246,7 +250,7 @@ enum MoveGenerator {
             guard cc >= 0, cc < 8 else { continue }
 
             if let target = state.board[oneForwardBase + cc], target.color != color {
-                appendPawnMove(&moves, from: (row, col), to: (oneForward, cc), promoRank: promoRank)
+                appendPawnMove(&moves, fromRow: row, fromCol: col, toRow: oneForward, toCol: cc, promoRank: promoRank)
             } else if let ep = state.enPassantSquare, ep.row == oneForward, ep.col == cc {
                 moves.append(ChessMove(fromRow: row, fromCol: col, toRow: oneForward, toCol: cc, promotion: nil))
             }
@@ -257,25 +261,26 @@ enum MoveGenerator {
 
     private static func appendPawnMove(
         _ moves: inout [ChessMove],
-        from: (Int, Int),
-        to: (Int, Int),
+        fromRow: Int, fromCol: Int,
+        toRow: Int, toCol: Int,
         promoRank: Int
     ) {
-        if to.0 == promoRank {
+        if toRow == promoRank {
             for promo in [PieceType.queen, .rook, .bishop, .knight] {
-                moves.append(ChessMove(fromRow: from.0, fromCol: from.1, toRow: to.0, toCol: to.1, promotion: promo))
+                moves.append(ChessMove(fromRow: fromRow, fromCol: fromCol, toRow: toRow, toCol: toCol, promotion: promo))
             }
         } else {
-            moves.append(ChessMove(fromRow: from.0, fromCol: from.1, toRow: to.0, toCol: to.1, promotion: nil))
+            moves.append(ChessMove(fromRow: fromRow, fromCol: fromCol, toRow: toRow, toCol: toCol, promotion: nil))
         }
     }
 
     private static func slidingMoves(
         row: Int, col: Int, color: PieceColor,
-        directions: [(Int, Int)], state: GameState
+        directions: [Offset], state: GameState
     ) -> [ChessMove] {
         var moves: [ChessMove] = []
-        for (dr, dc) in directions {
+        for o in directions {
+            let dr = o.dr, dc = o.dc
             var r = row + dr, c = col + dc
             while r >= 0, r < 8, c >= 0, c < 8 {
                 if let p = state.board[r * 8 + c] {
@@ -293,10 +298,11 @@ enum MoveGenerator {
 
     private static func jumpMoves(
         row: Int, col: Int, color: PieceColor,
-        offsets: [(Int, Int)], state: GameState
+        offsets: [Offset], state: GameState
     ) -> [ChessMove] {
         var moves: [ChessMove] = []
-        for (dr, dc) in offsets {
+        for o in offsets {
+            let dr = o.dr, dc = o.dc
             let r = row + dr, c = col + dc
             guard r >= 0, r < 8, c >= 0, c < 8 else { continue }
             if let p = state.board[r * 8 + c], p.color == color { continue }
@@ -358,8 +364,27 @@ enum MoveGenerator {
 
     // MARK: - Direction Tables
 
-    private static let knightOffsets = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
-    private static let diagonals = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-    private static let straights = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    /// A single (row, col) step. A concrete struct, deliberately **not** an
+    /// `(Int, Int)` tuple: these tables are iterated on the per-ply move-
+    /// generation hot path across many concurrent self-play workers, and tuple
+    /// element types have no static type metadata — every access (iterating
+    /// `[(Int,Int)]`, passing it to a function) calls `swift_getTupleTypeMetadata`,
+    /// which serializes on a global locking metadata cache. Under high worker
+    /// counts that cache contention dominated CPU (~66% in an Instruments
+    /// trace). A struct has static metadata, so the runtime cache is never
+    /// consulted. Order within each table is preserved from the original tuple
+    /// form so generated move lists are byte-identical.
+    struct Offset { let dr: Int; let dc: Int }
+
+    private static let knightOffsets = [
+        Offset(dr: -2, dc: -1), Offset(dr: -2, dc: 1), Offset(dr: -1, dc: -2), Offset(dr: -1, dc: 2),
+        Offset(dr: 1, dc: -2), Offset(dr: 1, dc: 2), Offset(dr: 2, dc: -1), Offset(dr: 2, dc: 1)
+    ]
+    private static let diagonals = [
+        Offset(dr: -1, dc: -1), Offset(dr: -1, dc: 1), Offset(dr: 1, dc: -1), Offset(dr: 1, dc: 1)
+    ]
+    private static let straights = [
+        Offset(dr: -1, dc: 0), Offset(dr: 1, dc: 0), Offset(dr: 0, dc: -1), Offset(dr: 0, dc: 1)
+    ]
     private static let allDirections = diagonals + straights
 }
