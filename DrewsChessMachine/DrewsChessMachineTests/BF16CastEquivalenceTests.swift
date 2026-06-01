@@ -91,6 +91,211 @@ final class BF16CastEquivalenceTests: XCTestCase {
         return bits
     }
 
+    /// Decisive check for the input GPU-cast offload. The pre-offload path fed
+    /// a bf16 board straight into a bf16 stem conv; the new path feeds fp32 and
+    /// narrows with an in-graph `cast` immediately before the same conv. The
+    /// standalone cast is bit-exact, but if MPSGraph fuses `cast → conv` with
+    /// different rounding/accumulation than a plain bf16-input conv, the whole
+    /// forward pass (and tactical move rankings) shifts. This builds both graphs
+    /// with identical bf16 weights, feeds the *same* board (bf16 bits to one,
+    /// the fp32 source to the other), and asserts the conv outputs are
+    /// bit-identical. The conv is the only consumer of the cast, so equality
+    /// here means the entire forward is unchanged.
+    func testCastThenConvMatchesDirectBF16Conv() throws {
+        guard ChessNetwork.dataType == .bFloat16 else {
+            throw XCTSkip("bf16 path inactive (dataType=\(ChessNetwork.dataType))")
+        }
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal not available")
+        }
+        let inC = ChessNetwork.inputPlanes
+        let outC = 128
+        let batch = 4
+        let side = ChessNetwork.boardSize
+
+        var s: UInt64 = 0x9E3779B97F4A7C15
+        func rnd() -> Float {
+            s = s &* 6364136223846793005 &+ 1442695040888963407
+            return (Float(s >> 40) / Float(1 << 24)) * 2 - 1   // [-1, 1)
+        }
+        let boardN = batch * inC * side * side
+        var boardFP32 = [Float](repeating: 0, count: boardN)
+        for i in 0..<boardN { boardFP32[i] = rnd() }
+        let wN = outC * inC * 3 * 3
+        var wBits = [UInt16](repeating: 0, count: wN)
+        for i in 0..<wN { wBits[i] = ChessNetwork.float32ToBFloat16Bits(rnd() * 0.1) }
+        let wData = wBits.withUnsafeBytes { Data($0) }
+
+        let wShape: [NSNumber] = [NSNumber(value: outC), NSNumber(value: inC), 3, 3]
+        let boardShape: [NSNumber] = [
+            NSNumber(value: batch), NSNumber(value: inC),
+            NSNumber(value: side), NSNumber(value: side)
+        ]
+        guard let conv = MPSGraphConvolution2DOpDescriptor(
+            strideInX: 1, strideInY: 1, dilationRateInX: 1, dilationRateInY: 1,
+            groups: 1, paddingLeft: 1, paddingRight: 1, paddingTop: 1, paddingBottom: 1,
+            paddingStyle: .explicit, dataLayout: .NCHW, weightsLayout: .OIHW
+        ) else { XCTFail("conv descriptor"); return }
+
+        // OLD path: bf16 placeholder fed the bf16 board directly.
+        let gOld = MPSGraph()
+        let pOld = gOld.placeholder(shape: boardShape, dataType: .bFloat16, name: "in")
+        let wOld = gOld.variable(with: wData, shape: wShape, dataType: .bFloat16, name: "w")
+        let outOld = gOld.convolution2D(pOld, weights: wOld, descriptor: conv, name: "conv")
+        let boardBF16 = boardFP32.map { ChessNetwork.float32ToBFloat16Bits($0) }
+        let oldInND = MPSNDArray(device: device,
+                                 descriptor: MPSNDArrayDescriptor(dataType: .bFloat16, shape: boardShape))
+        var bbits = boardBF16
+        bbits.withUnsafeMutableBytes { if let b = $0.baseAddress { oldInND.writeBytes(b, strideBytes: nil) } }
+        let rOld = gOld.run(with: queue, feeds: [pOld: MPSGraphTensorData(oldInND)],
+                            targetTensors: [outOld], targetOperations: nil)
+
+        // NEW path: fp32 placeholder -> cast(bf16) -> same conv.
+        let gNew = MPSGraph()
+        let pNew = gNew.placeholder(shape: boardShape, dataType: .float32, name: "in")
+        let cNew = gNew.cast(pNew, to: .bFloat16, name: "board_input_cast")
+        let wNew = gNew.variable(with: wData, shape: wShape, dataType: .bFloat16, name: "w")
+        let outNew = gNew.convolution2D(cNew, weights: wNew, descriptor: conv, name: "conv")
+        let newInND = MPSNDArray(device: device,
+                                 descriptor: MPSNDArrayDescriptor(dataType: .float32, shape: boardShape))
+        var bf = boardFP32
+        bf.withUnsafeMutableBytes { if let b = $0.baseAddress { newInND.writeBytes(b, strideBytes: nil) } }
+        let rNew = gNew.run(with: queue, feeds: [pNew: MPSGraphTensorData(newInND)],
+                            targetTensors: [outNew], targetOperations: nil)
+
+        guard let dOld = rOld[outOld], let dNew = rNew[outNew] else { XCTFail("no output"); return }
+        let outElems = batch * outC * side * side
+        var bitsOld = [UInt16](repeating: 0, count: outElems)
+        var bitsNew = [UInt16](repeating: 0, count: outElems)
+        bitsOld.withUnsafeMutableBytes { if let b = $0.baseAddress { dOld.mpsndarray().readBytes(b, strideBytes: nil) } }
+        bitsNew.withUnsafeMutableBytes { if let b = $0.baseAddress { dNew.mpsndarray().readBytes(b, strideBytes: nil) } }
+
+        var mismatches = 0
+        var maxAbsDiff: Float = 0
+        for i in 0..<outElems where bitsOld[i] != bitsNew[i] {
+            mismatches += 1
+            let a = ChessNetwork.bFloat16BitsToFloat32(bitsOld[i])
+            let b = ChessNetwork.bFloat16BitsToFloat32(bitsNew[i])
+            maxAbsDiff = max(maxAbsDiff, abs(a - b))
+        }
+        XCTAssertEqual(
+            mismatches, 0,
+            "cast→conv differs from direct bf16 conv on \(mismatches)/\(outElems) elements " +
+            "(maxAbsDiff=\(maxAbsDiff)) — the input offload changed the forward pass."
+        )
+    }
+
+    /// Backward-pass sibling of `testCastThenConvMatchesDirectBF16Conv`. The
+    /// offload also inserts the `cast` before the stem conv in the *training*
+    /// graph, and MPSGraph builds a separate backward graph — a `cast` ahead of
+    /// the conv could in principle make autodiff select a different
+    /// weight-gradient kernel. This builds the same two graphs (bf16-direct vs
+    /// fp32+cast) with identical bf16 weights, takes the gradient of `sum(conv²)`
+    /// w.r.t. the conv weights in each, and asserts the gradients are
+    /// bit-identical. `sum(conv²)` (not `sum(conv)`) is used so the weight
+    /// gradient actually depends on the conv output, making it sensitive to any
+    /// forward *or* backward divergence the cast might introduce.
+    func testCastThenConvGradientMatchesDirectBF16Conv() throws {
+        guard ChessNetwork.dataType == .bFloat16 else {
+            throw XCTSkip("bf16 path inactive (dataType=\(ChessNetwork.dataType))")
+        }
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal not available")
+        }
+        let inC = ChessNetwork.inputPlanes
+        let outC = 128
+        let batch = 4
+        let side = ChessNetwork.boardSize
+
+        var s: UInt64 = 0x9E3779B97F4A7C15
+        func rnd() -> Float {
+            s = s &* 6364136223846793005 &+ 1442695040888963407
+            return (Float(s >> 40) / Float(1 << 24)) * 2 - 1   // [-1, 1)
+        }
+        let boardN = batch * inC * side * side
+        var boardFP32 = [Float](repeating: 0, count: boardN)
+        for i in 0..<boardN { boardFP32[i] = rnd() }
+        let wN = outC * inC * 3 * 3
+        var wBits = [UInt16](repeating: 0, count: wN)
+        for i in 0..<wN { wBits[i] = ChessNetwork.float32ToBFloat16Bits(rnd() * 0.1) }
+        let wData = wBits.withUnsafeBytes { Data($0) }
+
+        let wShape: [NSNumber] = [NSNumber(value: outC), NSNumber(value: inC), 3, 3]
+        let boardShape: [NSNumber] = [
+            NSNumber(value: batch), NSNumber(value: inC),
+            NSNumber(value: side), NSNumber(value: side)
+        ]
+        guard let conv = MPSGraphConvolution2DOpDescriptor(
+            strideInX: 1, strideInY: 1, dilationRateInX: 1, dilationRateInY: 1,
+            groups: 1, paddingLeft: 1, paddingRight: 1, paddingTop: 1, paddingBottom: 1,
+            paddingStyle: .explicit, dataLayout: .NCHW, weightsLayout: .OIHW
+        ) else { XCTFail("conv descriptor"); return }
+
+        // Build a graph whose target is d(sum(conv²))/d(weights), cast to fp32.
+        // `wire` maps the placeholder to the conv input (identity for the
+        // bf16-direct path, a cast for the fp32 path).
+        func gradGraph(
+            inputDataType: MPSDataType,
+            wire: (MPSGraph, MPSGraphTensor) -> MPSGraphTensor
+        ) -> (graph: MPSGraph, input: MPSGraphTensor, gradF32: MPSGraphTensor)? {
+            let g = MPSGraph()
+            let p = g.placeholder(shape: boardShape, dataType: inputDataType, name: "in")
+            let convIn = wire(g, p)
+            let w = g.variable(with: wData, shape: wShape, dataType: .bFloat16, name: "w")
+            let out = g.convolution2D(convIn, weights: w, descriptor: conv, name: "conv")
+            let sq = g.multiplication(out, out, name: "sq")
+            // gradients(of: sq) seeds `sq` with ones → d(Σ sq)/d(w) = d(Σ conv²)/d(w).
+            let grads = g.gradients(of: sq, with: [w], name: "grads")
+            guard let dW = grads[w] else { return nil }
+            let dWf32 = g.cast(dW, to: .float32, name: "dW_f32")
+            return (g, p, dWf32)
+        }
+
+        guard let old = gradGraph(inputDataType: .bFloat16, wire: { _, p in p }) else {
+            XCTFail("old gradient missing"); return
+        }
+        let boardBF16 = boardFP32.map { ChessNetwork.float32ToBFloat16Bits($0) }
+        let oldInND = MPSNDArray(device: device,
+                                 descriptor: MPSNDArrayDescriptor(dataType: .bFloat16, shape: boardShape))
+        var bbits = boardBF16
+        bbits.withUnsafeMutableBytes { if let b = $0.baseAddress { oldInND.writeBytes(b, strideBytes: nil) } }
+        let rOld = old.graph.run(with: queue, feeds: [old.input: MPSGraphTensorData(oldInND)],
+                                 targetTensors: [old.gradF32], targetOperations: nil)
+
+        guard let new = gradGraph(inputDataType: .float32,
+                                  wire: { g, p in g.cast(p, to: .bFloat16, name: "board_input_cast") }) else {
+            XCTFail("new gradient missing"); return
+        }
+        let newInND = MPSNDArray(device: device,
+                                 descriptor: MPSNDArrayDescriptor(dataType: .float32, shape: boardShape))
+        var bf = boardFP32
+        bf.withUnsafeMutableBytes { if let b = $0.baseAddress { newInND.writeBytes(b, strideBytes: nil) } }
+        let rNew = new.graph.run(with: queue, feeds: [new.input: MPSGraphTensorData(newInND)],
+                                 targetTensors: [new.gradF32], targetOperations: nil)
+
+        guard let dOld = rOld[old.gradF32], let dNew = rNew[new.gradF32] else {
+            XCTFail("no gradient output"); return
+        }
+        var gradOld = [Float](repeating: 0, count: wN)
+        var gradNew = [Float](repeating: 0, count: wN)
+        gradOld.withUnsafeMutableBytes { if let b = $0.baseAddress { dOld.mpsndarray().readBytes(b, strideBytes: nil) } }
+        gradNew.withUnsafeMutableBytes { if let b = $0.baseAddress { dNew.mpsndarray().readBytes(b, strideBytes: nil) } }
+
+        var mismatches = 0
+        var maxAbsDiff: Float = 0
+        for i in 0..<wN where gradOld[i].bitPattern != gradNew[i].bitPattern {
+            mismatches += 1
+            maxAbsDiff = max(maxAbsDiff, abs(gradOld[i] - gradNew[i]))
+        }
+        XCTAssertEqual(
+            mismatches, 0,
+            "cast→conv weight-gradient differs from direct bf16 conv on \(mismatches)/\(wN) elements " +
+            "(maxAbsDiff=\(maxAbsDiff)) — the input offload changed the backward pass."
+        )
+    }
+
     // MARK: - GPU cast characterization
 
     /// bf16 → fp32 is a lossless widening; the GPU `cast` matches the CPU
