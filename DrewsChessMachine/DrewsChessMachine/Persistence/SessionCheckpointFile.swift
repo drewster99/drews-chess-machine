@@ -424,6 +424,20 @@ struct SessionCheckpointState: Codable, Equatable {
     // Arena history (audit log — displayed in the UI on resume)
     let arenaHistory: [ArenaHistoryEntryCodable]
 
+    /// Serialized 200-puzzle Lichess probe monitor history (OVERALL
+    /// NLL/Elo series, per-theme aggregate series, and the latest
+    /// per-puzzle detail rows). Optional for back-compat: sessions saved
+    /// before probe-history persistence existed decode this as nil, and
+    /// the loader starts the monitor empty. Positions aren't stored —
+    /// the per-puzzle rows are reconstructed by name on resume (see
+    /// `ProbeResultCodable`).
+    var lichessProbeHistory: LichessProbeHistorySnapshot?
+
+    /// Serialized tactical probe monitor history (per-probe time series
+    /// of full `ProbeResult`s). Optional for back-compat, same as
+    /// `lichessProbeHistory`.
+    var tacticalProbeHistory: TacticalProbeHistorySnapshot?
+
     // MARK: - Training Segments
 
     /// One Play-and-Train run, bounded by start and end wall-clock
@@ -521,6 +535,19 @@ struct SessionCheckpointState: Codable, Equatable {
         copy.progressRateSampleCount = progressRateSampleCount
         copy.arenaChartEvents = arenaChartEvents
         copy.legalMassMaxAllTime = legalMassMaxAllTime
+        return copy
+    }
+
+    /// Return a copy with the probe-monitor histories attached. Same
+    /// builder-helper pattern as `withChartData` — keeps the memberwise
+    /// init call site lean.
+    func withProbeHistories(
+        lichess: LichessProbeHistorySnapshot?,
+        tactical: TacticalProbeHistorySnapshot?
+    ) -> SessionCheckpointState {
+        var copy = self
+        copy.lichessProbeHistory = lichess
+        copy.tacticalProbeHistory = tactical
         return copy
     }
 

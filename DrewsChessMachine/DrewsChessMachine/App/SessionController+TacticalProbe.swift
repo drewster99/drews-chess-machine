@@ -13,7 +13,7 @@ import Foundation
 /// two scoreboards. The eight Lichess buckets are the theme names from
 /// the Lichess puzzle DB the curation script filters on, in the same
 /// priority order the Python-side bucketing uses.
-enum ProbeCategory: String, Sendable {
+enum ProbeCategory: String, Codable, Sendable {
     case mateInOne
     case hangingPieceCapture
     case forcedPromotion
@@ -73,7 +73,7 @@ struct TacticalProbe: Sendable {
 /// `correctButFlat` results on mate-in-1 positions; if even those come
 /// back `wrong`, the network can't represent sharp policy and we have
 /// a capacity question.
-enum ProbeVerdict: String, Sendable {
+enum ProbeVerdict: String, Codable, Sendable {
     case correctAndConfident   // expected move ranked #1 AND combined prob ≥ 0.5
     case correctButFlat        // expected move ranked #1 AND combined prob <  0.5
     case correctInTop5         // expected move ranked 2..5

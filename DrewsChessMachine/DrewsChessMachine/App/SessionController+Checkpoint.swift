@@ -730,6 +730,10 @@ extension SessionController {
                 parameterCount: ChessNetwork.parameterCount
             )
         )
+        .withProbeHistories(
+            lichess: lichessProbeHistory.makeSnapshot(),
+            tactical: tacticalProbeHistory.makeSnapshot()
+        )
     }
 
     // MARK: - Session resume (Stage 4k)

@@ -9,6 +9,20 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-06-01 CDT — Probe-monitor history persists across runs + step-indexed OVERALL charts
+
+The Lichess (200-puzzle) and tactical probe monitors now **save and restore with the session**, like everything else; previously both histories were in-memory only and reset on every launch. And the Lichess Probe Detail window's two OVERALL charts (NLL, puzzle-Elo) now plot against **trainer step** instead of elapsed wall-clock seconds, matching the rest of the app's telemetry.
+
+**Step-indexed x-axis.** `LichessProbeHistory.OverallTickSample` gained a per-tick `trainingStep`; the OVERALL trend chart's new pure helper `xPositions(for:)` plots against the step when every sample carries a non-nil, non-decreasing step (axis label "trainer step"), and falls back to tick index ("tick #") otherwise (e.g. a manual "Probe now" before training started). The old seconds axis made an 8-hour / 30k-step session read as "~500 across" — a rolling 120-tick window measured in seconds.
+
+**Persistence (both monitors, full detail).** Two new Optional fields on `SessionCheckpointState` (`lichessProbeHistory`, `tacticalProbeHistory`), packed in `buildCurrentSessionState` via a new `withProbeHistories(...)` builder and restored in `startRealTraining` alongside the chart-data seed (so they reappear on Continue Training), both branches logged with a `[RESUME-PROBE]` tag. `ProbeResult` stays non-Codable; persistence stores a scalar mirror (`ProbeResultCodable`) plus the probe **name**, and reconstructs the full `ProbeResult` — including `probe.state` (the board) — by looking the name up in the immutable fixture sets (`TacticalProbeData.standardSet` / `LichessProbeData.largeSet`) on resume. So no `GameState` is serialized, `session.json` stays small, and the board popover still works post-resume. Top moves round-trip as UCI via the new `ChessMove.uci` (now the single source of truth, also used by `LichessProbeExporter`) ↔ `LichessProbeData.parseUCI`.
+
+**Non-finite puzzle-Elo fix.** `OverallTickSample.puzzleElo` is `±infinity` (all puzzles wrong / all right) or `NaN` (no rated puzzles) by design — and the session's default `JSONEncoder` throws on non-finite Doubles, which would have aborted every save during early training (when `-inf` is the norm). It now encodes non-finite values as a string sentinel and round-trips them back exactly via a custom `Codable` on `OverallTickSample`.
+
+Back-compat: the new session fields are Optional — older `.dcmsession` files decode them as nil and the loader starts the monitors empty (logged). A probe name that no longer resolves (e.g. a future re-curation of `lichess_probes_200.json`) is skipped on reconstruct, never crashes. New `ProbeHistoryPersistenceTests` cover the codable round-trips, the live `makeSnapshot`/`restore` path, and the x-axis helper.
+
+---
+
 ## 2026-05-31 CDT — Canonical bf16 trainer = fp32 master weights (mixed precision)
 
 The bf16 trainer path is now standard mixed precision: forward/backward still compute in bf16 (the speed), but the optimizer keeps an **fp32 master** of every persistent tensor and accumulates into it, re-deriving the bf16 working copy as `cast(master)` each step. This fixes the bf16 weight-ULP freeze — updates below ~0.8% of a weight's magnitude no longer round away — without giving up the bf16 matmul speed. No toggle / no enum: it's gated purely on `ChessNetwork.dataType != .float32` (under `.float32` the working weights *are* the master, so it collapses to the prior plain path).

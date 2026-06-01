@@ -19,10 +19,13 @@ import SwiftUI
 /// 800–1800, so values pin near 800 until the network is solving
 /// at least one puzzle.
 ///
-/// X axis is elapsed seconds since the first recorded tick — keeps
-/// the spacing roughly proportional to wall-clock training time
-/// rather than tick index (which is uniform but doesn't show
-/// long pauses or a faster manual probe cadence).
+/// X axis is the trainer step (`ChessTrainer.completedTrainSteps`) at
+/// which each tick was recorded — the same index the rest of the app's
+/// telemetry uses, so the trajectory lines up with steps/positions
+/// elsewhere. If any sample lacks a step (e.g. a manual "Probe now"
+/// taken before training started, or the steps aren't monotonic) the
+/// chart falls back to plotting against tick index and labels the axis
+/// accordingly.
 ///
 /// When a comparison snapshot is loaded, a dashed horizontal
 /// reference line at the cmp's value is overlaid on each chart so
@@ -35,15 +38,39 @@ struct LichessProbeOverallTrendChart: View {
     let cmpNll: Double?
     let cmpElo: Double?
 
+    /// X-axis positions (one per sample, parallel to the input array)
+    /// plus the axis label. Uses the per-tick trainer step when every
+    /// sample carries a non-nil, non-decreasing step; otherwise falls
+    /// back to tick index (0-based). Pure + static so it can be unit
+    /// tested without a SwiftUI host.
+    static func xPositions(
+        for samples: [LichessProbeHistory.OverallTickSample]
+    ) -> (xs: [Double], label: String) {
+        let steps = samples.map(\.trainingStep)
+        let allPresent = steps.allSatisfy { $0 != nil }
+        var nonDecreasing = true
+        if allPresent {
+            var prev = Int.min
+            for case let s? in steps {
+                if s < prev { nonDecreasing = false; break }
+                prev = s
+            }
+        }
+        if allPresent && nonDecreasing {
+            return (steps.map { Double($0 ?? 0) }, "trainer step")
+        }
+        return ((0..<samples.count).map(Double.init), "tick #")
+    }
+
     var body: some View {
         let samples = history.overallSeries
         if samples.isEmpty {
             placeholder
         } else {
-            let baseT = samples.first!.timestamp
+            let x = Self.xPositions(for: samples)
             VStack(alignment: .leading, spacing: 4) {
-                nllChart(samples: samples, baseT: baseT)
-                eloChart(samples: samples, baseT: baseT)
+                nllChart(samples: samples, xs: x.xs, xLabel: x.label)
+                eloChart(samples: samples, xs: x.xs, xLabel: x.label)
             }
         }
     }
@@ -61,7 +88,8 @@ struct LichessProbeOverallTrendChart: View {
     @ViewBuilder
     private func nllChart(
         samples: [LichessProbeHistory.OverallTickSample],
-        baseT: Date
+        xs: [Double],
+        xLabel: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 8) {
@@ -80,10 +108,9 @@ struct LichessProbeOverallTrendChart: View {
                 Spacer()
             }
             Chart {
-                ForEach(Array(samples.enumerated()), id: \.offset) { _, s in
-                    let xSec = s.timestamp.timeIntervalSince(baseT)
+                ForEach(Array(samples.enumerated()), id: \.offset) { i, s in
                     LineMark(
-                        x: .value("Elapsed (s)", xSec),
+                        x: .value(xLabel, xs[i]),
                         y: .value("NLL", s.meanNegLogProb)
                     )
                     .foregroundStyle(Color.blue)
@@ -111,7 +138,7 @@ struct LichessProbeOverallTrendChart: View {
             }
             .frame(height: 110)
             .chartXAxisLabel(position: .bottom, alignment: .leading) {
-                Text("elapsed (s)")
+                Text(xLabel)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -121,12 +148,15 @@ struct LichessProbeOverallTrendChart: View {
     @ViewBuilder
     private func eloChart(
         samples: [LichessProbeHistory.OverallTickSample],
-        baseT: Date
+        xs: [Double],
+        xLabel: String
     ) -> some View {
         // Only finite-valued samples are plotted. If the entire
         // series is pinned at the floor / ceiling sentinel, the
-        // chart renders empty with a clarifying caption.
-        let finite = samples.filter { $0.puzzleElo.isFinite }
+        // chart renders empty with a clarifying caption. Keep each
+        // surviving sample's original index so it maps back to the
+        // matching x-position.
+        let finite = samples.enumerated().filter { $0.element.puzzleElo.isFinite }
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 8) {
                 Text("OVERALL puzzle-Elo (higher = better, 800–1800 set range)")
@@ -145,10 +175,9 @@ struct LichessProbeOverallTrendChart: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Chart {
-                    ForEach(Array(finite.enumerated()), id: \.offset) { _, s in
-                        let xSec = s.timestamp.timeIntervalSince(baseT)
+                    ForEach(finite, id: \.offset) { idx, s in
                         LineMark(
-                            x: .value("Elapsed (s)", xSec),
+                            x: .value(xLabel, xs[idx]),
                             y: .value("pElo", s.puzzleElo)
                         )
                         .foregroundStyle(Color.green)

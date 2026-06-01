@@ -18,7 +18,7 @@ import Observation
 final class LichessProbeHistory {
 
     /// Aggregate for one theme bucket at one tick.
-    struct Aggregate: Sendable {
+    struct Aggregate: Codable, Equatable, Sendable {
         let theme: ProbeCategory
         /// Total probes in the theme bucket (currently always 25).
         let total: Int
@@ -147,7 +147,7 @@ final class LichessProbeHistory {
     }
 
     /// One timestamped tick: 8 aggregates, one per theme bucket.
-    struct Entry: Sendable {
+    struct Entry: Codable, Equatable, Sendable {
         let timestamp: Date
         let aggregate: Aggregate
     }
@@ -164,7 +164,7 @@ final class LichessProbeHistory {
     /// across-the-board test-loss trajectory without re-folding eight
     /// per-theme series at every render. Trimmed in lockstep with
     /// `entries` to `maxEntriesPerTheme`.
-    struct OverallTickSample: Sendable {
+    struct OverallTickSample: Codable, Equatable, Sendable {
         let timestamp: Date
         let meanNegLogProb: Double
         /// MLE puzzle-Elo for this tick. Stored as Double for the same
@@ -172,6 +172,12 @@ final class LichessProbeHistory {
         /// rated puzzles, ±∞ for all-wrong / all-correct edges. Chart
         /// renderers should filter to `.isFinite` before plotting.
         let puzzleElo: Double
+        /// Trainer step (`ChessTrainer.completedTrainSteps`) at the
+        /// moment this tick was recorded — the x-axis the OVERALL trend
+        /// chart plots against. nil when the tick ran before a trainer
+        /// existed (e.g. a manual "Probe now" on a freshly built
+        /// champion); the chart falls back to tick index in that case.
+        let trainingStep: Int?
     }
     private(set) var overallSeries: [OverallTickSample] = []
 
@@ -284,7 +290,8 @@ final class LichessProbeHistory {
         overallSeries.append(OverallTickSample(
             timestamp: now,
             meanNegLogProb: overall.meanNegLogProb,
-            puzzleElo: elo
+            puzzleElo: elo,
+            trainingStep: trainingStep
         ))
         if overallSeries.count > maxEntriesPerTheme {
             overallSeries.removeFirst(overallSeries.count - maxEntriesPerTheme)
@@ -337,6 +344,57 @@ final class LichessProbeHistory {
         latestTickActiveTrainingSec = nil
         latestTickArenaCount = nil
         latestTickPromotionCount = nil
+    }
+
+    // MARK: - Session persistence
+
+    /// Pack the full history into a `Codable` snapshot for the session
+    /// checkpoint. Per-theme series are keyed by `ProbeCategory.rawValue`;
+    /// the latest per-puzzle results are stored as position-free
+    /// `ProbeResultCodable` rows (the board is reconstructed by name on
+    /// restore — see `ProbeResultCodable`).
+    func makeSnapshot() -> LichessProbeHistorySnapshot {
+        var perTheme: [String: [Entry]] = [:]
+        for (theme, series) in entries {
+            perTheme[theme.rawValue] = series
+        }
+        return LichessProbeHistorySnapshot(
+            perTheme: perTheme,
+            overall: overallSeries,
+            latestResults: latestPerPuzzleResults.map(ProbeResultCodable.init),
+            latestTimestamp: latestTickTimestamp,
+            latestModelLabel: latestTickModelLabel,
+            latestTrainingStep: latestTickTrainingStep,
+            latestPositionsTrained: latestTickPositionsTrained,
+            latestActiveTrainingSec: latestTickActiveTrainingSec,
+            latestArenaCount: latestTickArenaCount,
+            latestPromotionCount: latestTickPromotionCount
+        )
+    }
+
+    /// Replace the entire history with a restored snapshot. Per-theme
+    /// keys that no longer map to a `ProbeCategory` case and latest
+    /// results whose probe name no longer resolves are skipped (see
+    /// `ProbeResultCodable.reconstruct(using:)`).
+    func restore(from snapshot: LichessProbeHistorySnapshot) {
+        let index = ProbeFixtureIndex.build()
+        var rebuilt: [ProbeCategory: [Entry]] = [:]
+        for (rawTheme, series) in snapshot.perTheme {
+            guard let theme = ProbeCategory(rawValue: rawTheme) else { continue }
+            rebuilt[theme] = series
+        }
+        entries = rebuilt
+        overallSeries = snapshot.overall
+        latestPerPuzzleResults = snapshot.latestResults.compactMap {
+            $0.reconstruct(using: index)
+        }
+        latestTickTimestamp = snapshot.latestTimestamp
+        latestTickModelLabel = snapshot.latestModelLabel
+        latestTickTrainingStep = snapshot.latestTrainingStep
+        latestTickPositionsTrained = snapshot.latestPositionsTrained
+        latestTickActiveTrainingSec = snapshot.latestActiveTrainingSec
+        latestTickArenaCount = snapshot.latestArenaCount
+        latestTickPromotionCount = snapshot.latestPromotionCount
     }
 
     /// Sum of `argmaxCorrect` across all themes' latest entries, or
@@ -432,5 +490,68 @@ final class LichessProbeHistory {
             ))
         }
         return out
+    }
+}
+
+// MARK: - OverallTickSample Codable (non-finite-safe)
+
+extension LichessProbeHistory.OverallTickSample {
+    /// `puzzleElo` is intentionally allowed to be `±infinity` (all
+    /// puzzles wrong / all correct) or `NaN` (no rated puzzles this
+    /// tick) — the chart filters those with `.isFinite`. But the
+    /// session checkpoint's `JSONEncoder` uses the default
+    /// `.throw` non-conforming-float strategy, so a non-finite Double
+    /// would abort the entire session save (and `-inf` is the common
+    /// case in early training). Encode non-finite `puzzleElo` as a
+    /// string sentinel instead, round-tripping the exact value back on
+    /// decode. `meanNegLogProb` is finite by construction (floored at
+    /// `−log(1e-8)`), so it needs no special handling.
+    private enum CodingKeys: String, CodingKey {
+        case timestamp
+        case meanNegLogProb
+        case puzzleElo
+        case puzzleEloSentinel
+        case trainingStep
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let timestamp = try c.decode(Date.self, forKey: .timestamp)
+        let meanNegLogProb = try c.decode(Double.self, forKey: .meanNegLogProb)
+        let trainingStep = try c.decodeIfPresent(Int.self, forKey: .trainingStep)
+        let puzzleElo: Double
+        if let finite = try c.decodeIfPresent(Double.self, forKey: .puzzleElo) {
+            puzzleElo = finite
+        } else if let sentinel = try c.decodeIfPresent(String.self, forKey: .puzzleEloSentinel) {
+            switch sentinel {
+            case "posinf": puzzleElo = .infinity
+            case "neginf": puzzleElo = -.infinity
+            default:       puzzleElo = .nan
+            }
+        } else {
+            puzzleElo = .nan
+        }
+        self.init(
+            timestamp: timestamp,
+            meanNegLogProb: meanNegLogProb,
+            puzzleElo: puzzleElo,
+            trainingStep: trainingStep
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(timestamp, forKey: .timestamp)
+        try c.encode(meanNegLogProb, forKey: .meanNegLogProb)
+        try c.encodeIfPresent(trainingStep, forKey: .trainingStep)
+        if puzzleElo.isFinite {
+            try c.encode(puzzleElo, forKey: .puzzleElo)
+        } else {
+            let sentinel: String
+            if puzzleElo == .infinity { sentinel = "posinf" }
+            else if puzzleElo == -.infinity { sentinel = "neginf" }
+            else { sentinel = "nan" }
+            try c.encode(sentinel, forKey: .puzzleEloSentinel)
+        }
     }
 }

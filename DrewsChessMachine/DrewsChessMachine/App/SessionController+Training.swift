@@ -688,6 +688,14 @@ extension SessionController {
             if let chartURLs = pendingLoadedSession?.chartDataURLs {
                 seedChartCoordinatorFromLoadedSession(chartURLs: chartURLs)
             }
+            // Probe-monitor histories ride inline in session.json (not a
+            // companion file like the charts). Restore from the loaded
+            // session when present; otherwise clear so a fresh start or
+            // an older session shows empty monitors rather than stale
+            // in-memory ticks from a previous session this launch. Both
+            // branches log so a desync is visible. Appears alongside the
+            // chart data when the user presses Continue Training.
+            restoreProbeHistoriesForStart(resumeState: pendingLoadedSession?.state)
         }
         // Single self-play gate. `BatchedSelfPlayDriver` is one driver
         // task that ticks K active games against the champion network
@@ -2439,6 +2447,53 @@ extension SessionController {
         periodicSaveController = nil
         periodicSaveLastPollAt = nil
         periodicSaveInFlight = false
+    }
+
+    /// Restore (or clear) the probe-monitor histories on a non-continue
+    /// Play-and-Train start, mirroring the chart-data seed. Pulled out
+    /// of `startRealTraining` so its substantial body doesn't add to
+    /// that already-large function's type-check cost. When a loaded
+    /// session is present its saved snapshots are restored (or the
+    /// monitors are cleared if an older session lacks them); a fresh
+    /// start with no loaded session clears both. Both paths log under
+    /// `[RESUME-PROBE]` so a desync is visible.
+    private func restoreProbeHistoriesForStart(
+        resumeState: SessionCheckpointState?
+    ) {
+        guard let resumed = resumeState else {
+            lichessProbeHistory.clearAll()
+            tacticalProbeHistory.clearAll()
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] Fresh session — probe monitors cleared"
+            )
+            return
+        }
+        if let snap = resumed.lichessProbeHistory {
+            lichessProbeHistory.restore(from: snap)
+            let overallCount = lichessProbeHistory.overallSeries.count
+            let themeCount = lichessProbeHistory.entries.count
+            let rowCount = lichessProbeHistory.latestPerPuzzleResults.count
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] Restored Lichess probe history: \(overallCount) overall ticks, \(themeCount) themes, \(rowCount) latest puzzle rows"
+            )
+        } else {
+            lichessProbeHistory.clearAll()
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] No saved Lichess probe history (older session) — starting empty"
+            )
+        }
+        if let snap = resumed.tacticalProbeHistory {
+            tacticalProbeHistory.restore(from: snap)
+            let seriesCount = tacticalProbeHistory.entries.count
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] Restored tactical probe history: \(seriesCount) probe series"
+            )
+        } else {
+            tacticalProbeHistory.clearAll()
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] No saved tactical probe history (older session) — starting empty"
+            )
+        }
     }
 
 }

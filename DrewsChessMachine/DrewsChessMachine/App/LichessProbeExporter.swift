@@ -232,27 +232,11 @@ enum LichessProbeExporter {
         return PuzzleEntry(puzzle: puzzle, probeResult: probeResult)
     }
 
-    /// Reconstruct UCI long-algebraic from a `ChessMove`. Same shape as
-    /// `LichessProbeData.parseUCI`'s inverse:
-    /// `<from-square><to-square>[promotion]`.
+    /// Reconstruct UCI long-algebraic from a `ChessMove`. Delegates to
+    /// `ChessMove.uci`, the single source of truth for the encoding
+    /// shared with session-checkpoint probe persistence.
     private static func uciString(_ move: ChessMove) -> String {
-        let from = squareName(row: move.fromRow, col: move.fromCol)
-        let to = squareName(row: move.toRow, col: move.toCol)
-        let promo: String
-        switch move.promotion {
-        case .queen?:  promo = "q"
-        case .rook?:   promo = "r"
-        case .bishop?: promo = "b"
-        case .knight?: promo = "n"
-        default:       promo = ""
-        }
-        return "\(from)\(to)\(promo)"
-    }
-
-    private static func squareName(row: Int, col: Int) -> String {
-        let file = Character(UnicodeScalar(UInt8(97 + col)))
-        let rank = 8 - row
-        return "\(file)\(rank)"
+        move.uci
     }
 
     // MARK: - Codable payloads
