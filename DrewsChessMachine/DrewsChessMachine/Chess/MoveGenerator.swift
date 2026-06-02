@@ -70,43 +70,59 @@ enum MoveGenerator {
         var board = state.board
         let fromIndex = move.fromRow * 8 + move.fromCol
         let toIndex = move.toRow * 8 + move.toCol
-        guard let piece = board[fromIndex] else {
-            preconditionFailure(
-                "applyMove: source square at row=\(move.fromRow) col=\(move.fromCol) is empty — caller passed an illegal/corrupt move"
-            )
-        }
 
-        // Detect en passant capture before modifying the board
-        let isEnPassant = piece.type == .pawn
-            && move.toCol != move.fromCol
-            && state.board[toIndex] == nil
-        let isCapture = state.board[toIndex] != nil || isEnPassant
-
-        // Move the piece
-        board[fromIndex] = nil
-        if let promo = move.promotion {
-            board[toIndex] = Piece(type: promo, color: piece.color)
-        } else {
-            board[toIndex] = piece
-        }
-
-        // En passant: remove the captured pawn
-        if isEnPassant {
-            board[move.fromRow * 8 + move.toCol] = nil
-        }
-
-        // Castling: move the rook
-        if piece.type == .king && abs(move.toCol - move.fromCol) == 2 {
-            let rowBase = move.fromRow * 8
-            if move.toCol > move.fromCol {
-                // Kingside: rook h-file → f-file
-                board[rowBase + 5] = board[rowBase + 7]
-                board[rowBase + 7] = nil
-            } else {
-                // Queenside: rook a-file → d-file
-                board[rowBase + 3] = board[rowBase + 0]
-                board[rowBase + 0] = nil
+        // All board mutations run inside a single unsafe-buffer borrow. This
+        // forces the copy-on-write check exactly once (the buffer is made
+        // unique on entry), after which every read/write is a direct pointer
+        // access — collapsing the half-dozen `subscript.modify` coroutine
+        // invocations (each with its own uniqueness + bounds check) that this
+        // function showed as a hot spot. `piece` and `isCapture` are carried
+        // back out for the castling-rights and clock updates below; `isEnPassant`
+        // is only needed inside, to remove the captured pawn and to derive
+        // `isCapture`.
+        let (piece, isCapture) = board.withUnsafeMutableBufferPointer {
+            buf -> (Piece, Bool) in
+            guard let piece = buf[fromIndex] else {
+                preconditionFailure(
+                    "applyMove: source square at row=\(move.fromRow) col=\(move.fromCol) is empty — caller passed an illegal/corrupt move"
+                )
             }
+
+            // Detect en passant capture before modifying the board
+            let target = buf[toIndex]
+            let isEnPassant = piece.type == .pawn
+                && move.toCol != move.fromCol
+                && target == nil
+            let isCapture = target != nil || isEnPassant
+
+            // Move the piece
+            buf[fromIndex] = nil
+            if let promo = move.promotion {
+                buf[toIndex] = Piece(type: promo, color: piece.color)
+            } else {
+                buf[toIndex] = piece
+            }
+
+            // En passant: remove the captured pawn
+            if isEnPassant {
+                buf[move.fromRow * 8 + move.toCol] = nil
+            }
+
+            // Castling: move the rook
+            if piece.type == .king && abs(move.toCol - move.fromCol) == 2 {
+                let rowBase = move.fromRow * 8
+                if move.toCol > move.fromCol {
+                    // Kingside: rook h-file → f-file
+                    buf[rowBase + 5] = buf[rowBase + 7]
+                    buf[rowBase + 7] = nil
+                } else {
+                    // Queenside: rook a-file → d-file
+                    buf[rowBase + 3] = buf[rowBase + 0]
+                    buf[rowBase + 0] = nil
+                }
+            }
+
+            return (piece, isCapture)
         }
 
         // Update castling rights
@@ -161,59 +177,80 @@ enum MoveGenerator {
 
     /// Whether a square is attacked by any piece of the given color.
     static func isSquareAttacked(_ state: GameState, row: Int, col: Int, by attackerColor: PieceColor) -> Bool {
-        // Pawn attacks — an attacking pawn sits one row "behind" the target from its perspective
+        // Bind the board buffer once: every lookup below reads `board` instead
+        // of re-borrowing `state.board`, which keeps the array buffer's
+        // refcount traffic out of this hot path.
+        let board = state.board
+
+        // Pawn attacks — an attacking pawn sits one row "behind" the target
+        // from its perspective. The two diagonal source squares are checked
+        // explicitly rather than via a `[-1, 1]` literal, which would heap-
+        // allocate an array on every call.
         let pawnSourceRow = row + (attackerColor == .white ? 1 : -1)
         if pawnSourceRow >= 0, pawnSourceRow < 8 {
             let pawnRowBase = pawnSourceRow * 8
-            for dc in [-1, 1] {
-                let pc = col + dc
-                if pc >= 0, pc < 8,
-                   let p = state.board[pawnRowBase + pc],
-                   p.color == attackerColor, p.type == .pawn {
-                    return true
-                }
+            let leftCol = col - 1
+            if leftCol >= 0,
+               let p = board[pawnRowBase + leftCol],
+               p.color == attackerColor, p.type == .pawn {
+                return true
+            }
+            let rightCol = col + 1
+            if rightCol < 8,
+               let p = board[pawnRowBase + rightCol],
+               p.color == attackerColor, p.type == .pawn {
+                return true
             }
         }
 
         // Knight attacks
         for o in knightOffsets {
-            let dr = o.dr, dc = o.dc
-            let r = row + dr, c = col + dc
+            let r = row + o.dr, c = col + o.dc
             if r >= 0, r < 8, c >= 0, c < 8,
-               let p = state.board[r * 8 + c],
+               let p = board[r * 8 + c],
                p.color == attackerColor, p.type == .knight {
                 return true
             }
         }
 
-        // King attacks
-        for o in allDirections {
-            let dr = o.dr, dc = o.dc
-            let r = row + dr, c = col + dc
-            if r >= 0, r < 8, c >= 0, c < 8,
-               let p = state.board[r * 8 + c],
-               p.color == attackerColor, p.type == .king {
-                return true
-            }
-        }
-
-        // Sliding: bishop or queen on diagonals
+        // Sliding pieces and the adjacent king, in a single pass over the
+        // eight directions. Each ray is walked once: a piece found at distance
+        // 1 that is the attacker's king is itself an attacker, and the first
+        // piece encountered along the ray is a slider attacker when it matches
+        // the ray's orientation — bishop/queen on a diagonal, rook/queen on a
+        // straight. Folding the king test into each ray's first step replaces
+        // the separate king loop, which previously re-read the eight squares
+        // adjacent to the target that these rays already touch.
         for o in diagonals {
             let dr = o.dr, dc = o.dc
-            if let p = firstPieceAlong(state: state, row: row, col: col, dr: dr, dc: dc) {
-                if p.color == attackerColor, p.type == .bishop || p.type == .queen {
-                    return true
+            var r = row + dr, c = col + dc
+            var distance = 1
+            while r >= 0, r < 8, c >= 0, c < 8 {
+                if let p = board[r * 8 + c] {
+                    if p.color == attackerColor,
+                       p.type == .bishop || p.type == .queen || (distance == 1 && p.type == .king) {
+                        return true
+                    }
+                    break
                 }
+                r += dr; c += dc
+                distance += 1
             }
         }
-
-        // Sliding: rook or queen on straights
         for o in straights {
             let dr = o.dr, dc = o.dc
-            if let p = firstPieceAlong(state: state, row: row, col: col, dr: dr, dc: dc) {
-                if p.color == attackerColor, p.type == .rook || p.type == .queen {
-                    return true
+            var r = row + dr, c = col + dc
+            var distance = 1
+            while r >= 0, r < 8, c >= 0, c < 8 {
+                if let p = board[r * 8 + c] {
+                    if p.color == attackerColor,
+                       p.type == .rook || p.type == .queen || (distance == 1 && p.type == .king) {
+                        return true
+                    }
+                    break
                 }
+                r += dr; c += dc
+                distance += 1
             }
         }
 
@@ -348,18 +385,6 @@ enum MoveGenerator {
         }
 
         return moves
-    }
-
-    // MARK: - Helpers
-
-    /// First piece encountered along a ray from (row, col) in direction (dr, dc), exclusive of start.
-    private static func firstPieceAlong(state: GameState, row: Int, col: Int, dr: Int, dc: Int) -> Piece? {
-        var r = row + dr, c = col + dc
-        while r >= 0, r < 8, c >= 0, c < 8 {
-            if let p = state.board[r * 8 + c] { return p }
-            r += dr; c += dc
-        }
-        return nil
     }
 
     // MARK: - Direction Tables
