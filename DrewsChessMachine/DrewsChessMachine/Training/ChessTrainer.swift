@@ -2045,27 +2045,44 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: .int32,
             name: "move_played"
         )
-        let z = graph.placeholder(
+        // z / vBaseline / legalMask are fed as fp32 and narrowed to the
+        // compute dtype by an in-graph `cast` — the input boundary for
+        // these feeds, mirroring the fp32 board input (`board_input_cast`).
+        // The host write is then a raw memcpy: no per-element
+        // `float32ToBFloat16Bits` loop and no staging buffer (see
+        // `feedsForBatch`). The cast is bit-exact against that CPU loop
+        // (round-to-nearest-even, ties included — `BF16CastEquivalenceTests`),
+        // so every downstream op sees the same bf16 bits it saw before; on a
+        // `.float32` build the cast is the identity and is elided. The
+        // returned tuple field (the trainer's feed key) is the fp32
+        // placeholder `*Feed`; the bare `z` / `vBaseline` / `legalMask`
+        // bound below are the cast outputs that the loss graph consumes.
+        let zFeed = graph.placeholder(
             shape: [-1, 1],
-            dataType: dtype,
+            dataType: .float32,
             name: "z_outcome"
         )
+        let z = (dtype == .float32) ? zFeed : graph.cast(zFeed, to: dtype, name: "z_cast")
         // vBaseline: the value-head's own prediction of this position
         // captured at play time, fed as a placeholder so autodiff can't
         // walk back into the value head from the policy loss. MPSGraph
         // has no stopGradient op, so feeding the baseline in externally
-        // is how we get detach semantics.
-        let vBaseline = graph.placeholder(
+        // is how we get detach semantics. The fp32→cast indirection adds no
+        // gradient path into any trainable (the placeholder is a leaf), so
+        // the detach property is preserved.
+        let vBaselineFeed = graph.placeholder(
             shape: [-1, 1],
-            dataType: dtype,
+            dataType: .float32,
             name: "v_baseline"
         )
+        let vBaseline = (dtype == .float32) ? vBaselineFeed : graph.cast(vBaselineFeed, to: dtype, name: "v_baseline_cast")
 
-        let legalMask = graph.placeholder(
+        let legalMaskFeed = graph.placeholder(
             shape: [-1, NSNumber(value: ChessNetwork.policySize)],
-            dataType: dtype,
+            dataType: .float32,
             name: "legal_move_mask"
         )
+        let legalMask = (dtype == .float32) ? legalMaskFeed : graph.cast(legalMaskFeed, to: dtype, name: "legal_move_mask_cast")
 
         // Build masked logits: illegal positions get a huge negative bias.
         let oneConst = graph.constant(1.0, dataType: dtype)
@@ -3659,7 +3676,7 @@ final class ChessTrainer: @unchecked Sendable {
         )
 
         return (
-            movePlayed, z, vBaseline, legalMask,
+            movePlayed, zFeed, vBaselineFeed, legalMaskFeed,
             lrTensor, entropyCoeffTensor, weightDecayTensor, gradClipMaxNormTensor, policyLossWeightTensor,
             valueLossWeightTensor,
             illegalMassWeightTensor,
@@ -5157,13 +5174,14 @@ final class ChessTrainer: @unchecked Sendable {
     /// up. `staging` must be non-nil and sized to `count` on a narrow
     /// dtype (allocated once per batch size in `feedsForBatch`); it is
     /// `nil` on `.float32`.
-    /// Branches on the **ND array's own** dtype, not `ChessNetwork.dataType`,
-    /// because the feeds are no longer uniform: the board ND is fp32 (it feeds
-    /// the network's fp32 input placeholder, narrowed on the GPU) while
-    /// z / vBaseline / legalMask are the compute dtype (their placeholders are
-    /// declared at that width). An fp32 ND gets a raw passthrough (no
-    /// staging); a bf16 ND narrows through its staging buffer. Same dtype-of-
-    /// the-array discipline as `writeScalarFeed`.
+    /// Branches on the **ND array's own** dtype, not `ChessNetwork.dataType`.
+    /// All four real-valued feeds (board, z, vBaseline, legalMask) are now
+    /// fp32 — each feeds an fp32 placeholder narrowed to the compute dtype by
+    /// an in-graph `cast` — so on the bf16 build every call takes the fp32
+    /// raw-passthrough branch and `staging` is `nil`. The bf16 staging branch
+    /// is retained (general against a future narrow-dtype feed) but is
+    /// currently unexercised. Same dtype-of-the-array discipline as
+    /// `writeScalarFeed`.
     private func writeRealValuedFeed(
         _ ndArray: MPSNDArray,
         from floatPtr: UnsafePointer<Float>,
@@ -5253,25 +5271,23 @@ final class ChessTrainer: @unchecked Sendable {
         moveND.label = "trainer.feed.movePlayed[\(batchSize)] (reset)"
         let moveTD = MPSGraphTensorData(moveND)
 
-        // z / vBaseline / legalMask ND arrays match the network dtype:
-        // their graph placeholders are declared `dataType: dtype` (the
-        // network dtype, bf16 here), so the ND array storage they feed
-        // must be the same width. The Float32 host source is narrowed
-        // into per-batch-size bf16 staging in `buildFeeds` before each
-        // `writeBytes`; on `.float32` the staging is nil and the raw
-        // Float32 bytes go straight through. (The board feed no longer
-        // mirrors this — it is fp32 and narrowed on the GPU; see above.)
+        // z / vBaseline / legalMask ND arrays are fp32, like the board:
+        // their graph placeholders are now declared `dataType: .float32`
+        // and narrowed to the compute dtype on the GPU by an in-graph
+        // `cast` (see `buildTrainingOps`). So the ND storage is Float32
+        // regardless of the network dtype, and the host write is a raw
+        // Float32 passthrough — no per-batch-size bf16 staging.
         let zDesc = MPSNDArrayDescriptor(
-            dataType: dtype,
+            dataType: .float32,
             shape: [NSNumber(value: batchSize), 1]
         )
         let zND = MPSNDArray(device: mtlDevice, descriptor: zDesc)
         zND.label = "trainer.feed.z[\(batchSize)] (reset)"
         let zTD = MPSGraphTensorData(zND)
 
-        // vBaseline ND array — same shape as z, one scalar per row.
+        // vBaseline ND array — same shape as z, one scalar per row (fp32).
         let vBaselineDesc = MPSNDArrayDescriptor(
-            dataType: dtype,
+            dataType: .float32,
             shape: [NSNumber(value: batchSize), 1]
         )
         let vBaselineND = MPSNDArray(device: mtlDevice, descriptor: vBaselineDesc)
@@ -5279,7 +5295,7 @@ final class ChessTrainer: @unchecked Sendable {
         let vBaselineTD = MPSGraphTensorData(vBaselineND)
 
         let legalMaskDesc = MPSNDArrayDescriptor(
-            dataType: dtype,
+            dataType: .float32,
             shape: [NSNumber(value: batchSize), NSNumber(value: ChessNetwork.policySize)]
         )
         let legalMaskND = MPSNDArray(device: mtlDevice, descriptor: legalMaskDesc)
@@ -5311,28 +5327,16 @@ final class ChessTrainer: @unchecked Sendable {
             complementCEEnablePlaceholder: complementCEEnableTensorData
         ]
 
-        // Allocate the host-side bf16 staging for the three compute-dtype
-        // real-valued feeds (z / vBaseline / legalMask) once per batch size,
-        // each sized to its tensor's element count. (The board feed is fp32
-        // and needs no staging — see boardStaging below.) Only needed when
-        // the network dtype is narrower than Float32; on `.float32` each ND
-        // array is Float32 and the host feeds raw Float32 with no conversion,
-        // so leave them nil. `makeStaging` returns nil on `.float32` and a
-        // zero-filled buffer of the requested element count otherwise. These
-        // are freed in `freeStaging(_:)` on `feedCache` eviction
-        // (`resetNetwork` / `deinit`).
-        func makeStaging(_ elementCount: Int) -> UnsafeMutableBufferPointer<UInt16>? {
-            guard dtype != .float32 else { return nil }
-            let buffer = UnsafeMutableBufferPointer<UInt16>.allocate(capacity: elementCount)
-            buffer.initialize(repeating: 0)
-            return buffer
-        }
-        // Board feed is fp32 (the GPU narrows it) — no host-side bf16
-        // staging, regardless of the network dtype.
+        // All four real-valued feeds are fp32 and narrowed to the compute
+        // dtype on the GPU by an in-graph `cast` (board via
+        // `board_input_cast`; z / vBaseline / legalMask via the casts added
+        // in `buildTrainingOps`). So none needs host-side bf16 staging — the
+        // host write is a raw Float32 memcpy through the `.float32` branch of
+        // `writeRealValuedFeed`, regardless of the network dtype.
         let boardStaging: UnsafeMutableBufferPointer<UInt16>? = nil
-        let zStaging = makeStaging(batchSize)
-        let vBaselineStaging = makeStaging(batchSize)
-        let legalMaskStaging = makeStaging(batchSize * ChessNetwork.policySize)
+        let zStaging: UnsafeMutableBufferPointer<UInt16>? = nil
+        let vBaselineStaging: UnsafeMutableBufferPointer<UInt16>? = nil
+        let legalMaskStaging: UnsafeMutableBufferPointer<UInt16>? = nil
 
         let feeds = BatchFeeds(
             boardND: boardND,
