@@ -46,14 +46,14 @@ final class CheckpointController {
     /// genuinely stuck saves promptly.
     nonisolated static let slowSaveWatchdogSeconds: Int = 10
 
-    /// Surface a status message on the checkpoint status row, auto-clearing
-    /// after a kind-dependent lifetime so a transient save success line doesn't
-    /// linger past usefulness. Errors are also echoed to the session log
-    /// (`[CHECKPOINT-ERR]`) so an `.error`-lifetime on-screen line that
-    /// auto-clears is still recoverable from the persistent log file. The
-    /// `.success` lifetime is the longest — long enough for the user to glance
-    /// up and confirm the save actually landed — versus shorter lifetimes for
-    /// `.progress` and `.error` (see the lifetime switch below).
+    /// Surface a status message on the checkpoint status row. Terminal
+    /// statuses (`.success` / `.error`) auto-clear after a kind-dependent
+    /// lifetime so a transient confirmation doesn't linger past usefulness;
+    /// ongoing-operation statuses (`.progress` / `.slowProgress`) stay up
+    /// until replaced by the operation's terminal status, so an in-flight
+    /// save shows one continuous message rather than flickering off and back
+    /// on. Errors are also echoed to the session log (`[CHECKPOINT-ERR]`) so
+    /// an auto-cleared on-screen error is still recoverable from the log.
     func setCheckpointStatus(_ message: String, kind: CheckpointStatusKind) {
         checkpointStatusMessage = message
         checkpointStatusKind = kind
@@ -65,22 +65,28 @@ final class CheckpointController {
         if kind == .error {
             SessionLogger.shared.log("[CHECKPOINT-ERR] \(message)")
         }
-        // Auto-clear after a kind-dependent lifetime. Grabs the
-        // current message at schedule time so a later message isn't
-        // wiped out by an earlier one's timer.
-        let snapshotMessage = message
+        // Only TERMINAL statuses auto-clear. Ongoing-operation statuses
+        // (`.progress` / `.slowProgress`) are NOT auto-cleared: they mark an
+        // in-flight save / load / promotion and must stay on screen until
+        // that operation's terminal status replaces them. (Every path that
+        // sets `.progress` sets a `.success` or `.error` on completion — see
+        // the save / load / promote paths.)
+        //
+        // Auto-clearing progress on a timer produced a visible flicker: a
+        // save slower than the old 6 s progress lifetime had its "Saving…"
+        // line cleared mid-flight, then the 10 s slow-save watchdog re-showed
+        // a "still running" line — so the row read saving → blank → still
+        // saving. Leaving progress up until completion keeps it continuous.
         let lifetimeSeconds: Int
         switch kind {
-        case .progress: lifetimeSeconds = 6
-        // Slow-save status persists noticeably longer than a normal
-        // progress line — the user is presumably waiting on it, and a
-        // `.progress`-length auto-clear in the middle of a stuck save
-        // would just leave them confused about whether anything is
-        // still happening.
-        case .slowProgress: lifetimeSeconds = 120
+        case .progress, .slowProgress:
+            return
         case .success: lifetimeSeconds = 20
         case .error: lifetimeSeconds = 12
         }
+        // Grab the current message at schedule time so a later message isn't
+        // wiped out by an earlier one's timer.
+        let snapshotMessage = message
         Task { @MainActor in
             // `try?` is intentional: `Task.sleep` only throws
             // `CancellationError`. If the auto-clear Task is cancelled

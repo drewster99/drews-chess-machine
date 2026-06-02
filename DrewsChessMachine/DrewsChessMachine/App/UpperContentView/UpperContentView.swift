@@ -1,5 +1,4 @@
 import AppKit
-import Charts
 import Metal
 import SwiftUI
 import UniformTypeIdentifiers
