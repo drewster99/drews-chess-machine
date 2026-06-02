@@ -79,7 +79,7 @@ final class TacticalProbeWatcher {
             if Task.isCancelled { return }
 
             await self?.tickOnce()
-            var lastTriggeredStep = await self?.currentTrainerStep() ?? 0
+            var lastTriggeredStep = self?.currentTrainerStep() ?? 0
 
             while !Task.isCancelled {
                 do {
@@ -93,7 +93,7 @@ final class TacticalProbeWatcher {
                 }
                 if Task.isCancelled { return }
                 guard let self else { return }
-                guard let step = await self.currentTrainerStep() else { continue }
+                guard let step = self.currentTrainerStep() else { continue }
                 // Trainer rebuild / fresh session can roll step back —
                 // re-anchor so we don't lock out probes by holding a
                 // historical high-water mark.

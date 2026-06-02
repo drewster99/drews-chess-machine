@@ -216,7 +216,16 @@ struct SceneKitSurfaceView: NSViewRepresentable {
     /// type-checker into an expensive overload search.
     private static func configure(_ scnView: SCNView) {
         scnView.allowsCameraControl = true
-        scnView.autoenablesDefaultLighting = true
+        // `autoenablesDefaultLighting` is declared on the
+        // `SCNSceneRenderer` protocol that `SCNView` adopts (unlike
+        // `allowsCameraControl`, which lives directly on `SCNView`).
+        // Assigning the protocol-witnessed property on the concrete
+        // `SCNView` pushed the type-checker into a ~1s member/overload
+        // search; binding an explicitly-typed `SCNSceneRenderer`
+        // reference first keeps the assignment trivial — same class of
+        // workaround as the `NSColor.clear` / `vector3` helpers below.
+        let renderer: any SCNSceneRenderer = scnView
+        renderer.autoenablesDefaultLighting = true
         // Clear background so the sheet's material shows through the
         // empty space around the surface.
         scnView.backgroundColor = NSColor.clear
@@ -275,8 +284,14 @@ struct SceneKitSurfaceView: NSViewRepresentable {
         addAxisLabels(to: scene)
         let targetNode = addLookAtTarget(to: scene)
         let cameraNode = addCamera(to: scene, aimedAt: targetNode)
-        scnView.scene = scene
-        scnView.pointOfView = cameraNode
+        // `scene` and `pointOfView` are declared on the
+        // `SCNSceneRenderer` protocol that `SCNView` adopts; assigning
+        // them on the concrete `SCNView` triggers the same ~1s
+        // member/overload search worked around in `configure`. Bind an
+        // explicitly-typed renderer reference first.
+        let renderer: any SCNSceneRenderer = scnView
+        renderer.scene = scene
+        renderer.pointOfView = cameraNode
     }
 
     /// An empty scene — the assembly's starting point.

@@ -4987,7 +4987,7 @@ final class ChessTrainer: @unchecked Sendable {
     /// masters don't keep training from stale values. Caller must have paused
     /// training. (Init uses the synchronous `runSyncMastersAtInit`.)
     func syncMastersFromWorking() async throws {
-        guard !syncMastersOps.isEmpty, let first = masterVariables.first else { return }
+        guard !syncMastersOps.isEmpty, !masterVariables.isEmpty else { return }
         return try await withCheckedThrowingContinuation { continuation in
             executionQueue.async { [self] in
                 do {
@@ -4995,10 +4995,10 @@ final class ChessTrainer: @unchecked Sendable {
                         let results = network.graph.run(
                             with: network.commandQueue,
                             feeds: [network.inputPlaceholder: network.dummyInferenceInputTensorData],
-                            targetTensors: [first],
+                            targetTensors: [masterVariables[0]],
                             targetOperations: syncMastersOps
                         )
-                        guard results[first] != nil else {
+                        guard results[masterVariables[0]] != nil else {
                             throw ChessTrainerError.velocityLoadGraphFailed("master_sync")
                         }
                     }
