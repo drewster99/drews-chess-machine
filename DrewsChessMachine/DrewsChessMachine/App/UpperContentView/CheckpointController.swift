@@ -73,10 +73,11 @@ final class CheckpointController {
         // the save / load / promote paths.)
         //
         // Auto-clearing progress on a timer produced a visible flicker: a
-        // save slower than the old 6 s progress lifetime had its "Saving…"
-        // line cleared mid-flight, then the 10 s slow-save watchdog re-showed
-        // a "still running" line — so the row read saving → blank → still
-        // saving. Leaving progress up until completion keeps it continuous.
+        // save slower than the old progress auto-clear lifetime had its
+        // "Saving…" line cleared mid-flight, then the (longer-deadline)
+        // slow-save watchdog re-showed a "still running" line — so the row
+        // read saving → blank → still saving. Leaving progress up until
+        // completion keeps it continuous.
         let lifetimeSeconds: Int
         switch kind {
         case .progress, .slowProgress:
