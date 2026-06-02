@@ -77,8 +77,9 @@ enum NetworkWeightAnalyzer {
     /// Mirrors the shapes set in `ChessNetwork`'s graph construction;
     /// if those shapes change the analyzer needs updating in lockstep.
     static func fanIn(forVariableNamed name: String) -> Int? {
+        let convArea = ChessNetwork.towerConvKernelSize * ChessNetwork.towerConvKernelSize
         switch name {
-        case "stem_conv_weights":      return 30 * 3 * 3
+        case "stem_conv_weights":      return 30 * convArea
         case "policy_pre_conv_weights": return 128 * 1 * 1
         case "policy_conv_weights":    return 128 * 1 * 1
         case "value_conv_weights":  return ChessNetwork.channels   // 1×1 conv: inC = channels
@@ -87,7 +88,7 @@ enum NetworkWeightAnalyzer {
         default: break
         }
         if name.hasSuffix("_conv1_weights") || name.hasSuffix("_conv2_weights") {
-            return 128 * 3 * 3
+            return 128 * convArea
         }
         if name.hasSuffix("_se_fc1_weights") { return 128 }
         // se_fc2 is Glorot-init, handled by `expectedInitL2` before `fanIn`
@@ -574,27 +575,29 @@ enum NetworkWeightAnalyzer {
     private static func convShape(
         forVariableNamed name: String
     ) -> (outC: Int, inC: Int, kH: Int, kW: Int)? {
+        let k = ChessNetwork.towerConvKernelSize
         switch name {
-        case "stem_conv_weights":       return (128, 30, 3, 3)
+        case "stem_conv_weights":       return (128, 30, k, k)
         case "policy_pre_conv_weights": return (128, 128, 1, 1)
         case "policy_conv_weights":     return (76, 128, 1, 1)
         case "value_conv_weights":      return (ChessNetwork.valueHeadConvChannels, 128, 1, 1)
         default: break
         }
         if name.hasSuffix("_conv1_weights") || name.hasSuffix("_conv2_weights") {
-            return (128, 128, 3, 3)
+            return (128, 128, k, k)
         }
         return nil
     }
 
     private static func makeStemInputChannelDetail(stemConvValues: [Float]) -> Result.StemInputChannelDetail? {
-        let outC = 128, inC = 30, kH = 3, kW = 3
+        let outC = 128, inC = 30
+        let kH = ChessNetwork.towerConvKernelSize, kW = ChessNetwork.towerConvKernelSize
         let expected = outC * inC * kH * kW
         guard stemConvValues.count == expected else { return nil }
 
         var perInputSumSq = [Double](repeating: 0, count: inC)
-        let strideO = inC * kH * kW   // 270
-        let strideI = kH * kW         // 9
+        let strideO = inC * kH * kW
+        let strideI = kH * kW
         for o in 0..<outC {
             for i in 0..<inC {
                 let base = o * strideO + i * strideI

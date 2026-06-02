@@ -408,8 +408,10 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         let vConv = ChessNetwork.valueHeadConvChannels
         let vFlat = ChessNetwork.boardSize * ChessNetwork.boardSize * vConv
         let vHidden = ChessNetwork.valueHeadHiddenUnits
+        let k = ChessNetwork.towerConvKernelSize
+        let kArea = k * k
         var specs: [Spec] = [
-            Spec(name: "stem_conv", shape: [c, ChessNetwork.inputPlanes, 3, 3], fanIn: ChessNetwork.inputPlanes*3*3, fanOut: 0, kind: .he),
+            Spec(name: "stem_conv", shape: [c, ChessNetwork.inputPlanes, k, k], fanIn: ChessNetwork.inputPlanes*kArea, fanOut: 0, kind: .he),
             Spec(name: "value_conv", shape: [vConv, c, 1, 1], fanIn: c, fanOut: 0, kind: .he),
             Spec(name: "policy_pre_conv", shape: [c, c, 1, 1], fanIn: c, fanOut: 0, kind: .he),
             Spec(name: "policy_conv", shape: [ChessNetwork.policyChannels, c, 1, 1], fanIn: c, fanOut: 0, kind: .he),
@@ -420,8 +422,8 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             Spec(name: "value_fc2", shape: [vHidden, ChessNetwork.valueHeadClasses], fanIn: vHidden, fanOut: 0, kind: .he),
         ]
         for i in 0..<ChessNetwork.numBlocks {
-            specs.append(Spec(name: "block\(i)_conv1", shape: [c, c, 3, 3], fanIn: c*3*3, fanOut: 0, kind: .he))
-            specs.append(Spec(name: "block\(i)_conv2", shape: [c, c, 3, 3], fanIn: c*3*3, fanOut: 0, kind: .he))
+            specs.append(Spec(name: "block\(i)_conv1", shape: [c, c, k, k], fanIn: c*kArea, fanOut: 0, kind: .he))
+            specs.append(Spec(name: "block\(i)_conv2", shape: [c, c, k, k], fanIn: c*kArea, fanOut: 0, kind: .he))
         }
         let eps = ChessNetwork.weightRelativeEpsilon
         for s in specs {

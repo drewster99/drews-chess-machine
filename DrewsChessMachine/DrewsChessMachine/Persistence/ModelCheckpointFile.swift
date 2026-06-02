@@ -155,9 +155,10 @@ struct ModelCheckpointFile {
     /// architecture change (channels, policy width, input planes,
     /// SE width) instead of needing a manual bump.
     ///
-    /// Current largest tensors at the post-refresh architecture:
-    /// - residual conv weights: `channels × channels × 9 = 147,456`
-    /// - stem conv: `inputPlanes × channels × 9 = 34,560`
+    /// Current largest tensors at the post-refresh architecture (with a
+    /// `k×k` tower conv, `k = ChessNetwork.towerConvKernelSize`):
+    /// - residual conv weights: `channels × channels × k²`
+    /// - stem conv: `inputPlanes × channels × k²`
     /// - policy 1×1 conv: `channels × policyChannels = 9,728`
     /// - SE FC: `channels × (channels / r) = 4,096`
     /// All well below the cap. The 65,536-element slack lets a minor
@@ -168,8 +169,9 @@ struct ModelCheckpointFile {
     /// pre-decode) this is defense-in-depth: if the hash ever matches a
     /// malformed element count, we still reject before allocating.
     static var maxTensorElementCount: Int {
-        let residualConv = ChessNetwork.channels * ChessNetwork.channels * 9
-        let stemConv = ChessNetwork.inputPlanes * ChessNetwork.channels * 9
+        let convArea = ChessNetwork.towerConvKernelSize * ChessNetwork.towerConvKernelSize
+        let residualConv = ChessNetwork.channels * ChessNetwork.channels * convArea
+        let stemConv = ChessNetwork.inputPlanes * ChessNetwork.channels * convArea
         let policyConv = ChessNetwork.channels * ChessNetwork.policyChannels
         let seReduced = ChessNetwork.channels / ChessNetwork.seReductionRatio
         let seFC = ChessNetwork.channels * seReduced

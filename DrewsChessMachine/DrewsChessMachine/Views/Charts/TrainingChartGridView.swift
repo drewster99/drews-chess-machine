@@ -87,15 +87,15 @@ struct TrainingChartGridView: View {
                 bucketWidthSec: bucketWidthSec
             )
             .equatable()
-            EntropyChart(
+            NonNegChart(
                 buckets: frame.trainingBuckets,
                 group: fastChartGroup,
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
             )
             .equatable()
-            SmallProgressRateChart(
-                buckets: frame.progressRateBuckets,
+            EntropyChart(
+                buckets: frame.trainingBuckets,
                 group: fastChartGroup,
                 xDomain: xDomain,
                 bucketWidthSec: bucketWidthSec
@@ -124,13 +124,21 @@ struct TrainingChartGridView: View {
                 bucketWidthSec: bucketWidthSec
             )
             .equatable()
-            NonNegChart(
+            MiniLineChart(
+                title: "vLoss (W/D/L categorical CE)",
                 buckets: frame.trainingBuckets,
+                rangeAccessor: { $0.valueLoss },
+                unit: "",
+                color: .cyan,
                 group: fastChartGroup,
                 xDomain: xDomain,
-                bucketWidthSec: bucketWidthSec
+                bucketWidthSec: bucketWidthSec,
+                titleHelp: AttributedString("""
+                    Categorical cross-entropy of the value head's W/D/L softmax against the game's \
+                    one-hot result. Range is roughly [0, ln 3 ≈ 1.10]; values below ln 3 mean the \
+                    head is doing better than uniform.
+                    """)
             )
-            .equatable()
             ReplayRatioChart(
                 buckets: frame.trainingBuckets,
                 target: replayRatioTarget,
@@ -203,16 +211,11 @@ struct TrainingChartGridView: View {
             )
             DiversityHistogramChart(bars: diversityHistogram)
             DrawWatchHistogramChart(snapshot: drawWatchSnapshot)
-            ArenaActivityChart(
-                events: arenaEvents,
-                activeArenaStartElapsed: activeArenaStartElapsed,
-                lastTrainingElapsedSec: frame.lastTrainingElapsedSec,
-                promoteThreshold: promoteThreshold,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
-            )
-            // Row 4 — value head (post-WDL switch)
+            // Row 4 — value head + arena win % + training rate.
+            // NOTE: ArenaActivityChart was previously the first tile of this
+            // row; it's intentionally no longer placed in the grid (its view
+            // code is retained in ArenaActivityChart.swift). Arena promotions
+            // remain visible via the Arena win % tile below.
             WDLProbabilityChart(
                 buckets: frame.trainingBuckets,
                 group: fastChartGroup,
@@ -220,21 +223,20 @@ struct TrainingChartGridView: View {
                 bucketWidthSec: bucketWidthSec
             )
             .equatable()
-            MiniLineChart(
-                title: "vLoss (W/D/L categorical CE)",
-                buckets: frame.trainingBuckets,
-                rangeAccessor: { $0.valueLoss },
-                unit: "",
-                color: .cyan,
+            ArenaWinChart(
+                events: arenaEvents,
+                promoteThreshold: promoteThreshold,
+                hoveredSec: $hoveredSec,
+                scrollX: $scrollX,
+                context: context
+            )
+            SmallProgressRateChart(
+                buckets: frame.progressRateBuckets,
                 group: fastChartGroup,
                 xDomain: xDomain,
-                bucketWidthSec: bucketWidthSec,
-                titleHelp: AttributedString("""
-                    Categorical cross-entropy of the value head's W/D/L softmax against the game's \
-                    one-hot result. Range is roughly [0, ln 3 ≈ 1.10]; values below ln 3 mean the \
-                    head is doing better than uniform.
-                    """)
+                bucketWidthSec: bucketWidthSec
             )
+            .equatable()
             MiniLineChart(
                 title: "vMean (p_win − p_loss)",
                 buckets: frame.trainingBuckets,
@@ -279,13 +281,6 @@ struct TrainingChartGridView: View {
                     let pct = vAbs / decisive * 100.0
                     return String(format: "(%.1f%%)", pct)
                 }
-            )
-            ArenaWinChart(
-                events: arenaEvents,
-                promoteThreshold: promoteThreshold,
-                hoveredSec: $hoveredSec,
-                scrollX: $scrollX,
-                context: context
             )
         }
         .background(Color(nsColor: .separatorColor))

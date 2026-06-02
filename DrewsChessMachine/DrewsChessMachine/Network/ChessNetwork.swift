@@ -63,7 +63,8 @@ enum BNMode {
 ///   10 binary temporal-repetition-history planes (20–29). See
 ///   `BoardEncoder` and the `inputPlanes` doc below for the full
 ///   plane table.
-/// - Stem: 3x3 conv (`inputPlanes` -> 128 channels) -> BN. **No stem
+/// - Stem: `towerConvKernelSize`-square conv (`inputPlanes` -> 128
+///   channels) -> BN. **No stem
 ///   ReLU** — the first nonlinearity is deferred to block0's
 ///   pre-activation. The stem BN bounds `x_0`, the skip highway's
 ///   starting value.
@@ -160,12 +161,21 @@ final class ChessNetwork: @unchecked Sendable {
     /// 10 binary temporal-repetition-history planes (planes 20–29 in
     /// `BoardEncoder`). Changing this value automatically propagates
     /// through `BoardEncoder.tensorLength`, `ReplayBuffer.floatsPerBoard`,
-    /// the stem's weight shape `[channels, inputPlanes, 3, 3]`, and the
+    /// the stem's weight shape `[channels, inputPlanes, k, k]` (k =
+    /// `towerConvKernelSize`), and the
     /// network's `arch_hash`, so old checkpoints with a different value
     /// fail to load with a clear shape mismatch at startup.
     static let inputPlanes = 30
     static let boardSize = 8
-    static let numBlocks = 12
+    static let numBlocks = 5
+    /// Spatial kernel size of the stem conv and both convs inside every
+    /// residual block. The tower is "same"-padded (stride 1, padding
+    /// `(towerConvKernelSize - 1) / 2` on all four sides) so every conv
+    /// preserves the 8×8 board; that symmetric integer padding only exists
+    /// for *odd* kernels, which is why this is 7 and not an even size.
+    /// Single source of truth — `makeTowerConvDescriptor`, the stem/block
+    /// weight shapes, and `parameterCount` all derive from it.
+    static let towerConvKernelSize = 7
     /// Bumped whenever the forward-graph *topology* changes in a way the
     /// shape-only `archHash` can't see (activation swaps, block reordering,
     /// init scheme). Mixed into `ModelCheckpointFile.currentArchHash` so an
@@ -238,19 +248,20 @@ final class ChessNetwork: @unchecked Sendable {
     /// the live variable list.
     static var parameterCount: Int {
         let seReduced = channels / seReductionRatio
-        // Per residual block: two 3×3 convs, two BN layers
+        let convKernelArea = towerConvKernelSize * towerConvKernelSize
+        // Per residual block: two same-padded convs, two BN layers
         // (gamma+beta+mean+var each), the SE fc1/fc2 weights+biases (FC2
         // now emits 2×channels = gammas‖betas), and the per-block ReZero
         // scalar α.
-        let convPerBlock = 2 * (channels * channels * 9)
+        let convPerBlock = 2 * (channels * channels * convKernelArea)
         let bnPerBlock = 2 * (4 * channels)
         let seFC1 = (channels * seReduced) + seReduced
         let seFC2 = (seReduced * 2 * channels) + (2 * channels)
         let resScale = 1
         let perBlock = convPerBlock + bnPerBlock + seFC1 + seFC2 + resScale
 
-        // Stem: 3×3 conv (inputPlanes→channels) + one BN layer (no ReLU).
-        let stem = (inputPlanes * channels * 9) + (4 * channels)
+        // Stem: same-padded conv (inputPlanes→channels) + one BN layer (no ReLU).
+        let stem = (inputPlanes * channels * convKernelArea) + (4 * channels)
         // Tower-end BN (γ+β+mean+var) before the heads.
         let towerFinalBN = 4 * channels
         // Policy head: 1×1 conv (channels→channels, no bias) → BN(channels)
@@ -492,8 +503,15 @@ final class ChessNetwork: @unchecked Sendable {
         let g = MPSGraph()
         graph = g
 
-        let conv3x3 = try Self.makeConv3x3Descriptor()
+        let towerConv = try Self.makeTowerConvDescriptor()
         let conv1x1 = try Self.makeConv1x1Descriptor()
+
+        let stemConvDescriptor = towerConv
+        let stemConvDimension = Self.towerConvKernelSize
+
+        let blockConvDescriptor = towerConv
+        let blockConvDimension = Self.towerConvKernelSize
+
 
         // Input: [batch, inputPlanes, 8, 8]. The placeholder is fp32 — the
         // CPU feeds raw fp32 board planes (no host-side bf16 narrowing) and
@@ -530,11 +548,25 @@ final class ChessNetwork: @unchecked Sendable {
         var batchMeans: [MPSGraphTensor] = []
         var batchVars: [MPSGraphTensor] = []
 
-        // --- Stem: 3x3 conv (inputPlanes -> 128) -> BN -> ReLU ---
+        // --- Stem: same-padded conv (inputPlanes -> 128) -> BN -> ReLU ---
 
         let stemWeights = g.variable(
-            with: Self.heInitDataConvOIHW(shape: [128, Self.inputPlanes, 3, 3]),
-            shape: [128, NSNumber(value: Self.inputPlanes), 3, 3],
+            with: Self.heInitDataConvOIHW(
+                shape: [
+                    128,
+                    Self.inputPlanes,
+                    stemConvDimension,
+                    stemConvDimension
+                ]
+            ),
+            shape: [
+                128,
+                NSNumber(value: Self.inputPlanes),
+                NSNumber(value: stemConvDimension),
+                NSNumber(
+                    value: stemConvDimension
+                )
+            ],
             dataType: Self.dataType,
             name: "stem_conv_weights"
         )
@@ -543,7 +575,7 @@ final class ChessNetwork: @unchecked Sendable {
         var x = g.convolution2D(
             computeInput,
             weights: stemWeights,
-            descriptor: conv3x3,
+            descriptor: stemConvDescriptor,
             name: "stem_conv"
         )
         x = Self.batchNorm(
@@ -563,7 +595,12 @@ final class ChessNetwork: @unchecked Sendable {
 
         for i in 0..<Self.numBlocks {
             x = Self.residualBlock(
-                graph: g, input: x, descriptor: conv3x3, blockIndex: i, bnMode: bnMode,
+                graph: g,
+                input: x,
+                descriptor: blockConvDescriptor,
+                convolutionDimension: blockConvDimension,
+                blockIndex: i,
+                bnMode: bnMode,
                 trainables: &trainables,
                 shouldDecay: &shouldDecay,
                 runningStats: &runningStats,
@@ -1422,8 +1459,19 @@ final class ChessNetwork: @unchecked Sendable {
 
     // MARK: - Convolution Descriptors
 
-    /// 3x3 convolution with padding=1 (preserves 8x8 spatial dimensions).
-    private static func makeConv3x3Descriptor() throws -> MPSGraphConvolution2DOpDescriptor {
+    /// Stem / residual-tower convolution: a `towerConvKernelSize`-square
+    /// kernel, "same"-padded so it preserves the 8×8 board. Stride 1 with
+    /// padding `(towerConvKernelSize - 1) / 2` on every side yields
+    /// `out = in + 2·pad − kernel + 1 = in`. The padding is computed from
+    /// the kernel constant, so this stays correct if the kernel changes —
+    /// but only odd kernels give an integer symmetric pad (an even kernel
+    /// needs `kernel − 1` total padding split unevenly, which this asserts
+    /// against rather than silently mis-pad).
+    private static func makeTowerConvDescriptor() throws -> MPSGraphConvolution2DOpDescriptor {
+        precondition(
+            towerConvKernelSize % 2 == 1,
+            "towerConvKernelSize must be odd for symmetric same-padding (got \(towerConvKernelSize))"
+        )
         guard let desc = MPSGraphConvolution2DOpDescriptor(
             strideInX: 1, strideInY: 1,
             dilationRateInX: 1, dilationRateInY: 1,
@@ -1434,10 +1482,11 @@ final class ChessNetwork: @unchecked Sendable {
         ) else {
             throw ChessNetworkError.descriptorCreationFailed
         }
-        desc.paddingLeft = 1
-        desc.paddingRight = 1
-        desc.paddingTop = 1
-        desc.paddingBottom = 1
+        let pad = (towerConvKernelSize - 1) / 2
+        desc.paddingLeft = pad
+        desc.paddingRight = pad
+        desc.paddingTop = pad
+        desc.paddingBottom = pad
         return desc
     }
 
@@ -1629,6 +1678,7 @@ final class ChessNetwork: @unchecked Sendable {
         graph: MPSGraph,
         input: MPSGraphTensor,
         descriptor: MPSGraphConvolution2DOpDescriptor,
+        convolutionDimension: Int,
         blockIndex: Int,
         bnMode: BNMode,
         trainables: inout [MPSGraphTensor],
@@ -1653,8 +1703,20 @@ final class ChessNetwork: @unchecked Sendable {
         )
         h = graph.reLU(with: h, name: "\(prefix)_relu1")
         let conv1W = graph.variable(
-            with: heInitDataConvOIHW(shape: [128, 128, 3, 3]),
-            shape: [128, 128, 3, 3],
+            with: heInitDataConvOIHW(
+                shape: [
+                    128,
+                    128,
+                    convolutionDimension,
+                    convolutionDimension
+                ]
+            ),
+            shape: [
+                128,
+                128,
+                NSNumber(value: convolutionDimension),
+                NSNumber(value: convolutionDimension)
+            ],
             dataType: Self.dataType,
             name: "\(prefix)_conv1_weights"
         )
@@ -1673,8 +1735,20 @@ final class ChessNetwork: @unchecked Sendable {
         )
         h = graph.reLU(with: h, name: "\(prefix)_relu2")
         let conv2W = graph.variable(
-            with: heInitDataConvOIHW(shape: [128, 128, 3, 3]),
-            shape: [128, 128, 3, 3],
+            with: heInitDataConvOIHW(
+                shape: [
+                    128,
+                    128,
+                    convolutionDimension,
+                    convolutionDimension
+                ]
+            ),
+            shape: [
+                128,
+                128,
+                NSNumber(value: convolutionDimension),
+                NSNumber(value: convolutionDimension)
+            ],
             dataType: Self.dataType,
             name: "\(prefix)_conv2_weights"
         )

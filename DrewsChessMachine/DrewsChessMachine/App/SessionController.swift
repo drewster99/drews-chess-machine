@@ -690,8 +690,8 @@ final class SessionController {
             history: lichessProbeHistory,
             // Denser-than-default cadence (vs. the 400-step default) for a
             // closer forward-metric trace. Each tick is a trainer weight
-            // snapshot + 200-puzzle battery, so ~4x the default's tick load.
-            triggerEverySteps: 100
+            // snapshot + 200-puzzle battery, so ~16x the default's tick load.
+            triggerEverySteps: 25
         )
         lichessProbeWatcher = w
         w.start()
