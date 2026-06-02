@@ -225,6 +225,17 @@ struct TrainStepTiming: Sendable {
     /// runaway-velocity event, typically caused by setting μ too
     /// high relative to LR for the current loss landscape.
     let velocityNorm: Float
+
+    /// True when this step's diagnostic outputs (policy entropy, advantage
+    /// stats, played-move / value-head probabilities, weight & velocity norms,
+    /// non-negligible-cell counts, outcome-split policy losses) were actually
+    /// computed and read back. They are gated to stats steps — on a non-stats
+    /// step the trainer omits those extra graph reductions from the target
+    /// list so MPSGraph never encodes them, and the corresponding fields above
+    /// are `.nan` / `nil`. `recordStep` must not fold those placeholders into
+    /// the rolling means. The loss components, grad-norm, and all timing fields
+    /// are valid on every step. See GPU_UTILIZATION_PLAN.md (Phase 1).
+    let hasDiagnostics: Bool
 }
 
 // MARK: - Sweep Result
@@ -716,14 +727,29 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
     func recordStep(_ timing: TrainStepTiming) {
         lock.withLock {
             self._stats.record(timing)
-            self._lastTiming = timing
+            // Loss components, grad-norm, and the per-step timing windows are
+            // valid on EVERY step — they're weight-update-path outputs (or pure
+            // timing), always read back. Append them unconditionally.
             self._policyLossWindow.append(Double(timing.policyLoss))
             self._valueLossWindow.append(Double(timing.valueLoss))
-            self._policyEntropyWindow.append(Double(timing.policyEntropy))
             self._illegalMassPenaltyWindow.append(Double(timing.illegalMassPenalty))
+            self._gradNormWindow.append(Double(timing.gradGlobalNorm))
+            self._dataPrepMsWindow.append(timing.dataPrepMs)
+            self._gpuRunMsWindow.append(timing.gpuRunMs)
+            self._readbackMsWindow.append(timing.readbackMs)
+            self._queueWaitMsWindow.append(timing.queueWaitMs)
+            self._stepMsWindow.append(timing.totalMs)
+
+            // The diagnostic reductions are computed only on stats steps
+            // (`hasDiagnostics`); non-stats steps carry `.nan` / `nil`
+            // placeholders that must not enter the rolling means. `_lastTiming`
+            // — the source for the "Last Step" UI readout — is also updated only
+            // here so it never surfaces a NaN entropy/advantage.
+            guard timing.hasDiagnostics else { return }
+            self._lastTiming = timing
+            self._policyEntropyWindow.append(Double(timing.policyEntropy))
             self._policyNonNegWindow.append(Double(timing.policyNonNegligibleCount))
             self._policyNonNegIllegalWindow.append(Double(timing.policyNonNegligibleIllegalCount))
-            self._gradNormWindow.append(Double(timing.gradGlobalNorm))
             self._valueMeanWindow.append(Double(timing.valueMean))
             self._valueAbsMeanWindow.append(Double(timing.valueAbsMean))
             self._valueProbWinWindow.append(Double(timing.valueProbWin))
@@ -735,8 +761,8 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             // NaN protection: the conditional means are NaN when the
             // batch has zero positions on one side of the sign — skip
             // those entries so the rolling mean stays well-defined.
-            // The parallel `…SkipWindow` ring is appended on every step
-            // (1.0 on skip, 0.0 on contribution) so consumers can
+            // The parallel `…SkipWindow` ring is appended on every stats
+            // step (1.0 on skip, 0.0 on contribution) so consumers can
             // present the conditional mean as "mean over K/N samples"
             // rather than silently losing the skipped-batch count.
             if timing.playedMoveProbPosAdv.isFinite {
@@ -773,11 +799,6 @@ final class TrainingLiveStatsBox: @unchecked Sendable {
             if let raw = timing.advantageRaw, !raw.isEmpty {
                 self.pushAdvRaw(raw)
             }
-            self._dataPrepMsWindow.append(timing.dataPrepMs)
-            self._gpuRunMsWindow.append(timing.gpuRunMs)
-            self._readbackMsWindow.append(timing.readbackMs)
-            self._queueWaitMsWindow.append(timing.queueWaitMs)
-            self._stepMsWindow.append(timing.totalMs)
         }
     }
 
@@ -3897,7 +3918,10 @@ final class ChessTrainer: @unchecked Sendable {
                                 feeds: feeds,
                                 prepMs: prepMs,
                                 queueWaitMs: queueWaitMs,
-                                totalStart: totalStart
+                                totalStart: totalStart,
+                                // Random-data sweep: keep the full readback so
+                                // its measured step matches historical sweeps.
+                                includeDiagnostics: true
                             )
                         }
                     }
@@ -4208,7 +4232,10 @@ final class ChessTrainer: @unchecked Sendable {
                 feeds: feeds,
                 prepMs: prepMs,
                 queueWaitMs: phase3QueueWaitMs,
-                totalStart: totalStart
+                totalStart: totalStart,
+                // Diagnostic graph reductions only on stats steps — see
+                // GPU_UTILIZATION_PLAN.md (Phase 1).
+                includeDiagnostics: isStatsStep
             )
 
             // Count a successfully-completed real-data SGD step, for
@@ -4336,7 +4363,8 @@ final class ChessTrainer: @unchecked Sendable {
                 advantageRaw: baseTiming.advantageRaw,
                 policyLossWin: baseTiming.policyLossWin,
                 policyLossLoss: baseTiming.policyLossLoss,
-                velocityNorm: baseTiming.velocityNorm
+                velocityNorm: baseTiming.velocityNorm,
+                hasDiagnostics: baseTiming.hasDiagnostics
             )
         }
     }
@@ -5367,7 +5395,8 @@ final class ChessTrainer: @unchecked Sendable {
         feeds: [MPSGraphTensor: MPSGraphTensorData],
         prepMs: Double,
         queueWaitMs: Double,
-        totalStart: CFAbsoluteTime
+        totalStart: CFAbsoluteTime,
+        includeDiagnostics: Bool
     ) throws -> TrainStepTiming {
         // Wrap the graph.run + readback in an autoreleasepool so the
         // results dictionary and its MPSGraphTensorData values — which
@@ -5379,57 +5408,47 @@ final class ChessTrainer: @unchecked Sendable {
         // more time in deferred Obj-C releases.
         return try autoreleasepool {
         let gpuStart = CFAbsoluteTimeGetCurrent()
+        // Lean outputs (loss components + grad-norm) are on the weight-update
+        // path and read back every step. The diagnostic reductions — several
+        // over the full [batch, policySize] logit tensor — are extra graph work
+        // that only feeds the periodic [STATS] line and charts, so on non-stats
+        // steps we omit them from the target list and MPSGraph never encodes
+        // them. `assignOps` still forces the full forward+backward+optimizer,
+        // so this trims diagnostic reductions, not the core step. See
+        // GPU_UTILIZATION_PLAN.md (Phase 1).
+        let leanTargets: [MPSGraphTensor] = [
+            totalLoss, policyLossTensor, valueLossTensor,
+            illegalMassPenaltyTensor, gradGlobalNormTensor
+        ]
+        let diagnosticTargets: [MPSGraphTensor] = [
+            policyEntropyTensor, policyNonNegCountTensor, policyNonNegIllegalCountTensor,
+            valueMeanTensor, valueAbsMeanTensor,
+            valueProbWinTensor, valueProbDrawTensor, valueProbLossTensor,
+            policyHeadWeightNormTensor,
+            policyLogitAbsMaxTensor, playedMoveProbTensor,
+            playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
+            advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
+            advantageFracPosTensor, advantageFracSmallTensor,
+            advantageRawTensor,
+            policyLossWinTensor, policyLossLossTensor,
+            velocityGlobalNormTensor
+        ]
         let results = network.graph.run(
             with: network.commandQueue,
             feeds: feeds,
-            targetTensors: [
-                totalLoss, policyLossTensor, valueLossTensor,
-                policyEntropyTensor, illegalMassPenaltyTensor, policyNonNegCountTensor, policyNonNegIllegalCountTensor, gradGlobalNormTensor,
-                valueMeanTensor, valueAbsMeanTensor,
-                valueProbWinTensor, valueProbDrawTensor, valueProbLossTensor,
-                policyHeadWeightNormTensor,
-                policyLogitAbsMaxTensor, playedMoveProbTensor,
-                playedMoveProbPosAdvTensor, playedMoveProbNegAdvTensor,
-                advantageMeanTensor, advantageStdTensor, advantageMinTensor, advantageMaxTensor,
-                advantageFracPosTensor, advantageFracSmallTensor,
-                advantageRawTensor,
-                policyLossWinTensor, policyLossLossTensor,
-                velocityGlobalNormTensor
-            ],
+            targetTensors: includeDiagnostics ? leanTargets + diagnosticTargets : leanTargets,
             targetOperations: assignOps
         )
         let gpuMs = (CFAbsoluteTimeGetCurrent() - gpuStart) * 1000
 
         let readbackStart = CFAbsoluteTimeGetCurrent()
+        // Lean outputs are present every step (on the weight-update path).
         guard
             let totalData = results[totalLoss],
             let policyData = results[policyLossTensor],
             let valueData = results[valueLossTensor],
-            let entropyData = results[policyEntropyTensor],
             let illegalPenaltyData = results[illegalMassPenaltyTensor],
-            let nonNegData = results[policyNonNegCountTensor],
-            let nonNegIllegalData = results[policyNonNegIllegalCountTensor],
-            let gradNormData = results[gradGlobalNormTensor],
-            let valueMeanData = results[valueMeanTensor],
-            let valueAbsMeanData = results[valueAbsMeanTensor],
-            let valueProbWinData = results[valueProbWinTensor],
-            let valueProbDrawData = results[valueProbDrawTensor],
-            let valueProbLossData = results[valueProbLossTensor],
-            let policyHeadWNormData = results[policyHeadWeightNormTensor],
-            let pLogitAbsMaxData = results[policyLogitAbsMaxTensor],
-            let playedMoveProbData = results[playedMoveProbTensor],
-            let playedMoveProbPosAdvData = results[playedMoveProbPosAdvTensor],
-            let playedMoveProbNegAdvData = results[playedMoveProbNegAdvTensor],
-            let advMeanData = results[advantageMeanTensor],
-            let advStdData = results[advantageStdTensor],
-            let advMinData = results[advantageMinTensor],
-            let advMaxData = results[advantageMaxTensor],
-            let advFracPosData = results[advantageFracPosTensor],
-            let advFracSmallData = results[advantageFracSmallTensor],
-            let advRawData = results[advantageRawTensor],
-            let policyLossWinData = results[policyLossWinTensor],
-            let policyLossLossData = results[policyLossLossTensor],
-            let velocityNormData = results[velocityGlobalNormTensor]
+            let gradNormData = results[gradGlobalNormTensor]
         else {
             throw ChessTrainerError.lossOutputMissing
         }
@@ -5449,23 +5468,8 @@ final class ChessTrainer: @unchecked Sendable {
             count: 1
         )
         ChessNetwork.readFloats(
-            from: entropyData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotEntropy),
-            count: 1
-        )
-        ChessNetwork.readFloats(
             from: illegalPenaltyData,
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotIllegalMassPenalty),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: nonNegData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNeg),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: nonNegIllegalData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNegIllegal),
             count: 1
         )
         ChessNetwork.readFloats(
@@ -5473,142 +5477,104 @@ final class ChessTrainer: @unchecked Sendable {
             into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotGradNorm),
             count: 1
         )
-        ChessNetwork.readFloats(
-            from: valueMeanData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueMean),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: valueAbsMeanData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueAbsMean),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: valueProbWinData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbWin),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: valueProbDrawData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbDraw),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: valueProbLossData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbLoss),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: policyHeadWNormData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyHeadWNorm),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: pLogitAbsMaxData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPLogitAbsMax),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: playedMoveProbData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProb),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: playedMoveProbPosAdvData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbPosAdv),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: playedMoveProbNegAdvData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbNegAdv),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: advMeanData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMean),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: advStdData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvStd),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: advMinData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMin),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: advMaxData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMax),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: advFracPosData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracPos),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: advFracSmallData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracSmall),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: policyLossWinData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossWin),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: policyLossLossData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossLoss),
-            count: 1
-        )
-        ChessNetwork.readFloats(
-            from: velocityNormData,
-            into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotVelocityNorm),
-            count: 1
-        )
-        // Raw per-position advantage — batch-sized vector. Read into
-        // a fresh [Float] since the size depends on the runtime batch
-        // and we don't want to resize the scratch every time.
-        let advRawBatchSize: Int = advRawData.shape.reduce(1) { acc, dim in
-            acc * Int(truncating: dim)
-        }
-        var advRawValues = [Float](repeating: 0, count: advRawBatchSize)
-        if advRawBatchSize > 0 {
-            advRawValues.withUnsafeMutableBufferPointer { buf in
-                if let base = buf.baseAddress {
-                    ChessNetwork.readFloats(from: advRawData, into: base, count: advRawBatchSize)
+
+        // Diagnostic outputs are requested only on stats steps, so their
+        // results are absent otherwise. Read them all here under one guard;
+        // the per-field Buf values below default to `.nan` when skipped.
+        var advRawValues: [Float] = []
+        if includeDiagnostics {
+            guard
+                let entropyData = results[policyEntropyTensor],
+                let nonNegData = results[policyNonNegCountTensor],
+                let nonNegIllegalData = results[policyNonNegIllegalCountTensor],
+                let valueMeanData = results[valueMeanTensor],
+                let valueAbsMeanData = results[valueAbsMeanTensor],
+                let valueProbWinData = results[valueProbWinTensor],
+                let valueProbDrawData = results[valueProbDrawTensor],
+                let valueProbLossData = results[valueProbLossTensor],
+                let policyHeadWNormData = results[policyHeadWeightNormTensor],
+                let pLogitAbsMaxData = results[policyLogitAbsMaxTensor],
+                let playedMoveProbData = results[playedMoveProbTensor],
+                let playedMoveProbPosAdvData = results[playedMoveProbPosAdvTensor],
+                let playedMoveProbNegAdvData = results[playedMoveProbNegAdvTensor],
+                let advMeanData = results[advantageMeanTensor],
+                let advStdData = results[advantageStdTensor],
+                let advMinData = results[advantageMinTensor],
+                let advMaxData = results[advantageMaxTensor],
+                let advFracPosData = results[advantageFracPosTensor],
+                let advFracSmallData = results[advantageFracSmallTensor],
+                let advRawData = results[advantageRawTensor],
+                let policyLossWinData = results[policyLossWinTensor],
+                let policyLossLossData = results[policyLossLossTensor],
+                let velocityNormData = results[velocityGlobalNormTensor]
+            else {
+                throw ChessTrainerError.lossOutputMissing
+            }
+            ChessNetwork.readFloats(from: entropyData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotEntropy), count: 1)
+            ChessNetwork.readFloats(from: nonNegData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNeg), count: 1)
+            ChessNetwork.readFloats(from: nonNegIllegalData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotNonNegIllegal), count: 1)
+            ChessNetwork.readFloats(from: valueMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueMean), count: 1)
+            ChessNetwork.readFloats(from: valueAbsMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueAbsMean), count: 1)
+            ChessNetwork.readFloats(from: valueProbWinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbWin), count: 1)
+            ChessNetwork.readFloats(from: valueProbDrawData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbDraw), count: 1)
+            ChessNetwork.readFloats(from: valueProbLossData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotValueProbLoss), count: 1)
+            ChessNetwork.readFloats(from: policyHeadWNormData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyHeadWNorm), count: 1)
+            ChessNetwork.readFloats(from: pLogitAbsMaxData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPLogitAbsMax), count: 1)
+            ChessNetwork.readFloats(from: playedMoveProbData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProb), count: 1)
+            ChessNetwork.readFloats(from: playedMoveProbPosAdvData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbPosAdv), count: 1)
+            ChessNetwork.readFloats(from: playedMoveProbNegAdvData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPlayedMoveProbNegAdv), count: 1)
+            ChessNetwork.readFloats(from: advMeanData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMean), count: 1)
+            ChessNetwork.readFloats(from: advStdData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvStd), count: 1)
+            ChessNetwork.readFloats(from: advMinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMin), count: 1)
+            ChessNetwork.readFloats(from: advMaxData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvMax), count: 1)
+            ChessNetwork.readFloats(from: advFracPosData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracPos), count: 1)
+            ChessNetwork.readFloats(from: advFracSmallData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotAdvFracSmall), count: 1)
+            ChessNetwork.readFloats(from: policyLossWinData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossWin), count: 1)
+            ChessNetwork.readFloats(from: policyLossLossData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotPolicyLossLoss), count: 1)
+            ChessNetwork.readFloats(from: velocityNormData, into: lossReadbackScratchPtr.advanced(by: Self.lossReadbackSlotVelocityNorm), count: 1)
+            // Raw per-position advantage — batch-sized vector. Read into a
+            // fresh [Float] since the size depends on the runtime batch.
+            let advRawBatchSize: Int = advRawData.shape.reduce(1) { acc, dim in
+                acc * Int(truncating: dim)
+            }
+            advRawValues = [Float](repeating: 0, count: advRawBatchSize)
+            if advRawBatchSize > 0 {
+                advRawValues.withUnsafeMutableBufferPointer { buf in
+                    if let base = buf.baseAddress {
+                        ChessNetwork.readFloats(from: advRawData, into: base, count: advRawBatchSize)
+                    }
                 }
             }
         }
         let totalBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotTotal]
         let policyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicy]
         let valueBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValue]
-        let entropyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotEntropy]
         let illegalPenaltyBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotIllegalMassPenalty]
-        let nonNegBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotNonNeg]
-        let nonNegIllegalBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotNonNegIllegal]
         let gradNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotGradNorm]
-        let valueMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueMean]
-        let valueAbsMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueAbsMean]
-        let valueProbWinBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueProbWin]
-        let valueProbDrawBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueProbDraw]
-        let valueProbLossBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotValueProbLoss]
-        let policyHeadWNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicyHeadWNorm]
-        let pLogitAbsMaxBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPLogitAbsMax]
-        let playedMoveProbBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProb]
-        let playedMoveProbPosAdvBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProbPosAdv]
-        let playedMoveProbNegAdvBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProbNegAdv]
-        let advMeanBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvMean]
-        let advStdBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvStd]
-        let advMinBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvMin]
-        let advMaxBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvMax]
-        let advFracPosBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvFracPos]
-        let advFracSmallBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotAdvFracSmall]
-        let policyLossWinBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLossWin]
-        let policyLossLossBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLossLoss]
-        let velocityNormBufValue = lossReadbackScratchPtr[Self.lossReadbackSlotVelocityNorm]
+        // Diagnostic Buf values: the live scratch slot on stats steps, `.nan`
+        // otherwise (the reductions weren't encoded, so the slots are stale).
+        let entropyBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotEntropy] : Float.nan
+        let nonNegBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotNonNeg] : Float.nan
+        let nonNegIllegalBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotNonNegIllegal] : Float.nan
+        let valueMeanBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotValueMean] : Float.nan
+        let valueAbsMeanBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotValueAbsMean] : Float.nan
+        let valueProbWinBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotValueProbWin] : Float.nan
+        let valueProbDrawBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotValueProbDraw] : Float.nan
+        let valueProbLossBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotValueProbLoss] : Float.nan
+        let policyHeadWNormBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotPolicyHeadWNorm] : Float.nan
+        let pLogitAbsMaxBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotPLogitAbsMax] : Float.nan
+        let playedMoveProbBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProb] : Float.nan
+        let playedMoveProbPosAdvBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProbPosAdv] : Float.nan
+        let playedMoveProbNegAdvBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotPlayedMoveProbNegAdv] : Float.nan
+        let advMeanBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotAdvMean] : Float.nan
+        let advStdBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotAdvStd] : Float.nan
+        let advMinBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotAdvMin] : Float.nan
+        let advMaxBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotAdvMax] : Float.nan
+        let advFracPosBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotAdvFracPos] : Float.nan
+        let advFracSmallBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotAdvFracSmall] : Float.nan
+        let policyLossWinBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLossWin] : Float.nan
+        let policyLossLossBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotPolicyLossLoss] : Float.nan
+        let velocityNormBufValue = includeDiagnostics ? lossReadbackScratchPtr[Self.lossReadbackSlotVelocityNorm] : Float.nan
         let readbackMs = (CFAbsoluteTimeGetCurrent() - readbackStart) * 1000
 
         // Health check: any NaN/Inf in the headline loss or grad scalars means
@@ -5622,8 +5588,7 @@ final class ChessTrainer: @unchecked Sendable {
             || !policyBufValue.isFinite
             || !valueBufValue.isFinite
             || !gradNormBufValue.isFinite
-            || !valueMeanBufValue.isFinite
-            || !entropyBufValue.isFinite {
+            || (includeDiagnostics && (!valueMeanBufValue.isFinite || !entropyBufValue.isFinite)) {
             SessionLogger.shared.log(
                 "[ALARM] loss non-finite: total=\(totalBufValue) policy=\(policyBufValue) value=\(valueBufValue) grad=\(gradNormBufValue) vMean=\(valueMeanBufValue) pEnt=\(entropyBufValue)"
             )
@@ -5671,10 +5636,11 @@ final class ChessTrainer: @unchecked Sendable {
             advantageMax: advMaxBufValue,
             advantageFracPositive: advFracPosBufValue,
             advantageFracSmall: advFracSmallBufValue,
-            advantageRaw: advRawValues,
+            advantageRaw: includeDiagnostics ? advRawValues : nil,
             policyLossWin: policyLossWinBufValue.isFinite ? policyLossWinBufValue : nil,
             policyLossLoss: policyLossLossBufValue.isFinite ? policyLossLossBufValue : nil,
-            velocityNorm: velocityNormBufValue
+            velocityNorm: velocityNormBufValue,
+            hasDiagnostics: includeDiagnostics
         )
         }  // autoreleasepool
     }

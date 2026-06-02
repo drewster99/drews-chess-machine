@@ -63,12 +63,24 @@ control decision. They only feed rolling means emitted on the periodic
 
 ---
 
-## Phase 1 — Telemetry gating
+## Phase 1 — Telemetry gating — IMPLEMENTED 2026-06-02
 
 Compute the diagnostic-only graph outputs **only on stats steps**, reusing the
-existing `isStatsStep` gate (`ChessTrainer.swift:3954`,
+existing `isStatsStep` gate (`ChessTrainer.swift`,
 `nextStep % batchStatsInterval == 0`) that already gates the replay metadata and
 `[LEGAL-COST]` line.
+
+**As implemented:** `runPreparedStep` gained an `includeDiagnostics` flag (the
+main path passes `isStatsStep`; the random-data sweep passes `true` to keep its
+measured step unchanged). On non-stats steps only the lean targets (totalLoss,
+policyLoss, valueLoss, illegalMassPenalty, gradGlobalNorm) are requested, so
+MPSGraph never encodes the diagnostic reductions; the diagnostic `TrainStepTiming`
+fields are `.nan` / `nil` and `hasDiagnostics` is `false`. `recordStep` appends
+the loss/grad-norm + timing windows every step but gates the diagnostic windows,
+skip-windows, advantage-percentile ring, and `_lastTiming` on `hasDiagnostics`,
+so the rolling means accumulate only real samples (now at stats-step cadence) and
+the "Last Step" UI panel never shows NaN. Pending: measure the `p3` / encode-time
+drop on a non-stats step once training is idle.
 
 ### Honest bound on the win
 
