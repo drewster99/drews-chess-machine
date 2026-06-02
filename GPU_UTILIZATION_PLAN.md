@@ -70,9 +70,14 @@ existing `isStatsStep` gate (`ChessTrainer.swift`,
 `nextStep % batchStatsInterval == 0`) that already gates the replay metadata and
 `[LEGAL-COST]` line.
 
-**As implemented:** `runPreparedStep` gained an `includeDiagnostics` flag (the
-main path passes `isStatsStep`; the random-data sweep passes `true` to keep its
-measured step unchanged). On non-stats steps only the lean targets (totalLoss,
+**As implemented:** `runPreparedStep` gained an `includeDiagnostics` flag. It is
+gated on a **diagnostics cadence** that equals `batchStatsInterval` when that is
+set (so the reductions coincide with stats steps) but falls back to a fixed
+interval (`diagnosticsFallbackInterval = 10`) when `batchStatsInterval == 0` —
+because the diagnostics feed the `[STATS]` line and the entropy/draw-collapse
+alarms, not just `[BATCH-STATS]`, so disabling batch stats must not silently kill
+them. The random-data sweep passes `true` to keep its measured step unchanged.
+On non-diagnostic steps only the lean targets (totalLoss,
 policyLoss, valueLoss, illegalMassPenalty, gradGlobalNorm) are requested, so
 MPSGraph never encodes the diagnostic reductions; the diagnostic `TrainStepTiming`
 fields are `.nan` / `nil` and `hasDiagnostics` is `false`. `recordStep` appends

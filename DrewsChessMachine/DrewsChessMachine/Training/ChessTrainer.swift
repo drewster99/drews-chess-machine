@@ -1055,6 +1055,13 @@ final class ChessTrainer: @unchecked Sendable {
     /// user widen the valve when that happens.
     static let gradClipMaxNormDefault: Float = 30.0
 
+    /// Fallback cadence (in training steps) for computing the graph diagnostic
+    /// reductions when `batchStatsInterval` is 0 ([BATCH-STATS] disabled). The
+    /// diagnostics feed the [STATS] line and the entropy / draw-collapse alarms
+    /// — not just [BATCH-STATS] — so they must keep flowing regardless of the
+    /// batch-stats setting. See GPU_UTILIZATION_PLAN.md (Phase 1).
+    static let diagnosticsFallbackInterval = 10
+
     /// Default per-head loss coefficients in `total_loss =
     /// valueLossWeight · valueLoss + policyLossWeight · policyLoss
     /// − entropyCoeff · policyEntropy
@@ -3968,6 +3975,7 @@ final class ChessTrainer: @unchecked Sendable {
         struct Phase1: Sendable {
             let boardsCopy: [Float]
             let isStatsStep: Bool
+            let includeDiagnostics: Bool
         }
         let phase1: Phase1? = try await enqueue { [batchSize] in
             let phase1Start = CFAbsoluteTimeGetCurrent()
@@ -3993,6 +4001,12 @@ final class ChessTrainer: @unchecked Sendable {
             let interval = self.batchStatsInterval
             let nextStep = self._completedTrainSteps.value + 1
             let isStatsStep = interval > 0 && nextStep % interval == 0
+            // Graph diagnostics are gated separately from [BATCH-STATS]: they
+            // coincide with stats steps when `batchStatsInterval` is set, but
+            // fall back to a fixed cadence when it's 0 so the [STATS] line and
+            // the entropy/draw-collapse alarms never lose their inputs.
+            let diagnosticsInterval = interval > 0 ? interval : Self.diagnosticsFallbackInterval
+            let includeDiagnostics = nextStep % diagnosticsInterval == 0
             let didSample = replayBuffer.sample(
                 count: batchSize,
                 intoBoards: boards,
@@ -4051,7 +4065,7 @@ final class ChessTrainer: @unchecked Sendable {
             let totalFloats = batchSize * floatsPerBoard
             let boardsCopy = Array(UnsafeBufferPointer(start: boards, count: totalFloats))
             self.phase1WallTimesMs.append((CFAbsoluteTimeGetCurrent() - phase1Start) * 1000)
-            return Phase1(boardsCopy: boardsCopy, isStatsStep: isStatsStep)
+            return Phase1(boardsCopy: boardsCopy, isStatsStep: isStatsStep, includeDiagnostics: includeDiagnostics)
         }
         guard let phase1 else { return nil }
 
@@ -4082,7 +4096,8 @@ final class ChessTrainer: @unchecked Sendable {
         // current-trainer values from phase 2.
         let dispatchedAtPhase3 = CFAbsoluteTimeGetCurrent()
         let isStatsStep = phase1.isStatsStep
-        return try await enqueue { [batchSize, freshValues, freshBaselineMs, dispatchedAtPhase3, isStatsStep] in
+        let includeDiagnostics = phase1.includeDiagnostics
+        return try await enqueue { [batchSize, freshValues, freshBaselineMs, dispatchedAtPhase3, isStatsStep, includeDiagnostics] in
             let phase3Start = CFAbsoluteTimeGetCurrent()
             let phase3QueueWaitMs = (phase3Start - dispatchedAtPhase3) * 1000
             let totalStart = phase3Start
@@ -4233,9 +4248,10 @@ final class ChessTrainer: @unchecked Sendable {
                 prepMs: prepMs,
                 queueWaitMs: phase3QueueWaitMs,
                 totalStart: totalStart,
-                // Diagnostic graph reductions only on stats steps — see
-                // GPU_UTILIZATION_PLAN.md (Phase 1).
-                includeDiagnostics: isStatsStep
+                // Diagnostic graph reductions on the diagnostics cadence
+                // (== stats steps when batchStatsInterval > 0; a fixed
+                // fallback when it's 0) — see GPU_UTILIZATION_PLAN.md (Phase 1).
+                includeDiagnostics: includeDiagnostics
             )
 
             // Count a successfully-completed real-data SGD step, for
