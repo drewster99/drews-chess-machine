@@ -239,6 +239,16 @@ final class LichessProbeHistory {
     /// of wall-clock time.
     let maxEntriesPerTheme: Int
 
+    /// Retention cap for the OVERALL trend series (NLL / puzzle-Elo),
+    /// decoupled from `maxEntriesPerTheme`. The OVERALL charts plot the
+    /// whole-run trajectory on the path-based `FastLineChart`, so this is
+    /// set high enough to cover an entire run at the probe cadence — at
+    /// the 25-step cadence, 50k samples spans ~1.25M trainer steps. The
+    /// series is persisted in the session snapshot and restored on
+    /// resume. If a run ever exceeds this the oldest samples drop (the
+    /// per-bucket decimation the training charts use is not applied here).
+    private let maxOverallSamples = 50_000
+
     init(maxEntriesPerTheme: Int = 120) {
         self.maxEntriesPerTheme = maxEntriesPerTheme
     }
@@ -293,8 +303,8 @@ final class LichessProbeHistory {
             puzzleElo: elo,
             trainingStep: trainingStep
         ))
-        if overallSeries.count > maxEntriesPerTheme {
-            overallSeries.removeFirst(overallSeries.count - maxEntriesPerTheme)
+        if overallSeries.count > maxOverallSamples {
+            overallSeries.removeFirst(overallSeries.count - maxOverallSamples)
         }
     }
 

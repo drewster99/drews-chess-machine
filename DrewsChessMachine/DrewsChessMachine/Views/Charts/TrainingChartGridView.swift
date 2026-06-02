@@ -252,7 +252,8 @@ struct TrainingChartGridView: View {
                     Batch mean of the derived value scalar v = p_win − p_loss, in [-1, +1]. \
                     Negative means the head leans "losing" on average across the batch; zero is \
                     the neutral expectation.
-                    """)
+                    """),
+                valueFormat: { String(format: "%.4f", $0) }
             )
             MiniLineChart(
                 title: "vAbs |p_win − p_loss|",
