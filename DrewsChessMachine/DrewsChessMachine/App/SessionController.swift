@@ -913,6 +913,7 @@ final class SessionController {
             case .success(let net):
                 net.identifier = ModelIDMinter.mint()
                 network = net
+                net.network.commandQueue.label = "champion (self-play)"
                 runner = ChessRunner(network: net)
                 let idStr = net.identifier?.description ?? "?"
                 networkStatus = """
@@ -952,6 +953,7 @@ final class SessionController {
         case .success(let net):
             net.identifier = ModelIDMinter.mint()
             network = net
+            net.network.commandQueue.label = "champion (self-play)"
             runner = ChessRunner(network: net)
             isBuilding = false
             return .success(net)

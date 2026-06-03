@@ -5451,12 +5451,14 @@ final class ChessTrainer: @unchecked Sendable {
                 dataType: placeholder.dataType
             )
         }
+        let des = MPSGraphCompilationDescriptor()
+        des.optimizationLevel = .level1
         let executable = network.graph.compile(
             with: MPSGraphDevice(mtlDevice: network.metalDevice),
             feeds: feedShapes,
             targetTensors: targets,
             targetOperations: assignOps,
-            compilationDescriptor: MPSGraphCompilationDescriptor()
+            compilationDescriptor: des
         )
         trainingExecutables[key] = executable
         SessionLogger.shared.log(

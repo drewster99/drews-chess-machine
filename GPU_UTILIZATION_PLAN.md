@@ -251,10 +251,92 @@ actually cut the ~575 ms encode?), not correctness of weight sharing.
 
 ---
 
-## Phase 3 — Deferred
+## Phase 3 — Encode-ahead pipeline (4–8 steps in flight)
 
-Kernel-count reduction (fuse BN into convs, simplify the SE block) and
-eliminating/merging the per-step fresh-baseline forward (Phase 2 of `trainStep`,
-~136 ms, itself a second per-step `graph.run`). Revisit only if Phase 2's
-measurement shows the encode cost is raw-encoding-bound (many tiny kernels)
-rather than planning-bound.
+Phase 2's measurement settled the open question: the executable cut per-submission
+**CPU-to-GPU latency ~20%** (≈61→49 ms) but barely moved step time, so the cost is
+**raw command encoding** of the hundreds of tiny kernels, not planning. The win is
+to overlap CPU encode with GPU execution — keep the one command queue full so the
+GPU never stalls on the encoder.
+
+### The structural reality that shapes everything
+
+Training steps are a **sequential dependency chain**: step N+1's forward reads the
+weights step N's SGD `assignOps` just wrote. They therefore CANNOT run in parallel
+on the GPU — Metal serializes them via the weight-variable resource hazard.
+Submitting 4–8 in flight does not parallelize the training math; it keeps the
+**command queue full** so the GPU never waits on the CPU encoder ("always full for
+certain"), and gives slack against CPU encode jitter.
+
+The ordering question, resolved against Apple's docs:
+
+- Command buffers on one queue are **guaranteed to execute in enqueue order**
+  (archived Metal Programming Guide: "All command buffers sent to a single queue are
+  guaranteed to execute in the order in which the command buffers were enqueued").
+  That is *start* order, not non-overlap — Apple GPUs may overlap consecutive command
+  buffers, so order alone doesn't guarantee N's weight writes are visible to N+1's
+  reads.
+- BUT for **tracked** resources, "Metal automatically uses synchronization primitives
+  to avoid hazards on the GPU timeline" across passes/command buffers within a single
+  queue (`MTLHazardTrackingMode` docs). Device-allocated `MTLBuffer`s — which MPSGraph
+  `variable` weight buffers are — are **tracked by default**. Explicit Fences/Events
+  are only required for **untracked** resources (heap-allocated `.untracked`).
+
+So the weight read-after-write hazard across command buffers is **handled
+automatically by Metal**, provided the weight buffers are tracked (the default). We
+therefore likely need NO explicit `MTLEvent`/fence — just `enqueue()` for order +
+`commit`, relying on automatic hazard tracking, while the CPU encodes N+1…N+k ahead
+to keep the queue full. One queue (`network.commandQueue`), N command buffers.
+
+**Verify, don't assume:** confirm MPSGraph's variable buffers are tracked (they
+should be — device-allocated), with the loss-doesn't-diverge test (Increment 2) as
+the gate. If they turn out untracked, the fallback is a single `MTLFence` on the
+weight buffer. Never rely on bare in-order *start* without the tracking guarantee.
+
+### Pieces
+
+1. **`executable.encode(to: commandBuffer)` instead of `executable.run`.** `run`
+   commits-and-waits (the current stall). `encode(to:)` records into a command
+   buffer we own; `enqueue()` → encode → `commit` without waiting, then move on.
+2. **N-deep resource ring.** While the GPU reads step N's feeds / writes its
+   results, the CPU fills step N+1's — so feeds AND result buffers must be
+   N-buffered (currently single). `feedCache` → an N-slot ring per batch size;
+   pre-allocated result `MPSGraphTensorData` per slot (the `results:` argument,
+   now N-buffered — also removes the per-step result allocation).
+3. **GPU→GPU baseline handoff.** Co-encode the fresh-baseline forward and the
+   training step. The baseline's `v(s)` flows into the training step's `vBaseline`
+   as a **GPU buffer** (the baseline's output ndarray fed as the placeholder's
+   data) — no CPU readback (which would break the pipeline). Encoded in order, the
+   GPU runs `train(N-1)` [writes W] → `baseline(N)` [reads updated W] → `train(N)`,
+   so the baseline stays **fresh** AND the CPU round-trip is gone. The placeholder
+   boundary still detaches the gradient (value head only trains via its own CE).
+4. **Completion → readback → recordStep, off the handler.** The command-buffer
+   completion handler only *signals*; a consumer drains the result buffers and
+   calls `recordStep`. No work in the handler.
+5. **Replay-ratio controller** counts consumed batches at completion — same
+   cadence, now async.
+
+### Risks / validation
+- **Read-before-write on the weights** — handled by Metal's automatic hazard
+  tracking *if* the variable buffers are tracked (the default for device buffers);
+  the loss-doesn't-diverge test confirms it. Fallback if untracked: one `MTLFence`
+  on the weight buffer. A divergence is the signature of an unguarded hazard.
+- **vBaseline GPU-handoff detach** — confirm no gradient reaches the value head
+  through the baseline (the placeholder boundary must hold).
+- **N-buffer lifetime** — the GPU must finish reading slot k before the CPU
+  overwrites it N steps later; the in-flight cap (N) enforces this.
+- Success signature: CPU-to-GPU latency collapses toward µs, the GPU track goes
+  solid, step throughput rises.
+
+### Increments (each built + validated before the next)
+1. **Plumbing** — `executable.run` → `encode(to:)` + `commit` + completion handler,
+   still 1-deep (await completion). Same perf; proves the encode/commit/completion
+   path with zero pipelining risk.
+2. **Pipeline depth** — N-deep feed/result ring + encode-ahead (don't await; keep N
+   in flight, cap configurable 4–8). The actual win.
+3. **GPU→GPU baseline** — remove the CPU baseline readback; co-encode baseline+train.
+
+## Phase 4 — Deferred (kernel-count reduction)
+
+Fuse BN into convs, simplify the SE block — fewer kernels to encode. Revisit after
+the pipeline; with encode overlapped, fewer kernels compounds the win.

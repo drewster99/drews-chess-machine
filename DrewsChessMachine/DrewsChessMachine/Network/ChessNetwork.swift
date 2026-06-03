@@ -451,6 +451,18 @@ final class ChessNetwork: @unchecked Sendable {
     }
     private var batchInputCache: [Int: BatchInputEntry] = [:]
 
+    /// Compiled inference executables, keyed by batch size (`count`). The batched
+    /// forward pass is the highest-frequency GPU submission in the app (self-play
+    /// workers, plus the trainer's fresh-baseline forward), so it runs through a
+    /// compiled `MPSGraphExecutable` (`.level1` optimization) instead of
+    /// `graph.run`, which re-derives execution bookkeeping each call. Compiled
+    /// once per batch size and reused for the network's lifetime — the graph is
+    /// never rebuilt, and `loadWeights` (champion snapshots at each arena) mutates
+    /// the shared variables in place, which the executable observes (proven in
+    /// MPSGraphExecutableVariableSemanticsTests). Accessed only on
+    /// `executionQueue`, like `batchInputCache`. See GPU_UTILIZATION_PLAN.md.
+    private var inferenceExecutables: [Int: MPSGraphExecutable] = [:]
+
     /// Readback scratch for batched policy logits. Grows on demand to
     /// the largest batch size ever requested. **Not re-entrant** — the
     /// `UnsafeBufferPointer` handed to the consume closure of
@@ -1045,12 +1057,31 @@ final class ChessNetwork: @unchecked Sendable {
         try autoreleasepool {
             Self.writeInferenceInput(batchBoards, into: entry.ndArray)
 
-            let results = graph.run(
+            // Compiled-executable path (highest-frequency forward pass). Bind
+            // inputs in the executable's own feed order; the result array comes
+            // back in compiled targetTensors order, so zip restores the
+            // tensor→data dictionary the readback below expects. See
+            // MPSGraphExecutableTrainingEquivalenceTests for the equivalence and
+            // ordering proofs, and GPU_UTILIZATION_PLAN.md.
+            let executable = inferenceExecutable(for: count, feeds: entry.feeds)
+            guard let feedTensors = executable.feedTensors else {
+                throw ChessNetworkError.outputMissing("inference feed tensors")
+            }
+            var inputs: [MPSGraphTensorData] = []
+            inputs.reserveCapacity(feedTensors.count)
+            for tensor in feedTensors {
+                guard let data = entry.feeds[tensor] else {
+                    throw ChessNetworkError.outputMissing("inference feed binding")
+                }
+                inputs.append(data)
+            }
+            let resultArray = executable.run(
                 with: commandQueue,
-                feeds: entry.feeds,
-                targetTensors: inferenceTargets,
-                targetOperations: nil
+                inputs: inputs,
+                results: nil,
+                executionDescriptor: nil
             )
+            let results = Dictionary(uniqueKeysWithValues: zip(inferenceTargets, resultArray))
 
             guard let policyData = results[policyOutputReadback] else {
                 throw ChessNetworkError.outputMissing("policy")
@@ -1099,12 +1130,47 @@ final class ChessNetwork: @unchecked Sendable {
             shape: [NSNumber(value: count), NSNumber(value: Self.inputPlanes), 8, 8]
         )
         let nda = MPSNDArray(device: metalDevice, descriptor: desc)
-        nda.label = "nda"
+        nda.label = "inference.input[\(count)]"
         let tensorData = MPSGraphTensorData(nda)
         let feeds: [MPSGraphTensor: MPSGraphTensorData] = [inputPlaceholder: tensorData]
         let entry = BatchInputEntry(ndArray: nda, tensorData: tensorData, feeds: feeds)
         batchInputCache[count] = entry
         return entry
+    }
+
+    /// Compile + cache the inference executable for batch size `count`. Concrete
+    /// feed shapes are taken from the live feed tensor data (the placeholder
+    /// carries a `-1` batch dim; the executable is specialized to this count).
+    /// Targets are the policy / value / valueProbs outputs; no target operations
+    /// (inference is read-only). `.level1` trades compile time for execution
+    /// time — paid once per batch size, amortized to nothing. Must run on
+    /// `executionQueue`.
+    private func inferenceExecutable(
+        for count: Int,
+        feeds: [MPSGraphTensor: MPSGraphTensorData]
+    ) -> MPSGraphExecutable {
+        if let cached = inferenceExecutables[count] {
+            return cached
+        }
+        var feedShapes: [MPSGraphTensor: MPSGraphShapedType] = [:]
+        feedShapes.reserveCapacity(feeds.count)
+        for (placeholder, tensorData) in feeds {
+            feedShapes[placeholder] = MPSGraphShapedType(
+                shape: tensorData.shape,
+                dataType: placeholder.dataType
+            )
+        }
+        let desc = MPSGraphCompilationDescriptor()
+        desc.optimizationLevel = .level1
+        let executable = graph.compile(
+            with: MPSGraphDevice(mtlDevice: metalDevice),
+            feeds: feedShapes,
+            targetTensors: inferenceTargets,
+            targetOperations: nil,
+            compilationDescriptor: desc
+        )
+        inferenceExecutables[count] = executable
+        return executable
     }
 
     private func ensureBatchPolicyScratch(count: Int) -> UnsafeMutablePointer<Float> {
