@@ -251,7 +251,14 @@ actually cut the ~575 ms encode?), not correctness of weight sharing.
 
 ---
 
-## Phase 3 — Parallel-encoder pipeline (measurement-driven)
+## Phase 3 — Pipelining the encode-bound training step (measurement-driven)
+
+> **Read order:** the "parallel encoders feeding one ordered queue" architecture
+> below is the plan of record. Its core assumption — that one executable can be
+> encoded concurrently across threads — was initially contradicted by a probe, then
+> **confirmed** once the probe was fixed to obey the documented contract (callers own
+> the result buffers; never pass `results: nil`). See **PREREQUISITE — RESOLVED** and
+> **Where that leaves us** for the resolution and sequencing.
 
 **The decomposition (`[ENCODE-COST]` probe, build 1620, 2026-06-03):**
 - pure CPU `executable.encode()`: **p50 ≈ 340 ms/step**
@@ -308,26 +315,76 @@ tracking orders the baseline-write before the train-read; the GPU's step orderin
 keeps the baseline reading the latest weights (fresh). The placeholder boundary still
 detaches the gradient.
 
-### KEY open risk — verify before building (the make-or-break, like variable-sharing was for Phase 2)
-**Is `MPSGraphExecutable.encode(to:)` thread-safe for concurrent calls from multiple
-worker threads (each with its own command buffer, sharing one executable)?**
-- If **yes** → share the one cached executable across encoders. Done.
-- If **no** → need **per-thread executable instances** compiled from the same graph,
-  and we must verify *those* share the weight variables (extend
-  `MPSGraphExecutableVariableSemanticsTests`). This is the gating prerequisite —
-  resolve it with a focused probe/test first, exactly as we resolved variable-sharing
-  before committing to Phase 2.
+### PREREQUISITE — RESOLVED, POSITIVE with one usage rule (probes, build 1620, 2026-06-03)
+**Is `MPSGraphExecutable.encode(to:)` safe to call concurrently on ONE executable?**
+Resolved by reading the header contract, then two probes:
+- The header documents `resultsArray` as "Tensors for which the **caller** wishes
+  `MPSGraphTensorData` to be returned"; the completion-handler doc notes that when
+  results aren't provided "Graph hasn't yet allocated the results." So with
+  **`results: nil` the executable allocates and reuses internal result storage** —
+  shared mutable state.
+- **First probe** (`results: nil`, 16 threads) cross-contaminated outputs: iter #5
+  got #7's answer (72 vs 54), #10 got #2's (27 vs 99) — *other iterations' correct
+  results*, the signature of that shared internal buffer. **Not** an `encode`
+  reentrancy bug — a usage bug in the probe.
+- **Second probe** (`testExecutableConcurrentEncodeWithCallerOwnedResultsIsSafe`):
+  same 16 threads, but each passes its **own** pre-allocated `results:` buffer (and
+  its own input). All 16 correct. ⇒ **One executable can be encoded concurrently
+  across threads, provided every thread owns its input AND result buffers.**
 
-### Other caveats
-- **CPU cost:** ~2–3 cores continuously encoding — competes with the 800 self-play
-  workers for CPU. Watch self-play throughput doesn't regress.
-- **Not unit-testable:** correctness is concurrency-under-real-training; the gate is a
-  **live run** watching loss-doesn't-diverge + self-play health.
-- **Complementary lever (Phase 4):** kernel fusion cuts the ~340 ms encode at the root
-  (fewer kernels → less encode *and* less GPU), reducing the M needed — or removing the
-  need for parallel encoders entirely if it drops encode below the 175 ms GPU.
+So **parallel encoders can share one cached executable** — no per-thread executable
+instances needed. The hard requirement is that each encoder slot owns its inputs and
+its results (the N-slot ring already provides this — just pass the slot's result
+buffers as `results:`, never `nil`).
 
-## Phase 4 — Deferred (kernel-count reduction)
+**Two documented/operational caveats to honor in the build:**
+- **`commitAndContinue` may fire inside `encode`** (header: "commitAndContinue might
+  be called, please don't rely on underlying MTLCommandBuffer to remain
+  uncommitted"). So order must be locked by `enqueue()` *before* encode, and the
+  control thread must not assume the buffer is still open after handing it to an
+  encoder.
+- **One remaining training-specific probe before building:** the forward-only test
+  proves the result-buffer rule; the *training* executable also writes the shared
+  weight variables via `assign` ops. The variable writes are GPU-deferred (they run
+  at execution time in enqueue order, not at encode time), so concurrent *encode* of
+  assign-bearing steps should be fine — but add a `concurrent-encode-with-assigns`
+  probe (does each step still produce the right post-assign weights when many are
+  encoded concurrently?) to confirm before committing the pipeline.
 
-Fuse BN into convs, simplify the SE block — fewer kernels to encode. Revisit after
-the pipeline; with encode overlapped, fewer kernels compounds the win.
+### Where that leaves us — sequencing
+1. **Single-encoder encode-ahead (SAFE, ~1.5×, do first).** Stop waiting: encode step
+   N+1 while the GPU runs step N (2-deep feed/result ring, completion handler frees the
+   slot, caller-owned result buffers). Throughput → `max(encode, GPU)` ≈ 340 ms (from
+   ~515 ms serial). Zero concurrency; reclaims the 175 ms now spent waiting. This is
+   Increment 2, done correctly.
+2. **Parallel encoders sharing one executable (~3×, now UNBLOCKED).** M ≈ 2–3 encoder
+   threads, each owning its slot's input/result buffers, `enqueue()`-ordered. Gated
+   only on the small `concurrent-encode-with-assigns` probe above — the big risk
+   (needing per-thread executables) is retired.
+3. **Kernel fusion (Phase 4, still worth it).** Cuts the ~340 ms encode at the root AND
+   speeds the GPU; compounds with the pipeline and reduces the M encoders needed.
+
+**Recommendation:** ship (1) now for a safe ~1.5×, run the assigns probe, then build (2)
+for the full ~3×. (3) remains a parallel, compounding lever.
+
+### Caveats that apply to any pipelined option
+- **Caller-owned buffers, never `results: nil`** — the proven rule above.
+- **N-buffer lifetime:** the GPU must finish reading a slot before the CPU overwrites
+  it; the in-flight cap enforces this.
+- **GPU→GPU baseline:** co-encode baseline→train, bind the baseline's per-slot `v(s)`
+  ndarray as the train step's `vBaseline` (no CPU readback); placeholder boundary still
+  detaches the gradient.
+- **Not unit-testable end-to-end:** the gate is a **live run** watching
+  loss-doesn't-diverge + self-play throughput (the encoder competes with self-play for
+  CPU).
+
+## Phase 4 — kernel-count reduction (compounding lever)
+
+A second, independent attack on the same ~340 ms encode bottleneck — pursue alongside
+the pipeline, not instead of it. Fuse BN into the preceding conv (fold scale/shift into
+weights/bias at inference; at training it's trickier — BN stats update — so target the
+inference/self-play graphs first and the training graph second), simplify the SE block,
+prune redundant casts. Fewer kernels → less per-kernel encode overhead (the measured
+bottleneck) AND less GPU. The further encode drops, the fewer parallel encoders Phase 3
+needs — and if it ever falls below the ~175 ms GPU time, single-encoder encode-ahead
+saturates the GPU on its own.

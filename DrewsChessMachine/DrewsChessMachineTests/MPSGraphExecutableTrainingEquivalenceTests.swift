@@ -280,4 +280,112 @@ final class MPSGraphExecutableTrainingEquivalenceTests: XCTestCase {
         XCTAssertEqual(readBack(try XCTUnwrap(read[readW]), count: n), [7.0, 7.0, 7.0],
                        "encode(to:) must execute the compiled assign target-operation (weight update)")
     }
+
+    /// Guards the safe pattern the trainer actually uses: **one cached
+    /// `MPSGraphExecutable`, re-encoded SERIALLY** into a fresh command buffer each
+    /// step (distinct inputs), must give the correct result every time. This is
+    /// what `runPreparedStep` relies on — compile once, reuse every step.
+    ///
+    /// Backstory (Phase-3 prerequisite probe, build 1620, 2026-06-03): a first
+    /// concurrent-encode probe that passed `results: nil` cross-contaminated its
+    /// outputs (iter #5 got #7's answer, etc.) — because with `nil` the executable
+    /// allocates and *reuses* internal result storage, which is shared mutable
+    /// state. The follow-up `testExecutableConcurrentEncodeWithCallerOwnedResultsIsSafe`
+    /// then showed that with **caller-owned per-thread result buffers**, concurrent
+    /// encode on one executable IS correct. So the contract is: one executable may
+    /// be encoded serially (this test) or concurrently (that test) as long as the
+    /// caller owns the input/result buffers. See GPU_UTILIZATION_PLAN.md Phase 3.
+    func testExecutableSerialReuseAcrossCommandBuffersIsCorrect() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal not available")
+        }
+        queue.label = "serial-reuse-test"
+        let graph = MPSGraph()
+        let W = graph.variable(with: dataOf([2.0, 3.0, 4.0]), shape: shape, dataType: .float32, name: "W")
+        let x = graph.placeholder(shape: shape, dataType: .float32, name: "x")
+        let prod = graph.multiplication(W, x, name: "prod")
+        let outSum = graph.reductionSum(with: prod, axes: [0], name: "outSum")   // = 9·xi
+        let exe = graph.compile(
+            with: MPSGraphDevice(mtlDevice: device),
+            feeds: [x: MPSGraphShapedType(shape: shape, dataType: .float32)],
+            targetTensors: [outSum],
+            targetOperations: nil,
+            compilationDescriptor: MPSGraphCompilationDescriptor()
+        )
+
+        let iterations = 16
+        for i in 0..<iterations {
+            let xi = Float(i + 1)
+            let feed = tensorData(device, [xi, xi, xi], shape: shape)
+            guard let mtlCB = queue.makeCommandBuffer() else {
+                XCTFail("makeCommandBuffer returned nil at iteration \(i)")
+                return
+            }
+            let mpsCB = MPSCommandBuffer(commandBuffer: mtlCB)
+            let r = exe.encode(to: mpsCB, inputs: [feed], results: nil, executionDescriptor: nil)
+            mpsCB.commit()
+            mpsCB.waitUntilCompleted()
+            let got = readBack(r[0], count: 1)[0]
+            XCTAssertEqual(got, 9.0 * xi, accuracy: 1e-4,
+                           "serial reuse #\(i): expected \(9.0 * xi), got \(got)")
+        }
+    }
+
+    /// The doc-informed re-test of concurrent encode. The header documents
+    /// `resultsArray` as "Tensors for which the caller wishes MPSGraphTensorData to
+    /// be returned"; with `results: nil` the executable allocates and **reuses**
+    /// internal result storage — shared mutable state that cross-contaminated the
+    /// earlier nil-results concurrent probe. Here each thread passes its **own**
+    /// pre-allocated result buffer, so concurrent encodes can't clobber each other's
+    /// outputs. If this passes, `encode` IS usable concurrently on one executable
+    /// provided the caller owns the result (and input) buffers — which would put the
+    /// parallel-encoder pipeline back on the table (GPU_UTILIZATION_PLAN.md Phase 3).
+    func testExecutableConcurrentEncodeWithCallerOwnedResultsIsSafe() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal not available")
+        }
+        queue.label = "concurrent-encode-owned-results"
+        let graph = MPSGraph()
+        let W = graph.variable(with: dataOf([2.0, 3.0, 4.0]), shape: shape, dataType: .float32, name: "W")
+        let x = graph.placeholder(shape: shape, dataType: .float32, name: "x")
+        let prod = graph.multiplication(W, x, name: "prod")
+        let outSum = graph.reductionSum(with: prod, axes: [0], name: "outSum")   // shape [1], = 9·xi
+        let exe = graph.compile(
+            with: MPSGraphDevice(mtlDevice: device),
+            feeds: [x: MPSGraphShapedType(shape: shape, dataType: .float32)],
+            targetTensors: [outSum],
+            targetOperations: nil,
+            compilationDescriptor: MPSGraphCompilationDescriptor()
+        )
+
+        let iterations = 16
+        let outShape: [NSNumber] = [1]
+        // Per-iteration inputs AND result buffers, pre-created serially.
+        let feeds: [MPSGraphTensorData] = (0..<iterations).map { i in
+            let xi = Float(i + 1)
+            return tensorData(device, [xi, xi, xi], shape: shape)
+        }
+        let outputs: [MPSGraphTensorData] = (0..<iterations).map { _ in
+            MPSGraphTensorData(MPSNDArray(device: device,
+                                          descriptor: MPSNDArrayDescriptor(dataType: .float32, shape: outShape)))
+        }
+        var results = [Float](repeating: .nan, count: iterations)
+        results.withUnsafeMutableBufferPointer { buf in
+            DispatchQueue.concurrentPerform(iterations: iterations) { i in
+                guard let mtlCB = queue.makeCommandBuffer() else { return }
+                let mpsCB = MPSCommandBuffer(commandBuffer: mtlCB)
+                _ = exe.encode(to: mpsCB, inputs: [feeds[i]], results: [outputs[i]], executionDescriptor: nil)
+                mpsCB.commit()
+                mpsCB.waitUntilCompleted()
+                buf[i] = self.readBack(outputs[i], count: 1)[0]
+            }
+        }
+
+        for i in 0..<iterations {
+            XCTAssertEqual(results[i], 9.0 * Float(i + 1), accuracy: 1e-4,
+                           "owned-results concurrent encode #\(i): expected \(9.0 * Float(i + 1)), got \(results[i])")
+        }
+    }
 }
