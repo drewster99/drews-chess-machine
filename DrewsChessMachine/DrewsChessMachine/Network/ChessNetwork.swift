@@ -1,6 +1,7 @@
 import Accelerate
 import Foundation
 import Metal
+import MetalPerformanceShaders
 import MetalPerformanceShadersGraph
 
 // MARK: - Errors
@@ -1246,15 +1247,29 @@ final class ChessNetwork: @unchecked Sendable {
                 }
                 inputs.append(data)
             }
-            // Caller-owned result buffer (never `results: nil`) per the proven
-            // concurrent-encode contract. `run` commits and waits, so the buffer
-            // is fully populated before this returns.
-            _ = executable.run(
-                with: commandQueue,
+            // Non-blocking baseline forward (GPU_UTILIZATION_PLAN.md Phase 3,
+            // step 1). Encode into our own command buffer and `commit` WITHOUT
+            // `waitUntilCompleted`, so the baseline's GPU work overlaps the
+            // training-step encode that follows on the trainer queue instead of
+            // stalling the CPU here. Correctness rests on enqueue ordering +
+            // tracked-resource hazard tracking: the training step reads `resultTD`
+            // (the vBaseline) from a command buffer committed *after* this one on
+            // the same `commandQueue`, so Metal serializes the read behind this
+            // write — the trainer never touches `resultTD` on the CPU, so no host
+            // wait is needed. Caller-owned result buffer (never `results: nil`)
+            // per the proven concurrent-encode contract; `consume` only hands the
+            // buffer reference onward (the data fills on the GPU, in order).
+            guard let mtlCommandBuffer = commandQueue.makeCommandBuffer() else {
+                throw ChessNetworkError.outputMissing("value-baseline command buffer")
+            }
+            let mpsCommandBuffer = MPSCommandBuffer(commandBuffer: mtlCommandBuffer)
+            _ = executable.encode(
+                to: mpsCommandBuffer,
                 inputs: inputs,
                 results: [resultTD],
                 executionDescriptor: nil
             )
+            mpsCommandBuffer.commit()
             consume(resultTD)
         }
     }
