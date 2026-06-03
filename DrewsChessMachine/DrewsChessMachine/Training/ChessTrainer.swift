@@ -1586,6 +1586,16 @@ final class ChessTrainer: @unchecked Sendable {
     private var phase2WallTimesMs: [Double] = []
     private var phase3WallTimesMs: [Double] = []
     private var legalMaskLoopMsTimes: [Double] = []
+    /// Pipeline-feasibility probe (GPU_UTILIZATION_PLAN Phase 3): pure CPU
+    /// `executable.encode(...)` time vs the `commit + waitUntilCompleted` GPU
+    /// wall, per training step. The encode call is documented async (returns
+    /// after encoding, before the GPU runs), so these cleanly separate
+    /// CPU-encode from GPU-execution — the number that decides whether a
+    /// single-encoder pipeline can outpace the GPU (encode ≪ gpuWait) or whether
+    /// we need parallel encoders / it's GPU-bound. Accumulated per step, emitted
+    /// as `[ENCODE-COST]` on diagnostics steps.
+    private var encodeMsTimes: [Double] = []
+    private var gpuWaitMsTimes: [Double] = []
     /// Inter-step wall time: gap from the moment one training batch
     /// completes (after phase 3) to the same moment of the next.
     /// Captures everything `p1ms + p2ms + p3ms` doesn't — caller-side
@@ -5557,14 +5567,37 @@ final class ChessTrainer: @unchecked Sendable {
             throw ChessTrainerError.lossOutputMissing
         }
         let mpsCommandBuffer = MPSCommandBuffer(commandBuffer: mtlCommandBuffer)
+        // Pipeline-feasibility probe: time the (async, CPU-only) encode call
+        // separately from commit + GPU wait. encodeMs is pure CPU encode;
+        // gpuWaitMs is commit + GPU execution + wait. Their ratio decides the
+        // Phase 3 architecture. The executable was already compiled by
+        // `trainingExecutable` above, so no compile cost is folded into encodeMs.
+        let encodeStart = CFAbsoluteTimeGetCurrent()
         let resultArray = executable.encode(
             to: mpsCommandBuffer,
             inputs: inputs,
             results: nil,
             executionDescriptor: nil
         )
+        let encodeMs = (CFAbsoluteTimeGetCurrent() - encodeStart) * 1000
+        let gpuWaitStart = CFAbsoluteTimeGetCurrent()
         mpsCommandBuffer.commit()
         mpsCommandBuffer.waitUntilCompleted()
+        let gpuWaitMs = (CFAbsoluteTimeGetCurrent() - gpuWaitStart) * 1000
+        encodeMsTimes.append(encodeMs)
+        gpuWaitMsTimes.append(gpuWaitMs)
+        if includeDiagnostics {
+            SessionLogger.shared.log(
+                "[ENCODE-COST] step=\(_completedTrainSteps.value) batch=\(batchSize)"
+                + " n=\(encodeMsTimes.count)"
+                + String(format: " encodeMs=(p50=%.2f p99=%.2f)",
+                         Self.percentile(encodeMsTimes, 0.50), Self.percentile(encodeMsTimes, 0.99))
+                + String(format: " gpuWaitMs=(p50=%.2f p99=%.2f)",
+                         Self.percentile(gpuWaitMsTimes, 0.50), Self.percentile(gpuWaitMsTimes, 0.99))
+            )
+            encodeMsTimes.removeAll(keepingCapacity: true)
+            gpuWaitMsTimes.removeAll(keepingCapacity: true)
+        }
         // `encode` returns results in the compiled targetTensors order (same as
         // `run`), so zip restores the tensor→data dictionary the readback expects.
         let results = Dictionary(uniqueKeysWithValues: zip(targets, resultArray))
