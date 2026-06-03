@@ -143,4 +143,54 @@ final class MPSGraphExecutableTrainingEquivalenceTests: XCTestCase {
                            "post-update weight[\(i)] mismatch: graph.run=\(wAfterA[i]) executable=\(wAfterB[i])")
         }
     }
+
+    /// `runPreparedStep` maps the executable's result array back to the loss /
+    /// diagnostic tensors with `Dictionary(zip(targets, resultArray))`, which
+    /// assumes `executable.run` returns results in the **same order** as the
+    /// `targetTensors` passed at compile. That assumption is invisible with a
+    /// single target, so this exercises it with TWO distinct-valued outputs:
+    /// if `run` reordered them, the `zip` mapping would assign the wrong value
+    /// to each tensor and the asserts would fail.
+    func testExecutableMultiTargetResultsKeepCompileOrder() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal not available")
+        }
+        let graph = MPSGraph()
+        let W = graph.variable(with: dataOf([2.0, 3.0, 4.0]), shape: shape, dataType: .float32, name: "W")
+        let x = graph.placeholder(shape: shape, dataType: .float32, name: "x")
+        let prod = graph.multiplication(W, x, name: "prod")              // [3]
+        let outSum = graph.reductionSum(with: prod, axes: [0], name: "outSum")        // 9
+        let outMax = graph.reductionMaximum(with: prod, axes: [0], name: "outMax")    // 4
+
+        // Same target order used by both paths and by the mapping under test.
+        let targets = [outSum, outMax]
+        let feedX = tensorData(device, [1.0, 1.0, 1.0], shape: shape)
+
+        // Ground truth via graph.run (dictionary-keyed, order-independent).
+        let gr = graph.run(with: queue, feeds: [x: feedX], targetTensors: targets, targetOperations: nil)
+        let grSum = readBack(try XCTUnwrap(gr[outSum]), count: 1)[0]
+        let grMax = readBack(try XCTUnwrap(gr[outMax]), count: 1)[0]
+        // The two outputs must be distinct, else a swap would be undetectable.
+        XCTAssertNotEqual(grSum, grMax, "test outputs must differ to detect a reorder")
+
+        // Executable path, mapped exactly as runPreparedStep does.
+        let exe = graph.compile(
+            with: MPSGraphDevice(mtlDevice: device),
+            feeds: [x: MPSGraphShapedType(shape: shape, dataType: .float32)],
+            targetTensors: targets,
+            targetOperations: nil,
+            compilationDescriptor: MPSGraphCompilationDescriptor()
+        )
+        let feedOrder = try XCTUnwrap(exe.feedTensors)
+        let dataByTensor: [MPSGraphTensor: MPSGraphTensorData] = [x: feedX]
+        let inputs = try feedOrder.map { try XCTUnwrap(dataByTensor[$0]) }
+        let resultArray = exe.run(with: queue, inputs: inputs, results: nil, executionDescriptor: nil)
+        let mapped = Dictionary(uniqueKeysWithValues: zip(targets, resultArray))
+
+        XCTAssertEqual(readBack(try XCTUnwrap(mapped[outSum]), count: 1)[0], grSum, accuracy: 1e-6,
+                       "outSum must map to the sum, not the max — result order must follow compile order")
+        XCTAssertEqual(readBack(try XCTUnwrap(mapped[outMax]), count: 1)[0], grMax, accuracy: 1e-6,
+                       "outMax must map to the max — result order must follow compile order")
+    }
 }

@@ -1478,6 +1478,19 @@ final class ChessTrainer: @unchecked Sendable {
         }
     }
     private var feedCache: [Int: BatchFeeds] = [:]
+
+    /// Compiled training-step executables, keyed by batch size and whether the
+    /// diagnostic targets are included (Phase 1's two target sets → up to two
+    /// executables per batch size). Built lazily on first use for each key and
+    /// reused for the trainer network's lifetime; `resetNetwork` clears them
+    /// alongside `feedCache`. Accessed only on `executionQueue` (same as
+    /// `feedCache`), so no extra locking. See GPU_UTILIZATION_PLAN.md (Phase 2).
+    private struct TrainingExecutableKey: Hashable {
+        let batchSize: Int
+        let includeDiagnostics: Bool
+    }
+    private var trainingExecutables: [TrainingExecutableKey: MPSGraphExecutable] = [:]
+
     /// Mirror of `feedCache.count` updated on every cache mutation so a
     /// reader on a different queue can observe the size without
     /// touching the dictionary itself. Exposed via `feedCacheCount`
@@ -1957,6 +1970,10 @@ final class ChessTrainer: @unchecked Sendable {
         }
         feedCache.removeAll()
         _feedCacheCount.value = 0
+        // The compiled executables reference this trainer network's graph and
+        // variables; a rebuilt network invalidates them. Drop them so the next
+        // step recompiles against the fresh graph.
+        trainingExecutables.removeAll()
         // Fresh weights ⇒ the LR-warmup schedule must restart from
         // step 0. Without this, the warmup multiplier (a function of
         // `_completedTrainSteps / lrWarmupSteps`) jumps ahead of the
@@ -3926,6 +3943,7 @@ final class ChessTrainer: @unchecked Sendable {
                                 prepMs: prepMs,
                                 queueWaitMs: queueWaitMs,
                                 totalStart: totalStart,
+                                batchSize: batchSize,
                                 // Random-data sweep: keep the full readback so
                                 // its measured step matches historical sweeps.
                                 includeDiagnostics: true
@@ -4248,6 +4266,7 @@ final class ChessTrainer: @unchecked Sendable {
                 prepMs: prepMs,
                 queueWaitMs: phase3QueueWaitMs,
                 totalStart: totalStart,
+                batchSize: batchSize,
                 // Diagnostic graph reductions on the diagnostics cadence
                 // (== stats steps when batchStatsInterval > 0; a fixed
                 // fallback when it's 0) — see GPU_UTILIZATION_PLAN.md (Phase 1).
@@ -5404,6 +5423,48 @@ final class ChessTrainer: @unchecked Sendable {
         return feeds
     }
 
+    /// Return the compiled training-step executable for `(batchSize,
+    /// includeDiagnostics)`, compiling and caching it on first use. Must run on
+    /// `executionQueue` (same discipline as `feedCache`/`trainingExecutables`).
+    ///
+    /// The concrete feed shapes are derived from the live feed tensor data
+    /// (`feeds`) — the graph placeholders carry `-1` batch dims, but the
+    /// executable is specialized to this batch size, which is the whole point
+    /// (no per-call shape re-specialization). `assignOps` are compiled in as
+    /// target operations so the SGD weight update runs as part of the
+    /// executable, exactly as it did under `graph.run`.
+    private func trainingExecutable(
+        batchSize: Int,
+        includeDiagnostics: Bool,
+        targets: [MPSGraphTensor],
+        feeds: [MPSGraphTensor: MPSGraphTensorData]
+    ) -> MPSGraphExecutable {
+        let key = TrainingExecutableKey(batchSize: batchSize, includeDiagnostics: includeDiagnostics)
+        if let existing = trainingExecutables[key] {
+            return existing
+        }
+        var feedShapes: [MPSGraphTensor: MPSGraphShapedType] = [:]
+        feedShapes.reserveCapacity(feeds.count)
+        for (placeholder, tensorData) in feeds {
+            feedShapes[placeholder] = MPSGraphShapedType(
+                shape: tensorData.shape,
+                dataType: placeholder.dataType
+            )
+        }
+        let executable = network.graph.compile(
+            with: MPSGraphDevice(mtlDevice: network.metalDevice),
+            feeds: feedShapes,
+            targetTensors: targets,
+            targetOperations: assignOps,
+            compilationDescriptor: MPSGraphCompilationDescriptor()
+        )
+        trainingExecutables[key] = executable
+        SessionLogger.shared.log(
+            "[EXEC] compiled training executable batch=\(batchSize) diagnostics=\(includeDiagnostics) targets=\(targets.count)"
+        )
+        return executable
+    }
+
     /// Run the forward + backward + SGD update graph with the given feeds
     /// and read the loss scalar back. The two public `trainStep` entry
     /// points share this so they produce identical timing breakdowns.
@@ -5412,6 +5473,7 @@ final class ChessTrainer: @unchecked Sendable {
         prepMs: Double,
         queueWaitMs: Double,
         totalStart: CFAbsoluteTime,
+        batchSize: Int,
         includeDiagnostics: Bool
     ) throws -> TrainStepTiming {
         // Wrap the graph.run + readback in an autoreleasepool so the
@@ -5449,12 +5511,45 @@ final class ChessTrainer: @unchecked Sendable {
             policyLossWinTensor, policyLossLossTensor,
             velocityGlobalNormTensor
         ]
-        let results = network.graph.run(
-            with: network.commandQueue,
-            feeds: feeds,
-            targetTensors: includeDiagnostics ? leanTargets + diagnosticTargets : leanTargets,
-            targetOperations: assignOps
+        let targets = includeDiagnostics ? leanTargets + diagnosticTargets : leanTargets
+        // Phase 2: run through a compiled MPSGraphExecutable (cached per
+        // batchSize × target set) rather than `graph.run`, which re-derives the
+        // execution plan each call. The executable shares the graph's weight
+        // variables — bidirectional, proven in
+        // MPSGraphExecutableVariableSemanticsTests — so loadWeights / promotion
+        // / checkpoint reads still observe the trainer's in-place updates and
+        // vice versa. The compiled step is numerically identical to graph.run
+        // (MPSGraphExecutableTrainingEquivalenceTests). See
+        // GPU_UTILIZATION_PLAN.md (Phase 2).
+        let executable = trainingExecutable(
+            batchSize: batchSize,
+            includeDiagnostics: includeDiagnostics,
+            targets: targets,
+            feeds: feeds
         )
+        // Bind inputs in the executable's OWN feed order (ordering-safe: we map
+        // each of the executable's feed tensors to its bound data rather than
+        // guessing positions).
+        guard let feedTensors = executable.feedTensors else {
+            throw ChessTrainerError.lossOutputMissing
+        }
+        var inputs: [MPSGraphTensorData] = []
+        inputs.reserveCapacity(feedTensors.count)
+        for tensor in feedTensors {
+            guard let data = feeds[tensor] else {
+                preconditionFailure("ChessTrainer.runPreparedStep: executable feed tensor has no bound data")
+            }
+            inputs.append(data)
+        }
+        let resultArray = executable.run(
+            with: network.commandQueue,
+            inputs: inputs,
+            results: nil,
+            executionDescriptor: nil
+        )
+        // `executable.run` returns results in the compiled targetTensors order,
+        // so zip restores the tensor→data dictionary the readback below expects.
+        let results = Dictionary(uniqueKeysWithValues: zip(targets, resultArray))
         let gpuMs = (CFAbsoluteTimeGetCurrent() - gpuStart) * 1000
 
         let readbackStart = CFAbsoluteTimeGetCurrent()
