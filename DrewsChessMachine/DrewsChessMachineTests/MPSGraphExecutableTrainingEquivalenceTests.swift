@@ -240,4 +240,44 @@ final class MPSGraphExecutableTrainingEquivalenceTests: XCTestCase {
                            "encode(to:) result[\(i)] must match run() result")
         }
     }
+
+    /// The load-bearing correctness for Increment 1: that `encode(to:)` actually
+    /// executes the compiled **assign target-operations** (the SGD weight update
+    /// in the real training executable), not just the result tensors. A silently
+    /// skipped assign would stop the network learning. Build a graph whose target
+    /// operation is an assign, drive it through encode + commit + wait, and
+    /// confirm the variable was updated — read in a SEPARATE run, since
+    /// assign→read within one run is unordered.
+    func testExecutableEncodeAppliesAssignTargetOperation() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let cmdQueue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal not available")
+        }
+        let graph = MPSGraph()
+        let W = graph.variable(with: dataOf([1.0, 1.0, 1.0]), shape: shape, dataType: .float32, name: "W")
+        let ph = graph.placeholder(shape: shape, dataType: .float32, name: "ph")
+        let assign = graph.assign(W, tensor: ph, name: "assign")
+        let zero = graph.constant(0.0, shape: shape, dataType: .float32)
+        let readW = graph.addition(W, zero, name: "readW")
+
+        let exe = graph.compile(
+            with: MPSGraphDevice(mtlDevice: device),
+            feeds: [ph: MPSGraphShapedType(shape: shape, dataType: .float32)],
+            targetTensors: [readW],
+            targetOperations: [assign],
+            compilationDescriptor: MPSGraphCompilationDescriptor()
+        )
+        let inputs = try XCTUnwrap(exe.feedTensors).map { _ in tensorData(device, [7.0, 7.0, 7.0], shape: shape) }
+
+        let mtlCB = try XCTUnwrap(cmdQueue.makeCommandBuffer())
+        let mpsCB = MPSCommandBuffer(commandBuffer: mtlCB)
+        _ = exe.encode(to: mpsCB, inputs: inputs, results: nil, executionDescriptor: nil)
+        mpsCB.commit()
+        mpsCB.waitUntilCompleted()
+
+        // Separate run reads the variable; it must reflect the encode's assign.
+        let read = graph.run(with: cmdQueue, feeds: [:], targetTensors: [readW], targetOperations: nil)
+        XCTAssertEqual(readBack(try XCTUnwrap(read[readW]), count: n), [7.0, 7.0, 7.0],
+                       "encode(to:) must execute the compiled assign target-operation (weight update)")
+    }
 }
