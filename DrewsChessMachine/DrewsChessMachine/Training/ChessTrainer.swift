@@ -2,6 +2,7 @@ import Accelerate
 import Darwin
 import Foundation
 import Metal
+import MetalPerformanceShaders
 import MetalPerformanceShadersGraph
 import os
 
@@ -5543,14 +5544,29 @@ final class ChessTrainer: @unchecked Sendable {
             }
             inputs.append(data)
         }
-        let resultArray = executable.run(
-            with: network.commandQueue,
+        // Phase 3, Increment 1: encode into a command buffer we own, commit,
+        // and wait — instead of the synchronous `executable.run`. Functionally
+        // identical to `run` (which is encode+commit+wait internally) and the
+        // same perf at 1-deep; the point is to establish the
+        // encode/commit/completion plumbing so Increment 2 can stop waiting and
+        // keep N command buffers in flight. `MPSCommandBuffer` wraps a raw
+        // MTLCommandBuffer and conforms to MTLCommandBuffer, so commit/wait work
+        // on it directly. Equivalence to `run` is locked by
+        // testExecutableEncodeToCommandBufferMatchesRun.
+        guard let mtlCommandBuffer = network.commandQueue.makeCommandBuffer() else {
+            throw ChessTrainerError.lossOutputMissing
+        }
+        let mpsCommandBuffer = MPSCommandBuffer(commandBuffer: mtlCommandBuffer)
+        let resultArray = executable.encode(
+            to: mpsCommandBuffer,
             inputs: inputs,
             results: nil,
             executionDescriptor: nil
         )
-        // `executable.run` returns results in the compiled targetTensors order,
-        // so zip restores the tensor→data dictionary the readback below expects.
+        mpsCommandBuffer.commit()
+        mpsCommandBuffer.waitUntilCompleted()
+        // `encode` returns results in the compiled targetTensors order (same as
+        // `run`), so zip restores the tensor→data dictionary the readback expects.
         let results = Dictionary(uniqueKeysWithValues: zip(targets, resultArray))
         let gpuMs = (CFAbsoluteTimeGetCurrent() - gpuStart) * 1000
 

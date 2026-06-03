@@ -1,4 +1,5 @@
 import XCTest
+import MetalPerformanceShaders
 import MetalPerformanceShadersGraph
 @testable import DrewsChessMachine
 
@@ -192,5 +193,51 @@ final class MPSGraphExecutableTrainingEquivalenceTests: XCTestCase {
                        "outSum must map to the sum, not the max — result order must follow compile order")
         XCTAssertEqual(readBack(try XCTUnwrap(mapped[outMax]), count: 1)[0], grMax, accuracy: 1e-6,
                        "outMax must map to the max — result order must follow compile order")
+    }
+
+    /// Phase 3, Increment 1: `runPreparedStep` switches from `executable.run`
+    /// (synchronous) to `executable.encode(to: MPSCommandBuffer)` + commit +
+    /// wait. This proves the two produce identical results, so the plumbing
+    /// change is safe before Increment 2 stops waiting and goes N-deep.
+    func testExecutableEncodeToCommandBufferMatchesRun() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal not available")
+        }
+        let graph = MPSGraph()
+        let W = graph.variable(with: dataOf([2.0, 3.0, 4.0]), shape: shape, dataType: .float32, name: "W")
+        let x = graph.placeholder(shape: shape, dataType: .float32, name: "x")
+        let prod = graph.multiplication(W, x, name: "prod")
+        let outSum = graph.reductionSum(with: prod, axes: [0], name: "outSum")
+        let outMax = graph.reductionMaximum(with: prod, axes: [0], name: "outMax")
+        let targets = [outSum, outMax]
+        let feedX = tensorData(device, [1.0, 1.0, 1.0], shape: shape)
+
+        let exe = graph.compile(
+            with: MPSGraphDevice(mtlDevice: device),
+            feeds: [x: MPSGraphShapedType(shape: shape, dataType: .float32)],
+            targetTensors: targets,
+            targetOperations: nil,
+            compilationDescriptor: MPSGraphCompilationDescriptor()
+        )
+        let inputs = try XCTUnwrap(exe.feedTensors).map { _ in feedX }
+
+        // Path A — synchronous run (the old path).
+        let runResults = exe.run(with: queue, inputs: inputs, results: nil, executionDescriptor: nil)
+
+        // Path B — encode into a command buffer we own, commit, wait (Increment 1).
+        let mtlCB = try XCTUnwrap(queue.makeCommandBuffer())
+        let mpsCB = MPSCommandBuffer(commandBuffer: mtlCB)
+        let encResults = exe.encode(to: mpsCB, inputs: inputs, results: nil, executionDescriptor: nil)
+        mpsCB.commit()
+        mpsCB.waitUntilCompleted()
+
+        XCTAssertEqual(runResults.count, encResults.count)
+        for i in runResults.indices {
+            XCTAssertEqual(readBack(runResults[i], count: 1)[0],
+                           readBack(encResults[i], count: 1)[0],
+                           accuracy: 1e-6,
+                           "encode(to:) result[\(i)] must match run() result")
+        }
     }
 }
