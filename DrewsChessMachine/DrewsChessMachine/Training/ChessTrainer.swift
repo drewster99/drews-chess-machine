@@ -4102,31 +4102,38 @@ final class ChessTrainer: @unchecked Sendable {
         // trainer's network to compute v(s) for every position. We
         // discard the policy output and keep only the value scalars.
         let freshBaselineStart = CFAbsoluteTimeGetCurrent()
-        // `nonisolated(unsafe)` for the `var` so it can be mutated
-        // from inside the `@Sendable` consume closure. Safe because
-        // the await suspends this task for the closure window.
-        nonisolated(unsafe) var freshValues: [Float] = []
-        try await network.evaluateBatched(
+        // GPU→GPU baseline handoff: run a value-only forward on the trainer's
+        // current network and KEEP the per-position v(s) in a network-owned GPU
+        // buffer, handed back here without a CPU readback. Phase 3 feeds that
+        // buffer straight into the training step's vBaseline placeholder (see
+        // `runPreparedStep`), eliminating the old `Array(valuesBuf)` copy +
+        // staging re-write. Numerically identical to the old path — same v(s),
+        // just no CPU round-trip. `nonisolated(unsafe)` mirrors the prior
+        // `freshValues` pattern: the await fully completes the forward (its `run`
+        // waits) before phase 3 reads the buffer, so the single assignment is
+        // safe; it is then boxed (`VBaselineHandoff`) to cross the enqueue hop.
+        nonisolated(unsafe) var vBaselineResult: MPSGraphTensorData? = nil
+        try await network.computeValueBaselineGPU(
             batchBoards: phase1.boardsCopy,
             count: batchSize
-        ) { _, valuesBuf, _ in
-            // Policy is discarded (Phase 2 only needs the value
-            // scalars); copy the values out before the network's
-            // scratch is reused on the next call. Third arg (WDL
-            // probs) is the self-play draw-watch path; ignored here.
-            freshValues = Array(valuesBuf)
+        ) { td in
+            vBaselineResult = td
         }
         let freshBaselineMs = (CFAbsoluteTimeGetCurrent() - freshBaselineStart) * 1000
+        guard let vBaselineResult else {
+            preconditionFailure("ChessTrainer phase 2: value-baseline forward did not yield a result buffer")
+        }
+        let vBaselineHandoff = VBaselineHandoff(tensorData: vBaselineResult)
 
-        // Phase 3 (trainer queue): fill the vBaseline staging buffer
-        // with the fresh values, apply draw penalty, build feeds, run
-        // the training graph. Same flow as the pre-fresh-baseline
-        // implementation, just with vBaselines now containing
-        // current-trainer values from phase 2.
+        // Phase 3 (trainer queue): apply draw penalty, build feeds, run
+        // the training graph. The vBaseline is no longer staged from the
+        // host — it rides in `vBaselineHandoff.tensorData`, the GPU buffer
+        // phase 2's value-only forward wrote, bound directly to the
+        // vBaseline placeholder in `runPreparedStep` (GPU→GPU handoff).
         let dispatchedAtPhase3 = CFAbsoluteTimeGetCurrent()
         let isStatsStep = phase1.isStatsStep
         let includeDiagnostics = phase1.includeDiagnostics
-        return try await enqueue { [batchSize, freshValues, freshBaselineMs, dispatchedAtPhase3, isStatsStep, includeDiagnostics] in
+        return try await enqueue { [batchSize, vBaselineHandoff, freshBaselineMs, dispatchedAtPhase3, isStatsStep, includeDiagnostics] in
             let phase3Start = CFAbsoluteTimeGetCurrent()
             let phase3QueueWaitMs = (phase3Start - dispatchedAtPhase3) * 1000
             let totalStart = phase3Start
@@ -4136,22 +4143,14 @@ final class ChessTrainer: @unchecked Sendable {
                 let boards = self.replayBatchBoards,
                 let moves = self.replayBatchMoves,
                 let zs = self.replayBatchZs,
-                let vBaselines = self.replayBatchVBaselines,
                 let masks = self.replayBatchLegalMasks
             else {
                 preconditionFailure("ChessTrainer staging buffers vanished between phases")
             }
 
-            // Fill the vBaseline staging buffer with the fresh
-            // current-trainer values from phase 2. The buffer is not
-            // pre-populated from the replay buffer (it holds nothing
-            // until this loop runs), so every entry is written here.
-            freshValues.withUnsafeBufferPointer { src in
-                guard let srcBase = src.baseAddress else {
-                    preconditionFailure("ChessTrainer phase 3: freshValues baseAddress is nil")
-                }
-                vBaselines.update(from: srcBase, count: batchSize)
-            }
+            // The fresh per-position v(s) lives in `vBaselineHandoff.tensorData`
+            // (a GPU buffer produced by phase 2's value-only forward) and is
+            // bound straight into the training step below — no CPU staging copy.
 
             // Draw-penalty rewrite: draws arrive with z=0.0 exactly
             // (see `MPSChessPlayer.onGameEnded` — the four draw
@@ -4265,7 +4264,7 @@ final class ChessTrainer: @unchecked Sendable {
                 boards: UnsafePointer(boards),
                 moves: UnsafePointer(moves),
                 zs: UnsafePointer(zs),
-                vBaselines: UnsafePointer(vBaselines),
+                vBaselines: nil,   // fed via GPU→GPU handoff; bound in runPreparedStep
                 legalMasks: UnsafePointer(masks)
             ))
             let prepMs = (CFAbsoluteTimeGetCurrent() - prepStart) * 1000
@@ -4278,6 +4277,7 @@ final class ChessTrainer: @unchecked Sendable {
                 queueWaitMs: phase3QueueWaitMs,
                 totalStart: totalStart,
                 batchSize: batchSize,
+                vBaselineOverride: vBaselineHandoff.tensorData,
                 // Diagnostic graph reductions on the diagnostics cadence
                 // (== stats steps when batchStatsInterval > 0; a fixed
                 // fallback when it's 0) — see GPU_UTILIZATION_PLAN.md (Phase 1).
@@ -5159,8 +5159,21 @@ final class ChessTrainer: @unchecked Sendable {
         let boards: UnsafePointer<Float>
         let moves: UnsafePointer<Int32>
         let zs: UnsafePointer<Float>
-        let vBaselines: UnsafePointer<Float>
+        /// `nil` on the real-data path: the vBaseline is supplied as a GPU buffer
+        /// (the value-only forward's output) and bound directly in
+        /// `runPreparedStep`, so there is no CPU vBaseline to stage. Non-nil only
+        /// on the random-data sweep path, which has no baseline forward.
+        let vBaselines: UnsafePointer<Float>?
         let legalMasks: UnsafePointer<Float>
+    }
+
+    /// `@unchecked Sendable` wrapper so the value-only forward's GPU result
+    /// buffer (an `MPSGraphTensorData`, not `Sendable`) can cross the phase-2 →
+    /// phase-3 `enqueue` hop. Safe because the await fully completes the forward
+    /// (its `run` waits) before phase 3 reads the buffer. Same pattern as
+    /// `ChessNetwork.BatchBoardSource`.
+    private struct VBaselineHandoff: @unchecked Sendable {
+        let tensorData: MPSGraphTensorData
     }
 
     private func buildFeeds(_ input: BatchFeedsInput) -> [MPSGraphTensor: MPSGraphTensorData] {
@@ -5181,7 +5194,14 @@ final class ChessTrainer: @unchecked Sendable {
             * ChessNetwork.boardSize
         writeRealValuedFeed(cached.boardND, from: input.boards, count: boardElementCount, staging: cached.boardStaging)
         writeRealValuedFeed(cached.zND, from: input.zs, count: input.batchSize, staging: cached.zStaging)
-        writeRealValuedFeed(cached.vBaselineND, from: input.vBaselines, count: input.batchSize, staging: cached.vBaselineStaging)
+        // vBaseline: only the random-data sweep path stages it from the host. The
+        // real-data path passes `nil` and binds the value-only forward's GPU
+        // buffer directly in `runPreparedStep` (GPU→GPU handoff), so there is
+        // nothing to write here and `cached.vBaselineND` is left untouched (its
+        // dict entry is overridden at bind time).
+        if let vBaselines = input.vBaselines {
+            writeRealValuedFeed(cached.vBaselineND, from: vBaselines, count: input.batchSize, staging: cached.vBaselineStaging)
+        }
         writeRealValuedFeed(cached.legalMaskND, from: input.legalMasks, count: input.batchSize * ChessNetwork.policySize, staging: cached.legalMaskStaging)
         // move is int32 on both host and placeholder — always raw.
         cached.moveND.writeBytes(
@@ -5487,6 +5507,7 @@ final class ChessTrainer: @unchecked Sendable {
         queueWaitMs: Double,
         totalStart: CFAbsoluteTime,
         batchSize: Int,
+        vBaselineOverride: MPSGraphTensorData? = nil,
         includeDiagnostics: Bool
     ) throws -> TrainStepTiming {
         // Wrap the graph.run + readback in an autoreleasepool so the
@@ -5549,6 +5570,15 @@ final class ChessTrainer: @unchecked Sendable {
         var inputs: [MPSGraphTensorData] = []
         inputs.reserveCapacity(feedTensors.count)
         for tensor in feedTensors {
+            // GPU→GPU vBaseline handoff: when the caller supplies a baseline
+            // buffer (the real-data path's value-only forward output), bind it
+            // directly to the vBaseline placeholder instead of the cached
+            // CPU-staged feed — no CPU round-trip. fp32 [batch,1], matching the
+            // placeholder. See GPU_UTILIZATION_PLAN.md.
+            if let vBaselineOverride, tensor === vBaselinePlaceholder {
+                inputs.append(vBaselineOverride)
+                continue
+            }
             guard let data = feeds[tensor] else {
                 preconditionFailure("ChessTrainer.runPreparedStep: executable feed tensor has no bound data")
             }

@@ -302,6 +302,12 @@ final class ChessNetwork: @unchecked Sendable {
     /// full W/D/L distribution stays available via `valueLogits` /
     /// `valueProbs` for the value loss and diagnostics.
     let valueOutput: MPSGraphTensor
+    /// fp32 cast of `valueOutput` (or `valueOutput` itself on a `.float32`
+    /// build), used only as the target of the trainer's GPU→GPU value-baseline
+    /// forward so the per-position `v(s)` lands in an fp32 buffer that feeds the
+    /// training step's fp32 `vBaseline` placeholder with no CPU round-trip.
+    /// Mirrors `policyOutputReadback`. See `computeValueBaselineGPU`.
+    let valueOutputFP32: MPSGraphTensor
     /// Raw W/D/L value-head logits, shape `[batch, 3]` in `[win, draw,
     /// loss]` slot order — matched to the training target `idx = 1 − z`
     /// with z ∈ {+1, 0, −1} (win→0, draw→1, loss→2). Consumed by
@@ -462,6 +468,20 @@ final class ChessNetwork: @unchecked Sendable {
     /// MPSGraphExecutableVariableSemanticsTests). Accessed only on
     /// `executionQueue`, like `batchInputCache`. See GPU_UTILIZATION_PLAN.md.
     private var inferenceExecutables: [Int: MPSGraphExecutable] = [:]
+
+    /// Compiled value-only executables for the trainer's GPU→GPU baseline
+    /// forward, keyed by batch size. Targets just `valueOutputFP32` (no policy /
+    /// valueProbs, no assign target-ops, so it neither computes the discarded
+    /// policy nor pollutes BN running stats — same read-only semantics as the
+    /// inference executable). Shares the graph's weight variables like every
+    /// other executable. Lives for the network's lifetime (the graph is never
+    /// rebuilt), same as `inferenceExecutables`.
+    private var valueBaselineExecutables: [Int: MPSGraphExecutable] = [:]
+    /// Caller-owned (never `results: nil`) fp32 `[count, 1]` result buffers for
+    /// the value-baseline forward, keyed by batch size. The trainer feeds the
+    /// returned buffer straight into the training step's `vBaseline`; reused each
+    /// call, safe under the trainer's serial phase-2 → phase-3 ordering.
+    private var valueBaselineResultCache: [Int: MPSGraphTensorData] = [:]
 
     /// Readback scratch for batched policy logits. Grows on demand to
     /// the largest batch size ever requested. **Not re-entrant** — the
@@ -669,6 +689,9 @@ final class ChessNetwork: @unchecked Sendable {
             batchVars: &batchVars
         )
         valueOutput = valueHeadOut.scalar
+        valueOutputFP32 = (Self.dataType == .float32)
+            ? valueHeadOut.scalar
+            : g.cast(valueHeadOut.scalar, to: .float32, name: "value_scalar_f32")
         valueLogits = valueHeadOut.logits
         valueProbs = valueHeadOut.probs
 
@@ -1171,6 +1194,115 @@ final class ChessNetwork: @unchecked Sendable {
         )
         inferenceExecutables[count] = executable
         return executable
+    }
+
+    /// GPU→GPU value baseline. Runs a value-only forward on this network's
+    /// current weights and leaves the per-position `v(s)` (fp32, shape
+    /// `[count, 1]`) in a network-owned GPU buffer, handed to `consume` WITHOUT a
+    /// CPU readback. The trainer feeds that buffer straight into the training
+    /// step's `vBaseline` placeholder, eliminating the `Array(valuesBuf)` copy +
+    /// staging re-write the old `evaluateBatched` baseline path did. Numerically
+    /// identical to that path — same `v(s)` (the old path read `valueOutput`
+    /// back as bf16→fp32; this casts bf16→fp32 on the GPU) — just no CPU round
+    /// trip. The result buffer is reused per call; safe because the trainer
+    /// drives this serially (phase 2 fully completes before phase 3 reads it).
+    func computeValueBaselineGPU(
+        batchBoards: [Float],
+        count: Int,
+        consume: @Sendable @escaping (MPSGraphTensorData) -> Void
+    ) async throws {
+        try await enqueue {
+            try self.internalComputeValueBaseline(batchBoards: batchBoards, count: count, consume: consume)
+        }
+    }
+
+    private func internalComputeValueBaseline(
+        batchBoards: [Float],
+        count: Int,
+        consume: (MPSGraphTensorData) -> Void
+    ) throws {
+        guard count >= 1 else {
+            throw ChessNetworkError.boardSizeMismatch(expected: Self.inputPlanes * Self.boardSize * Self.boardSize, got: 0)
+        }
+        let expected = count * Self.inputPlanes * Self.boardSize * Self.boardSize
+        guard batchBoards.count == expected else {
+            throw ChessNetworkError.boardSizeMismatch(expected: expected, got: batchBoards.count)
+        }
+        let entry = batchInputEntry(for: count)
+        let resultTD = valueBaselineResultTD(for: count)
+        try autoreleasepool {
+            batchBoards.withUnsafeBufferPointer { buf in
+                Self.writeInferenceInput(buf, into: entry.ndArray)
+            }
+            let executable = valueBaselineExecutable(for: count, feeds: entry.feeds)
+            guard let feedTensors = executable.feedTensors else {
+                throw ChessNetworkError.outputMissing("value-baseline feed tensors")
+            }
+            var inputs: [MPSGraphTensorData] = []
+            inputs.reserveCapacity(feedTensors.count)
+            for tensor in feedTensors {
+                guard let data = entry.feeds[tensor] else {
+                    throw ChessNetworkError.outputMissing("value-baseline feed binding")
+                }
+                inputs.append(data)
+            }
+            // Caller-owned result buffer (never `results: nil`) per the proven
+            // concurrent-encode contract. `run` commits and waits, so the buffer
+            // is fully populated before this returns.
+            _ = executable.run(
+                with: commandQueue,
+                inputs: inputs,
+                results: [resultTD],
+                executionDescriptor: nil
+            )
+            consume(resultTD)
+        }
+    }
+
+    /// Compile + cache the value-only baseline executable for batch size `count`.
+    /// Feed shapes are taken from the live board feed (the placeholder carries a
+    /// `-1` batch dim). Target is just `valueOutputFP32`; no target operations
+    /// (read-only). Must run on `executionQueue`.
+    private func valueBaselineExecutable(
+        for count: Int,
+        feeds: [MPSGraphTensor: MPSGraphTensorData]
+    ) -> MPSGraphExecutable {
+        if let cached = valueBaselineExecutables[count] {
+            return cached
+        }
+        var feedShapes: [MPSGraphTensor: MPSGraphShapedType] = [:]
+        feedShapes.reserveCapacity(feeds.count)
+        for (placeholder, tensorData) in feeds {
+            feedShapes[placeholder] = MPSGraphShapedType(
+                shape: tensorData.shape,
+                dataType: placeholder.dataType
+            )
+        }
+        let desc = MPSGraphCompilationDescriptor()
+        desc.optimizationLevel = .level1
+        let executable = graph.compile(
+            with: MPSGraphDevice(mtlDevice: metalDevice),
+            feeds: feedShapes,
+            targetTensors: [valueOutputFP32],
+            targetOperations: nil,
+            compilationDescriptor: desc
+        )
+        valueBaselineExecutables[count] = executable
+        return executable
+    }
+
+    /// Network-owned fp32 `[count, 1]` result buffer for the value baseline,
+    /// matching `valueOutputFP32`'s shape/dtype. Cached per batch size.
+    private func valueBaselineResultTD(for count: Int) -> MPSGraphTensorData {
+        if let cached = valueBaselineResultCache[count] {
+            return cached
+        }
+        let desc = MPSNDArrayDescriptor(dataType: .float32, shape: [NSNumber(value: count), 1])
+        let nda = MPSNDArray(device: metalDevice, descriptor: desc)
+        nda.label = "vbaseline.result[\(count)]"
+        let td = MPSGraphTensorData(nda)
+        valueBaselineResultCache[count] = td
+        return td
     }
 
     private func ensureBatchPolicyScratch(count: Int) -> UnsafeMutablePointer<Float> {
