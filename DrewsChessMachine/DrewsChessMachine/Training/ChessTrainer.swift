@@ -1547,7 +1547,6 @@ final class ChessTrainer: @unchecked Sendable {
     private var replayBatchBoards: UnsafeMutablePointer<Float>?
     private var replayBatchMoves: UnsafeMutablePointer<Int32>?
     private var replayBatchZs: UnsafeMutablePointer<Float>?
-    private var replayBatchVBaselines: UnsafeMutablePointer<Float>?
     private var replayBatchLegalMasks: UnsafeMutablePointer<Float>?
 
     // Per-position observability metadata staging buffers — populated
@@ -1812,10 +1811,6 @@ final class ChessTrainer: @unchecked Sendable {
             ptr.deallocate()
         }
         if let ptr = replayBatchZs {
-            ptr.deinitialize(count: replayBatchCapacity)
-            ptr.deallocate()
-        }
-        if let ptr = replayBatchVBaselines {
             ptr.deinitialize(count: replayBatchCapacity)
             ptr.deallocate()
         }
@@ -4659,10 +4654,6 @@ final class ChessTrainer: @unchecked Sendable {
             ptr.deinitialize(count: replayBatchCapacity)
             ptr.deallocate()
         }
-        if let ptr = replayBatchVBaselines {
-            ptr.deinitialize(count: replayBatchCapacity)
-            ptr.deallocate()
-        }
         if let ptr = replayBatchLegalMasks {                              // <-- add
             ptr.deinitialize(count: replayBatchCapacity * ChessNetwork.policySize)
             ptr.deallocate()
@@ -4706,10 +4697,6 @@ final class ChessTrainer: @unchecked Sendable {
         let newZs = UnsafeMutablePointer<Float>.allocate(capacity: needed)
         newZs.initialize(repeating: 0, count: needed)
         replayBatchZs = newZs
-
-        let newVBaselines = UnsafeMutablePointer<Float>.allocate(capacity: needed)
-        newVBaselines.initialize(repeating: 0, count: needed)
-        replayBatchVBaselines = newVBaselines
 
         let maskFloats = needed * ChessNetwork.policySize                 // <-- add
         let newMasks = UnsafeMutablePointer<Float>.allocate(capacity: maskFloats)

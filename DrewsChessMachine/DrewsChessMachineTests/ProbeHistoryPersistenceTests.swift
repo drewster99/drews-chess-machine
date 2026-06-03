@@ -239,4 +239,37 @@ final class ProbeHistoryPersistenceTests: XCTestCase {
         XCTAssertEqual(result.xs, [0, 1])
         XCTAssertEqual(result.label, "tick #")
     }
+
+    // MARK: - OVERALL chart EMA overlay helper
+
+    /// The first EMA value seeds from the first sample, and the output length
+    /// matches the input — the invariants every downstream plot relies on.
+    func testEmaSeedsFromFirstSampleAndPreservesLength() {
+        let ys = [3.0, 7.0, 1.0, 9.0, 2.0]
+        let out = LichessProbeOverallTrendChart.ema(ys, span: 10)
+        XCTAssertEqual(out.count, ys.count)
+        XCTAssertEqual(out[0], 3.0, "EMA[0] must equal the first sample")
+    }
+
+    /// Exact recurrence at span 3 → alpha = 2/(3+1) = 0.5, so each output is the
+    /// midpoint of the current sample and the previous EMA. Hand-computed:
+    /// [0, 0.5·10+0.5·0=5, 0.5·10+0.5·5=7.5, 0.5·0+0.5·7.5=3.75].
+    func testEmaKnownRecurrenceSpan3() {
+        let out = LichessProbeOverallTrendChart.ema([0, 10, 10, 0], span: 3)
+        XCTAssertEqual(out, [0, 5, 7.5, 3.75])
+    }
+
+    /// EMA of a constant series is that constant at every point (any span).
+    func testEmaOfConstantIsConstant() {
+        let out = LichessProbeOverallTrendChart.ema([4, 4, 4, 4], span: 25)
+        for v in out { XCTAssertEqual(v, 4, accuracy: 1e-12) }
+    }
+
+    /// Degenerate inputs are returned unchanged: too few points to smooth, or a
+    /// non-positive span (alpha would be ill-defined).
+    func testEmaDegenerateInputsReturnedUnchanged() {
+        XCTAssertEqual(LichessProbeOverallTrendChart.ema([], span: 25), [])
+        XCTAssertEqual(LichessProbeOverallTrendChart.ema([5], span: 25), [5])
+        XCTAssertEqual(LichessProbeOverallTrendChart.ema([1, 2, 3], span: 0), [1, 2, 3])
+    }
 }

@@ -158,12 +158,22 @@ struct LichessProbeOverallTrendChart: View {
                 color: Color.orange.opacity(0.7), lineWidth: 1, dashed: true
             ))
         }
-        var series = [FastChartSeries(id: "nll", color: .blue, data: .points(points))]
+        // When the EMA overlay is on, fade the raw series into a faint "noise
+        // cloud" (low opacity, thin) and draw the EMA bold on top so the trend
+        // reads clearly — otherwise the dense full-opacity raw line drowns the
+        // overlay. With the overlay off, the raw series is the only line, so it
+        // stays at normal weight.
+        var series = [FastChartSeries(
+            id: "nll",
+            color: emaEnabled ? Color.blue.opacity(0.28) : .blue,
+            lineWidth: emaEnabled ? 1.0 : 1.5,
+            data: .points(points)
+        )]
         if emaEnabled {
             let ey = Self.ema(points.map { Double($0.y) }, span: emaSpan)
             yValues.append(contentsOf: ey)
             let emaPts = points.indices.map { CGPoint(x: points[$0].x, y: CGFloat(ey[$0])) }
-            series.append(FastChartSeries(id: "nll-ema", color: .indigo, data: .points(emaPts)))
+            series.append(FastChartSeries(id: "nll-ema", color: .indigo, lineWidth: 2.5, data: .points(emaPts)))
         }
         return FastLineChart(
             title: "OVERALL NLL (nats, lower = better)",
@@ -226,12 +236,19 @@ struct LichessProbeOverallTrendChart: View {
                 color: Color.orange.opacity(0.7), lineWidth: 1, dashed: true
             ))
         }
-        var series = [FastChartSeries(id: "elo", color: .green, data: .points(points))]
+        // Same treatment as the NLL chart: fade the raw series when the EMA
+        // overlay is on so the bold trend line reads over the noise cloud.
+        var series = [FastChartSeries(
+            id: "elo",
+            color: emaEnabled ? Color.green.opacity(0.28) : .green,
+            lineWidth: emaEnabled ? 1.0 : 1.5,
+            data: .points(points)
+        )]
         if emaEnabled {
             let ey = Self.ema(points.map { Double($0.y) }, span: emaSpan)
             yValues.append(contentsOf: ey)
             let emaPts = points.indices.map { CGPoint(x: points[$0].x, y: CGFloat(ey[$0])) }
-            series.append(FastChartSeries(id: "elo-ema", color: .teal, data: .points(emaPts)))
+            series.append(FastChartSeries(id: "elo-ema", color: .teal, lineWidth: 2.5, data: .points(emaPts)))
         }
         return FastLineChart(
             title: "OVERALL puzzle-Elo (higher = better, 800–1800 set range)",
