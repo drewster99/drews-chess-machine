@@ -343,13 +343,15 @@ buffers as `results:`, never `nil`).
   uncommitted"). So order must be locked by `enqueue()` *before* encode, and the
   control thread must not assume the buffer is still open after handing it to an
   encoder.
-- **One remaining training-specific probe before building:** the forward-only test
-  proves the result-buffer rule; the *training* executable also writes the shared
-  weight variables via `assign` ops. The variable writes are GPU-deferred (they run
-  at execution time in enqueue order, not at encode time), so concurrent *encode* of
-  assign-bearing steps should be fine — but add a `concurrent-encode-with-assigns`
-  probe (does each step still produce the right post-assign weights when many are
-  encoded concurrently?) to confirm before committing the pipeline.
+- **Training-specific assign probe — RESOLVED, POSITIVE.** The forward-only test
+  proved the result-buffer rule; the *training* executable also writes shared weight
+  variables via `assign` ops. `testConcurrentEncodeWithAssignOpIsSafe` (16 threads,
+  caller-owned results, an `assign` op present, order-independent by construction)
+  passed 3× in a row: per-step compute stays uncontaminated AND the assign still
+  lands. So concurrent encode of assign-bearing steps is safe. The *only* thing left
+  unproven at the unit level is the **execution-time** cross-command-buffer weight RAW
+  hazard (does step N+1's read see step N's write under enqueue ordering?) — that's an
+  on-GPU property, validated in the live run via loss-doesn't-diverge, not a unit test.
 
 ### Where that leaves us — sequencing
 1. **Single-encoder encode-ahead (SAFE, ~1.5×, do first).** Stop waiting: encode step
@@ -358,9 +360,11 @@ buffers as `results:`, never `nil`).
    ~515 ms serial). Zero concurrency; reclaims the 175 ms now spent waiting. This is
    Increment 2, done correctly.
 2. **Parallel encoders sharing one executable (~3×, now UNBLOCKED).** M ≈ 2–3 encoder
-   threads, each owning its slot's input/result buffers, `enqueue()`-ordered. Gated
-   only on the small `concurrent-encode-with-assigns` probe above — the big risk
-   (needing per-thread executables) is retired.
+   threads, each owning its slot's input/result buffers, `enqueue()`-ordered. All
+   unit-level prerequisites now clear (caller-owned results + assign-safe, both
+   proven); the big risk (needing per-thread executables) is retired. The remaining
+   open question is the execution-time cross-buffer weight hazard, settled in the live
+   run — so this builds directly on top of (1) with the live-run gate.
 3. **Kernel fusion (Phase 4, still worth it).** Cuts the ~340 ms encode at the root AND
    speeds the GPU; compounds with the pipeline and reduces the M encoders needed.
 

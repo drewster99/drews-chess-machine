@@ -388,4 +388,73 @@ final class MPSGraphExecutableTrainingEquivalenceTests: XCTestCase {
                            "owned-results concurrent encode #\(i): expected \(9.0 * Float(i + 1)), got \(results[i])")
         }
     }
+
+    /// The last Phase-3 prerequisite (GPU_UTILIZATION_PLAN.md): the training
+    /// executable doesn't just read variables, it **writes** the weights via
+    /// `assign` ops. Does concurrent encode of an executable that *contains an
+    /// assign* still produce correct per-step compute, and still apply the assign?
+    /// (The result-buffer rule alone was proven on a read-only graph.)
+    ///
+    /// Deliberately **order-independent** so it isolates encode correctness from the
+    /// separate execution-time question of the cross-command-buffer weight RAW
+    /// hazard (which is validated in the live run, per the plan): a read-only
+    /// variable `A` drives the per-step output, and the assigned variable `B` is set
+    /// to `A` every step — so `B`'s final value is `A` regardless of which encode
+    /// finishes first. If concurrent encode corrupted the recorded graph, the
+    /// per-step outputs would cross-contaminate (as the nil-results probe did) or
+    /// the assign would be dropped.
+    func testConcurrentEncodeWithAssignOpIsSafe() throws {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let queue = device.makeCommandQueue() else {
+            throw XCTSkip("Metal not available")
+        }
+        queue.label = "concurrent-encode-with-assign"
+        let graph = MPSGraph()
+        let A = graph.variable(with: dataOf([10.0, 10.0, 10.0]), shape: shape, dataType: .float32, name: "A")
+        let B = graph.variable(with: dataOf([0.0, 0.0, 0.0]), shape: shape, dataType: .float32, name: "B")
+        let x = graph.placeholder(shape: shape, dataType: .float32, name: "x")
+        let prod = graph.multiplication(A, x, name: "prod")                     // [3] = 10·x
+        let outSum = graph.reductionSum(with: prod, axes: [0], name: "outSum")  // [1] = 30·xi
+        let assignB = graph.assign(B, tensor: A, name: "assignB")               // B := A (order-independent)
+        let zero = graph.constant(0.0, shape: shape, dataType: .float32)
+        let readB = graph.addition(B, zero, name: "readB")
+        let exe = graph.compile(
+            with: MPSGraphDevice(mtlDevice: device),
+            feeds: [x: MPSGraphShapedType(shape: shape, dataType: .float32)],
+            targetTensors: [outSum],
+            targetOperations: [assignB],
+            compilationDescriptor: MPSGraphCompilationDescriptor()
+        )
+
+        let iterations = 16
+        let outShape: [NSNumber] = [1]
+        let feeds: [MPSGraphTensorData] = (0..<iterations).map { i in
+            let xi = Float(i + 1)
+            return tensorData(device, [xi, xi, xi], shape: shape)
+        }
+        let outputs: [MPSGraphTensorData] = (0..<iterations).map { _ in
+            MPSGraphTensorData(MPSNDArray(device: device,
+                                          descriptor: MPSNDArrayDescriptor(dataType: .float32, shape: outShape)))
+        }
+        var results = [Float](repeating: .nan, count: iterations)
+        results.withUnsafeMutableBufferPointer { buf in
+            DispatchQueue.concurrentPerform(iterations: iterations) { i in
+                guard let mtlCB = queue.makeCommandBuffer() else { return }
+                let mpsCB = MPSCommandBuffer(commandBuffer: mtlCB)
+                _ = exe.encode(to: mpsCB, inputs: [feeds[i]], results: [outputs[i]], executionDescriptor: nil)
+                mpsCB.commit()
+                mpsCB.waitUntilCompleted()
+                buf[i] = self.readBack(outputs[i], count: 1)[0]
+            }
+        }
+
+        for i in 0..<iterations {
+            XCTAssertEqual(results[i], 30.0 * Float(i + 1), accuracy: 1e-4,
+                           "assign-present concurrent encode #\(i): expected \(30.0 * Float(i + 1)), got \(results[i])")
+        }
+        // The assign landed: B was set to A in a separate, ordered read.
+        let read = graph.run(with: queue, feeds: [:], targetTensors: [readB], targetOperations: nil)
+        XCTAssertEqual(readBack(try XCTUnwrap(read[readB]), count: n), [10.0, 10.0, 10.0],
+                       "concurrent encode must still apply the assign target-operation")
+    }
 }
