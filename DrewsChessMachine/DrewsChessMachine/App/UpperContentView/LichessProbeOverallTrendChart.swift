@@ -45,6 +45,14 @@ struct LichessProbeOverallTrendChart: View {
     /// Elo chart move together. Owned here; both `FastLineChart`s read it.
     @State private var chartGroup = FastChartGroup()
 
+    /// EMA overlay state. The probe ticks every ~17s and the raw per-tick
+    /// 200-puzzle (soon 1000-puzzle) series is sampling-noisy, so an
+    /// exponential moving average makes the *trend* readable — the whole point
+    /// when eyeballing the effect of a training-dynamics change (LR/momentum
+    /// cycling). On by default; `emaSpan` is the window in ticks.
+    @State private var emaEnabled = true
+    @State private var emaSpan = 25
+
     /// X-axis positions (one per sample, parallel to the input array)
     /// plus the axis label. Uses the per-tick trainer step when every
     /// sample carries a non-nil, non-decreasing step; otherwise falls
@@ -76,6 +84,7 @@ struct LichessProbeOverallTrendChart: View {
         } else {
             let xs = Self.xPositions(for: samples).xs
             VStack(alignment: .leading, spacing: 4) {
+                emaControls
                 nllChart(samples: samples, xs: xs)
                 eloChart(samples: samples, xs: xs)
             }
@@ -90,6 +99,38 @@ struct LichessProbeOverallTrendChart: View {
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, 8)
+    }
+
+    /// Toggle + span control for the EMA overlay (drawn above both charts).
+    @ViewBuilder
+    private var emaControls: some View {
+        HStack(spacing: 12) {
+            Toggle("EMA overlay", isOn: $emaEnabled)
+                .toggleStyle(.checkbox)
+            if emaEnabled {
+                Stepper("span \(emaSpan)", value: $emaSpan, in: 3...200)
+                    .fixedSize()
+            }
+        }
+        .font(.system(.caption, design: .monospaced))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Exponential moving average over `ys` with the given span
+    /// (alpha = 2/(span+1)). Inputs are assumed finite — callers pass the
+    /// already-plotted, finite y-values. Pure + static for testability.
+    static func ema(_ ys: [Double], span: Int) -> [Double] {
+        guard ys.count > 1, span >= 1 else { return ys }
+        let alpha = 2.0 / (Double(span) + 1.0)
+        var out = [Double]()
+        out.reserveCapacity(ys.count)
+        var prev = ys[0]
+        out.append(prev)
+        for i in 1..<ys.count {
+            prev = alpha * ys[i] + (1.0 - alpha) * prev
+            out.append(prev)
+        }
+        return out
     }
 
     /// Uniform-over-30-legals reference value (≈ ln 30) for the NLL chart.
@@ -117,12 +158,19 @@ struct LichessProbeOverallTrendChart: View {
                 color: Color.orange.opacity(0.7), lineWidth: 1, dashed: true
             ))
         }
+        var series = [FastChartSeries(id: "nll", color: .blue, data: .points(points))]
+        if emaEnabled {
+            let ey = Self.ema(points.map { Double($0.y) }, span: emaSpan)
+            yValues.append(contentsOf: ey)
+            let emaPts = points.indices.map { CGPoint(x: points[$0].x, y: CGFloat(ey[$0])) }
+            series.append(FastChartSeries(id: "nll-ema", color: .indigo, data: .points(emaPts)))
+        }
         return FastLineChart(
             title: "OVERALL NLL (nats, lower = better)",
             group: chartGroup,
             xDomain: Self.paddedXDomain(xs),
             yDomain: Self.paddedYDomain(yValues),
-            series: [FastChartSeries(id: "nll", color: .blue, data: .points(points))],
+            series: series,
             referenceLines: refs,
             showXAxisLabels: true,
             yLabelFormatter: { String(format: "%.2f", $0) },
@@ -178,12 +226,19 @@ struct LichessProbeOverallTrendChart: View {
                 color: Color.orange.opacity(0.7), lineWidth: 1, dashed: true
             ))
         }
+        var series = [FastChartSeries(id: "elo", color: .green, data: .points(points))]
+        if emaEnabled {
+            let ey = Self.ema(points.map { Double($0.y) }, span: emaSpan)
+            yValues.append(contentsOf: ey)
+            let emaPts = points.indices.map { CGPoint(x: points[$0].x, y: CGFloat(ey[$0])) }
+            series.append(FastChartSeries(id: "elo-ema", color: .teal, data: .points(emaPts)))
+        }
         return FastLineChart(
             title: "OVERALL puzzle-Elo (higher = better, 800–1800 set range)",
             group: chartGroup,
             xDomain: Self.paddedXDomain(xs),
             yDomain: Self.paddedYDomain(yValues),
-            series: [FastChartSeries(id: "elo", color: .green, data: .points(points))],
+            series: series,
             referenceLines: refs,
             showXAxisLabels: true,
             yLabelFormatter: { String(format: "%.0f", $0) },
