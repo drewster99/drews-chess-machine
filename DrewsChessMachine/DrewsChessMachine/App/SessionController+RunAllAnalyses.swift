@@ -35,6 +35,12 @@ extension SessionController {
         let bufferRef = replayBuffer
         let championRef = network
         let trainerRef = trainer
+        // Snapshot training-progress context once, on the main actor,
+        // before the detached work begins. Every file written in this
+        // pass shares this snapshot, so step/elapsed values line up
+        // across the replay / value-head / weight JSONs produced
+        // together.
+        let exportMetadata = currentAnalysisExportMetadata()
 
         if bufferRef == nil && championRef == nil && trainerRef == nil {
             Self.presentRunAllAlert(
@@ -67,7 +73,8 @@ extension SessionController {
                     buffer: buf,
                     network: championRef,
                     modelLabel: modelLabel,
-                    entropyProbe: entropyProbe
+                    entropyProbe: entropyProbe,
+                    metadata: exportMetadata
                 )
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
@@ -80,7 +87,8 @@ extension SessionController {
                 let modelLabel = "champion:\(net.identifier?.description ?? "<no-id>")"
                 let step = await Self.runValueHeadStep(
                     network: net,
-                    modelLabel: modelLabel
+                    modelLabel: modelLabel,
+                    metadata: exportMetadata
                 )
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
@@ -94,7 +102,8 @@ extension SessionController {
                 let step = await Self.runNetworkWeightsStep(
                     networkInner: net.network,
                     modelLabel: modelLabel,
-                    tag: "Champion"
+                    tag: "Champion",
+                    metadata: exportMetadata
                 )
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
@@ -108,7 +117,8 @@ extension SessionController {
                 let step = await Self.runNetworkWeightsStep(
                     networkInner: trainer.network,
                     modelLabel: modelLabel,
-                    tag: "Trainer"
+                    tag: "Trainer",
+                    metadata: exportMetadata
                 )
                 summaryLines.append(step.summaryLine)
                 if firstSuccessURL == nil { firstSuccessURL = step.firstSuccessURL }
@@ -129,6 +139,87 @@ extension SessionController {
                 )
             }
         }
+    }
+
+    // MARK: - Export metadata
+
+    /// Snapshot the live training-progress context into an
+    /// `AnalysisExportMetadata` for stamping onto analysis exports.
+    /// Reads the trainer / self-play stats boxes, replay buffer, model
+    /// identifiers, and the static architecture constants, so it must run
+    /// on the main actor (the class's isolation) where that state is
+    /// reachable. The `selfPlay` and `training` sub-blocks are present
+    /// only when their backing context exists, so an export taken before
+    /// any run simply omits them rather than reporting misleading zeros.
+    ///
+    /// Used by both `Run All Analyses` (one snapshot shared across the
+    /// pass) and the three single-analysis Debug hooks.
+    func currentAnalysisExportMetadata() -> AnalysisExportMetadata {
+        let archHashHex = String(format: "0x%08x", ModelCheckpointFile.currentArchHash)
+        let notes = ChessNetwork.architectureNotes
+        let architecture = AnalysisExportMetadata.Architecture(
+            archHash: archHashHex,
+            architectureVersion: ChessNetwork.architectureVersion,
+            parameterCount: ChessNetwork.parameterCount,
+            numBlocks: ChessNetwork.numBlocks,
+            channels: ChessNetwork.channels,
+            convKernelSize: ChessNetwork.towerConvKernelSize,
+            inputPlanes: ChessNetwork.inputPlanes,
+            boardSize: ChessNetwork.boardSize,
+            policyChannels: ChessNetwork.policyChannels,
+            policySize: ChessNetwork.policySize,
+            seReductionRatio: ChessNetwork.seReductionRatio,
+            valueHead: AnalysisExportMetadata.Architecture.ValueHead(
+                classes: ChessNetwork.valueHeadClasses,
+                convChannels: ChessNetwork.valueHeadConvChannels,
+                hiddenUnits: ChessNetwork.valueHeadHiddenUnits
+            ),
+            summary: ChessNetwork.architectureSummary,
+            notes: notes.isEmpty ? nil : notes
+        )
+
+        let selfPlay: AnalysisExportMetadata.SelfPlay?
+        if let snap = parallelWorkerStatsBox?.snapshot() {
+            selfPlay = AnalysisExportMetadata.SelfPlay(
+                totalGames: snap.selfPlayGames,
+                totalMoves: snap.selfPlayPositions,
+                emittedGames: snap.emittedGames,
+                emittedMoves: snap.emittedPositions
+            )
+        } else {
+            selfPlay = nil
+        }
+
+        let training: AnalysisExportMetadata.Training?
+        if let snap = trainingBox?.snapshot() {
+            training = AnalysisExportMetadata.Training(
+                trainingSteps: snap.stats.steps,
+                cumulativeTrainingSeconds: checkpoint?.cumulativeActiveTrainingSec,
+                batchSize: TrainingParameters.shared.trainingBatchSize,
+                promoteThreshold: TrainingParameters.shared.arenaPromoteThreshold,
+                replayBufferPlies: replayBuffer?.count
+            )
+        } else {
+            training = nil
+        }
+
+        return AnalysisExportMetadata(
+            schemaVersion: AnalysisExportMetadata.currentSchemaVersion,
+            build: AnalysisExportMetadata.Build(
+                buildNumber: BuildInfo.buildNumber,
+                buildTimestamp: BuildInfo.buildTimestamp,
+                gitHash: BuildInfo.gitHash,
+                gitBranch: BuildInfo.gitBranch,
+                gitIsDirty: BuildInfo.gitDirty
+            ),
+            model: AnalysisExportMetadata.Model(
+                championModelID: network?.identifier?.description,
+                trainerModelID: trainer?.identifier?.description
+            ),
+            architecture: architecture,
+            selfPlay: selfPlay,
+            training: training
+        )
     }
 
     // MARK: - Per-analysis runners
@@ -188,9 +279,10 @@ extension SessionController {
         buffer: ReplayBuffer,
         network: ChessMPSNetwork?,
         modelLabel: String,
-        entropyProbe: (network: ChessMPSNetwork, label: String)? = nil
+        entropyProbe: (network: ChessMPSNetwork, label: String)? = nil,
+        metadata: AnalysisExportMetadata
     ) async -> AnalysisStepResult {
-        let result: ReplayBufferAnalyzer.Result
+        var result: ReplayBufferAnalyzer.Result
         do {
             if let probe = entropyProbe {
                 result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
@@ -216,6 +308,7 @@ extension SessionController {
             )
         }
 
+        result.exportMetadata = metadata
         let outcome = writeJSON(
             encodable: result,
             filenameStem: "replay_analysis",
@@ -247,9 +340,10 @@ extension SessionController {
     /// `[VALHEAD]` block.
     nonisolated private static func runValueHeadStep(
         network: ChessMPSNetwork,
-        modelLabel: String
+        modelLabel: String,
+        metadata: AnalysisExportMetadata
     ) async -> AnalysisStepResult {
-        let result: ValueHeadAnalyzer.Result
+        var result: ValueHeadAnalyzer.Result
         do {
             result = try await ValueHeadAnalyzer.run(
                 network: network,
@@ -263,6 +357,7 @@ extension SessionController {
             )
         }
 
+        result.exportMetadata = metadata
         let outcome = writeJSON(
             encodable: result,
             filenameStem: "valuehead_analysis",
@@ -296,9 +391,10 @@ extension SessionController {
     nonisolated private static func runNetworkWeightsStep(
         networkInner: ChessNetwork,
         modelLabel: String,
-        tag: String
+        tag: String,
+        metadata: AnalysisExportMetadata
     ) async -> AnalysisStepResult {
-        let result: NetworkWeightAnalyzer.Result
+        var result: NetworkWeightAnalyzer.Result
         do {
             result = try await NetworkWeightAnalyzer.run(
                 network: networkInner,
@@ -312,6 +408,7 @@ extension SessionController {
             )
         }
 
+        result.exportMetadata = metadata
         let outcome = writeJSON(
             encodable: result,
             filenameStem: "network_weights",

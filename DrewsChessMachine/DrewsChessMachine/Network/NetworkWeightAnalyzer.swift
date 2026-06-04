@@ -311,6 +311,13 @@ enum NetworkWeightAnalyzer {
 
         let producedAtISO8601: String
         let modelLabel: String
+
+        /// Cross-cutting training-progress context (step count, elapsed
+        /// time, build/git provenance). Stamped on by `SessionController`
+        /// at export time — the analyzer leaves it `nil` and a `nil`
+        /// optional omits its key, so analyzer-only callers and tests
+        /// produce JSON unchanged from before this field existed.
+        var exportMetadata: AnalysisExportMetadata? = nil
         let totalParamCount: Int
         let sections: [SectionSummary]
         let stemInputChannelDetail: StemInputChannelDetail?

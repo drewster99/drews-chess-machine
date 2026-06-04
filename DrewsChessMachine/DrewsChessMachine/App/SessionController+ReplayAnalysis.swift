@@ -42,6 +42,9 @@ extension SessionController {
         let netForEntropy = network
         let trainerForEntropy = trainer
         let modelLabel = netForEntropy?.identifier?.description ?? "<no-id>"
+        // Snapshot training-progress context on the main actor before
+        // the detached heavy walk; stamped onto the result below.
+        let exportMetadata = currentAnalysisExportMetadata()
 
         Task.detached(priority: .utility) {
             // Off-main heavy walk + JSON write. Both the analyzer pass
@@ -54,7 +57,7 @@ extension SessionController {
             let entropyProbe = await Self.buildTrainerEntropyProbeNetwork(
                 trainer: trainerForEntropy
             )
-            let result: ReplayBufferAnalyzer.Result
+            var result: ReplayBufferAnalyzer.Result
             do {
                 if let probe = entropyProbe {
                     result = try await ReplayBufferAnalyzer.runWithPolicyEntropy(
@@ -87,6 +90,7 @@ extension SessionController {
                     modelLabel: modelLabel
                 )
             }
+            result.exportMetadata = exportMetadata
             let summary = result.textSummary()
             let writeOutcome = Self.writeAnalysisJSON(
                 result: result,

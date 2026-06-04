@@ -29,6 +29,9 @@ extension SessionController {
             return
         }
         let modelLabel = net.identifier?.description ?? "<no-id>"
+        // Snapshot training-progress context on the main actor before
+        // the detached work; stamped onto the result below.
+        let exportMetadata = currentAnalysisExportMetadata()
 
         Task.detached(priority: .utility) {
             // Off-main work: exportWeights() bounces through the
@@ -38,7 +41,7 @@ extension SessionController {
             // under a second for a 2.4M-parameter network — but the
             // exportWeights await yields, so keep it off the main
             // actor.
-            let result: ValueHeadAnalyzer.Result
+            var result: ValueHeadAnalyzer.Result
             do {
                 result = try await ValueHeadAnalyzer.run(
                     network: net,
@@ -56,6 +59,7 @@ extension SessionController {
                 return
             }
 
+            result.exportMetadata = exportMetadata
             let summary = result.textSummary()
             let writeOutcome = Self.writeValueHeadJSON(
                 result: result,

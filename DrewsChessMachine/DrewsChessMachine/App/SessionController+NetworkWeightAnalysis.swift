@@ -70,8 +70,11 @@ extension SessionController {
         modelLabel: String,
         buttonContext: String
     ) {
+        // Snapshot training-progress context on the main actor before
+        // the detached work; stamped onto the result below.
+        let exportMetadata = currentAnalysisExportMetadata()
         Task.detached(priority: .utility) {
-            let result: NetworkWeightAnalyzer.Result
+            var result: NetworkWeightAnalyzer.Result
             do {
                 result = try await NetworkWeightAnalyzer.run(
                     network: networkInner,
@@ -89,6 +92,7 @@ extension SessionController {
                 return
             }
 
+            result.exportMetadata = exportMetadata
             let summary = result.textSummary()
             let writeOutcome = Self.writeNetworkWeightsJSON(
                 result: result,
