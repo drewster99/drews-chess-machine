@@ -709,16 +709,21 @@ fileprivate struct HumanPlayWindowView: View {
         }
     }
 
-    /// Ply count to display. Mid-game: `moveCount` (the live ply
-    /// counter). Post-game: `lastGameStats.totalMoves` (the final
-    /// ply count, because `GameWatcher` zeros `moveCount` at game
-    /// end so the session-cumulative `totalMoves + moveCount` math
-    /// elsewhere doesn't double-count).
+    /// Ply count to display. Always the displayed game length — the
+    /// number of plies in the pacer's `history` (the move list), which
+    /// is seeded with any reverted-in prefix and grows as play continues.
+    ///
+    /// Earlier this switched to `lastGameStats.totalMoves` once the game
+    /// ended; that under-reported any reverted game, because the engine's
+    /// per-loop counters restart at 0 after a Revert (the `runGameLoop`
+    /// total excludes the seeded prefix) while the move list, board, and
+    /// live counter all include it. `HumanPlayPlyReadout` documents the
+    /// choice; `history.count` keeps "Ply" equal to the move list in
+    /// every state — mid-game, game-over, reverted or not.
     private var plyText: String {
-        if snapshot.result != nil, let stats = snapshot.lastGameStats {
-            return "\(stats.totalMoves)"
-        }
-        return "\(snapshot.moveCount)"
+        let displayedHistoryPlies = playController.pacer?.history.count ?? snapshot.moveCount
+        let engineLoopTotalMoves = snapshot.result != nil ? snapshot.lastGameStats?.totalMoves : nil
+        return "\(HumanPlayPlyReadout.displayedPlyCount(displayedHistoryPlies: displayedHistoryPlies, engineLoopTotalMoves: engineLoopTotalMoves))"
     }
 
     private var lastMoveText: String {
