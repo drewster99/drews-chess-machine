@@ -1,4 +1,5 @@
 import SwiftUI
+import Darwin
 
 /// `SessionController`'s checkpoint persistence — split out of
 /// `SessionController.swift` to keep that file navigable. Holds the manual /
@@ -159,6 +160,48 @@ extension SessionController {
         )
     }
 
+    /// SIGUSR2 entry point — "checkpoint now, then shut down." Writes a full
+    /// `.dcmsession` through the same path as the manual save (gate dance,
+    /// weight export, resume-pointer record) tagged `.signalSave`, and on
+    /// SUCCESS exits the process so the next launch auto-resumes. On FAILURE it
+    /// logs loudly and STAYS RUNNING — never trade the live session for a failed
+    /// checkpoint. Also stays running (refuses) when there's no active session,
+    /// a save is already in flight, or an arena is running.
+    func handleSaveSessionFromSignal() {
+        SessionLogger.shared.log("[SIGUSR2] save-and-shutdown requested")
+        if checkpoint?.checkpointSaveInFlight == true {
+            SessionLogger.shared.log("[SIGUSR2] a save is already in progress; ignoring (staying running)")
+            return
+        }
+        if isArenaRunning {
+            SessionLogger.shared.log("[SIGUSR2] arena running; cannot checkpoint now — staying running")
+            return
+        }
+        guard realTraining,
+              let champion = network,
+              let trainer,
+              let selfPlayGate = activeSelfPlayGate,
+              let trainingGate = activeTrainingGate else {
+            SessionLogger.shared.log("[SIGUSR2] no active training session to save — staying running")
+            return
+        }
+        saveSessionInternal(
+            champion: champion,
+            trainer: trainer,
+            selfPlayGate: selfPlayGate,
+            trainingGate: trainingGate,
+            trigger: .signalSave,
+            onComplete: { success in
+                if success {
+                    SessionLogger.shared.log("[SIGUSR2] session checkpoint written — shutting down")
+                    Darwin._exit(0)
+                } else {
+                    SessionLogger.shared.log("[SIGUSR2] session checkpoint FAILED — staying running (not shutting down)")
+                }
+            }
+        )
+    }
+
     /// Fired by `PeriodicSaveController` when its 4-hour deadline
     /// elapses (after any arena-deferral has resolved). Behaves
     /// exactly like the manual save path but tagged `.periodic` so
@@ -215,7 +258,8 @@ extension SessionController {
         trainer: ChessTrainer,
         selfPlayGate: WorkerPauseGate,
         trainingGate: WorkerPauseGate,
-        trigger: SessionSaveTrigger
+        trigger: SessionSaveTrigger,
+        onComplete: (@MainActor @Sendable (Bool) -> Void)? = nil
     ) {
         let championID = champion.identifier?.description ?? "unknown"
         let trainerID = trainer.identifier?.description ?? "unknown"
@@ -248,6 +292,15 @@ extension SessionController {
         let chartSnapshotForSave = chartCoordinator?.buildSnapshot()
 
         Task {
+            // Fire `onComplete(success)` exactly once on every exit path
+            // (all the error `return`s and the normal end) via `defer`, so a
+            // caller like the SIGUSR2 save-and-shutdown handler can act on the
+            // outcome. `didSucceed` flips true only in the success branch
+            // below; the defer reads its final value at scope exit. nil
+            // onComplete (manual / periodic / promotion callers) ⇒ no-op.
+            var didSucceed = false
+            defer { onComplete?(didSucceed) }
+
             // Helper to clear both in-flight flags consistently on
             // every early-return path below. The periodic flag is
             // only meaningful when `trigger == .periodic`, but it's
@@ -360,6 +413,7 @@ extension SessionController {
             clearInFlight()
             switch outcome {
             case .success(let url):
+                didSucceed = true
                 checkpoint?.setCheckpointStatus("Saved \(url.lastPathComponent)\(uiSuffix)", kind: .success)
                 let bufStr: String
                 if let snap = bufferForSave?.stateSnapshot() {

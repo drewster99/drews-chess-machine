@@ -29,6 +29,12 @@ enum SessionSaveTrigger: Sendable {
     /// snapshot to reuse, just the live trainer weights we just
     /// copied into the champion.
     case manualPromote
+    /// Fired by SIGUSR2 (`EarlyStopCoordinator`) — a "checkpoint now and shut
+    /// down" request, typically before deploying a new build. Goes through the
+    /// shared `saveSessionInternal` gate dance like a manual save; tagged
+    /// distinctly so the filename + log make clear the save came from the
+    /// signal path (and the process then exited on success).
+    case signalSave
 
     /// Short tag written into the `.dcmsession` filename.
     /// Matches the `trigger:` string the existing `CheckpointManager`
@@ -40,6 +46,7 @@ enum SessionSaveTrigger: Sendable {
         case .manual: "manual"
         case .periodic: "periodic"
         case .manualPromote: "promote"
+        case .signalSave: "sigusr2"
         }
     }
 
@@ -53,6 +60,7 @@ enum SessionSaveTrigger: Sendable {
         case .manual: ""
         case .periodic: " (periodic)"
         case .manualPromote: " (post-promotion)"
+        case .signalSave: " (SIGUSR2)"
         }
     }
 }

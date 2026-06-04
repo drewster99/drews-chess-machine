@@ -822,6 +822,15 @@ extension SessionController {
         // captures the recorder, outputURL, and runStart so the
         // coordinator doesn't need to know about ContentView's state
         // shape — it just calls the closure with the termination reason.
+
+        // SIGUSR2 "checkpoint + shutdown" handler — registered for EVERY active
+        // session (GUI and CLI), unlike the CLI-only earlyStopHandler below.
+        // Cleared in the same teardown block. `[weak self]` so a torn-down
+        // controller can't be retained by the long-lived coordinator.
+        EarlyStopCoordinator.shared.saveSessionHandler = { [weak self] in
+            self?.handleSaveSessionFromSignal()
+        }
+
         if let recorder {
             EarlyStopCoordinator.shared.earlyStopHandler = { reason in
                 let elapsed = Date().timeIntervalSince(runStart)
@@ -2426,6 +2435,7 @@ extension SessionController {
                 lastReplayRatioCompensatorAt = nil
                 cliRecorder = nil
                 EarlyStopCoordinator.shared.earlyStopHandler = nil
+                EarlyStopCoordinator.shared.saveSessionHandler = nil
             }
         }
     }
