@@ -17,6 +17,11 @@ struct LichessProbeDetailView: View {
     /// trend chart for the ~4,435-puzzle set is shown beneath the 200-set
     /// chart. nil ⇒ no wide chart (200-set-only window).
     let wideHistory: LichessProbeHistory?
+    /// Observed for `currentSessionStart*ExportURL` so the auto-compare
+    /// can load this session's start snapshot the moment it's written and
+    /// on window open. Optional so previews / non-session hosts can omit
+    /// it (auto-compare then simply finds no session-start file).
+    var sessionController: SessionController?
     let onProbeNow: @MainActor () -> Void
     let onExport: @MainActor () -> Void
 
@@ -33,14 +38,26 @@ struct LichessProbeDetailView: View {
     /// comparison cell.
     @State private var comparison: LichessProbeComparison?
 
+    /// Loaded comparison for the WIDE set — drives the wide OVERALL band
+    /// and the wide chart cmp lines. nil = no comparison.
+    @State private var comparisonWide: LichessProbeComparison?
+
+    /// When true, both sets auto-compare to THIS session's start-of-
+    /// training snapshot and re-load when it's (re)written. Set false the
+    /// moment the user picks a file manually or clears. State machine in
+    /// the `comparison`-helpers extension below.
+    @State private var autoUpdateSelectedComparison = false
+
     init(
         history: LichessProbeHistory,
         wideHistory: LichessProbeHistory? = nil,
+        sessionController: SessionController? = nil,
         onProbeNow: @escaping @MainActor () -> Void = {},
         onExport: @escaping @MainActor () -> Void = {}
     ) {
         self.history = history
         self.wideHistory = wideHistory
+        self.sessionController = sessionController
         self.onProbeNow = onProbeNow
         self.onExport = onExport
     }
@@ -227,7 +244,7 @@ struct LichessProbeDetailView: View {
             // rightmost columns rather than scrolling horizontally.
             ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    overallSummaryBand
+                    overallSummaryBand(history: history, comparison: comparison)
                         .padding(.vertical, 6)
                         .padding(.horizontal, 12)
                         .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
@@ -248,10 +265,15 @@ struct LichessProbeDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 12)
                             .padding(.top, 6)
+                        overallSummaryBand(history: wideHistory, comparison: comparisonWide)
+                            .padding(.vertical, 6)
+                            .padding(.horizontal, 12)
+                            .background(Color(NSColor.controlBackgroundColor).opacity(0.6))
+                        Divider()
                         LichessProbeOverallTrendChart(
                             history: wideHistory,
-                            cmpNll: nil,
-                            cmpElo: nil
+                            cmpNll: comparisonWide?.overallSummary.meanNegLogProb,
+                            cmpElo: comparisonWide.map(Self.cmpMlePuzzleElo)
                         )
                         .padding(.vertical, 6)
                         .padding(.horizontal, 12)
@@ -288,6 +310,21 @@ struct LichessProbeDetailView: View {
             }
             footer
         }
+        .onAppear { applyOpenWindowComparisonState() }
+        .onChange(of: sessionController?.currentSessionStartSet200ExportURL) {
+            guard autoUpdateSelectedComparison,
+                  let u = sessionController?.currentSessionStartSet200ExportURL else { return }
+            Task { @MainActor in
+                comparison = LichessProbeComparisonLoader.load(from: u, announce: false)
+            }
+        }
+        .onChange(of: sessionController?.currentSessionStartWideExportURL) {
+            guard autoUpdateSelectedComparison,
+                  let u = sessionController?.currentSessionStartWideExportURL else { return }
+            Task { @MainActor in
+                comparisonWide = LichessProbeComparisonLoader.load(from: u, announce: false)
+            }
+        }
     }
 
     /// Look up the comparison's matched entry for a live row by puzzle
@@ -304,6 +341,86 @@ struct LichessProbeDetailView: View {
         return comparison.byPuzzleId[meta.id]
     }
 
+    // MARK: - Comparison auto-load state machine
+
+    private enum CmpDefaultsKey {
+        static let set200 = "lichessCompareLastSet200Path"
+        static let wide = "lichessCompareLastWidePath"
+    }
+
+    /// Window-open default. A manually-pinned file (in UserDefaults) wins
+    /// and turns auto off; otherwise enter auto mode and load whichever of
+    /// this session's start-of-training snapshots have already been
+    /// written (point E fills the rest as they land).
+    private func applyOpenWindowComparisonState() {
+        let d = UserDefaults.standard
+        let pinned200 = d.string(forKey: CmpDefaultsKey.set200)
+        let pinnedWide = d.string(forKey: CmpDefaultsKey.wide)
+        if pinned200 != nil || pinnedWide != nil {
+            autoUpdateSelectedComparison = false
+            if let p = pinned200 {
+                comparison = LichessProbeComparisonLoader.load(
+                    from: URL(fileURLWithPath: p), announce: false)
+            }
+            if let p = pinnedWide {
+                comparisonWide = LichessProbeComparisonLoader.load(
+                    from: URL(fileURLWithPath: p), announce: false)
+            }
+        } else {
+            autoUpdateSelectedComparison = true
+            loadSessionStartComparisons()
+        }
+    }
+
+    /// Load whichever session-start exports exist now (nil paths skipped).
+    private func loadSessionStartComparisons() {
+        if let u = sessionController?.currentSessionStartSet200ExportURL {
+            comparison = LichessProbeComparisonLoader.load(from: u, announce: false)
+        }
+        if let u = sessionController?.currentSessionStartWideExportURL {
+            comparisonWide = LichessProbeComparisonLoader.load(from: u, announce: false)
+        }
+    }
+
+    /// Manual `Compare…`: route the picked file by its probe count, pin it
+    /// per-set in UserDefaults, and leave auto mode.
+    private func routeManualComparison(_ cmp: LichessProbeComparison) {
+        autoUpdateSelectedComparison = false
+        let d = UserDefaults.standard
+        if cmp.payload.probeCount > 1000 {
+            comparisonWide = cmp
+            d.set(cmp.sourceURL.path, forKey: CmpDefaultsKey.wide)
+            SessionLogger.shared.log("[TACTICAL-LICHESS] compare pinned (wide): \(cmp.sourceURL.lastPathComponent)")
+        } else {
+            comparison = cmp
+            d.set(cmp.sourceURL.path, forKey: CmpDefaultsKey.set200)
+            SessionLogger.shared.log("[TACTICAL-LICHESS] compare pinned (200): \(cmp.sourceURL.lastPathComponent)")
+        }
+    }
+
+    /// `Clear compare`: drop both comparisons + both pins, auto off.
+    private func clearComparisons() {
+        SessionLogger.shared.log("[TACTICAL-LICHESS] compare cleared (both sets)")
+        comparison = nil
+        comparisonWide = nil
+        autoUpdateSelectedComparison = false
+        let d = UserDefaults.standard
+        d.removeObject(forKey: CmpDefaultsKey.set200)
+        d.removeObject(forKey: CmpDefaultsKey.wide)
+    }
+
+    /// Header toggle. false→true: wipe the pins (so it's auto again next
+    /// launch) and load this session's start snapshot(s). true→false: keep
+    /// whatever's loaded, just stop auto-updating.
+    private func handleAutoToggleChange(to on: Bool) {
+        autoUpdateSelectedComparison = on
+        guard on else { return }
+        let d = UserDefaults.standard
+        d.removeObject(forKey: CmpDefaultsKey.set200)
+        d.removeObject(forKey: CmpDefaultsKey.wide)
+        loadSessionStartComparisons()
+    }
+
     // MARK: Header
 
     @ViewBuilder
@@ -314,20 +431,30 @@ struct LichessProbeDetailView: View {
             Spacer()
             tickMetadataText
             comparisonMetadataText
+            Toggle("Auto vs session start", isOn: Binding(
+                get: { autoUpdateSelectedComparison },
+                set: { handleAutoToggleChange(to: $0) }
+            ))
+            .toggleStyle(.checkbox)
+            .controlSize(.small)
+            .help("""
+                When on, both sets compare against THIS session's start-of-training \
+                snapshot, updating the moment it's written. Turns off automatically \
+                when you pick a file with Compare…
+                """)
             Button("Probe now") {
                 onProbeNow()
             }
             .controlSize(.small)
             Button("Compare…") {
                 if let loaded = LichessProbeComparisonLoader.loadFromFile() {
-                    comparison = loaded
+                    routeManualComparison(loaded)
                 }
             }
             .controlSize(.small)
-            if comparison != nil {
+            if comparison != nil || comparisonWide != nil {
                 Button("Clear compare") {
-                    SessionLogger.shared.log("[TACTICAL-LICHESS] compare cleared")
-                    comparison = nil
+                    clearComparisons()
                 }
                 .controlSize(.small)
             }
@@ -346,18 +473,24 @@ struct LichessProbeDetailView: View {
     /// Renders nothing when no comparison is active.
     @ViewBuilder
     private var comparisonMetadataText: some View {
-        if let cmp = comparison {
+        if comparison != nil || comparisonWide != nil {
             VStack(alignment: .trailing, spacing: 1) {
-                Text("cmp: \(cmp.sourceURL.lastPathComponent)")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 300, alignment: .trailing)
-                Text("cmp model: \(cmp.payload.modelLabel ?? "<unknown>")")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if let cmp = comparison {
+                    Text("cmp 200: \(cmp.sourceURL.lastPathComponent)")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 300, alignment: .trailing)
+                }
+                if let cmp = comparisonWide {
+                    Text("cmp wide: \(cmp.sourceURL.lastPathComponent)")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 300, alignment: .trailing)
+                }
             }
         }
     }
@@ -780,7 +913,7 @@ struct LichessProbeDetailView: View {
     /// metadata lookup fails (defensive — the 200-puzzle bundle is
     /// stable but the lookup is by `probe.name`, which is a constructed
     /// string).
-    private func liveMlePuzzleElo() -> Double {
+    private static func mlePuzzleElo(forHistory history: LichessProbeHistory) -> Double {
         let pairs: [(rating: Int, correct: Bool)] = history.latestPerPuzzleResults.compactMap {
             guard let meta = LichessProbeData.metadata[$0.probe.name] else { return nil }
             let isArgmaxCorrect = $0.verdict == .correctAndConfident
@@ -1005,13 +1138,18 @@ struct LichessProbeDetailView: View {
     /// row for live data and (when a comparison is loaded) a second
     /// "cmp" row aligned under it with avg-prob / avg-rank color-coded
     /// against the live row.
+    /// OVERALL summary band for a given set's history + optional comparison.
+    /// Set-agnostic: folds the latest per-puzzle results directly (so it
+    /// covers all of the wide set's 13 themes, not just the 200-set's 8),
+    /// and computes the live puzzle-Elo from the same results.
     @ViewBuilder
-    private var overallSummaryBand: some View {
-        let liveAggregates = themeOrder.compactMap {
-            history.latest($0)?.aggregate
-        }
+    private func overallSummaryBand(
+        history: LichessProbeHistory,
+        comparison: LichessProbeComparison?
+    ) -> some View {
+        let liveAggregates = LichessProbeHistory.aggregates(from: history.latestPerPuzzleResults)
         let liveSummary = LichessProbeOverallSummary(folding: liveAggregates)
-        let liveElo = liveMlePuzzleElo()
+        let liveElo = Self.mlePuzzleElo(forHistory: history)
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 12) {
                 Text("OVERALL")

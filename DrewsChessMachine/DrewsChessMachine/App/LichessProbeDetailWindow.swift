@@ -12,6 +12,7 @@ final class LichessProbeDetailWindowController: NSWindowController, NSWindowDele
     init(
         history: LichessProbeHistory,
         wideHistory: LichessProbeHistory?,
+        sessionController: SessionController,
         onProbeNow: @escaping @MainActor () -> Void,
         onExport: @escaping @MainActor () -> Void
     ) {
@@ -19,6 +20,7 @@ final class LichessProbeDetailWindowController: NSWindowController, NSWindowDele
         let view = LichessProbeDetailView(
             history: history,
             wideHistory: wideHistory,
+            sessionController: sessionController,
             onProbeNow: onProbeNow,
             onExport: onExport
         )
@@ -81,6 +83,7 @@ enum LichessProbeDetailLauncher {
         let controller = LichessProbeDetailWindowController(
             history: sessionController.lichessProbeHistory,
             wideHistory: sessionController.lichessProbeWideHistory,
+            sessionController: sessionController,
             onProbeNow: { [weak sessionController] in
                 sessionController?.triggerLichessProbeNow()
             },

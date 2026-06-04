@@ -40,11 +40,16 @@ enum LichessProbeExporter {
     ///   - announce: when false, suppress the success/failure NSAlert and
     ///     the "no tick yet" beep — used by the automatic start-of-training
     ///     export so it doesn't pop UI. Always logs either way.
+    /// - Returns: the written file's `URL` on success, `nil` on skip
+    ///   (no tick yet) or any failure. The manual button ignores the
+    ///   return; the auto start-of-training export records it so the
+    ///   Detail window can auto-compare against it.
+    @discardableResult
     static func exportLatest(
         history: LichessProbeHistory,
         tag: String? = nil,
         announce: Bool = true
-    ) {
+    ) -> URL? {
         SessionLogger.shared.log(
             "[BUTTON] Export Lichess Probe Results"
             + (tag.map { " (\($0))" } ?? "")
@@ -57,7 +62,7 @@ enum LichessProbeExporter {
                 + (tag.map { " [\($0)]" } ?? "")
             )
             if announce { NSSound.beep() }
-            return
+            return nil
         }
 
         let exportID = UUID()
@@ -80,7 +85,7 @@ enum LichessProbeExporter {
                     revealURL: nil
                 )
             }
-            return
+            return nil
         }
 
         let url = dir.appendingPathComponent(filename)
@@ -110,6 +115,7 @@ enum LichessProbeExporter {
                     revealURL: url
                 )
             }
+            return url
         } catch {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export failed: \(error.localizedDescription)"
@@ -121,6 +127,7 @@ enum LichessProbeExporter {
                     revealURL: nil
                 )
             }
+            return nil
         }
     }
 

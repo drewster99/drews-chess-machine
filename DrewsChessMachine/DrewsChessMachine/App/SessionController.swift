@@ -90,6 +90,15 @@ final class SessionController {
     /// Fires once per launch.
     private var startOfTrainingExportTask: Task<Void, Never>?
 
+    /// Paths of THIS launch's start-of-training Lichess exports, set when
+    /// `scheduleStartOfTrainingProbeExport` fires. nil until then. The
+    /// Lichess Probe Detail window observes these (the session controller
+    /// is `@Observable`) to auto-load the "compare vs session start"
+    /// snapshot — using the in-memory path means there's no need to scan
+    /// the export folder or guess whether a file belongs to this session.
+    private(set) var currentSessionStartSet200ExportURL: URL?
+    private(set) var currentSessionStartWideExportURL: URL?
+
     // MARK: - Inference networks (life-of-app caches)
 
     /// Inference-mode network used as the arena's "candidate side" player. The
@@ -752,18 +761,24 @@ final class SessionController {
                 return
             }
             if Task.isCancelled { return }
-            LichessProbeExporter.exportLatest(
+            let set200URL = LichessProbeExporter.exportLatest(
                 history: self.lichessProbeHistory,
                 tag: "training-start-set200",
                 announce: false
             )
-            LichessProbeExporter.exportLatest(
+            let wideURL = LichessProbeExporter.exportLatest(
                 history: self.lichessProbeWideHistory,
                 tag: "training-start-wide",
                 announce: false
             )
+            // Record the written paths so the Detail window can auto-load
+            // them as the "session start" comparison (observed via @Observable).
+            self.currentSessionStartSet200ExportURL = set200URL
+            self.currentSessionStartWideExportURL = wideURL
             SessionLogger.shared.log(
-                "[TACTICAL-LICHESS] start-of-training auto-export fired (set200 + wide)"
+                "[TACTICAL-LICHESS] start-of-training auto-export fired"
+                + " (set200=\(set200URL?.lastPathComponent ?? "skip")"
+                + " wide=\(wideURL?.lastPathComponent ?? "skip"))"
             )
         }
     }

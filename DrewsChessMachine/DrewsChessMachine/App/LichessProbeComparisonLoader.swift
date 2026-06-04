@@ -39,14 +39,21 @@ enum LichessProbeComparisonLoader {
             return nil
         }
 
+        return load(from: url, announce: true)
+    }
+
+    /// Parse a previously-exported Lichess Probe JSON at a known path —
+    /// no panel. Used by `loadFromFile` (manual Compare…) and by the
+    /// Detail window's auto-compare. `announce` gates the error alerts:
+    /// the auto path passes `false` so a missing/garbage file logs
+    /// quietly instead of popping a warning.
+    static func load(from url: URL, announce: Bool = true) -> LichessProbeComparison? {
         let data: Data
         do {
             data = try Data(contentsOf: url)
         } catch {
-            presentLoaderError(
-                title: "Could not read file",
-                message: "Failed to read \(url.lastPathComponent):\n\n\(error.localizedDescription)"
-            )
+            reportLoadError(announce, "Could not read file",
+                "Failed to read \(url.lastPathComponent):\n\n\(error.localizedDescription)")
             return nil
         }
 
@@ -57,29 +64,16 @@ enum LichessProbeComparisonLoader {
                 from: data
             )
         } catch {
-            presentLoaderError(
-                title: "Could not parse file",
-                message: """
-                    \(url.lastPathComponent) is not a valid Lichess Probe export.
-
-                    \(error.localizedDescription)
-                    """
-            )
+            reportLoadError(announce, "Could not parse file",
+                "\(url.lastPathComponent) is not a valid Lichess Probe export.\n\n\(error.localizedDescription)")
             return nil
         }
 
-        // v3 adds the optional top-level `training_step`; v4 adds four
-        // more progress fields. None of those are decoded by
-        // `LoadedPayload`, so v2/v3/v4 files are read identically here.
-        // Accept all three.
+        // v2/v3/v4 decode identically here (v3/v4's extra top-level
+        // fields aren't in `LoadedPayload`); accept all three.
         guard (2...4).contains(decoded.schemaVersion) else {
-            presentLoaderError(
-                title: "Unsupported schema",
-                message: """
-                    \(url.lastPathComponent) uses schema version \(decoded.schemaVersion).
-                    Only versions 2-4 are supported.
-                    """
-            )
+            reportLoadError(announce, "Unsupported schema",
+                "\(url.lastPathComponent) uses schema version \(decoded.schemaVersion). Only versions 2-4 are supported.")
             return nil
         }
 
@@ -91,6 +85,18 @@ enum LichessProbeComparisonLoader {
             + "tick=\(decoded.tickTimestamp)"
         )
         return comparison
+    }
+
+    /// Either pop a warning alert (manual path) or log quietly (auto path).
+    private static func reportLoadError(_ announce: Bool, _ title: String, _ message: String) {
+        if announce {
+            presentLoaderError(title: title, message: message)
+        } else {
+            SessionLogger.shared.log(
+                "[TACTICAL-LICHESS] auto-compare \(title): "
+                + message.replacingOccurrences(of: "\n", with: " ")
+            )
+        }
     }
 
     private static func presentLoaderError(title: String, message: String) {
