@@ -9,6 +9,24 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-06-04 CDT — Parallel 4,435-puzzle WIDE Lichess probe set (one batched eval) + probe timing
+
+A second, much larger Lichess probe battery now runs **alongside** the existing 200-puzzle set as a fixed long-term yardstick: ~4,435 puzzles spanning rating 400–3200 (flat per-100 density 550–2800, mate-weighted), bundled as `lichess_probes_wide.json`. The 200-set is completely untouched — same data, same chart, same persistence — the wide set is purely additive. Feature commit `9818b66`; probe-timing follow-up in the same dated batch.
+
+**One snapshot, one batched forward, split two ways.** Both batteries are driven by the single `LichessProbeWatcher` tick: the 200 + wide probes are concatenated (~4,635 positions) and evaluated in a SINGLE `evaluateBatched(count:)` off one weight snapshot, then the result rows are split back to per-set histories (`lichessProbeHistory` / new `lichessProbeWideHistory`). This replaces the prior per-probe serial loop with `TacticalProbeRunner.runBatch`; the combined board tensor is pre-encoded once and reused every tick (boards are static — only weights change), and the fixed batch size means the network's per-batch-size graph/buffers compile+allocate once and are reused (no per-tick reallocation). Numerically equivalent to the old serial path (inference-mode BN makes each position independent), so the 200-set's trajectory stays continuous.
+
+**Start-of-training auto-export.** ~2 minutes after the trainer's step count starts advancing, both sets auto-export a snapshot to `…/Performance/LichessProbes/` tagged `training-start-set200` / `training-start-wide`, with the success window suppressed (`announce: false`) so nothing pops while unattended. `LichessProbeExporter.exportLatest` gained `tag:` and `announce:` (the manual "Export latest…" button is unchanged via defaults). These files are valid comparison snapshots, loadable later via "Compare…".
+
+**Persistence + UI.** New Optional `lichessProbeWideHistory` on `SessionCheckpointState` (back-compatible — older `.dcmsession` files decode it nil and start the wide monitor empty), saved via `withProbeHistories` and restored alongside the 200-set under `[RESUME-PROBE]`. A second OVERALL trend chart for the wide set shows beneath the 200-set chart in the Lichess Probe Detail window.
+
+**5 new `ProbeCategory` cases** (`lichessMateIn2`, `lichessDiscoveredAttack`, `lichessDeflection`, `lichessSacrifice`, `lichessPromotion`) so `themeToCategory` maps all 13 wide-set themes and the loader never hits its unknown-theme `preconditionFailure`; aggregation, the OVERALL fold, and the charts are all category-agnostic (keyed dynamically), so nothing else needed per-category code.
+
+**Probe-cost telemetry.** Each tick now logs `[TACTICAL-LICHESS] timing n=<count> encodeMs=… snapshotMs=… gpuMs=… postMs=… recordMs=… totalMs=…`: encode (one-time board encode, ≈0 after the first tick), snapshot (trainer weight export+load, candidate target only), gpu (the batched forward + readback copy), post (CPU softmax + legal-mask + verdict fold over all positions), record (aggregate + history append + per-set summary log), and the whole-tick total. `runBatch` returns the gpu/post split; the watcher measures the rest.
+
+Verified live (build 1642): the wide set ticks every 25 steps at ~15% argmax / pElo ~817 across all 13 themes, both auto-exports landed, the 200-set restored its 5,286-tick history intact, and training continued without throughput regression.
+
+---
+
 ## 2026-06-01 CDT — Probe-monitor history persists across runs + step-indexed OVERALL charts
 
 The Lichess (200-puzzle) and tactical probe monitors now **save and restore with the session**, like everything else; previously both histories were in-memory only and reset on every launch. And the Lichess Probe Detail window's two OVERALL charts (NLL, puzzle-Elo) now plot against **trainer step** instead of elapsed wall-clock seconds, matching the rest of the app's telemetry.

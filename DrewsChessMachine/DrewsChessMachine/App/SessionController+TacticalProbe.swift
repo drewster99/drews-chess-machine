@@ -327,15 +327,20 @@ static func run(_ probe: TacticalProbe, against net: ChessMPSNetwork) async -> P
 /// On any failure (forward-pass error or a readback-size mismatch) the
 /// whole battery returns `.error`-verdict results — same length and
 /// order as `probes` — so the caller's aggregate stays well-formed.
+/// Returns the per-position results plus a timing split so the caller
+/// can log probe cost: `gpuMs` covers the batched forward + readback
+/// copy (the `evaluateBatched` call), `postMs` covers the CPU fold
+/// (softmax + legal-mask + `buildProbeResult`) over all positions.
 static func runBatch(
     _ probes: [TacticalProbe],
     encodedInput: [Float],
     against net: ChessMPSNetwork
-) async -> [ProbeResult] {
-    guard !probes.isEmpty else { return [] }
+) async -> (results: [ProbeResult], gpuMs: Double, postMs: Double) {
+    guard !probes.isEmpty else { return ([], 0, 0) }
     let policySize = ChessNetwork.policySize
 
     let readback = BatchReadbackBox()
+    let gpuStart = DispatchTime.now().uptimeNanoseconds
     do {
         try await net.evaluateBatched(batchBoards: encodedInput, count: probes.count) { policy, _, wdlProbs in
             // Copy out of the executionQueue-owned buffers; the softmax +
@@ -348,8 +353,9 @@ static func runBatch(
         SessionLogger.shared.log(
             "[TACTICAL] evaluateBatched failed for \(probes.count)-probe battery: \(error)"
         )
-        return probes.map { Self.errorResult(for: $0) }
+        return (probes.map { Self.errorResult(for: $0) }, Self.msSince(gpuStart), 0)
     }
+    let gpuMs = Self.msSince(gpuStart)
 
     let policyFlat = readback.policy
     let wdlFlat = readback.wdl
@@ -360,9 +366,10 @@ static func runBatch(
             + " policy=\(policyFlat.count) expected=\(probes.count * policySize)"
             + " wdl=\(wdlFlat.count) — battery errored"
         )
-        return probes.map { Self.errorResult(for: $0) }
+        return (probes.map { Self.errorResult(for: $0) }, gpuMs, 0)
     }
 
+    let postStart = DispatchTime.now().uptimeNanoseconds
     var results: [ProbeResult] = []
     results.reserveCapacity(probes.count)
     for (j, probe) in probes.enumerated() {
@@ -373,7 +380,13 @@ static func runBatch(
         let wdl = (win: wdlFlat[wLo], draw: wdlFlat[wLo + 1], loss: wdlFlat[wLo + 2])
         results.append(buildProbeResult(probe: probe, rawPolicy: rawPolicy, wdl: wdl))
     }
-    return results
+    let postMs = Self.msSince(postStart)
+    return (results, gpuMs, postMs)
+}
+
+/// Monotonic elapsed milliseconds since a `DispatchTime` uptime mark.
+static func msSince(_ startNs: UInt64) -> Double {
+    Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
 }
 
 /// `.error`-verdict placeholder for a probe whose forward pass failed.

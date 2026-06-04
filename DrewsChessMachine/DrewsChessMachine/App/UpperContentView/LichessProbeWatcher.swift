@@ -210,6 +210,8 @@ final class LichessProbeWatcher {
     private func tickOnce() async {
         guard let session = sessionController else { return }
         let target = session.probeNetworkTarget
+        let tickStart = DispatchTime.now().uptimeNanoseconds
+        var snapshotMs = 0.0
 
         let net: ChessMPSNetwork
         switch target {
@@ -228,6 +230,7 @@ final class LichessProbeWatcher {
             // watcher's tickOnce is serial against itself.
             guard let trainer = session.trainer,
                   let probeNet = session.lichessProbeInferenceNetwork else { return }
+            let snapStart = DispatchTime.now().uptimeNanoseconds
             do {
                 let weights = try await trainer.network.exportWeights()
                 try await probeNet.loadWeights(weights)
@@ -238,6 +241,7 @@ final class LichessProbeWatcher {
                 return
             }
             probeNet.identifier = trainer.identifier
+            snapshotMs = elapsedMs(since: snapStart)
             net = probeNet
         }
 
@@ -247,12 +251,16 @@ final class LichessProbeWatcher {
         // readback is fresh each tick. Results split back into the two
         // sets, each recorded to its own history against identical
         // weights — so the two trajectories are directly comparable.
+        let encodeStart = DispatchTime.now().uptimeNanoseconds
         let combined = ensureCombined()
-        let allResults = await TacticalProbeRunner.runBatch(
+        let encodeMs = elapsedMs(since: encodeStart)
+
+        let batch = await TacticalProbeRunner.runBatch(
             combined.probes,
             encodedInput: combined.input,
             against: net
         )
+        let allResults = batch.results
         guard allResults.count == combined.probes.count else {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] tick aborted: batched result count \(allResults.count) != \(combined.probes.count)"
@@ -272,6 +280,7 @@ final class LichessProbeWatcher {
         let arenaCount = session.tournamentHistory.count
         let promotionCount = session.tournamentHistory.lazy.filter { $0.promoted }.count
 
+        let recordStart = DispatchTime.now().uptimeNanoseconds
         let primaryResults = Array(allResults[0..<combined.primaryCount])
         recordBattery(
             primaryResults,
@@ -299,6 +308,27 @@ final class LichessProbeWatcher {
                 setLabel: "wide"
             )
         }
+        let recordMs = elapsedMs(since: recordStart)
+
+        // Probe-cost telemetry. encode = one-time board encode (≈0 after the
+        // first tick, cached); snapshot = trainer weight export+load (candidate
+        // target only); gpu = the single batched forward + readback; post =
+        // CPU fold (softmax + legal-mask + verdicts) over all positions;
+        // record = aggregate + history append + per-set summary log; total =
+        // the whole tick. Grep `[TACTICAL-LICHESS] timing`.
+        let totalMs = elapsedMs(since: tickStart)
+        SessionLogger.shared.log(
+            "[TACTICAL-LICHESS] timing n=\(combined.probes.count)"
+            + String(
+                format: " encodeMs=%.1f snapshotMs=%.1f gpuMs=%.1f postMs=%.1f recordMs=%.1f totalMs=%.1f",
+                encodeMs, snapshotMs, batch.gpuMs, batch.postMs, recordMs, totalMs
+            )
+        )
+    }
+
+    /// Monotonic elapsed milliseconds since a `DispatchTime` uptime mark.
+    private func elapsedMs(since startNs: UInt64) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
     }
 
     /// Build (once) and cache the combined primary+wide probe list, its
