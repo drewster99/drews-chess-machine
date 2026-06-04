@@ -792,6 +792,7 @@ extension SessionController {
         )
         .withProbeHistories(
             lichess: lichessProbeHistory.makeSnapshot(),
+            wideLichess: lichessProbeWideHistory.makeSnapshot(),
             tactical: tacticalProbeHistory.makeSnapshot()
         )
     }

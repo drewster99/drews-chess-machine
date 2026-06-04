@@ -2472,6 +2472,7 @@ extension SessionController {
     ) {
         guard let resumed = resumeState else {
             lichessProbeHistory.clearAll()
+            lichessProbeWideHistory.clearAll()
             tacticalProbeHistory.clearAll()
             SessionLogger.shared.log(
                 "[RESUME-PROBE] Fresh session — probe monitors cleared"
@@ -2490,6 +2491,17 @@ extension SessionController {
             lichessProbeHistory.clearAll()
             SessionLogger.shared.log(
                 "[RESUME-PROBE] No saved Lichess probe history (older session) — starting empty"
+            )
+        }
+        if let snap = resumed.lichessProbeWideHistory {
+            lichessProbeWideHistory.restore(from: snap)
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] Restored WIDE Lichess probe history: \(lichessProbeWideHistory.overallSeries.count) overall ticks"
+            )
+        } else {
+            lichessProbeWideHistory.clearAll()
+            SessionLogger.shared.log(
+                "[RESUME-PROBE] No saved WIDE Lichess probe history (older session) — starting empty"
             )
         }
         if let snap = resumed.tacticalProbeHistory {

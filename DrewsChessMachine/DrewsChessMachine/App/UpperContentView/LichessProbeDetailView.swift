@@ -13,6 +13,10 @@ import SwiftUI
 /// data — fully derived from the observed history.
 struct LichessProbeDetailView: View {
     @Bindable var history: LichessProbeHistory
+    /// Optional parallel WIDE-set history. When present, a second OVERALL
+    /// trend chart for the ~4,435-puzzle set is shown beneath the 200-set
+    /// chart. nil ⇒ no wide chart (200-set-only window).
+    let wideHistory: LichessProbeHistory?
     let onProbeNow: @MainActor () -> Void
     let onExport: @MainActor () -> Void
 
@@ -31,10 +35,12 @@ struct LichessProbeDetailView: View {
 
     init(
         history: LichessProbeHistory,
+        wideHistory: LichessProbeHistory? = nil,
         onProbeNow: @escaping @MainActor () -> Void = {},
         onExport: @escaping @MainActor () -> Void = {}
     ) {
         self.history = history
+        self.wideHistory = wideHistory
         self.onProbeNow = onProbeNow
         self.onExport = onExport
     }
@@ -235,6 +241,23 @@ struct LichessProbeDetailView: View {
                     .padding(.horizontal, 12)
                     .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
                     Divider()
+                    if let wideHistory {
+                        Text("WIDE PROBE SET (\(LichessProbeData.wideSet.count) puzzles)")
+                            .font(.system(.caption, design: .default).weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.top, 6)
+                        LichessProbeOverallTrendChart(
+                            history: wideHistory,
+                            cmpNll: nil,
+                            cmpElo: nil
+                        )
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 12)
+                        .background(Color(NSColor.controlBackgroundColor).opacity(0.4))
+                        Divider()
+                    }
                     columnHeader
                         .padding(.vertical, 4)
                         .padding(.horizontal, 12)

@@ -433,6 +433,12 @@ struct SessionCheckpointState: Codable, Equatable {
     /// `ProbeResultCodable`).
     var lichessProbeHistory: LichessProbeHistorySnapshot?
 
+    /// Serialized WIDE-set (~4,435-puzzle) Lichess probe history,
+    /// parallel to `lichessProbeHistory`. Optional for back-compat:
+    /// sessions saved before the wide set existed decode this as nil and
+    /// the wide monitor starts empty.
+    var lichessProbeWideHistory: LichessProbeHistorySnapshot?
+
     /// Serialized tactical probe monitor history (per-probe time series
     /// of full `ProbeResult`s). Optional for back-compat, same as
     /// `lichessProbeHistory`.
@@ -543,10 +549,12 @@ struct SessionCheckpointState: Codable, Equatable {
     /// init call site lean.
     func withProbeHistories(
         lichess: LichessProbeHistorySnapshot?,
+        wideLichess: LichessProbeHistorySnapshot?,
         tactical: TacticalProbeHistorySnapshot?
     ) -> SessionCheckpointState {
         var copy = self
         copy.lichessProbeHistory = lichess
+        copy.lichessProbeWideHistory = wideLichess
         copy.tacticalProbeHistory = tactical
         return copy
     }

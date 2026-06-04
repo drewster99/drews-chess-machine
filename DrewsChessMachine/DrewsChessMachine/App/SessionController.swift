@@ -72,11 +72,23 @@ final class SessionController {
     /// of the session controller, same as `tacticalProbeHistory`.
     let lichessProbeHistory = LichessProbeHistory()
 
+    /// Parallel history for the ~4,435-puzzle WIDE Lichess probe set, run
+    /// alongside `lichessProbeHistory` by the same watcher off ONE weight
+    /// snapshot per tick. Separate instance so the 200-set's chart and
+    /// persistence stay untouched. Lifetime = session controller.
+    let lichessProbeWideHistory = LichessProbeHistory()
+
     /// Periodic driver behind `lichessProbeHistory`. Parallel to
     /// `tacticalProbeWatcher` — lazily created on first
     /// `startLichessProbeWatcher()`, runs for the life of the session,
     /// no-ops cleanly when the chosen probe network isn't ready.
     private var lichessProbeWatcher: LichessProbeWatcher?
+
+    /// One-shot task that, ~2 minutes after training first starts
+    /// progressing, auto-exports a "start of training" snapshot of both
+    /// Lichess probe sets (see `scheduleStartOfTrainingProbeExport`).
+    /// Fires once per launch.
+    private var startOfTrainingExportTask: Task<Void, Never>?
 
     // MARK: - Inference networks (life-of-app caches)
 
@@ -688,13 +700,72 @@ final class SessionController {
         let w = LichessProbeWatcher(
             sessionController: self,
             history: lichessProbeHistory,
+            // The WIDE longitudinal set rides the SAME watcher: one weight
+            // snapshot per tick, both batteries (200 + 4,435) in ONE
+            // batched forward, each recorded to its own history.
+            wideProbes: LichessProbeData.wideSet,
+            wideHistory: lichessProbeWideHistory,
             // Denser-than-default cadence (vs. the 400-step default) for a
-            // closer forward-metric trace. Each tick is a trainer weight
-            // snapshot + 200-puzzle battery, so ~16x the default's tick load.
+            // closer forward-metric trace. Batched eval keeps the combined
+            // ~4,635-position tick cheap enough to run this densely.
             triggerEverySteps: 25
         )
         lichessProbeWatcher = w
         w.start()
+        scheduleStartOfTrainingProbeExport()
+    }
+
+    /// Schedule the one-shot "start of training" Lichess probe export.
+    /// Idempotent per launch — a second call while the task is pending or
+    /// after it fired is a no-op. Waits until the trainer's step count
+    /// actually advances (training is really running, not just the view
+    /// mounting), then ~2 minutes later auto-exports a snapshot of BOTH
+    /// probe sets to the canonical export folder. Reuses the "Export
+    /// latest…" path but suppresses its window/beep (`announce: false`)
+    /// and tags the filenames so the start-of-training snapshots are easy
+    /// to pick out from manual exports.
+    private func scheduleStartOfTrainingProbeExport() {
+        guard startOfTrainingExportTask == nil else { return }
+        startOfTrainingExportTask = Task { [weak self] in
+            guard let self else { return }
+            // Wait for training to actually progress past wherever the
+            // step counter is now (handles "view mounted before training
+            // started" and session-resume, where the step is nonzero).
+            let baseline = self.trainer?.completedTrainSteps ?? 0
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch {
+                    return
+                }
+                if Task.isCancelled { return }
+                if let step = self.trainer?.completedTrainSteps, step > baseline {
+                    break
+                }
+            }
+            if Task.isCancelled { return }
+            // Give the watcher ~2 minutes to record a start-of-training
+            // tick into both histories, then export once.
+            do {
+                try await Task.sleep(nanoseconds: 120_000_000_000)
+            } catch {
+                return
+            }
+            if Task.isCancelled { return }
+            LichessProbeExporter.exportLatest(
+                history: self.lichessProbeHistory,
+                tag: "training-start-set200",
+                announce: false
+            )
+            LichessProbeExporter.exportLatest(
+                history: self.lichessProbeWideHistory,
+                tag: "training-start-wide",
+                announce: false
+            )
+            SessionLogger.shared.log(
+                "[TACTICAL-LICHESS] start-of-training auto-export fired (set200 + wide)"
+            )
+        }
     }
 
     /// On-demand fire of a single Lichess-probe cycle. Wired to the

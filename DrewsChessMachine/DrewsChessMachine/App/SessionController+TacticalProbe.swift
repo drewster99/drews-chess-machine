@@ -39,6 +39,18 @@ enum ProbeCategory: String, Codable, Sendable {
     case lichessOpening
     case lichessMiddlegame
     case lichessEndgame
+
+    // Wide-set additional buckets. The wide longitudinal probe set
+    // (`LichessProbeData.wideSet`, ~4,435 puzzles, rating 400–3200)
+    // carries five themes the 200-set never did. Pure additions — the
+    // eight buckets above are unchanged — so `themeToCategory` maps
+    // every wide-set theme string and the loader never hits its
+    // unknown-theme `preconditionFailure`.
+    case lichessMateIn2
+    case lichessDiscoveredAttack
+    case lichessDeflection
+    case lichessSacrifice
+    case lichessPromotion
 }
 
 /// A single hand-built tactical position with an unambiguous "right
@@ -289,7 +301,109 @@ static func run(_ probe: TacticalProbe, against net: ChessMPSNetwork) async -> P
     return buildProbeResult(probe: probe, rawPolicy: rawPolicy, wdl: wdl)
 }
 
+/// Batched sibling of `run(_:against:)`. Evaluates an ENTIRE probe
+/// battery through `net` in a SINGLE batched forward pass — one
+/// `evaluateBatched(count:)` over all positions, instead of two
+/// single-position forwards per probe — then folds each position's
+/// logits + W/D/L into a `ProbeResult` via the same pure
+/// `buildProbeResult` the serial path uses.
+///
+/// Numerically equivalent to calling `run` on each probe: inference-mode
+/// batch-norm makes every position in a batch independent, so a batched
+/// forward yields the same per-position logits as N serial forwards
+/// (within float noise). For large sets this is the whole game — the
+/// combined 200 + wide battery (~4,635 positions) is one forward pass
+/// rather than ~9,270, and because the batch size is fixed tick to tick
+/// the network's per-batch-size graph/buffers are compiled+allocated
+/// once and reused (no per-tick reallocation).
+///
+/// `encodedInput` is the caller's pre-encoded board tensor —
+/// `probes.count * BoardEncoder.tensorLength` floats, NCHW,
+/// position-major, in the SAME order as `probes`. The probe boards are
+/// static (only the weights change), so the caller encodes once and
+/// reuses the buffer every tick; passing it in keeps this call
+/// allocation-light.
+///
+/// On any failure (forward-pass error or a readback-size mismatch) the
+/// whole battery returns `.error`-verdict results — same length and
+/// order as `probes` — so the caller's aggregate stays well-formed.
+static func runBatch(
+    _ probes: [TacticalProbe],
+    encodedInput: [Float],
+    against net: ChessMPSNetwork
+) async -> [ProbeResult] {
+    guard !probes.isEmpty else { return [] }
+    let policySize = ChessNetwork.policySize
+
+    let readback = BatchReadbackBox()
+    do {
+        try await net.evaluateBatched(batchBoards: encodedInput, count: probes.count) { policy, _, wdlProbs in
+            // Copy out of the executionQueue-owned buffers; the softmax +
+            // legal-mask bookkeeping happens AFTER the await so the
+            // network's work queue isn't held during CPU work.
+            readback.policy = Array(policy)
+            readback.wdl = Array(wdlProbs)
+        }
+    } catch {
+        SessionLogger.shared.log(
+            "[TACTICAL] evaluateBatched failed for \(probes.count)-probe battery: \(error)"
+        )
+        return probes.map { Self.errorResult(for: $0) }
+    }
+
+    let policyFlat = readback.policy
+    let wdlFlat = readback.wdl
+    guard policyFlat.count == probes.count * policySize,
+          wdlFlat.count == probes.count * 3 else {
+        SessionLogger.shared.log(
+            "[TACTICAL] evaluateBatched readback size mismatch:"
+            + " policy=\(policyFlat.count) expected=\(probes.count * policySize)"
+            + " wdl=\(wdlFlat.count) — battery errored"
+        )
+        return probes.map { Self.errorResult(for: $0) }
+    }
+
+    var results: [ProbeResult] = []
+    results.reserveCapacity(probes.count)
+    for (j, probe) in probes.enumerated() {
+        let pLo = j * policySize
+        let rawLogits = Array(policyFlat[pLo..<pLo + policySize])
+        let rawPolicy = ChessRunner.softmax(rawLogits)
+        let wLo = j * 3
+        let wdl = (win: wdlFlat[wLo], draw: wdlFlat[wLo + 1], loss: wdlFlat[wLo + 2])
+        results.append(buildProbeResult(probe: probe, rawPolicy: rawPolicy, wdl: wdl))
+    }
+    return results
+}
+
+/// `.error`-verdict placeholder for a probe whose forward pass failed.
+/// Factored so single-probe `run` and batched `runBatch` agree on the
+/// shape of a failed result.
+static func errorResult(for probe: TacticalProbe) -> ProbeResult {
+    ProbeResult(
+        probe: probe,
+        topMoves: [],
+        expectedRank: nil,
+        expectedProb: 0,
+        legalCount: 0,
+        legalEntropyNats: 0,
+        uniformLegalEntropy: 0,
+        illegalMass: 0,
+        valueWDL: (0, 0, 0),
+        verdict: .error
+    )
+}
+
 }   // end enum TacticalProbeRunner
+
+/// Result holder for `TacticalProbeRunner.runBatch`'s batched readback —
+/// the `@Sendable` consume closure writes the policy/value arrays, which
+/// are read after the `await`. Same unchecked-Sendable pattern as
+/// `LogitsBox`: written inside the closure, read after the barrier.
+private final class BatchReadbackBox: @unchecked Sendable {
+    var policy: [Float] = []
+    var wdl: [Float] = []
+}
 
 // MARK: - Tactical Probe — SessionController extension
 

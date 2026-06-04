@@ -37,6 +37,22 @@ import Foundation
 final class LichessProbeWatcher {
     private weak var sessionController: SessionController?
     private let history: LichessProbeHistory
+    /// The primary (200-puzzle) battery, destination = `history` above.
+    private let primaryProbes: [TacticalProbe]
+    /// Optional second battery — the ~4,435-puzzle WIDE longitudinal set
+    /// — evaluated off the SAME weight snapshot in the SAME batched
+    /// forward as the primary set, then recorded to its own history.
+    /// nil ⇒ this watcher runs the primary battery only.
+    private let wideProbes: [TacticalProbe]?
+    private let wideHistory: LichessProbeHistory?
+
+    /// Lazily built then cached: primary + wide probes concatenated, the
+    /// matching pre-encoded board tensor (boards are static — only the
+    /// weights change — so encode once and reuse every tick), and the
+    /// split boundary (= primary count).
+    private var combinedProbes: [TacticalProbe]?
+    private var combinedInput: [Float]?
+    private var primaryCount = 0
     /// Fire one tick every time the trainer's `completedTrainSteps`
     /// has advanced by this many steps since the last tick.
     private let triggerEverySteps: Int
@@ -51,10 +67,16 @@ final class LichessProbeWatcher {
     init(
         sessionController: SessionController,
         history: LichessProbeHistory,
+        primaryProbes: [TacticalProbe] = LichessProbeData.largeSet,
+        wideProbes: [TacticalProbe]? = nil,
+        wideHistory: LichessProbeHistory? = nil,
         triggerEverySteps: Int = 400
     ) {
         self.sessionController = sessionController
         self.history = history
+        self.primaryProbes = primaryProbes
+        self.wideProbes = wideProbes
+        self.wideHistory = wideHistory
         self.triggerEverySteps = max(1, triggerEverySteps)
     }
 
@@ -179,11 +201,12 @@ final class LichessProbeWatcher {
         }
     }
 
-    /// One tick: pick network, run 200 probes, aggregate, record.
-    /// Mirrors `TacticalProbeWatcher.tickOnce()` for the network-target
-    /// selection and trainer-snapshot path so the two watchers behave
-    /// identically with respect to the existing
-    /// `probeNetworkTarget` toggle.
+    /// One tick: pick network, run the COMBINED battery (primary + optional
+    /// wide) in a single batched forward off one weight snapshot, split the
+    /// results, aggregate and record each set to its own history. Mirrors
+    /// `TacticalProbeWatcher.tickOnce()` for the network-target selection
+    /// and trainer-snapshot path so the two watchers behave identically
+    /// with respect to the existing `probeNetworkTarget` toggle.
     private func tickOnce() async {
         guard let session = sessionController else { return }
         let target = session.probeNetworkTarget
@@ -218,27 +241,29 @@ final class LichessProbeWatcher {
             net = probeNet
         }
 
-        // Run the full battery. 200 serial forward passes — the
-        // batched evaluator isn't wired through `TacticalProbeRunner`
-        // because per-probe top-5 / entropy bookkeeping wants the raw
-        // logits per position rather than a folded batch result.
-        let probes = LichessProbeData.largeSet
-        var allResults: [ProbeResult] = []
-        allResults.reserveCapacity(probes.count)
-        for probe in probes {
-            let r = await TacticalProbeRunner.run(probe, against: net)
-            allResults.append(r)
+        // ONE batched forward pass over the COMBINED battery (primary +
+        // optional wide) off this single weight snapshot. The pre-encoded
+        // board tensor is cached (boards are static), so only the GPU
+        // readback is fresh each tick. Results split back into the two
+        // sets, each recorded to its own history against identical
+        // weights — so the two trajectories are directly comparable.
+        let combined = ensureCombined()
+        let allResults = await TacticalProbeRunner.runBatch(
+            combined.probes,
+            encodedInput: combined.input,
+            against: net
+        )
+        guard allResults.count == combined.probes.count else {
+            SessionLogger.shared.log(
+                "[TACTICAL-LICHESS] tick aborted: batched result count \(allResults.count) != \(combined.probes.count)"
+            )
+            return
         }
 
-        let aggregates = LichessProbeHistory.aggregates(from: allResults)
+        // Progress fields captured once at tick time, shared by both
+        // batteries so an export reports values consistent with the
+        // probed weights even if minutes of training pass before export.
         let modelLabel = net.identifier?.description ?? "<no-id>"
-        // Snapshot the four progress fields the JSON export carries —
-        // captured at tick time (not export time) so a later
-        // "Export latest…" reports values consistent with the probed
-        // weights even if many minutes of training have happened
-        // since. Each is nil-safe at its own scope: trainer-step needs
-        // a live trainer, positions-trained derives from it, the
-        // checkpoint-controller fields need an attached controller.
         let trainingStep = session.trainer?.completedTrainSteps
         let positionsTrained = trainingStep.map {
             $0 * TrainingParameters.shared.trainingBatchSize
@@ -246,9 +271,79 @@ final class LichessProbeWatcher {
         let activeTrainingSec = session.checkpoint?.cumulativeActiveTrainingSec
         let arenaCount = session.tournamentHistory.count
         let promotionCount = session.tournamentHistory.lazy.filter { $0.promoted }.count
+
+        let primaryResults = Array(allResults[0..<combined.primaryCount])
+        recordBattery(
+            primaryResults,
+            into: history,
+            modelLabel: modelLabel,
+            trainingStep: trainingStep,
+            positionsTrained: positionsTrained,
+            activeTrainingSec: activeTrainingSec,
+            arenaCount: arenaCount,
+            promotionCount: promotionCount,
+            setLabel: nil
+        )
+
+        if let wideHistory {
+            let wideResults = Array(allResults[combined.primaryCount...])
+            recordBattery(
+                wideResults,
+                into: wideHistory,
+                modelLabel: modelLabel,
+                trainingStep: trainingStep,
+                positionsTrained: positionsTrained,
+                activeTrainingSec: activeTrainingSec,
+                arenaCount: arenaCount,
+                promotionCount: promotionCount,
+                setLabel: "wide"
+            )
+        }
+    }
+
+    /// Build (once) and cache the combined primary+wide probe list, its
+    /// pre-encoded board tensor, and the split boundary. Cached because
+    /// the boards never change — only the weights do — so the ~4,635-
+    /// position encode runs a single time, on the first tick.
+    private func ensureCombined() -> (probes: [TacticalProbe], input: [Float], primaryCount: Int) {
+        if let probes = combinedProbes, let input = combinedInput {
+            return (probes, input, primaryCount)
+        }
+        var probes = primaryProbes
+        primaryCount = primaryProbes.count
+        if let wideProbes {
+            probes += wideProbes
+        }
+        var input = [Float]()
+        input.reserveCapacity(probes.count * BoardEncoder.tensorLength)
+        for probe in probes {
+            input.append(contentsOf: BoardEncoder.encode(probe.state))
+        }
+        combinedProbes = probes
+        combinedInput = input
+        return (probes, input, primaryCount)
+    }
+
+    /// Aggregate one battery's results, record them to `history`, and log
+    /// a one-line `[TACTICAL-LICHESS]` summary. Shared by the primary and
+    /// wide batteries; `setLabel` tags the wide line (`set=wide`) so the
+    /// two sets are grep-separable, and is nil for the primary so its log
+    /// line is unchanged from before.
+    private func recordBattery(
+        _ results: [ProbeResult],
+        into history: LichessProbeHistory,
+        modelLabel: String,
+        trainingStep: Int?,
+        positionsTrained: Int?,
+        activeTrainingSec: Double?,
+        arenaCount: Int,
+        promotionCount: Int,
+        setLabel: String?
+    ) {
+        let aggregates = LichessProbeHistory.aggregates(from: results)
         history.record(
             aggregates,
-            allResults: allResults,
+            allResults: results,
             modelLabel: modelLabel,
             trainingStep: trainingStep,
             positionsTrained: positionsTrained,
@@ -258,9 +353,10 @@ final class LichessProbeWatcher {
         )
         logTickSummary(
             aggregates,
-            allResults: allResults,
+            allResults: results,
             modelLabel: modelLabel,
-            trainingStep: trainingStep
+            trainingStep: trainingStep,
+            setLabel: setLabel
         )
     }
 
@@ -274,7 +370,8 @@ final class LichessProbeWatcher {
         _ aggregates: [LichessProbeHistory.Aggregate],
         allResults: [ProbeResult],
         modelLabel: String,
-        trainingStep: Int?
+        trainingStep: Int?,
+        setLabel: String?
     ) {
         let overall = LichessProbeOverallSummary(folding: aggregates)
         let totalCorrect = overall.argmaxCorrect
@@ -313,6 +410,7 @@ final class LichessProbeWatcher {
 
         SessionLogger.shared.log(
             "[TACTICAL-LICHESS] tick"
+            + (setLabel.map { " set=\($0)" } ?? "")
             + " step=\(stepStr)"
             + " argmax=\(totalCorrect)/\(totalProbes)(\(pct(totalCorrect))%)"
             + " top5=\(top5Correct)/\(totalProbes)(\(pct(top5Correct))%)"

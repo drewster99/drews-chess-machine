@@ -31,12 +31,26 @@ enum LichessProbeData {
     /// Bundled 200-puzzle set, parsed at first access.
     static var largeSet: [TacticalProbe] { loaded.probes }
 
+    /// The ~4,435-puzzle WIDE longitudinal probe set (rating 400–3200,
+    /// flat per-100 density 550–2800, mate-weighted), from the bundled
+    /// `lichess_probes_wide.json`. Runs in parallel with `largeSet` as a
+    /// fixed long-term yardstick — the 200-set is left completely
+    /// untouched. See `LichessProbeWatcher`.
+    static var wideSet: [TacticalProbe] { loadedWide.probes }
+
     /// Sidecar metadata keyed by `TacticalProbe.name` so the detail
     /// window and the JSON exporter can surface the original Lichess
     /// puzzle id, rating, theme, FEN, and bookmove UCI without
     /// re-parsing the bundle JSON or trying to recover those fields
     /// from `probe.name` by regex.
-    static var metadata: [String: PuzzleMetadata] { loaded.metadata }
+    /// Per-puzzle metadata for BOTH sets, merged. Keyed by
+    /// `TacticalProbe.name` (which embeds the unique Lichess puzzle id),
+    /// so 200-set and wide-set entries don't collide; on a shared puzzle
+    /// the 200-set's entry wins (identical content anyway).
+    static var metadata: [String: PuzzleMetadata] { mergedMetadata }
+
+    private static let mergedMetadata: [String: PuzzleMetadata] =
+        loaded.metadata.merging(loadedWide.metadata) { existing, _ in existing }
 
     /// Per-puzzle metadata. Stored verbatim from the bundle JSON so
     /// exports round-trip cleanly back to the source.
@@ -55,7 +69,8 @@ enum LichessProbeData {
         let metadata: [String: PuzzleMetadata]
     }
 
-    private static let loaded: Loaded = loadFromBundle()
+    private static let loaded: Loaded = loadFromBundle(resource: "lichess_probes_200")
+    private static let loadedWide: Loaded = loadFromBundle(resource: "lichess_probes_wide")
 
     // MARK: - JSON shape
 
@@ -81,13 +96,13 @@ enum LichessProbeData {
 
     // MARK: - Bundle load
 
-    private static func loadFromBundle() -> Loaded {
+    private static func loadFromBundle(resource: String) -> Loaded {
         guard let url = Bundle.main.url(
-            forResource: "lichess_probes_200",
+            forResource: resource,
             withExtension: "json"
         ) else {
             preconditionFailure(
-                "LichessProbeData: lichess_probes_200.json not in bundle"
+                "LichessProbeData: \(resource).json not in bundle"
             )
         }
 
@@ -218,6 +233,11 @@ enum LichessProbeData {
         case "opening":      return .lichessOpening
         case "middlegame":   return .lichessMiddlegame
         case "endgame":      return .lichessEndgame
+        case "mateIn2":          return .lichessMateIn2
+        case "discoveredAttack": return .lichessDiscoveredAttack
+        case "deflection":       return .lichessDeflection
+        case "sacrifice":        return .lichessSacrifice
+        case "promotion":        return .lichessPromotion
         default:             return nil
         }
     }

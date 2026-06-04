@@ -32,20 +32,36 @@ import Foundation
 @MainActor
 enum LichessProbeExporter {
 
-    static func exportLatest(history: LichessProbeHistory) {
-        SessionLogger.shared.log("[BUTTON] Export Lichess Probe Results")
+    /// - Parameters:
+    ///   - tag: optional filename tag inserted before the hash (e.g.
+    ///     `training-start-wide`) so auto-exports are distinguishable
+    ///     from manual ones. nil ⇒ the original `LichessProbe_<stamp>_<hash>`
+    ///     name (manual button behavior, unchanged).
+    ///   - announce: when false, suppress the success/failure NSAlert and
+    ///     the "no tick yet" beep — used by the automatic start-of-training
+    ///     export so it doesn't pop UI. Always logs either way.
+    static func exportLatest(
+        history: LichessProbeHistory,
+        tag: String? = nil,
+        announce: Bool = true
+    ) {
+        SessionLogger.shared.log(
+            "[BUTTON] Export Lichess Probe Results"
+            + (tag.map { " (\($0))" } ?? "")
+        )
 
         guard !history.latestPerPuzzleResults.isEmpty,
               let tickTimestamp = history.latestTickTimestamp else {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export skipped: no tick recorded yet"
+                + (tag.map { " [\($0)]" } ?? "")
             )
-            NSSound.beep()
+            if announce { NSSound.beep() }
             return
         }
 
         let exportID = UUID()
-        let filename = filename(for: tickTimestamp, exportID: exportID)
+        let filename = filename(for: tickTimestamp, exportID: exportID, tag: tag)
 
         let dir = performanceLichessProbesDir
         do {
@@ -57,11 +73,13 @@ enum LichessProbeExporter {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export failed: could not create \(dir.path): \(error.localizedDescription)"
             )
-            presentExportAlert(
-                title: "Export failed",
-                message: "Could not create the export folder:\n\n\(dir.path)\n\n\(error.localizedDescription)",
-                revealURL: nil
-            )
+            if announce {
+                presentExportAlert(
+                    title: "Export failed",
+                    message: "Could not create the export folder:\n\n\(dir.path)\n\n\(error.localizedDescription)",
+                    revealURL: nil
+                )
+            }
             return
         }
 
@@ -77,28 +95,32 @@ enum LichessProbeExporter {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export wrote \(data.count) bytes to \(url.path)"
             )
-            presentExportAlert(
-                title: "Export complete",
-                message: """
-                    Wrote \(history.latestPerPuzzleResults.count) puzzles \
-                    (\(formattedSize(data.count))) to
+            if announce {
+                presentExportAlert(
+                    title: "Export complete",
+                    message: """
+                        Wrote \(history.latestPerPuzzleResults.count) puzzles \
+                        (\(formattedSize(data.count))) to
 
-                    \(url.path)
+                        \(url.path)
 
-                    Click Reveal in Finder to open the containing folder \
-                    with the file selected.
-                    """,
-                revealURL: url
-            )
+                        Click Reveal in Finder to open the containing folder \
+                        with the file selected.
+                        """,
+                    revealURL: url
+                )
+            }
         } catch {
             SessionLogger.shared.log(
                 "[TACTICAL-LICHESS] export failed: \(error.localizedDescription)"
             )
-            presentExportAlert(
-                title: "Export failed",
-                message: "Could not write the JSON file:\n\n\(url.path)\n\n\(error.localizedDescription)",
-                revealURL: nil
-            )
+            if announce {
+                presentExportAlert(
+                    title: "Export failed",
+                    message: "Could not write the JSON file:\n\n\(url.path)\n\n\(error.localizedDescription)",
+                    revealURL: nil
+                )
+            }
         }
     }
 
@@ -121,12 +143,13 @@ enum LichessProbeExporter {
 
     // MARK: - Filename
 
-    private static func filename(for tickTimestamp: Date, exportID: UUID) -> String {
+    private static func filename(for tickTimestamp: Date, exportID: UUID, tag: String?) -> String {
         let stamp = filenameTimestampFormatter.string(from: tickTimestamp)
         let shortHash = exportID.uuidString.lowercased()
             .replacingOccurrences(of: "-", with: "")
             .prefix(8)
-        return "LichessProbe_\(stamp)_\(shortHash).json"
+        let tagPart = tag.map { "_\($0)" } ?? ""
+        return "LichessProbe_\(stamp)\(tagPart)_\(shortHash).json"
     }
 
     private static let filenameTimestampFormatter: DateFormatter = {
