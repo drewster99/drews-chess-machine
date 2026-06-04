@@ -166,7 +166,7 @@ public protocol TrainingParameterKey: Sendable {
 @TrainingParameter(
     name: "Entropy Bonus",
     description: "Entropy regularization coefficient. Higher keeps the policy diverse longer; too high stalls learning.",
-    default: 0.0025,
+    default: 0.0,
     range: 0.0...0.1,
     category: "Optimizer",
     liveTunable: true
@@ -248,7 +248,7 @@ public enum ValueLossWeight: TrainingParameterKey {}
 @TrainingParameter(
     name: "Learning Rate",
     description: "SGD-with-momentum optimizer learning rate. Lower is slower but more stable. Pairs with sqrt_batch_scaling_lr. Note: under the bf16 weight path, updates below the bf16 weight ULP (~0.8% of a weight's magnitude) round away, so LRs much below ~1e-3 are largely no-ops.",
-    default: 1.0e-3,
+    default: 1.0e-2,
     range: 1.0e-7...1.0,
     category: "Optimizer",
     liveTunable: true
@@ -258,7 +258,7 @@ public enum LearningRate: TrainingParameterKey {}
 @TrainingParameter(
     name: "Momentum Coefficient",
     description: "Polyak momentum μ for SGD. 0.0 disables momentum (pure SGD); higher μ accumulates more gradient history. The optimizer uses decoupled weight decay (AdamW-style), so μ and Weight Decay tune independently — raising μ no longer amplifies decay. Effective step size in correlated-gradient regimes still scales ~1/(1−μ), so a high μ paired with the existing LR can be too aggressive — pair μ jumps with a proportional LR drop. Start low (≤0.5) and watch legalMass / pEntLegal before raising further.",
-    default: 0.65,
+    default: 0.9,
     range: 0.0...0.99,
     category: "Optimizer",
     liveTunable: true
@@ -346,7 +346,7 @@ public enum SelfPlayDrawKeepFraction: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Max Plies Per Game",
     description: "Self-play games are auto-terminated when they reach this many plies. Acts as a safety net against games that fail to terminate via the 50-move rule or 3-fold repetition. Terminated games are NOT emitted — they're counted as 'dropped' in the Played stats and never reach the replay buffer. Applies to self-play only — arena games are not affected.",
-    default: 150,
+    default: 450,
     range: 25...500,
     category: "Self-Play Sampling",
     liveTunable: true
@@ -356,7 +356,7 @@ public enum SelfPlayMaxPliesPerGame: TrainingParameterKey {}
 @TrainingParameter(
     name: "Draw-Watch pDraw Threshold",
     description: "Per-ply pDraw value (W/D/L softmax draw slot) a self-play position must clear to count toward the draw-watch streak. When N consecutive plies in the same game clear this threshold (N from 'Draw-Watch Streak Length', default 8), the game is flagged on the Draw-watch chart tile. With the 'Terminate flagged games' toggle off (default) flagging is purely observational; with it on, the game is dropped immediately on flag fire. Lowering this catches more games (and earlier); raising it tightens the precision-toward-draw calibration.",
-    default: 0.95,
+    default: 0.985,
     range: 0.5...1.0,
     category: "Self-Play Sampling",
     liveTunable: true
@@ -415,7 +415,7 @@ public enum ArenaTauDecayPerPly: TrainingParameterKey {}
 @TrainingParameter(
     name: "Replay Ratio Target",
     description: "Target ratio of consumed (training) positions to produced (self-play) positions. ReplayRatioController auto-adjusts step delay to track this.",
-    default: 1.0,
+    default: 0.48,
     range: 0.01...100.0,
     category: "Replay Buffer",
     liveTunable: true
@@ -434,7 +434,7 @@ public enum ReplayRatioAutoAdjust: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Concurrency",
     description: "Parallel self-play game count. More = faster replay-buffer fill but more GPU contention.",
-    default: 4000,
+    default: 800,
     range: 1...8192,
     category: "Training Window",
     liveTunable: true
@@ -454,7 +454,7 @@ public enum TrainingStepDelayMs: TrainingParameterKey {}
 @TrainingParameter(
     name: "Self-Play Delay (ms)",
     description: "Per-game-per-worker delay between self-play games in milliseconds. Used only when replay-ratio auto-adjust is OFF; auto-adjust on lets the controller manage it.",
-    default: 0,
+    default: 3000,
     range: 0...10000,
     category: "Training Window",
     liveTunable: true
@@ -474,7 +474,7 @@ public enum TrainingBatchSize: TrainingParameterKey {}
 @TrainingParameter(
     name: "Replay Buffer Capacity",
     description: "Maximum number of positions retained in the FIFO replay buffer.",
-    default: 1500000,
+    default: 1000000,
     range: 1000...10000000,
     category: "Replay Buffer",
     liveTunable: false
@@ -503,8 +503,8 @@ public enum MaxPliesFromAnyOneGame: TrainingParameterKey {}
 
 @TrainingParameter(
     name: "Target Sampled Game Length (plies)",
-    description: "When > 0, the batch sampler exponentially down-weights positions from long games so the position-weighted mean game length of the sampled batch approaches this value (in plies). 0 disables the length tilt. Intended to be set below the buffer's natural mean to de-weight shuffle-draw marathons.",
-    default: 124,
+    description: "When > 0, the batch sampler exponentially down-weights positions from long games so the position-weighted mean game length of the sampled batch approaches this value (in plies). 0 disables the length tilt, and any value at or above the buffer's natural mean game length leaves the batch effectively untilted. To de-weight shuffle-draw marathons, set it below the buffer's natural mean.",
+    default: 999,
     range: 0...10000,
     category: "Replay Buffer",
     liveTunable: true
@@ -514,7 +514,7 @@ public enum TargetSampledGameLengthPlies: TrainingParameterKey {}
 @TrainingParameter(
     name: "Max Draws Per Batch (%)",
     description: "Ceiling on the percentage of positions in a training batch that come from drawn games. If the buffer holds fewer drawn positions than the cap allows, the batch simply contains fewer (no padding); freed slots go to positions from decisive games. 100 disables the cap.",
-    default: 75,
+    default: 100,
     range: 0...100,
     category: "Replay Buffer",
     liveTunable: true
