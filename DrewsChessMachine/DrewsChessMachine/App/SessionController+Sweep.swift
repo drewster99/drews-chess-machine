@@ -27,6 +27,18 @@ extension SessionController {
         let cancelBox = CancelBox()
         sweepCancelBox = cancelBox
 
+        var startBanner = "[SWEEP] start sizes=[\(sizes.map(String.init).joined(separator: ","))]"
+            + String(format: " targetSecPerSize=%.1f", secondsPerSize)
+        if let caps = sweepDeviceCaps {
+            startBanner += String(
+                format: " device(workingSet=%.2fGB maxBuf=%.2fGB alloc=%.2fGB)",
+                Self.bytesToGB(caps.recommendedMaxWorkingSet),
+                Self.bytesToGB(caps.maxBufferLength),
+                Self.bytesToGB(caps.currentAllocated)
+            )
+        }
+        SessionLogger.shared.log(startBanner)
+
         sweepTask = Task { [trainer, cancelBox] in
             // Reset the trainer's internal weights so loss starts fresh
             // and small batches don't inherit overfit weights from prior
@@ -55,6 +67,19 @@ extension SessionController {
                 sweepResults = cancelBox.completedRows
                 if case .failure(let error) = result {
                     trainingError = "Sweep failed: \(error.localizedDescription)"
+                    SessionLogger.shared.log("[SWEEP] failed: \(error.localizedDescription)")
+                } else {
+                    let completed: [SweepResult] = sweepResults.compactMap {
+                        if case .completed(let r) = $0 { return r } else { return nil }
+                    }
+                    if let best = completed.max(by: { $0.positionsPerSec < $1.positionsPerSec }) {
+                        SessionLogger.shared.log(String(
+                            format: "[SWEEP] done rows=%d best=batch %d @ %d pos/s",
+                            sweepResults.count, best.batchSize, Int(best.positionsPerSec.rounded())
+                        ))
+                    } else {
+                        SessionLogger.shared.log("[SWEEP] done rows=\(sweepResults.count) (no completed rows)")
+                    }
                 }
                 sweepProgress = nil
                 sweepCancelBox = nil
@@ -102,9 +127,11 @@ extension SessionController {
                     cancelBox.takeRowPeak()
                 },
                 onRowCompleted: { row in
-                    // Worker thread — push the completed row into the box
-                    // so the heartbeat can pick it up. Lets the table grow
+                    // Worker thread — log the row (SessionLogger is thread-safe)
+                    // so the throughput curve is durable, then push it into the
+                    // box so the heartbeat can pick it up. Lets the table grow
                     // one row at a time as the sweep progresses.
+                    SessionLogger.shared.log(Self.sweepRowLogLine(row))
                     cancelBox.appendRow(row)
                 }
             ))
@@ -200,7 +227,29 @@ extension SessionController {
         return lines.joined(separator: "\n")
     }
 
-    private static func bytesToGB(_ bytes: UInt64) -> Double {
+    nonisolated private static func bytesToGB(_ bytes: UInt64) -> Double {
         Double(bytes) / 1_073_741_824.0
+    }
+
+    /// One-line `[SWEEP]` log entry for a completed or skipped row. Logged as the
+    /// sweep progresses so the throughput curve survives in the session log — the
+    /// in-memory `sweepResults` table is lost on app restart and was never
+    /// otherwise persisted.
+    nonisolated private static func sweepRowLogLine(_ row: SweepRow) -> String {
+        switch row {
+        case .completed(let r):
+            return String(
+                format: "[SWEEP] batch=%d warmup=%.1fms steps=%d time=%.1fs avgStep=%.2fms avgGpu=%.2fms posPerSec=%d loss=%+.4f peakRSS=%.2fGB",
+                r.batchSize, r.warmupMs, r.steps, r.elapsedSec, r.avgStepMs, r.avgGpuMs,
+                Int(r.positionsPerSec.rounded()), r.lastLoss, bytesToGB(r.peakResidentBytes)
+            )
+        case .skipped(let s):
+            let reason = (s.exceededWorkingSet && s.exceededBufferLength) ? "working-set+buffer cap"
+                : s.exceededWorkingSet ? "working-set cap" : "buffer cap"
+            return String(
+                format: "[SWEEP] batch=%d SKIPPED (%@) estRAM=%.2fGB maxBuf=%.2fGB",
+                s.batchSize, reason, bytesToGB(s.estimatedBytes), bytesToGB(s.largestBufferBytes)
+            )
+        }
     }
 }
