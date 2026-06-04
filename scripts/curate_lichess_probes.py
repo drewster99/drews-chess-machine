@@ -68,14 +68,31 @@ class Preset:
     # behavior). Multiple tiers == rating-stratified with per-tier density.
     rating_tiers: list[tuple[int, int, int]]
     filters: QualityFilters = field(default_factory=QualityFilters)
+    # Optional per-theme tier overrides. A theme listed here uses its own tiers
+    # instead of the shared `rating_tiers` — e.g. to sample mate themes more
+    # densely where they're abundant (mates are plentiful below ~2000 but
+    # essentially absent above ~2400, so a heavier quota only fills the low-mid
+    # bands and naturally caps at the top).
+    theme_tiers: dict[str, list[tuple[int, int, int]]] = field(default_factory=dict)
+
+    def tiers_for(self, theme: str) -> list[tuple[int, int, int]]:
+        return self.theme_tiers.get(theme, self.rating_tiers)
 
     @property
     def rating_min(self) -> int:
-        return min(lo for lo, _, _ in self.rating_tiers)
+        allt = [self.rating_tiers] + list(self.theme_tiers.values())
+        return min(lo for tiers in allt for lo, _, _ in tiers)
 
     @property
     def rating_max(self) -> int:
-        return max(hi for _, hi, _ in self.rating_tiers)
+        allt = [self.rating_tiers] + list(self.theme_tiers.values())
+        return max(hi for tiers in allt for _, hi, _ in tiers)
+
+
+def uniform_tiers(lo: int, hi: int, width: int, count: int) -> list[tuple[int, int, int]]:
+    """Contiguous [lo, hi] split into `width`-wide rating bins, `count` per
+    theme each — a flat per-rating-point density (subject to DB availability)."""
+    return [(b, min(b + width - 1, hi), count) for b in range(lo, hi + 1, width)]
 
 
 # --- Legacy 200-set: DO NOT CHANGE. Reproduces the bundled set exactly. ---
@@ -106,19 +123,28 @@ WIDE = Preset(
         "discoveredAttack", "deflection", "sacrifice", "promotion",
         "endgame", "middlegame", "opening",
     ],
-    rating_tiers=[
-        (400, 549, 4),     # low anchor (thin)
-        (550, 799, 8),     # ┐
-        (800, 1049, 8),    # │
-        (1050, 1299, 8),   # │
-        (1300, 1549, 8),   # │
-        (1550, 1799, 8),   # ├─ uniform density 550-2800 (8/theme per 250 band)
-        (1800, 2049, 8),   # │
-        (2050, 2299, 8),   # │
-        (2300, 2549, 8),   # │
-        (2550, 2800, 8),   # ┘
-        (2801, 3200, 4),   # high anchor (thin)
-    ],
+    # Uniform density per 100-rating bin across 550-2849 (13/theme each) so the
+    # per-100 profile is flat — not just per-250 — with thin anchor tails outside.
+    # Per theme: 23*13 + 2*8 = 315; * 13 themes = 4095 upper bound (≈4096 target,
+    # realized under where sparse theme×bin cells under-fill — e.g. hard mates,
+    # the rating extremes, and naturally thin sub-ranges).
+    rating_tiers=(
+        [(400, 549, 8)]                          # low anchor (thin)
+        + uniform_tiers(550, 2849, 100, 13)      # dense band, flat per-100
+        + [(2850, 3200, 8)]                      # high anchor (thin)
+    ),
+    # Mate themes sampled 2x denser (26/100-bin) — the net is weak at mates so a
+    # richer battery measures that better. Mates are abundant below ~2000 and
+    # essentially absent above ~2400, so this fills the low-mid bands and caps
+    # itself at the top (no padding of nonexistent hard mates).
+    theme_tiers={
+        "mateIn1": (
+            [(400, 549, 16)] + uniform_tiers(550, 2849, 100, 26) + [(2850, 3200, 16)]
+        ),
+        "mateIn2": (
+            [(400, 549, 16)] + uniform_tiers(550, 2849, 100, 26) + [(2850, 3200, 16)]
+        ),
+    },
 )
 
 PRESETS = {p.name: p for p in (LEGACY, WIDE)}
@@ -198,7 +224,7 @@ def select(buckets: dict[str, list[dict]], preset: Preset) -> list[dict]:
     for theme in preset.theme_priority:
         theme_rows = buckets[theme]
         theme_picked = 0
-        for (lo, hi, count) in preset.rating_tiers:
+        for (lo, hi, count) in preset.tiers_for(theme):
             cell = sorted(
                 (r for r in theme_rows if lo <= r["rating"] <= hi),
                 key=lambda r: r["id"],
