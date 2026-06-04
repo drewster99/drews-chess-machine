@@ -194,6 +194,12 @@ extension SessionController {
             onComplete: { success in
                 if success {
                     SessionLogger.shared.log("[SIGUSR2] session checkpoint written — shutting down")
+                    // Graceful path (not a hard-kill): flush the log tail so the
+                    // deliberate shutdown is traceable, then exit. The
+                    // `.dcmsession` is already on disk (CheckpointManager writes
+                    // synchronously); `shutdown()` is `queue.sync` so it FIFOs
+                    // behind the pending log writes without deadlocking.
+                    SessionLogger.shared.shutdown()
                     Darwin._exit(0)
                 } else {
                     SessionLogger.shared.log("[SIGUSR2] session checkpoint FAILED — staying running (not shutting down)")

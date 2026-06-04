@@ -53,6 +53,7 @@ enum SweepCLI {
         } catch {
             FileHandle.standardError.write(Data("sweep: failed: \(error)\n".utf8))
             SessionLogger.shared.log("[SWEEP-CLI] failed: \(error)")
+            SessionLogger.shared.shutdown()
             Darwin.exit(31)
         }
 
@@ -72,6 +73,7 @@ enum SweepCLI {
         } else {
             print("\n  (no completed rows)")
         }
+        SessionLogger.shared.shutdown()   // flush the [SWEEP] log tail before exit
         Darwin.exit(0)
     }
 
