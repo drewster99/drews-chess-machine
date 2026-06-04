@@ -111,6 +111,12 @@ struct DrewsChessMachineApp: App {
         // otherwise re-start training automatically) never runs.
         Self.handleUciIfPresent(rawArgs: rawArgs)
 
+        // Pre-flight: headless batch-size sweep (--sweep). Builds a fresh net,
+        // runs the same ChessTrainer.runSweep the GUI button uses, prints the
+        // throughput table + [SWEEP] logs, and exits — before SwiftUI / Metal
+        // GUI init, so no window and no auto-resume sheet.
+        Self.handleSweepIfPresent(rawArgs: rawArgs)
+
         // Known flags.
         let booleanFlags: Set<String> = ["--train"]
         let valueFlags: Set<String> = ["--parameters", "--output", "--training-time-limit"]
@@ -678,6 +684,67 @@ struct DrewsChessMachineApp: App {
         }
 
         UCIEngine.runAndExit(modelPath: modelPath)
+    }
+
+    // MARK: - Batch-size sweep pre-flight (--sweep)
+
+    /// Inspects `rawArgs` for `--sweep`. If present, validates the optional
+    /// companions (`--sweep-sizes <csv>`, `--sweep-seconds <n>`), hands control
+    /// to `SweepCLI.runAndExit`, and never returns. Runs before the strict-CLI
+    /// parser (which would reject `--sweep` as unknown) and before the SwiftUI
+    /// `WindowGroup` — so it's a pure headless measurement, no window, no
+    /// auto-resume sheet starting training under us.
+    private static func handleSweepIfPresent(rawArgs: [String]) {
+        let sweepFlag = "--sweep"
+        let sizesFlag = "--sweep-sizes"
+        let secondsFlag = "--sweep-seconds"
+        guard rawArgs.contains(sweepFlag) else { return }
+
+        // Only the two companion flags are allowed alongside.
+        let allowedFlags: Set<String> = [sweepFlag, sizesFlag, secondsFlag]
+        if let bad = rawArgs.first(where: { $0.hasPrefix("--") && !allowedFlags.contains($0) }) {
+            FileHandle.standardError.write(Data(
+                "error: \(sweepFlag) does not accept '\(bad)' (only \(sizesFlag) <csv> and \(secondsFlag) <n> allowed)\n".utf8
+            ))
+            Darwin.exit(40)
+        }
+
+        // --sweep-sizes <comma-separated positive ints>
+        var sizes: [Int]? = nil
+        if let idx = rawArgs.firstIndex(of: sizesFlag) {
+            let valueIdx = idx + 1
+            guard valueIdx < rawArgs.count, !rawArgs[valueIdx].hasPrefix("--") else {
+                FileHandle.standardError.write(Data(
+                    "error: \(sizesFlag) requires a comma-separated list, e.g. 256,512,1024\n".utf8
+                ))
+                Darwin.exit(41)
+            }
+            let parsed = rawArgs[valueIdx]
+                .split(separator: ",")
+                .compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+            guard !parsed.isEmpty, parsed.allSatisfy({ $0 > 0 }) else {
+                FileHandle.standardError.write(Data(
+                    "error: \(sizesFlag) value '\(rawArgs[valueIdx])' is not a list of positive integers\n".utf8
+                ))
+                Darwin.exit(42)
+            }
+            sizes = parsed
+        }
+
+        // --sweep-seconds <positive double> (default: SessionController's)
+        var secondsPerSize = SessionController.sweepSecondsPerSize
+        if let idx = rawArgs.firstIndex(of: secondsFlag) {
+            let valueIdx = idx + 1
+            guard valueIdx < rawArgs.count, let v = Double(rawArgs[valueIdx]), v > 0 else {
+                FileHandle.standardError.write(Data(
+                    "error: \(secondsFlag) requires a positive number of seconds\n".utf8
+                ))
+                Darwin.exit(43)
+            }
+            secondsPerSize = v
+        }
+
+        SweepCLI.runAndExit(sizes: sizes, secondsPerSize: secondsPerSize)
     }
 
     // MARK: - Replay-buffer analyzer pre-flight (--analyze-replay-buffer)
