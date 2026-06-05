@@ -76,10 +76,17 @@ enum SafetensorsModelIO {
         var tensors: [SafetensorsTensor] = []
         tensors.reserveCapacity(weights.count)
         for (i, w) in weights.enumerated() {
-            // Base tensors carry their plan shape; appended velocity tensors are
-            // 1-D (their float count) since they mirror flattened trainables.
-            let shape = i < plan.count ? plan[i].shape : [w.count]
-            tensors.append(SafetensorsTensor(name: names[i], shape: shape, data: w))
+            if i < plan.count {
+                // Base model tensors: store in PyTorch state_dict layout so the
+                // file is load_state_dict-ready (FC weights transposed to
+                // [out,in], biases 1-D; conv OIHW + BN [C] already match).
+                let (shape, data) = Self.toTorchLayout(kind: plan[i].kind, nativeShape: plan[i].shape, data: w)
+                tensors.append(SafetensorsTensor(name: names[i], shape: shape, data: data))
+            } else {
+                // Optimizer velocity (trainer file): DCM-internal optimizer state,
+                // not part of a torch state_dict — stored 1-D in native order.
+                tensors.append(SafetensorsTensor(name: names[i], shape: [w.count], data: w))
+            }
         }
 
         var md: [String: String] = [
@@ -124,12 +131,18 @@ enum SafetensorsModelIO {
 
         let hasVelocity = tensors.contains { $0.name.hasPrefix("opt.") && $0.name.hasSuffix(".velocity") }
         let names = tensorNames(for: architecture, includesVelocity: hasVelocity)
+        let plan = architecture.weightTensorPlan()
 
         var weights: [[Float]] = []
         weights.reserveCapacity(names.count)
-        for name in names {
-            guard let w = byName[name] else { throw IOError.missingTensor(name) }
-            weights.append(w)
+        for (i, name) in names.enumerated() {
+            guard let torchData = byName[name] else { throw IOError.missingTensor(name) }
+            if i < plan.count {
+                // Reverse the PyTorch layout back to the engine's native flat order.
+                weights.append(Self.fromTorchLayout(kind: plan[i].kind, nativeShape: plan[i].shape, torchData: torchData))
+            } else {
+                weights.append(torchData) // velocity: stored native flat
+            }
         }
 
         let metadata = ModelCheckpointMetadata(
@@ -145,5 +158,50 @@ enum SafetensorsModelIO {
             weights: weights
         )
         return Decoded(file: file, architecture: architecture, hasVelocity: hasVelocity)
+    }
+
+    // MARK: - PyTorch layout transforms
+
+    /// Native engine layout -> PyTorch state_dict layout (for the on-disk file).
+    /// Only Linear weights need a data transpose; biases reshape to 1-D; conv
+    /// (OIHW) and BN params ([C]) already match torch.
+    private static func toTorchLayout(kind: WeightKind, nativeShape: [Int], data: [Float]) -> (shape: [Int], data: [Float]) {
+        switch kind {
+        case .linear:
+            // native [in, out] -> torch [out, in]
+            let inDim = nativeShape[0]
+            let outDim = nativeShape[1]
+            return ([outDim, inDim], transpose2D(data, rows: inDim, cols: outDim))
+        case .bias:
+            return ([data.count], data)            // [1,N,1,1] / [1,N] -> [N]
+        case .conv, .bnAffine, .bnRunningStat, .scalar:
+            return (nativeShape, data)
+        }
+    }
+
+    /// PyTorch layout -> native engine flat order (for loading into the graph).
+    private static func fromTorchLayout(kind: WeightKind, nativeShape: [Int], torchData: [Float]) -> [Float] {
+        switch kind {
+        case .linear:
+            // torch [out, in] -> native [in, out]
+            let inDim = nativeShape[0]
+            let outDim = nativeShape[1]
+            return transpose2D(torchData, rows: outDim, cols: inDim)
+        case .conv, .bias, .bnAffine, .bnRunningStat, .scalar:
+            return torchData                       // count preserved; flat load is shape-agnostic
+        }
+    }
+
+    /// Transpose a row-major `rows × cols` matrix (flat) to its `cols × rows`
+    /// transpose (flat): out[c*rows + r] = flat[r*cols + c].
+    private static func transpose2D(_ flat: [Float], rows: Int, cols: Int) -> [Float] {
+        var out = [Float](repeating: 0, count: rows * cols)
+        for r in 0..<rows {
+            let base = r * cols
+            for c in 0..<cols {
+                out[c * rows + r] = flat[base + c]
+            }
+        }
+        return out
     }
 }
