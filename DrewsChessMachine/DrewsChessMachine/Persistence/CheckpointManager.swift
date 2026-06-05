@@ -161,6 +161,7 @@ enum CheckpointPaths {
         }
         sweep(sessionsDir, ".tmp")
         sweep(modelsDir, ".dcmmodel.tmp")
+        sweep(modelsDir, ".safetensors.tmp")
     }
 
     /// POSIX/UTC timestamp formatter used as the leading sort key in
@@ -403,18 +404,19 @@ enum CheckpointManager {
     ) async throws -> URL {
         try CheckpointPaths.ensureDirectories()
 
-        let file = ModelCheckpointFile(
+        let encoded = try SafetensorsModelIO.encode(
             modelID: modelID,
             createdAtUnix: createdAtUnix,
             metadata: metadata,
-            weights: weights
+            weights: weights,
+            architecture: .current,
+            includesVelocity: false
         )
-        let encoded = try file.encode()
 
         let filename = CheckpointPaths.makeFilename(
             modelID: modelID,
             trigger: trigger,
-            ext: "dcmmodel",
+            ext: "safetensors",
             at: date
         )
         let finalURL = CheckpointPaths.modelsDir.appendingPathComponent(filename)
@@ -894,6 +896,16 @@ enum CheckpointManager {
     /// pipeline including SHA-256 and arch checks. Returns the
     /// parsed struct; the caller is responsible for loading the
     /// weights into a live network.
+    /// Decode a model file of either format: native safetensors (current) or
+    /// the legacy custom `.dcmmodel` binary, detected by its `DCMMODEL` magic.
+    /// Existing models stay loadable; new saves are safetensors.
+    static func decodeAnyModelFile(_ data: Data) throws -> ModelCheckpointFile {
+        if data.count >= 8, Array(data.prefix(8)) == ModelCheckpointFile.magic {
+            return try ModelCheckpointFile.decode(data)
+        }
+        return try SafetensorsModelIO.decode(data).file
+    }
+
     static func loadModelFile(at url: URL) throws -> ModelCheckpointFile {
         let data: Data
         do {
@@ -901,7 +913,7 @@ enum CheckpointManager {
         } catch {
             throw CheckpointManagerError.readFailed(url, error)
         }
-        return try ModelCheckpointFile.decode(data)
+        return try decodeAnyModelFile(data)
     }
 
     /// Read just `session.json` from a `.dcmsession` directory and
@@ -936,8 +948,8 @@ enum CheckpointManager {
     static func loadSession(at directoryURL: URL) throws -> LoadedSession {
         let (stateData, championData, trainerData) = try SessionCheckpointLayout.readAll(from: directoryURL)
         let state = try SessionCheckpointState.decode(stateData)
-        let championFile = try ModelCheckpointFile.decode(championData)
-        let trainerFile = try ModelCheckpointFile.decode(trainerData)
+        let championFile = try decodeAnyModelFile(championData)
+        let trainerFile = try decodeAnyModelFile(trainerData)
         let bufferURL = SessionCheckpointLayout.replayBufferURL(in: directoryURL)
         let bufferPresent = (state.hasReplayBuffer == true)
             && FileManager.default.fileExists(atPath: bufferURL.path)
@@ -1009,7 +1021,7 @@ enum CheckpointManager {
         }
         let readBack: ModelCheckpointFile
         do {
-            readBack = try ModelCheckpointFile.decode(data)
+            readBack = try decodeAnyModelFile(data)
         } catch {
             throw error
         }
