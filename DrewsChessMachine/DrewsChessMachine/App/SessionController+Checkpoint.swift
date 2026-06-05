@@ -90,6 +90,7 @@ extension SessionController {
                 notes: "Manual Save Champion export"
             )
             let createdAtUnix = Int64(Date().timeIntervalSince1970)
+            let championArch = champion.network.arch
 
             let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
                 do {
@@ -98,6 +99,7 @@ extension SessionController {
                         modelID: championID,
                         createdAtUnix: createdAtUnix,
                         metadata: metadata,
+                        architecture: championArch,
                         trigger: "manual"
                     )
                     return .success(url)
@@ -393,6 +395,9 @@ extension SessionController {
                 notes: "Trainer lineage at session checkpoint (\(diskTag))"
             )
             let now = Int64(Date().timeIntervalSince1970)
+            // Champion and trainer share a topology; the trainer was built to
+            // the champion's arch, so it's the authoritative source.
+            let sessionArch = trainer.arch
             let outcome: Result<URL, Error> = await Task.detached(priority: .userInitiated) {
                 [bufferForSave, chartSnapshotForSave] in
                 do {
@@ -406,6 +411,7 @@ extension SessionController {
                         trainerMetadata: trainerMetadata,
                         trainerCreatedAtUnix: now,
                         state: sessionState,
+                        architecture: sessionArch,
                         replayBuffer: bufferForSave,
                         chartSnapshot: chartSnapshotForSave,
                         trigger: diskTag

@@ -1297,6 +1297,9 @@ final class ChessTrainer: @unchecked Sendable {
 
     // MARK: Graph Tensors
 
+    /// Architecture the trainer's network is built to — must match the champion
+    /// it forks from. Captured at init and reused by `internalResetNetwork`.
+    let arch: NetworkArchitecture
     private(set) var network: ChessNetwork
     private var movePlayedPlaceholder: MPSGraphTensor   // [batch] int32
     private var zPlaceholder: MPSGraphTensor            // [batch, 1] float
@@ -1637,7 +1640,8 @@ final class ChessTrainer: @unchecked Sendable {
         momentumCoeff: Float = 0.0,
         useSignedAdvantageComplementCE: Bool = true,
         sqrtBatchScalingForLR: Bool = true,
-        lrWarmupSteps: Int = 100
+        lrWarmupSteps: Int = 100,
+        arch: NetworkArchitecture = .current
     ) throws {
         self.learningRate = learningRate
         self.entropyRegularizationCoeff = entropyRegularizationCoeff
@@ -1653,7 +1657,8 @@ final class ChessTrainer: @unchecked Sendable {
         self.useSignedAdvantageComplementCE = useSignedAdvantageComplementCE
         self.sqrtBatchScalingForLR = sqrtBatchScalingForLR
         self.lrWarmupSteps = lrWarmupSteps
-        let net = try ChessNetwork(bnMode: .training)
+        self.arch = arch
+        let net = try ChessNetwork(arch: arch, bnMode: .training)
         net.commandQueue.label = "ChessTrainer.net(init)"
         self.network = net
         let built = try Self.buildTrainingOps(network: net)
@@ -1856,7 +1861,7 @@ final class ChessTrainer: @unchecked Sendable {
     }
 
     private func internalResetNetwork() throws {
-        let net = try ChessNetwork(bnMode: .training)
+        let net = try ChessNetwork(arch: arch, bnMode: .training)
         net.commandQueue.label = "ChessTrainer.net(reset)"
         self.network = net
         let built = try Self.buildTrainingOps(network: net)

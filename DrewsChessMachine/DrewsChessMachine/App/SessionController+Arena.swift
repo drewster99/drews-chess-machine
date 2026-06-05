@@ -483,6 +483,9 @@ extension SessionController {
             // transfer to the detached task explicit).
             let championWeightsSnapshot = promotedChampionWeights
             let trainerWeightsSnapshot = trainerSnapshotWeights + trainerSnapshotVelocity
+            // Champion + trainer share the topology; capture it on the main
+            // actor (the detached task below must not touch `self`).
+            let promotedArch = trainer.arch
             let bufferForAutosave = replayBuffer
             // Same main-actor snapshot rule as the manual/periodic
             // path — rings are @MainActor-isolated, so the array
@@ -516,6 +519,7 @@ extension SessionController {
                         trainerMetadata: trainerMetadata,
                         trainerCreatedAtUnix: createdAtUnix,
                         state: sessionState,
+                        architecture: promotedArch,
                         replayBuffer: bufferForAutosave,
                         chartSnapshot: chartSnapshotForAutosave,
                         trigger: "promote"

@@ -933,7 +933,10 @@ final class SessionController {
                 momentumCoeff: Float(params.momentumCoeff),
                 useSignedAdvantageComplementCE: params.signedAdvantageComplementCE,
                 sqrtBatchScalingForLR: params.sqrtBatchScalingLR,
-                lrWarmupSteps: params.lrWarmupSteps
+                lrWarmupSteps: params.lrWarmupSteps,
+                // The trainer forks champion weights, so its net must match the
+                // champion's architecture.
+                arch: network?.network.arch ?? .current
             )
             trainer = t
             return t

@@ -399,6 +399,7 @@ enum CheckpointManager {
         modelID: String,
         createdAtUnix: Int64,
         metadata: ModelCheckpointMetadata,
+        architecture: NetworkArchitecture = .current,
         trigger: String,
         at date: Date = Date()
     ) async throws -> URL {
@@ -409,7 +410,7 @@ enum CheckpointManager {
             createdAtUnix: createdAtUnix,
             metadata: metadata,
             weights: weights,
-            architecture: .current,
+            architecture: architecture,
             includesVelocity: false
         )
 
@@ -465,7 +466,7 @@ enum CheckpointManager {
         // Verify BEFORE the rename so a failed check leaves nothing
         // with the final name.
         do {
-            try await verifyModelFile(at: tmpURL, expectedWeights: weights)
+            try await verifyModelFile(at: tmpURL, expectedWeights: weights, architecture: architecture)
         } catch {
             cleanupTmp()
             throw error
@@ -509,6 +510,7 @@ enum CheckpointManager {
         trainerMetadata: ModelCheckpointMetadata,
         trainerCreatedAtUnix: Int64,
         state: SessionCheckpointState,
+        architecture: NetworkArchitecture = .current,
         replayBuffer: ReplayBuffer? = nil,
         chartSnapshot: ChartCoordinatorSnapshot? = nil,
         trigger: String,
@@ -547,7 +549,7 @@ enum CheckpointManager {
             createdAtUnix: championCreatedAtUnix,
             metadata: championMetadata,
             weights: championWeights,
-            architecture: .current,
+            architecture: architecture,
             includesVelocity: false
         )
 
@@ -559,7 +561,7 @@ enum CheckpointManager {
             createdAtUnix: trainerCreatedAtUnix,
             metadata: trainerMetadata,
             weights: trainerWeights,
-            architecture: .current,
+            architecture: architecture,
             includesVelocity: true
         )
 
@@ -746,7 +748,7 @@ enum CheckpointManager {
         }
 
         do {
-            try await verifyModelFile(at: championTmpURL, expectedWeights: championWeights)
+            try await verifyModelFile(at: championTmpURL, expectedWeights: championWeights, architecture: architecture)
             // Trainer file is v2 layout: trainables + bn + velocity.
             // The inference scratch network used by `verifyModelFile`
             // can only load trainables + bn, so the forward-pass
@@ -759,6 +761,7 @@ enum CheckpointManager {
             try await verifyModelFile(
                 at: trainerTmpURL,
                 expectedWeights: trainerWeights,
+                architecture: architecture,
                 forwardPassPrefixCount: championWeights.count
             )
             // Round-trip session.json: decode the bytes we just wrote
@@ -1015,6 +1018,7 @@ enum CheckpointManager {
     static func verifyModelFile(
         at url: URL,
         expectedWeights: [[Float]],
+        architecture: NetworkArchitecture = .current,
         forwardPassPrefixCount: Int? = nil
     ) async throws {
         // 1. Re-read and byte-compare.
@@ -1059,7 +1063,7 @@ enum CheckpointManager {
         //    loadWeights → graph state is caught end-to-end.
         let scratch: ChessMPSNetwork
         do {
-            scratch = try ChessMPSNetwork(.randomWeights)
+            scratch = try ChessMPSNetwork(.randomWeights, arch: architecture)
             scratch.network.commandQueue.label = "verifyModelFile scratch"
         } catch {
             throw CheckpointManagerError.verificationScratchBuildFailed(error)

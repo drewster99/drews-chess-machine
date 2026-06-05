@@ -879,11 +879,17 @@ extension SessionController {
 
             // --- Setup: build any missing networks, reset the trainer ---
 
+            // Every inference network below receives champion/trainer weight
+            // snapshots, so each must be built to the champion's architecture
+            // (the captured `network` is the champion). Sendable, so it crosses
+            // into the detached build tasks.
+            let champArch = network.network.arch
+
             let needsCandidateBuild = await MainActor.run { candidateInferenceNetwork == nil }
             if needsCandidateBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights)
+                        try ChessMPSNetwork(.randomWeights, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining candidate Inference"
                     await MainActor.run {
@@ -903,7 +909,7 @@ extension SessionController {
             if needsProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights)
+                        try ChessMPSNetwork(.randomWeights, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining probe Inference"
                     await MainActor.run {
@@ -924,7 +930,7 @@ extension SessionController {
             if needsArenaChampionBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights)
+                        try ChessMPSNetwork(.randomWeights, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining arena champion"
                     await MainActor.run {
@@ -952,7 +958,7 @@ extension SessionController {
             if needsLichessProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights)
+                        try ChessMPSNetwork(.randomWeights, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining lichess probe Inference"
                     await MainActor.run {
@@ -979,7 +985,7 @@ extension SessionController {
             if needsTacticalProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
-                        try ChessMPSNetwork(.randomWeights)
+                        try ChessMPSNetwork(.randomWeights, arch: champArch)
                     }.value
                     built.network.commandQueue.label = "startrealTraining tactical probe Inference"
                     await MainActor.run {

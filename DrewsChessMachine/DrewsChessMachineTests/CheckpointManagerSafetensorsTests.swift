@@ -138,6 +138,43 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         }
     }
 
+    /// The trainer-arch wiring: a non-default (8-block) champion's weights must
+    /// load into a trainer built to the SAME arch (the fork), and the non-default
+    /// model must save (verifyModelFile uses an arch-matched scratch) and reload
+    /// bit-exact with the correct embedded architecture. A default-arch trainer
+    /// or verify-scratch would throw a shape mismatch here.
+    func testNonDefaultArchTrainerForkAndSave() async throws {
+        let arch = NetworkArchitecture.preset(.v4_8block_3x3) // 8 blocks 3x3 — not the default
+        try arch.validate()
+
+        let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let championWeights = try await champion.network.exportWeights()
+        XCTAssertEqual(championWeights.count, arch.weightTensorPlan().count) // 145 for 8-block
+
+        // Trainer built to the champion's arch must accept its weights (fork).
+        let trainer = try ChessTrainer(arch: arch)
+        XCTAssertEqual(trainer.arch, arch)
+        try await trainer.network.loadWeights(championWeights) // would throw if arch mismatched
+
+        // Save the non-default champion (verifyModelFile builds an arch-matched
+        // scratch internally) and reload bit-exact.
+        let url = try await CheckpointManager.saveModel(
+            weights: championWeights, modelID: "unittest-nondefault",
+            createdAtUnix: 1_780_000_000,
+            metadata: ModelCheckpointMetadata(creator: "manual", trainingStep: nil, parentModelID: "", notes: "nd"),
+            architecture: arch, trigger: "unittest"
+        )
+        defer { do { try FileManager.default.removeItem(at: url) } catch {} }
+
+        let loaded = try CheckpointManager.loadModelFile(at: url)
+        assertBitEqual(loaded.weights, championWeights, "non-default save/reload")
+
+        // The embedded architecture is the actual (non-default) one, not the default.
+        let decoded = try SafetensorsModelIO.decode(try Data(contentsOf: url))
+        XCTAssertEqual(decoded.architecture, arch)
+        XCTAssertNotEqual(decoded.architecture, .current)
+    }
+
     private func assertBitEqual(_ a: [[Float]], _ b: [[Float]], _ label: String) {
         XCTAssertEqual(a.count, b.count, "\(label): tensor count")
         for (i, pair) in zip(a, b).enumerated() {

@@ -889,7 +889,7 @@ final class PlayController {
             }
             do {
                 let weights = try await champion.exportWeights()
-                let net = try await Self.buildInferenceNetwork(loading: weights)
+                let net = try await Self.buildInferenceNetwork(loading: weights, arch: champion.network.arch)
                 let idText = champion.identifier.map { "\($0)" } ?? "unnamed"
                 currentOpponentDescription = "Champion snapshot · \(idText)"
                 return .success(DirectMoveEvaluationSource(network: net))
@@ -903,7 +903,7 @@ final class PlayController {
             }
             do {
                 let weights = try await trainer.network.exportWeights()
-                let net = try await Self.buildInferenceNetwork(loading: weights)
+                let net = try await Self.buildInferenceNetwork(loading: weights, arch: trainer.arch)
                 let idText = trainer.identifier.map { "\($0)" } ?? "unnamed"
                 currentOpponentDescription = "Trainer snapshot · \(idText)"
                 return .success(DirectMoveEvaluationSource(network: net))
@@ -917,7 +917,7 @@ final class PlayController {
             }
             do {
                 if liveTrainerMirrorNetwork == nil {
-                    liveTrainerMirrorNetwork = try await Self.buildBareInferenceNetwork()
+                    liveTrainerMirrorNetwork = try await Self.buildBareInferenceNetwork(arch: trainer.arch)
                 }
                 guard let mirror = liveTrainerMirrorNetwork else {
                     return .failure(PlayControllerError.noTrainerAvailable)
@@ -954,9 +954,12 @@ final class PlayController {
     /// Swift Concurrency executor. Mirrors the pattern
     /// `SessionController.performBuild()` uses, plus an immediate
     /// `loadWeights` to overwrite the randomly-initialized graph.
-    private nonisolated static func buildInferenceNetwork(loading weights: [[Float]]) async throws -> ChessMPSNetwork {
+    private nonisolated static func buildInferenceNetwork(
+        loading weights: [[Float]],
+        arch: NetworkArchitecture = .current
+    ) async throws -> ChessMPSNetwork {
         let net = try await Task.detached(priority: .userInitiated) {
-            try ChessMPSNetwork(.randomWeights)
+            try ChessMPSNetwork(.randomWeights, arch: arch)
         }.value
         try await net.loadWeights(weights)
         return net
@@ -967,9 +970,11 @@ final class PlayController {
     /// mirror — the mirror's initial weights are immaterial because
     /// `LiveTrainerMoveEvaluationSource.evaluate` overwrites them on
     /// every AI move via `loadWeights(...)`.
-    private nonisolated static func buildBareInferenceNetwork() async throws -> ChessMPSNetwork {
+    private nonisolated static func buildBareInferenceNetwork(
+        arch: NetworkArchitecture = .current
+    ) async throws -> ChessMPSNetwork {
         try await Task.detached(priority: .userInitiated) {
-            try ChessMPSNetwork(.randomWeights)
+            try ChessMPSNetwork(.randomWeights, arch: arch)
         }.value
     }
 
