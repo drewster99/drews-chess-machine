@@ -476,57 +476,70 @@ extension SessionController {
         checkpoint?.setCheckpointStatus("Loading \(url.lastPathComponent)…", kind: .progress)
 
         Task {
-            // Auto-build the champion shell if it doesn't exist yet.
-            // The weights are about to be overwritten, so the random
-            // init is only satisfying graph compilation — no reason
-            // to require the user to press Build first.
-            let championResult = await self.ensureChampionBuilt()
-            switch championResult {
-            case .failure(let error):
+            // 1. Read + decode the file first (CPU) to learn its architecture.
+            //    The security scope is held across the read; loadWeights below
+            //    works off the in-memory decode and needs no file access.
+            let readResult: Result<ModelCheckpointFile, Error> = await Task.detached(priority: .userInitiated) {
+                let scopeAccessed = url.startAccessingSecurityScopedResource()
+                defer {
+                    if scopeAccessed {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                do {
+                    return .success(try CheckpointManager.loadModelFile(at: url))
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            guard case .success(let file) = readResult else {
                 checkpoint?.checkpointSaveInFlight = false
-                checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
-                SessionLogger.shared.log("[CHECKPOINT] Load model auto-build failed: \(error.localizedDescription)")
-                return
-            case .success(let champion):
-                // Keep the security scope open across the entire
-                // detached read+load so files picked from outside the
-                // sandbox (Downloads, AirDrop, external volumes) stay
-                // accessible until the work finishes. Start/stop must
-                // happen inside the detached closure to bracket the
-                // actual I/O.
-                let outcome: Result<ModelCheckpointFile, Error> = await Task.detached(priority: .userInitiated) {
-                    let scopeAccessed = url.startAccessingSecurityScopedResource()
-                    defer {
-                        if scopeAccessed {
-                            url.stopAccessingSecurityScopedResource()
-                        }
-                    }
-                    do {
-                        let file = try CheckpointManager.loadModelFile(at: url)
-                        try await champion.loadWeights(file.weights)
-                        return .success(file)
-                    } catch {
-                        return .failure(error)
-                    }
-                }.value
-                checkpoint?.checkpointSaveInFlight = false
-                switch outcome {
-                case .success(let file):
-                    champion.identifier = ModelID(value: file.modelID)
-                    networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
-                    checkpoint?.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
-                    SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
-                    onClearInferenceResult()
-                    // Flag champion-replaced for the post-Stop Start
-                    // dialog's "Continue" annotation. Cleared as
-                    // soon as a new training segment starts.
-                    if replayBuffer != nil {
-                        championLoadedSinceLastTrainingSegment = true
-                    }
-                case .failure(let error):
+                if case .failure(let error) = readResult {
                     checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
                     SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
                 }
+                return
+            }
+
+            // 2. Build (or rebuild) the champion at the file's architecture so a
+            //    non-default / historical model gets a matching graph. The random
+            //    init only satisfies graph compilation; weights overwrite it next.
+            let championResult = await self.ensureChampionBuilt(arch: file.architecture)
+            guard case .success(let champion) = championResult else {
+                checkpoint?.checkpointSaveInFlight = false
+                if case .failure(let error) = championResult {
+                    checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load model auto-build failed: \(error.localizedDescription)")
+                }
+                return
+            }
+
+            // 3. Apply weights.
+            let applyResult: Result<Void, Error> = await Task.detached(priority: .userInitiated) {
+                do {
+                    try await champion.loadWeights(file.weights)
+                    return .success(())
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            checkpoint?.checkpointSaveInFlight = false
+            switch applyResult {
+            case .success:
+                champion.identifier = ModelID(value: file.modelID)
+                networkStatus = "Loaded model \(file.modelID)\nFrom: \(url.lastPathComponent)"
+                checkpoint?.setCheckpointStatus("Loaded \(file.modelID)", kind: .success)
+                SessionLogger.shared.log("[CHECKPOINT] Loaded model: \(url.lastPathComponent) → \(file.modelID)")
+                onClearInferenceResult()
+                // Flag champion-replaced for the post-Stop Start dialog's
+                // "Continue" annotation. Cleared as soon as a new training
+                // segment starts.
+                if replayBuffer != nil {
+                    championLoadedSinceLastTrainingSegment = true
+                }
+            case .failure(let error):
+                checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
+                SessionLogger.shared.log("[CHECKPOINT] Load model failed: \(error.localizedDescription)")
             }
         }
     }
@@ -557,20 +570,9 @@ extension SessionController {
         checkpoint?.setCheckpointStatus("Loading session \(url.lastPathComponent)…", kind: .progress)
 
         Task {
-            // Auto-build the champion shell if it doesn't exist yet.
-            // The weights are about to be overwritten, so the random
-            // init is only satisfying graph compilation — no reason
-            // to require the user to press Build first.
-            let championResult = await self.ensureChampionBuilt()
-            guard case .success(let champion) = championResult else {
-                checkpoint?.checkpointSaveInFlight = false
-                if case .failure(let error) = championResult {
-                    checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
-                    SessionLogger.shared.log("[CHECKPOINT] Load session auto-build failed: \(error.localizedDescription)")
-                }
-                return
-            }
-            let outcome: Result<LoadedSession, Error> = await Task.detached(priority: .userInitiated) {
+            // 1. Decode the session first (CPU only, no graph) so we know the
+            //    architecture it was saved with before building anything.
+            let loadResult: Result<LoadedSession, Error> = await Task.detached(priority: .userInitiated) {
                 let scopeAccessed = url.startAccessingSecurityScopedResource()
                 defer {
                     if scopeAccessed {
@@ -578,18 +580,49 @@ extension SessionController {
                     }
                 }
                 do {
-                    let loaded = try CheckpointManager.loadSession(at: url)
-                    // Apply champion weights immediately; trainer
-                    // weights are held for the next startRealTraining.
+                    return .success(try CheckpointManager.loadSession(at: url))
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            guard case .success(let loaded) = loadResult else {
+                checkpoint?.checkpointSaveInFlight = false
+                if case .failure(let error) = loadResult {
+                    checkpoint?.setCheckpointStatus("Load failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load session decode failed: \(error.localizedDescription)")
+                }
+                if startAfterLoad { onResumeFinished() }
+                return
+            }
+
+            // 2. Build (or rebuild) the champion at the SESSION's architecture —
+            //    not the current build default — so non-default / historical
+            //    sessions get a matching graph. The random init only satisfies
+            //    graph compilation; the weights are overwritten next.
+            let championResult = await self.ensureChampionBuilt(arch: loaded.championFile.architecture)
+            guard case .success(let champion) = championResult else {
+                checkpoint?.checkpointSaveInFlight = false
+                if case .failure(let error) = championResult {
+                    checkpoint?.setCheckpointStatus("Build failed: \(error.localizedDescription)", kind: .error)
+                    SessionLogger.shared.log("[CHECKPOINT] Load session auto-build failed: \(error.localizedDescription)")
+                }
+                if startAfterLoad { onResumeFinished() }
+                return
+            }
+
+            // 3. Apply champion weights; trainer weights are held for the next
+            //    startRealTraining via `pendingLoadedSession`.
+            let applyResult: Result<Void, Error> = await Task.detached(priority: .userInitiated) {
+                do {
                     try await champion.loadWeights(loaded.championFile.weights)
-                    return .success(loaded)
+                    return .success(())
                 } catch {
                     return .failure(error)
                 }
             }.value
             checkpoint?.checkpointSaveInFlight = false
-            switch outcome {
-            case .success(let loaded):
+            switch applyResult {
+            case .success:
                 champion.identifier = ModelID(value: loaded.championFile.modelID)
                 pendingLoadedSession = loaded
                 networkStatus = """

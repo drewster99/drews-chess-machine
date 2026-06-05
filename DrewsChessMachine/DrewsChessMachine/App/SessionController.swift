@@ -1032,22 +1032,26 @@ final class SessionController {
         }
     }
 
-    /// Ensure `network` exists. If it's already built, returns it. Otherwise
-    /// runs the same detached `performBuild()` path the menu's Build button
-    /// uses and wires the result in. Used by the load paths so the user doesn't
-    /// have to press Build first when the weights are about to be overwritten.
-    func ensureChampionBuilt() async -> Result<ChessMPSNetwork, Error> {
-        if let champion = network {
+    /// Ensure a champion exists at the requested architecture (defaults to
+    /// `buildArchitecture`). If one is already built at that arch, returns it;
+    /// otherwise builds (or rebuilds) one. Load paths pass the loaded file's
+    /// architecture so a non-default / historical model gets a matching graph
+    /// rather than the current build's default. Used so the user doesn't have to
+    /// press Build first before a load.
+    func ensureChampionBuilt(arch requestedArch: NetworkArchitecture? = nil) async -> Result<ChessMPSNetwork, Error> {
+        let targetArch = requestedArch ?? buildArchitecture
+        if let champion = network, champion.network.arch == targetArch {
             return .success(champion)
         }
+        // No champion, or the existing one is for a different architecture
+        // (resuming / loading a model of another arch) — (re)build to match.
         isBuilding = true
         networkStatus = ""
         onDropTrainer()
         onClearTrainingDisplay()
-        SessionLogger.shared.log("[BUILD] Auto-build before load")
-        let arch = buildArchitecture
+        SessionLogger.shared.log("[BUILD] Auto-build before load (\(targetArch.archHashHex))")
         let result = await Task.detached(priority: .userInitiated) {
-            Self.performBuild(arch: arch)
+            Self.performBuild(arch: targetArch)
         }.value
         switch result {
         case .success(let net):

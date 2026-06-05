@@ -182,6 +182,11 @@ struct ModelCheckpointFile {
     let modelID: String
     let createdAtUnix: Int64
     let metadata: ModelCheckpointMetadata
+    /// Architecture the weights belong to. Populated from the embedded config
+    /// for safetensors files; defaults to the current arch for legacy
+    /// `.dcmmodel` files (which pass the archHash == current check). Lets the
+    /// load path build a matching graph instead of assuming the current arch.
+    let architecture: NetworkArchitecture
     /// One sub-array per persistent tensor.
     /// - Champion/candidate/probe files: `trainableVariables +
     ///   bnRunningStatsVariables`.
@@ -207,12 +212,14 @@ struct ModelCheckpointFile {
         createdAtUnix: Int64,
         metadata: ModelCheckpointMetadata,
         weights: [[Float]],
+        architecture: NetworkArchitecture = .current,
         formatVersion: UInt32 = ModelCheckpointFile.formatVersion
     ) {
         self.modelID = modelID
         self.createdAtUnix = createdAtUnix
         self.metadata = metadata
         self.weights = weights
+        self.architecture = architecture
         self.formatVersion = formatVersion
     }
 

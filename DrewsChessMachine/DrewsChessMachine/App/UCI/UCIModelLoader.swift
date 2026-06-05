@@ -72,7 +72,7 @@ enum UCIModelLoader {
             throw LoadError.modelFileMissing(url)
         }
         let file = try CheckpointManager.loadModelFile(at: url)
-        let network = try await buildAndLoad(weights: file.weights)
+        let network = try await buildAndLoad(weights: file.weights, arch: file.architecture)
         return Loaded(
             network: network,
             modelID: file.modelID,
@@ -93,7 +93,7 @@ enum UCIModelLoader {
             throw LoadError.modelFileMissing(trainerURL)
         }
         let file = try CheckpointManager.loadModelFile(at: trainerURL)
-        let network = try await buildAndLoad(weights: file.weights)
+        let network = try await buildAndLoad(weights: file.weights, arch: file.architecture)
         return Loaded(
             network: network,
             modelID: file.modelID,
@@ -109,8 +109,8 @@ enum UCIModelLoader {
     /// `trainableVariables.count + bnRunningStatsVariables.count`.
     /// Champion-file weights are exactly that length already, so the
     /// prefix is a no-op for them.
-    private static func buildAndLoad(weights: [[Float]]) async throws -> ChessMPSNetwork {
-        let network = try ChessMPSNetwork(.randomWeights)
+    private static func buildAndLoad(weights: [[Float]], arch: NetworkArchitecture) async throws -> ChessMPSNetwork {
+        let network = try ChessMPSNetwork(.randomWeights, arch: arch)
         let baseCount = network.network.trainableVariables.count
             + network.network.bnRunningStatsVariables.count
         guard weights.count >= baseCount else {

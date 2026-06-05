@@ -164,7 +164,8 @@ enum SafetensorsModelIO {
             modelID: md[Key.modelID] ?? "",
             createdAtUnix: md[Key.createdAt].flatMap { Int64($0) } ?? 0,
             metadata: metadata,
-            weights: weights
+            weights: weights,
+            architecture: architecture
         )
         return Decoded(file: file, architecture: architecture, hasVelocity: hasVelocity)
     }

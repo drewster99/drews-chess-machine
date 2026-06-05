@@ -168,6 +168,9 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
 
         let loaded = try CheckpointManager.loadModelFile(at: url)
         assertBitEqual(loaded.weights, championWeights, "non-default save/reload")
+        // The loaded file surfaces its architecture so the load path can build a
+        // matching graph (the enabler for resuming non-default models).
+        XCTAssertEqual(loaded.architecture, arch)
 
         // The embedded architecture is the actual (non-default) one, not the default.
         let decoded = try SafetensorsModelIO.decode(try Data(contentsOf: url))
@@ -204,6 +207,10 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         let loaded = try CheckpointManager.loadSession(at: dir)
         assertBitEqual(loaded.championFile.weights, base, "nd session champion")
         assertBitEqual(loaded.trainerFile.weights, trainerWeights, "nd session trainer+velocity")
+        // Both files surface the non-default arch, so resume can rebuild the
+        // champion + trainer to match instead of the build default.
+        XCTAssertEqual(loaded.championFile.architecture, arch)
+        XCTAssertEqual(loaded.trainerFile.architecture, arch)
     }
 
     private func assertBitEqual(_ a: [[Float]], _ b: [[Float]], _ label: String) {
