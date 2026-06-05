@@ -64,7 +64,8 @@ enum UCIModelLoader {
     private static func loadExplicit(path: String) async throws -> Loaded {
         let expanded = (path as NSString).expandingTildeInPath
         let url = URL(fileURLWithPath: expanded)
-        guard url.pathExtension.lowercased() == "dcmmodel" else {
+        let ext = url.pathExtension.lowercased()
+        guard ext == "safetensors" || ext == "dcmmodel" else {
             throw LoadError.explicitMustBeDcmmodel(url)
         }
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -87,7 +88,7 @@ enum UCIModelLoader {
         guard pointer.directoryExists else {
             throw LoadError.sessionDirectoryMissing(dir)
         }
-        let trainerURL = SessionCheckpointLayout.trainerURL(in: dir)
+        let trainerURL = SessionCheckpointLayout.existingTrainerURL(in: dir)
         guard FileManager.default.fileExists(atPath: trainerURL.path) else {
             throw LoadError.modelFileMissing(trainerURL)
         }

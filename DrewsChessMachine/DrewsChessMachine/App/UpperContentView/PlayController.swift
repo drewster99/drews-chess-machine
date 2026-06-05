@@ -271,9 +271,10 @@ final class PlayController {
     func pickModelFile() {
         let panel = NSOpenPanel()
         panel.title = "Choose a saved model"
-        panel.message = "Pick a .dcmmodel file (Models/ or inside a .dcmsession/)"
+        panel.message = "Pick a .safetensors or .dcmmodel file (Models/ or inside a .dcmsession/)"
         panel.allowedContentTypes = [
-            UTType(filenameExtension: "dcmmodel") ?? .data
+            UTType(filenameExtension: "safetensors") ?? .data,
+            UTType(filenameExtension: "dcmmodel") ?? .data,
         ]
         panel.allowsMultipleSelection = false
         panel.canChooseFiles = true

@@ -577,19 +577,42 @@ struct SessionCheckpointState: Codable, Equatable {
 /// constituent `.dcmmodel` files are immediately usable when
 /// copied out in Finder.
 enum SessionCheckpointLayout {
-    static let championFilename = "champion.dcmmodel"
-    static let trainerFilename = "trainer.dcmmodel"
+    static let championFilename = "champion.safetensors"
+    static let trainerFilename = "trainer.safetensors"
+    static let legacyChampionFilename = "champion.dcmmodel"
+    static let legacyTrainerFilename = "trainer.dcmmodel"
     static let stateFilename = "session.json"
     static let replayBufferFilename = "replay_buffer.bin"
     static let trainingChartFilename = "training_chart.json"
     static let progressRateChartFilename = "progress_rate_chart.json"
 
+    /// Canonical (write) path for new sessions: `champion.safetensors`.
     static func championURL(in directoryURL: URL) -> URL {
         directoryURL.appendingPathComponent(championFilename)
     }
 
+    /// Canonical (write) path for new sessions: `trainer.safetensors`.
     static func trainerURL(in directoryURL: URL) -> URL {
         directoryURL.appendingPathComponent(trainerFilename)
+    }
+
+    /// Read path: native `.safetensors` if present, else legacy `.dcmmodel`.
+    /// Falls back to the `.safetensors` path when neither exists so the
+    /// caller's `fileExists` check reports the file missing as before.
+    static func existingChampionURL(in directoryURL: URL) -> URL {
+        resolveExisting(in: directoryURL, primary: championFilename, legacy: legacyChampionFilename)
+    }
+
+    static func existingTrainerURL(in directoryURL: URL) -> URL {
+        resolveExisting(in: directoryURL, primary: trainerFilename, legacy: legacyTrainerFilename)
+    }
+
+    private static func resolveExisting(in directoryURL: URL, primary: String, legacy: String) -> URL {
+        let primaryURL = directoryURL.appendingPathComponent(primary)
+        if FileManager.default.fileExists(atPath: primaryURL.path) { return primaryURL }
+        let legacyURL = directoryURL.appendingPathComponent(legacy)
+        if FileManager.default.fileExists(atPath: legacyURL.path) { return legacyURL }
+        return primaryURL
     }
 
     static func stateURL(in directoryURL: URL) -> URL {
@@ -624,8 +647,8 @@ enum SessionCheckpointLayout {
         // children resolve correctly.
         let normalizedDir = URL(fileURLWithPath: directoryURL.path, isDirectory: true)
         let fm = FileManager.default
-        let championURL = championURL(in: normalizedDir)
-        let trainerURL = trainerURL(in: normalizedDir)
+        let championURL = existingChampionURL(in: normalizedDir)
+        let trainerURL = existingTrainerURL(in: normalizedDir)
         let stateURL = stateURL(in: normalizedDir)
 
         guard fm.fileExists(atPath: championURL.path) else {

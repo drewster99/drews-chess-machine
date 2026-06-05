@@ -542,21 +542,26 @@ enum CheckpointManager {
         // the buffer write captured atomically under its own lock,
         // rather than from a stale snapshot the caller took before
         // self-play paused. See the writtenSnap section below.
-        let championFile = ModelCheckpointFile(
+        let championEncoded = try SafetensorsModelIO.encode(
             modelID: championID,
             createdAtUnix: championCreatedAtUnix,
             metadata: championMetadata,
-            weights: championWeights
+            weights: championWeights,
+            architecture: .current,
+            includesVelocity: false
         )
-        let championEncoded = try championFile.encode()
 
-        let trainerFile = ModelCheckpointFile(
+        // Trainer file = base weights (trainables + BN running stats) followed by
+        // optimizer velocity (one per trainable, trainable order) — named
+        // opt.<trainable>.velocity by SafetensorsModelIO.
+        let trainerEncoded = try SafetensorsModelIO.encode(
             modelID: trainerID,
             createdAtUnix: trainerCreatedAtUnix,
             metadata: trainerMetadata,
-            weights: trainerWeights
+            weights: trainerWeights,
+            architecture: .current,
+            includesVelocity: true
         )
-        let trainerEncoded = try trainerFile.encode()
 
         // Build the staging directory, write the three files, verify.
         let fm = FileManager.default
