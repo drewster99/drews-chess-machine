@@ -798,3 +798,54 @@ PUCT = Q(s,a) + c_puct × P(s,a) × √(N(s)) / (1 + N(s,a))
 ```
 
 This lets the network's policy output guide which branches MCTS explores — moves the network thinks are promising get searched more deeply, moves it thinks are bad get fewer simulations. On a limited simulation budget (800 sims/move on one Mac), this is how you get strong play without exhaustive search.
+
+---
+
+## Model storage & Python interop (safetensors)
+
+Model weights are stored in the **safetensors** format (`.safetensors`), so a
+saved file is directly loadable by Python's `safetensors` with no conversion
+step. On-disk file = `[u64 little-endian header length][JSON header][contiguous
+F32 data]`. The header maps each tensor name → `{dtype:"F32", shape, data_offsets:[b,e]}`,
+plus a reserved `"__metadata__"` string→string map carrying `content_sha256`
+(SHA-256 over the data region — the integrity guard), `dcm_format_version`,
+`model_id`, provenance, and `architecture` (the full `NetworkArchitecture` as a
+JSON string, so a loader can rebuild the matching graph). Weights are always
+**Float32 on disk** regardless of the compute dtype (the GPU may compute in
+bf16; disk stays the f32 master). `SafetensorsFile` is the raw codec;
+`SafetensorsModelIO` bridges it to the in-memory `ModelCheckpointFile`. The
+legacy custom `.dcmmodel` binary (`DCMMODEL` magic, trailing SHA, positional
+tensor list) is still read for back-compat; new saves are safetensors.
+
+### Tensor layout & names — PyTorch-drop-in
+
+On disk the tensors are a real torch `state_dict`, so the conventions are
+PyTorch's, not the engine's internal MPSGraph layout:
+
+- **Conv weights:** `[outC, inC, kH, kW]` (OIHW) — matches `nn.Conv2d.weight`,
+  C-contiguous, little-endian Float32.
+- **Linear weights:** stored **transposed to `[out, in]`** (torch
+  `nn.Linear.weight`). The engine's native layout is `[in, out]`; the writer
+  transposes on save and the reader transposes back on load.
+- **Biases:** 1-D `[N]` (the engine carries them as `[1, N, 1, 1]` / `[1, N]`).
+- **BatchNorm:** `gamma→weight`, `beta→bias`, plus `running_mean` / `running_var`,
+  each `[C]`. There is **no `num_batches_tracked`** (the engine uses a fixed-EMA
+  BN update, not count-based momentum). A torch consumer should synthesize
+  `num_batches_tracked = 0` on import; importing a torch model into the engine
+  should drop that buffer.
+- **Names** are module paths (`stem.conv.weight`, `blocks.<i>.conv1.weight`,
+  `tower_final_bn.weight`, `policy.conv.weight`, `value.fc1.weight`, …).
+  Materially-different modules carry a flag token so they aren't mistaken for
+  stock components: **`se_scalebias`** (scale-and-bias SE — FC2 emits `2·C` =
+  `sigmoid(γ)·z + β`, not a stock channel gate), **`rezero_alpha`** (a learned
+  per-block scalar on the residual branch, `out = input + α·F(input)`), and
+  **`value.wdl_fc2`** (the value head emits **3 W/D/L logits**, not a scalar;
+  the derived value is `p_win − p_loss`, no tanh).
+- **Trainer files** append optimizer velocity as `opt.<trainable>.velocity`
+  (1-D, native order) — DCM-internal optimizer state, not part of the torch
+  model; a model-loading consumer ignores these.
+
+Do not expect bit-exact cross-framework numerics (different conv kernels diverge
+in the low bits); the promise is "same weights + equivalent topology." The
+`architecture` JSON in `__metadata__` plus these conventions are enough to
+rebuild an equivalent `nn.Module` and load the weights.

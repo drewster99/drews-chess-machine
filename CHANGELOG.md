@@ -9,6 +9,24 @@ empirical outcome of a training run (no source change) are tagged `(FINDING)`.
 
 ---
 
+## 2026-06-05 CDT — Model storage is safetensors-native + runtime-configurable architecture (foundation)
+
+Branch `safetensors-storage`. Two linked changes, sequenced storage-format-first.
+
+**Storage: custom `.dcmmodel` → safetensors.** New model/session weight files are written in the HuggingFace **safetensors** format (`.safetensors`), directly loadable by Python (`safetensors`) with no exporter step. A from-scratch, dependency-free Swift reader/writer (`SafetensorsFile`) matches the canonical spec (u64-LE header length + JSON header + contiguous F32 data); integrity is `__metadata__["content_sha256"]` over the data region (replacing the legacy trailing SHA). `SafetensorsModelIO` bridges the in-memory `ModelCheckpointFile`, embedding the full architecture (JSON), modelID, and provenance in `__metadata__`. The legacy `.dcmmodel` reader is retained (selected by `DCMMODEL` magic) so existing current-arch models/sessions still load; `saveModel`/`saveSession` write safetensors; `verifyModelFile`'s bit-exact forward-pass save gate is unchanged. Trainer files carry optimizer velocity as `opt.<trainable>.velocity`. (`bd056c0`–`ca91deb`)
+
+**PyTorch-drop-in layout.** On disk the tensors form a real torch `state_dict`: FC weights transposed to `[out,in]`, biases 1-D `[N]`, conv `OIHW`, BN params `[C]`; the inverse transform on load restores the engine's native order (round-trip bit-exact). Materially-different modules carry flag tokens — `se_scalebias` (scale-and-bias SE, FC2→2C), `rezero_alpha` (learned residual scalar), `value.wdl_fc2` (3-logit WDL head) — so a torch consumer can't mistake them for stock parts. (`16cf999`)
+
+**Runtime-configurable architecture.** Network shape (channels, block count, conv kernel, SE shape + reduction, value-head dims, compute dtype) is now a `NetworkArchitecture` value type instead of `ChessNetwork` `static let`s; `ChessNetwork(arch:)` builds any topology (verified: a 64-channel net builds + forward-passes). Fixed-by-engine fields (30 planes, 8×8, 76 policy channels, 3 WDL classes) are validated, not editable. Build any architecture without a rebuild via `architecture.json`. The static constants remain as the *default* arch for external callers, pinned to `NetworkArchitecture.current` by a guard test. (`b4619d9`, `d9bdd26`, `552930c`)
+
+**Decoder hardening + review fixes.** The safetensors decoder (which sees external/hand-edited files) no longer traps on a `>Int.max` header length or an overflowing shape product — both throw cleanly, with regression tests for every typed error case + scalar/empty tensors. `validate()` rejects a zero SE reduction ratio unconditionally. The analysis export now describes the actual champion arch, not the build defaults. Plus three Lichess probe-compare fixes (nearest-set-size routing, dead-pin cleanup, accurate auto-compare help). (`524d59f`, `d593c2b`, `b585198`)
+
+**Round-trip coverage.** Bit-exact tests for: model and session save/restore in safetensors; cross-format conversion both directions (legacy `.dcmmodel` ↔ safetensors); session-level legacy→safetensors migration incl. trainer velocity; plus a verified Python load of a Swift-written file. Suite 611/611.
+
+**Status / remaining.** Storage + build-any-architecture are done and tested. Not yet wired: the trainer/candidate/arena nets still build the default arch (a non-default champion can be built but not yet *trained* — fails gracefully at fork); per-model compute precision; loading historical v3/v4 (old-arch) models (needs an `archHash→config` fallback + v3 builder + consuming the embedded config on load); CLI `--uci` build-from-embedded-config and `--playchess`. See `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md`.
+
+---
+
 ## 2026-06-04 CDT — Parallel 4,435-puzzle WIDE Lichess probe set (one batched eval) + probe timing
 
 A second, much larger Lichess probe battery now runs **alongside** the existing 200-puzzle set as a fixed long-term yardstick: ~4,435 puzzles spanning rating 400–3200 (flat per-100 density 550–2800, mate-weighted), bundled as `lichess_probes_wide.json`. The 200-set is completely untouched — same data, same chart, same persistence — the wide set is purely additive. Feature commit `9818b66`; probe-timing follow-up in the same dated batch.

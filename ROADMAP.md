@@ -11,6 +11,21 @@ original rationale is not lost.
 
 ## Future improvements (validated open)
 
+- **Safetensors-native storage + runtime-configurable architecture.** In
+  progress on branch `safetensors-storage`; full design + phase plan in
+  `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md`. **Done (tested):** model/session weight
+  files are now safetensors (`.safetensors`, PyTorch-drop-in layout, Python-
+  loadable, no exporter); legacy `.dcmmodel` still reads; `ChessNetwork` builds
+  from a `NetworkArchitecture` value type; build any architecture via
+  `architecture.json`. **Remaining:** thread the champion's arch through the
+  trainer/candidate/arena nets so a non-default architecture is *trainable*
+  (and through `saveModel`/`saveSession` so it's saved with the correct embedded
+  config); per-model compute precision (bf16/f32); load historical v3/v4
+  (old-arch) models via an `archHash→config` fallback + a v3 block/value-head
+  builder + consuming the embedded config on load; CLI (`--uci` builds from the
+  file's embedded config; `--playchess` opens the human-play UI with an
+  auto/`--model`-selected net).
+
 - **`BatchFeedsInput` struct for `ChessTrainer.buildFeeds`.** Still open.
   Current implementation evidence: `ChessTrainer.buildFeeds(batchSize:boards:moves:zs:vBaselines:legalMasks:)`
   in `Training/ChessTrainer.swift` still takes six positional arguments:
