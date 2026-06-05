@@ -82,7 +82,7 @@ struct AnalysisExportMetadata: Codable, Sendable {
         let policySize: Int
         let seReductionRatio: Int
         let valueHead: ValueHead
-        /// Generated one-line summary (`ChessNetwork.architectureSummary`).
+        /// Generated one-line summary (`NetworkArchitecture.architectureSummary`).
         let summary: String
         /// Hand-maintained qualitative note; omitted when empty.
         let notes: String?
