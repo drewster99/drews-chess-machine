@@ -70,10 +70,13 @@ final class LichessProbeDataTests: XCTestCase {
     // MARK: - Metadata sidecar
 
     func testMetadataCountMatchesProbeCount() {
+        // metadata merges the 200-set and the wide-set (keyed by probe name),
+        // so its size is the union of both sets' names — not just the 200-set.
+        let names = Set(LichessProbeData.largeSet.map(\.name))
+            .union(LichessProbeData.wideSet.map(\.name))
         XCTAssertEqual(
-            LichessProbeData.metadata.count,
-            LichessProbeData.largeSet.count,
-            "metadata dict size must match largeSet length"
+            LichessProbeData.metadata.count, names.count,
+            "metadata must cover exactly the union of the 200-set and wide-set probes"
         )
     }
 
@@ -82,6 +85,15 @@ final class LichessProbeDataTests: XCTestCase {
             XCTAssertNotNil(
                 LichessProbeData.metadata[probe.name],
                 "missing metadata for probe '\(probe.name)'"
+            )
+        }
+    }
+
+    func testEveryWideProbeHasMetadata() {
+        for probe in LichessProbeData.wideSet {
+            XCTAssertNotNil(
+                LichessProbeData.metadata[probe.name],
+                "missing metadata for wide-set probe '\(probe.name)'"
             )
         }
     }
