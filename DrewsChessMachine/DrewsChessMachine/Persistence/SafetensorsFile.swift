@@ -37,7 +37,7 @@ import CryptoKit
 
 enum SafetensorsError: Error, CustomStringConvertible {
     case truncated(String)
-    case headerNotUTF8
+    case headerParseFailed(String)
     case headerNotObject
     case badTensorEntry(String)
     case unsupportedDType(name: String, dtype: String)
@@ -49,7 +49,7 @@ enum SafetensorsError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .truncated(let what): return "safetensors: truncated (\(what))"
-        case .headerNotUTF8: return "safetensors: header is not valid UTF-8"
+        case .headerParseFailed(let detail): return "safetensors: header JSON parse failed (\(detail))"
         case .headerNotObject: return "safetensors: header JSON is not an object"
         case .badTensorEntry(let name): return "safetensors: malformed entry for tensor '\(name)'"
         case .unsupportedDType(let name, let dtype): return "safetensors: tensor '\(name)' has unsupported dtype '\(dtype)' (only F32 supported)"
@@ -129,8 +129,11 @@ enum SafetensorsFile {
         guard data.count >= dataStart else { throw SafetensorsError.truncated("header") }
 
         let headerData = data.subdata(in: headerStart..<dataStart)
-        guard let obj = try? JSONSerialization.jsonObject(with: headerData) else {
-            throw SafetensorsError.headerNotUTF8
+        let obj: Any
+        do {
+            obj = try JSONSerialization.jsonObject(with: headerData)
+        } catch {
+            throw SafetensorsError.headerParseFailed(error.localizedDescription)
         }
         guard let header = obj as? [String: Any] else { throw SafetensorsError.headerNotObject }
 
