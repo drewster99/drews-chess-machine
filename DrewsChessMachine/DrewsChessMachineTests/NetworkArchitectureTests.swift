@@ -73,17 +73,15 @@ final class NetworkArchitectureTests: XCTestCase {
         XCTAssertEqual(NetworkArchitecture.preset(.v4_8block_3x3).weightTensorPlan().count, 145)
     }
 
-    func testPlanOrderTrainablesThenRunningStats() {
+    func testPlanOrderTrainablesThenRunningStats() throws {
         // exportWeights / loadWeights order = all trainables, then all BN
         // running stats. So no running-stat tensor may precede a non-running
         // tensor.
         let plan = NetworkArchitecture.current.weightTensorPlan()
         XCTAssertEqual(plan.first?.name, "stem.conv.weight")
-        let firstRunning = plan.firstIndex { $0.kind == .bnRunningStat }
-        let lastNonRunning = plan.lastIndex { $0.kind != .bnRunningStat }
-        XCTAssertNotNil(firstRunning)
-        XCTAssertNotNil(lastNonRunning)
-        XCTAssertLessThan(lastNonRunning!, firstRunning!)
+        let firstRunning = try XCTUnwrap(plan.firstIndex { $0.kind == .bnRunningStat })
+        let lastNonRunning = try XCTUnwrap(plan.lastIndex { $0.kind != .bnRunningStat })
+        XCTAssertLessThan(lastNonRunning, firstRunning)
     }
 
     func testPlanNamesAreUnique() {

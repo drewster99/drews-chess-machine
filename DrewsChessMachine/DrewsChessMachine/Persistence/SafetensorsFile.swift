@@ -39,9 +39,13 @@ enum SafetensorsError: Error, CustomStringConvertible {
     case truncated(String)
     case headerParseFailed(String)
     case headerNotObject
+    case metadataNotStringMap
     case badTensorEntry(String)
     case unsupportedDType(name: String, dtype: String)
+    case negativeDimension(name: String)
+    case shapeProductOverflow(name: String)
     case shapeCountMismatch(name: String, declared: Int, bytes: Int)
+    case shapeDataMismatch(name: String, shapeElements: Int, dataElements: Int)
     case offsetsOutOfRange(name: String)
     case dataRegionNotCovered(expected: Int, covered: Int)
     case contentHashMismatch(expected: String, got: String)
@@ -51,9 +55,13 @@ enum SafetensorsError: Error, CustomStringConvertible {
         case .truncated(let what): return "safetensors: truncated (\(what))"
         case .headerParseFailed(let detail): return "safetensors: header JSON parse failed (\(detail))"
         case .headerNotObject: return "safetensors: header JSON is not an object"
+        case .metadataNotStringMap: return "safetensors: __metadata__ is present but is not a string→string map"
         case .badTensorEntry(let name): return "safetensors: malformed entry for tensor '\(name)'"
         case .unsupportedDType(let name, let dtype): return "safetensors: tensor '\(name)' has unsupported dtype '\(dtype)' (only F32 supported)"
+        case .negativeDimension(let name): return "safetensors: tensor '\(name)' has a negative shape dimension"
+        case .shapeProductOverflow(let name): return "safetensors: tensor '\(name)' shape product overflows Int"
         case .shapeCountMismatch(let name, let declared, let bytes): return "safetensors: tensor '\(name)' shape implies \(declared) floats but byte range holds \(bytes)"
+        case .shapeDataMismatch(let name, let shapeElements, let dataElements): return "safetensors: tensor '\(name)' shape implies \(shapeElements) elements but data has \(dataElements)"
         case .offsetsOutOfRange(let name): return "safetensors: tensor '\(name)' data_offsets out of range"
         case .dataRegionNotCovered(let expected, let covered): return "safetensors: data region is \(expected) bytes but tensors cover \(covered) (gaps/overlap not allowed)"
         case .contentHashMismatch(let expected, let got): return "safetensors: content_sha256 mismatch (file \(expected), computed \(got))"
@@ -84,6 +92,14 @@ enum SafetensorsFile {
         var dataRegion = Data()
         var entries: [String: Any] = [:]
         for t in tensors {
+            // Catch arch/builder drift at SAVE time rather than only on reload:
+            // the declared shape must account for exactly the data we're writing.
+            let shapeElements = t.shape.reduce(1, *)
+            guard shapeElements == t.data.count else {
+                throw SafetensorsError.shapeDataMismatch(
+                    name: t.name, shapeElements: shapeElements, dataElements: t.data.count
+                )
+            }
             let begin = dataRegion.count
             t.data.withUnsafeBufferPointer { buf in
                 dataRegion.append(buf)   // host LE == on-disk LE on Apple Silicon
@@ -125,8 +141,13 @@ enum SafetensorsFile {
             UInt64(littleEndian: raw.loadUnaligned(fromByteOffset: 0, as: UInt64.self))
         }
         let headerStart = 8
+        // Guard BEFORE the Int cast: a length > Int.max traps on the cast, and
+        // the addition could overflow-trap, both before any size check would
+        // run — and external / hand-edited files reach this path.
+        guard headerLen <= UInt64(data.count - headerStart) else {
+            throw SafetensorsError.truncated("declared header length \(headerLen) exceeds file")
+        }
         let dataStart = headerStart + Int(headerLen)
-        guard data.count >= dataStart else { throw SafetensorsError.truncated("header") }
 
         let headerData = data.subdata(in: headerStart..<dataStart)
         let obj: Any
@@ -140,7 +161,14 @@ enum SafetensorsFile {
         let dataRegion = data.subdata(in: dataStart..<data.count)
 
         var metadata: [String: String] = [:]
-        if let meta = header["__metadata__"] as? [String: String] { metadata = meta }
+        if let metaValue = header["__metadata__"] {
+            // Must be a string→string map; a non-conforming __metadata__ would
+            // otherwise silently drop content_sha256 and skip the integrity check.
+            guard let meta = metaValue as? [String: String] else {
+                throw SafetensorsError.metadataNotStringMap
+            }
+            metadata = meta
+        }
 
         struct Parsed { let name: String; let shape: [Int]; let begin: Int; let end: Int }
         var parsed: [Parsed] = []
@@ -179,8 +207,18 @@ enum SafetensorsFile {
         tensors.reserveCapacity(parsed.count)
         for p in parsed {
             let byteCount = p.end - p.begin
-            let declared = p.shape.reduce(1, *)
-            guard byteCount == declared * MemoryLayout<Float>.size else {
+            // Overflow-safe shape product: dims are attacker-controlled (e.g.
+            // [Int.max, 2]); a plain reduce(*) would trap and crash instead of
+            // failing cleanly.
+            var declared = 1
+            for dim in p.shape {
+                guard dim >= 0 else { throw SafetensorsError.negativeDimension(name: p.name) }
+                let (product, overflow) = declared.multipliedReportingOverflow(by: dim)
+                guard !overflow else { throw SafetensorsError.shapeProductOverflow(name: p.name) }
+                declared = product
+            }
+            let (declaredBytes, byteOverflow) = declared.multipliedReportingOverflow(by: MemoryLayout<Float>.size)
+            guard !byteOverflow, byteCount == declaredBytes else {
                 throw SafetensorsError.shapeCountMismatch(name: p.name, declared: declared, bytes: byteCount)
             }
             let slice = dataRegion.subdata(in: p.begin..<p.end)
