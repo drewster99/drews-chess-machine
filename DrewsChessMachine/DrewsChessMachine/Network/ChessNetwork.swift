@@ -542,13 +542,21 @@ final class ChessNetwork: @unchecked Sendable {
     let graphDevice: MPSGraphDevice
     private let executionQueue = DispatchQueue(label: "drewschess.chessnetwork.serial")
 
+    /// The architecture this instance was built to. Drives every layer shape
+    /// in the build path (the static `channels`/`numBlocks`/… constants remain
+    /// as the *default* arch for external callers; a guard test asserts they
+    /// match `NetworkArchitecture.current`). Compute dtype stays on the static
+    /// `dataType` for now — per-model precision is a later phase.
+    let arch: NetworkArchitecture
+
     // MARK: Initialization
 
     /// Build the network. Default `bnMode = .inference` keeps the existing
     /// behavior for play / forward-pass demos; pass `.training` to build a
     /// copy whose BN layers compute fresh batch stats on every forward pass
     /// (used by ChessTrainer for accurate training-step benchmarks).
-    init(bnMode: BNMode = .inference) throws {
+    init(arch: NetworkArchitecture = .current, bnMode: BNMode = .inference) throws {
+        try arch.validate()
         guard let mtlDevice = MTLCreateSystemDefaultDevice() else {
             throw ChessNetworkError.metalNotSupported
         }
@@ -563,15 +571,16 @@ final class ChessNetwork: @unchecked Sendable {
         graphDevice = MPSGraphDevice(mtlDevice: mtlDevice)
         let g = MPSGraph()
         graph = g
+        self.arch = arch
 
-        let towerConv = try Self.makeTowerConvDescriptor()
+        let towerConv = try Self.makeTowerConvDescriptor(arch: arch)
         let conv1x1 = try Self.makeConv1x1Descriptor()
 
         let stemConvDescriptor = towerConv
-        let stemConvDimension = Self.towerConvKernelSize
+        let stemConvDimension = arch.towerConvKernelSize
 
         let blockConvDescriptor = towerConv
-        let blockConvDimension = Self.towerConvKernelSize
+        let blockConvDimension = arch.towerConvKernelSize
 
 
         // Input: [batch, inputPlanes, 8, 8]. The placeholder is fp32 — the
@@ -614,14 +623,14 @@ final class ChessNetwork: @unchecked Sendable {
         let stemWeights = g.variable(
             with: Self.heInitDataConvOIHW(
                 shape: [
-                    128,
+                    arch.channels,
                     Self.inputPlanes,
                     stemConvDimension,
                     stemConvDimension
                 ]
             ),
             shape: [
-                128,
+                NSNumber(value: arch.channels),
                 NSNumber(value: Self.inputPlanes),
                 NSNumber(value: stemConvDimension),
                 NSNumber(
@@ -640,7 +649,7 @@ final class ChessNetwork: @unchecked Sendable {
             name: "stem_conv"
         )
         x = Self.batchNorm(
-            graph: g, input: x, channels: 128, name: "stem_bn", bnMode: bnMode,
+            graph: g, input: x, channels: arch.channels, name: "stem_bn", bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -654,9 +663,10 @@ final class ChessNetwork: @unchecked Sendable {
 
         // --- Tower: pre-activation residual blocks (count = `numBlocks`) ---
 
-        for i in 0..<Self.numBlocks {
+        for i in 0..<arch.numBlocks {
             x = Self.residualBlock(
                 graph: g,
+                arch: arch,
                 input: x,
                 descriptor: blockConvDescriptor,
                 convolutionDimension: blockConvDimension,
@@ -679,7 +689,7 @@ final class ChessNetwork: @unchecked Sendable {
         // here (the canonical v2 "post-activation at the very end") so the
         // policy/value heads receive a clean, conditioned feature map.
         x = Self.batchNorm(
-            graph: g, input: x, channels: 128, name: "tower_final_bn", bnMode: bnMode,
+            graph: g, input: x, channels: arch.channels, name: "tower_final_bn", bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -692,7 +702,7 @@ final class ChessNetwork: @unchecked Sendable {
         // --- Policy head ---
 
         let policy = Self.policyHead(
-            graph: g, input: x, descriptor: conv1x1, bnMode: bnMode,
+            graph: g, arch: arch, input: x, descriptor: conv1x1, bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -709,7 +719,7 @@ final class ChessNetwork: @unchecked Sendable {
         // --- Value head ---
 
         let valueHeadOut = Self.valueHead(
-            graph: g, input: x, descriptor: conv1x1, bnMode: bnMode,
+            graph: g, arch: arch, input: x, descriptor: conv1x1, bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -1708,7 +1718,8 @@ final class ChessNetwork: @unchecked Sendable {
     /// but only odd kernels give an integer symmetric pad (an even kernel
     /// needs `kernel − 1` total padding split unevenly, which this asserts
     /// against rather than silently mis-pad).
-    private static func makeTowerConvDescriptor() throws -> MPSGraphConvolution2DOpDescriptor {
+    private static func makeTowerConvDescriptor(arch: NetworkArchitecture) throws -> MPSGraphConvolution2DOpDescriptor {
+        let towerConvKernelSize = arch.towerConvKernelSize
         precondition(
             towerConvKernelSize % 2 == 1,
             "towerConvKernelSize must be odd for symmetric same-padding (got \(towerConvKernelSize))"
@@ -1917,6 +1928,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// excluded from weight decay. Reduction ratio = `seReductionRatio`.
     private static func residualBlock(
         graph: MPSGraph,
+        arch: NetworkArchitecture,
         input: MPSGraphTensor,
         descriptor: MPSGraphConvolution2DOpDescriptor,
         convolutionDimension: Int,
@@ -1930,11 +1942,14 @@ final class ChessNetwork: @unchecked Sendable {
         batchVars: inout [MPSGraphTensor]
     ) -> MPSGraphTensor {
         let prefix = "block\(blockIndex)"
+        let channels = arch.channels
+        let seReduced = channels / arch.seReductionRatio
+        let seExpand = 2 * channels
 
         // --- Pre-activation residual function F(input) ---
         // BN1 → ReLU → conv1  (conv bias-free, He-init)
         var h = batchNorm(
-            graph: graph, input: input, channels: 128, name: "\(prefix)_bn1", bnMode: bnMode,
+            graph: graph, input: input, channels: channels, name: "\(prefix)_bn1", bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -1946,15 +1961,15 @@ final class ChessNetwork: @unchecked Sendable {
         let conv1W = graph.variable(
             with: heInitDataConvOIHW(
                 shape: [
-                    128,
-                    128,
+                    channels,
+                    channels,
                     convolutionDimension,
                     convolutionDimension
                 ]
             ),
             shape: [
-                128,
-                128,
+                NSNumber(value: channels),
+                NSNumber(value: channels),
                 NSNumber(value: convolutionDimension),
                 NSNumber(value: convolutionDimension)
             ],
@@ -1966,7 +1981,7 @@ final class ChessNetwork: @unchecked Sendable {
 
         // BN2 → ReLU → conv2
         h = batchNorm(
-            graph: graph, input: h, channels: 128, name: "\(prefix)_bn2", bnMode: bnMode,
+            graph: graph, input: h, channels: channels, name: "\(prefix)_bn2", bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -1978,15 +1993,15 @@ final class ChessNetwork: @unchecked Sendable {
         let conv2W = graph.variable(
             with: heInitDataConvOIHW(
                 shape: [
-                    128,
-                    128,
+                    channels,
+                    channels,
                     convolutionDimension,
                     convolutionDimension
                 ]
             ),
             shape: [
-                128,
-                128,
+                NSNumber(value: channels),
+                NSNumber(value: channels),
                 NSNumber(value: convolutionDimension),
                 NSNumber(value: convolutionDimension)
             ],
@@ -2002,19 +2017,18 @@ final class ChessNetwork: @unchecked Sendable {
         // Squeeze: global average pool over [H, W]; graph.mean keeps the
         // reduced dims, so [B, 128, 8, 8] → [B, 128, 1, 1].
         var s = graph.mean(of: z, axes: [2, 3], name: "\(prefix)_se_squeeze")
-        s = graph.reshape(s, shape: [-1, 128], name: "\(prefix)_se_squeeze_flatten")
+        s = graph.reshape(s, shape: [-1, NSNumber(value: channels)], name: "\(prefix)_se_squeeze_flatten")
 
-        // Excite FC1: 128 → (128 / r), He-init, + ReLU.
-        let reduced = 128 / Self.seReductionRatio
+        // Excite FC1: channels → (channels / r), He-init, + ReLU.
         let seFC1W = graph.variable(
-            with: heInitDataFCInOut(shape: [128, reduced]),
-            shape: [128, NSNumber(value: reduced)],
+            with: heInitDataFCInOut(shape: [channels, seReduced]),
+            shape: [NSNumber(value: channels), NSNumber(value: seReduced)],
             dataType: Self.dataType,
             name: "\(prefix)_se_fc1_weights"
         )
         let seFC1Bias = graph.variable(
-            with: zerosData(count: reduced),
-            shape: [1, NSNumber(value: reduced)],
+            with: zerosData(count: seReduced),
+            shape: [1, NSNumber(value: seReduced)],
             dataType: Self.dataType,
             name: "\(prefix)_se_fc1_bias"
         )
@@ -2024,18 +2038,18 @@ final class ChessNetwork: @unchecked Sendable {
         s = graph.addition(s, seFC1Bias, name: "\(prefix)_se_fc1_bias_add")
         s = graph.reLU(with: s, name: "\(prefix)_se_fc1_relu")
 
-        // Excite FC2: (128 / r) → 2·128 = 256, Glorot-init (feeds the
+        // Excite FC2: (channels / r) → 2·channels, Glorot-init (feeds the
         // sigmoid gate). Output splits into a `gammas` (scale) half and a
         // `betas` (bias) half.
         let seFC2W = graph.variable(
-            with: glorotInitDataFCInOut(shape: [reduced, 256]),
-            shape: [NSNumber(value: reduced), 256],
+            with: glorotInitDataFCInOut(shape: [seReduced, seExpand]),
+            shape: [NSNumber(value: seReduced), NSNumber(value: seExpand)],
             dataType: Self.dataType,
             name: "\(prefix)_se_fc2_weights"
         )
         let seFC2Bias = graph.variable(
-            with: zerosData(count: 256),
-            shape: [1, 256],
+            with: zerosData(count: seExpand),
+            shape: [1, NSNumber(value: seExpand)],
             dataType: Self.dataType,
             name: "\(prefix)_se_fc2_bias"
         )
@@ -2044,14 +2058,14 @@ final class ChessNetwork: @unchecked Sendable {
         s = graph.matrixMultiplication(primary: s, secondary: seFC2W, name: "\(prefix)_se_fc2")
         s = graph.addition(s, seFC2Bias, name: "\(prefix)_se_fc2_bias_add")
 
-        // Split [B, 256] → gammas [B, 128] (scale) and betas [B, 128] (bias).
-        let gammas = graph.sliceTensor(s, dimension: 1, start: 0, length: 128, name: "\(prefix)_se_gammas")
-        let betas = graph.sliceTensor(s, dimension: 1, start: 128, length: 128, name: "\(prefix)_se_betas")
+        // Split [B, 2·channels] → gammas [B, channels] (scale) and betas [B, channels] (bias).
+        let gammas = graph.sliceTensor(s, dimension: 1, start: 0, length: channels, name: "\(prefix)_se_gammas")
+        let betas = graph.sliceTensor(s, dimension: 1, start: channels, length: channels, name: "\(prefix)_se_betas")
 
         // Sigmoid on the scale half only; the bias half is linear.
         var scale = graph.sigmoid(with: gammas, name: "\(prefix)_se_gate")
-        scale = graph.reshape(scale, shape: [-1, 128, 1, 1], name: "\(prefix)_se_scale_reshape")
-        let bias = graph.reshape(betas, shape: [-1, 128, 1, 1], name: "\(prefix)_se_bias_reshape")
+        scale = graph.reshape(scale, shape: [-1, NSNumber(value: channels), 1, 1], name: "\(prefix)_se_scale_reshape")
+        let bias = graph.reshape(betas, shape: [-1, NSNumber(value: channels), 1, 1], name: "\(prefix)_se_bias_reshape")
 
         // SE_out = sigmoid(gammas)·z + betas. The [B, 128, 1, 1] tensors
         // broadcast across the H=8, W=8 axes of z = [B, 128, 8, 8].
@@ -2061,7 +2075,7 @@ final class ChessNetwork: @unchecked Sendable {
 
         // ReZero / SkipInit branch scalar α (init 1/√numBlocks), trainable,
         // no weight decay.
-        let alphaInit: Float = 1.0 / Float(Self.numBlocks).squareRoot()
+        let alphaInit: Float = 1.0 / Float(arch.numBlocks).squareRoot()
         let alpha = graph.variable(
             with: makeWeightData([alphaInit]),
             shape: [1],
@@ -2098,6 +2112,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// the intermediate one — that is what `policyHeadFinalWeights` feeds.
     private static func policyHead(
         graph: MPSGraph,
+        arch: NetworkArchitecture,
         input: MPSGraphTensor,
         descriptor: MPSGraphConvolution2DOpDescriptor,
         bnMode: BNMode,
@@ -2108,12 +2123,13 @@ final class ChessNetwork: @unchecked Sendable {
         batchMeans: inout [MPSGraphTensor],
         batchVars: inout [MPSGraphTensor]
     ) -> (output: MPSGraphTensor, finalWeights: MPSGraphTensor) {
-        // Intermediate 1×1 conv (128 → 128) → BN → ReLU. No bias on the
-        // conv — the BN's beta subsumes it (same convention as the value
+        let channels = arch.channels
+        // Intermediate 1×1 conv (channels → channels) → BN → ReLU. No bias on
+        // the conv — the BN's beta subsumes it (same convention as the value
         // head's conv).
         let preConvW = graph.variable(
-            with: heInitDataConvOIHW(shape: [128, 128, 1, 1]),
-            shape: [128, 128, 1, 1],
+            with: heInitDataConvOIHW(shape: [channels, channels, 1, 1]),
+            shape: [NSNumber(value: channels), NSNumber(value: channels), 1, 1],
             dataType: Self.dataType,
             name: "policy_pre_conv_weights"
         )
@@ -2122,7 +2138,7 @@ final class ChessNetwork: @unchecked Sendable {
             input, weights: preConvW, descriptor: descriptor, name: "policy_pre_conv"
         )
         x = batchNorm(
-            graph: graph, input: x, channels: 128, name: "policy_pre_bn", bnMode: bnMode,
+            graph: graph, input: x, channels: channels, name: "policy_pre_bn", bnMode: bnMode,
             trainables: &trainables,
             shouldDecay: &shouldDecay,
             runningStats: &runningStats,
@@ -2135,8 +2151,8 @@ final class ChessNetwork: @unchecked Sendable {
         // Final 1×1 conv: 128 channels → policyChannels (76). Emits raw
         // logits — bias retained, no BN/activation after.
         let convW = graph.variable(
-            with: heInitDataConvOIHW(shape: [Self.policyChannels, 128, 1, 1]),
-            shape: [NSNumber(value: Self.policyChannels), 128, 1, 1],
+            with: heInitDataConvOIHW(shape: [Self.policyChannels, channels, 1, 1]),
+            shape: [NSNumber(value: Self.policyChannels), NSNumber(value: channels), 1, 1],
             dataType: Self.dataType,
             name: "policy_conv_weights"
         )
@@ -2173,6 +2189,7 @@ final class ChessNetwork: @unchecked Sendable {
     /// W/D/L diagnostics in `ChessTrainer`.
     private static func valueHead(
         graph: MPSGraph,
+        arch: NetworkArchitecture,
         input: MPSGraphTensor,
         descriptor: MPSGraphConvolution2DOpDescriptor,
         bnMode: BNMode,
@@ -2185,10 +2202,10 @@ final class ChessNetwork: @unchecked Sendable {
     ) -> (scalar: MPSGraphTensor, logits: MPSGraphTensor, probs: MPSGraphTensor) {
         // 1×1 conv: compress the `channels`-wide trunk to
         // `valueHeadConvChannels` learned scoring maps over the 64 squares.
-        let convChannels = Self.valueHeadConvChannels
+        let convChannels = arch.valueHeadConvChannels
         let convW = graph.variable(
-            with: heInitDataConvOIHW(shape: [convChannels, Self.channels, 1, 1]),
-            shape: [NSNumber(value: convChannels), NSNumber(value: Self.channels), 1, 1],
+            with: heInitDataConvOIHW(shape: [convChannels, arch.channels, 1, 1]),
+            shape: [NSNumber(value: convChannels), NSNumber(value: arch.channels), 1, 1],
             dataType: Self.dataType,
             name: "value_conv_weights"
         )
@@ -2213,7 +2230,7 @@ final class ChessNetwork: @unchecked Sendable {
         x = graph.reshape(x, shape: [-1, NSNumber(value: flattenSize)], name: "value_flatten")
 
         // FC1: flattenSize -> valueHeadHiddenUnits
-        let hidden = Self.valueHeadHiddenUnits
+        let hidden = arch.valueHeadHiddenUnits
         let fc1W = graph.variable(
             with: heInitDataFCInOut(shape: [flattenSize, hidden]),
             shape: [NSNumber(value: flattenSize), NSNumber(value: hidden)],

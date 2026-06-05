@@ -115,4 +115,26 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
             XCTAssertEqual(a.map(\.bitPattern), b.map(\.bitPattern))
         }
     }
+
+    /// Builds a NON-default architecture (half-width, 64 channels) and runs a
+    /// forward pass. This is the oracle for the static->instance refactor: any
+    /// leftover hardcoded channel literal (128) would mis-shape a layer and
+    /// crash the build or the forward pass on a 64-channel net.
+    func testNonDefaultArchitectureBuildsAndEvaluates() async throws {
+        var arch = NetworkArchitecture.current
+        arch.channels = 64
+        try arch.validate()
+
+        let net = try ChessMPSNetwork(.randomWeights, arch: arch)
+        XCTAssertEqual(net.network.arch.channels, 64)
+
+        let weights = try await net.network.exportWeights()
+        XCTAssertEqual(weights.count, arch.weightTensorPlan().count)
+
+        let board = BoardEncoder.encode(.starting)
+        try await net.evaluate(board: board) { policyBuf, value in
+            XCTAssertEqual(policyBuf.count, arch.policySize)
+            XCTAssertTrue(value.isFinite)
+        }
+    }
 }

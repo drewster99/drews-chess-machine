@@ -79,12 +79,12 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// which is silently broken until `loadWeights` is called — is
     /// the kind of footgun this engine has spent debugging effort on
     /// before.
-    init(_ mode: NetworkInitMode) throws {
+    init(_ mode: NetworkInitMode, arch: NetworkArchitecture = .current) throws {
         let start = CFAbsoluteTimeGetCurrent()
 
         switch mode {
         case .randomWeights:
-            let net = try ChessNetwork()
+            let net = try ChessNetwork(arch: arch)
             net.commandQueue.label = "ChessMPSNetwork.net(init)"
             try Self.calibrateBNRunningStats(into: net)
             network = net
@@ -159,7 +159,7 @@ final class ChessMPSNetwork: @unchecked Sendable {
         // so the batch stats reflect the inference network's actual
         // weight realization (different random seed → different
         // activation distribution → different needed running stats).
-        let trainingNet = try ChessNetwork(bnMode: .training)
+        let trainingNet = try ChessNetwork(arch: inference.arch, bnMode: .training)
         trainingNet.commandQueue.label = "calibrateBNRunningStats trainingNet"
         let boards = warmupBatch()
 

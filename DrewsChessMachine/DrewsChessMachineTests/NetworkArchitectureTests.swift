@@ -162,4 +162,26 @@ final class NetworkArchitectureTests: XCTestCase {
         XCTAssertGreaterThan(base.parameterCount, attenuate.parameterCount)
         XCTAssertGreaterThan(attenuate.parameterCount, noSE.parameterCount)
     }
+
+    // MARK: guard against static-constant / preset drift
+
+    /// ChessNetwork keeps its static arch constants as the *default* arch for
+    /// external callers; this asserts they stay in lockstep with the
+    /// NetworkArchitecture.current preset (the single source of truth).
+    func testStaticConstantsMatchCurrentPreset() {
+        let cur = NetworkArchitecture.current
+        XCTAssertEqual(ChessNetwork.channels, cur.channels)
+        XCTAssertEqual(ChessNetwork.numBlocks, cur.numBlocks)
+        XCTAssertEqual(ChessNetwork.towerConvKernelSize, cur.towerConvKernelSize)
+        XCTAssertEqual(ChessNetwork.inputPlanes, cur.inputPlanes)
+        XCTAssertEqual(ChessNetwork.boardSize, cur.boardSize)
+        XCTAssertEqual(ChessNetwork.policyChannels, cur.policyChannels)
+        XCTAssertEqual(ChessNetwork.policySize, cur.policySize)
+        XCTAssertEqual(ChessNetwork.valueHeadClasses, cur.valueHeadClasses)
+        XCTAssertEqual(ChessNetwork.seReductionRatio, cur.seReductionRatio)
+        XCTAssertEqual(ChessNetwork.valueHeadConvChannels, cur.valueHeadConvChannels)
+        XCTAssertEqual(ChessNetwork.valueHeadHiddenUnits, cur.valueHeadHiddenUnits)
+        XCTAssertEqual(ChessNetwork.architectureVersion, cur.architectureVersion)
+        XCTAssertEqual(ChessNetwork.parameterCount, cur.parameterCount)
+    }
 }
