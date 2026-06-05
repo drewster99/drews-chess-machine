@@ -190,4 +190,63 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         XCTAssertEqual(viaLegacy.modelID, id)
         XCTAssertEqual(viaLegacy.metadata, meta)
     }
+
+    /// Session-level cross-format migration: stage a LEGACY .dcmmodel session
+    /// (champion + trainer-with-velocity) on disk, load it, re-save via the
+    /// real saveSession (which now writes safetensors), reload, and confirm the
+    /// champion AND trainer (incl. optimizer velocity) survive bit-exact.
+    func testLegacySessionLoadsAndReSavesAsSafetensorsBitExact() async throws {
+        let net = try ChessMPSNetwork(.randomWeights)
+        let base = try await net.network.exportWeights()
+        let trainables = NetworkArchitecture.current.weightTensorPlan().filter { $0.kind != .bnRunningStat }
+        let velocity: [[Float]] = trainables.enumerated().map { (j, spec) in
+            (0..<spec.elementCount).map { Float(820000 + j * 17 + $0) }
+        }
+        let trainerWeights = base + velocity
+
+        let cMeta = ModelCheckpointMetadata(creator: "manual", trainingStep: 99, parentModelID: "", notes: "champ")
+        let tMeta = ModelCheckpointMetadata(creator: "manual", trainingStep: 99, parentModelID: "20260420-1-abcd", notes: "trainer")
+        let state = try minimalState(sessionID: "20260420-1-abcd", championID: "20260420-1-abcd", trainerID: "20260420-2-efgh")
+
+        // --- Stage a LEGACY .dcmmodel session in a temp dir ---
+        let legacyDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy_session_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacyDir, withIntermediateDirectories: true)
+        defer { do { try FileManager.default.removeItem(at: legacyDir) } catch {} }
+
+        try ModelCheckpointFile(modelID: "20260420-1-abcd", createdAtUnix: 1_700_000_000,
+                                metadata: cMeta, weights: base).encode()
+            .write(to: legacyDir.appendingPathComponent(SessionCheckpointLayout.legacyChampionFilename))
+        try ModelCheckpointFile(modelID: "20260420-2-efgh", createdAtUnix: 1_700_000_001,
+                                metadata: tMeta, weights: trainerWeights).encode()
+            .write(to: legacyDir.appendingPathComponent(SessionCheckpointLayout.legacyTrainerFilename))
+        try state.encode().write(to: SessionCheckpointLayout.stateURL(in: legacyDir))
+
+        // --- Load the legacy session ---
+        let legacyLoaded = try CheckpointManager.loadSession(at: legacyDir)
+        assertBitEqual(legacyLoaded.championFile.weights, base, "legacy session champion")
+        assertBitEqual(legacyLoaded.trainerFile.weights, trainerWeights, "legacy session trainer+velocity")
+
+        // --- Re-save via saveSession (writes safetensors) and reload ---
+        let newDir = try await CheckpointManager.saveSession(
+            championWeights: legacyLoaded.championFile.weights,
+            championID: legacyLoaded.championFile.modelID,
+            championMetadata: legacyLoaded.championFile.metadata,
+            championCreatedAtUnix: legacyLoaded.championFile.createdAtUnix,
+            trainerWeights: legacyLoaded.trainerFile.weights,
+            trainerID: legacyLoaded.trainerFile.modelID,
+            trainerMetadata: legacyLoaded.trainerFile.metadata,
+            trainerCreatedAtUnix: legacyLoaded.trainerFile.createdAtUnix,
+            state: legacyLoaded.state, trigger: "unittest-migrate"
+        )
+        defer { do { try FileManager.default.removeItem(at: newDir) } catch {} }
+
+        // Inner files are now safetensors.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: SessionCheckpointLayout.championURL(in: newDir).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: SessionCheckpointLayout.trainerURL(in: newDir).path))
+
+        let migrated = try CheckpointManager.loadSession(at: newDir)
+        assertBitEqual(migrated.championFile.weights, base, "migrated champion")
+        assertBitEqual(migrated.trainerFile.weights, trainerWeights, "migrated trainer+velocity")
+    }
 }
