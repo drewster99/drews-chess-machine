@@ -137,4 +137,57 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
             XCTAssertTrue(value.isFinite)
         }
     }
+
+    private func assertBitEqual(_ a: [[Float]], _ b: [[Float]], _ label: String) {
+        XCTAssertEqual(a.count, b.count, "\(label): tensor count")
+        for (i, pair) in zip(a, b).enumerated() {
+            XCTAssertEqual(pair.0.map(\.bitPattern), pair.1.map(\.bitPattern), "\(label): tensor \(i)")
+        }
+    }
+
+    /// Cross-format conversion both directions, bit-exact:
+    ///   legacy .dcmmodel -> safetensors -> reload, and the reverse.
+    /// Validates the "lazy convert on re-save" promise — a model can move
+    /// between the old and new containers without losing a bit.
+    func testCrossFormatRoundTripBothDirections() async throws {
+        let net = try ChessMPSNetwork(.randomWeights)
+        let w0 = try await net.network.exportWeights()
+        let meta = ModelCheckpointMetadata(creator: "manual", trainingStep: 7,
+                                           parentModelID: "", notes: "xfmt")
+        let id = "unittest-xfmt"
+        let created: Int64 = 1_780_000_000
+
+        // Direction 1: legacy .dcmmodel -> decode -> re-encode safetensors -> decode.
+        let legacyData = try ModelCheckpointFile(
+            modelID: id, createdAtUnix: created, metadata: meta, weights: w0
+        ).encode()
+        let fromLegacy = try CheckpointManager.decodeAnyModelFile(legacyData)
+        assertBitEqual(fromLegacy.weights, w0, "legacy decode")
+
+        let stData = try SafetensorsModelIO.encode(
+            modelID: fromLegacy.modelID, createdAtUnix: fromLegacy.createdAtUnix,
+            metadata: fromLegacy.metadata, weights: fromLegacy.weights,
+            architecture: .current, includesVelocity: false
+        )
+        let viaSafetensors = try CheckpointManager.decodeAnyModelFile(stData)
+        assertBitEqual(viaSafetensors.weights, w0, "legacy->safetensors->reload")
+        XCTAssertEqual(viaSafetensors.modelID, id)
+        XCTAssertEqual(viaSafetensors.metadata, meta)
+        XCTAssertEqual(viaSafetensors.createdAtUnix, created)
+
+        // Direction 2: safetensors -> decode -> re-encode legacy .dcmmodel -> decode.
+        let stData2 = try SafetensorsModelIO.encode(
+            modelID: id, createdAtUnix: created, metadata: meta, weights: w0,
+            architecture: .current, includesVelocity: false
+        )
+        let fromST = try CheckpointManager.decodeAnyModelFile(stData2)
+        let legacyData2 = try ModelCheckpointFile(
+            modelID: fromST.modelID, createdAtUnix: fromST.createdAtUnix,
+            metadata: fromST.metadata, weights: fromST.weights
+        ).encode()
+        let viaLegacy = try CheckpointManager.decodeAnyModelFile(legacyData2)
+        assertBitEqual(viaLegacy.weights, w0, "safetensors->legacy->reload")
+        XCTAssertEqual(viaLegacy.modelID, id)
+        XCTAssertEqual(viaLegacy.metadata, meta)
+    }
 }
