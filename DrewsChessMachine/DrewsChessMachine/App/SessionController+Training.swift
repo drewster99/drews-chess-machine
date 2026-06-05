@@ -885,7 +885,11 @@ extension SessionController {
             // into the detached build tasks.
             let champArch = network.network.arch
 
-            let needsCandidateBuild = await MainActor.run { candidateInferenceNetwork == nil }
+            // Rebuild if absent OR if a previously-built net is for a different
+            // architecture (champion was rebuilt with a new arch this launch) —
+            // these persist for the app's life and receive champion/trainer
+            // weight snapshots, so a stale-arch net would shape-mismatch.
+            let needsCandidateBuild = await MainActor.run { candidateInferenceNetwork == nil || candidateInferenceNetwork?.network.arch != champArch }
             if needsCandidateBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
@@ -905,7 +909,7 @@ extension SessionController {
                 }
             }
 
-            let needsProbeBuild = await MainActor.run { probeInferenceNetwork == nil }
+            let needsProbeBuild = await MainActor.run { probeInferenceNetwork == nil || probeInferenceNetwork?.network.arch != champArch }
             if needsProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
@@ -926,7 +930,7 @@ extension SessionController {
                 }
             }
 
-            let needsArenaChampionBuild = await MainActor.run { arenaChampionNetwork == nil }
+            let needsArenaChampionBuild = await MainActor.run { arenaChampionNetwork == nil || arenaChampionNetwork?.network.arch != champArch }
             if needsArenaChampionBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
@@ -954,7 +958,7 @@ extension SessionController {
             // `fireCandidateProbeIfNeeded`, which both snapshot into
             // `probeInferenceNetwork`. Cost: one extra network instance
             // (~2.4M params worth of MPSGraph state).
-            let needsLichessProbeBuild = await MainActor.run { lichessProbeInferenceNetwork == nil }
+            let needsLichessProbeBuild = await MainActor.run { lichessProbeInferenceNetwork == nil || lichessProbeInferenceNetwork?.network.arch != champArch }
             if needsLichessProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {
@@ -981,7 +985,7 @@ extension SessionController {
             // weight snapshots. With its own network, neither consumer
             // can overwrite the other mid-cycle. Memory cost is the
             // same ~2.4M-param network instance.
-            let needsTacticalProbeBuild = await MainActor.run { tacticalProbeInferenceNetwork == nil }
+            let needsTacticalProbeBuild = await MainActor.run { tacticalProbeInferenceNetwork == nil || tacticalProbeInferenceNetwork?.network.arch != champArch }
             if needsTacticalProbeBuild {
                 do {
                     let built = try await Task.detached(priority: .userInitiated) {

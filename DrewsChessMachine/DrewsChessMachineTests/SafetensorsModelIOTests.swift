@@ -127,6 +127,23 @@ final class SafetensorsModelIOTests: XCTestCase {
         }
     }
 
+    func testDecodeRejectsArchHashInconsistentWithEmbeddedConfig() throws {
+        // A file whose stored arch_hash disagrees with its embedded architecture
+        // (hand-edited / tampered) must be rejected up front, not surface later
+        // as a weight-shape error. The guard fires before weight reconstruction,
+        // so empty tensors suffice.
+        let archJSON = String(decoding: try JSONEncoder().encode(NetworkArchitecture.current), as: UTF8.self)
+        let bytes = try SafetensorsFile.encode(
+            tensors: [],
+            metadata: ["architecture": archJSON, "arch_hash": "0xdeadbeef", "dcm_format_version": "3"]
+        )
+        XCTAssertThrowsError(try SafetensorsModelIO.decode(bytes)) { error in
+            guard case SafetensorsModelIO.IOError.archHashMismatch = error else {
+                return XCTFail("expected .archHashMismatch, got \(error)")
+            }
+        }
+    }
+
     func testWrongWeightCountThrows() {
         let arch = NetworkArchitecture.current
         XCTAssertThrowsError(try SafetensorsModelIO.encode(

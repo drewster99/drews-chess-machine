@@ -175,6 +175,37 @@ final class CheckpointManagerSafetensorsTests: XCTestCase {
         XCTAssertNotEqual(decoded.architecture, .current)
     }
 
+    /// Non-default architecture through the full session save/load path
+    /// (champion + trainer-with-velocity), bit-exact, with the correct embedded
+    /// arch — the saveSession analog of the trainer-fork test.
+    func testNonDefaultArchSessionRoundTrips() async throws {
+        let arch = NetworkArchitecture.preset(.v4_8block_3x3)
+        try arch.validate()
+        let champion = try ChessMPSNetwork(.randomWeights, arch: arch)
+        let base = try await champion.network.exportWeights()
+        let trainables = arch.weightTensorPlan().filter { $0.kind != .bnRunningStat }
+        let velocity: [[Float]] = trainables.enumerated().map { (j, spec) in
+            (0..<spec.elementCount).map { Float(640000 + j * 7 + $0) }
+        }
+        let trainerWeights = base + velocity
+
+        let meta = ModelCheckpointMetadata(creator: "manual", trainingStep: 1, parentModelID: "", notes: "nd-session")
+        let state = try minimalState(sessionID: "20260420-9-nd99", championID: "20260420-9-nd99", trainerID: "20260420-9-ndtt")
+
+        let dir = try await CheckpointManager.saveSession(
+            championWeights: base, championID: "20260420-9-nd99",
+            championMetadata: meta, championCreatedAtUnix: 1_780_000_000,
+            trainerWeights: trainerWeights, trainerID: "20260420-9-ndtt",
+            trainerMetadata: meta, trainerCreatedAtUnix: 1_780_000_001,
+            state: state, architecture: arch, trigger: "unittest-nd"
+        )
+        defer { do { try FileManager.default.removeItem(at: dir) } catch {} }
+
+        let loaded = try CheckpointManager.loadSession(at: dir)
+        assertBitEqual(loaded.championFile.weights, base, "nd session champion")
+        assertBitEqual(loaded.trainerFile.weights, trainerWeights, "nd session trainer+velocity")
+    }
+
     private func assertBitEqual(_ a: [[Float]], _ b: [[Float]], _ label: String) {
         XCTAssertEqual(a.count, b.count, "\(label): tensor count")
         for (i, pair) in zip(a, b).enumerated() {

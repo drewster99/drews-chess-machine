@@ -21,6 +21,7 @@ enum SafetensorsModelIO {
         case missingTensor(String)
         case missingArchitecture
         case badArchitectureJSON(String)
+        case archHashMismatch(stored: String, computed: String)
 
         var description: String {
             switch self {
@@ -28,6 +29,7 @@ enum SafetensorsModelIO {
             case .missingTensor(let name): return "safetensors model: missing tensor '\(name)'"
             case .missingArchitecture: return "safetensors model: no architecture in __metadata__"
             case .badArchitectureJSON(let d): return "safetensors model: architecture JSON failed to decode (\(d))"
+            case .archHashMismatch(let stored, let computed): return "safetensors model: arch_hash \(stored) doesn't match embedded architecture (\(computed)) — file is inconsistent/tampered"
             }
         }
     }
@@ -127,6 +129,13 @@ enum SafetensorsModelIO {
             architecture = try JSONDecoder().decode(NetworkArchitecture.self, from: Data(archJSON.utf8))
         } catch {
             throw IOError.badArchitectureJSON(error.localizedDescription)
+        }
+
+        // The stored arch_hash must agree with the embedded architecture, so a
+        // hand-edited / mismatched config is caught here rather than surfacing
+        // later as a confusing weight-shape error.
+        if let storedHash = md[Key.archHash], storedHash != architecture.archHashHex {
+            throw IOError.archHashMismatch(stored: storedHash, computed: architecture.archHashHex)
         }
 
         let hasVelocity = tensors.contains { $0.name.hasPrefix("opt.") && $0.name.hasSuffix(".velocity") }
