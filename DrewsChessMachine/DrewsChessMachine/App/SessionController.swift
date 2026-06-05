@@ -973,8 +973,13 @@ final class SessionController {
     /// disable conditions for keyboard-shortcut / URL-scheme invocations under
     /// a race. On success, mints a fresh `ModelID`, wires the new network +
     /// runner, fills `networkStatus`, and clears the last-saved-at marker.
+    /// Architecture the next Build uses. Defaults to the current champion
+    /// architecture; set from the architecture config (architecture.json /
+    /// the build UI) to construct a different topology.
+    var buildArchitecture: NetworkArchitecture = .current
+
     func buildNetwork() {
-        SessionLogger.shared.log("[BUTTON] Build Network")
+        SessionLogger.shared.log("[BUTTON] Build Network (\(buildArchitecture.archHashHex))")
         if isBusyProvider() {
             onRefuseMenuAction(busyReasonProvider())
             return
@@ -990,9 +995,15 @@ final class SessionController {
         onDropTrainer()
         onClearTrainingDisplay()
 
+        // architecture.json (if present) drives the build, re-read each time so
+        // an edit takes effect on the next Build without relaunching.
+        if let fileArch = ArchitectureConfig.loadDefaultIfPresent() {
+            buildArchitecture = fileArch
+        }
+        let arch = buildArchitecture
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                Self.performBuild()
+                Self.performBuild(arch: arch)
             }.value
 
             switch result {
@@ -1005,8 +1016,7 @@ final class SessionController {
                 networkStatus = """
                     Network built in \(String(format: "%.1f", net.buildTimeMs)) ms
                     ID: \(idStr)
-                    Architecture: \(ChessNetwork.inputPlanes)x8x8 -> stem(128)
-                      -> 8 res+SE blocks -> policy(\(ChessNetwork.policySize)) + value(3 W/D/L)
+                    Architecture: \(net.network.arch.architectureSummary)
                     """
                 checkpoint?.lastSavedAt = nil
                 checkpoint?.lastResumedAt = nil
@@ -1032,8 +1042,9 @@ final class SessionController {
         onDropTrainer()
         onClearTrainingDisplay()
         SessionLogger.shared.log("[BUILD] Auto-build before load")
+        let arch = buildArchitecture
         let result = await Task.detached(priority: .userInitiated) {
-            Self.performBuild()
+            Self.performBuild(arch: arch)
         }.value
         switch result {
         case .success(let net):
@@ -1055,7 +1066,7 @@ final class SessionController {
     /// The actual network construction. Runs on a detached `.userInitiated`
     /// task at the call sites (MPSGraph build is long synchronous work), so
     /// this is `nonisolated`.
-    nonisolated static func performBuild() -> Result<ChessMPSNetwork, Error> {
-        Result { try ChessMPSNetwork(.randomWeights) }
+    nonisolated static func performBuild(arch: NetworkArchitecture = .current) -> Result<ChessMPSNetwork, Error> {
+        Result { try ChessMPSNetwork(.randomWeights, arch: arch) }
     }
 }
