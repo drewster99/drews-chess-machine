@@ -194,10 +194,13 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
         guard valueHeadHiddenUnits > 0 else {
             throw NetworkArchitectureError.nonPositive(field: "valueHeadHiddenUnits", value: valueHeadHiddenUnits)
         }
+        // Unconditional: the residual block computes `channels / seReductionRatio`
+        // regardless of SE style, so a zero ratio would divide-by-zero at build
+        // even when se == .none.
+        guard seReductionRatio > 0 else {
+            throw NetworkArchitectureError.nonPositive(field: "seReductionRatio", value: seReductionRatio)
+        }
         if se != .none {
-            guard seReductionRatio > 0 else {
-                throw NetworkArchitectureError.nonPositive(field: "seReductionRatio", value: seReductionRatio)
-            }
             guard channels % seReductionRatio == 0 else {
                 throw NetworkArchitectureError.channelsNotDivisibleByReduction(channels: channels, reduction: seReductionRatio)
             }

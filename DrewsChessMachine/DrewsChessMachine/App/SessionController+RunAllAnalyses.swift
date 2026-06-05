@@ -155,26 +155,28 @@ extension SessionController {
     /// Used by both `Run All Analyses` (one snapshot shared across the
     /// pass) and the three single-analysis Debug hooks.
     func currentAnalysisExportMetadata() -> AnalysisExportMetadata {
-        let archHashHex = String(format: "0x%08x", ModelCheckpointFile.currentArchHash)
+        // Describe the ACTUAL champion architecture, not the build's static
+        // defaults — they diverge once a non-default net is built.
+        let arch = network?.network.arch ?? .current
         let notes = ChessNetwork.architectureNotes
         let architecture = AnalysisExportMetadata.Architecture(
-            archHash: archHashHex,
-            architectureVersion: ChessNetwork.architectureVersion,
-            parameterCount: ChessNetwork.parameterCount,
-            numBlocks: ChessNetwork.numBlocks,
-            channels: ChessNetwork.channels,
-            convKernelSize: ChessNetwork.towerConvKernelSize,
-            inputPlanes: ChessNetwork.inputPlanes,
-            boardSize: ChessNetwork.boardSize,
-            policyChannels: ChessNetwork.policyChannels,
-            policySize: ChessNetwork.policySize,
-            seReductionRatio: ChessNetwork.seReductionRatio,
+            archHash: arch.archHashHex,
+            architectureVersion: arch.architectureVersion,
+            parameterCount: arch.parameterCount,
+            numBlocks: arch.numBlocks,
+            channels: arch.channels,
+            convKernelSize: arch.towerConvKernelSize,
+            inputPlanes: arch.inputPlanes,
+            boardSize: arch.boardSize,
+            policyChannels: arch.policyChannels,
+            policySize: arch.policySize,
+            seReductionRatio: arch.seReductionRatio,
             valueHead: AnalysisExportMetadata.Architecture.ValueHead(
-                classes: ChessNetwork.valueHeadClasses,
-                convChannels: ChessNetwork.valueHeadConvChannels,
-                hiddenUnits: ChessNetwork.valueHeadHiddenUnits
+                classes: arch.valueHeadClasses,
+                convChannels: arch.valueHeadConvChannels,
+                hiddenUnits: arch.valueHeadHiddenUnits
             ),
-            summary: ChessNetwork.architectureSummary,
+            summary: arch.architectureSummary,
             notes: notes.isEmpty ? nil : notes
         )
 

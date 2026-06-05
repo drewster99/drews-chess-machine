@@ -285,21 +285,11 @@ final class ChessNetwork: @unchecked Sendable {
         return (numBlocks * perBlock) + stem + towerFinalBN + policy + value
     }
 
-    /// One-line human-readable architecture summary, **generated** from
-    /// the arch constants above so it can never drift out of sync with
-    /// `parameterCount` or the structured fields an analysis export
-    /// carries. Flip `numBlocks` or `towerConvKernelSize` and this
-    /// re-derives automatically. Surfaced as `architecture.summary` in
-    /// the analysis-export metadata.
-    static var architectureSummary: String {
-        let k = towerConvKernelSize
-        let paramsStr = parameterCount.formatted(.number)
-        return "v\(architectureVersion) · stem \(inputPlanes)→\(channels) (\(k)×\(k))"
-            + " · \(numBlocks)×[\(k)×\(k) conv×2, SE÷\(seReductionRatio), ReZero]"
-            + " · policy→\(policyChannels) (\(policySize))"
-            + " · value→\(valueHeadConvChannels)→FC\(valueHeadHiddenUnits)→WDL(\(valueHeadClasses))"
-            + " · \(paramsStr) params"
-    }
+    // The one-line human-readable summary now lives on `NetworkArchitecture`
+    // (`net.network.arch.architectureSummary`) so it always describes the
+    // ACTUAL built net rather than the static defaults. The former static
+    // `ChessNetwork.architectureSummary` was removed to avoid a second,
+    // divergently-formatted source.
 
     /// Hand-maintained qualitative note about the current architecture
     /// experiment, surfaced as `architecture.notes` in analysis exports.

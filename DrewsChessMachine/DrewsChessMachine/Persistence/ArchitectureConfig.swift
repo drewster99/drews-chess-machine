@@ -38,7 +38,10 @@ enum ArchitectureConfig {
             SessionLogger.shared.log("[ARCH-CONFIG] Using \(url.lastPathComponent): \(arch.architectureSummary)")
             return arch
         } catch {
-            SessionLogger.shared.log("[ARCH-CONFIG] Ignoring \(url.lastPathComponent): \(error.localizedDescription)")
+            // `String(describing:)` keeps the precise DecodingError context
+            // (key path, type) that `localizedDescription` flattens to a vague
+            // "data couldn't be read" — essential for debugging a hand-edited file.
+            SessionLogger.shared.log("[ARCH-CONFIG] Ignoring \(url.lastPathComponent): \(String(describing: error))")
             return nil
         }
     }

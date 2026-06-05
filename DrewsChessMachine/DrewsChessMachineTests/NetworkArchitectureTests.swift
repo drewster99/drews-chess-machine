@@ -139,6 +139,19 @@ final class NetworkArchitectureTests: XCTestCase {
         XCTAssertNoThrow(try a.validate())
     }
 
+    func testValidationRejectsZeroReductionEvenWithoutSE() {
+        // The residual block computes channels / seReductionRatio regardless of
+        // SE style, so a zero ratio must be rejected to avoid a build-time
+        // divide-by-zero — even when se == .none.
+        var a = NetworkArchitecture.current
+        a.se = .none
+        a.seReductionRatio = 0
+        XCTAssertThrowsError(try a.validate()) { error in
+            XCTAssertEqual(error as? NetworkArchitectureError,
+                           .nonPositive(field: "seReductionRatio", value: 0))
+        }
+    }
+
     // MARK: Codable round-trip (this is what rides in safetensors __metadata__)
 
     func testCodableRoundTrip() throws {
