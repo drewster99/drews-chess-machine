@@ -354,19 +354,35 @@ struct LichessProbeDetailView: View {
     /// written (point E fills the rest as they land).
     private func applyOpenWindowComparisonState() {
         let d = UserDefaults.standard
-        let pinned200 = d.string(forKey: CmpDefaultsKey.set200)
-        let pinnedWide = d.string(forKey: CmpDefaultsKey.wide)
-        if pinned200 != nil || pinnedWide != nil {
+        var loadedAnyPin = false
+
+        // Load each pinned comparison; if its file is gone, clear the dead pin
+        // (mirrors LastSessionPointer) rather than leaving a no-comparison +
+        // auto-off dead state.
+        if let p = d.string(forKey: CmpDefaultsKey.set200) {
+            if let cmp = LichessProbeComparisonLoader.load(from: URL(fileURLWithPath: p), announce: false) {
+                comparison = cmp
+                loadedAnyPin = true
+            } else {
+                d.removeObject(forKey: CmpDefaultsKey.set200)
+                SessionLogger.shared.log("[TACTICAL-LICHESS] cleared dead 200-set compare pin: \(p)")
+            }
+        }
+        if let p = d.string(forKey: CmpDefaultsKey.wide) {
+            if let cmp = LichessProbeComparisonLoader.load(from: URL(fileURLWithPath: p), announce: false) {
+                comparisonWide = cmp
+                loadedAnyPin = true
+            } else {
+                d.removeObject(forKey: CmpDefaultsKey.wide)
+                SessionLogger.shared.log("[TACTICAL-LICHESS] cleared dead wide compare pin: \(p)")
+            }
+        }
+
+        if loadedAnyPin {
             autoUpdateSelectedComparison = false
-            if let p = pinned200 {
-                comparison = LichessProbeComparisonLoader.load(
-                    from: URL(fileURLWithPath: p), announce: false)
-            }
-            if let p = pinnedWide {
-                comparisonWide = LichessProbeComparisonLoader.load(
-                    from: URL(fileURLWithPath: p), announce: false)
-            }
         } else {
+            // No live pins (none set, or all were dead and cleared) — fall back
+            // to auto + the session-start exports.
             autoUpdateSelectedComparison = true
             loadSessionStartComparisons()
         }
@@ -387,7 +403,11 @@ struct LichessProbeDetailView: View {
     private func routeManualComparison(_ cmp: LichessProbeComparison) {
         autoUpdateSelectedComparison = false
         let d = UserDefaults.standard
-        if cmp.payload.probeCount > 1000 {
+        // Route to whichever set's size the file's probe count is closer to,
+        // using the actual set sizes as the source of truth (no magic number).
+        let toWide = abs(cmp.payload.probeCount - LichessProbeData.wideSet.count)
+            <= abs(cmp.payload.probeCount - LichessProbeData.largeSet.count)
+        if toWide {
             comparisonWide = cmp
             d.set(cmp.sourceURL.path, forKey: CmpDefaultsKey.wide)
             SessionLogger.shared.log("[TACTICAL-LICHESS] compare pinned (wide): \(cmp.sourceURL.lastPathComponent)")
@@ -423,118 +443,203 @@ struct LichessProbeDetailView: View {
 
     // MARK: Header
 
+    /// Three stacked zones rather than one competing row: the earlier
+    /// single `HStack` multiplexed identity (title), read-only telemetry
+    /// (tick/model/step/…), comparison filenames, and actions into one
+    /// line, so the title wrapped, the telemetry stacked awkwardly in a
+    /// narrow center gap, and the filenames were `…`-truncated
+    /// (which hid *which* snapshot was loaded — the one thing those
+    /// strings exist to convey). Splitting into a title+controls row over
+    /// a full-width metadata grid lets the telemetry align into columns
+    /// and the filenames show in full.
     @ViewBuilder
     private var header: some View {
-        HStack(spacing: 16) {
-            Text("Lichess Probe Detail — 200 puzzles")
-                .font(.system(.title2).weight(.semibold))
-            Spacer()
-            tickMetadataText
-            comparisonMetadataText
-            Toggle("Auto vs session start", isOn: Binding(
-                get: { autoUpdateSelectedComparison },
-                set: { handleAutoToggleChange(to: $0) }
-            ))
-            .toggleStyle(.checkbox)
-            .controlSize(.small)
-            .help("""
-                When on, both sets compare against THIS session's start-of-training \
-                snapshot, updating the moment it's written. Turns off automatically \
-                when you pick a file with Compare…
-                """)
-            Button("Probe now") {
-                onProbeNow()
-            }
-            .controlSize(.small)
-            Button("Compare…") {
-                if let loaded = LichessProbeComparisonLoader.loadFromFile() {
-                    routeManualComparison(loaded)
-                }
-            }
-            .controlSize(.small)
+        VStack(alignment: .leading, spacing: 8) {
+            titleRow
+            Divider()
+            tickMetadataGrid
             if comparison != nil || comparisonWide != nil {
-                Button("Clear compare") {
-                    clearComparisons()
-                }
-                .controlSize(.small)
+                Divider()
+                comparisonMetadataGrid
             }
-            Button("Export latest…") {
-                onExport()
-            }
-            .controlSize(.small)
-            .disabled(history.latestPerPuzzleResults.isEmpty)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
     }
 
-    /// Right-aligned metadata block describing the currently-loaded
-    /// comparison snapshot — filename, model label, tick timestamp.
-    /// Renders nothing when no comparison is active.
+    /// Top row: window identity on the left, all actions on the right.
     @ViewBuilder
-    private var comparisonMetadataText: some View {
-        if comparison != nil || comparisonWide != nil {
-            VStack(alignment: .trailing, spacing: 1) {
-                if let cmp = comparison {
-                    Text("cmp 200: \(cmp.sourceURL.lastPathComponent)")
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: 300, alignment: .trailing)
-                }
-                if let cmp = comparisonWide {
-                    Text("cmp wide: \(cmp.sourceURL.lastPathComponent)")
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth: 300, alignment: .trailing)
-                }
-            }
+    private var titleRow: some View {
+        HStack(spacing: 12) {
+            Text("Lichess Probe Detail — 200 puzzles")
+                .font(.system(.title2).weight(.semibold))
+                .lineLimit(1)
+            Spacer(minLength: 16)
+            headerControls
         }
     }
 
+    /// The toggle + action buttons, kept on a single trailing line.
     @ViewBuilder
-    private var tickMetadataText: some View {
+    private var headerControls: some View {
+        Toggle("Auto vs session start", isOn: Binding(
+            get: { autoUpdateSelectedComparison },
+            set: { handleAutoToggleChange(to: $0) }
+        ))
+        .toggleStyle(.checkbox)
+        .controlSize(.small)
+        .help("""
+            When on, both sets compare against the start-of-training snapshot \
+            taken at the first training run after launch, updating the moment \
+            it's written. It is not re-armed for a later run in the same launch. \
+            Turns off automatically when you pick a file with Compare…
+            """)
+        Button("Probe now") {
+            onProbeNow()
+        }
+        .controlSize(.small)
+        Button("Compare…") {
+            if let loaded = LichessProbeComparisonLoader.loadFromFile() {
+                routeManualComparison(loaded)
+            }
+        }
+        .controlSize(.small)
+        if comparison != nil || comparisonWide != nil {
+            Button("Clear compare") {
+                clearComparisons()
+            }
+            .controlSize(.small)
+        }
+        Button("Export latest…") {
+            onExport()
+        }
+        .controlSize(.small)
+        .disabled(history.latestPerPuzzleResults.isEmpty)
+    }
+
+    /// Read-only tick telemetry, laid out as a fixed-column label/value
+    /// `Grid` so the three groups (when/where, training-progress,
+    /// arena-progress) align across the two rows. Each value field is
+    /// "—" when its source is nil (champion-target probes before
+    /// Play-and-Train, or a pre-checkpoint-controller session boot)
+    /// rather than dropping the field — the column stays dimensionally
+    /// stable as the run warms up.
+    @ViewBuilder
+    private var tickMetadataGrid: some View {
         if let ts = history.latestTickTimestamp {
-            VStack(alignment: .trailing, spacing: 1) {
-                Text("tick: \(Self.timestampFormatter.string(from: ts))")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                Text("model: \(history.latestTickModelLabel ?? "<unknown>")")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                // Step + cumulative-progress line. Mirrors the status
-                // bar cells so the Detail window stands alone as a
-                // record of "where in training was this tick taken."
-                // Each part is "—" when nil (champion-target probes
-                // before Play-and-Train, or pre-checkpoint-controller
-                // session boot).
-                Text(progressMetadataLine)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 3) {
+                GridRow {
+                    metaLabel("Tick")
+                    metaValue(Self.timestampFormatter.string(from: ts))
+                    metaLabel("Step", groupGap: true)
+                    metaValue(stepValue)
+                    metaLabel("Active", groupGap: true)
+                    metaValue(activeValue)
+                }
+                GridRow {
+                    metaLabel("Model")
+                    metaValue(history.latestTickModelLabel ?? "<unknown>")
+                    metaLabel("Positions", groupGap: true)
+                    metaValue(positionsValue)
+                    metaLabel("Arenas", groupGap: true)
+                    metaValue(arenasValue)
+                }
             }
         } else {
-            Text("no tick yet")
+            Text("No tick yet")
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
     }
 
-    /// "step: 10451 positions: 42.8M active: 2:14:07 arenas: 15 (0 promoted)"
-    /// — composed inline so each nil-typed field is handled with a
-    /// short "—" sentinel rather than dropping the whole row.
-    private var progressMetadataLine: String {
-        let stepStr = history.latestTickTrainingStep.map(String.init) ?? "—"
-        let posStr = history.latestTickPositionsTrained
-            .map { Self.compactCount($0) } ?? "—"
-        let activeStr = history.latestTickActiveTrainingSec
-            .map { Self.formatHMS(seconds: $0) } ?? "—"
-        let arenaStr = history.latestTickArenaCount.map(String.init) ?? "—"
-        let promoStr = history.latestTickPromotionCount.map(String.init) ?? "—"
-        return "step: \(stepStr)  positions: \(posStr)"
-            + "  active: \(activeStr)  arenas: \(arenaStr) (\(promoStr) promoted)"
+    /// The currently-loaded comparison snapshot(s), one `key: filename`
+    /// row each. Unlike the old fixed-width-capped trailing block, the
+    /// filename is shown in full (middle-truncating only when the window
+    /// is narrow) so the loaded snapshot is identifiable at a glance.
+    /// The "Compare" group label appears once, on the first present row.
+    @ViewBuilder
+    private var comparisonMetadataGrid: some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 3) {
+            if let cmp = comparison {
+                GridRow {
+                    metaLabel("Compare")
+                    cmpKey("200:")
+                    cmpFilename(cmp.sourceURL.lastPathComponent)
+                }
+            }
+            if let cmp = comparisonWide {
+                GridRow {
+                    metaLabel(comparison == nil ? "Compare" : "")
+                    cmpKey("wide:")
+                    cmpFilename(cmp.sourceURL.lastPathComponent)
+                }
+            }
+        }
+    }
+
+    /// Training step with locale grouping separators ("285,928") so the
+    /// digit count reads at a glance. "—" before any step has run.
+    private var stepValue: String {
+        history.latestTickTrainingStep.map { $0.formatted() } ?? "—"
+    }
+
+    private var positionsValue: String {
+        history.latestTickPositionsTrained.map { Self.compactCount($0) } ?? "—"
+    }
+
+    private var activeValue: String {
+        history.latestTickActiveTrainingSec.map { Self.formatHMS(seconds: $0) } ?? "—"
+    }
+
+    private var arenasValue: String {
+        let arenas = history.latestTickArenaCount.map(String.init) ?? "—"
+        let promoted = history.latestTickPromotionCount.map(String.init) ?? "—"
+        return "\(arenas) (\(promoted) promoted)"
+    }
+
+    /// Dimmer, semibold column label. `groupGap` adds leading inset so
+    /// the second and third label/value groups read as distinct clusters
+    /// rather than running together with the previous value.
+    @ViewBuilder
+    private func metaLabel(_ text: String, groupGap: Bool = false) -> some View {
+        Text(text)
+            .font(.system(.caption2, design: .monospaced).weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.leading, groupGap ? 20 : 0)
+            .gridColumnAlignment(.leading)
+    }
+
+    /// Brighter value cell paired with `metaLabel`.
+    @ViewBuilder
+    private func metaValue(_ text: String) -> some View {
+        Text(text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.primary)
+            .gridColumnAlignment(.leading)
+    }
+
+    /// The "200:" / "wide:" set key in the comparison grid.
+    @ViewBuilder
+    private func cmpKey(_ text: String) -> some View {
+        Text(text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.secondary)
+            .gridColumnAlignment(.leading)
+    }
+
+    /// Comparison filename, shown in full up to its max width, then
+    /// middle-truncated. `.help` exposes the full name on hover even
+    /// when the window forces truncation.
+    @ViewBuilder
+    private func cmpFilename(_ name: String) -> some View {
+        Text(name)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: 560, alignment: .leading)
+            .help(name)
+            .gridColumnAlignment(.leading)
     }
 
     /// "1,234,567" → "1.2M", "42,000" → "42.0K", "789" → "789".
