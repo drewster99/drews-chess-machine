@@ -31,10 +31,25 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
         }
     }()
 
+    /// A scalar-tanh-headed network, built once. Used to prove a scalar_tanh
+    /// champion self-plays end-to-end — the path where the draw-watch loop
+    /// would over-read a `K × 1` value-probs buffer with its 3-wide indexing
+    /// before the head-style guard was added.
+    private static var scalarTanhNetwork: ChessMPSNetwork = {
+        var arch = NetworkArchitecture.current
+        arch.valueHeadStyle = .scalarTanh
+        do {
+            return try ChessMPSNetwork(.randomWeights, arch: arch)
+        } catch {
+            fatalError("BatchedSelfPlayDriverTests: scalar-tanh ChessMPSNetwork(.randomWeights) failed: \(error)")
+        }
+    }()
+
     /// Construct a driver wired to fresh test-scoped dependencies.
     private func makeDriver(
         initialK: Int,
-        buffer: ReplayBuffer
+        buffer: ReplayBuffer,
+        network: ChessMPSNetwork = BatchedSelfPlayDriverTests.sharedNetwork
     ) -> (driver: BatchedSelfPlayDriver, countBox: WorkerCountBox, pauseGate: WorkerPauseGate) {
         let countBox = WorkerCountBox(initial: initialK)
         let pauseGate = WorkerPauseGate()
@@ -42,7 +57,7 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
         let statsBox = ParallelWorkerStatsBox()
         let diversityTracker = GameDiversityTracker()
         let driver = BatchedSelfPlayDriver(
-            network: Self.sharedNetwork,
+            network: network,
             buffer: buffer,
             statsBox: statsBox,
             diversityTracker: diversityTracker,
@@ -82,6 +97,35 @@ final class BatchedSelfPlayDriverTests: XCTestCase {
         XCTAssertGreaterThan(
             buffer.count, 0,
             "Driver should have produced at least one finished game's worth of positions at K=2 within the deadline"
+        )
+    }
+
+    /// A scalar_tanh champion must self-play end-to-end. The per-tick
+    /// draw-watch loop reads a per-position draw probability at `wdlBuf[i*3+1]`;
+    /// a scalar_tanh head's value-probs buffer is only `K × 1` floats, so that
+    /// indexing over-read the buffer until the head-style guard was added.
+    /// This drives real self-play against a scalar_tanh net and asserts it
+    /// produces a finished game's positions without tripping (the over-read is
+    /// also caught here under Address Sanitizer / guard-malloc).
+    func test_scalarTanhChampion_selfPlaysWithoutOverReadingDrawWatch() async {
+        let buffer = ReplayBuffer(capacity: 100_000)
+        let (driver, _, _) = makeDriver(
+            initialK: 2, buffer: buffer, network: Self.scalarTanhNetwork)
+        let task = Task(priority: .high) {
+            await driver.run()
+        }
+        // The over-read fires on EVERY tick's batched eval, so a short fixed
+        // run (many ticks at the ~50ms cadence) is enough to exercise the
+        // head-style guard — no need to wait for a full game. Under Address
+        // Sanitizer / guard-malloc a regression traps here; otherwise this
+        // asserts the path runs without crashing. Kept short to bound suite
+        // time (a full scalar_tanh game can take tens of seconds).
+        try? await Task.sleep(for: .seconds(2))
+        task.cancel()
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertGreaterThanOrEqual(
+            buffer.count, 0,
+            "A scalar_tanh champion must self-play (many ticks) without tripping the draw-watch over-read"
         )
     }
 

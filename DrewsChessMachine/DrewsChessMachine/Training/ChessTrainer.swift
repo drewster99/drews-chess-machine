@@ -2825,9 +2825,17 @@ final class ChessTrainer: @unchecked Sendable {
             valueProbDraw = graph.mean(of: valueProbDrawCol, axes: [0, 1], name: "value_prob_draw")
             valueProbLoss = graph.mean(of: valueProbLossCol, axes: [0, 1], name: "value_prob_loss")
         case .scalarTanh:
-            valueProbWin = graph.constant(0.0, dataType: dtype)
-            valueProbDraw = graph.constant(0.0, dataType: dtype)
-            valueProbLoss = graph.constant(0.0, dataType: dtype)
+            // No W/D/L distribution for a 1-logit tanh head; report zeros. These
+            // MUST be three DISTINCT graph tensors: the diagnostic readback keys
+            // its results dict by tensor, and an anonymous `graph.constant(0)`
+            // can be interned by MPSGraph into a single shared tensor — which
+            // would duplicate-key the dictionary and trap on every stats step.
+            // Three separate multiplication ops (real tensor × 0) are guaranteed
+            // distinct tensor objects that all evaluate to 0.
+            let zeroScale = graph.constant(0.0, dataType: dtype)
+            valueProbWin = graph.multiplication(valueMean, zeroScale, name: "value_prob_win_inactive")
+            valueProbDraw = graph.multiplication(valueAbsMean, zeroScale, name: "value_prob_draw_inactive")
+            valueProbLoss = graph.multiplication(valueMean, zeroScale, name: "value_prob_loss_inactive")
         }
 
         // --- Policy entropy ---
@@ -3914,16 +3922,34 @@ final class ChessTrainer: @unchecked Sendable {
         } else {
             warmupMul = 1.0
         }
+        // Base LR: the cycle's geometric value when LR cycling is active,
+        // otherwise the static `learningRate`. Identical resolution to
+        // `buildFeeds` so this readout matches the LR the SGD step actually
+        // applies — sqrt-batch scaling and warmup compose on top.
+        let baseLR: Float = _lrMomentumCycle.value.learningRate(forStep: steps).map { Float($0) } ?? learningRate
         var lr: Float
         if sqrtBatchScalingForLR {
             let sqrtBatchScale: Float = Float(
                 sqrt(Double(batchSize) / Double(Self.sqrtScaleBaseBatchSize))
             )
-            lr = learningRate * sqrtBatchScale
+            lr = baseLR * sqrtBatchScale
         } else {
-            lr = learningRate
+            lr = baseLR
         }
         return lr * warmupMul
+    }
+
+    /// Effective Polyak momentum the optimizer is currently being fed:
+    /// the cycle's linear value when momentum cycling is active, otherwise
+    /// the static `momentumCoeff`. Mirrors the `buildFeeds` resolution so a
+    /// status-bar readout matches what the SGD step applies. Like
+    /// `effectiveLearningRate`, reads the step count from the `SyncBox`
+    /// (never `executionQueue`), so a UI readout never blocks on an
+    /// in-flight step; pass `completedSteps` to pin it to the same
+    /// observation as a co-published LR.
+    func effectiveMomentum(completedSteps: Int? = nil) -> Float {
+        let steps = completedSteps ?? _completedTrainSteps.value
+        return _lrMomentumCycle.value.momentum(forStep: steps).map { Float($0) } ?? momentumCoeff
     }
 
     private func internalTrainStep(batchSize: Int, queueWaitMs: Double = 0) throws -> TrainStepTiming {

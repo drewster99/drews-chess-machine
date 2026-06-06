@@ -2674,12 +2674,12 @@ struct UpperContentView: View {
         let hasHistory = checkpoint.cumulativeRunCount > 0 || totalSteps > 0
         let canRunArena = !session.isArenaRunning && network != nil && trainer != nil
         let totalPositions = totalSteps * trainingParams.trainingBatchSize
-        let warmupLR: String? = {
-            if let snap = trainerWarmupSnap, snap.inWarmup {
-                return String(format: "%.2e", snap.effectiveLR)
-            }
-            return nil
-        }()
+        // Live actual LR + momentum the optimizer is being fed (cycle-aware,
+        // warmup-aware), shown whenever a trainer exists — not only during
+        // warm-up. During warm-up the LR value is the actual ramped value.
+        let liveLR: String? = trainerWarmupSnap.map { String(format: "%.2e", $0.effectiveLR) }
+        let liveMomentum: String? = trainerWarmupSnap.map { String(format: "%.3f", $0.effectiveMomentum) }
+        let liveLRInWarmup: Bool = trainerWarmupSnap?.inWarmup ?? false
         let legalMassStr = realLastLegalMassSnapshot.map {
             String(format: "%.4f%%", Double($0.legalMass) * 100)
         } ?? "--"
@@ -2687,7 +2687,9 @@ struct UpperContentView: View {
             hasHistory: hasHistory,
             canRunArena: canRunArena,
             activeTrainingTime: GameWatcher.Snapshot.formatHMS(seconds: checkpoint.cumulativeActiveTrainingSec),
-            warmupLREffective: warmupLR,
+            learningRate: liveLR,
+            learningRateInWarmup: liveLRInWarmup,
+            momentum: liveMomentum,
             trainingSteps: Int(totalSteps).formatted(),
             positionsTrained: Self.formatCompactCount(totalPositions),
             trainingRate: trainingRateStatusValue,

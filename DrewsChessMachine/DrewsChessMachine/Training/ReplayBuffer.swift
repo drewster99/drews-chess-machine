@@ -33,13 +33,17 @@ final class ReplayBuffer: @unchecked Sendable {
     /// recorded stride differs from this value.
     let floatsPerBoard: Int
 
-    /// Convenience stride matching what `BoardEncoder` actually produces
-    /// today — the transitional `BoardEncoder.tensorLength` (basic30 until
-    /// the per-ply encode call sites are wired to `arch.inputEncoding`).
-    /// Used by tests, the UI RAM estimate, tooling, and as the live
-    /// buffer's stride: the buffer must match the ENCODER's output width,
-    /// not the arch's nominal `inputPlanes`, while encoding is transitional.
-    static var defaultFloatsPerBoard: Int { BoardEncoder.tensorLength }
+    /// Convenience stride for the DEFAULT architecture's input encoding
+    /// (`NetworkArchitecture.current.inputEncoding`). Used by tests, the UI
+    /// RAM estimate, and tooling that has no specific net in hand. NOT used
+    /// by the live training buffer — that passes the session network's actual
+    /// `tensorLength(for: network.inputEncoding)` explicitly, and the restore
+    /// paths peek the file's recorded stride. Tracks the current preset's
+    /// encoding rather than hardcoding basic30, so it stays correct if a
+    /// different encoding ever becomes the default.
+    static var defaultFloatsPerBoard: Int {
+        BoardEncoder.tensorLength(for: NetworkArchitecture.current.inputEncoding)
+    }
 
     /// Maximum number of positions held. Older positions are overwritten
     /// in FIFO order once the buffer is full.

@@ -2213,10 +2213,22 @@ final class ChessNetwork: @unchecked Sendable {
             return (scalar: scalar, logits: logits, probs: probs)
         case .scalarTanh:
             // scalar = tanh(raw logit) in [-1, 1]; trained with MSE vs z (Phase D).
-            // `probs` mirrors `scalar` so the tuple shape is uniform; W/D/L
-            // diagnostics only apply to wdl nets.
+            // `probs` mirrors `scalar` (W/D/L diagnostics only apply to wdl nets)
+            // but MUST be a DISTINCT graph tensor: `inferenceTargets` lists both
+            // `valueOutput` (= scalar) and `valueProbs` (= probs), and the
+            // readback builds `Dictionary(uniqueKeysWithValues:)` keyed by
+            // tensor — aliasing the two to one tensor traps on a duplicate key.
+            // A no-op reshape (scalar is already [batch, 1]) yields a separate
+            // tensor carrying the same values.
             let scalar = graph.tanh(with: logits, name: "value_scalar")
-            return (scalar: scalar, logits: logits, probs: scalar)
+            // `probs` must be a DISTINCT graph tensor from `scalar`: both go into
+            // `inferenceTargets` and the readback keys its results dict by tensor,
+            // so aliasing them traps on a duplicate key. A multiply-by-1 op yields
+            // a separate tensor object carrying the same values (a same-shape
+            // reshape could in principle be elided; an op output cannot).
+            let probsOne = graph.constant(1.0, dataType: Self.mpsDataType(for: arch))
+            let probs = graph.multiplication(scalar, probsOne, name: "value_scalar_probs")
+            return (scalar: scalar, logits: logits, probs: probs)
         }
     }
 

@@ -165,11 +165,15 @@ extension SessionController {
                 forBatchSize: TrainingParameters.shared.trainingBatchSize,
                 completedSteps: completedTrainSteps
             )
+            // Same step observation as the LR so the published pair is
+            // self-consistent (cheap SyncBox-only read, no executionQueue hop).
+            let effectiveMomentum = trainer.effectiveMomentum(completedSteps: completedTrainSteps)
             elap("after 3.2 (awaited)")
             let next = SessionController.TrainerWarmupSnapshot(
                 completedSteps: completedTrainSteps,
                 warmupSteps: trainer.lrWarmupSteps,
-                effectiveLR: effectiveLR
+                effectiveLR: effectiveLR,
+                effectiveMomentum: effectiveMomentum
             )
             elap("after 3.3 (everything super fast)")
             if next != trainerWarmupSnap { trainerWarmupSnap = next }

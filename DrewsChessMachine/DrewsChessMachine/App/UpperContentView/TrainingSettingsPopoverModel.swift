@@ -653,6 +653,15 @@ final class TrainingSettingsPopoverModel {
             lrCycleMaxError = true
             anyError = true
         }
+        // Cross-field: LR max must be >= min. The cycle guards itself
+        // (`learningRate(forStep:)` returns nil and falls back to the static
+        // LR when lrMax < lrMin), so an inverted pair would silently make the
+        // cycle inert while the UI reads "enabled" — flag the max field so the
+        // misconfiguration is visible instead.
+        if !lrCycleMinError, !lrCycleMaxError, p.lrCycleMax < p.lrCycleMin {
+            lrCycleMaxError = true
+            anyError = true
+        }
         if let n = Int(lrCyclePeriodText.trimmingCharacters(in: .whitespaces)),
            n >= 1, n <= 10_000_000 {
             lrCyclePeriodError = false
@@ -684,6 +693,14 @@ final class TrainingSettingsPopoverModel {
             momentumCycleMaxError = false
             if abs(v - p.momentumCycleMax) > Double.ulpOfOne { p.momentumCycleMax = v }
         } else {
+            momentumCycleMaxError = true
+            anyError = true
+        }
+        // Cross-field: momentum max must be >= min. Unlike LR, `momentum(forStep:)`
+        // has NO min<=max guard — an inverted pair would silently run the
+        // schedule reversed with no signal — so flagging it here is the only
+        // safeguard against a silent misconfiguration.
+        if !momentumCycleMinError, !momentumCycleMaxError, p.momentumCycleMax < p.momentumCycleMin {
             momentumCycleMaxError = true
             anyError = true
         }

@@ -513,7 +513,13 @@ final class SessionController {
     struct TrainerWarmupSnapshot: Equatable {
         var completedSteps: Int
         var warmupSteps: Int
+        /// Actual LR the optimizer is being fed this step — cycle value (if
+        /// LR cycling is active) composed with √batch scaling and the warmup
+        /// ramp. Shown live in the status bar regardless of warmup state.
         var effectiveLR: Float
+        /// Actual Polyak momentum being fed this step — cycle value (if
+        /// momentum cycling is active) or the static coefficient.
+        var effectiveMomentum: Float
         var inWarmup: Bool { warmupSteps > 0 && completedSteps < warmupSteps }
     }
     /// Mirror of the trainer's warmup state, refreshed by the heartbeat. `nil` outside a session.
