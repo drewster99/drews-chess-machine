@@ -93,6 +93,74 @@ final class RuntimeArchReachTests: XCTestCase {
             ReplayBuffer.bytesPerPosition(floatsPerBoard: 1280))
     }
 
+    /// A basic20-stride buffer must save and restore round-trip. The restore
+    /// target's stride is fixed at construction, so the loader has to peek the
+    /// file's recorded stride (`peekFloatsPerBoard`) rather than assume the
+    /// default basic30 width — otherwise the save-verify scratch and the CLI
+    /// restore reject every basic20 file with `incompatibleBoardSize`. Pure
+    /// persistence (no Metal).
+    func testBasic20BufferSaveRestoreRoundTripViaPeek() throws {
+        let stride = BoardEncoder.tensorLength(for: .basic20)
+        XCTAssertEqual(stride, 1280)
+        let buffer = ReplayBuffer(capacity: 64, floatsPerBoard: stride)
+        XCTAssertEqual(buffer.floatsPerBoard, stride)
+
+        var board = [Float](repeating: 0, count: stride)
+        for i in 0..<stride { board[i] = Float(i % 7) * 0.5 }
+        var move: Int32 = 99
+        var ply: UInt16 = 0
+        var tau: Float = 0.8
+        var hash: UInt64 = 0x1234_5678
+        var mat: UInt8 = 24
+        board.withUnsafeBufferPointer { boardsBuf in
+            guard let base = boardsBuf.baseAddress else {
+                XCTFail("board buffer baseAddress is nil"); return
+            }
+            withUnsafePointer(to: &move) { moveP in
+            withUnsafePointer(to: &ply) { plyP in
+            withUnsafePointer(to: &tau) { tauP in
+            withUnsafePointer(to: &hash) { hashP in
+            withUnsafePointer(to: &mat) { matP in
+                buffer.append(
+                    boards: base,
+                    policyIndices: moveP,
+                    plyIndices: plyP,
+                    samplingTaus: tauP,
+                    stateHashes: hashP,
+                    materialCounts: matP,
+                    gameLength: 1,
+                    workerId: 0,
+                    intraWorkerGameIndex: 0,
+                    outcome: 1.0,
+                    count: 1
+                )
+            }}}}}
+        }
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("bin")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try buffer.write(to: url)
+
+        // The fix: peek the file's stride and construct a matching buffer.
+        XCTAssertEqual(try ReplayBuffer.peekFloatsPerBoard(at: url), stride)
+        let cap = try ReplayBuffer.peekCapacity(at: url)
+        let restored = ReplayBuffer(
+            capacity: cap,
+            floatsPerBoard: try ReplayBuffer.peekFloatsPerBoard(at: url))
+        try restored.restore(from: url)
+        XCTAssertEqual(restored.count, 1)
+        XCTAssertEqual(restored.floatsPerBoard, stride)
+
+        // Negative: a default-stride (basic30) buffer must reject the basic20
+        // file — proving the peek is load-bearing, not cosmetic.
+        let wrongStride = ReplayBuffer(capacity: cap)
+        XCTAssertThrowsError(
+            try wrongStride.restore(from: url),
+            "a basic30-stride buffer must reject a basic20 file")
+    }
+
     // MARK: - scalar_tanh (Phase D: trainer value-loss branch)
 
     func testScalarTanhArchitectureShape() throws {

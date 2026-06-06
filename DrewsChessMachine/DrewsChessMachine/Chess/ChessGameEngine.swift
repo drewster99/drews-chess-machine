@@ -132,6 +132,26 @@ final class ChessGameEngine {
     /// static so tests can read the same constant the implementation does.
     static let recentPositionKeyWindow: Int = 10
 
+    /// Ordered window of up to `recentStateWindow` most recent *prior* full
+    /// game states, index 0 = the position 1 ply ago, index
+    /// `recentStateWindow - 1` = the oldest retained. Each stored `GameState`
+    /// already carries the `repetitionCount`/`recentRepetitionMask` it had at
+    /// the time, so a history frame reflects the board exactly as it stood.
+    ///
+    /// Unlike `recentPositionKeys`, this is **never cleared on irreversible
+    /// moves**: a history-stacking input encoding must show the true prior
+    /// board across pawn moves and captures, not a window reset to empty.
+    /// Feeds `BoardEncoder`'s history-aware encode path for the
+    /// `full10ply200` encoding (current frame + 9 prior frames).
+    private(set) var recentStates: [GameState] = []
+
+    /// Hard cap on `recentStates` length. Sized to the deepest history-
+    /// stacking `InputEncoding` — `full10ply200` needs the current position
+    /// plus 9 prior frames. Deliberately distinct from
+    /// `recentPositionKeyWindow` (different size *and* different clearing
+    /// semantics: this window does not clear on irreversible moves).
+    static let recentStateWindow: Int = 9
+
     init(state: GameState = .starting) {
         // The starting position has occurred zero times before — fold that
         // into the state itself so encoders downstream see a consistent
@@ -169,6 +189,16 @@ final class ChessGameEngine {
         // the move is irreversible, in which case the window is cleared
         // and the snapshot is discarded — see below).
         let priorKey = PositionKey(from: state)
+
+        // Push the pre-apply state into the non-clearing history window for
+        // history-stacking encodings. Done unconditionally and *outside* the
+        // irreversible-move branch below: a history frame must show the board
+        // as it actually stood, even across a pawn move or capture. The
+        // stored state already carries its as-of-then repetition fields.
+        recentStates.insert(state, at: 0)
+        if recentStates.count > Self.recentStateWindow {
+            recentStates.removeLast(recentStates.count - Self.recentStateWindow)
+        }
 
         let appliedState = MoveGenerator.applyMove(move, to: state)
         moveHistory.append(move)

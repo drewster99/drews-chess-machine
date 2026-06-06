@@ -42,6 +42,11 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
     case basic20
     /// 30 planes: `basic20` (planes 0–19) + 10 temporal-repetition history planes.
     case basic30
+    /// 200 planes: the 20-plane `basic20` block stacked 10× for plies N, N-1,
+    /// … N-9 — every frame rendered from the ply-N mover's perspective. No
+    /// marker planes; absent (pre-game-start) frames stay all-zero. History
+    /// frames carry no temporal-repetition block (each is plain basic20).
+    case full10ply200
 
     /// Ordered plane-group spec. `description` renders from this and a unit test
     /// asserts the encoder fills exactly these ranges (no doc/impl drift).
@@ -63,11 +68,45 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
             return base + [
                 PlaneGroup(20...29, "temporal-repetition history: plane 20+i = position i+1 plies ago is a strict duplicate")
             ]
+        case .full10ply200:
+            // 10 stacked basic20 frames (current + 9 prior), all from the
+            // ply-N mover's perspective. Frame 0 = ply N; frame f = ply N-f.
+            var groups: [PlaneGroup] = []
+            for f in 0..<historyFrameCount {
+                let off = f * planesPerFrame
+                let label = f == 0 ? "ply N" : "ply N-\(f)"
+                for g in base {
+                    groups.append(PlaneGroup(
+                        (g.range.lowerBound + off)...(g.range.upperBound + off),
+                        "[\(label)] \(g.meaning)"))
+                }
+            }
+            return groups
         }
     }
 
     /// Number of 8x8 planes — derived from `planeGroups`, never duplicated.
     var planeCount: Int { (planeGroups.last?.range.upperBound ?? -1) + 1 }
+
+    /// Number of stacked position frames (current + history). 1 for single-
+    /// frame encodings; 10 for `full10ply200`.
+    var historyFrameCount: Int {
+        switch self {
+        case .basic20, .basic30: return 1
+        case .full10ply200: return 10
+        }
+    }
+
+    /// Planes per stacked frame. History encodings stack the 20-plane basic20
+    /// block; single-frame encodings report their whole plane count.
+    /// Invariant (asserted in tests): `historyFrameCount * planesPerFrame == planeCount`.
+    var planesPerFrame: Int {
+        switch self {
+        case .basic20: return 20
+        case .basic30: return 30
+        case .full10ply200: return 20
+        }
+    }
 
     /// Human-readable table, rendered from `planeGroups` (single source of truth).
     var planeDescription: String {

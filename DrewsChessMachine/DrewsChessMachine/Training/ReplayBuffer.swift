@@ -482,6 +482,45 @@ final class ReplayBuffer: @unchecked Sendable {
         return Int(cap64)
     }
 
+    /// Read the per-position board stride (`floatsPerBoard`) a saved file
+    /// was written with, without loading it. Needed when constructing a
+    /// fresh `ReplayBuffer` to restore INTO: the buffer's stride is fixed at
+    /// init and must match the file's, so a restore target for a foreign-
+    /// encoding file (e.g. a basic20 buffer = 1280) can't just assume the
+    /// default. Mirrors `peekCapacity` (floatsPerBoard is at byte offset 16).
+    static func peekFloatsPerBoard(at url: URL) throws -> Int {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw PersistenceError.readFailed(error)
+        }
+        defer { try? handle.close() }
+        guard let headerData = try handle.read(upToCount: headerSize),
+              headerData.count == headerSize else {
+            throw PersistenceError.truncatedHeader
+        }
+        let magicMatches = headerData.prefix(8).elementsEqual(fileMagic)
+        guard magicMatches else { throw PersistenceError.badMagic }
+        let version: UInt32 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
+        }
+        guard version == fileVersion else {
+            throw PersistenceError.unsupportedVersion(version)
+        }
+        let fpb64: Int64 = headerData.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: 16, as: Int64.self)
+        }
+        guard fpb64 > 0 && fpb64 <= maxReasonableFloatsPerBoard else {
+            throw PersistenceError.upperBoundExceeded(
+                field: "floatsPerBoard",
+                value: fpb64,
+                max: maxReasonableFloatsPerBoard
+            )
+        }
+        return Int(fpb64)
+    }
+
     // MARK: - Hash helper (encoded board → stable UInt64 hash)
 
     /// Hash an encoded `[floatsPerBoard]` board tensor into a single

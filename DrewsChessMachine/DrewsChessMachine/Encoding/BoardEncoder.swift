@@ -250,7 +250,9 @@ enum BoardEncoder {
     /// and halfmove planes are written according to the standard
     /// encoding. The buffer must have at least `tensorLength` elements.
     static func encode(
-        _ state: GameState,
+        _ current: GameState,
+        history: [GameState] = [],
+        perspective: PieceColor? = nil,
         into buffer: UnsafeMutableBufferPointer<Float>,
         encoding: InputEncoding = .basic30
     ) {
@@ -278,9 +280,58 @@ enum BoardEncoder {
         // previously-initialized `UnsafeMutablePointer` allocation.
         base.update(repeating: 0, count: tensorLength)
 
-        let flip = state.currentPlayer == .black
+        // All frames are written from the ply-N mover's perspective. For
+        // single-frame encodings that's just `current.currentPlayer`; the
+        // history path passes the ply-N mover explicitly so an odd,
+        // opponent-to-move prior frame still shows *our* pieces in planes
+        // 0–5, oriented to our side.
+        let persp = perspective ?? current.currentPlayer
 
-        // Planes 0-11: pieces
+        switch encoding {
+        case .basic20:
+            writeBasicBlock(current, perspective: persp, planeBase: 0,
+                            includeTemporalRepetition: false, base: base)
+        case .basic30:
+            writeBasicBlock(current, perspective: persp, planeBase: 0,
+                            includeTemporalRepetition: true, base: base)
+        case .full10ply200:
+            // Frame 0 = current (ply N); frame f = history[f-1] = ply N-f
+            // when available. All share `persp`. Absent frames stay zero
+            // from the leading clear (the "no frame here" signal). Each
+            // frame is the 20-plane basic20 set — no per-frame temporal-
+            // repetition block.
+            let stride = encoding.planesPerFrame
+            writeBasicBlock(current, perspective: persp, planeBase: 0,
+                            includeTemporalRepetition: false, base: base)
+            let available = min(history.count, encoding.historyFrameCount - 1)
+            for f in 0..<available {
+                writeBasicBlock(history[f], perspective: persp,
+                                planeBase: (f + 1) * stride,
+                                includeTemporalRepetition: false, base: base)
+            }
+        }
+    }
+
+    /// Write one 20-plane `basic20` block — optionally plus the 10
+    /// temporal-repetition planes (20–29) for basic30 — starting at
+    /// `planeBase`, oriented to `perspective`.
+    ///
+    /// Piece placement (mine 0–5 / opponent's 6–11), the vertical flip,
+    /// castling assignment, and en-passant orientation are all keyed to
+    /// `perspective`, NOT `state.currentPlayer`. That's what lets a prior
+    /// history frame whose own mover was the opponent still render from our
+    /// side. The halfmove-clock and repetition planes carry the frame's own
+    /// values. `base` must already be zero-cleared across the full tensor.
+    private static func writeBasicBlock(
+        _ state: GameState,
+        perspective: PieceColor,
+        planeBase: Int,
+        includeTemporalRepetition: Bool,
+        base: UnsafeMutablePointer<Float>
+    ) {
+        let flip = perspective == .black
+
+        // Planes [+0 … +11]: pieces.
         for row in 0..<8 {
             let sourceRow = flip ? (7 - row) : row
             let sourceRowBase = sourceRow * 8
@@ -288,13 +339,13 @@ enum BoardEncoder {
             for col in 0..<8 {
                 guard let piece = state.board[sourceRowBase + col] else { continue }
 
-                let isMine = piece.color == state.currentPlayer
-                let plane = (isMine ? 0 : 6) + piece.type.rawValue
+                let isMine = piece.color == perspective
+                let plane = planeBase + (isMine ? 0 : 6) + piece.type.rawValue
                 base[plane * 64 + destRowBase + col] = 1.0
             }
         }
 
-        // Planes 12-15: castling rights (from current player's perspective)
+        // Planes [+12 … +15]: castling rights (from `perspective`).
         let myKingside: Bool
         let myQueenside: Bool
         let oppKingside: Bool
@@ -312,70 +363,43 @@ enum BoardEncoder {
             oppQueenside = state.blackQueensideCastle
         }
 
-        if myKingside { fillPlane(base, plane: 12) }
-        if myQueenside { fillPlane(base, plane: 13) }
-        if oppKingside { fillPlane(base, plane: 14) }
-        if oppQueenside { fillPlane(base, plane: 15) }
+        if myKingside { fillPlane(base, plane: planeBase + 12) }
+        if myQueenside { fillPlane(base, plane: planeBase + 13) }
+        if oppKingside { fillPlane(base, plane: planeBase + 14) }
+        if oppQueenside { fillPlane(base, plane: planeBase + 15) }
 
-        // Plane 16: en passant target square
+        // Plane [+16]: en passant target square.
         if let ep = state.enPassantSquare {
             let epRow = flip ? (7 - ep.row) : ep.row
-            base[16 * 64 + epRow * 8 + ep.col] = 1.0
+            base[(planeBase + 16) * 64 + epRow * 8 + ep.col] = 1.0
         }
 
-        // Plane 17: halfmove clock, normalized as `min(clock, 99) / 99`.
-        // Saturates at 1.0 on the 99th ply of no progress — the last ply
-        // before either side can claim the 50-move rule on their next
-        // turn. Matches Leela Chess Zero's `rule50_count / 99` convention:
-        // putting the saturation point at the move-decision boundary
-        // rather than at the rule-firing moment gives the value head a
-        // signal aligned with when a player must actually act on the
-        // approaching draw, not one ply later. The actual 50-move-rule
-        // game logic (in ChessGameEngine) still fires at clock >= 100;
-        // only the normalization of this *input feature* changes.
+        // Plane [+17]: halfmove clock, normalized as `min(clock, 99) / 99`
+        // (Leela's rule50 convention — saturation at the move-decision
+        // boundary). The real 50-move-rule logic still fires at clock >=
+        // 100 in ChessGameEngine; only this input feature's scale changes.
         let normalized = Float(min(state.halfmoveClock, 99)) / 99.0
         if normalized > 0 {
-            fillPlane(base, plane: 17, value: normalized)
+            fillPlane(base, plane: planeBase + 17, value: normalized)
         }
 
-        // Planes 18 and 19: threefold-repetition signals. Always-fill
-        // pattern (no skip-if-zero optimization) so each plane is
-        // self-contained and doesn't depend on the leading
-        // `base.update(repeating: 0, count: tensorLength)` above —
-        // easier to reason about and immune to the silent failure mode
-        // where someone bumps `tensorLength` without updating the
-        // leading clear's count. Cost is 128 extra writes per encode,
-        // negligible against the existing tensorLength-float clear.
-        //
-        // The rep count is read from the GameState itself (populated
-        // by ChessGameEngine after every move from its positionCounts
-        // table). For tests / UI editable positions / .starting where
-        // the count defaults to 0, both planes are zero — the correct
-        // "no repetition history" encoding.
+        // Planes [+18, +19]: threefold-repetition signals. Always-fill (no
+        // skip-if-zero) so each plane is self-contained. Read from the
+        // frame's own GameState; .starting / tests / UI positions default
+        // to 0 → both planes zero.
         let repCount = state.repetitionCount
-        fillPlane(base, plane: 18, value: repCount >= 1 ? 1.0 : 0.0)
-        fillPlane(base, plane: 19, value: repCount >= 2 ? 1.0 : 0.0)
+        fillPlane(base, plane: planeBase + 18, value: repCount >= 1 ? 1.0 : 0.0)
+        fillPlane(base, plane: planeBase + 19, value: repCount >= 2 ? 1.0 : 0.0)
 
-        // Planes 20–29: temporal-repetition history. Plane `20 + i` is
-        // all-1 iff bit `i` of `state.recentRepetitionMask` is set,
-        // meaning the position `i + 1` plies ago is a `PositionKey`
-        // duplicate of the current position. Skip-if-zero is fine here
-        // (unlike planes 18/19) because the leading `base.update`
-        // above already cleared the full tensorLength region — we
-        // only need to fill the 1-bits, not also zero out the 0-bits.
-        //
-        // The mask is read from the GameState itself (populated by
-        // ChessGameEngine after every move from its recentPositionKeys
-        // window). For tests / UI editable positions / .starting where
-        // the mask defaults to 0, all 10 planes stay zero — the correct
-        // "no recent repetitions" encoding.
-        // Planes 20-29 exist only in encodings that include the temporal
-        // history window (basic30); basic20 stops at plane 19.
-        if encoding.planeCount > 20 {
+        // Planes [+20 … +29]: temporal-repetition history (basic30 only).
+        // Plane +20+i is all-1 iff bit i of recentRepetitionMask is set
+        // (the position i+1 plies ago is a PositionKey duplicate of this
+        // frame). Skip-if-zero — the leading clear already zeroed the region.
+        if includeTemporalRepetition {
             let recentMask = state.recentRepetitionMask
             if recentMask != 0 {
                 for i in 0..<10 where (recentMask >> i) & 1 == 1 {
-                    fillPlane(base, plane: 20 + i)
+                    fillPlane(base, plane: planeBase + 20 + i)
                 }
             }
         }
@@ -387,10 +411,15 @@ enum BoardEncoder {
     /// paths share the same encoding logic. Used by non-hot-path
     /// callers (tests, the Forward Pass demo UI). Hot-path callers
     /// should use `encode(_:into:)` with a pre-allocated scratch.
-    static func encode(_ state: GameState, encoding: InputEncoding = .basic30) -> [Float] {
+    static func encode(
+        _ current: GameState,
+        history: [GameState] = [],
+        perspective: PieceColor? = nil,
+        encoding: InputEncoding = .basic30
+    ) -> [Float] {
         var tensor = [Float](repeating: 0, count: tensorLength(for: encoding))
         tensor.withUnsafeMutableBufferPointer { buf in
-            encode(state, into: buf, encoding: encoding)
+            encode(current, history: history, perspective: perspective, into: buf, encoding: encoding)
         }
         return tensor
     }

@@ -802,8 +802,13 @@ enum CheckpointManager {
             // deliberately differs on.
             if wantsReplayBuffer, let written = writtenSnap {
                 let scratchCapacity = max(1, written.storedCount)
-                let scratch = ReplayBuffer(capacity: scratchCapacity)
+                let scratch: ReplayBuffer
                 do {
+                    // Match the just-written file's per-position stride (per
+                    // architecture — e.g. basic20 = 1280) so the verify
+                    // restore doesn't reject it on a stride mismatch.
+                    let scratchFloatsPerBoard = try ReplayBuffer.peekFloatsPerBoard(at: bufferTmpURL)
+                    scratch = ReplayBuffer(capacity: scratchCapacity, floatsPerBoard: scratchFloatsPerBoard)
                     try scratch.restore(from: bufferTmpURL)
                 } catch {
                     throw CheckpointManagerError.replayVerificationFailed(

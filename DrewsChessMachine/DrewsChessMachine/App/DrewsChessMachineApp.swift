@@ -824,7 +824,8 @@ struct DrewsChessMachineApp: App {
         let buffer: ReplayBuffer
         do {
             let cap = try ReplayBuffer.peekCapacity(at: bufferURL)
-            let b = ReplayBuffer(capacity: cap)
+            let fpb = try ReplayBuffer.peekFloatsPerBoard(at: bufferURL)
+            let b = ReplayBuffer(capacity: cap, floatsPerBoard: fpb)
             try b.restore(from: bufferURL)
             buffer = b
         } catch {
