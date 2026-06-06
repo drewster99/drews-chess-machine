@@ -252,7 +252,7 @@ final class LichessProbeWatcher {
         // sets, each recorded to its own history against identical
         // weights — so the two trajectories are directly comparable.
         let encodeStart = DispatchTime.now().uptimeNanoseconds
-        let combined = ensureCombined()
+        let combined = ensureCombined(encoding: net.inputEncoding)
         let encodeMs = elapsedMs(since: encodeStart)
 
         let batch = await TacticalProbeRunner.runBatch(
@@ -335,7 +335,7 @@ final class LichessProbeWatcher {
     /// pre-encoded board tensor, and the split boundary. Cached because
     /// the boards never change — only the weights do — so the ~4,635-
     /// position encode runs a single time, on the first tick.
-    private func ensureCombined() -> (probes: [TacticalProbe], input: [Float], primaryCount: Int) {
+    private func ensureCombined(encoding: InputEncoding) -> (probes: [TacticalProbe], input: [Float], primaryCount: Int) {
         if let probes = combinedProbes, let input = combinedInput {
             return (probes, input, primaryCount)
         }
@@ -345,9 +345,9 @@ final class LichessProbeWatcher {
             probes += wideProbes
         }
         var input = [Float]()
-        input.reserveCapacity(probes.count * BoardEncoder.tensorLength)
+        input.reserveCapacity(probes.count * BoardEncoder.tensorLength(for: encoding))
         for probe in probes {
-            input.append(contentsOf: BoardEncoder.encode(probe.state))
+            input.append(contentsOf: BoardEncoder.encode(probe.state, encoding: encoding))
         }
         combinedProbes = probes
         combinedInput = input

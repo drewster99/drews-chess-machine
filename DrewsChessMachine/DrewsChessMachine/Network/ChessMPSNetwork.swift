@@ -37,6 +37,15 @@ enum NetworkInitMode {
 final class ChessMPSNetwork: @unchecked Sendable {
     let network: ChessNetwork
 
+    /// The architecture this network was built from. Convenience for the
+    /// common `someMPSNet.network.arch` hop. Source of the input encoding
+    /// every board fed to this network must be encoded with.
+    var arch: NetworkArchitecture { network.arch }
+
+    /// Input encoding this network expects — every `BoardEncoder.encode`
+    /// feeding it must use this so the tensor width matches the stem.
+    var inputEncoding: InputEncoding { network.arch.inputEncoding }
+
     /// Time taken to build the graph and initialize weights, in milliseconds.
     let buildTimeMs: Double
 
@@ -112,8 +121,8 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// restarting on terminal positions, until the batch is full.
     /// Outputs are concatenated `BoardEncoder.encode` tensors in the
     /// position-major NCHW layout the network expects.
-    private static func warmupBatch() -> [Float] {
-        let perBoard = BoardEncoder.tensorLength
+    private static func warmupBatch(encoding: InputEncoding) -> [Float] {
+        let perBoard = BoardEncoder.tensorLength(for: encoding)
         var out = [Float](repeating: 0, count: warmupBatchSize * perBoard)
         var state = GameState.starting
         var ply = 0
@@ -132,7 +141,7 @@ final class ChessMPSNetwork: @unchecked Sendable {
                     start: base.advanced(by: ply * perBoard),
                     count: perBoard
                 )
-                BoardEncoder.encode(state, into: slot)
+                BoardEncoder.encode(state, into: slot, encoding: encoding)
                 ply += 1
                 guard let move = MoveGenerator.legalMoves(for: state).randomElement() else {
                     // No legal moves (mate/stalemate) — reset to the opening
@@ -161,7 +170,7 @@ final class ChessMPSNetwork: @unchecked Sendable {
         // activation distribution → different needed running stats).
         let trainingNet = try ChessNetwork(arch: inference.arch, bnMode: .training)
         trainingNet.commandQueue.label = "calibrateBNRunningStats trainingNet"
-        let boards = warmupBatch()
+        let boards = warmupBatch(encoding: inference.arch.inputEncoding)
 
         // Bridge async → sync via a semaphore + a Sendable holder for
         // the caught error. The work runs on each network's private

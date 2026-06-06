@@ -258,7 +258,7 @@ enum TacticalProbeRunner {
 /// returns a `.error`-verdict result so the caller's batch summary
 /// stays well-formed.
 static func run(_ probe: TacticalProbe, against net: ChessMPSNetwork) async -> ProbeResult {
-    let boardTensor = BoardEncoder.encode(probe.state)
+    let boardTensor = BoardEncoder.encode(probe.state, encoding: net.inputEncoding)
 
     // Forward pass #1: raw policy logits. Box them into a Sendable
     // holder so the @Sendable consume closure can write into a value

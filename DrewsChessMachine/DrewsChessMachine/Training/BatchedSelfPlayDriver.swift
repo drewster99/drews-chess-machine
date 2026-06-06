@@ -182,7 +182,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     }
 
     deinit {
-        let boardFloats = BoardEncoder.tensorLength
+        let boardFloats = BoardEncoder.tensorLength(for: network.inputEncoding)
         if let p = tickScratch {
             p.deinitialize(count: tickScratchCapK * boardFloats); p.deallocate()
         }
@@ -306,7 +306,11 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
 
     private func runOneTick(P: Int) async {
         let K = games.count
-        let boardFloats = BoardEncoder.tensorLength
+        // Encoding the champion network expects (per architecture). Hoisted
+        // into a Sendable local so the parallel encode closure below captures
+        // it without reaching for `self`.
+        let encoding = network.inputEncoding
+        let boardFloats = BoardEncoder.tensorLength(for: encoding)
         guard let scratch = tickScratch,
               let policyOut = policyResultScratch,
               let valueOut = valueResultScratch,
@@ -342,7 +346,8 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                         let dst = scratchCarrier.pointer + i * boardFloats
                         BoardEncoder.encode(
                             g.engine.state,
-                            into: UnsafeMutableBufferPointer(start: dst, count: boardFloats)
+                            into: UnsafeMutableBufferPointer(start: dst, count: boardFloats),
+                            encoding: encoding
                         )
                         i += P
                     }
@@ -773,7 +778,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
     private func ensureScratchCapacity(_ K: Int) {
         if K <= tickScratchCapK { return }
         let newCap = max(K, tickScratchCapK * 2)
-        let boardFloats = BoardEncoder.tensorLength
+        let boardFloats = BoardEncoder.tensorLength(for: network.inputEncoding)
         let policySize = ChessNetwork.policySize
         let scratchCap = MoveSampler.scratchCapacity
 

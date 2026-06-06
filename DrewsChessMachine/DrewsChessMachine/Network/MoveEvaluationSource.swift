@@ -93,6 +93,12 @@ struct PolicyDestination: @unchecked Sendable {
 /// possible. This replaces the previous `[Float]`-returning contract,
 /// which paid a fresh policy allocation on every move.
 protocol MoveEvaluationSource: AnyObject, Sendable {
+    /// Input encoding the backing network expects. Callers MUST encode
+    /// every board they pass to `evaluate` with this encoding so the
+    /// tensor width matches the network's stem (basic20 = 1280 floats,
+    /// basic30 = 1920).
+    var inputEncoding: InputEncoding { get }
+
     func evaluate(
         encodedBoard: [Float],
         intoPolicy: PolicyDestination
@@ -116,6 +122,8 @@ protocol MoveEvaluationSource: AnyObject, Sendable {
 /// invalidating any outstanding policy buffer.
 final class DirectMoveEvaluationSource: MoveEvaluationSource, @unchecked Sendable {
     let network: ChessMPSNetwork
+
+    var inputEncoding: InputEncoding { network.inputEncoding }
 
     init(network: ChessMPSNetwork) {
         self.network = network
@@ -192,6 +200,8 @@ final class LiveTrainerMoveEvaluationSource: MoveEvaluationSource, @unchecked Se
     private let mirror: ChessMPSNetwork
     private let direct: DirectMoveEvaluationSource
 
+    var inputEncoding: InputEncoding { mirror.inputEncoding }
+
     init(trainer: ChessTrainer, mirror: ChessMPSNetwork) {
         self.trainer = trainer
         self.mirror = mirror
@@ -242,6 +252,8 @@ final class LiveTrainerMoveEvaluationSource: MoveEvaluationSource, @unchecked Se
 final class UIGatedMoveEvaluationSource: MoveEvaluationSource, @unchecked Sendable {
     private let inner: MoveEvaluationSource
     private let pacer: HumanPlayPacer
+
+    var inputEncoding: InputEncoding { inner.inputEncoding }
 
     init(wrapping inner: MoveEvaluationSource, pacer: HumanPlayPacer) {
         self.inner = inner

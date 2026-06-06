@@ -72,7 +72,11 @@ extension SessionController {
         if continueMode, let existing = replayBuffer {
             buffer = existing
         } else {
-            buffer = ReplayBuffer(capacity: TrainingParameters.shared.replayBufferCapacity)
+            // Buffer stride must match the encoding self-play produces — the
+            // champion network's per-architecture input encoding.
+            buffer = ReplayBuffer(
+                capacity: TrainingParameters.shared.replayBufferCapacity,
+                floatsPerBoard: BoardEncoder.tensorLength(for: network.inputEncoding))
             replayBuffer = buffer
         }
         // Seed the buffer's per-batch sampling constraints from the

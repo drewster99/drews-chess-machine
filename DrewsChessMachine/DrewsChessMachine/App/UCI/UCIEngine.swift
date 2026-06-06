@@ -233,9 +233,10 @@ enum UCIEngine {
         }
 
         let state = engine.state
-        var encodedBuffer = [Float](repeating: 0, count: BoardEncoder.tensorLength)
+        let encoding = session.source.inputEncoding
+        var encodedBuffer = [Float](repeating: 0, count: BoardEncoder.tensorLength(for: encoding))
         encodedBuffer.withUnsafeMutableBufferPointer { buf in
-            BoardEncoder.encode(state, into: buf)
+            BoardEncoder.encode(state, into: buf, encoding: encoding)
         }
         // Rebind to a `let` so the @Sendable closure passed to
         // syncWait below captures an immutable value rather than the

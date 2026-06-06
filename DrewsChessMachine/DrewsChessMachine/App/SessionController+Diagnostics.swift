@@ -134,7 +134,7 @@ extension SessionController {
         if let net = net {
             ran += 1
             do {
-                let board = BoardEncoder.encode(.starting)
+                let board = BoardEncoder.encode(.starting, encoding: net.inputEncoding)
                 // Uses `SyncBox<[Float]>` so the lock discipline is explicit
                 // — the `consume` closure's happens-before guarantee with the
                 // post-await read lives outside this file and would break
@@ -216,8 +216,8 @@ extension SessionController {
         )
 
         do {
-            let board1 = BoardEncoder.encode(pos1)
-            let board2 = BoardEncoder.encode(pos2)
+            let board1 = BoardEncoder.encode(pos1, encoding: net.inputEncoding)
+            let board2 = BoardEncoder.encode(pos2, encoding: net.inputEncoding)
             // SyncBox over the (policy, value) pair so the post-await
             // read sees both fields under a single lock, with no
             // nonisolated(unsafe) capture. See the matching note in

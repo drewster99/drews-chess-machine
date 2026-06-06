@@ -33,10 +33,13 @@ final class ActiveGame: @unchecked Sendable {
 
     // MARK: - Constants
 
-    /// Per-position encoded-board size in floats. Cached here so init
-    /// math doesn't need to reach into `BoardEncoder` for every slot
-    /// allocation.
-    private static let boardFloats = BoardEncoder.tensorLength
+    /// Per-position encoded-board size in floats, for the encoding the
+    /// game's networks expect (per architecture — white and black are the
+    /// same arch). Used by the per-side staging math and deinit. `init`
+    /// can't use this computed accessor before every stored property is
+    /// set, so it derives the same value from the `whiteNetwork` parameter
+    /// directly and passes it into `allocBoardScratch`.
+    private var boardFloats: Int { BoardEncoder.tensorLength(for: whiteNetwork.inputEncoding) }
 
     // MARK: - Identity (set once at init or per-game reset)
 
@@ -216,8 +219,12 @@ final class ActiveGame: @unchecked Sendable {
         let sideCap = (capPlies + 1) / 2
         self.perSideCap = sideCap
 
-        self.whiteBoardScratch = Self.allocBoardScratch(sideCap)
-        self.blackBoardScratch = Self.allocBoardScratch(sideCap)
+        // Encoded-board width for these networks' architecture. Derived from
+        // the parameter (not the computed `boardFloats`, which can't run
+        // until every stored property is initialized).
+        let bf = BoardEncoder.tensorLength(for: whiteNetwork.inputEncoding)
+        self.whiteBoardScratch = Self.allocBoardScratch(sideCap, boardFloats: bf)
+        self.blackBoardScratch = Self.allocBoardScratch(sideCap, boardFloats: bf)
         self.whitePolicyIndices = Self.allocInt32(sideCap)
         self.blackPolicyIndices = Self.allocInt32(sideCap)
         self.whitePlyIndices = Self.allocUInt16(sideCap)
@@ -231,7 +238,7 @@ final class ActiveGame: @unchecked Sendable {
     }
 
     deinit {
-        let bf = Self.boardFloats
+        let bf = boardFloats
         whiteBoardScratch.deinitialize(count: perSideCap * bf)
         whiteBoardScratch.deallocate()
         blackBoardScratch.deinitialize(count: perSideCap * bf)
@@ -322,7 +329,7 @@ final class ActiveGame: @unchecked Sendable {
         samplingTau: Float,
         materialCount: UInt8
     ) {
-        let bf = Self.boardFloats
+        let bf = boardFloats
         switch side {
         case .white:
             precondition(
@@ -485,7 +492,7 @@ final class ActiveGame: @unchecked Sendable {
     /// it's safe to discard buffer contents — we're between games.
     private func growSideScratches(to newCap: Int) {
         precondition(newCap > perSideCap, "ActiveGame.growSideScratches: must strictly increase")
-        let bf = Self.boardFloats
+        let bf = boardFloats
 
         whiteBoardScratch.deinitialize(count: perSideCap * bf); whiteBoardScratch.deallocate()
         blackBoardScratch.deinitialize(count: perSideCap * bf); blackBoardScratch.deallocate()
@@ -500,8 +507,8 @@ final class ActiveGame: @unchecked Sendable {
         whiteMaterialCounts.deinitialize(count: perSideCap); whiteMaterialCounts.deallocate()
         blackMaterialCounts.deinitialize(count: perSideCap); blackMaterialCounts.deallocate()
 
-        whiteBoardScratch = Self.allocBoardScratch(newCap)
-        blackBoardScratch = Self.allocBoardScratch(newCap)
+        whiteBoardScratch = Self.allocBoardScratch(newCap, boardFloats: bf)
+        blackBoardScratch = Self.allocBoardScratch(newCap, boardFloats: bf)
         whitePolicyIndices = Self.allocInt32(newCap)
         blackPolicyIndices = Self.allocInt32(newCap)
         whitePlyIndices = Self.allocUInt16(newCap)
@@ -518,7 +525,7 @@ final class ActiveGame: @unchecked Sendable {
 
     // MARK: - Allocation helpers
 
-    private static func allocBoardScratch(_ sideCap: Int) -> UnsafeMutablePointer<Float> {
+    private static func allocBoardScratch(_ sideCap: Int, boardFloats: Int) -> UnsafeMutablePointer<Float> {
         let count = sideCap * boardFloats
         let p = UnsafeMutablePointer<Float>.allocate(capacity: count)
         p.initialize(repeating: 0, count: count)

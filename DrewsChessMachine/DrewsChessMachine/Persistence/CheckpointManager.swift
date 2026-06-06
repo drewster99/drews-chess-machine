@@ -1069,7 +1069,7 @@ enum CheckpointManager {
             throw CheckpointManagerError.verificationScratchBuildFailed(error)
         }
 
-        let testBoard = BoardEncoder.encode(.starting)
+        let testBoard = BoardEncoder.encode(.starting, encoding: architecture.inputEncoding)
 
         // For v2 trainer files the scratch inference network can
         // only load the base prefix (trainables + bn), not the
