@@ -1,6 +1,10 @@
 # Self-play game corpus — design plan
 
-Status: **PLANNED, not started.** Branch: `safetensors-storage`. Created 2026-06-06.
+Status: **TABLED — deferred.** Captured for later; not the current focus (that's
+`FULL10PLY200_PLAN.md`). This feature is independent of full10ply200 — full10ply200 sources
+its history from the live `ChessGameEngine` window, not from this corpus — so tabling B
+does not block A. The emit-completeness regression test (invariants 1–5) is specced here
+and travels with this workstream. Branch: `safetensors-storage`. Created 2026-06-06.
 
 ## Goal
 
