@@ -13,9 +13,11 @@ current 20-plane `basic20` block repeated 10× for plies N, N-1, … N-9. No new
 or presence planes. This is an *additional* option, not a replacement, and is selectable
 when building a new network (not a named preset).
 
-It composes with a training-time augmentation, `historyDropoutProbability`, that
-sometimes feeds the net only frame N (history zeroed) to regularize against
-over-reliance on history.
+A companion training-time augmentation, `historyDropoutProbability` (feed the net
+only frame N for some fraction of sampled positions, to regularize against
+over-reliance on history), is **DEFERRED to future work** — tracked in
+`ROADMAP.md` under "Future improvements". The current scope is **Phases 1–4
+only**; Phase 5 below is retained for when it's picked up.
 
 ## Locked design decisions
 
@@ -128,7 +130,11 @@ the `basic30` default stride):
 - Add `full10ply200` to the input-encoding picker on the Build-New-Network screen (a
   selectable option, not a preset).
 
-## Phase 5 — `historyDropoutProbability` augmentation
+## Phase 5 — `historyDropoutProbability` augmentation — DEFERRED (see ROADMAP.md)
+
+> **Deferred to future work.** Not part of the current full10ply200 scope
+> (Phases 1–4). Spec retained below for when it's picked up.
+
 
 Sometimes train on frame-N-only (history zeroed) to regularize against history
 over-reliance. Binary (not random-depth): with probability *p*, zero frames N-1…N-9.

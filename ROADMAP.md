@@ -11,6 +11,23 @@ original rationale is not lost.
 
 ## Future improvements (validated open)
 
+- **History dropout (training-time input masking) — deferred future feature.**
+  For history-stacking input encodings (`full10ply200`), a
+  `historyDropoutProbability` ∈ [0,1] training augmentation: with probability *p*,
+  a sampled position has its history frames (planes 20–199) zeroed so the net
+  trains on frame N only — regularizing against over-reliance on history (a known
+  failure mode for history-input nets that AZ/Lc0 did not deliberately address).
+  **Binary** (not random-depth), applied at *sample* time in `ChessTrainer` (one
+  `vDSP_vclr` per masked position, before GPU upload) so the real full history
+  stays in the replay buffer and the same position can be seen with/without
+  history across epochs. `liveTunable`, default 0, **no-op for single-frame
+  encodings** (basic20/basic30). Self-play / arena / Play Game always feed real
+  full history (train-with-dropout, play-clean). Full spec + the
+  `@TrainingParameter`-checklist touchpoints live in `FULL10PLY200_PLAN.md`
+  (Phase 5). **Not in the current full10ply200 scope (Phases 1–4); revisit after
+  the encoding is training cleanly and we can measure whether history
+  over-reliance actually appears.**
+
 - **Long-run UI hang + throughput decline (investigated 2026-06-05).** Symptom:
   after ~12 h a session develops a periodic ~1 s main-thread hang on the
   heartbeat cadence, and self-play/training throughput declines ~25 % over a
