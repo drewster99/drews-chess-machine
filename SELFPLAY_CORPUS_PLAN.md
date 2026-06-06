@@ -38,8 +38,21 @@ units.
   fixed-by-engine today).
 - **Outcome** — raw per-ply result from side-to-move's perspective, z ∈ {−1,0,+1}; both
   value heads derive their target from it.
+- **Behavior-policy probability of the played move** — the post-mask, post-temperature
+  softmax probability the *generating* net assigned to the move it actually played. A
+  single float; encoding-independent (it's a probability tied to the played move, not to
+  the input representation). Already computed by the sampler at emit time.
+- **Value-head scalar** — the generating net's perspective-adjusted value at that
+  position, v ∈ [−1,+1] (for `wdl_softmax`, v = p_win − p_loss; for `scalar_tanh`, the
+  tanh scalar). Head-agnostic single float; available at eval time.
 - **Side to move**, **ply index**, **sampling tau**, **material count**, **game length**,
   **worker/game id** — metadata (ply + game id let you regroup/order even a flat stream).
+
+The behavior-policy probability and value scalar are *generation-time* data (what the
+champion net believed), distinct from the *targets* (played move, outcome). They are
+captured now — cheap (~2 floats/ply) and impossible to backfill once the generating net is
+replaced — and unlock principled off-policy correction (importance sampling / V-trace) and
+TD/bootstrapped value targets later. See "Consumption deferred" below.
 
 ## Derived at stream time — NOT stored
 
@@ -47,6 +60,31 @@ Encoded board tensor (per target encoding), state hash (recompute, or move it to
 `PositionKey` hash so it's encoding-stable), the value-target representation, and the
 full10ply200 history stack. Re-encoding regenerates all of these; the engine regenerates
 repetition masks and the history window when moves are replayed.
+
+## Corpus stream format (versioned)
+
+The stream is **self-describing and versioned** so fields can be added later without
+invalidating existing corpus files (the way Lc0 evolved chunk formats v3→v6):
+
+- **Stream header** with a `format_version` (start at 1) plus engine-identity pins a
+  reader can check for compatibility: `PolicyEncoding` version (we store moves and derive
+  policy indices), board/policy dims (fixed-by-engine today, but recorded so a future
+  reader detects mismatch), and creation timestamp.
+- **Per-game header**: outcome, game length, worker/game id, and the **generating
+  champion `ModelID`** (provenance — needed to reason about off-policy distance/staleness
+  once the behavior data is consumed; reconstructable only fuzzily from timestamps
+  otherwise).
+- **Per-ply records**: the fields listed above, including the behavior-policy probability
+  and value scalar from v1 onward.
+
+A reader keys off `format_version` to know which fields are present. A tiny round-trip
+test should assert the header version is written and read back, and that an unknown/newer
+version is rejected rather than silently misparsed.
+
+**Replay buffer is unchanged today.** The behavior-policy probability and value scalar
+live only in the stream format; the current re-stream path can ignore them. No new buffer
+columns now — when off-policy / TD training is actually built, the buffer and trainer get
+extended to carry/use them, and the data is already in the corpus (no regeneration).
 
 ## Structural requirement
 
@@ -79,19 +117,15 @@ legal, complete, and reproduces the emitted sequence bit-exact (matching the sui
 existing bit-exact round-trip style). Re-assert invariants 1–5 against the *corpus* emit,
 not just the buffer.
 
-## Later / deferred — off-policy hedge fields
+## Consumption deferred (data captured now)
 
-Not needed for the current supervised regime (hard move targets + Monte-Carlo outcomes),
-but **cheap now and impossible to backfill** (the generating net is gone once it's
-replaced). Decide whether to add before the corpus format is frozen:
+The behavior-policy probability, value scalar, and generating `ModelID` are **captured in
+the v1 format now** (decided), because they're cheap and impossible to backfill. What's
+deferred is *using* them — the current supervised regime (hard move targets + Monte-Carlo
+outcomes) ignores them. When wanted, off-policy correction (importance sampling / V-trace)
+and TD/bootstrapped value targets are built by extending the buffer + trainer to carry and
+consume these fields; no self-play regeneration needed since the corpus already has them.
 
-- **Behavior-policy probability of the played move** per ply (the post-mask,
-  post-temperature softmax prob the *generating* net assigned), optionally the net's
-  **value scalar** at that ply — enables principled off-policy correction (importance
-  sampling / V-trace) and TD/bootstrapped value targets if ever wanted. ~1–2 floats/ply.
-- **Generating champion `ModelID`** per game — provenance for off-policy distance /
-  staleness reasoning and experiment analysis (reconstructable only fuzzily from
-  timestamps otherwise).
-
-MCTS visit-count policy targets would also require richer emit, but search is an explicit
-non-goal — noted and dismissed.
+MCTS visit-count policy targets would require richer emit still (a full distribution per
+ply, not the single played move + its probability), but search is an explicit non-goal —
+noted and dismissed.

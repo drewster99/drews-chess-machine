@@ -2697,68 +2697,91 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: dtype,
             name: "value_label_smoothing_epsilon"
         )
-        // idx = 1 − z. z is [batch, 1] float in {−1, 0, +1} (exact in
-        // FP32), so `1 − z ∈ {2, 1, 0}` is exact; casting to int32
-        // truncates toward zero, which is identity on those values and
-        // maps a `-drawPenalty` rewrite as described above. With the
-        // current drawPenalty range ([0, 1]) the rewritten z stays in
-        // [-1, 0], so `1 − z ∈ [1, 2]` and the truncated index is
-        // always in {1, 2} ⊂ {0, 1, 2} — but clamp to [0, 2] anyway
-        // (same defensive stance as the policy path's `max(|legal|, 1)`
-        // guard): an out-of-range oneHot index would silently produce
-        // an all-zero, gradient-free target row, not an error. oneHot
-        // adds the class axis, so reshape the indices to rank-1 first.
-        let valueSlotOneFloat = graph.constant(1.0, dataType: dtype)
-        let valueSlotIndexFloat = graph.subtraction(valueSlotOneFloat, z, name: "value_slot_index_float")
-        let valueSlotIndexLow = graph.constant(0.0, dataType: dtype)
-        let valueSlotIndexHigh = graph.constant(Double(network.arch.valueHeadClasses - 1), dataType: dtype)
-        let valueSlotIndexClamped = graph.minimum(
-            graph.maximum(valueSlotIndexFloat, valueSlotIndexLow, name: "value_slot_index_lo"),
-            valueSlotIndexHigh,
-            name: "value_slot_index_clamped"
-        )
-        let valueSlotIndexInt = graph.cast(valueSlotIndexClamped, to: .int32, name: "value_slot_index")
-        let valueSlotIndexFlat = graph.reshape(valueSlotIndexInt, shape: [-1], name: "value_slot_index_flat")
-        let valueOneHot = graph.oneHot(
-            withIndicesTensor: valueSlotIndexFlat,
-            depth: 3,
-            axis: 1,
-            dataType: dtype,
-            onValue: 1.0,
-            offValue: 0.0,
-            name: "value_onehot"
-        )
-        // smoothed = (1 − ε)·oneHot + ε·(1/3). At ε = 0 this is
-        // bit-exact the hard one-hot.
-        let valueOneMinusEps = graph.subtraction(
-            valueSlotOneFloat,
-            valueLabelSmoothingEpsilonTensor,
-            name: "value_label_smoothing_one_minus_eps"
-        )
-        let valueUniformConst = graph.constant(1.0 / 3.0, shape: [1, 3], dataType: dtype)
-        let valueSmoothedTarget = graph.addition(
-            graph.multiplication(valueOneHot, valueOneMinusEps, name: "value_smoothed_target_onehot_part"),
-            graph.multiplication(valueUniformConst, valueLabelSmoothingEpsilonTensor, name: "value_smoothed_target_uniform_part"),
-            name: "value_smoothed_target"
-        )
-        // softMaxCrossEntropy has an autodiff rule and accepts an
-        // arbitrary (here: smoothed) label tensor — same reasoning as
-        // the policy CE above.
-        let valueCEPerPos = graph.softMaxCrossEntropy(
-            network.valueLogits,
-            labels: valueSmoothedTarget,
-            axis: 1,
-            reuctionType: .none,
-            name: "value_ce_raw"
-        )
-        // .none reduces the class axis → one loss per batch element
-        // ([batch]); reshape to [batch, 1] so the mean lines up with
-        // the rest of the scalar reductions.
-        let valueCEPerPosReshaped = graph.reshape(valueCEPerPos, shape: [-1, 1], name: "value_ce_per_pos")
-        let valueLoss = narrowReductionResult(
-            graph.mean(of: widenForReduction(valueCEPerPosReshaped), axes: [0, 1], name: "value_loss_f32"),
-            "value_loss"
-        )
+        // The value loss depends on the head style. The W/D/L softmax head
+        // trains with categorical cross-entropy against a smoothed one-hot
+        // on the outcome slot; the scalar tanh head trains with MSE between
+        // its `tanh` scalar and the outcome `z` directly. Both still feed
+        // the same `valueLoss` scalar downstream.
+        let valueLoss: MPSGraphTensor
+        switch network.arch.valueHeadStyle {
+        case .wdlSoftmax:
+            // idx = 1 − z. z is [batch, 1] float in {−1, 0, +1} (exact in
+            // FP32), so `1 − z ∈ {2, 1, 0}` is exact; casting to int32
+            // truncates toward zero, which is identity on those values and
+            // maps a `-drawPenalty` rewrite as described above. With the
+            // current drawPenalty range ([0, 1]) the rewritten z stays in
+            // [-1, 0], so `1 − z ∈ [1, 2]` and the truncated index is
+            // always in {1, 2} ⊂ {0, 1, 2} — but clamp to [0, 2] anyway
+            // (same defensive stance as the policy path's `max(|legal|, 1)`
+            // guard): an out-of-range oneHot index would silently produce
+            // an all-zero, gradient-free target row, not an error. oneHot
+            // adds the class axis, so reshape the indices to rank-1 first.
+            let valueSlotOneFloat = graph.constant(1.0, dataType: dtype)
+            let valueSlotIndexFloat = graph.subtraction(valueSlotOneFloat, z, name: "value_slot_index_float")
+            let valueSlotIndexLow = graph.constant(0.0, dataType: dtype)
+            let valueSlotIndexHigh = graph.constant(Double(network.arch.valueHeadClasses - 1), dataType: dtype)
+            let valueSlotIndexClamped = graph.minimum(
+                graph.maximum(valueSlotIndexFloat, valueSlotIndexLow, name: "value_slot_index_lo"),
+                valueSlotIndexHigh,
+                name: "value_slot_index_clamped"
+            )
+            let valueSlotIndexInt = graph.cast(valueSlotIndexClamped, to: .int32, name: "value_slot_index")
+            let valueSlotIndexFlat = graph.reshape(valueSlotIndexInt, shape: [-1], name: "value_slot_index_flat")
+            let valueOneHot = graph.oneHot(
+                withIndicesTensor: valueSlotIndexFlat,
+                depth: 3,
+                axis: 1,
+                dataType: dtype,
+                onValue: 1.0,
+                offValue: 0.0,
+                name: "value_onehot"
+            )
+            // smoothed = (1 − ε)·oneHot + ε·(1/3). At ε = 0 this is
+            // bit-exact the hard one-hot.
+            let valueOneMinusEps = graph.subtraction(
+                valueSlotOneFloat,
+                valueLabelSmoothingEpsilonTensor,
+                name: "value_label_smoothing_one_minus_eps"
+            )
+            let valueUniformConst = graph.constant(1.0 / 3.0, shape: [1, 3], dataType: dtype)
+            let valueSmoothedTarget = graph.addition(
+                graph.multiplication(valueOneHot, valueOneMinusEps, name: "value_smoothed_target_onehot_part"),
+                graph.multiplication(valueUniformConst, valueLabelSmoothingEpsilonTensor, name: "value_smoothed_target_uniform_part"),
+                name: "value_smoothed_target"
+            )
+            // softMaxCrossEntropy has an autodiff rule and accepts an
+            // arbitrary (here: smoothed) label tensor — same reasoning as
+            // the policy CE above.
+            let valueCEPerPos = graph.softMaxCrossEntropy(
+                network.valueLogits,
+                labels: valueSmoothedTarget,
+                axis: 1,
+                reuctionType: .none,
+                name: "value_ce_raw"
+            )
+            // .none reduces the class axis → one loss per batch element
+            // ([batch]); reshape to [batch, 1] so the mean lines up with
+            // the rest of the scalar reductions.
+            let valueCEPerPosReshaped = graph.reshape(valueCEPerPos, shape: [-1, 1], name: "value_ce_per_pos")
+            valueLoss = narrowReductionResult(
+                graph.mean(of: widenForReduction(valueCEPerPosReshaped), axes: [0, 1], name: "value_loss_f32"),
+                "value_loss"
+            )
+
+        case .scalarTanh:
+            // MSE between the tanh value scalar (`network.valueOutput`, which
+            // is the raw tanh for this head style) and the outcome target z.
+            // Label smoothing is a W/D/L-distribution concept and does not
+            // apply here, so `valueLabelSmoothingEpsilonTensor` is unused on
+            // this path (still created + fed so the graph/feed shape is
+            // stable across head styles).
+            let valueDiff = graph.subtraction(network.valueOutput, z, name: "value_tanh_diff")
+            let valueSq = graph.multiplication(valueDiff, valueDiff, name: "value_tanh_sq")
+            valueLoss = narrowReductionResult(
+                graph.mean(of: widenForReduction(valueSq), axes: [0, 1], name: "value_loss_f32"),
+                "value_loss"
+            )
+        }
 
         // --- Value-head output diagnostics ---
         //
@@ -2785,12 +2808,27 @@ final class ChessTrainer: @unchecked Sendable {
             axes: [0, 1],
             name: "value_abs_mean"
         )
-        let valueProbWinCol = graph.sliceTensor(network.valueProbs, dimension: 1, start: 0, length: 1, name: "value_prob_win_col")
-        let valueProbDrawCol = graph.sliceTensor(network.valueProbs, dimension: 1, start: 1, length: 1, name: "value_prob_draw_col")
-        let valueProbLossCol = graph.sliceTensor(network.valueProbs, dimension: 1, start: 2, length: 1, name: "value_prob_loss_col")
-        let valueProbWin = graph.mean(of: valueProbWinCol, axes: [0, 1], name: "value_prob_win")
-        let valueProbDraw = graph.mean(of: valueProbDrawCol, axes: [0, 1], name: "value_prob_draw")
-        let valueProbLoss = graph.mean(of: valueProbLossCol, axes: [0, 1], name: "value_prob_loss")
+        // W/D/L probability means exist only for the 3-column softmax head;
+        // the scalar tanh head's `valueProbs` is a single column, so slicing
+        // columns 1/2 would be out of bounds. Report zeros there so the
+        // stats readback slots stay well-formed (the UI's W/D/L row simply
+        // reads flat for a tanh net).
+        let valueProbWin: MPSGraphTensor
+        let valueProbDraw: MPSGraphTensor
+        let valueProbLoss: MPSGraphTensor
+        switch network.arch.valueHeadStyle {
+        case .wdlSoftmax:
+            let valueProbWinCol = graph.sliceTensor(network.valueProbs, dimension: 1, start: 0, length: 1, name: "value_prob_win_col")
+            let valueProbDrawCol = graph.sliceTensor(network.valueProbs, dimension: 1, start: 1, length: 1, name: "value_prob_draw_col")
+            let valueProbLossCol = graph.sliceTensor(network.valueProbs, dimension: 1, start: 2, length: 1, name: "value_prob_loss_col")
+            valueProbWin = graph.mean(of: valueProbWinCol, axes: [0, 1], name: "value_prob_win")
+            valueProbDraw = graph.mean(of: valueProbDrawCol, axes: [0, 1], name: "value_prob_draw")
+            valueProbLoss = graph.mean(of: valueProbLossCol, axes: [0, 1], name: "value_prob_loss")
+        case .scalarTanh:
+            valueProbWin = graph.constant(0.0, dataType: dtype)
+            valueProbDraw = graph.constant(0.0, dataType: dtype)
+            valueProbLoss = graph.constant(0.0, dataType: dtype)
+        }
 
         // --- Policy entropy ---
         //
