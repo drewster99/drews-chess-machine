@@ -13,6 +13,16 @@ final class CombinedLossWindowController: NSWindowController, NSWindowDelegate {
     init(coordinator: ChartCoordinator, evalHistory: LichessProbeHistory) {
         let view = CombinedLossChartView(coordinator: coordinator, evalHistory: evalHistory)
         let hosting = NSHostingController(rootView: view)
+        // The root SwiftUI view fills available space (`maxHeight: .infinity`),
+        // which makes its fitting height unbounded. With the hosting
+        // controller's default `.preferredContentSize` sizing, AppKit feeds
+        // that unbounded height back as the window's content size during the
+        // first user-driven resize/move layout pass, so the window snaps to
+        // full screen height (under the dock and past it) and can't be made
+        // smaller again. Detaching content-driven sizing makes the window
+        // size purely user-controlled, with `setContentSize`/`minSize` below
+        // as the only policy.
+        hosting.sizingOptions = []
         let window = NSWindow(contentViewController: hosting)
         window.setContentSize(NSSize(width: 900, height: 520))
         window.minSize = NSSize(width: 520, height: 320)

@@ -110,8 +110,10 @@ struct CombinedLossChartView: View {
 
         let xs = trainPlot.map { Double($0.x) } + evalPlot.map { Double($0.x) }
 
-        var trainYs = trainPlot.map { Double($0.y) }
-        var evalYs = evalPlot.map { Double($0.y) }
+        let trainRawYs = trainPlot.map { Double($0.y) }
+        let evalRawYs = evalPlot.map { Double($0.y) }
+        let trainEMAYs = emaEnabled ? FastChartMath.ema(trainRawYs, span: emaSpan) : []
+        let evalEMAYs = emaEnabled ? FastChartMath.ema(evalRawYs, span: emaSpan) : []
 
         var series: [FastChartSeries] = []
         if !trainPlot.isEmpty {
@@ -123,9 +125,7 @@ struct CombinedLossChartView: View {
                 yAxis: .primary
             ))
             if emaEnabled {
-                let ey = FastChartMath.ema(trainPlot.map { Double($0.y) }, span: emaSpan)
-                trainYs.append(contentsOf: ey)
-                let pts = trainPlot.indices.map { CGPoint(x: trainPlot[$0].x, y: CGFloat(ey[$0])) }
+                let pts = trainPlot.indices.map { CGPoint(x: trainPlot[$0].x, y: CGFloat(trainEMAYs[$0])) }
                 series.append(FastChartSeries(
                     id: "train EMA", color: .indigo, lineWidth: 2.5,
                     data: .points(pts), yAxis: .primary
@@ -141,15 +141,24 @@ struct CombinedLossChartView: View {
                 yAxis: .secondary
             ))
             if emaEnabled {
-                let ey = FastChartMath.ema(evalPlot.map { Double($0.y) }, span: emaSpan)
-                evalYs.append(contentsOf: ey)
-                let pts = evalPlot.indices.map { CGPoint(x: evalPlot[$0].x, y: CGFloat(ey[$0])) }
+                let pts = evalPlot.indices.map { CGPoint(x: evalPlot[$0].x, y: CGFloat(evalEMAYs[$0])) }
                 series.append(FastChartSeries(
                     id: "eval EMA", color: .red, lineWidth: 2.5,
                     data: .points(pts), yAxis: .secondary
                 ))
             }
         }
+
+        // Auto-scale each Y axis to the *smoothed* (EMA) trajectory plus
+        // padding when the overlay is on, rather than the raw min/max. A
+        // single warm-up/transient raw sample (e.g. the rolling-loss
+        // accumulator still filling at the oldest end of the ring) would
+        // otherwise stretch the axis and waste most of the panel. Raw
+        // points outside the EMA range still draw — the Canvas clips them
+        // to the plot's top/bottom edge. With the EMA off there is no
+        // smoothed curve to scale to, so fall back to the raw extents.
+        let trainDomainYs = emaEnabled ? trainEMAYs : trainRawYs
+        let evalDomainYs = emaEnabled ? evalEMAYs : evalRawYs
 
         let legendItems = [
             FastChartLegendItem(label: "train total loss (left)", color: trainColor),
@@ -160,8 +169,8 @@ struct CombinedLossChartView: View {
             title: "Training vs Eval Loss (X = trainer step)",
             group: chartGroup,
             xDomain: Self.paddedXDomain(xs),
-            yDomain: Self.paddedYDomain(trainYs),
-            secondaryYDomain: evalPlot.isEmpty ? nil : Self.paddedYDomain(evalYs),
+            yDomain: Self.paddedYDomain(trainDomainYs),
+            secondaryYDomain: evalPlot.isEmpty ? nil : Self.paddedYDomain(evalDomainYs),
             secondaryYLabelFormatter: { String(format: "%.2f", $0) },
             secondaryYLabelColor: evalColor,
             series: series,
@@ -259,13 +268,13 @@ struct CombinedLossChartView: View {
         return lo...hi
     }
 
-    /// Y domain fit to the data with 8% padding so the trajectory fills
-    /// the panel instead of being compressed.
+    /// Y domain fit to the data with a small fractional padding so the
+    /// trajectory fills the panel instead of being pinned to the edges.
     static func paddedYDomain(_ values: [Double]) -> ClosedRange<Double> {
         let finite = values.filter(\.isFinite)
         guard let lo = finite.min(), let hi = finite.max() else { return 0...1 }
         if hi <= lo { return (lo - 0.5)...(hi + 0.5) }
-        let pad = (hi - lo) * 0.08
+        let pad = (hi - lo) * 0.10
         return (lo - pad)...(hi + pad)
     }
 }
