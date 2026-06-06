@@ -193,27 +193,33 @@ final class NetworkArchitectureTests: XCTestCase {
         XCTAssertGreaterThan(attenuate.parameterCount, noSE.parameterCount)
     }
 
-    // MARK: guard against ChessNetwork static-constant / preset drift
+    // MARK: guard against default-arch (`.current`) drift
 
-    /// ChessNetwork keeps its static arch constants as the *default* arch; this
-    /// asserts they stay in lockstep with `NetworkArchitecture.current` (the
-    /// single source of truth). Current is v4_5block_7x7 (all kernels 7).
-    func testStaticConstantsMatchCurrentPreset() {
+    /// The per-arch identity constants used to live on `ChessNetwork` as
+    /// static lets and this test asserted they matched `.current`. They were
+    /// removed once architecture became runtime-configurable — the single
+    /// source of truth is now the `NetworkArchitecture` value. This pins the
+    /// concrete identity of the default arch (`.current` = v4_5block_7x7, all
+    /// kernels 7) so an accidental change to what `.current` resolves to is
+    /// caught, plus the genuinely fixed engine constants that remain static.
+    func testCurrentPresetIdentity() {
         let cur = NetworkArchitecture.current
-        XCTAssertEqual(ChessNetwork.channels, cur.channels)
-        XCTAssertEqual(ChessNetwork.numBlocks, cur.numBlocks)
-        XCTAssertEqual(ChessNetwork.towerConvKernelSize, cur.blockConv1KernelSize)
-        XCTAssertEqual(ChessNetwork.towerConvKernelSize, cur.blockConv2KernelSize)
-        XCTAssertEqual(ChessNetwork.towerConvKernelSize, cur.stemConvKernelSize)
-        XCTAssertEqual(ChessNetwork.inputPlanes, cur.inputPlanes)
-        XCTAssertEqual(ChessNetwork.boardSize, cur.boardSize)
-        XCTAssertEqual(ChessNetwork.policyChannels, cur.policyChannels)
-        XCTAssertEqual(ChessNetwork.policySize, cur.policySize)
-        XCTAssertEqual(ChessNetwork.valueHeadClasses, cur.valueHeadClasses)
-        XCTAssertEqual(ChessNetwork.seReductionRatio, cur.blockSeReductionRatio)
-        XCTAssertEqual(ChessNetwork.valueHeadConvChannels, cur.valueHeadConvChannels)
-        XCTAssertEqual(ChessNetwork.valueHeadHiddenUnits, cur.valueHeadHiddenUnits)
-        XCTAssertEqual(ChessNetwork.architectureVersion, cur.architectureVersionLabel)
-        XCTAssertEqual(ChessNetwork.parameterCount, cur.parameterCount)
+        XCTAssertEqual(cur.channels, 128)
+        XCTAssertEqual(cur.numBlocks, 5)
+        XCTAssertEqual(cur.blockConv1KernelSize, 7)
+        XCTAssertEqual(cur.blockConv2KernelSize, 7)
+        XCTAssertEqual(cur.stemConvKernelSize, 7)
+        XCTAssertEqual(cur.inputPlanes, 30)
+        XCTAssertEqual(cur.valueHeadClasses, 3)
+        XCTAssertEqual(cur.blockSeReductionRatio, 4)
+        XCTAssertEqual(cur.valueHeadConvChannels, 16)
+        XCTAssertEqual(cur.valueHeadHiddenUnits, 128)
+        XCTAssertEqual(cur.architectureVersionLabel, 4)
+        // Fixed engine constants still owned by ChessNetwork.
+        XCTAssertEqual(ChessNetwork.boardSize, 8)
+        XCTAssertEqual(ChessNetwork.policyChannels, 76)
+        XCTAssertEqual(ChessNetwork.policySize, 4864)
+        XCTAssertEqual(cur.policyChannels, ChessNetwork.policyChannels)
+        XCTAssertEqual(cur.policySize, ChessNetwork.policySize)
     }
 }

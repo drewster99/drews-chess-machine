@@ -156,7 +156,6 @@ final class ChessNetwork: @unchecked Sendable {
     /// `inputPlanes` etc. are independent of this.
     static let dataType: MPSDataType = .bFloat16
 
-    static let channels = 128
     /// Input plane count. v3 architecture: 20 baseline planes (pieces +
     /// castling + EP + halfmove clock + 2 repetition-count planes) plus
     /// 10 binary temporal-repetition-history planes (planes 20–29 in
@@ -168,122 +167,24 @@ final class ChessNetwork: @unchecked Sendable {
     /// fail to load with a clear shape mismatch at startup.
     static let inputPlanes = 30
     static let boardSize = 8
-    static let numBlocks = 5
-    /// Spatial kernel size of the stem conv and both convs inside every
-    /// residual block. The tower is "same"-padded (stride 1, padding
-    /// `(towerConvKernelSize - 1) / 2` on all four sides) so every conv
-    /// preserves the 8×8 board; that symmetric integer padding only exists
-    /// for *odd* kernels, which is why this is 7 and not an even size.
-    /// Single source of truth — `makeTowerConvDescriptor`, the stem/block
-    /// weight shapes, and `parameterCount` all derive from it.
-    static let towerConvKernelSize = 7
-    /// Bumped whenever the forward-graph *topology* changes in a way the
-    /// shape-only `archHash` can't see (activation swaps, block reordering,
-    /// init scheme). Mixed into `ModelCheckpointFile.currentArchHash` so an
-    /// incompatible-topology checkpoint is rejected up front with a clear
-    /// "architecture mismatch" rather than a deep tensor-count error. The
-    /// value-head dims (`valueHeadConvChannels`, `valueHeadHiddenUnits`) are
-    /// also invisible to that scalar mix — bump this when changing them if
-    /// older checkpoints must be rejected. (Left at v4 across the value-head
-    /// widening on this branch: the in-development v4 checkpoints are
-    /// rebuilt, not loaded.)
-    /// v4: pre-activation (ResNet v2) tower, scale-and-bias SE, per-block
-    /// ReZero scalar, `conv→BN` stem (no stem ReLU), tower-end `BN→ReLU`;
-    /// multi-channel value head (1×1 conv + FC stack — see
-    /// `valueHeadConvChannels` / `valueHeadHiddenUnits` for the dims).
-    static let architectureVersion = 4
     /// Number of policy output channels: 56 queen-style (8 dirs × 7 dists)
     /// + 8 knight + 9 underpromotion (3 pieces × 3 dirs) + 3 queen-promotion
     /// (3 dirs) = 76. See `PolicyEncoding` for the full layout.
     static let policyChannels = 76
     /// Total raw policy logits emitted by the network: `policyChannels × 64`.
     static let policySize = policyChannels * boardSize * boardSize
-    /// Squeeze-and-Excitation reduction ratio inside each residual block:
-    /// the SE module compresses 128 channels to `128 / seReductionRatio` in
-    /// the squeeze MLP before re-expanding to 128 with sigmoid scaling.
-    static let seReductionRatio = 4
-    /// Number of value-head output classes — the W/D/L head emits this
-    /// many raw logits per position, in `[win, draw, loss]` slot order
-    /// (matched to the training target `idx = 1 − z`, z ∈ {+1, 0, −1}).
-    /// Bumped from the prior single tanh scalar; the checkpoint
-    /// `archHash` mixes this so files saved against the scalar head are
-    /// cleanly rejected.
-    static let valueHeadClasses = 3
 
-    /// Value head: number of channels the 1×1 conv compresses the
-    /// `channels`-wide trunk down to before flattening into the FC stack.
-    /// Each output channel is an independent learned scoring map over the
-    /// 64 squares (king-zone pressure, material-on-square, pawn structure,
-    /// …). A single channel — the prior design — forced the entire spatial
-    /// value representation through one 8×8 map, starving the FC stack and
-    /// rendering `value_bn` a near-no-op (per-channel norm over one channel).
-    /// 16 maps is a deliberate middle ground between that bottleneck and
-    /// lc0's 32-channel head, sized to keep the value head a modest fraction
-    /// of the net. The flatten width is `boardSize² × valueHeadConvChannels`.
-    ///
-    /// Not mixed into `ModelCheckpointFile.currentArchHash` (which hashes
-    /// only scalar arch constants, not tensor shapes), so changing this —
-    /// or `valueHeadHiddenUnits` — requires bumping `architectureVersion`
-    /// to reject older checkpoints built against a different value head.
-    static let valueHeadConvChannels = 16
-
-    /// Value head: hidden width of the first FC layer (flatten → hidden →
-    /// W/D/L logits). Sized to consume the widened flatten with real mixing
-    /// capacity; the prior 64 was matched to the old 64-wide flatten and
-    /// would re-bottleneck a `boardSize² × valueHeadConvChannels`-wide one.
-    /// See `valueHeadConvChannels` re: `architectureVersion`.
-    static let valueHeadHiddenUnits = 128
-
-    /// Total persistent-tensor element count for the current architecture
-    /// — trainable weights plus BN running mean/var, matching what
-    /// `exportWeights()` emits and what the analyzer reports as
-    /// `totalParamCount`. Derived purely from the arch constants above so
-    /// it auto-tracks any change to `numBlocks`, `channels`, `inputPlanes`,
-    /// `policyChannels`, or `valueHeadClasses`.
-    ///
-    /// Mirrors the shapes built in graph construction (`residualBlock`,
-    /// `stem`, `policyHead`, `valueHead`); if any of those layer shapes
-    /// change, update this in lockstep — same caveat as
-    /// `NetworkWeightAnalyzer.fanIn`. Used for display only (the About
-    /// popover); the load path never trusts it, validating instead against
-    /// the live variable list.
-    static var parameterCount: Int {
-        let seReduced = channels / seReductionRatio
-        let convKernelArea = towerConvKernelSize * towerConvKernelSize
-        // Per residual block: two same-padded convs, two BN layers
-        // (gamma+beta+mean+var each), the SE fc1/fc2 weights+biases (FC2
-        // now emits 2×channels = gammas‖betas), and the per-block ReZero
-        // scalar α.
-        let convPerBlock = 2 * (channels * channels * convKernelArea)
-        let bnPerBlock = 2 * (4 * channels)
-        let seFC1 = (channels * seReduced) + seReduced
-        let seFC2 = (seReduced * 2 * channels) + (2 * channels)
-        let resScale = 1
-        let perBlock = convPerBlock + bnPerBlock + seFC1 + seFC2 + resScale
-
-        // Stem: same-padded conv (inputPlanes→channels) + one BN layer (no ReLU).
-        let stem = (inputPlanes * channels * convKernelArea) + (4 * channels)
-        // Tower-end BN (γ+β+mean+var) before the heads.
-        let towerFinalBN = 4 * channels
-        // Policy head: 1×1 conv (channels→channels, no bias) → BN(channels)
-        // → ReLU → 1×1 conv (channels→policyChannels) + bias.
-        let policyPreConv = channels * channels
-        let policyPreBN = 4 * channels
-        let policyProj = (channels * policyChannels) + policyChannels
-        let policy = policyPreConv + policyPreBN + policyProj
-        // Value head: 1×1 conv (channels→valueHeadConvChannels)
-        // → BN(valueHeadConvChannels) → flatten(boardSize² × convChannels)
-        // → FC(flat→hidden) → FC(hidden→valueHeadClasses).
-        let valueConvChannels = valueHeadConvChannels
-        let valueFlatten = boardSize * boardSize * valueConvChannels
-        let valueHidden = valueHeadHiddenUnits
-        let valueConvBN = (channels * valueConvChannels) + (4 * valueConvChannels)
-        let valueFC1 = (valueFlatten * valueHidden) + valueHidden
-        let valueFC2 = (valueHidden * valueHeadClasses) + valueHeadClasses
-        let value = valueConvBN + valueFC1 + valueFC2
-
-        return (numBlocks * perBlock) + stem + towerFinalBN + policy + value
-    }
+    // Per-architecture identity constants (channels, numBlocks, kernel
+    // sizes, SE reduction, value-head dims, version, parameterCount) used
+    // to live here as static lets describing one hardcoded topology. They
+    // were removed once the architecture became runtime-configurable: the
+    // single source of truth is now the instance `arch:
+    // NetworkArchitecture`. Read `arch.channels`, `arch.numBlocks`,
+    // `arch.parameterCount`, etc. — never a global default — so every
+    // consumer describes the ACTUAL built net. Only the genuinely fixed
+    // engine constants (`boardSize`, `policyChannels`, `policySize`, and —
+    // pending their own removal passes — `dataType` / `inputPlanes`) remain
+    // static.
 
     // The one-line human-readable summary now lives on `NetworkArchitecture`
     // (`net.network.arch.architectureSummary`) so it always describes the
@@ -809,8 +710,8 @@ final class ChessNetwork: @unchecked Sendable {
         let valueScratch = UnsafeMutablePointer<Float>.allocate(capacity: 1)
         valueScratch.initialize(repeating: 0, count: 1)
         inferenceValueScratchPtr = valueScratch
-        let valueProbsScratch = UnsafeMutablePointer<Float>.allocate(capacity: Self.valueHeadClasses)
-        valueProbsScratch.initialize(repeating: 0, count: Self.valueHeadClasses)
+        let valueProbsScratch = UnsafeMutablePointer<Float>.allocate(capacity: arch.valueHeadClasses)
+        valueProbsScratch.initialize(repeating: 0, count: arch.valueHeadClasses)
         inferenceValueProbsScratchPtr = valueProbsScratch
     }
 
@@ -819,7 +720,7 @@ final class ChessNetwork: @unchecked Sendable {
         inferencePolicyScratchPtr.deallocate()
         inferenceValueScratchPtr.deinitialize(count: 1)
         inferenceValueScratchPtr.deallocate()
-        inferenceValueProbsScratchPtr.deinitialize(count: Self.valueHeadClasses)
+        inferenceValueProbsScratchPtr.deinitialize(count: arch.valueHeadClasses)
         inferenceValueProbsScratchPtr.deallocate()
         if let ptr = batchPolicyScratchPtr {
             ptr.deinitialize(count: batchPolicyScratchCapacity)
@@ -958,7 +859,7 @@ final class ChessNetwork: @unchecked Sendable {
                 guard let probsData = results[valueProbs] else {
                     throw ChessNetworkError.outputMissing("valueProbs")
                 }
-                Self.readFloats(from: probsData, into: inferenceValueProbsScratchPtr, count: Self.valueHeadClasses)
+                Self.readFloats(from: probsData, into: inferenceValueProbsScratchPtr, count: arch.valueHeadClasses)
                 return (
                     win: inferenceValueProbsScratchPtr[0],
                     draw: inferenceValueProbsScratchPtr[1],
@@ -1137,12 +1038,12 @@ final class ChessNetwork: @unchecked Sendable {
 
             Self.readFloatsFP32(from: policyData, into: policyPtr, count: count * Self.policySize)
             Self.readFloats(from: valueData, into: valuePtr, count: count)
-            Self.readFloats(from: valueProbsData, into: valueProbsPtr, count: count * Self.valueHeadClasses)
+            Self.readFloats(from: valueProbsData, into: valueProbsPtr, count: count * arch.valueHeadClasses)
 
             consume(
                 UnsafeBufferPointer(start: policyPtr, count: count * Self.policySize),
                 UnsafeBufferPointer(start: valuePtr, count: count),
-                UnsafeBufferPointer(start: valueProbsPtr, count: count * Self.valueHeadClasses)
+                UnsafeBufferPointer(start: valueProbsPtr, count: count * arch.valueHeadClasses)
             )
         }
     }
@@ -1370,7 +1271,7 @@ final class ChessNetwork: @unchecked Sendable {
     }
 
     private func ensureBatchValueProbsScratch(count: Int) -> UnsafeMutablePointer<Float> {
-        let needed = count * Self.valueHeadClasses
+        let needed = count * arch.valueHeadClasses
         if let ptr = batchValueProbsScratchPtr, batchValueProbsScratchCapacity >= needed {
             return ptr
         }

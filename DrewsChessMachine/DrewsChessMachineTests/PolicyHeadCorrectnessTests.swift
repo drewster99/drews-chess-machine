@@ -403,15 +403,16 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
     func testInitWeightStdsMatchExpected() throws {
         enum Kind { case he, glorot }
         struct Spec { let name: String; let shape: [Int]; let fanIn: Int; let fanOut: Int; let kind: Kind }
-        let c = ChessNetwork.channels
-        let reduced = c / ChessNetwork.seReductionRatio
-        let vConv = ChessNetwork.valueHeadConvChannels
+        let cur = NetworkArchitecture.current
+        let c = cur.channels
+        let reduced = c / cur.blockSeReductionRatio
+        let vConv = cur.valueHeadConvChannels
         let vFlat = ChessNetwork.boardSize * ChessNetwork.boardSize * vConv
-        let vHidden = ChessNetwork.valueHeadHiddenUnits
-        let k = ChessNetwork.towerConvKernelSize
+        let vHidden = cur.valueHeadHiddenUnits
+        let k = cur.blockConv1KernelSize
         let kArea = k * k
         var specs: [Spec] = [
-            Spec(name: "stem_conv", shape: [c, ChessNetwork.inputPlanes, k, k], fanIn: ChessNetwork.inputPlanes*kArea, fanOut: 0, kind: .he),
+            Spec(name: "stem_conv", shape: [c, cur.inputPlanes, cur.stemConvKernelSize, cur.stemConvKernelSize], fanIn: cur.inputPlanes * cur.stemConvKernelSize * cur.stemConvKernelSize, fanOut: 0, kind: .he),
             Spec(name: "value_conv", shape: [vConv, c, 1, 1], fanIn: c, fanOut: 0, kind: .he),
             Spec(name: "policy_pre_conv", shape: [c, c, 1, 1], fanIn: c, fanOut: 0, kind: .he),
             Spec(name: "policy_conv", shape: [ChessNetwork.policyChannels, c, 1, 1], fanIn: c, fanOut: 0, kind: .he),
@@ -419,9 +420,9 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
             // SE FC2: [reduced, 2·channels] (gammas‖betas), Glorot-init.
             Spec(name: "se_fc2", shape: [reduced, 2*c], fanIn: reduced, fanOut: 2*c, kind: .glorot),
             Spec(name: "value_fc1", shape: [vFlat, vHidden], fanIn: vFlat, fanOut: 0, kind: .he),
-            Spec(name: "value_fc2", shape: [vHidden, ChessNetwork.valueHeadClasses], fanIn: vHidden, fanOut: 0, kind: .he),
+            Spec(name: "value_fc2", shape: [vHidden, cur.valueHeadClasses], fanIn: vHidden, fanOut: 0, kind: .he),
         ]
-        for i in 0..<ChessNetwork.numBlocks {
+        for i in 0..<cur.numBlocks {
             specs.append(Spec(name: "block\(i)_conv1", shape: [c, c, k, k], fanIn: c*kArea, fanOut: 0, kind: .he))
             specs.append(Spec(name: "block\(i)_conv2", shape: [c, c, k, k], fanIn: c*kArea, fanOut: 0, kind: .he))
         }
@@ -1316,8 +1317,8 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
 
     // MARK: - parameterCount matches the live persistent-tensor inventory
     //
-    // `ChessNetwork.parameterCount` is a hand-maintained formula derived
-    // from the arch constants (see its doc comment). `exportWeights()`
+    // `NetworkArchitecture.parameterCount` is a hand-maintained formula
+    // derived from the arch fields (see its doc comment). `exportWeights()`
     // emits one [Float] per persistent variable (trainables + BN running
     // stats) — exactly what `parameterCount` claims to count. They must
     // agree, or the formula has silently desynced from a layer-shape
@@ -1332,8 +1333,8 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
         let weights = try await net.exportWeights()
         let exportedElementCount = weights.reduce(0) { $0 + $1.count }
         XCTAssertEqual(
-            exportedElementCount, ChessNetwork.parameterCount,
-            "ChessNetwork.parameterCount (\(ChessNetwork.parameterCount)) disagrees with the " +
+            exportedElementCount, net.arch.parameterCount,
+            "NetworkArchitecture.parameterCount (\(net.arch.parameterCount)) disagrees with the " +
             "summed element count of exportWeights() (\(exportedElementCount)). The hand-maintained " +
             "parameterCount formula has desynced from the actual layer shapes — update it in lockstep."
         )

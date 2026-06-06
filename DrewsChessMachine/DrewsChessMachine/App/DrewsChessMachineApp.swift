@@ -273,7 +273,7 @@ struct DrewsChessMachineApp: App {
             "TensorChannelNames is out of sync with ChessNetwork.inputPlanes (\(ChessNetwork.inputPlanes)) — names=\(TensorChannelNames.names.count), shortNames=\(TensorChannelNames.shortNames.count). Update Views/Board/TensorChannelNames.swift."
         )
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
-        let archHashHex = String(format: "0x%08x", ModelCheckpointFile.currentArchHash)
+        let archHashHex = String(format: "0x%08x", ModelCheckpointFile.archHash(for: .current))
         let autoTrainMarker = autoTrainOnLaunch ? " autoTrain=on" : ""
         SessionLogger.shared.log(
             "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp) arch_hash=\(archHashHex) inputPlanes=\(ChessNetwork.inputPlanes) policySize=\(ChessNetwork.policySize)\(autoTrainMarker)"

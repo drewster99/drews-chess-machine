@@ -108,16 +108,20 @@ struct ModelCheckpointFile {
     /// rejected instead of silently inventing missing session state.
     static let supportedReadVersions: Set<UInt32> = [2]
 
-    /// Hash of the shape constants that determine variable layout.
-    /// Any change to `ChessNetwork.channels`, `numBlocks`,
-    /// `inputPlanes`, `boardSize`, `policySize`, or `valueHeadClasses`
-    /// changes this value, so stale files refuse to load instead of
-    /// silently landing in wrong-sized slots.
-    static var currentArchHash: UInt32 {
+    /// Legacy `.dcmmodel` architecture hash for a given architecture — the
+    /// 7-scalar FNV-1a mix (channels, numBlocks, inputPlanes, boardSize,
+    /// policySize, valueHeadClasses, architecture version) that historical
+    /// files embedded so a stale file refused to land in wrong-sized slots.
+    /// Retained only for the legacy `.dcmmodel` write/read path; the
+    /// safetensors format carries the full embedded config instead. The
+    /// values are mixed from the *given* architecture (not a global
+    /// default), so a freshly-saved `.dcmmodel` round-trips through
+    /// `legacyDcmmodelArchHashes` to the matching preset.
+    static func archHash(for arch: NetworkArchitecture) -> UInt32 {
         var h: UInt32 = 0x811C9DC5 // FNV-1a offset basis
         func mix(_ value: Int) {
             guard let u32 = UInt32(exactly: value) else {
-                preconditionFailure("Architecture constant exceeds UInt32: \(value). Widen currentArchHash before using values this large.")
+                preconditionFailure("Architecture constant exceeds UInt32: \(value). Widen archHash before using values this large.")
             }
             var v = u32.littleEndian
             withUnsafeBytes(of: &v) { raw in
@@ -127,16 +131,16 @@ struct ModelCheckpointFile {
                 }
             }
         }
-        mix(ChessNetwork.channels)
-        mix(ChessNetwork.numBlocks)
-        mix(ChessNetwork.inputPlanes)
+        mix(arch.channels)
+        mix(arch.numBlocks)
+        mix(arch.inputPlanes)
         mix(ChessNetwork.boardSize)
         mix(ChessNetwork.policySize)
-        mix(ChessNetwork.valueHeadClasses)
+        mix(arch.valueHeadClasses)
         // Topology version — distinguishes forward-graph changes the
         // shape-only mixes above can't see (e.g. the v3→v4 pre-activation
         // rebuild), so an incompatible-topology checkpoint is rejected.
-        mix(ChessNetwork.architectureVersion)
+        mix(arch.architectureVersionLabel)
         return h
     }
 
@@ -155,27 +159,30 @@ struct ModelCheckpointFile {
     /// architecture change (channels, policy width, input planes,
     /// SE width) instead of needing a manual bump.
     ///
-    /// Current largest tensors at the post-refresh architecture (with a
-    /// `k×k` tower conv, `k = ChessNetwork.towerConvKernelSize`):
+    /// Largest plausible single-tensor element count for `arch` (with its
+    /// own per-conv kernel sizes):
     /// - residual conv weights: `channels × channels × k²`
-    /// - stem conv: `inputPlanes × channels × k²`
-    /// - policy 1×1 conv: `channels × policyChannels = 9,728`
-    /// - SE FC: `channels × (channels / r) = 4,096`
-    /// All well below the cap. The 65,536-element slack lets a minor
-    /// architectural tweak land without immediately tripping the
-    /// implausibleTensorSize guard.
+    /// - stem conv: `inputPlanes × channels × stemK²`
+    /// - policy 1×1 conv: `channels × policyChannels`
+    /// - value FC1: `(boardSize² × valueHeadConvChannels) × valueHeadHiddenUnits`
+    /// - SE FC: `channels × (channels / r)`
+    /// The 65,536-element slack lets a minor architectural tweak land
+    /// without immediately tripping the implausibleTensorSize guard.
     ///
     /// Paired with the SHA-256 trailer (which already catches corruption
     /// pre-decode) this is defense-in-depth: if the hash ever matches a
     /// malformed element count, we still reject before allocating.
-    static var maxTensorElementCount: Int {
-        let convArea = ChessNetwork.towerConvKernelSize * ChessNetwork.towerConvKernelSize
-        let residualConv = ChessNetwork.channels * ChessNetwork.channels * convArea
-        let stemConv = ChessNetwork.inputPlanes * ChessNetwork.channels * convArea
-        let policyConv = ChessNetwork.channels * ChessNetwork.policyChannels
-        let seReduced = ChessNetwork.channels / ChessNetwork.seReductionRatio
-        let seFC = ChessNetwork.channels * seReduced
-        let largest = max(residualConv, stemConv, policyConv, seFC)
+    static func maxTensorElementCount(for arch: NetworkArchitecture) -> Int {
+        let c = arch.channels
+        let blockArea = max(arch.blockConv1KernelSize, arch.blockConv2KernelSize) * max(arch.blockConv1KernelSize, arch.blockConv2KernelSize)
+        let stemArea = arch.stemConvKernelSize * arch.stemConvKernelSize
+        let residualConv = c * c * blockArea
+        let stemConv = arch.inputPlanes * c * stemArea
+        let policyConv = c * ChessNetwork.policyChannels
+        let valueFC1 = (ChessNetwork.boardSize * ChessNetwork.boardSize * arch.valueHeadConvChannels) * arch.valueHeadHiddenUnits
+        let seReduced = arch.blockSeStyle == .none ? 1 : c / arch.blockSeReductionRatio
+        let seFC = c * seReduced
+        let largest = max(residualConv, stemConv, policyConv, valueFC1, seFC)
         return largest + 65_536
     }
 
@@ -235,7 +242,7 @@ struct ModelCheckpointFile {
         // Fixed header
         out.append(contentsOf: Self.magic)
         out.appendUInt32LE(Self.formatVersion)
-        out.appendUInt32LE(Self.currentArchHash)
+        out.appendUInt32LE(Self.archHash(for: architecture))
         out.appendUInt32LE(UInt32(weights.count))
         out.appendInt64LE(createdAtUnix)
 
@@ -326,7 +333,7 @@ struct ModelCheckpointFile {
         let archHash = try reader.readUInt32LE()
         guard let legacyPreset = NetworkArchitecture.legacyDcmmodelArchHashes[archHash] else {
             throw ModelCheckpointError.archMismatch(
-                expected: Self.currentArchHash,
+                expected: Self.archHash(for: .current),
                 got: archHash
             )
         }
@@ -368,11 +375,12 @@ struct ModelCheckpointFile {
                 )
             }
             let elementCount = Int(try reader.readUInt32LE())
-            guard elementCount >= 0, elementCount <= Self.maxTensorElementCount else {
+            let maxElements = Self.maxTensorElementCount(for: resolvedArchitecture)
+            guard elementCount >= 0, elementCount <= maxElements else {
                 throw ModelCheckpointError.implausibleTensorSize(
                     tensorIndex: expectedIndex,
                     elementCount: elementCount,
-                    maxAllowed: Self.maxTensorElementCount
+                    maxAllowed: maxElements
                 )
             }
             let (byteCount, overflowed) = elementCount.multipliedReportingOverflow(by: MemoryLayout<Float>.size)
@@ -380,7 +388,7 @@ struct ModelCheckpointFile {
                 throw ModelCheckpointError.implausibleTensorSize(
                     tensorIndex: expectedIndex,
                     elementCount: elementCount,
-                    maxAllowed: Self.maxTensorElementCount
+                    maxAllowed: maxElements
                 )
             }
             let raw = try reader.readBytes(byteCount)

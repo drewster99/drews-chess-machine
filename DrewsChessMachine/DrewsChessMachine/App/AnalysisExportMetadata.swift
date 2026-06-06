@@ -70,7 +70,7 @@ struct AnalysisExportMetadata: Codable, Sendable {
         /// Human v-number for display (4 = pre-activation, 3 = post-activation).
         /// Identity is the embedded config / `summary`, not a hash (see plan §6).
         let architectureVersion: Int
-        /// Total persistent-tensor element count (`ChessNetwork.parameterCount`).
+        /// Total persistent-tensor element count (`NetworkArchitecture.parameterCount`).
         let parameterCount: Int
         let numBlocks: Int
         let channels: Int

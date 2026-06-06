@@ -44,15 +44,16 @@ enum NetworkWeightAnalyzer {
 
     /// Canonical section ordering in the JSON output. Block indices
     /// match the code's 0-based numbering — `ChessNetwork` builds
-    /// residual blocks via `for i in 0..<ChessNetwork.numBlocks`, so
+    /// residual blocks via `for i in 0..<arch.numBlocks`, so
     /// variable names are `block0_conv1_weights` through
     /// `block<numBlocks-1>_conv1_weights` and the section names mirror
     /// that. Unknown variables fall through to `"other"` so nothing is
     /// silently dropped.
-    static let sectionOrder: [String] =
+    static func sectionOrder(numBlocks: Int) -> [String] {
         ["stem"]
-        + (0..<ChessNetwork.numBlocks).map { "block_\($0)" }
+        + (0..<numBlocks).map { "block_\($0)" }
         + ["tower_final", "policy", "value", "other"]
+    }
 
     /// 0-based section bucket for a variable. Drives both the
     /// per-section summaries and the text-summary grouping.
@@ -76,21 +77,20 @@ enum NetworkWeightAnalyzer {
     /// He-init reference (biases, BN gamma/beta, BN running stats).
     /// Mirrors the shapes set in `ChessNetwork`'s graph construction;
     /// if those shapes change the analyzer needs updating in lockstep.
-    static func fanIn(forVariableNamed name: String) -> Int? {
-        let convArea = ChessNetwork.towerConvKernelSize * ChessNetwork.towerConvKernelSize
+    static func fanIn(forVariableNamed name: String, arch: NetworkArchitecture) -> Int? {
+        let c = arch.channels
         switch name {
-        case "stem_conv_weights":      return 30 * convArea
-        case "policy_pre_conv_weights": return 128 * 1 * 1
-        case "policy_conv_weights":    return 128 * 1 * 1
-        case "value_conv_weights":  return ChessNetwork.channels   // 1×1 conv: inC = channels
-        case "value_fc1_weights":   return ChessNetwork.boardSize * ChessNetwork.boardSize * ChessNetwork.valueHeadConvChannels  // FC [flatten, hidden], fan_in = flatten
-        case "value_fc2_weights":   return ChessNetwork.valueHeadHiddenUnits  // FC [hidden, classes], fan_in = hidden
+        case "stem_conv_weights":       return arch.inputPlanes * arch.stemConvKernelSize * arch.stemConvKernelSize
+        case "policy_pre_conv_weights": return c * 1 * 1
+        case "policy_conv_weights":     return (arch.policyHeadStyle == .simpleConv ? c : arch.policyPreConvChannels) * 1 * 1
+        case "value_conv_weights":      return c   // 1×1 conv: inC = channels
+        case "value_fc1_weights":       return arch.boardSize * arch.boardSize * arch.valueHeadConvChannels  // FC [flatten, hidden]
+        case "value_wdl_fc2_weights", "value_scalar_fc2_weights": return arch.valueHeadHiddenUnits  // FC [hidden, classes]
         default: break
         }
-        if name.hasSuffix("_conv1_weights") || name.hasSuffix("_conv2_weights") {
-            return 128 * convArea
-        }
-        if name.hasSuffix("_se_fc1_weights") { return 128 }
+        if name.hasSuffix("_conv1_weights") { return c * arch.blockConv1KernelSize * arch.blockConv1KernelSize }
+        if name.hasSuffix("_conv2_weights") { return c * arch.blockConv2KernelSize * arch.blockConv2KernelSize }
+        if name.hasSuffix("_se_fc1_weights") { return c }
         // se_fc2 is Glorot-init, handled by `expectedInitL2` before `fanIn`
         // is ever consulted — so no He fan-in entry here.
         return nil
@@ -115,12 +115,14 @@ enum NetworkWeightAnalyzer {
     /// with no random-init reference. The SE FC2 weight uses Glorot (it
     /// feeds the sigmoid gate — see `ChessNetwork.glorotInitDataFCInOut`),
     /// so it gets the Glorot reference; everything else uses He.
-    static func expectedInitL2(forVariableNamed name: String, elementCount n: Int) -> Double? {
+    static func expectedInitL2(forVariableNamed name: String, elementCount n: Int, arch: NetworkArchitecture) -> Double? {
         if name.hasSuffix("_se_fc2_weights") {
-            // `[in, out]` = [channels/r, 2·channels] = [32, 256].
-            return glorotInitL2(elementCount: n, fanIn: 32, fanOut: 256)
+            // `[in, out]` = [channels/r, scaleAndBias ? 2·channels : channels].
+            let fanIn = arch.channels / arch.blockSeReductionRatio
+            let fanOut = arch.blockSeStyle == .scaleAndBias ? 2 * arch.channels : arch.channels
+            return glorotInitL2(elementCount: n, fanIn: fanIn, fanOut: fanOut)
         }
-        return fanIn(forVariableNamed: name).map { heInitL2(elementCount: n, fanIn: $0) }
+        return fanIn(forVariableNamed: name, arch: arch).map { heInitL2(elementCount: n, fanIn: $0) }
     }
 
     /// Deterministic initial value for variables that don't use He-init.
@@ -131,21 +133,19 @@ enum NetworkWeightAnalyzer {
     /// `WeightStats.driftFromInit`.
     static func deterministicInit(
         forVariableNamed name: String,
-        elementCount n: Int
+        elementCount n: Int,
+        arch: NetworkArchitecture
     ) -> [Double]? {
         guard n > 0 else { return nil }
-        // Special case: value_fc2_bias initializes to [0, ln 6, 0]
-        // — see ChessNetwork.valueHead for the rationale (draw-heavy
-        // prior of a fresh self-play buffer).
-        if name == "value_fc2_bias" && n == 3 {
+        // Special case: WDL value head's fc2 bias initializes to [0, ln 6, 0]
+        // — see ChessNetwork.valueHead (draw-heavy prior of a fresh buffer).
+        if name == "value_wdl_fc2_bias" && n == 3 {
             return [0.0, log(6.0), 0.0]
         }
-        // Per-block ReZero branch scalar α initializes to 1/√numBlocks
-        // — see ChessNetwork.residualBlock. Its drift-from-init reference
-        // is that value, so the analyzer reports how far each block has
-        // grown or shrunk its residual contribution.
+        // Per-block ReZero branch scalar α initializes to `rezeroAlphaInit`
+        // — see ChessNetwork.residualBlock. Its drift-from-init reference.
         if name.hasSuffix("_res_scale") {
-            return Array(repeating: 1.0 / Double(ChessNetwork.numBlocks).squareRoot(), count: n)
+            return Array(repeating: Double(arch.rezeroAlphaInit), count: n)
         }
         // BN gamma initializes to ones, var initializes to ones —
         // see ChessNetwork.batchNorm.
@@ -346,6 +346,7 @@ enum NetworkWeightAnalyzer {
     ) async throws -> Result {
         let weights = try await network.exportWeights()
         let allVariables = network.trainableVariables + network.bnRunningStatsVariables
+        let arch = network.arch
 
         guard weights.count == allVariables.count else {
             throw NetworkWeightAnalyzerError.weightCountMismatch(
@@ -366,9 +367,9 @@ enum NetworkWeightAnalyzer {
 
         // Per-section summaries.
         var sections: [Result.SectionSummary] = []
-        for sec in sectionOrder {
+        for sec in sectionOrder(numBlocks: arch.numBlocks) {
             guard let vars = perSection[sec] else { continue }
-            sections.append(makeSectionSummary(sectionName: sec, variables: vars))
+            sections.append(makeSectionSummary(sectionName: sec, variables: vars, arch: arch))
         }
 
         // Stem per-input-channel detail.
@@ -377,7 +378,7 @@ enum NetworkWeightAnalyzer {
                   let stem = stemVars.first(where: { $0.name == "stem_conv_weights" }) else {
                 return nil
             }
-            return makeStemInputChannelDetail(stemConvValues: stem.values)
+            return makeStemInputChannelDetail(stemConvValues: stem.values, arch: arch)
         }()
 
         // Per-output-channel L2 for every conv weight tensor — stem,
@@ -387,7 +388,7 @@ enum NetworkWeightAnalyzer {
         for variable in allVariables {
             let name = variable.operation.name
             guard let values = allByName[name] else { continue }
-            guard let shape = convShape(forVariableNamed: name) else { continue }
+            guard let shape = convShape(forVariableNamed: name, arch: arch) else { continue }
             if let detail = makeConvOutputChannelDetail(
                 variableName: name,
                 values: values,
@@ -425,10 +426,10 @@ enum NetworkWeightAnalyzer {
         }
 
         // SE attention detail — one per block, walking blocks in order
-        // (matching ChessNetwork's `for i in 0..<ChessNetwork.numBlocks`
+        // (matching ChessNetwork's `for i in 0..<arch.numBlocks`
         // loop). The SE FC2 bias for a block is named "blockN_se_fc2_bias".
         var seDetails: [Result.SEAttentionDetail] = []
-        for blockIndex in 0..<ChessNetwork.numBlocks {
+        for blockIndex in 0..<arch.numBlocks {
             let seBiasName = "block\(blockIndex)_se_fc2_bias"
             guard let seBiasValues = allByName[seBiasName] else { continue }
             seDetails.append(makeSEAttentionDetail(
@@ -459,7 +460,8 @@ enum NetworkWeightAnalyzer {
 
     private static func makeSectionSummary(
         sectionName: String,
-        variables: [(name: String, values: [Float])]
+        variables: [(name: String, values: [Float])],
+        arch: NetworkArchitecture
     ) -> Result.SectionSummary {
         var perVarStats: [Result.WeightStats] = []
         perVarStats.reserveCapacity(variables.count)
@@ -470,7 +472,7 @@ enum NetworkWeightAnalyzer {
         var anyHeInit = false
 
         for (name, values) in variables {
-            let stats = makeWeightStats(name: name, values: values)
+            let stats = makeWeightStats(name: name, values: values, arch: arch)
             perVarStats.append(stats)
             totalElements += stats.elementCount
             totalSumSq += stats.l2Norm * stats.l2Norm
@@ -501,7 +503,8 @@ enum NetworkWeightAnalyzer {
 
     private static func makeWeightStats(
         name: String,
-        values: [Float]
+        values: [Float],
+        arch: NetworkArchitecture
     ) -> Result.WeightStats {
         let n = values.count
         guard n > 0 else {
@@ -539,13 +542,13 @@ enum NetworkWeightAnalyzer {
             percentile(p: Double(p), sortedAscending: sorted)
         }
 
-        let initL2 = expectedInitL2(forVariableNamed: name, elementCount: n)
+        let initL2 = expectedInitL2(forVariableNamed: name, elementCount: n, arch: arch)
         let ratio = initL2.map { $0 > 0 ? l2 / $0 : 0 }
 
         // Drift from init — only meaningful for variables with
         // deterministic initial values.
         let drift: Double? = {
-            guard let initial = deterministicInit(forVariableNamed: name, elementCount: n) else {
+            guard let initial = deterministicInit(forVariableNamed: name, elementCount: n, arch: arch) else {
                 return nil
             }
             var driftSq: Double = 0
@@ -580,25 +583,32 @@ enum NetworkWeightAnalyzer {
     /// channel detail walker so it can iterate every conv tensor
     /// without needing to inspect the MPSGraphTensor shape directly.
     private static func convShape(
-        forVariableNamed name: String
+        forVariableNamed name: String,
+        arch: NetworkArchitecture
     ) -> (outC: Int, inC: Int, kH: Int, kW: Int)? {
-        let k = ChessNetwork.towerConvKernelSize
+        let c = arch.channels
         switch name {
-        case "stem_conv_weights":       return (128, 30, k, k)
-        case "policy_pre_conv_weights": return (128, 128, 1, 1)
-        case "policy_conv_weights":     return (76, 128, 1, 1)
-        case "value_conv_weights":      return (ChessNetwork.valueHeadConvChannels, 128, 1, 1)
+        case "stem_conv_weights":       return (c, arch.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize)
+        case "policy_pre_conv_weights": return (c, c, 1, 1)
+        case "policy_conv_weights":     return (ChessNetwork.policyChannels, c, 1, 1)
+        case "value_conv_weights":      return (arch.valueHeadConvChannels, c, 1, 1)
         default: break
         }
-        if name.hasSuffix("_conv1_weights") || name.hasSuffix("_conv2_weights") {
-            return (128, 128, k, k)
+        if name.hasSuffix("_conv1_weights") {
+            return (c, c, arch.blockConv1KernelSize, arch.blockConv1KernelSize)
+        }
+        if name.hasSuffix("_conv2_weights") {
+            return (c, c, arch.blockConv2KernelSize, arch.blockConv2KernelSize)
         }
         return nil
     }
 
-    private static func makeStemInputChannelDetail(stemConvValues: [Float]) -> Result.StemInputChannelDetail? {
-        let outC = 128, inC = 30
-        let kH = ChessNetwork.towerConvKernelSize, kW = ChessNetwork.towerConvKernelSize
+    private static func makeStemInputChannelDetail(
+        stemConvValues: [Float],
+        arch: NetworkArchitecture
+    ) -> Result.StemInputChannelDetail? {
+        let outC = arch.channels, inC = arch.inputPlanes
+        let kH = arch.stemConvKernelSize, kW = arch.stemConvKernelSize
         let expected = outC * inC * kH * kW
         guard stemConvValues.count == expected else { return nil }
 

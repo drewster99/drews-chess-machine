@@ -124,9 +124,9 @@ struct ArenaHistoryEntryCodable: Codable, Equatable {
 /// Optional on `SessionCheckpointState` for back-compat with
 /// sessions saved before the field landed.
 struct ArchitectureMetadata: Codable, Equatable {
-    /// `ChessNetwork.architectureVersion` — distinguishes topology
-    /// changes (e.g. the v3 → v4 pre-activation rebuild) that pure
-    /// shape constants don't capture.
+    /// `NetworkArchitecture.architectureVersionLabel` — distinguishes
+    /// topology changes (e.g. the v3 → v4 pre-activation rebuild) that
+    /// pure shape constants don't capture.
     let architectureVersion: Int
     let channels: Int
     let numBlocks: Int
@@ -134,12 +134,12 @@ struct ArchitectureMetadata: Codable, Equatable {
     let policySize: Int
     let valueHeadClasses: Int
     /// Squeeze-and-Excitation FC reduction ratio
-    /// (`ChessNetwork.seReductionRatio`). Surfaced because changing
-    /// the SE width without changing channels still produces a
+    /// (`NetworkArchitecture.blockSeReductionRatio`). Surfaced because
+    /// changing the SE width without changing channels still produces a
     /// distinct architecture for the model loader's arch hash.
     let seReductionRatio: Int
     /// Trainable + BN parameter count, computed via
-    /// `ChessNetwork.parameterCount` at save time.
+    /// `NetworkArchitecture.parameterCount` at save time.
     let parameterCount: Int
 }
 

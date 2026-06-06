@@ -95,7 +95,7 @@ final class ValueHeadWDLTests: XCTestCase {
         let one = graph.constant(1.0, dataType: dtype)
         let slotIdxFloat = graph.subtraction(one, zT, name: "slot_idx_float")
         let lo = graph.constant(0.0, dataType: dtype)
-        let hi = graph.constant(Double(ChessNetwork.valueHeadClasses - 1), dataType: dtype)
+        let hi = graph.constant(Double(NetworkArchitecture.current.valueHeadClasses - 1), dataType: dtype)
         let slotIdxClamped = graph.minimum(
             graph.maximum(slotIdxFloat, lo, name: nil), hi, name: nil
         )
@@ -159,7 +159,7 @@ final class ValueHeadWDLTests: XCTestCase {
     // MARK: - Tests
 
     func testValueHeadClassesIsThree() {
-        XCTAssertEqual(ChessNetwork.valueHeadClasses, 3)
+        XCTAssertEqual(NetworkArchitecture.current.valueHeadClasses, 3)
     }
 
     /// ε=0: the loss is the hard-one-hot CE `−log softmax(logits)[idx]`,

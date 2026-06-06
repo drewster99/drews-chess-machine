@@ -2711,7 +2711,7 @@ final class ChessTrainer: @unchecked Sendable {
         let valueSlotOneFloat = graph.constant(1.0, dataType: dtype)
         let valueSlotIndexFloat = graph.subtraction(valueSlotOneFloat, z, name: "value_slot_index_float")
         let valueSlotIndexLow = graph.constant(0.0, dataType: dtype)
-        let valueSlotIndexHigh = graph.constant(Double(ChessNetwork.valueHeadClasses - 1), dataType: dtype)
+        let valueSlotIndexHigh = graph.constant(Double(network.arch.valueHeadClasses - 1), dataType: dtype)
         let valueSlotIndexClamped = graph.minimum(
             graph.maximum(valueSlotIndexFloat, valueSlotIndexLow, name: "value_slot_index_lo"),
             valueSlotIndexHigh,
@@ -5922,11 +5922,11 @@ final class ChessTrainer: @unchecked Sendable {
 
             // Largest single MTLBuffer we'll ask Metal for. Exact, not
             // estimated: the trainer literally uploads a
-            // [batch, ChessNetwork.channels, ChessNetwork.boardSize, ChessNetwork.boardSize]
+            // [batch, arch.channels, ChessNetwork.boardSize, ChessNetwork.boardSize]
             // float32 activation tensor and that's the biggest buffer in
             // the graph (beats the [batch, policySize] policy tensors and
             // the [batch, inputPlanes, ChessNetwork.boardSize, ChessNetwork.boardSize] input).
-            let largestBufferBytes = Self.largestBufferBytes(forBatchSize: batchSize)
+            let largestBufferBytes = Self.largestBufferBytes(forBatchSize: batchSize, arch: arch)
             // Working-set prediction comes from a least-squares fit over
             // the rows we've already run. Returns nil before we have any
             // data to fit, in which case we don't skip on this criterion.
@@ -6040,15 +6040,15 @@ final class ChessTrainer: @unchecked Sendable {
 
     /// Exact size of the largest single MTLBuffer the trainer requests at
     /// this batch size — one
-    /// [batch, ChessNetwork.channels, ChessNetwork.boardSize, ChessNetwork.boardSize]
+    /// [batch, arch.channels, ChessNetwork.boardSize, ChessNetwork.boardSize]
     /// float32 activation tensor. That's larger than the [batch, policySize]
     /// policy tensors and the [batch, inputPlanes, ChessNetwork.boardSize,
     /// ChessNetwork.boardSize] input, so it's the buffer that would first hit
     /// `maxBufferLength`. This is an architectural fact, not a guess.
-    static func largestBufferBytes(forBatchSize batchSize: Int) -> UInt64 {
+    static func largestBufferBytes(forBatchSize batchSize: Int, arch: NetworkArchitecture) -> UInt64 {
         let floatBytes = MemoryLayout<Float>.size
         let spatial = ChessNetwork.boardSize * ChessNetwork.boardSize
-        let channels = ChessNetwork.channels
+        let channels = arch.channels
         return UInt64(channels * spatial * floatBytes) * UInt64(batchSize)
     }
 
