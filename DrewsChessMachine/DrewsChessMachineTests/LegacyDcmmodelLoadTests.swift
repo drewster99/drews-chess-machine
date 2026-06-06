@@ -59,6 +59,39 @@ final class LegacyDcmmodelLoadTests: XCTestCase {
             // loadWeights validates per-tensor shape against the live variable
             // list; a mismatch (wrong builder order/shape) throws here.
             try await net.network.loadWeights(Array(file.weights.prefix(base)))
+
+            // Cross-format round-trip: original .dcmmodel weights -> encode as
+            // safetensors (PyTorch layout, FC transposed) -> decode back ->
+            // bit-compare vs the original load. Proves the old->new bridge is
+            // lossless and that every historical tensor's WeightKind (so its
+            // transpose) is classified correctly.
+            let plan = file.architecture.weightTensorPlan()
+            let trainablesCount = plan.filter { $0.kind != .bnRunningStat }.count
+            let includesVelocity: Bool
+            if file.weights.count == plan.count {
+                includesVelocity = false
+            } else if file.weights.count == plan.count + trainablesCount {
+                includesVelocity = true
+            } else {
+                XCTFail("\(url.lastPathComponent): unexpected weight count \(file.weights.count) (plan \(plan.count))")
+                continue
+            }
+            let bytes = try SafetensorsModelIO.encode(
+                modelID: file.modelID,
+                createdAtUnix: file.createdAtUnix,
+                metadata: file.metadata,
+                weights: file.weights,
+                architecture: file.architecture,
+                includesVelocity: includesVelocity)
+            let reloaded = try SafetensorsModelIO.decode(bytes)
+            XCTAssertEqual(reloaded.architecture, file.architecture,
+                           "\(url.lastPathComponent): architecture changed across formats")
+            XCTAssertEqual(reloaded.file.weights.count, file.weights.count,
+                           "\(url.lastPathComponent): tensor count changed across formats")
+            for (orig, rt) in zip(file.weights, reloaded.file.weights) {
+                XCTAssertEqual(orig.map(\.bitPattern), rt.map(\.bitPattern),
+                               "\(url.lastPathComponent): weight data changed across .dcmmodel->safetensors round-trip")
+            }
             loadedCount += 1
         }
         XCTAssertGreaterThan(loadedCount, 0)
