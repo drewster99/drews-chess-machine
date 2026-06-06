@@ -123,8 +123,15 @@ final class ChessMPSNetwork: @unchecked Sendable {
     /// position-major NCHW layout the network expects.
     private static func warmupBatch(encoding: InputEncoding) -> [Float] {
         let perBoard = BoardEncoder.tensorLength(for: encoding)
+        // Prior frames a history-stacking encoding needs (0 for single-frame).
+        let historyDepth = max(0, encoding.historyFrameCount - 1)
         var out = [Float](repeating: 0, count: warmupBatchSize * perBoard)
         var state = GameState.starting
+        // Rolling window of recent prior states (most-recent-first), mirroring
+        // ChessGameEngine.recentStates so warmup inputs carry realistic history
+        // for history-stacking encodings. Empty for single-frame encodings, so
+        // their warmup is byte-identical to before. Cleared on game reset.
+        var history: [GameState] = []
         var ply = 0
         out.withUnsafeMutableBufferPointer { buf in
             // `out` is `warmupBatchSize * perBoard` floats, statically
@@ -141,13 +148,20 @@ final class ChessMPSNetwork: @unchecked Sendable {
                     start: base.advanced(by: ply * perBoard),
                     count: perBoard
                 )
-                BoardEncoder.encode(state, into: slot, encoding: encoding)
+                BoardEncoder.encode(state, history: history, into: slot, encoding: encoding)
                 ply += 1
                 guard let move = MoveGenerator.legalMoves(for: state).randomElement() else {
                     // No legal moves (mate/stalemate) — reset to the opening
-                    // and keep generating warmup positions.
+                    // and keep generating warmup positions. New game → no history.
                     state = .starting
+                    history.removeAll(keepingCapacity: true)
                     continue
+                }
+                if historyDepth > 0 {
+                    history.insert(state, at: 0)
+                    if history.count > historyDepth {
+                        history.removeLast(history.count - historyDepth)
+                    }
                 }
                 state = MoveGenerator.applyMove(move, to: state)
             }

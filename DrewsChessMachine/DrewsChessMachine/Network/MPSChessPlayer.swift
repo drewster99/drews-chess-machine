@@ -317,7 +317,8 @@ final class MPSChessPlayer: ChessPlayer {
     func onChooseNextMove(
         opponentMove: ChessMove?,
         newGameState gameState: GameState,
-        legalMoves: [ChessMove]
+        legalMoves: [ChessMove],
+        recentHistory: [GameState]
     ) async throws -> ChessMove {
         guard !legalMoves.isEmpty else {
             throw ChessPlayerError.noLegalMoves
@@ -331,7 +332,7 @@ final class MPSChessPlayer: ChessPlayer {
         // not worth a per-instance scratch buffer.
         var encoded = [Float](repeating: 0, count: boardFloats)
         encoded.withUnsafeMutableBufferPointer { buf in
-            BoardEncoder.encode(gameState, into: buf, encoding: source.inputEncoding)
+            BoardEncoder.encode(gameState, history: recentHistory, into: buf, encoding: source.inputEncoding)
         }
 
         // Run inference. The source writes `policySize` raw policy

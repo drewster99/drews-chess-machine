@@ -1,9 +1,17 @@
 # full10ply200 input encoding + history-dropout — implementation plan
 
-Status: **PLANNED, not started.** Branch: `safetensors-storage`. Created 2026-06-06.
+Status: **Phases 1–4 IMPLEMENTED (compile-clean).** Tests written; **test *run*
+deferred** (a live training session blocks running tests/app per project rule).
+Phase 5 (history dropout) **DEFERRED → ROADMAP.md**. Branch: `safetensors-storage`.
+Created 2026-06-06.
 
-Do not begin implementation until explicitly told to start. Build once at the end of
-each phase (no incremental mid-phase builds).
+Phase 3 scope note: in addition to self-play / inference / BN-warmup, the **arena**
+(`TickTournamentDriver`) also encodes per-ply and was threaded with
+`g.engine.recentStates` — otherwise a full10ply200 arena would evaluate on
+history-less inputs while the nets were trained with history. The
+probe/diagnostic/FEN encode paths (lichess probe, candidate probe, tactical probe,
+UCI, Engine Diagnostics) are intentionally left history-less: they evaluate
+isolated positions that genuinely have no game trajectory.
 
 ## Goal
 
@@ -48,7 +56,7 @@ is only the encoding + its consumers. Nothing here changes what self-play must *
 
 ---
 
-## Phase 1 — Engine non-clearing state window
+## Phase 1 — Engine non-clearing state window — DONE
 
 `ChessGameEngine` today retains `recentPositionKeys: [PositionKey]` (window 10, **cleared
 on irreversible move**) — hashes only, not full states, and wrong clearing semantics for
@@ -63,7 +71,7 @@ this feature.
 - Window size 9 is coupled to the deepest history-stacking encoding (full10ply200 needs
   current + 9 prior). Document that coupling at the declaration.
 
-## Phase 2 — Encoder refactor + `InputEncoding.full10ply200`
+## Phase 2 — Encoder refactor + `InputEncoding.full10ply200` — DONE
 
 In `BoardEncoder.swift`, factor the current single-frame body into a private writer:
 
@@ -99,7 +107,7 @@ In `NetworkArchitecture.swift`, add `case full10ply200` with `planeGroups` rende
 to 200; everything downstream (stem depth, buffer stride, weight plan, summaries) follows
 automatically.
 
-## Phase 3 — Thread session encoding + history through the hot paths
+## Phase 3 — Thread session encoding + history through the hot paths — DONE
 
 Finishes the "Phase C" debt the BoardEncoder comments flag (call sites currently hardcode
 the `basic30` default stride):
@@ -122,7 +130,7 @@ the `basic30` default stride):
 `decodeSynthetic` needs **no change** — frame N's pieces/castling/EP/clock stay at planes
 0–17 (used by `ChessTrainer.legalMassSnapshot`).
 
-## Phase 4 — ReplayBuffer stride + Build-New-Network UI
+## Phase 4 — ReplayBuffer stride + Build-New-Network UI — DONE
 
 - Buffer stride already derives from `arch.inputPlanes` (`ChessTrainer.swift:4111`); verify
   200 planes (12800 floats/position) flows end-to-end. Surface replay-capacity guidance

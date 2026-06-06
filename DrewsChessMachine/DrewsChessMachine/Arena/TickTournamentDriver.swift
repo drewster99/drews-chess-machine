@@ -379,6 +379,7 @@ final class TickTournamentDriver: @unchecked Sendable {
                             + compactIdxSnap[i] * boardFloats
                         BoardEncoder.encode(
                             g.engine.state,
+                            history: g.engine.recentStates,
                             into: UnsafeMutableBufferPointer(start: dst, count: boardFloats),
                             encoding: encoding
                         )

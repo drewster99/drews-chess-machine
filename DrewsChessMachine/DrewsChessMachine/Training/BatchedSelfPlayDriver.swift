@@ -346,6 +346,7 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                         let dst = scratchCarrier.pointer + i * boardFloats
                         BoardEncoder.encode(
                             g.engine.state,
+                            history: g.engine.recentStates,
                             into: UnsafeMutableBufferPointer(start: dst, count: boardFloats),
                             encoding: encoding
                         )
@@ -389,6 +390,13 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
         let drawWatchThreshold = lp.drawWatchThreshold
         let drawWatchTerminate = lp.drawWatchTerminate
         let drawWatchStreakLen = lp.drawWatchStreakLen
+        // Draw-watch reads a per-position DRAW probability, which only exists
+        // for the W/D/L softmax head. For a scalar-tanh champion the value
+        // probs buffer is `count × 1` (just the tanh scalar), so the 3-wide
+        // `wdlBase[i*3 + 1]` indexing below would read off the end of the
+        // buffer. Hoisted as a Sendable Bool so the consume closure can skip
+        // the whole draw-watch block without reaching for `self`.
+        let drawWatchActive = network.arch.valueHeadStyle == .wdlSoftmax
         let floatCount = K * boardFloats
         let policyTarget = MutablePointerCarrier(pointer: policyOut)
         let valueTarget = MutablePointerCarrier(pointer: valueOut)
@@ -410,8 +418,12 @@ final class BatchedSelfPlayDriver: @unchecked Sendable {
                 // pDraw is wdlBuf[i*3 + 1]. Each slot's `ActiveGame` is
                 // touched by exactly this thread for the duration of
                 // consume, so no aliasing across slots; per-slot
-                // mutation is single-task-owned.
-                guard let wdlBase = wdlBuf.baseAddress else { return }
+                // mutation is single-task-owned. Skipped entirely for a
+                // non-W/D/L head (no draw probability; `wdlBuf` is only
+                // `K × 1` floats there) — this block is the last thing in
+                // the closure, so the early return just ends consume after
+                // the policy/value copies above.
+                guard drawWatchActive, let wdlBase = wdlBuf.baseAddress else { return }
                 let triggerLen = drawWatchStreakLen
                 for i in 0..<K {
                     let game = gamesSnapshot[i]

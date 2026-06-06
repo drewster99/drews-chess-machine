@@ -108,8 +108,16 @@ enum InputEncoding: String, Codable, CaseIterable, Sendable, Hashable {
         }
     }
 
-    /// Human-readable table, rendered from `planeGroups` (single source of truth).
+    /// Human-readable table, rendered from `planeGroups` (single source of
+    /// truth). History-stacking encodings repeat one frame's groups many times,
+    /// so they get a one-line structural summary instead of the full table.
     var planeDescription: String {
+        if historyFrameCount > 1 {
+            return "\(rawValue) — \(planeCount) planes: a \(planesPerFrame)-plane "
+                + "basic20 frame stacked \(historyFrameCount)× for plies N, N-1, … "
+                + "N-\(historyFrameCount - 1), each from the ply-N mover's perspective; "
+                + "absent (pre-game) frames are zero."
+        }
         var lines = ["\(rawValue) — \(planeCount) planes:"]
         for g in planeGroups {
             let lo = g.range.lowerBound, hi = g.range.upperBound
