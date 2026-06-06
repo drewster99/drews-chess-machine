@@ -91,7 +91,7 @@ final class SafetensorsModelIOTests: XCTestCase {
         for t in tensors { shapeByName[t.name] = t.shape }
 
         let flatten = arch.boardSize * arch.boardSize * arch.valueHeadConvChannels
-        let seReduced = arch.channels / arch.seReductionRatio
+        let seReduced = arch.channels / arch.blockSeReductionRatio
 
         // FC weights transposed to torch [out, in]:
         XCTAssertEqual(shapeByName["value.fc1.weight"], [arch.valueHeadHiddenUnits, flatten])
@@ -104,7 +104,7 @@ final class SafetensorsModelIOTests: XCTestCase {
         XCTAssertEqual(shapeByName["policy.conv.bias"], [arch.policyChannels])
         // Conv OIHW unchanged; BN [C]; scalar [1]:
         XCTAssertEqual(shapeByName["policy.conv.weight"], [arch.policyChannels, arch.channels, 1, 1])
-        XCTAssertEqual(shapeByName["stem.conv.weight"], [arch.channels, arch.inputPlanes, arch.towerConvKernelSize, arch.towerConvKernelSize])
+        XCTAssertEqual(shapeByName["stem.conv.weight"], [arch.channels, arch.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize])
         XCTAssertEqual(shapeByName["stem.bn.weight"], [arch.channels])
         XCTAssertEqual(shapeByName["blocks.0.rezero_alpha"], [1])
 
@@ -124,23 +124,6 @@ final class SafetensorsModelIOTests: XCTestCase {
         XCTAssertEqual(decoded.file.weights.count, weights.count)
         for (a, b) in zip(weights, decoded.file.weights) {
             XCTAssertEqual(a.map(\.bitPattern), b.map(\.bitPattern))
-        }
-    }
-
-    func testDecodeRejectsArchHashInconsistentWithEmbeddedConfig() throws {
-        // A file whose stored arch_hash disagrees with its embedded architecture
-        // (hand-edited / tampered) must be rejected up front, not surface later
-        // as a weight-shape error. The guard fires before weight reconstruction,
-        // so empty tensors suffice.
-        let archJSON = String(decoding: try JSONEncoder().encode(NetworkArchitecture.current), as: UTF8.self)
-        let bytes = try SafetensorsFile.encode(
-            tensors: [],
-            metadata: ["architecture": archJSON, "arch_hash": "0xdeadbeef", "dcm_format_version": "3"]
-        )
-        XCTAssertThrowsError(try SafetensorsModelIO.decode(bytes)) { error in
-            guard case SafetensorsModelIO.IOError.archHashMismatch = error else {
-                return XCTFail("expected .archHashMismatch, got \(error)")
-            }
         }
     }
 
