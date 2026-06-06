@@ -125,6 +125,18 @@ final class ChartSampleRing<Element> {
         }
     }
 
+    /// Rewrite every stored element in place by applying `body`.
+    /// Preserves order, count, and block layout. Used by the one-time
+    /// training-step back-fill to fill the `trainingStep` gap on
+    /// pre-existing samples without reallocating the ring. O(count).
+    func transformEach(_ body: (Element) -> Element) {
+        for b in blocks.indices {
+            for i in blocks[b].indices {
+                blocks[b][i] = body(blocks[b][i])
+            }
+        }
+    }
+
     /// Drop every appended element. Retains the first block's
     /// reserved capacity so the next session reuses the existing
     /// allocation; releases all subsequent blocks. No-op (and no

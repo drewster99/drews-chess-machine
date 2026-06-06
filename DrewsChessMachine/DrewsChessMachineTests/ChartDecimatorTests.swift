@@ -21,6 +21,7 @@ final class ChartDecimatorTests: XCTestCase {
         TrainingChartSample(
             id: id,
             elapsedSec: elapsedSec,
+            trainingStep: nil,
             rollingPolicyLoss: policyLoss,
             rollingValueLoss: nil,
             rollingPolicyEntropy: policyEntropy,

@@ -116,21 +116,13 @@ struct LichessProbeOverallTrendChart: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Exponential moving average over `ys` with the given span
-    /// (alpha = 2/(span+1)). Inputs are assumed finite — callers pass the
-    /// already-plotted, finite y-values. Pure + static for testability.
+    /// Exponential moving average over `ys` with the given span. Thin
+    /// delegate to `FastChartMath.ema` (the single implementation shared
+    /// with the combined Training-vs-Eval-Loss window); kept as a static
+    /// here so existing call sites and tests referencing
+    /// `LichessProbeOverallTrendChart.ema` stay valid.
     static func ema(_ ys: [Double], span: Int) -> [Double] {
-        guard ys.count > 1, span >= 1 else { return ys }
-        let alpha = 2.0 / (Double(span) + 1.0)
-        var out = [Double]()
-        out.reserveCapacity(ys.count)
-        var prev = ys[0]
-        out.append(prev)
-        for i in 1..<ys.count {
-            prev = alpha * ys[i] + (1.0 - alpha) * prev
-            out.append(prev)
-        }
-        return out
+        FastChartMath.ema(ys, span: span)
     }
 
     /// Uniform-over-30-legals reference value (≈ ln 30) for the NLL chart.

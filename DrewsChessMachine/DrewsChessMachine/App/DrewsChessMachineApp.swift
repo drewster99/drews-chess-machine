@@ -481,6 +481,9 @@ struct DrewsChessMachineApp: App {
                     .disabled(!commandHub.networkReady)
                 Button("Open Lichess Probe Monitor…") { commandHub.openLichessProbeMonitor() }
                     .disabled(!commandHub.networkReady)
+                Divider()
+                Button("Open Training vs Eval Loss…") { commandHub.openCombinedLossWindow() }
+                    .disabled(!commandHub.networkReady)
             }
 
             CommandMenu("Debug") {

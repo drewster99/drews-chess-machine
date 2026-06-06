@@ -19,6 +19,17 @@ public struct FastLineChart: View {
     private let group: FastChartGroup
     private let xDomain: ClosedRange<Double>
     private let yDomain: ClosedRange<Double>
+    /// Independent domain for series tagged `yAxis: .secondary`. When
+    /// non-nil the chart reserves a trailing label column and draws a
+    /// second set of Y labels on the right; when nil the chart is a
+    /// plain single-axis chart exactly as before.
+    private let secondaryYDomain: ClosedRange<Double>?
+    private let secondaryYTickValues: [Double]?
+    private let secondaryYLabelFormatter: @Sendable (Double) -> String
+    /// Tint for the trailing-axis labels. When nil they render in the
+    /// same secondary style as the primary labels; pass a color to
+    /// visually bind the right axis to the series it scales.
+    private let secondaryYLabelColor: Color?
     private let series: [FastChartSeries]
     private let referenceLines: [FastChartReferenceLine]
     private let yLabelCount: Int
@@ -42,6 +53,10 @@ public struct FastLineChart: View {
         group: FastChartGroup,
         xDomain: ClosedRange<Double>,
         yDomain: ClosedRange<Double>,
+        secondaryYDomain: ClosedRange<Double>? = nil,
+        secondaryYTickValues: [Double]? = nil,
+        secondaryYLabelFormatter: @escaping @Sendable (Double) -> String = FastChartFormatters.compact,
+        secondaryYLabelColor: Color? = nil,
         series: [FastChartSeries],
         referenceLines: [FastChartReferenceLine] = [],
         yLabelCount: Int = 4,
@@ -59,6 +74,10 @@ public struct FastLineChart: View {
         self.group = group
         self.xDomain = xDomain
         self.yDomain = yDomain
+        self.secondaryYDomain = secondaryYDomain
+        self.secondaryYTickValues = secondaryYTickValues
+        self.secondaryYLabelFormatter = secondaryYLabelFormatter
+        self.secondaryYLabelColor = secondaryYLabelColor
         self.series = series
         self.referenceLines = referenceLines
         self.yLabelCount = yLabelCount
@@ -98,6 +117,18 @@ public struct FastLineChart: View {
             explicit: xTickValues,
             domain: xDomain,
             fallback: { ChartAxisLayout.evenlySpacedTicks(domain: $0, count: xLabelCount) }
+        )
+    }
+
+    /// Tick positions for the trailing (secondary) Y axis. Empty when
+    /// no `secondaryYDomain` is set. Mirrors the primary `yTicks`
+    /// resolution so the right labels read as round numbers too.
+    private var secondaryYTicks: [Double] {
+        guard let secondaryYDomain else { return [] }
+        return ChartAxisLayout.resolvedTicks(
+            explicit: secondaryYTickValues,
+            domain: secondaryYDomain,
+            fallback: { ChartAxisLayout.niceTicks(domain: $0, approxCount: yLabelCount) }
         )
     }
 
@@ -179,11 +210,13 @@ public struct FastLineChart: View {
     private var plotArea: some View {
         let yTicksResolved = yTicks
         let xTicksResolved = xTicks
+        let secondaryYTicksResolved = secondaryYTicks
         return GeometryReader { geo in
             let layout = ChartAxisLayout(
                 totalSize: geo.size,
                 yLabelWidth: yAxisLabelColumnWidth,
-                xLabelHeight: showXAxisLabels ? xAxisLabelRowHeight : 0
+                xLabelHeight: showXAxisLabels ? xAxisLabelRowHeight : 0,
+                rightLabelWidth: secondaryYDomain != nil ? yAxisLabelColumnWidth : 0
             )
             ZStack(alignment: .topLeading) {
                 FastChartCanvasContent(
@@ -191,6 +224,7 @@ public struct FastLineChart: View {
                     referenceLines: referenceLines,
                     xDomain: xDomain,
                     yDomain: yDomain,
+                    secondaryYDomain: secondaryYDomain,
                     yTicks: yTicksResolved,
                     xTicks: xTicksResolved,
                     gridlineColor: Color.gray.opacity(0.18),
@@ -200,6 +234,13 @@ public struct FastLineChart: View {
                 .offset(x: layout.plotRect.origin.x, y: layout.plotRect.origin.y)
 
                 yAxisLabels(layout: layout, ticks: yTicksResolved)
+                if let secondaryYDomain {
+                    secondaryYAxisLabels(
+                        layout: layout,
+                        ticks: secondaryYTicksResolved,
+                        domain: secondaryYDomain
+                    )
+                }
                 if showXAxisLabels {
                     xAxisLabels(layout: layout, ticks: xTicksResolved)
                 }
@@ -208,6 +249,40 @@ public struct FastLineChart: View {
                 crosshairOverlay(layout: layout)
             }
         }
+    }
+
+    /// Trailing-axis labels for the secondary domain. Mirrors
+    /// `yAxisLabels` but positions each label inside the right-hand
+    /// reserved column and maps tick values through a transform built
+    /// from `domain` so they line up with the `.secondary` series.
+    private func secondaryYAxisLabels(
+        layout: ChartAxisLayout,
+        ticks: [Double],
+        domain: ClosedRange<Double>
+    ) -> some View {
+        let plot = layout.plotRect
+        let transform = ChartCoordTransform(
+            xDomain: xDomain,
+            yDomain: domain,
+            rect: plot
+        )
+        return ZStack(alignment: .topLeading) {
+            ForEach(ticks.indices, id: \.self) { i in
+                let y = ticks[i]
+                Text(secondaryYLabelFormatter(y))
+                    .font(.system(size: 7))
+                    .monospacedDigit()
+                    .foregroundStyle(secondaryYLabelColor ?? .secondary)
+                    .lineLimit(1)
+                    .frame(width: layout.rightLabelWidth - 2, alignment: .leading)
+                    .position(
+                        x: plot.maxX + layout.rightLabelWidth / 2,
+                        y: transform.viewY(y)
+                    )
+            }
+        }
+        .frame(width: layout.totalSize.width, height: layout.totalSize.height, alignment: .topLeading)
+        .allowsHitTesting(false)
     }
 
     private func yAxisLabels(layout: ChartAxisLayout, ticks: [Double]) -> some View {

@@ -220,4 +220,43 @@ final class SwiftUIFastChartsTests: XCTestCase {
         XCTAssertEqual(FastChartFormatters.elapsedTime(125), "2:05")
         XCTAssertEqual(FastChartFormatters.elapsedTime(3725), "1:02:05")
     }
+
+    // MARK: - Dual-axis layout geometry
+
+    func testRightLabelWidthShrinksPlotFromTheRight() {
+        let size = CGSize(width: 200, height: 100)
+        let single = ChartAxisLayout(totalSize: size, yLabelWidth: 26, xLabelHeight: 10)
+        let dual = ChartAxisLayout(totalSize: size, yLabelWidth: 26, xLabelHeight: 10, rightLabelWidth: 26)
+        // Left origin and height are unchanged by the trailing column…
+        XCTAssertEqual(dual.plotRect.origin.x, single.plotRect.origin.x, accuracy: 0.001)
+        XCTAssertEqual(dual.plotRect.height, single.plotRect.height, accuracy: 0.001)
+        // …and the plot is exactly `rightLabelWidth` narrower.
+        XCTAssertEqual(single.plotRect.width - dual.plotRect.width, 26, accuracy: 0.001)
+        XCTAssertEqual(dual.plotRect.maxX, 200 - 26, accuracy: 0.001)
+    }
+
+    func testRightLabelWidthDefaultsToZero() {
+        let layout = ChartAxisLayout(totalSize: CGSize(width: 200, height: 100), yLabelWidth: 26, xLabelHeight: 0)
+        XCTAssertEqual(layout.rightLabelWidth, 0)
+        XCTAssertEqual(layout.plotRect.maxX, 200, accuracy: 0.001)
+    }
+
+    // MARK: - EMA
+
+    func testEMAReturnsShortInputsUnchanged() {
+        XCTAssertEqual(FastChartMath.ema([], span: 25), [])
+        XCTAssertEqual(FastChartMath.ema([5], span: 25), [5])
+        XCTAssertEqual(FastChartMath.ema([1, 2, 3], span: 0), [1, 2, 3])
+    }
+
+    func testEMAConvergesTowardConstantSeries() {
+        let out = FastChartMath.ema([4, 4, 4, 4], span: 10)
+        XCTAssertEqual(out, [4, 4, 4, 4])
+    }
+
+    func testEMAFirstValueIsSeedAndStaysBounded() {
+        let out = FastChartMath.ema([0, 10, 10, 0], span: 3)
+        XCTAssertEqual(out.first, 0)
+        for v in out { XCTAssertTrue(v >= 0 && v <= 10) }
+    }
 }

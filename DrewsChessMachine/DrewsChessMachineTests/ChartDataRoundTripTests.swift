@@ -50,6 +50,7 @@ final class ChartDataRoundTripTests: XCTestCase {
         TrainingChartSample(
             id: id,
             elapsedSec: elapsedSec,
+            trainingStep: id * 100,
             rollingPolicyLoss: 1.5,
             rollingValueLoss: 0.25,
             rollingPolicyEntropy: 6.5,
@@ -81,6 +82,7 @@ final class ChartDataRoundTripTests: XCTestCase {
         TrainingChartSample(
             id: id,
             elapsedSec: elapsedSec,
+            trainingStep: nil,
             rollingPolicyLoss: nil,
             rollingValueLoss: nil,
             rollingPolicyEntropy: nil,

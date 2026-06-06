@@ -159,6 +159,10 @@ final class AppCommandHub {
     /// argmax-fraction over time. Independent of the periodic watcher
     /// — opening/closing doesn't start/stop ticking.
     var openLichessProbeMonitor: () -> Void = {}
+    /// Open the standalone Training-vs-Eval-Loss window — training total
+    /// loss (left axis) overlaid on the wide-set eval NLL (right axis),
+    /// both against the shared trainer-step X axis. Purely observational.
+    var openCombinedLossWindow: () -> Void = {}
     /// Open the standalone Lichess Probe Detail window — the per-
     /// puzzle drill-down companion of the aggregate monitor. Shows all
     /// 200 puzzles with id, rating, expected move, actual top-1,

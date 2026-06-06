@@ -8,6 +8,10 @@ struct ChartAxisLayout {
     let totalSize: CGSize
     /// Width reserved on the left for Y axis labels.
     let yLabelWidth: CGFloat
+    /// Width reserved on the right for the secondary (trailing) Y axis
+    /// labels. Zero for single-axis charts, so the plot extends to the
+    /// right edge exactly as before.
+    let rightLabelWidth: CGFloat
     /// Height reserved at the bottom for X axis labels.
     let xLabelHeight: CGFloat
     let plotRect: CGRect
@@ -15,15 +19,17 @@ struct ChartAxisLayout {
     init(
         totalSize: CGSize,
         yLabelWidth: CGFloat,
-        xLabelHeight: CGFloat
+        xLabelHeight: CGFloat,
+        rightLabelWidth: CGFloat = 0
     ) {
         self.totalSize = totalSize
         self.yLabelWidth = yLabelWidth
+        self.rightLabelWidth = rightLabelWidth
         self.xLabelHeight = xLabelHeight
         self.plotRect = CGRect(
             x: yLabelWidth,
             y: 0,
-            width: max(0, totalSize.width - yLabelWidth),
+            width: max(0, totalSize.width - yLabelWidth - rightLabelWidth),
             height: max(0, totalSize.height - xLabelHeight)
         )
     }

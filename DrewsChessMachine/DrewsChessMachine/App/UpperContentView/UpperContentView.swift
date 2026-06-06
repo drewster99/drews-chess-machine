@@ -2099,6 +2099,9 @@ struct UpperContentView: View {
         commandHub.openLichessProbeMonitor = {
             LichessProbeMonitorLauncher.openWindow(sessionController: session)
         }
+        commandHub.openCombinedLossWindow = {
+            CombinedLossWindowLauncher.openWindow(sessionController: session)
+        }
         commandHub.openLichessProbeDetail = {
             LichessProbeDetailLauncher.openWindow(sessionController: session)
         }

@@ -15,6 +15,19 @@ struct TrainingChartSample: Identifiable, Sendable, Codable, Equatable {
     let id: Int
     let elapsedSec: Double
 
+    /// Trainer step (`ChessTrainer.completedTrainSteps`) at sample
+    /// time — the same monotonic counter the Lichess probe records, so
+    /// training loss and held-out eval loss can be plotted on one
+    /// shared step axis (see the combined Training-vs-Eval-Loss window).
+    /// `nil` for samples collected before this field existed; those are
+    /// back-filled in memory by interpolating against the probe's exact
+    /// `(step, time)` anchors (`TrainingStepBackfill`). Declared `var`
+    /// (the rest of the struct is immutable) precisely so that one-time
+    /// back-fill can fill the gap in place without rebuilding every
+    /// field. Optional + additive, so older `.dcmsession` files keep
+    /// decoding (missing key → `nil`).
+    var trainingStep: Int?
+
     let rollingPolicyLoss: Double?
     let rollingValueLoss: Double?
     let rollingPolicyEntropy: Double?

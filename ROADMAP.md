@@ -11,6 +11,60 @@ original rationale is not lost.
 
 ## Future improvements (validated open)
 
+- **Long-run UI hang + throughput decline (investigated 2026-06-05).** Symptom:
+  after ~12 h a session develops a periodic ~1 s main-thread hang on the
+  heartbeat cadence, and self-play/training throughput declines ~25 % over a
+  day. **Root cause (proven by Instruments + the per-stage heartbeat traces):**
+  every 5 s the `snapshotTimer` re-evaluates the whole 9.6k-line
+  `UpperContentView.body`, which rebuilds a large `@Observable` tracking set —
+  the ~1 s is pure `ObservationRegistrar.cancel`/`registerTracking` +
+  `AnyKeyPath.hash` + `Set`/`Dictionary` churn, inside a `ViewThatFits`/
+  `GeometryReader` layout (SwiftUI `Charts` internals). The tracking set grows
+  with accumulated run state, so the hang only appears after many hours. The
+  **throughput** half was the *same event*: `BatchedSelfPlayDriver.runOneTick`
+  did `await MainActor.run { TrainingParameters.shared.X }` 3–5×/tick, so during
+  each UI hang self-play blocked on the hung MainActor. Ruled out (with data):
+  memory leak (rss/gpuMem flat), thermal (`thermalState` never above "fair"),
+  the lichess probe (its charts are already `FastLineChart`), and the replay
+  controller. Battery/clamshell-sleep episodes are a real but intermittent,
+  non-progressive contributor to throughput only.
+
+  **Phase 1 — DONE (2026-06-05, builds clean, not yet long-run-verified):**
+  decoupled training from the MainActor.
+  `BatchedSelfPlayDriver` now reads its 5 live-tunable params from a `SyncBox`
+  (`SelfPlayLiveParams`) refreshed by an off-hot-path task — zero per-tick
+  MainActor hops, so a UI hang can never stall game production again. Heartbeat
+  `asyncCompletedTrainSteps()`/`asyncEffectiveLearningRate()` (which dispatch to
+  the *starved* global pool, costing ~0.8 s each) swapped for the sync
+  `completedTrainSteps`/`effectiveLearningRate` getters. Net: self-play's hot
+  path does ~0 MainActor hops (was ~39/s), which also un-starves the global
+  dispatch pool and shortens the heartbeat tick. **This fixes the throughput
+  decline and shortens the tick; it does NOT remove the ~1 s observation
+  teardown.**
+
+  **Phase 2 — NOT done (the UI-hang cure), deliberately not shipped blind.** The
+  fix is to stop the heartbeat from re-evaluating the whole body: move every
+  read of the hot heartbeat-written `@Observable` props (`trainingStats`,
+  `parallelStats`, `gameSnapshot`, `trainerWarmupSnap`, `replayRatioSnapshot`)
+  out of `UpperContentView.body` into small dedicated observing `View` structs,
+  and migrate the 4 always-visible native-`Charts` tiles (`ArenaActivityChart`,
+  `ArenaWinChart`, `DrawWatchHistogramChart`, `DiversityHistogramChart`) to the
+  path-based `FastLineChart` (no `ViewThatFits`). Two blockers to doing it as a
+  one-shot: (a) it's **all-or-nothing per property** — partial moves yield no
+  measurable win because the body still re-evaluates; (b) those reads are spread
+  across the whole view, so it's a deep refactor, and there's **no fast feedback
+  loop** (the hang takes ~12 h to reproduce; a fresh launch shows nothing).
+  **Decisive next data point:** on the next long run, when the hang appears,
+  expand the Instruments call tree just *above* `ObservationRegistrar.cancel` to
+  the `DrewsChessMachine` view frame + the collection it iterates — that pins
+  the exact growing structure in one profile, after which the migration/
+  decomposition is targeted and confident rather than speculative. (Candidate
+  but unconfirmed: a native-`Charts` tile's `ForEach` over growing
+  `tournamentHistory`.) Also consider gating the heartbeat to a single
+  end-of-tick batch of `@State`/`@Observable` writes (reduces re-eval frequency
+  ~10×→1×) — contained to `SessionController+Heartbeat`, but a high-risk
+  restructure of the UI-state path.
+
 - **Safetensors-native storage + runtime-configurable architecture.** In
   progress on branch `safetensors-storage`; full design + phase plan in
   `RUNTIME_ARCHITECTURE_CONFIG_PLAN.md`. **Done (tested):** model/session weight
@@ -25,6 +79,62 @@ original rationale is not lost.
   builder + consuming the embedded config on load; CLI (`--uci` builds from the
   file's embedded config; `--playchess` opens the human-play UI with an
   auto/`--model`-selected net).
+
+- **Standalone "Training vs Eval Loss" window.** Planned (added 2026-06-05).
+  A separate, freely-resizable `NSWindow` (following the established
+  `LichessProbeMonitorWindow` pattern: `NSWindowController` + single-instance
+  registry + `Launcher.openWindow(sessionController:)` + a `Performance` menu
+  button wired through `AppCommandHub`) that overlays two trajectories on **one
+  plot with two independent auto-scaling Y axes**, both indexed on the shared
+  X = trainer step (`ChessTrainer.completedTrainSteps`):
+  - **Training total loss** (leading axis): `rollingPolicyLoss + rollingValueLoss`
+    (`TrainingChartSample.rollingTotalLoss`), from `chartCoordinator.trainingRing`.
+  - **Eval loss** (trailing axis): wide-set (~4,435-puzzle) bookmove cross-entropy
+    `meanNegLogProb`, from `lichessProbeWideHistory.overallSeries`
+    (`OverallTickSample`, already step-indexed and persisted).
+
+  Interpretation caveat to keep in the docstring: the eval line is *pure* policy
+  cross-entropy, while the training line is *outcome-weighted* policy CE + value
+  CE (`pLoss` can go negative) — related but not the same metric, hence the dual
+  auto-scaled axes; the *trends* are the signal (both falling = healthy; train
+  falling while eval flattens = overfitting/plateau).
+
+  **Enabling schema change:** add `trainingStep: Int?` to `TrainingChartSample`
+  (Optional → additive-safe per that struct's own back-compat rule; persists
+  through `ChartFileFormat` automatically), populated at the existing heartbeat
+  construction site (`SessionController+Heartbeat.swift:516`) from the step the
+  heartbeat already fetches. Pre-existing samples carry `nil` step.
+
+  **Rendering:** mirror the lichess overall-trend look — reuse
+  `SwiftUIFastCharts.FastLineChart` + the existing EMA helper
+  (`LichessProbeOverallTrendChart.ema`) with the raw series faded to a faint
+  "noise cloud" (opacity ~0.28) behind a bold EMA line, per-series toggle/span.
+  Note `FastLineChart` exposes only a single `yDomain` with **leading-only** axis
+  labels, so the dual-axis overlay requires (a) linearly remapping the eval
+  series into the training-loss domain and (b) a hand-rolled trailing-axis label
+  column whose labels inverse-map the same pixel positions back to eval units.
+  (The lichess precedent stacks two single-axis charts sharing X instead — the
+  native-grain alternative if the dual-overlay custom work isn't wanted.)
+
+  **Decisions (locked 2026-06-05):**
+  1. *Back-fill:* interpolate a step for each pre-existing stepless
+     `TrainingChartSample` via piecewise-linear interpolation of its `elapsedSec`
+     against exact `(step ↔ elapsedSec)` anchors — the regular lichess probe's
+     `overallSeries` ticks every ~25 steps and stores `(trainingStep, timestamp)`
+     (timestamp → elapsedSec via `chartElapsedAnchor`), plus a terminal anchor at
+     `(current elapsedSec, current completedTrainSteps)`. Back-fill runs once
+     in-memory (guarded) when the window first opens and **persists on the next
+     save** (user OK'd saving estimated steps). Falls back to a global
+     linear-in-time map if no anchors exist.
+  2. *Layout:* single dual-axis overlay (leading = training total loss, trailing
+     = eval NLL), implemented by adding **real secondary/trailing-axis support to
+     `FastLineChart`** (per-series `yAxis: .primary/.secondary` + `secondaryYDomain`
+     + trailing label column; backward-compatible, defaults preserve current
+     behavior) so future charts reuse it — not a one-off overlay.
+
+  No `TrainingParameter` involved (the parameter checklist doesn't apply).
+  Pure-logic XCTests in scope: the step-interpolation function and the
+  `ChartAxisLayout` right-column geometry.
 
 - **`BatchFeedsInput` struct for `ChessTrainer.buildFeeds`.** Still open.
   Current implementation evidence: `ChessTrainer.buildFeeds(batchSize:boards:moves:zs:vBaselines:legalMasks:)`

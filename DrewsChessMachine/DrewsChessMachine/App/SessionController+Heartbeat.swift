@@ -143,13 +143,25 @@ extension SessionController {
         // trainer yields nil so the Idle chip path doesn't accidentally
         // surface stale warmup numbers from a prior 
         if let trainer {
-            let completedTrainSteps = await trainer.asyncCompletedTrainSteps()
+            // Sync SyncBox read — NOT `asyncCompletedTrainSteps()`, which
+            // hops onto the trainer's serial `executionQueue` (the GPU work
+            // queue) and waits behind the in-flight ~0.8s training step,
+            // adding ~0.8s to every heartbeat tick. The count lives in its
+            // own `SyncBox`, independent of `executionQueue`, so a direct
+            // read is instant and thread-safe.
+            let completedTrainSteps = trainer.completedTrainSteps
             elap("after 3.1 (everything was awaited)")
             // Pass the locally-snapshotted step count so the LR uses the
             // same observation rather than re-acquiring the SyncBox; the
             // count and LR in the published snapshot are then guaranteed
             // consistent.
-            let effectiveLR = await trainer.asyncEffectiveLearningRate(
+            // Sync — NOT `asyncEffectiveLearningRate`, which dispatches to
+            // `DispatchQueue.global` and so waits for a free pool thread.
+            // Under load the global pool is starved (blocked GPU/lock
+            // threads), making that hop cost ~0.8s. The computation reads
+            // only the SyncBox step count + immutable LR config, so a direct
+            // call on the main actor is instant.
+            let effectiveLR = trainer.effectiveLearningRate(
                 forBatchSize: TrainingParameters.shared.trainingBatchSize,
                 completedSteps: completedTrainSteps
             )
@@ -487,6 +499,18 @@ extension SessionController {
         // `parallelStats.sessionStart` and the back-dated
         // `checkpoint?.currentSessionStart` originally introduced).
         let elapsed = max(0, now.timeIntervalSince(chartCoordinator?.chartElapsedAnchor ?? Date()))
+        // Authoritative trainer step at sample time — the SAME counter
+        // the Lichess probe stamps onto its overall series, so the
+        // combined Training-vs-Eval-Loss window can share one step
+        // axis. Read off the trainer (not `stats.steps`, which is the
+        // current run's local count and diverges from the global
+        // counter across a resume). nil when no trainer exists, which
+        // only happens outside real training when no sample is appended
+        // anyway.
+        // Sync SyncBox read (see the note at the other call site) — avoids
+        // the ~0.8s `executionQueue` wait that `asyncCompletedTrainSteps()`
+        // incurs behind the in-flight training step.
+        let completedTrainStep = trainer?.completedTrainSteps
         let trainingSnap: TrainingLiveStatsBox.Snapshot?
         if let trainingBox {
             trainingSnap = await trainingBox.snapshot()
@@ -516,6 +540,7 @@ extension SessionController {
         let sample = TrainingChartSample(
             id: chartCoordinator?.trainingChartNextId ?? 0,
             elapsedSec: elapsed,
+            trainingStep: completedTrainStep,
             rollingPolicyLoss: trainingSnap?.rollingPolicyLoss,
             rollingValueLoss: trainingSnap?.rollingValueLoss,
             rollingPolicyEntropy: trainingSnap?.rollingPolicyEntropy,
