@@ -417,9 +417,7 @@ struct DrewsChessMachineApp: App {
             // to Train (before Window) as the closest SwiftUI
             // approximation.
             CommandMenu("Train") {
-                Button("Build Network") { commandHub.buildNetwork() }
-                    .disabled(commandHub.isBusy || commandHub.networkReady)
-                Button("New Model…") { commandHub.presentBuildNewModel() }
+                Button("New Network…") { commandHub.presentBuildNewModel() }
                     .disabled(commandHub.isBusy || commandHub.networkReady)
                 Button(commandHub.pendingLoadedSessionExists ? "Continue Training" : "Play and Train") {
                     commandHub.startRealTraining()
@@ -482,6 +480,8 @@ struct DrewsChessMachineApp: App {
                 Button("Open Tactical Probe Monitor…") { commandHub.openTacticalProbeMonitor() }
                     .disabled(!commandHub.networkReady)
                 Button("Open Lichess Probe Monitor…") { commandHub.openLichessProbeMonitor() }
+                    .disabled(!commandHub.networkReady)
+                Button("Open Lichess Probe Detail…") { commandHub.openLichessProbeDetail() }
                     .disabled(!commandHub.networkReady)
                 Divider()
                 Button("Open Training vs Eval Loss…") { commandHub.openCombinedLossWindow() }

@@ -364,11 +364,13 @@ final class RepPlaneProbeTests: XCTestCase {
             throw NSError(domain: "RepPlaneProbeTests", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "no .dcmsession found"])
         }
-        let modelURL = latest.appendingPathComponent("champion.dcmmodel")
+        // Resolve champion.safetensors (current format) then champion.dcmmodel
+        // (legacy) — sessions no longer write .dcmmodel.
+        let modelURL = SessionCheckpointLayout.existingChampionURL(in: latest)
         guard fm.fileExists(atPath: modelURL.path) else {
             throw NSError(
                 domain: "RepPlaneProbeTests", code: 2,
-                userInfo: [NSLocalizedDescriptionKey: "latest session has no champion.dcmmodel: \(modelURL.path)"]
+                userInfo: [NSLocalizedDescriptionKey: "latest session has no champion model: \(modelURL.path)"]
             )
         }
         return modelURL
@@ -392,27 +394,26 @@ final class RepPlaneProbeTests: XCTestCase {
         } catch {
             throw XCTSkip("No champion model on disk: \(error.localizedDescription)")
         }
-        let mps = try ChessMPSNetwork(.randomWeights)
         let file: ModelCheckpointFile
         do {
             file = try CheckpointManager.loadModelFile(at: modelURL)
         } catch ModelCheckpointError.archMismatch(let expected, let got) {
             throw XCTSkip(
-                "Latest champion is architecture-incompatible "
-                + "(file archHash 0x\(String(got, radix: 16)) != current "
-                + "0x\(String(expected, radix: 16)); numBlocks=\(ChessNetwork.numBlocks)). "
-                + "Train a champion under the current architecture to run this probe."
+                "Latest champion has an unmapped legacy archHash 0x\(String(got, radix: 16)) "
+                + "(no preset; expected one of the documented 0x\(String(expected, radix: 16)))."
             )
         }
+        // Build the champion's ACTUAL architecture — safetensors embeds it; a
+        // legacy .dcmmodel maps its hash to a preset — so non-default champions
+        // load and the probe runs instead of skipping.
+        let mps = try ChessMPSNetwork(.randomWeights, arch: file.architecture)
+        let baseCount = mps.network.trainableVariables.count
+            + mps.network.bnRunningStatsVariables.count
         do {
-            try await mps.network.loadWeights(file.weights)
+            try await mps.network.loadWeights(Array(file.weights.prefix(baseCount)))
         } catch {
-            // Defense-in-depth: archHash matched but the live variable
-            // list still rejected the tensor count/shape. Treat as
-            // arch-incompatible and skip rather than fail.
             throw XCTSkip(
-                "Champion weights incompatible with current network "
-                + "(\(ChessNetwork.numBlocks) blocks): \(error.localizedDescription)"
+                "Champion weights incompatible with rebuilt architecture: \(error.localizedDescription)"
             )
         }
         return (mps, file, modelURL)

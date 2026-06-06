@@ -35,7 +35,7 @@ struct BuildNewModelView: View {
     var body: some View {
         @Bindable var model = model
         VStack(spacing: 0) {
-            Text("Build New Model")
+            Text("New Network")
                 .font(.title2.weight(.semibold))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding([.horizontal, .top])
@@ -97,7 +97,7 @@ struct BuildNewModelView: View {
                 }
 
                 Section("Name") {
-                    TextField("Label", text: $model.label)
+                    TextField("Label", text: $model.labelOverride, prompt: Text(model.label))
                 }
             }
             .formStyle(.grouped)
@@ -169,15 +169,21 @@ struct BuildNewModelView: View {
 
     // MARK: Helpers
 
-    /// Picker binding that loads the chosen preset (or leaves fields as "Custom").
+    /// Picker selection derived from architecture equality: shows the matching
+    /// preset's name when the current fields equal a preset, else "Custom". This
+    /// avoids the stale-selection bug where loading a preset's fields would
+    /// immediately reset the label to "Custom".
     private var presetSelection: Binding<String?> {
         Binding(
-            get: { model.selectedPresetName },
+            get: {
+                let current = model.architecture
+                return ArchitecturePresetStore.allPresets().first(where: { $0.named.architecture == current })?.name
+            },
             set: { newName in
-                guard let name = newName else { model.selectedPresetName = nil; return }
-                if let entry = ArchitecturePresetStore.allPresets().first(where: { $0.name == name }) {
-                    model.load(name: name, entry.named)
-                }
+                guard let name = newName,
+                      let entry = ArchitecturePresetStore.allPresets().first(where: { $0.name == name })
+                else { return }
+                model.load(entry.named)
             }
         )
     }
@@ -189,18 +195,15 @@ struct BuildNewModelView: View {
         Picker(title, selection: binding) {
             ForEach(cases, id: \.self) { Text($0.rawValue).tag($0) }
         }
-        .onChange(of: binding.wrappedValue) { model.selectedPresetName = nil }
     }
 
     @ViewBuilder
     private func intField(_ title: String, _ binding: Binding<Int>) -> some View {
         TextField(title, value: binding, format: .number)
-            .onChange(of: binding.wrappedValue) { model.selectedPresetName = nil }
     }
 
     @ViewBuilder
     private func floatField(_ title: String, _ binding: Binding<Float>) -> some View {
         TextField(title, value: binding, format: .number)
-            .onChange(of: binding.wrappedValue) { model.selectedPresetName = nil }
     }
 }

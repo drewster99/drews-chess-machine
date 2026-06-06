@@ -9,4 +9,4 @@ if [ "${DCM_FORCE_LAUNCH:-0}" != "1" ] && pgrep -x DrewsChessMachine >/dev/null 
     echo "$PROG: DrewsChessMachine is already running (set DCM_FORCE_LAUNCH=1 to override)" >&2
     exit 10
 fi
-exec ~/Library/Developer/Xcode/DerivedData/DrewsChessMachine-*/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine $@
+exec ~/Library/Developer/Xcode/DerivedData/DrewsChessMachine-*/Build/Products/Release/DrewsChessMachine.app/Contents/MacOS/DrewsChessMachine "$@"

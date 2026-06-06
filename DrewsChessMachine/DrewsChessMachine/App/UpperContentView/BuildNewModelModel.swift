@@ -19,8 +19,10 @@ import Observation
 final class BuildNewModelModel {
 
     // Editable topology fields (defaults from the current preset; replaced by
-    // `load(_:)`). `label` lives here, outside the topology (plan §5a (b)).
-    var label: String
+    // `load(_:)`). The user's optional label override lives here, outside the
+    // topology (plan §5a (b)). The effective `label` is computed below, so a
+    // config edited away from a preset shows "Custom", not the preset's name.
+    var labelOverride: String = ""
     var inputEncoding: InputEncoding
     var channels: Int
     var numBlocks: Int
@@ -41,17 +43,13 @@ final class BuildNewModelModel {
     var valueHeadHiddenUnits: Int
     var computeDataType: ComputeDataType
 
-    /// The preset name currently selected in the picker (built-in or user), or
-    /// nil = "Custom" once any field diverges. Display-only.
-    var selectedPresetName: String?
-
     /// Name to save the current config under (Save-as-Preset). Defaults from the
     /// label, sanitized to a filename-safe slug.
     var saveAsName: String = ""
 
     init(_ named: NamedArchitecture = NamedArchitecture(label: "Custom", architecture: .current)) {
         let a = named.architecture
-        self.label = named.label
+        self.labelOverride = ""
         self.inputEncoding = a.inputEncoding
         self.channels = a.channels
         self.numBlocks = a.numBlocks
@@ -73,10 +71,11 @@ final class BuildNewModelModel {
         self.computeDataType = a.computeDataType
     }
 
-    /// Populate every field from a preset and mark it selected.
-    func load(name: String, _ named: NamedArchitecture) {
+    /// Populate every field from a preset (the picker selection is derived from
+    /// architecture equality, so no separate "selected" flag is needed).
+    func load(_ named: NamedArchitecture) {
         let a = named.architecture
-        label = named.label
+        labelOverride = ""
         inputEncoding = a.inputEncoding
         channels = a.channels
         numBlocks = a.numBlocks
@@ -96,7 +95,6 @@ final class BuildNewModelModel {
         valueHeadConvChannels = a.valueHeadConvChannels
         valueHeadHiddenUnits = a.valueHeadHiddenUnits
         computeDataType = a.computeDataType
-        selectedPresetName = name
     }
 
     /// The architecture described by the current fields.
@@ -143,7 +141,22 @@ final class BuildNewModelModel {
     /// Live one-line summary, or the validation error when invalid.
     var summary: String { isValid ? architecture.architectureSummary : (validationError ?? "invalid") }
 
-    /// A filename-safe slug derived from the label, for the Save-as-Preset default.
+    /// The preset (built-in or user-saved) whose architecture equals the current
+    /// fields, if any — `nil` means "Custom".
+    var matchedPreset: NamedArchitecture? {
+        let a = architecture
+        return ArchitecturePresetStore.allPresets().first(where: { $0.named.architecture == a })?.named
+    }
+
+    /// Effective display label: the user's override if set; else the matched
+    /// preset's label; else "Custom". So editing away from a preset shows
+    /// "Custom" rather than lingering on the preset's name.
+    var label: String {
+        labelOverride.isEmpty ? (matchedPreset?.label ?? "Custom") : labelOverride
+    }
+
+    /// A filename-safe slug derived from the effective label (so an edited config
+    /// defaults to "custom", never the original preset's name).
     var defaultSaveName: String {
         let lowered = label.lowercased()
         let mapped = lowered.map { ch -> Character in

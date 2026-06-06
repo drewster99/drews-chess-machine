@@ -726,6 +726,11 @@ extension SessionController {
         let entropyCoeff = trainer?.entropyRegularizationCoeff ?? Self.entropyRegularizationCoeffDefault
         let drawPen = trainer?.drawPenalty ?? Float(params.drawPenalty)
         let bufferSnap = replayBuffer?.stateSnapshot()
+        // Architecture metadata must reflect the ACTUAL built network, not the
+        // ChessNetwork static defaults (which only describe the current preset).
+        // Without this, a non-default session (e.g. a rebuilt v3 8-block) saved
+        // the wrong arch and the resume prompt showed v4/5-block.
+        let resolvedArch = network?.network.arch ?? trainer?.arch ?? .current
         let segments: [SessionCheckpointState.TrainingSegment]? =
             (checkpoint?.completedTrainingSegments.isEmpty ?? true)
             ? nil
@@ -777,6 +782,7 @@ extension SessionController {
             legalMassCollapseGraceSeconds: params.legalMassCollapseGraceSeconds,
             legalMassCollapseNoImprovementProbes: params.legalMassCollapseNoImprovementProbes,
             batchStatsInterval: params.batchStatsInterval,
+            lrMomentumCycle: params.lrMomentumCycle,
             maxPliesFromAnyOneGame: params.maxPliesFromAnyOneGame,
             targetSampledGameLengthPlies: params.targetSampledGameLengthPlies,
             maxDrawPercentPerBatch: params.maxDrawPercentPerBatch,
@@ -819,14 +825,14 @@ extension SessionController {
         .withTrainingSegments(segments)
         .withArchitecture(
             ArchitectureMetadata(
-                architectureVersion: ChessNetwork.architectureVersion,
-                channels: ChessNetwork.channels,
-                numBlocks: ChessNetwork.numBlocks,
-                inputPlanes: ChessNetwork.inputPlanes,
-                policySize: ChessNetwork.policySize,
-                valueHeadClasses: ChessNetwork.valueHeadClasses,
-                seReductionRatio: ChessNetwork.seReductionRatio,
-                parameterCount: ChessNetwork.parameterCount
+                architectureVersion: resolvedArch.architectureVersionLabel,
+                channels: resolvedArch.channels,
+                numBlocks: resolvedArch.numBlocks,
+                inputPlanes: resolvedArch.inputPlanes,
+                policySize: resolvedArch.policySize,
+                valueHeadClasses: resolvedArch.valueHeadClasses,
+                seReductionRatio: resolvedArch.blockSeReductionRatio,
+                parameterCount: resolvedArch.parameterCount
             )
         )
         .withProbeHistories(

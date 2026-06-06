@@ -457,10 +457,16 @@ struct LichessProbeDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             titleRow
             Divider()
-            tickMetadataGrid
-            if comparison != nil || comparisonWide != nil {
-                Divider()
-                comparisonMetadataGrid
+            // Tick telemetry on the left; the loaded-comparison filenames to its
+            // right (separated by a vertical rule) so the header uses the wide
+            // window's horizontal space instead of stacking another two rows.
+            HStack(alignment: .top, spacing: 20) {
+                tickMetadataGrid
+                if comparison != nil || comparisonWide != nil {
+                    Divider().frame(height: 34)
+                    comparisonMetadataGrid
+                }
+                Spacer(minLength: 0)
             }
         }
         .padding(.horizontal, 16)

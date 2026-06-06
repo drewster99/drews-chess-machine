@@ -26,7 +26,7 @@ final class LichessProbeDetailWindowController: NSWindowController, NSWindowDele
         )
         let hosting = NSHostingController(rootView: view)
         let window = NSWindow(contentViewController: hosting)
-        window.setContentSize(NSSize(width: 1100, height: 700))
+        window.setContentSize(NSSize(width: 1320, height: 770))
         window.minSize = NSSize(width: 900, height: 400)
         window.title = "Lichess Probe Detail"
         window.isReleasedWhenClosed = false

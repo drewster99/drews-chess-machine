@@ -410,6 +410,13 @@ struct NetworkArchitecture: Sendable, Codable, Hashable {
 
     // MARK: Summary (human-readable, computed from the config)
 
+    /// Compact one-glance label for the title bar, e.g. "v3 · 8-block 3×3 · 128ch · 2,483,667 params".
+    var shortLabel: String {
+        let k1 = blockConv1KernelSize, k2 = blockConv2KernelSize
+        let kDesc = k1 == k2 ? "\(k1)×\(k1)" : "\(k1)×\(k1),\(k2)×\(k2)"
+        return "v\(architectureVersionLabel) · \(numBlocks)-block \(kDesc) · \(channels)ch · \(parameterCount.formatted(.number)) params"
+    }
+
     var architectureSummary: String {
         let seDesc: String
         switch blockSeStyle {

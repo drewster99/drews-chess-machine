@@ -18,8 +18,21 @@ import XCTest
 
 final class LegacyDcmmodelLoadTests: XCTestCase {
 
-    /// Collect real `.dcmmodel` files: the standalone Models/ folder plus each
-    /// session's `champion.dcmmodel` (champion = trainables+running, no velocity).
+    /// The stored archHash (u32 LE at byte offset 12) of a `.dcmmodel`, used to
+    /// pick ONE representative file per distinct architecture so the test stays
+    /// fast (a GPU build + round-trip per file is expensive; there can be ~100
+    /// sessions on disk, but only a handful of distinct arches).
+    private func storedArchHash(of url: URL) -> UInt32? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        guard (try? h.seek(toOffset: 12)) != nil,
+              let data = try? h.read(upToCount: 4), data.count == 4 else { return nil }
+        return data.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }.littleEndian
+    }
+
+    /// Collect real `.dcmmodel` champion files (Models/ + each session's
+    /// `champion.dcmmodel`), then keep one per distinct stored archHash so each
+    /// historical architecture is exercised exactly once.
     private func legacyChampionModelURLs() -> [URL] {
         let fm = FileManager.default
         var urls: [URL] = []
@@ -32,10 +45,27 @@ final class LegacyDcmmodelLoadTests: XCTestCase {
                 if fm.fileExists(atPath: champ.path) { urls.append(champ) }
             }
         }
-        return urls
+        var seenHashes = Set<UInt32>()
+        var unique: [URL] = []
+        for url in urls {
+            let hash = storedArchHash(of: url) ?? 0
+            if seenHashes.insert(hash).inserted { unique.append(url) }
+        }
+        return unique
     }
 
     func testRealLegacyDcmmodelsResolveBuildAndLoad() async throws {
+        // Opt-in only: this is slow (a GPU network build + safetensors round-trip
+        // per distinct historical architecture) and depends on real files on
+        // disk, so it would otherwise push the whole suite past the 10-minute
+        // build+run cap. Run on demand with:
+        //   DCM_RUN_LEGACY_LOAD=1  (scheme env var, or
+        //   `xcodebuild test -only-testing:DrewsChessMachineTests/LegacyDcmmodelLoadTests`
+        //   with that env set — see tools/verify-legacy-load.sh).
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["DCM_RUN_LEGACY_LOAD"] == "1",
+            "Set DCM_RUN_LEGACY_LOAD=1 to run the legacy-load validation (slow, GPU, real-file)."
+        )
         let urls = legacyChampionModelURLs()
         guard !urls.isEmpty else {
             throw XCTSkip("No legacy .dcmmodel files on disk to validate.")

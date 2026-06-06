@@ -77,6 +77,13 @@ enum ArchitecturePresetStore {
         Set(NetworkArchitecture.Preset.allCases.map(\.rawValue))
     }
 
+    /// The current default preset as a `NamedArchitecture` — the default the
+    /// "New Network…" screen opens to ("latest and greatest").
+    static var currentNamed: NamedArchitecture {
+        let p = NetworkArchitecture.Preset.current
+        return NamedArchitecture(label: builtInLabel(p), architecture: .preset(p))
+    }
+
     // MARK: User-saved presets
 
     /// Decode + validate a `NamedArchitecture` from a JSON file. Throws on a
