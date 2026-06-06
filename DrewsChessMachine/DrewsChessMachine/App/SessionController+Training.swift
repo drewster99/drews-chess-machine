@@ -246,6 +246,36 @@ extension SessionController {
                         "[RESUME-PARAM] batch_stats_interval: saved=nil applied=\(TrainingParameters.shared.batchStatsInterval) (defaulted)"
                     )
                 }
+                // LR/momentum cycling. The 12 cycling params are written back
+                // onto the singleton (so UserDefaults + the popover reflect the
+                // resumed config) and the bundled struct is pushed onto the
+                // trainer (the off-main consumer in `buildFeeds`). The cycle's
+                // phase is a pure function of `trainingSteps`, already restored
+                // above, so the schedule continues exactly where it left off.
+                if let cyc = rs.lrMomentumCycle {
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] lr_momentum_cycle: lrEnabled=\(cyc.lrEnabled) lr=[\(cyc.lrMin),\(cyc.lrMax)]^\(cyc.lrPeriodSteps)st inv=\(cyc.lrInvert) momEnabled=\(cyc.momentumEnabled) mom=[\(cyc.momentumMin),\(cyc.momentumMax)]^\(cyc.momentumPeriodSteps)st inv=\(cyc.momentumInvert) (from session)"
+                    )
+                    let p = TrainingParameters.shared
+                    p.lrCycleEnabled = cyc.lrEnabled
+                    p.lrCyclePeriodSteps = cyc.lrPeriodSteps
+                    p.lrCycleCount = cyc.lrCount
+                    p.lrCycleMin = cyc.lrMin
+                    p.lrCycleMax = cyc.lrMax
+                    p.lrCycleInvert = cyc.lrInvert
+                    p.momentumCycleEnabled = cyc.momentumEnabled
+                    p.momentumCyclePeriodSteps = cyc.momentumPeriodSteps
+                    p.momentumCycleCount = cyc.momentumCount
+                    p.momentumCycleMin = cyc.momentumMin
+                    p.momentumCycleMax = cyc.momentumMax
+                    p.momentumCycleInvert = cyc.momentumInvert
+                    trainer.lrMomentumCycle = cyc
+                } else {
+                    trainer.lrMomentumCycle = TrainingParameters.shared.lrMomentumCycle
+                    SessionLogger.shared.log(
+                        "[RESUME-PARAM] lr_momentum_cycle: saved=nil applied=current (defaulted)"
+                    )
+                }
                 // Composition-aware replay-buffer sampler constraints. Unlike
                 // most params on this resume path these don't shadow on the
                 // trainer — the sampler reads them straight off
@@ -1531,7 +1561,7 @@ extension SessionController {
                         let workerN = countBox.count
                         let spSched = scheduleBox.selfPlay
                         let arSched = scheduleBox.arena
-                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, complementCEOn) = await MainActor.run {
+                        let (trainerID, championID, lr, entropyCoeff, illegalMassW, drawPen, weightDec, gradClip, policyW, valueW, momentum, sqrtLR, warmupSteps, completedSteps, arenaAutoSec, livePromoteThreshold, liveTournamentGames, drawKeepFrac, maxPliesCap, complementCEOn, cycle) = await MainActor.run {
                             (
                                 trainer.identifier?.description ?? "?",
                                 network.identifier?.description ?? "?",
@@ -1552,9 +1582,17 @@ extension SessionController {
                                 TrainingParameters.shared.arenaGamesPerTournament,
                                 TrainingParameters.shared.selfPlayDrawKeepFraction,
                                 TrainingParameters.shared.selfPlayMaxPliesPerGame,
-                                trainer.useSignedAdvantageComplementCE
+                                trainer.useSignedAdvantageComplementCE,
+                                trainer.lrMomentumCycle
                             )
                         }
+                        // Effective base LR / momentum for THIS step under the
+                        // active cycle (nil when that channel isn't cycling →
+                        // fall back to the static trainer values below). The LR
+                        // here is the pre-warmup/√batch base; the ·warmup / ·√b
+                        // markers on `lrStr` convey the remaining multipliers.
+                        let cycledLRBase: Double? = cycle.learningRate(forStep: completedSteps)
+                        let cycledMu: Double? = cycle.momentum(forStep: completedSteps)
                         let policyStr: String
                         if let p = trainingSnap.rollingPolicyLoss {
                             policyStr = String(format: "%+.4f", p)
@@ -1593,7 +1631,7 @@ extension SessionController {
                         } else {
                             vNormStr = "--"
                         }
-                        let muStr = String(format: "%.3f", momentum)
+                        let muStr = cycledMu.map { String(format: "%.3f·cyc", $0) } ?? String(format: "%.3f", momentum)
                         let vMeanStr: String
                         if let vm = trainingSnap.rollingValueMean {
                             vMeanStr = String(format: "%+.4f", vm)
@@ -1632,12 +1670,17 @@ extension SessionController {
                         let divStr = divSnap.gamesInWindow > 0
                         ? String(format: "unique=%d/%d(%.0f%%) diverge=%.1f", divSnap.uniqueGames, divSnap.gamesInWindow, divSnap.uniquePercent, divSnap.avgDivergencePly)
                         : "n/a"
-                        // Append a `·√b` marker when sqrt-batch scaling is on
-                        // and a `·warmup(i/N)` marker while warmup is still
-                        // active, so the reader can tell at a glance what
-                        // per-step multipliers the optimizer is actually
-                        // seeing. The displayed LR is always the base value.
-                        var lrStr = String(format: "%.1e", lr) + (sqrtLR ? "·√b" : "")
+                        // Append a `·cyc` marker when the LR cycle is driving the
+                        // base LR (the displayed value is then the cycle's
+                        // current geometric value, not the static base), a `·√b`
+                        // marker when sqrt-batch scaling is on, and a
+                        // `·warmup(i/N)` marker while warmup is still active, so
+                        // the reader can tell at a glance what per-step value and
+                        // multipliers the optimizer is actually seeing.
+                        let lrBaseForStats = cycledLRBase ?? Double(lr)
+                        var lrStr = String(format: "%.1e", lrBaseForStats)
+                            + (cycledLRBase != nil ? "·cyc" : "")
+                            + (sqrtLR ? "·√b" : "")
                         if warmupSteps > 0 && completedSteps < warmupSteps {
                             lrStr += "·warmup(\(completedSteps)/\(warmupSteps))"
                         }
@@ -2021,6 +2064,10 @@ extension SessionController {
                                 drawPenalty: Double(drawPen),
                                 policyLossWeight: Double(policyW),
                                 valueLossWeight: Double(valueW),
+                                lrEffectiveBase: cycledLRBase ?? Double(lr),
+                                momentumEffective: cycledMu ?? Double(momentum),
+                                lrCycleActive: cycledLRBase != nil,
+                                momentumCycleActive: cycledMu != nil,
                                 buildNumber: BuildInfo.buildNumber,
                                 trainerID: trainerID,
                                 championID: championID

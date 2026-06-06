@@ -613,6 +613,16 @@ final class CliTrainingRecorder: @unchecked Sendable {
         let drawPenalty: Double
         let policyLossWeight: Double
         let valueLossWeight: Double
+        /// Effective base learning rate actually applied this tick (the LR
+        /// cycle's geometric value when LR cycling is active, else the static
+        /// `learningRate`), BEFORE warmup/√batch multipliers. Distinct from
+        /// `learningRate` above, which is always the static configured base.
+        let lrEffectiveBase: Double
+        /// Effective Polyak momentum applied this tick (the momentum cycle's
+        /// value when active, else the static coefficient).
+        let momentumEffective: Double
+        let lrCycleActive: Bool
+        let momentumCycleActive: Bool
         let buildNumber: Int
         let trainerID: String
         let championID: String
@@ -702,6 +712,10 @@ final class CliTrainingRecorder: @unchecked Sendable {
             case drawPenalty = "draw_penalty"
             case policyLossWeight = "policy_loss_weight"
             case valueLossWeight = "value_loss_weight"
+            case lrEffectiveBase = "lr_effective_base"
+            case momentumEffective = "momentum_effective"
+            case lrCycleActive = "lr_cycle_active"
+            case momentumCycleActive = "momentum_cycle_active"
             case buildNumber = "build_number"
             case trainerID = "trainer_id"
             case championID = "champion_id"

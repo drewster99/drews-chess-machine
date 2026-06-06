@@ -280,6 +280,10 @@ final class CliTrainingRecorderTests: XCTestCase {
             drawPenalty: 0.1,
             policyLossWeight: 1,
             valueLossWeight: 1,
+            lrEffectiveBase: 5e-5,
+            momentumEffective: 0.9,
+            lrCycleActive: false,
+            momentumCycleActive: false,
             buildNumber: 42,
             trainerID: "T1",
             championID: "C1"

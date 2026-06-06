@@ -621,6 +621,143 @@ public enum ArenaConcurrency: TrainingParameterKey {}
 )
 public enum BatchStatsInterval: TrainingParameterKey {}
 
+// MARK: - LR / Momentum cycling (TRAINING_DYNAMICS_PLAN.md §3)
+//
+// Two independent repeating cycles — one for the learning rate (geometric
+// interpolation between absolute endpoints), one for Polyak momentum (linear).
+// The phase is a pure function of the trainer's global step, so resume is
+// seamless. See `LRMomentumCycle.swift` for the math. Inverse coupling (high
+// LR ↔ low momentum) is recovered by enabling the momentum cycle with
+// `momentum_cycle_invert = true` at an equal period.
+
+@TrainingParameter(
+    name: "LR Cycle Enabled",
+    description: "Enable the repeating learning-rate cycle. When on, the base LR each step is set by the cycle (geometric interpolation between LR Cycle Min and Max over LR Cycle Period Steps) instead of the static Learning Rate, then composed with the existing warmup × √batch multipliers. Overrides the static base-LR schedule while enabled.",
+    default: false,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_enabled",
+    liveTunable: true
+)
+public enum LRCycleEnabled: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Period (steps)",
+    description: "Full up-then-down period of the LR cycle, in optimizer steps. A sensible default is 2–8× the replay-buffer turnover (bufferCapacity / batchSize), the self-play analog of an epoch.",
+    default: 2000,
+    range: 1...10000000,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_period_steps",
+    liveTunable: true
+)
+public enum LRCyclePeriodSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Count",
+    description: "Number of LR cycles to run before freezing at the cycle boundary (LR Cycle Min, or Max when inverted). 0 = unbounded (repeat forever), the default for open-ended self-play.",
+    default: 0,
+    range: 0...1000000,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_count",
+    liveTunable: true
+)
+public enum LRCycleCount: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Min",
+    description: "Absolute learning rate at the LR cycle's low point (the period boundaries when not inverted). Must be > 0 — geometric interpolation is undefined at zero, and LR Cycle Max must be ≥ this value or the cycle is ignored.",
+    default: 0.001,
+    range: 1.0e-7...1.0,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_min",
+    liveTunable: true
+)
+public enum LRCycleMin: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Max",
+    description: "Absolute learning rate at the LR cycle's high point (the period midpoint when not inverted). Must be ≥ LR Cycle Min.",
+    default: 0.03,
+    range: 1.0e-7...1.0,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_max",
+    liveTunable: true
+)
+public enum LRCycleMax: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "LR Cycle Invert",
+    description: "Flip the LR waveform so the cycle starts at LR Cycle Max and dips to Min at the midpoint. Normally left off (LR rises to its peak at the midpoint); momentum is the channel usually inverted.",
+    default: false,
+    category: "LR/Momentum Cycling",
+    id: "lr_cycle_invert",
+    liveTunable: true
+)
+public enum LRCycleInvert: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Enabled",
+    description: "Enable the repeating Polyak-momentum cycle. When on, the momentum coefficient each step is set by the cycle (linear interpolation between Momentum Cycle Min and Max) instead of the static Momentum Coefficient.",
+    default: false,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_enabled",
+    liveTunable: true
+)
+public enum MomentumCycleEnabled: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Period (steps)",
+    description: "Full up-then-down period of the momentum cycle, in optimizer steps. Set equal to the LR Cycle Period (with Momentum Cycle Invert on) for Smith-style inverse coupling — high LR paired with low momentum.",
+    default: 2000,
+    range: 1...10000000,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_period_steps",
+    liveTunable: true
+)
+public enum MomentumCyclePeriodSteps: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Count",
+    description: "Number of momentum cycles before freezing at the cycle boundary. 0 = unbounded (the default).",
+    default: 0,
+    range: 0...1000000,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_count",
+    liveTunable: true
+)
+public enum MomentumCycleCount: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Min",
+    description: "Polyak momentum at the cycle's low point (the period midpoint when inverted, where LR peaks). Smith's recommendation is ~0.85.",
+    default: 0.85,
+    range: 0.0...0.99,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_min",
+    liveTunable: true
+)
+public enum MomentumCycleMin: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Max",
+    description: "Polyak momentum at the cycle's high point (the period boundaries when inverted, where LR bottoms). Smith's recommendation is ~0.95.",
+    default: 0.95,
+    range: 0.0...0.99,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_max",
+    liveTunable: true
+)
+public enum MomentumCycleMax: TrainingParameterKey {}
+
+@TrainingParameter(
+    name: "Momentum Cycle Invert",
+    description: "Flip the momentum waveform so it starts at Momentum Cycle Max and dips to Min at the midpoint. Default ON: at an equal period this makes momentum the inverse of LR (high LR ↔ low momentum), Smith's super-convergence coupling.",
+    default: true,
+    category: "LR/Momentum Cycling",
+    id: "momentum_cycle_invert",
+    liveTunable: true
+)
+public enum MomentumCycleInvert: TrainingParameterKey {}
+
 // MARK: - TrainingParametersSnapshot
 
 public struct TrainingParametersSnapshot: Sendable {
@@ -700,6 +837,18 @@ public extension TrainingParametersSnapshot {
     var legalMassCollapseNoImprovementProbes: Int { value(for: LegalMassCollapseNoImprovementProbes.self) }
     var arenaConcurrency: Int { value(for: ArenaConcurrency.self) }
     var batchStatsInterval: Int { value(for: BatchStatsInterval.self) }
+    var lrCycleEnabled: Bool { value(for: LRCycleEnabled.self) }
+    var lrCyclePeriodSteps: Int { value(for: LRCyclePeriodSteps.self) }
+    var lrCycleCount: Int { value(for: LRCycleCount.self) }
+    var lrCycleMin: Double { value(for: LRCycleMin.self) }
+    var lrCycleMax: Double { value(for: LRCycleMax.self) }
+    var lrCycleInvert: Bool { value(for: LRCycleInvert.self) }
+    var momentumCycleEnabled: Bool { value(for: MomentumCycleEnabled.self) }
+    var momentumCyclePeriodSteps: Int { value(for: MomentumCyclePeriodSteps.self) }
+    var momentumCycleCount: Int { value(for: MomentumCycleCount.self) }
+    var momentumCycleMin: Double { value(for: MomentumCycleMin.self) }
+    var momentumCycleMax: Double { value(for: MomentumCycleMax.self) }
+    var momentumCycleInvert: Bool { value(for: MomentumCycleInvert.self) }
 }
 
 // MARK: - TrainingParameters singleton
@@ -757,6 +906,18 @@ public final class TrainingParameters {
     public var legalMassCollapseNoImprovementProbes: Int { didSet { Self.persist(LegalMassCollapseNoImprovementProbes.self, value: legalMassCollapseNoImprovementProbes) } }
     public var arenaConcurrency: Int { didSet { Self.persist(ArenaConcurrency.self, value: arenaConcurrency) } }
     public var batchStatsInterval: Int { didSet { Self.persist(BatchStatsInterval.self, value: batchStatsInterval) } }
+    public var lrCycleEnabled: Bool { didSet { Self.persist(LRCycleEnabled.self, value: lrCycleEnabled) } }
+    public var lrCyclePeriodSteps: Int { didSet { Self.persist(LRCyclePeriodSteps.self, value: lrCyclePeriodSteps) } }
+    public var lrCycleCount: Int { didSet { Self.persist(LRCycleCount.self, value: lrCycleCount) } }
+    public var lrCycleMin: Double { didSet { Self.persist(LRCycleMin.self, value: lrCycleMin) } }
+    public var lrCycleMax: Double { didSet { Self.persist(LRCycleMax.self, value: lrCycleMax) } }
+    public var lrCycleInvert: Bool { didSet { Self.persist(LRCycleInvert.self, value: lrCycleInvert) } }
+    public var momentumCycleEnabled: Bool { didSet { Self.persist(MomentumCycleEnabled.self, value: momentumCycleEnabled) } }
+    public var momentumCyclePeriodSteps: Int { didSet { Self.persist(MomentumCyclePeriodSteps.self, value: momentumCyclePeriodSteps) } }
+    public var momentumCycleCount: Int { didSet { Self.persist(MomentumCycleCount.self, value: momentumCycleCount) } }
+    public var momentumCycleMin: Double { didSet { Self.persist(MomentumCycleMin.self, value: momentumCycleMin) } }
+    public var momentumCycleMax: Double { didSet { Self.persist(MomentumCycleMax.self, value: momentumCycleMax) } }
+    public var momentumCycleInvert: Bool { didSet { Self.persist(MomentumCycleInvert.self, value: momentumCycleInvert) } }
 
     private init() {
         // Read each value from UserDefaults (or definition default if absent / invalid).
@@ -807,6 +968,18 @@ public final class TrainingParameters {
         self.legalMassCollapseNoImprovementProbes = Self.read(LegalMassCollapseNoImprovementProbes.self)
         self.arenaConcurrency = Self.read(ArenaConcurrency.self)
         self.batchStatsInterval = Self.read(BatchStatsInterval.self)
+        self.lrCycleEnabled = Self.read(LRCycleEnabled.self)
+        self.lrCyclePeriodSteps = Self.read(LRCyclePeriodSteps.self)
+        self.lrCycleCount = Self.read(LRCycleCount.self)
+        self.lrCycleMin = Self.read(LRCycleMin.self)
+        self.lrCycleMax = Self.read(LRCycleMax.self)
+        self.lrCycleInvert = Self.read(LRCycleInvert.self)
+        self.momentumCycleEnabled = Self.read(MomentumCycleEnabled.self)
+        self.momentumCyclePeriodSteps = Self.read(MomentumCyclePeriodSteps.self)
+        self.momentumCycleCount = Self.read(MomentumCycleCount.self)
+        self.momentumCycleMin = Self.read(MomentumCycleMin.self)
+        self.momentumCycleMax = Self.read(MomentumCycleMax.self)
+        self.momentumCycleInvert = Self.read(MomentumCycleInvert.self)
     }
 
     // MARK: Snapshot
@@ -863,6 +1036,18 @@ public final class TrainingParameters {
         v[LegalMassCollapseNoImprovementProbes.id] = LegalMassCollapseNoImprovementProbes.encode(legalMassCollapseNoImprovementProbes)
         v[ArenaConcurrency.id] = ArenaConcurrency.encode(arenaConcurrency)
         v[BatchStatsInterval.id] = BatchStatsInterval.encode(batchStatsInterval)
+        v[LRCycleEnabled.id] = LRCycleEnabled.encode(lrCycleEnabled)
+        v[LRCyclePeriodSteps.id] = LRCyclePeriodSteps.encode(lrCyclePeriodSteps)
+        v[LRCycleCount.id] = LRCycleCount.encode(lrCycleCount)
+        v[LRCycleMin.id] = LRCycleMin.encode(lrCycleMin)
+        v[LRCycleMax.id] = LRCycleMax.encode(lrCycleMax)
+        v[LRCycleInvert.id] = LRCycleInvert.encode(lrCycleInvert)
+        v[MomentumCycleEnabled.id] = MomentumCycleEnabled.encode(momentumCycleEnabled)
+        v[MomentumCyclePeriodSteps.id] = MomentumCyclePeriodSteps.encode(momentumCyclePeriodSteps)
+        v[MomentumCycleCount.id] = MomentumCycleCount.encode(momentumCycleCount)
+        v[MomentumCycleMin.id] = MomentumCycleMin.encode(momentumCycleMin)
+        v[MomentumCycleMax.id] = MomentumCycleMax.encode(momentumCycleMax)
+        v[MomentumCycleInvert.id] = MomentumCycleInvert.encode(momentumCycleInvert)
         return v
     }
 
@@ -971,6 +1156,30 @@ public final class TrainingParameters {
             try ArenaConcurrency.definition.validate(raw); arenaConcurrency = try ArenaConcurrency.decode(raw)
         case BatchStatsInterval.id:
             try BatchStatsInterval.definition.validate(raw); batchStatsInterval = try BatchStatsInterval.decode(raw)
+        case LRCycleEnabled.id:
+            try LRCycleEnabled.definition.validate(raw); lrCycleEnabled = try LRCycleEnabled.decode(raw)
+        case LRCyclePeriodSteps.id:
+            try LRCyclePeriodSteps.definition.validate(raw); lrCyclePeriodSteps = try LRCyclePeriodSteps.decode(raw)
+        case LRCycleCount.id:
+            try LRCycleCount.definition.validate(raw); lrCycleCount = try LRCycleCount.decode(raw)
+        case LRCycleMin.id:
+            try LRCycleMin.definition.validate(raw); lrCycleMin = try LRCycleMin.decode(raw)
+        case LRCycleMax.id:
+            try LRCycleMax.definition.validate(raw); lrCycleMax = try LRCycleMax.decode(raw)
+        case LRCycleInvert.id:
+            try LRCycleInvert.definition.validate(raw); lrCycleInvert = try LRCycleInvert.decode(raw)
+        case MomentumCycleEnabled.id:
+            try MomentumCycleEnabled.definition.validate(raw); momentumCycleEnabled = try MomentumCycleEnabled.decode(raw)
+        case MomentumCyclePeriodSteps.id:
+            try MomentumCyclePeriodSteps.definition.validate(raw); momentumCyclePeriodSteps = try MomentumCyclePeriodSteps.decode(raw)
+        case MomentumCycleCount.id:
+            try MomentumCycleCount.definition.validate(raw); momentumCycleCount = try MomentumCycleCount.decode(raw)
+        case MomentumCycleMin.id:
+            try MomentumCycleMin.definition.validate(raw); momentumCycleMin = try MomentumCycleMin.decode(raw)
+        case MomentumCycleMax.id:
+            try MomentumCycleMax.definition.validate(raw); momentumCycleMax = try MomentumCycleMax.decode(raw)
+        case MomentumCycleInvert.id:
+            try MomentumCycleInvert.definition.validate(raw); momentumCycleInvert = try MomentumCycleInvert.decode(raw)
         default:
             throw TrainingConfigError.unknownParameter(id: id)
         }
@@ -1086,7 +1295,19 @@ public final class TrainingParameters {
         LegalMassCollapseGraceSeconds.self,
         LegalMassCollapseNoImprovementProbes.self,
         ArenaConcurrency.self,
-        BatchStatsInterval.self
+        BatchStatsInterval.self,
+        LRCycleEnabled.self,
+        LRCyclePeriodSteps.self,
+        LRCycleCount.self,
+        LRCycleMin.self,
+        LRCycleMax.self,
+        LRCycleInvert.self,
+        MomentumCycleEnabled.self,
+        MomentumCyclePeriodSteps.self,
+        MomentumCycleCount.self,
+        MomentumCycleMin.self,
+        MomentumCycleMax.self,
+        MomentumCycleInvert.self
     ]
 
     public nonisolated static var allDefinitions: [TrainingParameterDefinition] {

@@ -54,13 +54,40 @@ struct ControlSideEffectsProbe: View {
         // behavioral grouping is implied: `.onChange` handlers are
         // independent and order-insensitive, so the split is invisible
         // at runtime.
-        samplingChanges(
-            ratioAndTrainerChanges(
-                modeAndConcurrencyChanges(
-                    Color.clear.frame(width: 0, height: 0)
+        cyclingChanges(
+            samplingChanges(
+                ratioAndTrainerChanges(
+                    modeAndConcurrencyChanges(
+                        Color.clear.frame(width: 0, height: 0)
+                    )
                 )
             )
         )
+    }
+
+    /// Live-tunability for the 12 LR/momentum cycling params. All 12 persist +
+    /// update the singleton on edit automatically (via `@TrainingParameter`
+    /// `didSet`), but the trainer reads the bundled `LRMomentumCycle` from its
+    /// own `SyncBox` each step — so a mid-session edit only takes effect once
+    /// the rebuilt struct is written across. `trainingParams.lrMomentumCycle`
+    /// is a computed value that reads all 12 tracked properties, so a single
+    /// `.onChange` on it (it is `Equatable`) fires whenever ANY of them
+    /// changes — collapsing what would be a 12-handler chain (slow to
+    /// type-check, and this file deliberately keeps its `.onChange` chains
+    /// short) into one. `nil` trainer (between sessions) is a no-op; the next
+    /// session start picks up the singleton.
+    private func cyclingChanges(_ content: some View) -> some View {
+        content
+            .onChange(of: trainingParams.lrMomentumCycle) { _, c in
+                let lrPart = c.lrEnabled
+                    ? "lr=[\(String(format: "%.2e", c.lrMin)),\(String(format: "%.2e", c.lrMax))]^\(c.lrPeriodSteps)st cnt=\(c.lrCount) inv=\(c.lrInvert)"
+                    : "lr=off"
+                let momPart = c.momentumEnabled
+                    ? "mom=[\(String(format: "%.2f", c.momentumMin)),\(String(format: "%.2f", c.momentumMax))]^\(c.momentumPeriodSteps)st cnt=\(c.momentumCount) inv=\(c.momentumInvert)"
+                    : "mom=off"
+                SessionLogger.shared.log("[PARAM] lr_momentum_cycle: \(lrPart) \(momPart)")
+                trainer?.lrMomentumCycle = c
+            }
     }
 
     private func modeAndConcurrencyChanges(_ content: some View) -> some View {

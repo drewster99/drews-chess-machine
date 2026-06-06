@@ -916,6 +916,7 @@ final class SessionController {
             trainer.sqrtBatchScalingForLR = params.sqrtBatchScalingLR
             trainer.lrWarmupSteps = params.lrWarmupSteps
             trainer.batchStatsInterval = params.batchStatsInterval
+            trainer.lrMomentumCycle = params.lrMomentumCycle
             return trainer
         }
         do {
@@ -938,6 +939,7 @@ final class SessionController {
                 // champion's architecture.
                 arch: network?.network.arch ?? .current
             )
+            t.lrMomentumCycle = params.lrMomentumCycle
             trainer = t
             return t
         } catch {

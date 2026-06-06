@@ -35,6 +35,7 @@ import SwiftUI
 /// "edit → cancel discards" pattern from the user's POV.
 fileprivate enum Tab: String, CaseIterable, Identifiable {
     case optimizer = "Optimizer"
+    case cycling = "Cycling"
     case selfPlay = "Self Play"
     case replay = "Replay"
     var id: String { rawValue }
@@ -112,6 +113,17 @@ struct TrainingSettingsPopover: View {
             || model.trainingBatchSizeError
     }
 
+    private var cyclingHasError: Bool {
+        model.lrCycleMinError
+            || model.lrCycleMaxError
+            || model.lrCyclePeriodError
+            || model.lrCycleCountError
+            || model.momentumCycleMinError
+            || model.momentumCycleMaxError
+            || model.momentumCyclePeriodError
+            || model.momentumCycleCountError
+    }
+
     private var selfPlayHasError: Bool {
         model.selfPlayConcurrencyError
             || model.selfPlayStartTauError
@@ -135,7 +147,7 @@ struct TrainingSettingsPopover: View {
     }
 
     private var anyTabHasError: Bool {
-        optimizerHasError || selfPlayHasError || replayHasError
+        optimizerHasError || cyclingHasError || selfPlayHasError || replayHasError
     }
 
     var body: some View {
@@ -171,6 +183,7 @@ struct TrainingSettingsPopover: View {
             TrainingSettingsTabBar(
                 selectedTab: $selectedTab,
                 optimizerHasError: optimizerHasError,
+                cyclingHasError: cyclingHasError,
                 selfPlayHasError: selfPlayHasError,
                 replayHasError: replayHasError
             )
@@ -192,6 +205,29 @@ struct TrainingSettingsPopover: View {
             // bounded vertical region to scroll within.
             ScrollView(.vertical, showsIndicators: true) {
             switch selectedTab {
+            case .cycling:
+                CyclingTab(
+                    lrCycleEnabled: $model.lrCycleEnabledValue,
+                    lrCycleMinText: $model.lrCycleMinText,
+                    lrCycleMaxText: $model.lrCycleMaxText,
+                    lrCyclePeriodText: $model.lrCyclePeriodText,
+                    lrCycleCountText: $model.lrCycleCountText,
+                    lrCycleInvert: $model.lrCycleInvertValue,
+                    momentumCycleEnabled: $model.momentumCycleEnabledValue,
+                    momentumCycleMinText: $model.momentumCycleMinText,
+                    momentumCycleMaxText: $model.momentumCycleMaxText,
+                    momentumCyclePeriodText: $model.momentumCyclePeriodText,
+                    momentumCycleCountText: $model.momentumCycleCountText,
+                    momentumCycleInvert: $model.momentumCycleInvertValue,
+                    lrCycleMinError: model.lrCycleMinError,
+                    lrCycleMaxError: model.lrCycleMaxError,
+                    lrCyclePeriodError: model.lrCyclePeriodError,
+                    lrCycleCountError: model.lrCycleCountError,
+                    momentumCycleMinError: model.momentumCycleMinError,
+                    momentumCycleMaxError: model.momentumCycleMaxError,
+                    momentumCyclePeriodError: model.momentumCyclePeriodError,
+                    momentumCycleCountError: model.momentumCycleCountError
+                )
             case .optimizer:
                 OptimizerTab(
                     lrText: $model.lrText,
@@ -219,7 +255,9 @@ struct TrainingSettingsPopover: View {
                     valueLossWeightError: model.valueLossWeightError,
                     valueLabelSmoothingError: model.valueLabelSmoothingError,
                     drawPenaltyError: model.drawPenaltyError,
-                    trainingBatchSizeError: model.trainingBatchSizeError
+                    trainingBatchSizeError: model.trainingBatchSizeError,
+                    lrCyclingEnabled: model.lrCycleEnabledValue,
+                    momentumCyclingEnabled: model.momentumCycleEnabledValue
                 )
             case .selfPlay:
                 SelfPlayTab(
@@ -335,15 +373,16 @@ struct TrainingSettingsPopover: View {
 /// light accent-color tint; unselected tabs render with a
 /// secondary foreground for the label.
 ///
-/// The three tabs are unrolled (rather than `ForEach(Tab.allCases)`)
+/// The four tabs are unrolled (rather than `ForEach(Tab.allCases)`)
 /// so there is no per-render `Array(Tab.allCases.enumerated())`
 /// allocation and no `if idx > 0 { Divider() }` conditional that
 /// would change the view tree shape across re-evals. SwiftUI sees a
-/// stable five-child HStack: button, divider, button, divider,
-/// button.
+/// stable seven-child HStack: button, divider, button, divider,
+/// button, divider, button.
 fileprivate struct TrainingSettingsTabBar: View {
     @Binding var selectedTab: Tab
     let optimizerHasError: Bool
+    let cyclingHasError: Bool
     let selfPlayHasError: Bool
     let replayHasError: Bool
 
@@ -353,6 +392,12 @@ fileprivate struct TrainingSettingsTabBar: View {
                 tab: .optimizer,
                 selectedTab: $selectedTab,
                 hasError: optimizerHasError
+            )
+            Divider().frame(height: 18)
+            TrainingSettingsTabButton(
+                tab: .cycling,
+                selectedTab: $selectedTab,
+                hasError: cyclingHasError
             )
             Divider().frame(height: 18)
             TrainingSettingsTabButton(
@@ -460,6 +505,155 @@ fileprivate struct LiveRatioBadge: View {
     }
 }
 
+// MARK: - Cycling tab
+
+/// Cyclical LR / inverse-coupled momentum controls (TRAINING_DYNAMICS_PLAN.md §3).
+///
+/// Same edit-text + Stepper combo (`PopoverRow`) as every other tab: values are
+/// typed (or nudged with the stepper) and committed transactionally by
+/// `TrainingSettingsPopoverModel.save()`, which validates each against the
+/// `@TrainingParameter` range and flags bad input with the red overlay. The
+/// running trainer picks up the committed config via `ControlSideEffectsProbe`'s
+/// `.onChange(of: trainingParams.lrMomentumCycle)` forwarder. The two `…Enabled`
+/// bindings also drive the disabling of the Optimizer tab's matching LR /
+/// momentum field (passed in from the shared model), so a field that the cycle
+/// is overriding can't be edited there.
+///
+/// The "Reverse direction" toggles are deliberately phrased without reference to
+/// LR: each channel's waveform can be flipped to start at its max independently.
+/// (At equal periods, reversing momentum relative to LR is what yields Smith's
+/// inverse coupling — but that's a usage, not a hard tie.)
+private struct CyclingTab: View {
+    @Binding var lrCycleEnabled: Bool
+    @Binding var lrCycleMinText: String
+    @Binding var lrCycleMaxText: String
+    @Binding var lrCyclePeriodText: String
+    @Binding var lrCycleCountText: String
+    @Binding var lrCycleInvert: Bool
+    @Binding var momentumCycleEnabled: Bool
+    @Binding var momentumCycleMinText: String
+    @Binding var momentumCycleMaxText: String
+    @Binding var momentumCyclePeriodText: String
+    @Binding var momentumCycleCountText: String
+    @Binding var momentumCycleInvert: Bool
+    let lrCycleMinError: Bool
+    let lrCycleMaxError: Bool
+    let lrCyclePeriodError: Bool
+    let lrCycleCountError: Bool
+    let momentumCycleMinError: Bool
+    let momentumCycleMaxError: Bool
+    let momentumCyclePeriodError: Bool
+    let momentumCycleCountError: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // LR cycle
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Cycle learning rate", isOn: $lrCycleEnabled)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 13, weight: .semibold))
+                VStack(alignment: .leading, spacing: 6) {
+                    PopoverRow(label: "Min LR:", text: $lrCycleMinText, error: lrCycleMinError, placeholder: "1.00e-03") {
+                        Stepper(
+                            "",
+                            onIncrement: { stepLogText($lrCycleMinText, factor: sqrt(10.0), fallback: 1e-3) },
+                            onDecrement: { stepLogText($lrCycleMinText, factor: 1.0 / sqrt(10.0), fallback: 1e-3) }
+                        )
+                    }
+                    PopoverRow(label: "Max LR:", text: $lrCycleMaxText, error: lrCycleMaxError, placeholder: "3.00e-02") {
+                        Stepper(
+                            "",
+                            onIncrement: { stepLogText($lrCycleMaxText, factor: sqrt(10.0), fallback: 3e-2) },
+                            onDecrement: { stepLogText($lrCycleMaxText, factor: 1.0 / sqrt(10.0), fallback: 3e-2) }
+                        )
+                    }
+                    PopoverRow(label: "Period (steps):", text: $lrCyclePeriodText, error: lrCyclePeriodError, placeholder: "2000") {
+                        Stepper(
+                            "",
+                            onIncrement: { stepPeriodText($lrCyclePeriodText, up: true) },
+                            onDecrement: { stepPeriodText($lrCyclePeriodText, up: false) }
+                        )
+                    }
+                    PopoverRow(label: "Cycles (0=∞):", text: $lrCycleCountText, error: lrCycleCountError, placeholder: "0") {
+                        Stepper("", value: PopoverBindings.intBinding(text: $lrCycleCountText, fallback: 0), in: 0...1_000_000, step: 1)
+                    }
+                    HStack(spacing: 8) {
+                        Text("").frame(width: 160, alignment: .trailing)
+                        Toggle("Reverse direction (start at max)", isOn: $lrCycleInvert)
+                            .toggleStyle(.checkbox)
+                        Spacer()
+                    }
+                }
+                .padding(.leading, 20)
+                .disabled(!lrCycleEnabled)
+                .opacity(lrCycleEnabled ? 1.0 : 0.5)
+            }
+
+            Divider()
+
+            // Momentum cycle
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Cycle momentum", isOn: $momentumCycleEnabled)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 13, weight: .semibold))
+                VStack(alignment: .leading, spacing: 6) {
+                    PopoverRow(label: "Min μ:", text: $momentumCycleMinText, error: momentumCycleMinError, placeholder: "0.85") {
+                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumCycleMinText, fallback: 0.85, format: "%.2f"), in: 0.0...0.99, step: 0.01)
+                    }
+                    PopoverRow(label: "Max μ:", text: $momentumCycleMaxText, error: momentumCycleMaxError, placeholder: "0.95") {
+                        Stepper("", value: PopoverBindings.doubleBinding(text: $momentumCycleMaxText, fallback: 0.95, format: "%.2f"), in: 0.0...0.99, step: 0.01)
+                    }
+                    PopoverRow(label: "Period (steps):", text: $momentumCyclePeriodText, error: momentumCyclePeriodError, placeholder: "2000") {
+                        Stepper(
+                            "",
+                            onIncrement: { stepPeriodText($momentumCyclePeriodText, up: true) },
+                            onDecrement: { stepPeriodText($momentumCyclePeriodText, up: false) }
+                        )
+                    }
+                    PopoverRow(label: "Cycles (0=∞):", text: $momentumCycleCountText, error: momentumCycleCountError, placeholder: "0") {
+                        Stepper("", value: PopoverBindings.intBinding(text: $momentumCycleCountText, fallback: 0), in: 0...1_000_000, step: 1)
+                    }
+                    HStack(spacing: 8) {
+                        Text("").frame(width: 160, alignment: .trailing)
+                        Toggle("Reverse direction (start at max)", isOn: $momentumCycleInvert)
+                            .toggleStyle(.checkbox)
+                        Spacer()
+                    }
+                }
+                .padding(.leading, 20)
+                .disabled(!momentumCycleEnabled)
+                .opacity(momentumCycleEnabled ? 1.0 : 0.5)
+            }
+
+            Divider()
+
+            Text("LR interpolates geometrically (equal time per octave); momentum linearly. The cycle phase keys off the global training step, so stop/resume is seamless. While a cycle is enabled it overrides the matching field on the Optimizer tab. Tip: equal periods with one channel reversed gives Smith-style super-convergence (high LR paired with low momentum).")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Multiply the edit text by `factor`, clamp to the LR parameter range
+    /// `[1e-7, 1.0]`, and re-format. Half-decade (×√10) ladder matching the
+    /// Optimizer tab's base-LR stepper — a linear step is unusable across
+    /// this many decades. The actual write to `trainingParams` still happens
+    /// on Save; this only nudges the displayed text.
+    private func stepLogText(_ text: Binding<String>, factor: Double, fallback: Double) {
+        let current = Double(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? fallback
+        let next = min(1.0, max(1e-7, current * factor))
+        text.wrappedValue = String(format: "%.2e", next)
+    }
+
+    /// Multiply / divide the period edit text by 2, clamped to `[1, 1e7]`.
+    private func stepPeriodText(_ text: Binding<String>, up: Bool) {
+        let current = Int(text.wrappedValue.trimmingCharacters(in: .whitespaces)) ?? 2000
+        let next = up ? min(10_000_000, max(1, current * 2)) : max(1, current / 2)
+        text.wrappedValue = String(next)
+    }
+}
+
 // MARK: - Optimizer tab
 
 private struct OptimizerTab: View {
@@ -490,6 +684,13 @@ private struct OptimizerTab: View {
     let valueLabelSmoothingError: Bool
     let drawPenaltyError: Bool
     let trainingBatchSizeError: Bool
+    /// When true, the LR cycle (Cycling tab) is driving the learning rate, so
+    /// the static LR field here is disabled — editing it would have no effect
+    /// while the cycle overrides it. Reads the Cycling tab's pending enable
+    /// toggle (shared model), so it responds the instant that toggle flips.
+    let lrCyclingEnabled: Bool
+    /// Same, for the momentum field vs the momentum cycle.
+    let momentumCyclingEnabled: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -512,6 +713,10 @@ private struct OptimizerTab: View {
                         onDecrement: { stepLRBy(factor: 1.0 / sqrt(10.0)) }
                     )
                 }
+                .disabled(lrCyclingEnabled)
+                .help(lrCyclingEnabled
+                    ? "The LR cycle (Cycling tab) is driving the learning rate. Disable it there to edit this directly."
+                    : "")
                 VStack(alignment: .leading, spacing: 6) {
                     PopoverRow(
                         label: "Warm-up steps:",
@@ -543,6 +748,10 @@ private struct OptimizerTab: View {
                             step: 0.05
                         )
                     }
+                    .disabled(momentumCyclingEnabled)
+                    .help(momentumCyclingEnabled
+                        ? "The momentum cycle (Cycling tab) is driving μ. Disable it there to edit this directly."
+                        : "")
                     HStack(spacing: 8) {
                         Text("")
                             .frame(width: 160, alignment: .trailing)

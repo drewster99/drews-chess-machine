@@ -1285,6 +1285,24 @@ final class ChessTrainer: @unchecked Sendable {
     /// `runPreparedStep` keeps the read-modify-write atomic on its
     /// own, no longer dependent on the queue invariant.
     private let _completedTrainSteps = SyncBox<Int>(0)
+
+    /// Live LR/momentum cycling configuration (see `LRMomentumCycle` /
+    /// TRAINING_DYNAMICS_PLAN.md §3). Read once per training step in
+    /// `buildFeeds` — which runs off-main on `executionQueue` — and written
+    /// from the main actor at session start, on each cycling edit, and on
+    /// resume. Stored in a `SyncBox` (not a bare `var` like `learningRate`)
+    /// because it is a multi-field struct: a bare `var` could tear a half-
+    /// applied edit across the main/off-main boundary and feed a single step
+    /// a mismatched (enabled / min / max) combination. The lock is held only
+    /// across a struct copy, so the per-step read cost is negligible.
+    /// `.disabled` until a session pushes the real config, so absent any
+    /// configuration the static `learningRate` / `momentumCoeff` are used.
+    private let _lrMomentumCycle = SyncBox<LRMomentumCycle>(.disabled)
+    var lrMomentumCycle: LRMomentumCycle {
+        get { _lrMomentumCycle.value }
+        set { _lrMomentumCycle.value = newValue }
+    }
+
     private let executionQueue = DispatchQueue(label: "drewschess.chesstrainer.serial")
 
     /// Optional stable identity for the trainer's internal network.
@@ -5214,20 +5232,31 @@ final class ChessTrainer: @unchecked Sendable {
         // decay fixed across batch sizes. The user-visible base LR
         // stays authoritative; scaling and warmup are applied here
         // at write time only, never persisted back.
+        // Snapshot the step count and the cycling config once, so warmup,
+        // the LR cycle, and the momentum cycle all key off the same step and
+        // a single consistent (untorn) config read.
+        let currentStep = _completedTrainSteps.value
+        let cycle = _lrMomentumCycle.value
+
         let warmupMul: Float
         if lrWarmupSteps > 0 {
-            warmupMul = Float(min(1.0, Double(_completedTrainSteps.value) / Double(lrWarmupSteps)))
+            warmupMul = Float(min(1.0, Double(currentStep) / Double(lrWarmupSteps)))
         } else {
             warmupMul = 1.0
         }
+        // Base LR: the cycle's geometric value when LR cycling is active,
+        // otherwise the static configured learning rate. sqrt-batch scaling
+        // and warmup then compose multiplicatively on top, exactly as before —
+        // enabling LR cycling overrides the static base, not the multipliers.
+        let baseLR: Float = cycle.learningRate(forStep: currentStep).map { Float($0) } ?? learningRate
         var lr: Float
         if sqrtBatchScalingForLR {
             let sqrtBatchScale: Float = Float(
                 sqrt(Double(input.batchSize) / Double(Self.sqrtScaleBaseBatchSize))
             )
-            lr = learningRate * sqrtBatchScale
+            lr = baseLR * sqrtBatchScale
         } else {
-            lr = learningRate
+            lr = baseLR
         }
         lr *= warmupMul
         // Each scalar hyperparameter ND array is declared at
@@ -5245,7 +5274,10 @@ final class ChessTrainer: @unchecked Sendable {
         writeScalarFeed(illegalMassWeightNDArray, value: illegalMassPenaltyWeight)
         writeScalarFeed(labelSmoothingEpsilonNDArray, value: policyLabelSmoothingEpsilon)
         writeScalarFeed(valueLabelSmoothingEpsilonNDArray, value: valueLabelSmoothingEpsilon)
-        writeScalarFeed(momentumNDArray, value: momentumCoeff)
+        // Momentum: the cycle's linear value when momentum cycling is active,
+        // otherwise the static configured coefficient.
+        let momentumToFeed: Float = cycle.momentum(forStep: currentStep).map { Float($0) } ?? momentumCoeff
+        writeScalarFeed(momentumNDArray, value: momentumToFeed)
         writeScalarFeed(complementCEEnableNDArray, value: useSignedAdvantageComplementCE ? 1.0 : 0.0)
 
         return cached.feedsDict

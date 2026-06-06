@@ -272,6 +272,15 @@ struct SessionCheckpointState: Codable, Equatable {
     /// Optional for back-compat; absent → loader falls through to
     /// `TrainingParameters.shared.batchStatsInterval`.
     var batchStatsInterval: Int?
+    /// LR/momentum cycling configuration in effect at save time (the 12
+    /// `lr_cycle_*` / `momentum_cycle_*` parameters bundled into the runtime
+    /// `LRMomentumCycle` struct). Optional for back-compat with session files
+    /// written before cycling landed; absent → loader falls through to the
+    /// user's current `TrainingParameters.shared` cycling values. Because the
+    /// schedule's phase is a pure function of the global step (which is also
+    /// persisted as `trainingSteps`), restoring this is all resume needs to
+    /// continue the cycle seamlessly.
+    var lrMomentumCycle: LRMomentumCycle?
     /// Composition-aware replay-buffer sampler constraints in effect at
     /// save time. All Optional for back-compat with session files written
     /// before these knobs existed; absent → loader falls through to the

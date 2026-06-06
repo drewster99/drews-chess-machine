@@ -67,6 +67,38 @@ final class TrainingSettingsPopoverModel {
     private(set) var drawPenaltyError = false
     private(set) var trainingBatchSizeError = false
 
+    // MARK: - Cycling tab
+    //
+    // LR / momentum cycling (TRAINING_DYNAMICS_PLAN.md §3). Same edit-text +
+    // validate-on-Save pattern as the Optimizer tab — these are NOT live-
+    // propagated, so there is no Cancel stash for them (Cancel just re-seeds on
+    // the next open). The two `…Enabled` toggles also gate the Optimizer tab's
+    // LR / momentum text fields (disabled while the matching cycle is on); that
+    // cross-tab disable reads these pending model values, so it responds the
+    // instant the toggle flips, before Save.
+
+    var lrCycleEnabledValue = false
+    var lrCycleMinText = "" { didSet { lrCycleMinError = false } }
+    var lrCycleMaxText = "" { didSet { lrCycleMaxError = false } }
+    var lrCyclePeriodText = "" { didSet { lrCyclePeriodError = false } }
+    var lrCycleCountText = "" { didSet { lrCycleCountError = false } }
+    var lrCycleInvertValue = false
+    var momentumCycleEnabledValue = false
+    var momentumCycleMinText = "" { didSet { momentumCycleMinError = false } }
+    var momentumCycleMaxText = "" { didSet { momentumCycleMaxError = false } }
+    var momentumCyclePeriodText = "" { didSet { momentumCyclePeriodError = false } }
+    var momentumCycleCountText = "" { didSet { momentumCycleCountError = false } }
+    var momentumCycleInvertValue = true
+
+    private(set) var lrCycleMinError = false
+    private(set) var lrCycleMaxError = false
+    private(set) var lrCyclePeriodError = false
+    private(set) var lrCycleCountError = false
+    private(set) var momentumCycleMinError = false
+    private(set) var momentumCycleMaxError = false
+    private(set) var momentumCyclePeriodError = false
+    private(set) var momentumCycleCountError = false
+
     // MARK: - Self Play tab
 
     var selfPlayConcurrencyText = "" { didSet { selfPlayConcurrencyError = false } }
@@ -196,6 +228,19 @@ final class TrainingSettingsPopoverModel {
         valueLabelSmoothingText = String(format: "%.3f", p.valueLabelSmoothingEpsilon)
         drawPenaltyText = String(format: "%.3f", p.drawPenalty)
         trainingBatchSizeText = String(p.trainingBatchSize)
+        // --- Cycling tab ---
+        lrCycleEnabledValue = p.lrCycleEnabled
+        lrCycleMinText = String(format: "%.2e", p.lrCycleMin)
+        lrCycleMaxText = String(format: "%.2e", p.lrCycleMax)
+        lrCyclePeriodText = String(p.lrCyclePeriodSteps)
+        lrCycleCountText = String(p.lrCycleCount)
+        lrCycleInvertValue = p.lrCycleInvert
+        momentumCycleEnabledValue = p.momentumCycleEnabled
+        momentumCycleMinText = String(format: "%.2f", p.momentumCycleMin)
+        momentumCycleMaxText = String(format: "%.2f", p.momentumCycleMax)
+        momentumCyclePeriodText = String(p.momentumCyclePeriodSteps)
+        momentumCycleCountText = String(p.momentumCycleCount)
+        momentumCycleInvertValue = p.momentumCycleInvert
         // --- Self Play tab ---
         selfPlayConcurrencyText = String(p.selfPlayConcurrency)
         selfPlayStartTauText = String(format: "%.2f", p.selfPlayStartTau)
@@ -254,6 +299,14 @@ final class TrainingSettingsPopoverModel {
         valueLabelSmoothingError = false
         drawPenaltyError = false
         trainingBatchSizeError = false
+        lrCycleMinError = false
+        lrCycleMaxError = false
+        lrCyclePeriodError = false
+        lrCycleCountError = false
+        momentumCycleMinError = false
+        momentumCycleMaxError = false
+        momentumCyclePeriodError = false
+        momentumCycleCountError = false
         selfPlayConcurrencyError = false
         selfPlayStartTauError = false
         selfPlayDecayPerPlyError = false
@@ -572,6 +625,96 @@ final class TrainingSettingsPopoverModel {
             momentumError = true
             anyError = true
         }
+
+        // --- Cycling tab ---
+        // LR / momentum cycling params. Validated against the same ranges as
+        // the underlying @TrainingParameters and written to the singleton here.
+        // The per-change [PARAM] audit line AND the push onto the live trainer
+        // are both handled once, as a bundle, by `ControlSideEffectsProbe`'s
+        // `.onChange(of: trainingParams.lrMomentumCycle)` forwarder (which fires
+        // when any of these writes lands) — the same "write singleton → probe
+        // reacts" split the Replay tab's sampling constraints use, avoiding a
+        // 12-line-per-Save log spew.
+        if lrCycleEnabledValue != p.lrCycleEnabled { p.lrCycleEnabled = lrCycleEnabledValue }
+        if lrCycleInvertValue != p.lrCycleInvert { p.lrCycleInvert = lrCycleInvertValue }
+        if let v = Double(lrCycleMinText.trimmingCharacters(in: .whitespaces)),
+           v >= 1e-7, v <= 1.0, v.isFinite {
+            lrCycleMinError = false
+            if abs(v - p.lrCycleMin) > Double.ulpOfOne { p.lrCycleMin = v }
+        } else {
+            lrCycleMinError = true
+            anyError = true
+        }
+        if let v = Double(lrCycleMaxText.trimmingCharacters(in: .whitespaces)),
+           v >= 1e-7, v <= 1.0, v.isFinite {
+            lrCycleMaxError = false
+            if abs(v - p.lrCycleMax) > Double.ulpOfOne { p.lrCycleMax = v }
+        } else {
+            lrCycleMaxError = true
+            anyError = true
+        }
+        if let n = Int(lrCyclePeriodText.trimmingCharacters(in: .whitespaces)),
+           n >= 1, n <= 10_000_000 {
+            lrCyclePeriodError = false
+            if n != p.lrCyclePeriodSteps { p.lrCyclePeriodSteps = n }
+        } else {
+            lrCyclePeriodError = true
+            anyError = true
+        }
+        if let n = Int(lrCycleCountText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 1_000_000 {
+            lrCycleCountError = false
+            if n != p.lrCycleCount { p.lrCycleCount = n }
+        } else {
+            lrCycleCountError = true
+            anyError = true
+        }
+        if momentumCycleEnabledValue != p.momentumCycleEnabled { p.momentumCycleEnabled = momentumCycleEnabledValue }
+        if momentumCycleInvertValue != p.momentumCycleInvert { p.momentumCycleInvert = momentumCycleInvertValue }
+        if let v = Double(momentumCycleMinText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.99, v.isFinite {
+            momentumCycleMinError = false
+            if abs(v - p.momentumCycleMin) > Double.ulpOfOne { p.momentumCycleMin = v }
+        } else {
+            momentumCycleMinError = true
+            anyError = true
+        }
+        if let v = Double(momentumCycleMaxText.trimmingCharacters(in: .whitespaces)),
+           v >= 0.0, v <= 0.99, v.isFinite {
+            momentumCycleMaxError = false
+            if abs(v - p.momentumCycleMax) > Double.ulpOfOne { p.momentumCycleMax = v }
+        } else {
+            momentumCycleMaxError = true
+            anyError = true
+        }
+        if let n = Int(momentumCyclePeriodText.trimmingCharacters(in: .whitespaces)),
+           n >= 1, n <= 10_000_000 {
+            momentumCyclePeriodError = false
+            if n != p.momentumCyclePeriodSteps { p.momentumCyclePeriodSteps = n }
+        } else {
+            momentumCyclePeriodError = true
+            anyError = true
+        }
+        if let n = Int(momentumCycleCountText.trimmingCharacters(in: .whitespaces)),
+           n >= 0, n <= 1_000_000 {
+            momentumCycleCountError = false
+            if n != p.momentumCycleCount { p.momentumCycleCount = n }
+        } else {
+            momentumCycleCountError = true
+            anyError = true
+        }
+        // Push the committed cycle config straight onto the live trainer
+        // (mirroring how the LR / momentum fields above push `trainer?.…`),
+        // so the popover path does not depend solely on
+        // `ControlSideEffectsProbe` being mounted. Unlike the sampling
+        // constraints — which the buffer re-reads from `TrainingParameters`
+        // every `sample(count:)` — the trainer reads the cycle from its own
+        // `SyncBox`, so it must be written across. `p.lrMomentumCycle` reflects
+        // exactly the just-committed state (valid fields updated, any invalid
+        // field left unchanged). The probe's `.onChange` still fires too (it
+        // owns the single bundled `[PARAM]` audit line and covers CLI / other
+        // write paths); a second identical write is harmless.
+        trainer?.lrMomentumCycle = p.lrMomentumCycle
 
         // √batch scaling toggle — Bool, cannot fail to parse.
         if sqrtBatchScalingValue != p.sqrtBatchScalingLR {
