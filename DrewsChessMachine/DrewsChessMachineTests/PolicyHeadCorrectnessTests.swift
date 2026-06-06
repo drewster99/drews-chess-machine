@@ -761,7 +761,7 @@ final class PolicyHeadCorrectnessTests: XCTestCase {
 
     func testEncoderTensorLengthMatchesNetworkInputShape() {
         XCTAssertEqual(BoardEncoder.tensorLength,
-                       ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
+                       NetworkArchitecture.current.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
         XCTAssertEqual(BoardEncoder.tensorLength, 1920)
         XCTAssertEqual(ChessNetwork.policySize,
                        ChessNetwork.policyChannels * ChessNetwork.boardSize * ChessNetwork.boardSize)

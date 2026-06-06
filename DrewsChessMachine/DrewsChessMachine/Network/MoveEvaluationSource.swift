@@ -72,7 +72,7 @@ struct PolicyDestination: @unchecked Sendable {
 /// shape; batching there would only add latency.
 ///
 /// `encodedBoard` is `BoardEncoder.tensorLength` floats
-/// (= `ChessNetwork.inputPlanes` × 8 × 8 in NCHW layout) produced by
+/// (= `arch.inputPlanes` × 8 × 8 in NCHW layout) produced by
 /// `BoardEncoder.encode`, wrapped in a plain `[Float]` for `Sendable`
 /// crossings. `MPSChessPlayer` takes one `Array(...)` copy at the
 /// call site.

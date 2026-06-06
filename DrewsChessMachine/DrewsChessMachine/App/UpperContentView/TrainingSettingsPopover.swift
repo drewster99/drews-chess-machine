@@ -65,7 +65,7 @@ struct TrainingSettingsPopover: View {
     let replayRatioComputedDelayMs: Int?
     /// Live auto-computed self-play delay from the controller.
     let replayRatioComputedSelfPlayDelayMs: Int?
-    /// Bytes-per-position for the auto-GB readout (`ReplayBuffer.bytesPerPosition`).
+    /// Bytes-per-position for the auto-GB readout (`ReplayBuffer.bytesPerPosition(floatsPerBoard:)`).
     let bytesPerPosition: Int
     /// Live resident-set composition of the replay buffer, for the
     /// "Replay sampling" section's pre-constraint readout. `nil` outside

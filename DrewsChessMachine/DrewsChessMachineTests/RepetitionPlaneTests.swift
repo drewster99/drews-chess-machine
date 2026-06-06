@@ -278,7 +278,7 @@ final class RepetitionPlaneTests: XCTestCase {
     /// test still passes as long as the relationship holds.
     func testTensorLengthMatchesInputPlanes() {
         XCTAssertEqual(BoardEncoder.tensorLength,
-                       ChessNetwork.inputPlanes * 8 * 8)
+                       NetworkArchitecture.current.inputPlanes * 8 * 8)
     }
 
     /// The engine exposes its window-size constant to match the encoder's

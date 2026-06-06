@@ -145,16 +145,12 @@ final class ChessNetwork: @unchecked Sendable {
     /// vImage half path; `.bFloat16` uses `float32ToBFloat16Bits` /
     /// `bFloat16BitsToFloat32` (vImage has no bfloat16 primitive).
 
-    /// Input plane count. v3 architecture: 20 baseline planes (pieces +
-    /// castling + EP + halfmove clock + 2 repetition-count planes) plus
-    /// 10 binary temporal-repetition-history planes (planes 20–29 in
-    /// `BoardEncoder`). Changing this value automatically propagates
-    /// through `BoardEncoder.tensorLength`, `ReplayBuffer.floatsPerBoard`,
-    /// the stem's weight shape `[channels, inputPlanes, k, k]` (k =
-    /// `towerConvKernelSize`), and the
-    /// network's `arch_hash`, so old checkpoints with a different value
-    /// fail to load with a clear shape mismatch at startup.
-    static let inputPlanes = 30
+    /// Input plane count is per-architecture (`arch.inputPlanes`, derived
+    /// from `arch.inputEncoding.planeCount`) — not a global static. It
+    /// drives the stem weight shape `[channels, inputPlanes, k, k]`, the
+    /// board-encoding stride (`ReplayBuffer.floatsPerBoard`), and the input
+    /// placeholder shape; all read it off the built net's arch so a net
+    /// using a different encoding builds and loads correctly.
     static let boardSize = 8
     /// Number of policy output channels: 56 queen-style (8 dirs × 7 dists)
     /// + 8 knight + 9 underpromotion (3 pieces × 3 dirs) + 3 queen-promotion
@@ -465,7 +461,7 @@ final class ChessNetwork: @unchecked Sendable {
         // self-play / arena inference paths *and* by the trainer's board
         // feed, so both write fp32 (see ChessTrainer.feedsForBatch).
         let input = g.placeholder(
-            shape: [-1, NSNumber(value: Self.inputPlanes), 8, 8],
+            shape: [-1, NSNumber(value: arch.inputPlanes), 8, 8],
             dataType: .float32,
             name: "board_input"
         )
@@ -496,12 +492,12 @@ final class ChessNetwork: @unchecked Sendable {
 
         let stemWeights = g.variable(
             with: Self.heInitDataConvOIHW(
-                shape: [arch.channels, Self.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize],
+                shape: [arch.channels, arch.inputPlanes, arch.stemConvKernelSize, arch.stemConvKernelSize],
                 dataType: Self.mpsDataType(for: arch)
             ),
             shape: [
                 NSNumber(value: arch.channels),
-                NSNumber(value: Self.inputPlanes),
+                NSNumber(value: arch.inputPlanes),
                 NSNumber(value: arch.stemConvKernelSize),
                 NSNumber(value: arch.stemConvKernelSize)
             ],
@@ -659,7 +655,7 @@ final class ChessNetwork: @unchecked Sendable {
         // narrows to the compute dtype). Feeds the fp32 `inputPlaceholder`.
         let inputDesc = MPSNDArrayDescriptor(
             dataType: .float32,
-            shape: [1, NSNumber(value: Self.inputPlanes), 8, 8]
+            shape: [1, NSNumber(value: arch.inputPlanes), 8, 8]
         )
         let inputND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
         inputND.label = "inputND"
@@ -674,7 +670,7 @@ final class ChessNetwork: @unchecked Sendable {
         let dummyND = MPSNDArray(device: mtlDevice, descriptor: inputDesc)
         dummyND.label = "dummyND"
         Self.writeFloatsFP32(
-            [Float](repeating: 0, count: 1 * Self.inputPlanes * Self.boardSize * Self.boardSize),
+            [Float](repeating: 0, count: 1 * arch.inputPlanes * Self.boardSize * Self.boardSize),
             into: dummyND
         )
         dummyInferenceInputTensorData = MPSGraphTensorData(dummyND)
@@ -766,7 +762,7 @@ final class ChessNetwork: @unchecked Sendable {
         board: UnsafeBufferPointer<Float>,
         consume: (UnsafeBufferPointer<Float>, Float) -> Void
     ) throws {
-        let expected = 1 * Self.inputPlanes * Self.boardSize * Self.boardSize
+        let expected = 1 * arch.inputPlanes * Self.boardSize * Self.boardSize
         guard board.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: board.count)
         }
@@ -833,7 +829,7 @@ final class ChessNetwork: @unchecked Sendable {
     }
 
     private func internalEvaluateValueDistribution(board: [Float]) throws -> (win: Float, draw: Float, loss: Float) {
-        let expected = 1 * Self.inputPlanes * Self.boardSize * Self.boardSize
+        let expected = 1 * arch.inputPlanes * Self.boardSize * Self.boardSize
         guard board.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: board.count)
         }
@@ -970,9 +966,9 @@ final class ChessNetwork: @unchecked Sendable {
         // from the caller's binding (COW), and the buffer pointer's
         // count is set at construction and never derived dynamically.
         guard count >= 1 else {
-            throw ChessNetworkError.boardSizeMismatch(expected: Self.inputPlanes * Self.boardSize * Self.boardSize, got: 0)
+            throw ChessNetworkError.boardSizeMismatch(expected: arch.inputPlanes * Self.boardSize * Self.boardSize, got: 0)
         }
-        let expected = count * Self.inputPlanes * Self.boardSize * Self.boardSize
+        let expected = count * arch.inputPlanes * Self.boardSize * Self.boardSize
         guard batchBoards.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: batchBoards.count)
         }
@@ -1060,7 +1056,7 @@ final class ChessNetwork: @unchecked Sendable {
         // narrows to the compute dtype.
         let desc = MPSNDArrayDescriptor(
             dataType: .float32,
-            shape: [NSNumber(value: count), NSNumber(value: Self.inputPlanes), 8, 8]
+            shape: [NSNumber(value: count), NSNumber(value: arch.inputPlanes), 8, 8]
         )
         let nda = MPSNDArray(device: metalDevice, descriptor: desc)
         nda.label = "inference.input[\(count)]"
@@ -1132,9 +1128,9 @@ final class ChessNetwork: @unchecked Sendable {
         consume: (MPSGraphTensorData) -> Void
     ) throws {
         guard count >= 1 else {
-            throw ChessNetworkError.boardSizeMismatch(expected: Self.inputPlanes * Self.boardSize * Self.boardSize, got: 0)
+            throw ChessNetworkError.boardSizeMismatch(expected: arch.inputPlanes * Self.boardSize * Self.boardSize, got: 0)
         }
-        let expected = count * Self.inputPlanes * Self.boardSize * Self.boardSize
+        let expected = count * arch.inputPlanes * Self.boardSize * Self.boardSize
         guard batchBoards.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: batchBoards.count)
         }
@@ -1430,10 +1426,10 @@ final class ChessNetwork: @unchecked Sendable {
         }
         guard count >= 1 else {
             throw ChessNetworkError.boardSizeMismatch(
-                expected: Self.inputPlanes * Self.boardSize * Self.boardSize, got: 0
+                expected: arch.inputPlanes * Self.boardSize * Self.boardSize, got: 0
             )
         }
-        let expected = count * Self.inputPlanes * Self.boardSize * Self.boardSize
+        let expected = count * arch.inputPlanes * Self.boardSize * Self.boardSize
         guard boards.count == expected else {
             throw ChessNetworkError.boardSizeMismatch(expected: expected, got: boards.count)
         }

@@ -1826,7 +1826,7 @@ final class ChessTrainer: @unchecked Sendable {
         lossReadbackScratchPtr.deinitialize(count: Self.lossReadbackSlotCount)
         lossReadbackScratchPtr.deallocate()
         if let ptr = replayBatchBoards {
-            ptr.deinitialize(count: replayBatchCapacity * ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
+            ptr.deinitialize(count: replayBatchCapacity * arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
             ptr.deallocate()
         }
         if let ptr = replayBatchMoves {
@@ -3894,7 +3894,7 @@ final class ChessTrainer: @unchecked Sendable {
         // --- Data prep: synthesize random boards, moves, outcomes ---
 
         let prepStart = CFAbsoluteTimeGetCurrent()
-        let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+        let floatsPerBoard = arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
         let totalBoardFloats = batchSize * floatsPerBoard
         let totalMaskFloats = batchSize * ChessNetwork.policySize
 
@@ -4108,7 +4108,7 @@ final class ChessTrainer: @unchecked Sendable {
                     SessionLogger.shared.log(line)
                 }
             }
-            let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+            let floatsPerBoard = self.arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
             let totalFloats = batchSize * floatsPerBoard
             let boardsCopy = Array(UnsafeBufferPointer(start: boards, count: totalFloats))
             self.phase1WallTimesMs.append((CFAbsoluteTimeGetCurrent() - phase1Start) * 1000)
@@ -4187,7 +4187,7 @@ final class ChessTrainer: @unchecked Sendable {
 
             // NEW: populate the legal-move mask for each position in the batch.
             let policySize = ChessNetwork.policySize
-            let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+            let floatsPerBoard = self.arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
 
             // Zero the entire mask buffer first — cheaper than zeroing per-row inside
             // the loop, and the legal-move generator will overwrite the legal indices.
@@ -4485,7 +4485,7 @@ final class ChessTrainer: @unchecked Sendable {
                 zs: zs
             )
             guard ok else { return nil }
-            let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+            let floatsPerBoard = self.arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
             let total = sampleSize * floatsPerBoard
             return Sampled(
                 boards: Array(UnsafeBufferPointer(start: boards, count: total)),
@@ -4531,7 +4531,7 @@ final class ChessTrainer: @unchecked Sendable {
             }
         }
 
-        let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+        let floatsPerBoard = arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
         let policySize = ChessNetwork.policySize
 
         var legalMassSum: Double = 0
@@ -4666,7 +4666,7 @@ final class ChessTrainer: @unchecked Sendable {
         guard needed > replayBatchCapacity else { return }
 
         if let ptr = replayBatchBoards {
-            ptr.deinitialize(count: replayBatchCapacity * ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
+            ptr.deinitialize(count: replayBatchCapacity * arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize)
             ptr.deallocate()
         }
         if let ptr = replayBatchMoves {
@@ -4707,7 +4707,7 @@ final class ChessTrainer: @unchecked Sendable {
             ptr.deallocate()
         }
 
-        let floatsPerBoard = ChessNetwork.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
+        let floatsPerBoard = arch.inputPlanes * ChessNetwork.boardSize * ChessNetwork.boardSize
         let boardSlots = needed * floatsPerBoard
         let newBoards = UnsafeMutablePointer<Float>.allocate(capacity: boardSlots)
         newBoards.initialize(repeating: 0, count: boardSlots)
@@ -5199,7 +5199,7 @@ final class ChessTrainer: @unchecked Sendable {
         // width matches the ND array's dtype, so the `writeBytes` byte
         // count lines up. `writeRealValuedFeed` branches once on dtype.
         let boardElementCount = input.batchSize
-            * ChessNetwork.inputPlanes
+            * arch.inputPlanes
             * ChessNetwork.boardSize
             * ChessNetwork.boardSize
         writeRealValuedFeed(cached.boardND, from: input.boards, count: boardElementCount, staging: cached.boardStaging)
@@ -5367,7 +5367,7 @@ final class ChessTrainer: @unchecked Sendable {
             dataType: .float32,
             shape: [
                 NSNumber(value: batchSize),
-                NSNumber(value: ChessNetwork.inputPlanes),
+                NSNumber(value: arch.inputPlanes),
                 NSNumber(value: ChessNetwork.boardSize),
                 NSNumber(value: ChessNetwork.boardSize)
             ]

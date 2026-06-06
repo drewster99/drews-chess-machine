@@ -23,12 +23,23 @@ import os
 /// mutable state access. The lock is never held across an `await`.
 final class ReplayBuffer: @unchecked Sendable {
     /// Number of floats required to hold one encoded board position
-    /// (`inputPlanes` × 8 × 8 — currently 30 × 64 = 1920 with the v3
-    /// architecture refresh that added 10 binary temporal-repetition
-    /// history planes on top of the v2 baseline).
-    static let floatsPerBoard = ChessNetwork.inputPlanes
-        * ChessNetwork.boardSize
-        * ChessNetwork.boardSize
+    /// (`arch.inputPlanes` × 8 × 8 — e.g. 30 × 64 = 1920 for the basic30
+    /// encoding, 20 × 64 = 1280 for basic20). Per-architecture, fixed at
+    /// construction: a buffer holds encodings produced by ONE network, so
+    /// its stride must match that network's input-plane count. The live
+    /// training buffer passes the session network's actual stride
+    /// explicitly; a mismatched stride would silently misinterpret every
+    /// stored board, which is also why `restore` rejects a file whose
+    /// recorded stride differs from this value.
+    let floatsPerBoard: Int
+
+    /// Convenience stride matching what `BoardEncoder` actually produces
+    /// today — the transitional `BoardEncoder.tensorLength` (basic30 until
+    /// the per-ply encode call sites are wired to `arch.inputEncoding`).
+    /// Used by tests, the UI RAM estimate, tooling, and as the live
+    /// buffer's stride: the buffer must match the ENCODER's output width,
+    /// not the arch's nominal `inputPlanes`, while encoding is transitional.
+    static var defaultFloatsPerBoard: Int { BoardEncoder.tensorLength }
 
     /// Maximum number of positions held. Older positions are overwritten
     /// in FIFO order once the buffer is full.
@@ -249,9 +260,11 @@ final class ReplayBuffer: @unchecked Sendable {
         ReplayBufferAnalyzer.materialBucketIndex(for: Int(materialCount))
     }
 
-    init(capacity: Int) {
+    init(capacity: Int, floatsPerBoard: Int = ReplayBuffer.defaultFloatsPerBoard) {
         precondition(capacity > 0, "Replay buffer capacity must be positive")
+        precondition(floatsPerBoard > 0, "Replay buffer floatsPerBoard must be positive")
         self.capacity = capacity
+        self.floatsPerBoard = floatsPerBoard
 
         // Pre-allocate one IndexedSlotSet per analyzer bucket. The 5th
         // (23–30) is structurally unreachable but kept to keep array
@@ -261,7 +274,7 @@ final class ReplayBuffer: @unchecked Sendable {
             count: ReplayBufferAnalyzer.materialBuckets.count
         )
 
-        let boardSlots = capacity * Self.floatsPerBoard
+        let boardSlots = capacity * self.floatsPerBoard
         let boards = UnsafeMutablePointer<Float>.allocate(capacity: boardSlots)
         boards.initialize(repeating: 0, count: boardSlots)
         self.boardStorage = boards
@@ -300,7 +313,7 @@ final class ReplayBuffer: @unchecked Sendable {
     }
 
     deinit {
-        let boardSlots = capacity * Self.floatsPerBoard
+        let boardSlots = capacity * self.floatsPerBoard
         boardStorage.deinitialize(count: boardSlots)
         boardStorage.deallocate()
 
@@ -351,15 +364,19 @@ final class ReplayBuffer: @unchecked Sendable {
     /// outcome float + observability fields (ply UInt16 + gameLength
     /// UInt16 + tau Float + hash UInt64 + workerGameId UInt32 +
     /// materialCount UInt8). Used by the UI to estimate buffer RAM usage.
-    static let bytesPerPosition: Int = floatsPerBoard * MemoryLayout<Float>.size
-        + MemoryLayout<Int32>.size
-        + MemoryLayout<Float>.size
-        + MemoryLayout<UInt16>.size      // plyIndex
-        + MemoryLayout<UInt16>.size      // gameLength
-        + MemoryLayout<Float>.size       // samplingTau
-        + MemoryLayout<UInt64>.size      // stateHash
-        + MemoryLayout<UInt32>.size      // workerGameId
-        + MemoryLayout<UInt8>.size       // materialCount
+    static func bytesPerPosition(floatsPerBoard: Int) -> Int {
+        floatsPerBoard * MemoryLayout<Float>.size
+            + MemoryLayout<Int32>.size       // move
+            + MemoryLayout<Float>.size       // outcome
+            + MemoryLayout<UInt16>.size      // plyIndex
+            + MemoryLayout<UInt16>.size      // gameLength
+            + MemoryLayout<Float>.size       // samplingTau
+            + MemoryLayout<UInt64>.size      // stateHash
+            + MemoryLayout<UInt32>.size      // workerGameId
+            + MemoryLayout<UInt8>.size       // materialCount
+    }
+    /// This buffer's per-position storage cost in bytes.
+    var bytesPerPosition: Int { Self.bytesPerPosition(floatsPerBoard: floatsPerBoard) }
 
     /// Typed pointer view of every per-slot column. Lifetime is bounded
     /// to a single `withSlotData(_:)` block: the analyzer reads from
@@ -473,7 +490,7 @@ final class ReplayBuffer: @unchecked Sendable {
     /// is rebuilt fresh on each session restore so cross-process
     /// stability isn't required.
     @inline(__always)
-    static func hashBoard(_ ptr: UnsafePointer<Float>, count: Int = floatsPerBoard) -> UInt64 {
+    static func hashBoard(_ ptr: UnsafePointer<Float>, count: Int) -> UInt64 {
         var hasher = Hasher()
         let raw = UnsafeRawBufferPointer(
             start: UnsafeRawPointer(ptr),
@@ -932,7 +949,7 @@ final class ReplayBuffer: @unchecked Sendable {
         // the call — `withLockUnchecked` is the documented escape hatch
         // for that case (see Apple's `OSAllocatedUnfairLock` reference).
         lock.withLockUnchecked {
-            let floatsPerBoard = Self.floatsPerBoard
+            let floatsPerBoard = self.floatsPerBoard
 
             // The incoming positions may straddle the ring's wraparound
             // point. Split the write into at most two contiguous runs:
@@ -1216,7 +1233,7 @@ final class ReplayBuffer: @unchecked Sendable {
                 return false
             }
 
-            let floatsPerBoard = Self.floatsPerBoard
+            let floatsPerBoard = self.floatsPerBoard
 
             @inline(__always)
             func emit(_ i: Int, _ srcIndex: Int) {
@@ -2246,7 +2263,7 @@ final class ReplayBuffer: @unchecked Sendable {
     private func _writeLocked(to url: URL) throws {
         let stored = storedCount
         let cap = capacity
-        let floatsPerBoard = Self.floatsPerBoard
+        let floatsPerBoard = self.floatsPerBoard
         let wIndex = writeIndex
         let totalAdded = _totalPositionsAdded
 
@@ -2608,9 +2625,9 @@ final class ReplayBuffer: @unchecked Sendable {
             $0.loadUnaligned(fromByteOffset: 48, as: Int64.self)
         }
 
-        guard Int(fpbFile) == Self.floatsPerBoard else {
+        guard Int(fpbFile) == self.floatsPerBoard else {
             throw PersistenceError.incompatibleBoardSize(
-                expected: Self.floatsPerBoard,
+                expected: self.floatsPerBoard,
                 got: Int(fpbFile)
             )
         }
@@ -2758,7 +2775,7 @@ final class ReplayBuffer: @unchecked Sendable {
                 return
             }
 
-            let floatsPerBoard = Self.floatsPerBoard
+            let floatsPerBoard = self.floatsPerBoard
             let boardSlotBytes = floatsPerBoard * MemoryLayout<Float>.size
 
             // Skip the `skip` oldest board records if capacity shrank.

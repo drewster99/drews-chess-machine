@@ -47,7 +47,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
         materialCount: UInt8
     ) {
         precondition(length > 0)
-        let fpb = ReplayBuffer.floatsPerBoard
+        let fpb = ReplayBuffer.defaultFloatsPerBoard
         var boards = [Float](repeating: 0, count: length * fpb)
         for i in 0..<length { boards[i * fpb] = Float(workerId) * 1e6 + Float(gameIndex) * 1e3 + Float(i) }
         var moves = [Int32](repeating: 0, count: length)
@@ -78,7 +78,7 @@ final class ReplayBufferMaterialBucketTests: XCTestCase {
     private func drawBatch(
         _ buffer: ReplayBuffer, count: Int
     ) -> (ok: Bool, materialCounts: [UInt8]) {
-        let fpb = ReplayBuffer.floatsPerBoard
+        let fpb = ReplayBuffer.defaultFloatsPerBoard
         var boards = [Float](repeating: 0, count: count * fpb)
         var moves = [Int32](repeating: 0, count: count)
         var zs = [Float](repeating: 0, count: count)

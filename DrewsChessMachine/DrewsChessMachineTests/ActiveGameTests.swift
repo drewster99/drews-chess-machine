@@ -209,7 +209,7 @@ final class ActiveGameTests: XCTestCase {
         // Spot-check: sample N positions; every outcome should be 0
         // for a draw (no per-side sign flip).
         let n = 6
-        var boards = [Float](repeating: 0, count: n * ReplayBuffer.floatsPerBoard)
+        var boards = [Float](repeating: 0, count: n * ReplayBuffer.defaultFloatsPerBoard)
         var moves  = [Int32](repeating: 0, count: n)
         var zs     = [Float](repeating: 0, count: n)
         let ok = boards.withUnsafeMutableBufferPointer { bBuf in
@@ -242,7 +242,7 @@ final class ActiveGameTests: XCTestCase {
         // requires count <= storedCount). With a 32/32 sign split, a 64-draw
         // batch missing either sign has probability ~2^-63.
         let n = 64
-        var boards = [Float](repeating: 0, count: n * ReplayBuffer.floatsPerBoard)
+        var boards = [Float](repeating: 0, count: n * ReplayBuffer.defaultFloatsPerBoard)
         var moves  = [Int32](repeating: 0, count: n)
         var zs     = [Float](repeating: 0, count: n)
         _ = boards.withUnsafeMutableBufferPointer { bBuf in

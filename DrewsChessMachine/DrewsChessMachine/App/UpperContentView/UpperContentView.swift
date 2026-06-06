@@ -805,6 +805,14 @@ struct UpperContentView: View {
     @State private var contentWindow: NSWindow?
 
     private var networkReady: Bool { network != nil }
+
+    /// Input-plane count of the live network (the net that produced any
+    /// `inferenceResult` overlay). Per-architecture; falls back to the
+    /// default arch's count when no net is built yet. Drives the channel
+    /// overlay stepper bounds so they never index past the encoded board.
+    private var liveInputPlanes: Int {
+        network?.network.arch.inputPlanes ?? NetworkArchitecture.current.inputPlanes
+    }
     private var isBusy: Bool {
         isBuilding
         || isEvaluating
@@ -1313,6 +1321,7 @@ struct UpperContentView: View {
                     overlay: currentOverlay,
                     selectedOverlay: selectedOverlay,
                     inferenceResultPresent: inferenceResult != nil,
+                    inputPlaneCount: liveInputPlanes,
                     forwardPassEditable: forwardPassEditable,
                     realTraining: realTraining,
                     isCandidateTestActive: isCandidateTestActive,
@@ -1494,7 +1503,7 @@ struct UpperContentView: View {
         if let result = inferenceResult, showForwardPassUI, selectedOverlay >= 0 {
             Divider()
             HStack(spacing: 2) {
-                ForEach(0..<ChessNetwork.inputPlanes, id: \.self) { channel in
+                ForEach(Array(0..<liveInputPlanes), id: \.self) { channel in
                     let start = channel * 64
                     let isSelected = selectedOverlay == channel + 1
                     VStack(spacing: 1) {
@@ -1784,7 +1793,7 @@ struct UpperContentView: View {
         // no overlay). 0 = Top Moves; 1..inputPlanes = channel views,
         // both of which require an inferenceResult to render.
         let next = selectedOverlay + direction
-        if next < -1 || next > ChessNetwork.inputPlanes { return }
+        if next < -1 || next > liveInputPlanes { return }
         if next >= 0 && inferenceResult == nil { return }
         selectedOverlay = next
     }
@@ -3124,7 +3133,9 @@ struct UpperContentView: View {
         if isSelfPlay {
             let bufCount = replayBuffer?.count ?? 0
             let bufCap = replayBuffer?.capacity ?? trainingParams.replayBufferCapacity
-            let bufRamMB = Double(bufCap * ReplayBuffer.bytesPerPosition) / (1024.0 * 1024.0)
+            let bytesPerPos = replayBuffer?.bytesPerPosition
+                ?? ReplayBuffer.bytesPerPosition(floatsPerBoard: ReplayBuffer.defaultFloatsPerBoard)
+            let bufRamMB = Double(bufCap * bytesPerPos) / (1024.0 * 1024.0)
             let bufStr = String(format: "%6d / %d  (%.0f MB)", bufCount, bufCap, bufRamMB)
             lines.append("  Buffer:     \(bufStr)")
             // Pre-constraint composition: game-weighted mean game length,
@@ -3511,7 +3522,8 @@ extension UpperContentView {
                 replayRatioCurrent: replayRatioSnapshot?.currentRatio,
                 replayRatioComputedDelayMs: replayRatioSnapshot?.computedDelayMs,
                 replayRatioComputedSelfPlayDelayMs: replayRatioSnapshot?.computedSelfPlayDelayMs,
-                bytesPerPosition: ReplayBuffer.bytesPerPosition,
+                bytesPerPosition: replayBuffer?.bytesPerPosition
+                    ?? ReplayBuffer.bytesPerPosition(floatsPerBoard: ReplayBuffer.defaultFloatsPerBoard),
                 bufferComposition: session.bufferComposition,
                 lastSamplingResult: session.lastSamplingResult,
                 parallelStats: session.parallelStats

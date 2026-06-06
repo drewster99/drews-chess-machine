@@ -24,7 +24,7 @@ final class BoardEncoderTests: XCTestCase {
 
     func testTensorLength() {
         XCTAssertEqual(BoardEncoder.tensorLength,
-                       ChessNetwork.inputPlanes * 8 * 8,
+                       NetworkArchitecture.current.inputPlanes * 8 * 8,
                        "tensorLength must equal inputPlanes × 64")
         XCTAssertEqual(BoardEncoder.tensorLength, 1920,
                        "Architecture v3 has 30 planes × 64 = 1920 floats per encoded position (20 baseline + 10 temporal-repetition history)")

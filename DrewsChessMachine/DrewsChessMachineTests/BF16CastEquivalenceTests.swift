@@ -109,7 +109,7 @@ final class BF16CastEquivalenceTests: XCTestCase {
               let queue = device.makeCommandQueue() else {
             throw XCTSkip("Metal not available")
         }
-        let inC = ChessNetwork.inputPlanes
+        let inC = NetworkArchitecture.current.inputPlanes
         let outC = 128
         let batch = 4
         let side = ChessNetwork.boardSize
@@ -204,7 +204,7 @@ final class BF16CastEquivalenceTests: XCTestCase {
               let queue = device.makeCommandQueue() else {
             throw XCTSkip("Metal not available")
         }
-        let inC = ChessNetwork.inputPlanes
+        let inC = NetworkArchitecture.current.inputPlanes
         let outC = 128
         let batch = 4
         let side = ChessNetwork.boardSize

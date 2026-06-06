@@ -430,7 +430,7 @@ enum ReplayBufferAnalyzer {
                 finalPositionMaterialByOutcome[mb][g.outcome] += 1
 
                 let planesBase = slots.boards.advanced(
-                    by: slot * ReplayBuffer.floatsPerBoard
+                    by: slot * buffer.floatsPerBoard
                 )
                 let signature = computeMaterialSignature(planesBase: planesBase)
                 var entry = sigAccum[signature] ?? SigAccum()
@@ -612,11 +612,11 @@ enum ReplayBufferAnalyzer {
                 boards.reserveCapacity(target)
                 for slotIdx in shuffled.prefix(target) {
                     let base = slots.boards.advanced(
-                        by: slotIdx * ReplayBuffer.floatsPerBoard
+                        by: slotIdx * buffer.floatsPerBoard
                     )
                     let buf = UnsafeBufferPointer(
                         start: base,
-                        count: ReplayBuffer.floatsPerBoard
+                        count: buffer.floatsPerBoard
                     )
                     boards.append(Array(buf))
                 }

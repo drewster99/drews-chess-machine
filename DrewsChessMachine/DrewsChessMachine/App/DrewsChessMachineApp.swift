@@ -267,16 +267,17 @@ struct DrewsChessMachineApp: App {
         // stats — lands in a single `dcm_log_yyyymmdd-HHMMSS.txt`
         // file under the app's Library/Logs directory.
         SessionLogger.shared.start()
+        let defaultInputPlanes = NetworkArchitecture.current.inputPlanes
         precondition(
-            TensorChannelNames.names.count == ChessNetwork.inputPlanes
-                && TensorChannelNames.shortNames.count == ChessNetwork.inputPlanes,
-            "TensorChannelNames is out of sync with ChessNetwork.inputPlanes (\(ChessNetwork.inputPlanes)) — names=\(TensorChannelNames.names.count), shortNames=\(TensorChannelNames.shortNames.count). Update Views/Board/TensorChannelNames.swift."
+            TensorChannelNames.names.count == defaultInputPlanes
+                && TensorChannelNames.shortNames.count == defaultInputPlanes,
+            "TensorChannelNames is out of sync with the default arch inputPlanes (\(defaultInputPlanes)) — names=\(TensorChannelNames.names.count), shortNames=\(TensorChannelNames.shortNames.count). Update Views/Board/TensorChannelNames.swift."
         )
         let dirtyMarker = BuildInfo.gitDirty ? "*" : ""
         let archHashHex = String(format: "0x%08x", ModelCheckpointFile.archHash(for: .current))
         let autoTrainMarker = autoTrainOnLaunch ? " autoTrain=on" : ""
         SessionLogger.shared.log(
-            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp) arch_hash=\(archHashHex) inputPlanes=\(ChessNetwork.inputPlanes) policySize=\(ChessNetwork.policySize)\(autoTrainMarker)"
+            "[APP] launched build=\(BuildInfo.buildNumber) git=\(BuildInfo.gitHash)\(dirtyMarker) branch=\(BuildInfo.gitBranch) date=\(BuildInfo.buildDate) timestamp=\(BuildInfo.buildTimestamp) arch_hash=\(archHashHex) inputPlanes=\(NetworkArchitecture.current.inputPlanes) policySize=\(ChessNetwork.policySize)\(autoTrainMarker)"
         )
         if let path = SessionLogger.shared.activeLogPath {
             SessionLogger.shared.log("[APP] session log: \(path)")

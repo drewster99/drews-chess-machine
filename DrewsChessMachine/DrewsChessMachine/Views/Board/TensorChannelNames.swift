@@ -6,9 +6,10 @@ import Foundation
 /// pattern — plane `20 + i` is all-1 iff the position `i + 1` plies ago is
 /// a strict chess-rules duplicate of the current position.
 ///
-/// Must stay in lockstep with `ChessNetwork.inputPlanes` — `count` is
-/// asserted equal to `ChessNetwork.inputPlanes` at app launch so a drift
-/// fails loudly instead of trapping later inside SwiftUI's layout pass.
+/// Must stay in lockstep with the default arch's `inputPlanes`
+/// (`NetworkArchitecture.current.inputPlanes`) — `count` is asserted equal
+/// to it at app launch so a drift fails loudly instead of trapping later
+/// inside SwiftUI's layout pass.
 enum TensorChannelNames {
     static let names = [
         "My Pawns", "My Knights", "My Bishops",

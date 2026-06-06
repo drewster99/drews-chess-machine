@@ -40,7 +40,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
         workerId: UInt16, gameIndex: UInt32
     ) {
         precondition(length > 0)
-        let fpb = ReplayBuffer.floatsPerBoard
+        let fpb = ReplayBuffer.defaultFloatsPerBoard
         var boards = [Float](repeating: 0, count: length * fpb)
         // Make boards distinct so the hash dict doesn't collapse them.
         for i in 0..<length { boards[i * fpb] = Float(workerId) * 1e6 + Float(gameIndex) * 1e3 + Float(i) }
@@ -73,7 +73,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
     private func drawBatch(
         _ buffer: ReplayBuffer, count: Int
     ) -> (ok: Bool, zs: [Float], lens: [UInt16], gameIds: [UInt32]) {
-        let fpb = ReplayBuffer.floatsPerBoard
+        let fpb = ReplayBuffer.defaultFloatsPerBoard
         var boards = [Float](repeating: 0, count: count * fpb)
         var moves = [Int32](repeating: 0, count: count)
         var zs = [Float](repeating: 0, count: count)
@@ -497,7 +497,7 @@ final class ReplayBufferSamplingConstraintsTests: XCTestCase {
     /// inspect the resulting summary. Single sample call — keeps
     /// `_lastSamplingResult` aligned with the summary returned.
     private func sampleAndCompute(_ buffer: ReplayBuffer, count: Int) -> ReplayBuffer.BatchStatsSummary {
-        let fpb = ReplayBuffer.floatsPerBoard
+        let fpb = ReplayBuffer.defaultFloatsPerBoard
         let b = UnsafeMutablePointer<Float>.allocate(capacity: count * fpb)
         let m = UnsafeMutablePointer<Int32>.allocate(capacity: count)
         let z = UnsafeMutablePointer<Float>.allocate(capacity: count)
