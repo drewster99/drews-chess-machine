@@ -419,6 +419,8 @@ struct DrewsChessMachineApp: App {
             CommandMenu("Train") {
                 Button("Build Network") { commandHub.buildNetwork() }
                     .disabled(commandHub.isBusy || commandHub.networkReady)
+                Button("New Model…") { commandHub.presentBuildNewModel() }
+                    .disabled(commandHub.isBusy || commandHub.networkReady)
                 Button(commandHub.pendingLoadedSessionExists ? "Continue Training" : "Play and Train") {
                     commandHub.startRealTraining()
                 }

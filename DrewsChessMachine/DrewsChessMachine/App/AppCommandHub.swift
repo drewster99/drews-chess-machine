@@ -80,6 +80,8 @@ final class AppCommandHub {
     // MARK: - Action closures
 
     var buildNetwork: () -> Void = {}
+    /// Present the Build-New-Model screen (configure a custom architecture).
+    var presentBuildNewModel: () -> Void = {}
     var runForwardPass: () -> Void = {}
     var playSingleGame: () -> Void = {}
     var startContinuousPlay: () -> Void = {}

@@ -998,11 +998,9 @@ final class SessionController {
         onDropTrainer()
         onClearTrainingDisplay()
 
-        // architecture.json (if present) drives the build, re-read each time so
-        // an edit takes effect on the next Build without relaunching.
-        if let fileArch = ArchitectureConfig.loadDefaultIfPresent() {
-            buildArchitecture = fileArch
-        }
+        // `buildArchitecture` is set by the Build-New-Model screen (or, headless,
+        // a CLI arch flag); default is `.current`. The old well-known
+        // `architecture.json` auto-load was removed per plan §10.
         let arch = buildArchitecture
         Task {
             let result = await Task.detached(priority: .userInitiated) {

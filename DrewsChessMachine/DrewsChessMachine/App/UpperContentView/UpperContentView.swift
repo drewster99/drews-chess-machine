@@ -548,6 +548,7 @@ struct UpperContentView: View {
     /// configured to show only the promoted records, opened by
     /// clicking the "Promotions" cell in the top status bar.
     @State private var showPromotionsSheet: Bool = false
+    @State private var showBuildNewModelSheet: Bool = false
     // Sampling cadence (`chartCoordinator.progressRateLastFetch`,
     // `chartCoordinator.progressRateNextId`, `chartCoordinator.trainingChartNextId`,
     // `chartCoordinator.prevChartTotalGpuMs`), chart navigation (`chartCoordinator.scrollX`,
@@ -1146,6 +1147,17 @@ struct UpperContentView: View {
                 configuredGamesPerTournament: trainingParams.arenaGamesPerTournament,
                 promoteThreshold: trainingParams.arenaPromoteThreshold,
                 onClose: { showArenaHistorySheet = false }
+            )
+        }
+        .sheet(isPresented: $showBuildNewModelSheet) {
+            BuildNewModelView(
+                initial: NamedArchitecture(label: "Custom", architecture: session.buildArchitecture),
+                onBuild: { arch in
+                    session.buildArchitecture = arch
+                    showBuildNewModelSheet = false
+                    session.buildNetwork()
+                },
+                onCancel: { showBuildNewModelSheet = false }
             )
         }
         // Promotions sheet — reuses `ArenaHistoryView` filtered to the
@@ -2076,6 +2088,7 @@ struct UpperContentView: View {
     /// by the struct value).
     private func wireMenuCommandHub() {
         commandHub.buildNetwork = { session.buildNetwork() }
+        commandHub.presentBuildNewModel = { showBuildNewModelSheet = true }
         commandHub.runForwardPass = { runForwardPass() }
         commandHub.playSingleGame = { playSingleGame() }
         commandHub.startContinuousPlay = { startContinuousPlay() }
