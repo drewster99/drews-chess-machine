@@ -532,6 +532,37 @@ the app.
   embedded into saved-model metadata; `NetworkArchitecture` stays **purely topological**
   (decision (b)).
 
+### Build New Model screen (required)
+
+A dedicated screen for creating a fresh network — opened from the Build action (and a
+**File ▸ New Model…** menu item), replacing the old immediate "build default" path. One
+SwiftUI `View` struct in its own file under `App/UpperContentView/`, backed by an
+`@Observable` model (mirrors `TrainingSettingsPopoverModel`).
+
+- **Preset picker** — built-in presets + user-saved (from the Presets folder); selecting
+  one populates every field; switches to "Custom" once any field is edited.
+- **Free-form controls — every required topology field (§5a), grouped:**
+  - *Input:* `input_encoding` (picker; shows the `planeGroups` table for the selected case).
+  - *Tower:* `channels`, `num_blocks`, `stem_conv_kernel_size`, `activation_function`.
+  - *Block:* `block_activation_style`, `block_skip_merge`, `block_use_rezero`
+    (+`rezero_alpha_init`, enabled only when on), `block_conv1_kernel_size`,
+    `block_conv2_kernel_size`, `block_se_style` (+`block_se_reduction_ratio`, enabled only
+    when SE ≠ none).
+  - *Policy:* `policy_head_style` (+`policy_pre_conv_channels`).
+  - *Value:* `value_head_style`, `value_head_conv_channels`, `value_head_hidden_units`.
+  - *Precision:* `compute_data_type`.
+  - *Name:* free-text `label`.
+- **Live readouts** (recompute on every change): `parameterCount` (monospaced, whitespace-
+  padded), `architectureSummary`, estimated memory vs the device budget, and inline
+  validation — invalid fields flagged, **Build disabled** until `validate()` passes.
+- **Actions:** **Build** (constructs `ChessNetwork(arch:)` + readies the session),
+  **Save as Preset…** (writes a `.json` to the Presets folder), **Reset to preset**.
+- **Conventions:** one `View` per file; `@Observable` model with per-field bindings +
+  validation (mirrors `TrainingSettingsPopoverModel`); monospaced padded digits;
+  light/dark; aligned columns; keyboard/accessibility per the house UI rules.
+
+Built in **Phase H**.
+
 ## 11. Python / framework interop
 
 Native format = interoperable; no exporter. Conventions to honor + document in
@@ -559,37 +590,75 @@ Native format = interoperable; no exporter. Conventions to honor + document in
   numpy`) — load our file, check names/shapes/values. Inference-in-Python is a
   later, separate validation.
 
-## 12. Phased implementation (build + commit per phase, no stopping)
+## 12. Phased implementation (RE-SEQUENCED — build + commit per phase)
 
-1. **(DONE)** **`NetworkArchitecture` foundation** — struct, enums, presets, `parameterCount`
-   / `architectureSummary` / `archHash` / `weightTensorPlan` (matching the current
-   v4 build order) + validation. XCTests for hashes, param counts, plan counts,
-   validation. No `ChessNetwork` rewiring.
-2. **(DONE)** **Safetensors-native storage (current arch)** — from-scratch Swift
-   reader/writer; `CheckpointManager` save/load via safetensors; `.safetensors`
-   extension; name-keyed load into the current net; `__metadata__` schema (incl.
-   `content_sha256`, `dcm_format_version`, embedded `architecture`); legacy
-   `.dcmmodel` reader; update loaders/pointers/open-panel filters
-   (`UCIModelLoader`, `PlayController`, `SessionCheckpointLayout`,
-   `LastSessionPointer`); keep `verifyModelFile`. **Validate:** round-trip on the
-   current net (byte + forward) + Python load.
-3. **(DONE)** **static→instance refactor** — thread `arch` through `ChessNetwork` &
-   `NetworkWeightAnalyzer`; **bit-exact parity gate**.
-4. **(DONE — partially superseded)** **Build-new-net flexibility** — architecture UI +
-   validation; Build constructs from config; persistence already config-driven.
-   *As-built used a well-known `architecture.json`; the finalized design (§10) replaces
-   that with `--architecture-preset` / `--architecture-file` + a Presets folder.*
-   *(Also done out of band: Phase 6a — resume/load by embedded architecture.)*
-5. **(TODO)** **Per-model precision** — `compute_data_type` in config, honored as-is
-   (no HW gate/detection, §9); thread off the static `dataType`; fp32-master
-   mixed-precision trainer for bf16.
-6. **(TODO)** **v3/v4 block-style + SE variants + archHash→config fallback map** — ONE
-   code path (§8): `residualBlock`/`weightTensorPlan` branch on `arch.blockStyle` +
-   `arch.se`; value head reused verbatim. Load historical v3 & v4 models, verified
-   by loading the real 8-block-v3 file through `verifyModelFile`.
-7. **(TODO)** **CLI** — `--uci` builds from embedded config; implement `--playchess`.
-8. **(TODO)** **Capstone** — build 8-block-v4 from preset; load all four historical
-   arches; full suite green; Python inference spot-check.
+Dependency-ordered. "(rework)" = revises as-built Phase 1–4 code to the finalized design.
+**Capability comes online incrementally:** after Phase B you can build+train any
+*v4-family* arch (any blocks/channels/kernels/SE/policy/activation, WDL, basic30) — most
+of the experimentation surface; C adds basic20, D adds scalar_tanh, G adds fp32/bf16
+choice. The two safety gates are placed where they matter: the **parity gate** at B
+(protects the current model) and **`verifyModelFile`** at E/F (proves persistence +
+historical loads).
+
+**A. `NetworkArchitecture` foundation (rework).** Rebuild the struct as the full
+decomposed, all-required, purely-topological surface (§5a): every field, no defaults;
+`InputEncoding` enum + `planeGroups`; canonical snake_case `Codable` (`sortedKeys`);
+`validate()` (odd kernels, SE divisibility, memory budget); `parameterCount`,
+`architectureSummary`, `weightTensorPlan()` branching on every axis; built-in `Preset`
+enum (8-blk-v3, 16-blk-v3, 12-blk-v4, 5-blk-v4, 8-blk-v4). Drop the SHA/arch_hash
+identity machinery; `label` lives outside the struct.
+*Validate:* XCTests — param + plan counts for every preset, validation rejects, `Codable`
+round-trip + canonical determinism (reorder fields → identical bytes). No `ChessNetwork`
+wiring yet.
+
+**B. Forward-graph builder = one code path + PARITY GATE (rework).** `ChessNetwork`'s
+static builders branch on all decomposed axes (block_activation_style, skip_merge,
+use_rezero, conv1/2 kernel, se_style/ratio, policy_head_style + pre_conv_channels,
+value_head_style forward graph, network-wide activation_function incl. silu/gelu exact).
+Remove the `= .current` init defaults — every call site passes its arch.
+*Validate (INVARIANT CHECKPOINT, §15):* default/current config builds the **bit-identical**
+graph (forward-pass parity test + `verifyModelFile`); build-and-forward smoke for every
+preset.
+
+**C. Input-encoding reach (`BoardEncoder` + `ReplayBuffer`).** `input_encoding`-driven
+plane count: `BoardEncoder.encode(…, encoding:)` branches (basic20/basic30);
+`tensorLength`/stem depth/`ReplayBuffer` stride become instance-derived; resume validates
+buffer stride. *Validate:* encoder fills exactly `planeGroups` ranges (golden test per
+encoding); a basic20 net builds + short self-play fills the buffer at the right stride.
+
+**D. Trainer reach (value-loss branch).** `ChessTrainer.buildTrainingOps` branches on
+`value_head_style`: wdl→categorical CE, scalar_tanh→MSE (resurrect the pre-WDL loss +
+tanh baseline). *Validate:* a few steps on a wdl AND a scalar_tanh net; loss drops,
+gNorm finite.
+
+**E. Safetensors-native, no arch_hash (rework).** Embed full canonical `architecture` +
+`label`; identity = embedded config; integrity = `content_sha256`; **remove the
+`arch_hash` write+verify**. Name-keyed load that **builds the graph from the embedded
+config** then loads (config-driven build replaces the hard-refuse). *Validate:*
+save→load→resave bit-exact on current + a couple presets; `verifyModelFile`; Python load
+(throwaway venv).
+
+**F. Legacy `.dcmmodel` (read-mostly).** Bidirectional `[storedHash ↔ preset]` table;
+read → build preset arch → load (replaces hard-refuse); optional write only when config
+matches a legacy preset. *Validate:* load the **real 8-block-v3 and 12-block-v4** files
+through `verifyModelFile` (bit-exact). [**10% "load old models" milestone.**] (16-blk-v3
+unverifiable — no file on disk.)
+
+**G. Per-model precision.** `compute_data_type` honored as-is (no gate, §9); thread off
+the static `dataType`; fp32-master mixed-precision for bf16. *Validate:* build+train a
+bf16 and an fp32 net; save/load preserves requested dtype; current bf16 behavior
+unchanged. [**90% "build+train any arch" fully enabled.**]
+
+**H. Build UX + presets + CLI (rework Phase 4).** The **Build New Model screen** (full
+spec in §10: preset picker built-ins+user, every free-form field, live
+paramCount/summary, memory validation, Save-as-Preset, `label`) opened from the Build
+action + **File ▸ New Model…**; Presets folder (user-saved only); `--architecture-preset`
+/ `--architecture-file` (remove the `architecture.json` loader); `--uci` from embedded
+config; `--playchess`. *Validate:* the screen builds a free-form arch that trains; CLI
+build from preset + file; `--uci`/`--playchess` resolve.
+
+**I. Capstone.** Build a fresh 8-block-v4 from preset; load every available historical
+file; full suite green; Python inference spot-check.
 
 ## 13. Risks & mitigations
 
